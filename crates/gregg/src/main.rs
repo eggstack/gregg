@@ -3,6 +3,7 @@ mod cli;
 mod clock;
 mod config;
 mod endpoint;
+mod event;
 mod poller;
 mod scheduler;
 mod state;

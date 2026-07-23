@@ -329,13 +329,18 @@ pub fn entry_height(system: &SystemState) -> u16 {
 }
 
 /// Compute which systems in display order are visible given a top
-/// index and available height.
+/// index, the system states, and available height.
 ///
 /// Online entries take 4 rows; offline entries take 1. Partial entries
 /// at the bottom are excluded when possible. If the terminal has fewer
 /// than 4 usable rows, returns an empty range.
 #[must_use]
-pub fn visible_range(display_order: &[usize], top_index: usize, height: u16) -> Range<usize> {
+pub fn visible_range(
+    display_order: &[usize],
+    systems: &[SystemState],
+    top_index: usize,
+    height: u16,
+) -> Range<usize> {
     if height < 4 {
         return 0..0;
     }
@@ -344,27 +349,15 @@ pub fn visible_range(display_order: &[usize], top_index: usize, height: u16) -> 
     let mut count = 0_usize;
 
     for &idx in display_order.iter().skip(top_index) {
-        let _ = idx;
-        // We need the system state to determine entry height, but we
-        // only have indices here. The caller must ensure the indices
-        // correspond to actual systems. For this function, we can't
-        // determine height without the system state, so we use a
-        // simplified approach: assume max 4 rows per entry as a
-        // conservative estimate. The actual rendering will use
-        // entry_height for precise layout.
-        //
-        // Since this function is used for viewport computation and
-        // the caller has access to AppState, we'll use a heuristic
-        // that works for the common case: start with the assumption
-        // that the first entry might be online (4 rows) and the rest
-        // might be offline (1 row). This gives a conservative lower
-        // bound.
-        let estimated_height: u16 = if count == 0 { 4 } else { 1 };
-
-        if rows_used + estimated_height > height && count > 0 {
+        if idx >= systems.len() {
             break;
         }
-        rows_used += estimated_height;
+        let h = entry_height(&systems[idx]);
+
+        if rows_used + h > height && count > 0 {
+            break;
+        }
+        rows_used += h;
         count += 1;
     }
 
@@ -399,7 +392,7 @@ pub fn ensure_selected_visible(state: &mut AppState) {
     let usable_height = height.saturating_sub(2); // Reserve for headers/footers.
 
     // Find which systems fit from top_pos downward.
-    let visible = visible_range(&order, top_pos, usable_height);
+    let visible = visible_range(&order, &state.systems, top_pos, usable_height);
 
     if visible.contains(&selected_pos) {
         // Already visible, nothing to do.
@@ -839,19 +832,20 @@ mod tests {
 
     #[test]
     fn visible_range_handles_mixed_heights() {
-        // This test verifies that visible_range works with indices.
-        // Since we can't pass SystemState to visible_range, we test
-        // with a simple setup.
-        let order: Vec<usize> = (0..10).collect();
-        let range = visible_range(&order, 0, 20);
+        let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
+        let state = AppState::from_config(&config);
+        let order = state.display_order();
+        let range = visible_range(&order, &state.systems, 0, 20);
         // Should include some entries.
         assert!(!range.is_empty());
     }
 
     #[test]
     fn visible_range_small_terminal() {
-        let order: Vec<usize> = (0..10).collect();
-        let range = visible_range(&order, 0, 3);
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let state = AppState::from_config(&config);
+        let order = state.display_order();
+        let range = visible_range(&order, &state.systems, 0, 3);
         // Terminal too small for even one online entry.
         assert!(range.is_empty());
     }

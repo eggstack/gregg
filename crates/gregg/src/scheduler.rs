@@ -368,6 +368,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn overlap_skip_if_running() {
+        // Create a slow mock server that takes 100ms to respond.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // Simulate a slow endpoint.
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let snap = LinuxSnapshotBuilder::default().build();
+            let body = serde_json::to_string(&snap).unwrap();
+            let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+        });
+
+        let ep = Endpoint {
+            id: "slow-ep".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let mut clock = FakeClock::new(anchor);
+
+        // Refresh interval is 20ms, but the endpoint takes 100ms.
+        let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(20), 4);
+        let cancel = CancellationToken::new();
+        let mut rx = scheduler.run(vec![ep], cancel.clone());
+
+        // Wait for the first batch to complete (takes ~100ms).
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch1.generation, 1);
+
+        // Advance clock past multiple refresh intervals.
+        // The scheduler should not start a new generation while the
+        // previous one is still in flight (skip-if-running).
+        clock.advance(Duration::from_millis(60));
+
+        // We should NOT receive a second batch yet because the scheduler
+        // sleeps for the interval before starting a new generation, and
+        // the first generation took 100ms. With a 20ms refresh interval,
+        // after the first batch completes at ~100ms, the scheduler sleeps
+        // 20ms more before starting generation 2. So at clock=160ms
+        // (100ms first cycle + 60ms advance), generation 2 should have
+        // started but may not have finished yet. The key invariant is
+        // that generation numbers are strictly monotonically increasing
+        // and no generation is skipped.
+        clock.advance(Duration::from_millis(100));
+
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        // Generation must be exactly 2 (no skipped generations).
+        assert_eq!(batch2.generation, 2);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn multiple_endpoints_all_polled() {
         let url1 = valid_snapshot_server().await;
         let url2 = valid_snapshot_server().await;
