@@ -126,8 +126,32 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
   page scrolling, config reload, resize, quit).
 
 The `run_tui` async function in `main.rs` wires the config store, HTTP client,
-scheduler, and state reducer. Phase 8 will add Ratatui rendering as a
-downstream consumer of immutable `AppState` projections.
+scheduler, state reducer, terminal lifecycle, crossterm event stream, and
+Ratatui rendering. The TUI reads `AppState` projections and renders without
+performing network or filesystem I/O.
+
+## Client TUI
+
+The TUI lives in `crates/gregg/src/` and is composed of these modules:
+
+- `terminal.rs` — Terminal lifecycle (raw mode, alternate screen, cursor hiding)
+  with panic-hook restoration on all exit paths.
+- `input.rs` — Crossterm event stream adapter reading events on a dedicated
+  thread and forwarding typed `Event`s through a bounded channel.
+- `ui/mod.rs` — Top-level `render()` function delegating to sub-modules.
+- `ui/layout.rs` — Viewport computation: which systems are visible and their
+  rect positions.
+- `ui/system_block.rs` — 4-row online system rendering (header + CPU/MEM/SWP
+  bars) and 1-row offline rendering.
+- `ui/bar.rs` — Reusable ASCII usage bar renderer with width-safe arithmetic.
+- `ui/text.rs` — Text formatting helpers (byte sizes, percentages, load
+  averages, priority-aware header composition).
+- `ui/diagnostics.rs` — Empty-config and terminal-too-small messages.
+
+Rendering reads `AppState` exclusively; it performs no network or filesystem I/O.
+Width degradation drops lower-priority identity segments before truncating
+higher-priority values. The terminal is restored on normal quit, error, signal,
+and panic paths.
 
 ## Service management
 

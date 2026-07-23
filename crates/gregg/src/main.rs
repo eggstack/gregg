@@ -4,9 +4,12 @@ mod clock;
 mod config;
 mod endpoint;
 mod event;
+mod input;
 mod poller;
 mod scheduler;
 mod state;
+mod terminal;
+mod ui;
 
 use clap::Parser;
 
@@ -68,13 +71,80 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     });
 
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
-    let mut rx = scheduler.run(endpoints, cancel.clone());
+    let mut batch_rx = scheduler.run(endpoints, cancel.clone());
 
-    while let Some(batch) = rx.recv().await {
-        app_state.apply_batch(&batch);
-        // Phase 8 will render here.
+    let mut terminal = terminal::Terminal::init()?;
+    let (event_stream, mut event_rx) = input::EventStream::new();
+
+    // Set initial terminal size in state.
+    if let Ok((w, h)) = terminal::Terminal::size() {
+        app_state.apply_action(action::Action::Resize {
+            width: w,
+            height: h,
+        });
     }
 
+    let result = run_event_loop(
+        &mut terminal,
+        &mut app_state,
+        &mut batch_rx,
+        &mut event_rx,
+        &cancel,
+    )
+    .await;
+
+    event_stream.shutdown();
+    terminal.restore();
     cancel.cancel();
+
+    result
+}
+
+async fn run_event_loop(
+    terminal: &mut terminal::Terminal,
+    app_state: &mut state::AppState,
+    batch_rx: &mut tokio::sync::mpsc::Receiver<poller::PollBatch>,
+    event_rx: &mut tokio::sync::mpsc::Receiver<event::Event>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Initial render.
+    terminal.draw(|f| ui::render(f, app_state))?;
+
+    loop {
+        tokio::select! {
+            biased;
+
+            () = cancel.cancelled() => {
+                break;
+            }
+
+            maybe_batch = batch_rx.recv() => {
+                match maybe_batch {
+                    Some(batch) => {
+                        app_state.apply_batch(&batch);
+                    }
+                    None => break,
+                }
+            }
+
+            maybe_event = event_rx.recv() => {
+                match maybe_event {
+                    Some(evt) => {
+                        if let Some(action) = event::translate_event(&evt) {
+                            if matches!(action, action::Action::Quit) {
+                                app_state.apply_action(action);
+                                break;
+                            }
+                            app_state.apply_action(action);
+                        }
+                    }
+                    None => break,
+                }
+            }
+        }
+
+        terminal.draw(|f| ui::render(f, app_state))?;
+    }
+
     Ok(())
 }

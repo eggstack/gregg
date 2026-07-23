@@ -4,11 +4,11 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 7 are implemented. Phase 7 adds
-> bounded concurrent HTTP polling, generation-based scheduling, typed
-> poll outcomes, application state with online-first display ordering,
-> selection by stable system ID, and variable-height viewport helpers.
-> TUI rendering continues in phase 8 per [`plans/`](plans/).
+> Project status: phases 1 through 8 are implemented. Phase 8 adds
+> the compact Ratatui TUI with keyboard-first navigation, 4-row
+> online system rendering, 1-row offline rendering, width degradation,
+> terminal resize handling, and comprehensive buffer tests.
+> Performance hardening continues in phase 9 per [`plans/`](plans/).
 
 ## Goals
 
