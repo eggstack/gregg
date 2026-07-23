@@ -863,3 +863,48 @@ fn identity_os_release_only_comments() {
     assert_eq!(identity.os_name, "linux");
     assert_eq!(identity.os_version, "unknown");
 }
+
+// ---------- Collector hardening: suspend/resume ----------
+
+#[test]
+fn suspend_resume_counter_jump_produces_valid_snapshot() {
+    // After a system suspend/resume, CPU counters jump forward by a large
+    // amount. The delta is valid but much larger than a normal interval.
+    // The collector must produce finite percentages without overflow.
+    let mut collector = LinuxCollector::with_source(
+        source_from(
+            &[
+                ("suspend_resume_proc_stat_a.txt", "/proc/stat"),
+                ("ubuntu_x86_64_proc_loadavg.txt", "/proc/loadavg"),
+                ("ubuntu_x86_64_proc_meminfo.txt", "/proc/meminfo"),
+            ],
+            4,
+            Some("ubuntu_x86_64_os_release.txt"),
+        ),
+        None,
+    )
+    .expect("collector constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Simulate resume: swap to post-suspend counters.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("suspend_resume_proc_stat_b.txt"));
+
+    let metrics = collector.sample().expect("sample after resume succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: true },
+        identity,
+    );
+    snap.validate()
+        .expect("snapshot validates after suspend/resume");
+    assert!(snap.cpu.usage_pct.is_finite());
+    assert!(snap.cpu.iowait_pct.is_some());
+    assert!((0.0..=100.0).contains(&snap.cpu.usage_pct));
+}

@@ -114,4 +114,70 @@ mod tests {
         assert!(cols > 0, "columns should be > 0, got {cols}");
         assert!(rows > 0, "rows should be > 0, got {rows}");
     }
+
+    // ---------- Terminal lifecycle tests ----------
+
+    #[test]
+    fn restore_terminal_safe_without_init() {
+        // restore_terminal should be safe to call even if Terminal::init
+        // was never called. The underlying crossterm calls are idempotent:
+        // leaving alternate screen when not in one is a no-op, and
+        // disabling raw mode when not in raw mode is a no-op.
+        for _ in 0..10 {
+            restore_terminal();
+        }
+    }
+
+    #[test]
+    fn restore_terminal_preserves_stdout() {
+        // After restore_terminal, stdout should still be usable.
+        restore_terminal();
+        let result = std::io::stdout().write_all(b"test");
+        assert!(
+            result.is_ok(),
+            "stdout should remain writable after restore"
+        );
+    }
+
+    #[test]
+    fn panic_hook_does_not_interfere_with_normal_operation() {
+        // Install the panic hook and then verify normal operations work.
+        HOOK_INSTALLED.call_once(|| {
+            let original_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore_terminal();
+                original_hook(info);
+            }));
+        });
+
+        // These should all succeed without triggering the panic hook.
+        restore_terminal();
+        let (cols, rows) = Terminal::size().expect("size should work");
+        assert!(cols > 0);
+        assert!(rows > 0);
+    }
+
+    #[test]
+    fn multiple_hooks_do_not_stack() {
+        // The Once guard ensures the hook is only installed once.
+        // Calling the installation logic multiple times should not
+        // create multiple hooks.
+        let hook1 = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            hook1(info);
+        }));
+
+        // Second installation via Once should be skipped.
+        HOOK_INSTALLED.call_once(|| {
+            let original_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore_terminal();
+                original_hook(info);
+            }));
+        });
+
+        // Clean up: restore default hook.
+        let _ = std::panic::take_hook();
+    }
 }

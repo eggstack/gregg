@@ -783,4 +783,67 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("configuration file not found"));
     }
+
+    // --- Service restart loop protection tests ---
+
+    #[test]
+    fn croncheck_with_failing_start_returns_error_without_looping() {
+        // When the service is inactive and start fails, croncheck must
+        // return an error after a single start attempt, not loop.
+        let service = FakeServiceManager::new();
+        service.set_active(false);
+        service.set_start_error(ServiceError::CommandFailed {
+            command: "systemctl start greggd".into(),
+            exit_status: Some(1),
+            stderr: "invalid config".into(),
+        });
+
+        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
+        assert!(result.is_err());
+
+        // Exactly one is_active + one start call, no loop.
+        let calls = service.calls();
+        assert_eq!(calls, vec!["is_active", "start"]);
+    }
+
+    #[test]
+    fn repeated_croncheck_calls_each_make_single_start_attempt() {
+        // Simulate a cron daemon calling croncheck every minute while the
+        // service is inactive and start keeps failing. Each invocation
+        // should be independent: one is_active + one start per call.
+        for i in 0..5 {
+            let service = FakeServiceManager::new();
+            service.set_active(false);
+            service.set_start_error(ServiceError::CommandFailed {
+                command: "systemctl start greggd".into(),
+                exit_status: Some(1),
+                stderr: format!("attempt {i}"),
+            });
+
+            let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
+            assert!(result.is_err(), "iteration {i} should fail");
+
+            let calls = service.calls();
+            assert_eq!(
+                calls,
+                vec!["is_active", "start"],
+                "iteration {i} should have exactly 2 calls"
+            );
+        }
+    }
+
+    #[test]
+    fn croncheck_start_success_sets_active_and_does_not_restart() {
+        // When croncheck starts the service successfully, it should not
+        // call restart. Only start should be called.
+        let service = FakeServiceManager::new();
+        service.set_active(false);
+
+        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
+        assert!(result.is_ok());
+
+        let calls = service.calls();
+        assert_eq!(calls, vec!["is_active", "start"]);
+        assert!(!calls.contains(&"restart"));
+    }
 }

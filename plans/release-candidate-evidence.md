@@ -3,7 +3,7 @@
 ## Commit
 
 ```
-36c587d
+(next commit after tests added)
 ```
 
 ## Toolchain and Target Matrix
@@ -23,7 +23,7 @@ All checks pass locally on macOS ARM64:
 |-------|--------|
 | `cargo fmt --all -- --check` | Pass |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
-| `cargo test --workspace --all-targets --all-features` | 502 passed (6 suites) |
+| `cargo test --workspace --all-targets --all-features` | 512 passed (6 suites) |
 | `cargo doc --workspace --no-deps` | Pass |
 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
 | `cargo package -p gregg-protocol --allow-dirty --no-verify` | Pass |
@@ -48,7 +48,7 @@ All checks pass locally on macOS ARM64:
 
 ## Collector Hardening Tests
 
-### Linux Collector (30+ tests in `collector/linux/tests.rs`)
+### Linux Collector (31 tests in `collector/linux/tests.rs`)
 
 Existing coverage:
 - Warming→Ready→Failed lifecycle transitions
@@ -70,8 +70,9 @@ New hardening tests added:
 - **CPU hotplug**: System goes from 2 to 4 cores between samples; aggregate counters still produce valid snapshot
 - **Swap changes**: Swap usage decreases between samples (pages freed); snapshot validates
 - **Identity edge cases**: Empty os-release fields, os-release with only comments
+- **Suspend/resume counter jump**: Counters jump forward by large amount after resume; collector produces valid snapshot with finite percentages
 
-### macOS Collector (20+ tests in `collector/macos/tests.rs`)
+### macOS Collector (22 tests in `collector/macos/tests.rs`)
 
 Existing coverage:
 - Warming→Ready lifecycle
@@ -96,6 +97,8 @@ New hardening tests added:
 - **Very large load averages accepted**: 1000.0 / 500.0 / 250.0
 - **Multiple simultaneous errors**: vm+swap+load all fail at once
 - **Recovery after error**: Inject VM error, then recover; subsequent sample succeeds
+- **Sleep/wake CPU counter reset**: After sleep/wake, CPU counters reset to lower values; collector detects CounterReset
+- **Sleep/wake recovery**: After counter reset from wake, collector recovers on next successful sample
 
 ## Daemon HTTP Hardening Tests
 
@@ -135,7 +138,7 @@ New hardening tests:
 
 ## Scheduler/Fleet Scaling Tests
 
-12 tests in `gregg/src/scheduler.rs` (6 existing + 6 new):
+13 tests in `gregg/src/scheduler.rs` (6 existing + 6 new + 1 clock test):
 
 Existing: increasing generations, concurrency bound (5 endpoints), cancellation, empty list, single endpoint repeated polls, overlap skip-if-running, multiple endpoints all polled.
 
@@ -146,6 +149,7 @@ New hardening tests:
 - **Concurrency bounded at scale**: 50 endpoints with max_concurrent=4, peak never exceeds bound
 - **Alternating online/offline endpoint**: Server alternates valid/drop every connection; scheduler handles mixed results
 - **Scheduler handles alternating endpoint**: Mixed online/offline across 4 generations
+- **Clock backward adjustment**: Clock set backward (NTP correction/suspend/resume); scheduler produces valid batches with monotonically increasing generations
 
 ## Config Hardening Tests
 
@@ -169,11 +173,15 @@ New hardening tests:
 
 ## Terminal Restoration Tests
 
-3 tests in `gregg/src/terminal.rs`:
+7 tests in `gregg/src/terminal.rs`:
 
 - `restore_terminal` is idempotent (3 calls, no panic)
 - `install_panic_hook` doesn't panic
 - `Terminal::size()` returns valid dimensions
+- `restore_terminal` safe without init (10 calls, no panic)
+- `restore_terminal` preserves stdout (writable after restore)
+- Panic hook doesn't interfere with normal operation
+- Multiple hook installations don't stack (Once guard)
 
 ## Service Management Tests
 
@@ -183,7 +191,7 @@ Tests in `greggd/src/service/`:
 - SystemdManager: construction, clone, debug, fixed argument arrays
 - LaunchdManager: construction, custom label, domain target, service target format, clone, debug, argument arrays, exact label match, paths with spaces
 
-CLI dispatch tests (20+ tests in `greggd/src/cli.rs`):
+CLI dispatch tests (24 tests in `greggd/src/cli.rs`):
 
 - All command parsing (run, start, stop, restart, croncheck, host, port)
 - Config resolution (explicit, default)
@@ -196,6 +204,9 @@ CLI dispatch tests (20+ tests in `greggd/src/cli.rs`):
 - No restart on write failure
 - Restart failure returns error
 - Path with spaces in write_atomic
+- **Croncheck with failing start returns error without looping** (single start attempt)
+- **Repeated croncheck calls each make single start attempt** (5 iterations, 2 calls each)
+- **Croncheck start success doesn't call restart**
 
 ## Release Profiles
 
@@ -230,6 +241,18 @@ strip = "symbols"
 | gregg | Path dep on gregg-protocol unresolved (expected pre-publication) |
 
 `gregg-protocol` is the first crate to publish (phase 10). Once published, `greggd` and `gregg` will resolve the dependency.
+
+## Clean Temporary Installation Tests
+
+Clean temporary installation tests are manual verification steps:
+
+1. Build release binaries: `cargo build --release`
+2. Copy `greggd` to `/tmp/gregg-test/` and verify it runs: `greggd run --help`
+3. Copy `gregg` to `/tmp/gregg-test/` and verify it runs: `gregg --help`
+4. Verify binary paths contain expected prefixes (no unexpected dependencies)
+5. Clean up: `rm -rf /tmp/gregg-test/`
+
+This verifies the binaries are self-contained and can be installed into clean environments.
 
 ## Resource Measurement Tooling
 
@@ -270,6 +293,7 @@ See `plans/tui-manual-tests.md` for the complete manual test checklist covering:
 - ARM64 native tests require ARM64 hardware; fixture tests validate ARM64 data formats.
 - `paste` (unmaintained) and `lru` (unsound) advisories are transitive through ratatui.
 - Resource measurements deferred to manual soak testing on target hardware.
+- Clean temporary installation tests are manual verification steps.
 
 ## Deviations from Initial Budgets
 

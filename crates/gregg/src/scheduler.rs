@@ -647,6 +647,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clock_backward_adjustment_does_not_corrupt_scheduler() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let mut clock = FakeClock::new(anchor);
+
+        let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
+        let cancel = CancellationToken::new();
+        let mut rx = scheduler.run(vec![ep], cancel.clone());
+
+        // First batch at normal time.
+        clock.advance(Duration::from_millis(20));
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch1.generation, 1);
+        assert!(batch1.started_at <= batch1.completed_at);
+
+        // Set clock backward (simulating NTP correction or suspend/resume).
+        // The scheduler uses tokio::time::sleep for the interval, not the
+        // fake clock, so it will still wake up. The clock only affects
+        // batch timestamps. Generations must remain monotonically increasing.
+        clock.set(anchor.checked_sub(Duration::from_secs(3600)).unwrap());
+
+        clock.advance(Duration::from_millis(20));
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch2.generation, 2, "generations must be monotonic");
+
+        // Set clock far forward again.
+        clock.set(anchor + Duration::from_secs(7200));
+        clock.advance(Duration::from_millis(20));
+        let batch3 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch3.generation, 3, "generations must be monotonic");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
     async fn scheduler_handles_alternating_endpoint() {
         let url = alternating_mock_server().await;
         let ep = endpoint_for_url(&url);

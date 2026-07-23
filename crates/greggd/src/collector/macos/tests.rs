@@ -484,3 +484,77 @@ fn recovery_after_error() {
     );
     snap.validate().expect("snapshot validates after recovery");
 }
+
+// ---------- Collector hardening: sleep/wake transitions ----------
+
+#[test]
+fn sleep_wake_cpu_counter_reset_after_wake() {
+    // After a macOS sleep/wake cycle, CPU counters may reset to lower
+    // values. The collector must detect this as a CounterReset error
+    // rather than producing negative or NaN percentages.
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Simulate wake: CPU counters reset to lower values.
+    *collector.source_mut() = MockNativeQueries {
+        cpu: RawCpuTicks {
+            user: 500,
+            system: 200,
+            idle: 4000,
+            nice: 50,
+        },
+        ..MockNativeQueries::success()
+    };
+    let err = collector.sample().expect_err("counter reset after wake");
+    assert_eq!(err.kind, CollectErrorKind::CounterReset);
+}
+
+#[test]
+fn sleep_wake_recovery_after_counter_reset() {
+    // After a sleep/wake counter reset, the collector should recover on
+    // the next successful sample once counters begin incrementing again.
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Simulate wake with reset counters.
+    *collector.source_mut() = MockNativeQueries {
+        cpu: RawCpuTicks {
+            user: 500,
+            system: 200,
+            idle: 4000,
+            nice: 50,
+        },
+        ..MockNativeQueries::success()
+    };
+    let err = collector.sample().expect_err("counter reset after wake");
+    assert_eq!(err.kind, CollectErrorKind::CounterReset);
+
+    // Now simulate normal operation after wake: counters increment from
+    // the new baseline.
+    *collector.source_mut() = MockNativeQueries {
+        cpu: RawCpuTicks {
+            user: 600,
+            system: 250,
+            idle: 4500,
+            nice: 60,
+        },
+        ..MockNativeQueries::success()
+    };
+    let metrics = collector.sample().expect("sample after recovery succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate()
+        .expect("snapshot validates after wake recovery");
+    assert!(snap.cpu.usage_pct.is_finite());
+    assert!((0.0..=100.0).contains(&snap.cpu.usage_pct));
+}
