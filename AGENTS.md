@@ -67,6 +67,8 @@ Dependencies must solve a concrete version-1 requirement. Disable unused default
 
 The daemon now uses axum, tokio, tracing, serde_json, serde, toml, and clap for the HTTP server, async runtime, structured logging, JSON serialization, configuration serialization/parsing, and CLI argument parsing respectively.
 
+The client crate (`gregg`) uses clap, serde, serde_json, toml, and uuid for CLI argument parsing, configuration serialization/parsing, JSON output, and stable endpoint identity respectively.
+
 `greggd` now exposes a `lib` target so integration tests can exercise the
 collector without depending on internal-only paths.
 

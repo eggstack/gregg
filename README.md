@@ -4,10 +4,10 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 5 are implemented. Phase 5 adds
-> daemon configuration, service lifecycle commands, and native
-> packaging for systemd (Linux) and launchd (macOS). Client and TUI
-> work continues in phases 6-8 per [`plans/`](plans/).
+> Project status: phases 1 through 6 are implemented. Phase 6 adds
+> client configuration, endpoint management, and CLI subcommands
+> (`add`, `list`, `remove`, `refresh`, `edit`). TUI and polling work
+> continues in phases 7-8 per [`plans/`](plans/).
 
 ## Goals
 

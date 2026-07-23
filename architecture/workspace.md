@@ -84,6 +84,24 @@ prevent silent typo acceptance. Validation produces structured `ConfigViolation`
 values rather than failing through serde. Atomic writes follow the
 write-flush-rename-verify pattern.
 
+## Client CLI and configuration
+
+The client CLI lives in `crates/gregg/src/cli.rs` and uses `clap` derive macros.
+Subcommands include `add`, `list`, `remove`, `refresh`, and `edit`. Running
+`gregg` without a subcommand is reserved for the TUI entry point.
+
+Client configuration lives in `crates/gregg/src/config.rs`. It stores monitored
+endpoints as `[[systems]]` entries with stable UUID v4 IDs, host, port, and
+optional display name. The `ConfigStore` provides `load_or_default`,
+`load_existing`, `write`, `mutate`, and `mutate_with_result` operations with
+a `Mutex`-based concurrency guard. Atomic writes follow the same
+write-flush-rename-verify pattern as the daemon.
+
+The endpoint parser lives in `crates/gregg/src/endpoint.rs`. It supports IPv4,
+IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional ports. The parser
+rejects URL schemes, paths, credentials, and malformed input. Host-only removal
+semantics are supported for the `remove` command.
+
 ## Service management
 
 The service abstraction lives in `crates/greggd/src/service/`. A `ServiceManager`

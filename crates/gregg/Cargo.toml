@@ -19,7 +19,15 @@ path = "src/main.rs"
 
 [dependencies]
 gregg-protocol = { version = "0.1.0", path = "../gregg-protocol" }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+uuid = { version = "1", features = ["v4"] }
 thiserror = { version = "1.0", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [lints]
 workspace = true
