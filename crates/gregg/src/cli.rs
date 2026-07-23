@@ -40,6 +40,17 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Add a monitored endpoint.
+    ///
+    /// Parses the endpoint, assigns a stable UUID, and appends it to the
+    /// configuration. Exact duplicates are rejected unless `--replace` is set.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg add 192.168.1.8
+    /// gregg add macmini.local:11310 --name "Mac Mini"
+    /// gregg add 10.0.0.5:8080 --replace
+    /// ```
     Add {
         /// Endpoint in host:port format (default port 11310).
         endpoint: String,
@@ -51,23 +62,63 @@ pub enum Command {
         replace: bool,
     },
     /// List all configured endpoints.
+    ///
+    /// Prints one endpoint per line in stable insertion order. With `--json`,
+    /// emits a machine-readable JSON array.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg list
+    /// gregg list --json
+    /// ```
     List {
         /// Output in JSON format.
         #[arg(long)]
         json: bool,
     },
     /// Remove one or more monitored endpoints.
+    ///
+    /// Use host only to remove all entries for that host (regardless of port),
+    /// or host:port to remove a specific endpoint.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg remove 192.168.1.8
+    /// gregg remove 10.0.0.5:8080
+    /// ```
     Remove {
         /// Endpoint to remove. Use host only to remove all entries for that host,
         /// or host:port to remove a specific endpoint.
         endpoint: String,
     },
     /// Set the global polling interval in seconds.
+    ///
+    /// Persists the interval to the configuration file. Does not trigger an
+    /// immediate poll. Valid range is 1..=3600.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg refresh 5
+    /// gregg refresh 30
+    /// ```
     Refresh {
         /// Refresh interval in seconds (1-3600).
         seconds: u64,
     },
     /// Open the configuration file in an editor.
+    ///
+    /// Resolves the editor from `$VISUAL`, `$EDITOR`, then fallbacks (`hx`,
+    /// `vim`, `vi`). Validates the file after the editor exits.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg edit
+    /// gregg --config /tmp/test.toml edit
+    /// ```
     Edit,
 }
 

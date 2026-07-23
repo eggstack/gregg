@@ -69,6 +69,8 @@ impl SystemEntry {
 ///
 /// All fields are serialized to TOML. Unknown fields are rejected during
 /// deserialization to prevent silent typo acceptance.
+///
+/// See [`config.example.toml`](../config.example.toml) for a complete example.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::struct_field_names)]

@@ -11,7 +11,7 @@ readme.workspace = true
 description = "Compact keyboard-first terminal monitor that polls greggd endpoints and renders each system in four rows."
 keywords = ["tui", "monitoring", "metrics", "ratatui", "cli"]
 categories = ["command-line-utilities", "visualization"]
-include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "config.example.toml"]
 
 [[bin]]
 name = "gregg"

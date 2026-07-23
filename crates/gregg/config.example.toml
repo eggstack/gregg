@@ -1,0 +1,31 @@
+# Gregg client configuration
+# This file is loaded from the platform-specific config directory or via --config.
+
+config_version = 1
+
+# Global polling interval in seconds (1..=3600).
+refresh_seconds = 5
+
+# HTTP request timeout in milliseconds (100+).
+request_timeout_ms = 1500
+
+# Maximum concurrent polling requests (1..=64).
+max_concurrent_requests = 16
+
+# Default port for endpoints that don't specify one (1..=65535).
+default_port = 11310
+
+# Monitored systems.
+# Each entry requires: id (UUID v4), host, port.
+# An optional name provides a display label.
+
+[[systems]]
+id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+host = "192.168.182.8"
+port = 11310
+name = "Deadpool"
+
+[[systems]]
+id = "f6e5d4c3-b2a1-4f7e-8d9c-0b1a2f3e4d5c"
+host = "macmini.local"
+port = 11310
