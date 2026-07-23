@@ -66,9 +66,37 @@ On collector error the sampler transitions to `Failed`.
 
 ## Daemon entry point
 
-The `run()` entry point in `crates/greggd/src/lib.rs` wires together the collector,
+The `run()` entry point in `crates/greggd/src/run.rs` wires together the collector,
 sampler, HTTP server, and signal handlers (SIGTERM/SIGINT). It starts the sampler
 loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
+
+## CLI and configuration
+
+The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
+for structured argument parsing. Subcommands include `run`, `start`, `stop`,
+`restart`, `croncheck`, `host`, and `port`. The `run` command loads validated
+TOML configuration and enters the foreground daemon loop. Lifecycle commands
+delegate to the platform service manager.
+
+Configuration lives in `crates/greggd/src/config.rs`. The `Config` struct is
+serialized/deserialized via `serde` and `toml` with `deny_unknown_fields` to
+prevent silent typo acceptance. Validation produces structured `ConfigViolation`
+values rather than failing through serde. Atomic writes follow the
+write-flush-rename-verify pattern.
+
+## Service management
+
+The service abstraction lives in `crates/greggd/src/service/`. A `ServiceManager`
+trait provides `start`, `stop`, `restart`, and `is_active` operations. Platform
+adapters wrap native tools:
+
+- `service/systemd.rs` — wraps `systemctl` with fixed argument arrays.
+- `service/launchd.rs` — wraps `launchctl` with `bootstrap`, `bootout`, and
+  `kickstart` flows.
+
+A `NoopServiceManager` is provided for testing and development. External command
+invocation is acceptable for service management because `systemctl`/`launchctl`
+are the native administrative interfaces.
 
 ## MSRV
 

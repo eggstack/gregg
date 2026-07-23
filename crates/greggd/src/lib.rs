@@ -1,11 +1,12 @@
 //! `greggd` library.
 //!
-//! Phase 2 adds the Linux collector module behind `cfg(target_os = "linux")`.
-//! Phase 3 adds the macOS collector behind `cfg(target_os = "macos")`.
-//! Phase 4 wires the sampler and HTTP server. Until then the binary only
-//! reports its protocol schema version so the workspace remains packageable.
+//! Provides the daemon components: configuration, service management,
+//! metrics collection, periodic sampling, and HTTP server.
 
+pub mod cli;
 pub mod collector;
+pub mod config;
 pub mod run;
 pub mod sampler;
 pub mod server;
+pub mod service;

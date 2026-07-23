@@ -4,9 +4,10 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 4 are implemented. Phase 4 adds the
-> daemon sampler, HTTP server, and graceful shutdown. Client and TUI
-> work continues in phases 5-8 per [`plans/`](plans/).
+> Project status: phases 1 through 5 are implemented. Phase 5 adds
+> daemon configuration, service lifecycle commands, and native
+> packaging for systemd (Linux) and launchd (macOS). Client and TUI
+> work continues in phases 6-8 per [`plans/`](plans/).
 
 ## Goals
 
@@ -24,7 +25,7 @@ The intended workspace contains three independently publishable crates:
 | Crate | Binary/library | Responsibility |
 | --- | --- | --- |
 | `gregg-protocol` | library | Versioned JSON wire types, metric capabilities, endpoint identity, and compatibility rules. |
-| `greggd` | `greggd` binary | Native Linux/macOS metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, and graceful shutdown. |
+| `greggd` | `greggd` binary | Native Linux/macOS metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, graceful shutdown, configuration management, and native service integration. |
 | `gregg` | `gregg` binary | Endpoint configuration, bounded concurrent polling, application state, keyboard input, and compact Ratatui rendering. |
 
 The protocol crate must remain lightweight and must not depend on the daemon server stack or TUI stack.
@@ -55,7 +56,7 @@ Reachable systems preserve configured order. Unreachable systems preserve their 
 Daemon commands:
 
 ```text
-greggd run
+greggd run [--config PATH]
 greggd start
 greggd stop
 greggd restart
@@ -65,6 +66,8 @@ greggd port 11320
 ```
 
 `greggd run` is the foreground process used by systemd or launchd. It starts a process that samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files. Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
+
+The `--config` flag overrides the platform default configuration path (`/etc/gregg/greggd.toml` on Linux, `/Library/Application Support/gregg/greggd.toml` on macOS) for development, testing, or container deployments.
 
 Client commands:
 
@@ -127,6 +130,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
 cargo package -p gregg-protocol --allow-dirty --no-verify
+cargo package -p greggd --allow-dirty --no-verify
 ```
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current

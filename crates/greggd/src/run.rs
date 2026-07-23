@@ -1,10 +1,9 @@
 //! Foreground daemon entry point.
 //!
 //! Wires the native collector, periodic sampler, HTTP server, signal handling,
-//! and structured logging into a single foreground process. Phase 5 will add
-//! config discovery and service-manager commands around this entry point.
+//! and structured logging into a single foreground process. Uses the validated
+//! [`crate::config::Config`] for all runtime parameters.
 
-use std::net::IpAddr;
 use std::sync::Arc;
 
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
@@ -12,31 +11,11 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::collector::SystemCollector;
+use crate::config::Config;
 use crate::sampler::{RealClock, Sampler};
 use crate::server::{Config as ServerConfig, ServerState};
 
-/// Daemon run configuration.
-#[derive(Debug, Clone)]
-pub struct RunConfig {
-    /// Address to bind the HTTP server to.
-    pub host: IpAddr,
-    /// TCP port to listen on.
-    pub port: u16,
-    /// Native sampling interval in milliseconds.
-    pub sample_interval_ms: u64,
-}
-
-impl Default for RunConfig {
-    fn default() -> Self {
-        Self {
-            host: IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            port: 11310,
-            sample_interval_ms: 1000,
-        }
-    }
-}
-
-/// Run the daemon with the given collector.
+/// Run the daemon with the given collector and configuration.
 ///
 /// This is the main entry point for `greggd run`. It:
 ///
@@ -48,10 +27,11 @@ impl Default for RunConfig {
 ///
 /// # Errors
 ///
-/// Returns an error if configuration is invalid.
+/// Returns an error if configuration is invalid or the server fails
+/// to start.
 pub async fn run<C: SystemCollector + 'static>(
     collector: C,
-    config: RunConfig,
+    config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
@@ -64,9 +44,9 @@ pub async fn run<C: SystemCollector + 'static>(
     );
 
     let server_config = ServerConfig {
-        host: config.host,
-        port: config.port,
-        sample_interval_ms: config.sample_interval_ms,
+        host: config.host(),
+        port: config.port(),
+        sample_interval_ms: config.sample_interval_ms(),
         ..ServerConfig::default()
     };
     if let Err(e) = server_config.validate() {
@@ -74,7 +54,8 @@ pub async fn run<C: SystemCollector + 'static>(
         std::process::exit(1);
     }
 
-    let interval_ms = match Sampler::<C, RealClock>::validate_interval(config.sample_interval_ms) {
+    let interval_ms = match Sampler::<C, RealClock>::validate_interval(config.sample_interval_ms())
+    {
         Ok(ms) => ms,
         Err(e) => {
             eprintln!("configuration error: {e}");

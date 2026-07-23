@@ -11,7 +11,7 @@ readme.workspace = true
 description = "Lightweight Linux and macOS metrics daemon that exposes a read-only JSON API for the gregg client."
 keywords = ["metrics", "daemon", "system", "monitoring"]
 categories = ["api-bindings", "system-utilities"]
-include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "../../packaging/**/*"]
 
 [[bin]]
 name = "greggd"
@@ -27,8 +27,11 @@ axum = { version = "0.7", default-features = false, features = ["http1", "tokio"
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { version = "1.0", default-features = false }
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
