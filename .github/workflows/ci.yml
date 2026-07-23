@@ -20,6 +20,8 @@ jobs:
         include:
           - os: ubuntu-latest
             toolchain: stable
+          - os: macos-13
+            toolchain: stable
           - os: macos-latest
             toolchain: stable
 
