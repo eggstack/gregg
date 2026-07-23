@@ -51,7 +51,7 @@ pub async fn run<C: SystemCollector + 'static>(
     };
     if let Err(e) = server_config.validate() {
         eprintln!("configuration error: {e}");
-        std::process::exit(1);
+        std::process::exit(crate::cli::ExitCode::RuntimeError as i32);
     }
 
     let interval_ms = match Sampler::<C, RealClock>::validate_interval(config.sample_interval_ms())
@@ -59,7 +59,7 @@ pub async fn run<C: SystemCollector + 'static>(
         Ok(ms) => ms,
         Err(e) => {
             eprintln!("configuration error: {e}");
-            std::process::exit(1);
+            std::process::exit(crate::cli::ExitCode::RuntimeError as i32);
         }
     };
 

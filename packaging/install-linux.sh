@@ -51,6 +51,19 @@ fi
 [[ -f "$BINARY_PATH" ]] || die "binary not found: $BINARY_PATH"
 [[ -x "$BINARY_PATH" ]] || die "binary is not executable: $BINARY_PATH"
 
+# Validate architecture matches host.
+HOST_ARCH="$(uname -m)"
+FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|aarch64|ARM|80386' | head -1)"
+case "$HOST_ARCH" in
+    x86_64)  EXPECTED_ARCH="x86_64" ;;
+    aarch64) EXPECTED_ARCH="aarch64" ;;
+    armv7l)  EXPECTED_ARCH="ARM" ;;
+    *)       EXPECTED_ARCH="" ;;
+esac
+if [[ -n "$EXPECTED_ARCH" && -n "$FILE_ARCH" && "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
+    die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+fi
+
 # --- Installation ---
 
 echo "Installing greggd..."

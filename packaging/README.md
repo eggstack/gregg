@@ -126,3 +126,24 @@ sudo rm -rf "/Library/Application Support/gregg"
 - The default configuration binds to `0.0.0.0`, making metrics visible to all reachable peers. Use `greggd host 127.0.0.1` for SSH-tunnel-only access.
 - The systemd unit includes security hardening options. Some options may need adjustment on older distributions or ARM boards.
 - The launchd plist runs as a system daemon. Consider creating a dedicated `_greggd` user for production deployments.
+
+## Privilege Model
+
+System installation and mutation of system config/service state generally require administrator privileges. The binary must not silently invoke `sudo` or prompt unexpectedly inside library code.
+
+- **Installation scripts** require root (`sudo`). They detect missing privileges and print the exact command requiring elevation.
+- **`greggd run --config <writable temp path>`** can run unprivileged for development and testing.
+- **Service lifecycle commands** (`start`, `stop`, `restart`, `croncheck`) delegate to the native service manager and require appropriate privileges.
+- **Config mutation commands** (`host`, `port`) atomically persist the config and restart the service, requiring write access to the config directory and service manager privileges.
+
+The systemd unit runs as root with `NoNewPrivileges=true` and comprehensive filesystem/capability restrictions. This is intentional: the daemon needs read access to `/proc` and `/sys` for metrics collection, and bind access to the configured port. Running as a dedicated system user is possible but adds installation complexity; the current model relies on systemd's security hardening to limit the blast radius.
+
+## Development Mode
+
+For development and testing, run the daemon unprivileged with a temporary config:
+
+```bash
+greggd run --config /tmp/test-config.toml
+```
+
+This avoids needing root privileges and does not interact with the system service manager.

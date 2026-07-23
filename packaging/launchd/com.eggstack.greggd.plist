@@ -33,12 +33,6 @@
     <key>StandardErrorPath</key>
     <string>/var/log/greggd.log</string>
 
-    <key>WorkingDirectory</key>
-    <string>/tmp</string>
-
-    <key>ProcessType</key>
-    <string>Background</string>
-
     <key>HardResourceLimits</key>
     <dict>
         <key>NumberOfFiles</key>

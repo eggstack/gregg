@@ -53,6 +53,18 @@ fi
 [[ -f "$BINARY_PATH" ]] || die "binary not found: $BINARY_PATH"
 [[ -x "$BINARY_PATH" ]] || die "binary is not executable: $BINARY_PATH"
 
+# Validate architecture matches host.
+HOST_ARCH="$(uname -m)"
+FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|arm64' | head -1)"
+case "$HOST_ARCH" in
+    x86_64)  EXPECTED_ARCH="x86_64" ;;
+    arm64)   EXPECTED_ARCH="arm64" ;;
+    *)       EXPECTED_ARCH="" ;;
+esac
+if [[ -n "$EXPECTED_ARCH" && -n "$FILE_ARCH" && "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
+    die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+fi
+
 # --- Installation ---
 
 echo "Installing greggd..."
@@ -101,8 +113,11 @@ chmod 644 "$LOG_FILE"
 echo "  Created log file: $LOG_FILE"
 
 # Bootstrap the service.
-launchctl bootstrap "system" "$PLIST_FILE"
-echo "  Bootstrapped service"
+# The service is NOT auto-bootstrapped. Use explicit intent:
+#   sudo launchctl bootstrap system "$PLIST_FILE"
+echo ""
+echo "To enable and start the service:"
+echo "  sudo launchctl bootstrap system $PLIST_FILE"
 
 echo ""
 echo "Installation complete."

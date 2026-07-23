@@ -7,7 +7,6 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5
 StartLimitIntervalSec=60

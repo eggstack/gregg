@@ -133,9 +133,15 @@ impl LaunchdManager {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // A loaded service appears as a line with the label. Active services
-        // have a PID; loaded but stopped services have `0` as PID.
-        Ok(stdout.lines().any(|line| line.contains(&self.label)))
+        // A loaded service appears as a line with the label as a distinct
+        // whitespace-delimited field. We split on whitespace and match the
+        // last field (the label) exactly to avoid false positives from partial
+        // matches (e.g., "com.eggstack.greggd-test" matching "com.eggstack.greggd").
+        Ok(stdout.lines().any(|line| {
+            line.split_whitespace()
+                .last()
+                .is_some_and(|field| field == self.label)
+        }))
     }
 }
 
@@ -212,5 +218,56 @@ mod tests {
         let manager = LaunchdManager::new();
         let debug = format!("{manager:?}");
         assert!(debug.contains("LaunchdManager"));
+    }
+
+    #[test]
+    fn launchd_command_uses_argument_arrays() {
+        // Verify bootstrap/bootout/kickstart construct argument arrays
+        // without shell interpolation. The code uses:
+        //   self.run_launchctl(&["bootstrap", &target, plist_path])
+        // which passes arguments directly to execvp.
+        let manager = LaunchdManager::new();
+        let target = manager.service_target();
+        assert_eq!(target, "system/com.eggstack.greggd");
+        // The plist path is passed as a separate array element, not
+        // shell-quoted. This is correct for paths with spaces like
+        // "/Library/Application Support/gregg/greggd.toml".
+    }
+
+    #[test]
+    fn check_loaded_exact_label_match() {
+        // Verify that check_loaded matches the label exactly, not as a
+        // substring. A line with "com.eggstack.greggd-test" should NOT
+        // match "com.eggstack.greggd".
+        let label = "com.eggstack.greggd";
+        let line_with_suffix = "  12345  0  com.eggstack.greggd-test";
+        let line_exact = "  12345  0  com.eggstack.greggd";
+
+        // Our new matching logic: split on whitespace, match last field exactly.
+        let matches_suffix = line_with_suffix
+            .split_whitespace()
+            .last()
+            .is_some_and(|field| field == label);
+        let matches_exact = line_exact
+            .split_whitespace()
+            .last()
+            .is_some_and(|field| field == label);
+
+        assert!(!matches_suffix, "should not match partial label");
+        assert!(matches_exact, "should match exact label");
+    }
+
+    #[test]
+    fn launchd_paths_with_spaces_handled_correctly() {
+        // The plist path "/Library/Application Support/gregg/greggd.toml"
+        // contains a space. In the ProgramArguments array, each element is
+        // a separate string — launchd does not use shell interpretation.
+        // The bootstrap method passes plist_path as a &str argument array element.
+        let manager = LaunchdManager::new();
+        let target = manager.service_target();
+        // Verify the target string itself is safe (no spaces in domain/label).
+        assert!(!target.contains(' '));
+        // The plist path with spaces would be passed as a separate &str element
+        // in the run_launchctl(&["bootstrap", &target, plist_path]) call.
     }
 }

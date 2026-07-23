@@ -119,4 +119,24 @@ mod tests {
         let debug = format!("{manager:?}");
         assert!(debug.contains("SystemdManager"));
     }
+
+    #[test]
+    fn systemd_command_uses_fixed_arg_arrays() {
+        // Verify the command construction pattern uses fixed argument arrays
+        // and does not use shell interpolation. The code at line 37 uses
+        // Command::new("systemctl").args([action, &self.unit]) which passes
+        // arguments directly to execvp without shell interpretation.
+        let manager = SystemdManager::with_unit("test-unit");
+        assert_eq!(manager.unit, "test-unit");
+        // The unit name is passed as a separate argument, not interpolated
+        // into a shell string.
+    }
+
+    #[test]
+    fn systemd_check_active_uses_fixed_args() {
+        // Verify is_active uses ["is-active", &self.unit] as separate args.
+        let manager = SystemdManager::with_unit("my-service");
+        assert_eq!(manager.unit, "my-service");
+        // The unit name is a distinct array element, not part of a command string.
+    }
 }

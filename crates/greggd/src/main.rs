@@ -26,7 +26,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         command => {
             // Non-run commands are synchronous.
-            greggd::cli::dispatch(&command, &config_path)
+            let service = greggd::service::platform_service_manager();
+            greggd::cli::dispatch(&command, &config_path, service.as_ref())
         }
     }
 }
