@@ -88,7 +88,7 @@ write-flush-rename-verify pattern.
 
 The client CLI lives in `crates/gregg/src/cli.rs` and uses `clap` derive macros.
 Subcommands include `add`, `list`, `remove`, `refresh`, and `edit`. Running
-`gregg` without a subcommand is reserved for the TUI entry point.
+`gregg` without a subcommand starts the TUI entry point.
 
 Client configuration lives in `crates/gregg/src/config.rs`. It stores monitored
 endpoints as `[[systems]]` entries with stable UUID v4 IDs, host, port, and
@@ -101,6 +101,33 @@ The endpoint parser lives in `crates/gregg/src/endpoint.rs`. It supports IPv4,
 IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional ports. The parser
 rejects URL schemes, paths, credentials, and malformed input. Host-only removal
 semantics are supported for the `remove` command.
+
+## Client polling and state engine
+
+The polling engine lives in `crates/gregg/src/` and is composed of five modules:
+
+- `clock.rs` — `Clock` trait for time abstraction (enables deterministic testing
+  with `FakeClock`).
+- `poller.rs` — `HttpClient` wrapping a long-lived `reqwest::Client` with
+  configurable timeout, 64 KiB body cap, redirect rejection, and bounded
+  connection pool. `PollOutcome` classifies every failure mode (timeout,
+  connection refused, DNS failure, HTTP status, body too large, decode error,
+  unsupported schema, invalid snapshot, cancelled). `PollBatch` carries a
+  generation counter and completed results.
+- `scheduler.rs` — `PollScheduler` produces `PollBatch`es on a configurable
+  interval. Concurrency is bounded by a semaphore. Generation numbers increase
+  monotonically; the state reducer rejects stale batches.
+- `state.rs` — `AppState` owns the system list, selection (by stable `SystemId`),
+  viewport position, and generation tracking. Display order is
+  online-first/offline-last while preserving configured relative order.
+  Viewport helpers compute visible ranges for mixed 4-row (online) and 1-row
+  (offline) entries.
+- `action.rs` — `Action` enum for typed state transitions (selection navigation,
+  page scrolling, config reload, resize, quit).
+
+The `run_tui` async function in `main.rs` wires the config store, HTTP client,
+scheduler, and state reducer. Phase 8 will add Ratatui rendering as a
+downstream consumer of immutable `AppState` projections.
 
 ## Service management
 
