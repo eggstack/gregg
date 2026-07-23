@@ -3,7 +3,7 @@
 ## Commit
 
 ```
-180360a (pending update after latest changes)
+36c587d
 ```
 
 ## Toolchain and Target Matrix
