@@ -65,6 +65,9 @@ development and CI.
 
 Dependencies must solve a concrete version-1 requirement. Disable unused default features, especially in HTTP clients and servers. The daemon needs plain HTTP/1 on a trusted local network; do not add TLS, cookies, proxy support, HTTP/2, multipart handling, compression, or remote-control surfaces without an approved scope change.
 
+`greggd` now exposes a `lib` target so integration tests can exercise the
+collector without depending on internal-only paths.
+
 The workspace enables `clippy::pedantic` as a warning (not an error) so
 contributors see style suggestions without breaking the build on unrelated
 changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`;

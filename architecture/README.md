@@ -8,7 +8,7 @@ and that contributors should read before reorganising code across boundaries.
 | Document | Purpose |
 | --- | --- |
 | [`workspace.md`](workspace.md) | Cargo workspace layout, member responsibilities, dependency direction, and crate-boundary rules. |
-| [`protocol.md`](protocol.md) | Schema-version-1 wire contract, capabilities, validation, and compatibility policy. |
+| [`protocol.md`](protocol.md) | Schema-version-1 wire contract, capabilities, validation, compatibility policy, and collector contract. |
 | [`error-conventions.md`](error-conventions.md) | Typed error boundaries, command-level diagnostics, and what may or may not appear in wire responses. |
 
 Phase plans under [`plans/`](../plans/) are the source of truth for sequencing

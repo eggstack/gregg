@@ -17,6 +17,10 @@ include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
 name = "greggd"
 path = "src/main.rs"
 
+[lib]
+name = "greggd"
+path = "src/lib.rs"
+
 [dependencies]
 gregg-protocol = { version = "0.1.0", path = "../gregg-protocol" }
 thiserror = { version = "1.0", default-features = false }

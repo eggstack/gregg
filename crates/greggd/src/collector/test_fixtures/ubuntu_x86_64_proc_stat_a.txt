@@ -1,0 +1,13 @@
+Typical Ubuntu 24.04 x86_64 host: first sample of a paired CPU reading.
+
+cpu  100 0 50 8000 30 5 2 1 0 0
+cpu0 25 0 12 2000 7 1 0 0 0 0
+cpu1 25 0 12 2000 7 1 0 0 0 0
+cpu2 25 0 13 2000 8 1 1 0 0 0
+cpu3 25 0 13 2000 8 2 1 1 0 0
+intr 12345 0 0 0 0
+ctxt 23456789
+btime 1716460800
+processes 12345
+procs_running 1
+procs_blocked 0

@@ -98,3 +98,22 @@ These fixtures deserialise into `StatusSnapshot` / `HealthResponse`,
 validate cleanly, and re-serialise byte-stable. The macOS fixture
 demonstrates the `cpu_iowait: false` / `iowait_pct: null` distinction; the
 Linux fixture demonstrates a measured non-zero I/O-wait.
+
+## Collector contract
+
+The shared `SystemCollector` trait lives in
+`crates/greggd/src/collector/mod.rs`. It exposes three methods:
+`identity()`, `sample()`, and `capabilities()`. `sample()` returns a
+`CollectedMetrics` value.
+
+`CollectedMetrics` is a daemon-internal normalised sample. It maps
+losslessly to a `StatusSnapshot` once the daemon stamps
+`observed_at_unix_ms` and `sample_interval_ms`. The collector never owns
+a clock; the sampler (phase 4) does.
+
+The Linux implementation lives behind `cfg(target_os = "linux")` and
+reads procfs/sysfs only. No external commands are executed. The macOS
+implementation arrives in phase 3.
+
+For collector semantics and acceptance criteria, see
+[`plans/002-linux-metrics-collector.md`](../plans/002-linux-metrics-collector.md).

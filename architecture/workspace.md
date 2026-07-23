@@ -4,9 +4,9 @@ The repository is a Cargo workspace with three independently publishable
 members under `crates/`:
 
 ```text
-crates/gregg-protocol    library   versioned wire types and compatibility rules
-crates/greggd           binary    Linux/macOS metrics daemon + service-management CLI
-crates/gregg            binary    endpoint-management CLI + polling/state engine + Ratatui TUI
+crates/gregg-protocol    library    versioned wire types and compatibility rules
+crates/greggd           bin + lib  Linux/macOS metrics daemon + service-management CLI (lib exposes the collector for integration tests)
+crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
 ## Dependency direction
@@ -37,6 +37,12 @@ Within each binary crate, the following are kept separate:
 - Client polling is distinct from application-state reduction.
 - The renderer reads state; it does not perform I/O or mutate polling internals.
 - Platform-specific code remains under narrow `cfg(target_os = ...)` modules.
+
+## Collector module boundary
+
+The daemon's collector lives under `crates/greggd/src/collector/`. Platform-specific
+collectors are `cfg(target_os = ...)`-gated and share the `SystemCollector` trait
+defined in `collector/mod.rs`. Only one platform module is compiled per target.
 
 ## MSRV
 

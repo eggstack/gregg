@@ -4,9 +4,9 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phase 1 (workspace, package metadata, schema-version-1
-> protocol crate) is implemented and CI-clean on macOS. Collector, daemon,
-> client, and TUI work begins in phases 2 through 8 per
+> Project status: phases 1 and 2 are implemented. Phase 2 adds a Linux
+> metrics collector gated to `cfg(target_os = "linux")`, CI-clean on
+> Linux + macOS. Daemon, client, and TUI work continues in phases 3-8 per
 > [`plans/`](plans/).
 
 ## Goals
@@ -119,7 +119,8 @@ crate inherits the same license expression from the workspace root.
 
 ## Local development
 
-Phase 1 enforces the following on every commit through CI:
+Phase 1 enforces the following on every commit through CI. Phase 2 adds the
+Linux collector, which is tested on `ubuntu-latest` in CI:
 
 ```text
 cargo fmt --all -- --check
