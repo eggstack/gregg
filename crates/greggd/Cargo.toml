@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "README.md"
 description = "Lightweight Linux and macOS metrics daemon that exposes a read-only JSON API for the gregg client."
 keywords = ["metrics", "daemon", "system", "monitoring"]
 categories = ["api-bindings", "system-utilities"]
@@ -22,7 +22,7 @@ name = "greggd"
 path = "src/lib.rs"
 
 [dependencies]
-gregg-protocol = { version = "0.1.0", path = "../gregg-protocol" }
+gregg-protocol = { version = "1.0.0", path = "../gregg-protocol" }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs"] }
 tracing = "0.1"
@@ -37,7 +37,7 @@ toml = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
 tower = { version = "0.4", features = ["util"] }
 hyper = { version = "1.0", features = ["client"] }
-gregg-protocol = { version = "0.1.0", path = "../gregg-protocol", features = ["test_support"] }
+gregg-protocol = { version = "1.0.0", path = "../gregg-protocol", features = ["test_support"] }
 http-body-util = "0.1"
 
 [lints]

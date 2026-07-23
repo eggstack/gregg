@@ -4,11 +4,22 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 9 are implemented. Phase 9 adds
-> protocol compatibility fixtures, collector/daemon/client hardening
-> tests, release profiles (thin LTO, symbol stripping), supply-chain
-> policy via cargo-deny, and comprehensive package validation.
-> Phase 10 handles crates.io publication per [`plans/`](plans/).
+## Installation
+
+```text
+cargo install gregg-protocol   # library crate, not needed directly
+cargo install greggd           # daemon
+cargo install gregg            # client + TUI
+```
+
+## Supported targets
+
+| Platform | Architecture | Status |
+| --- | --- | --- |
+| Linux | x86-64 | Supported |
+| Linux | ARM64 | Supported |
+| macOS | Intel (x86-64) | Supported |
+| macOS | Apple Silicon (arm64) | Supported |
 
 ## Goals
 
@@ -16,12 +27,11 @@ The project is intentionally narrow. A lightweight daemon, `greggd`, runs on des
 - Support Linux and macOS daemons in version 1, including x86-64, ARM64 Linux, Intel Macs, and Apple Silicon Macs.
 - Keep the TUI useful in a small terminal-multiplexer pane.
 - Separate collection, protocol, polling/state management, and rendering so each can be tested independently.
-- Publish all three workspace crates to crates.io for the version-1 release.
 - Prefer stable, read-only, local-network operation over broad monitoring-platform functionality.
 
 ## Workspace
 
-The intended workspace contains three independently publishable crates:
+The workspace contains three independently publishable crates:
 
 | Crate | Binary/library | Responsibility |
 | --- | --- | --- |
@@ -29,11 +39,71 @@ The intended workspace contains three independently publishable crates:
 | `greggd` | `greggd` binary | Native Linux/macOS metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, graceful shutdown, configuration management, and native service integration. |
 | `gregg` | `gregg` binary | Endpoint configuration, bounded concurrent polling, application state, keyboard input, and compact Ratatui rendering. |
 
-The protocol crate must remain lightweight and must not depend on the daemon server stack or TUI stack.
+The protocol crate is intentionally dependency-light (serde, serde_json, thiserror) and must not depend on the daemon server stack or TUI stack.
 
-## Version-1 display model
+## Daemon
 
-A reachable system consumes exactly four rows and does not require a border:
+### Running
+
+```text
+greggd run [--config PATH]
+greggd start
+greggd stop
+greggd restart
+greggd croncheck
+```
+
+`greggd run` is the foreground process used by systemd or launchd. It samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files.
+
+### Configuration
+
+The `--config` flag overrides the platform default configuration path:
+
+- Linux: `/etc/gregg/greggd.toml`
+- macOS: `/Library/Application Support/gregg/greggd.toml`
+
+Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
+
+### Service installation
+
+Linux (systemd):
+
+```text
+cp packaging/systemd/greggd.service /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now greggd
+```
+
+macOS (launchd):
+
+```text
+cp packaging/launchd/com.eggstack.greggd.plist /Library/LaunchDaemons/
+launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
+```
+
+## Client
+
+### Commands
+
+```text
+gregg                          # start the TUI
+gregg add 192.168.182.8        # add an endpoint
+gregg add deadpool.local:11320 # add with custom port
+gregg list                     # list configured endpoints
+gregg remove 192.168.182.8     # remove an endpoint
+gregg refresh 30               # set polling interval (seconds)
+gregg edit                     # open config in $EDITOR
+```
+
+### TUI navigation
+
+- `j` / Down: move to the next system
+- `k` / Up: move to the previous system
+- Viewport scrolls by system entry, not by raw row
+
+## Display model
+
+A reachable system consumes exactly four rows:
 
 ```text
 Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
@@ -42,7 +112,7 @@ MEM  [||||||||||||||||||                            ] 37.8%  5.9/15.6 GiB
 SWAP [                                                ]  0.0%  0/4.0 GiB
 ```
 
-A macOS system uses the same schema and layout. Because macOS does not expose a CPU accounting state equivalent to Linux `iowait`, that capability is reported as unavailable and rendered as `IO —` rather than as a fabricated zero.
+A macOS system uses the same layout. macOS does not expose a CPU accounting state equivalent to Linux `iowait`; that capability is reported as unavailable and rendered as `IO --`.
 
 An unreachable system consumes one row:
 
@@ -50,43 +120,9 @@ An unreachable system consumes one row:
 Deadpool@192.168.182.8:11310 offline
 ```
 
-Reachable systems preserve configured order. Unreachable systems preserve their relative configured order but are displayed after all reachable systems.
+## API
 
-## Intended commands
-
-Daemon commands:
-
-```text
-greggd run [--config PATH]
-greggd start
-greggd stop
-greggd restart
-greggd croncheck
-greggd host 127.0.0.1
-greggd port 11320
-```
-
-`greggd run` is the foreground process used by systemd or launchd. It starts a process that samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files. Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
-
-The `--config` flag overrides the platform default configuration path (`/etc/gregg/greggd.toml` on Linux, `/Library/Application Support/gregg/greggd.toml` on macOS) for development, testing, or container deployments.
-
-Client commands:
-
-```text
-gregg
-gregg add 192.168.182.8
-gregg add deadpool.local:11320
-gregg list
-gregg remove 192.168.182.8
-gregg refresh 30
-gregg edit
-```
-
-Running `gregg` without a subcommand starts the TUI. Default polling is every five seconds. Navigation is keyboard-first: `j`/Down moves to the next system, `k`/Up moves to the previous system, and the viewport scrolls by system rather than by raw row.
-
-## API direction
-
-The default port is `11310`; `113100` is outside the valid TCP port range. The intended read-only surface is:
+The default port is `11310`. The read-only HTTP surface:
 
 ```text
 GET /
@@ -94,26 +130,30 @@ GET /v1/status
 GET /healthz
 ```
 
-The daemon samples metrics on its own cadence and serves a cached immutable snapshot. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values.
+The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values.
 
-## Platform model
+## Platform notes
 
-Linux collection is expected to use native kernel interfaces such as `/proc/stat`, `/proc/loadavg`, and `/proc/meminfo`. macOS collection is expected to use Mach host statistics and `sysctlbyname` through a small, contained FFI boundary. External utilities such as `top`, `vm_stat`, `sysctl`, or `sw_vers` are diagnostic references, not runtime dependencies.
+Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`). macOS collection uses Mach host statistics and `sysctlbyname` through a contained FFI boundary. External utilities are diagnostic references, not runtime dependencies.
 
-Service integration is native to each platform:
+Service integration is native to each platform (systemd on Linux, launchd on macOS).
 
-- Linux: systemd system service.
-- macOS: launchd system daemon.
+## Security
 
-The client remains platform-neutral wherever Ratatui, Crossterm, and the HTTP client support the target.
+The daemon is designed for **private-network** use only. It does not provide TLS, authentication, rate limiting, or public-internet hardening. See [SECURITY.md](SECURITY.md) for details.
 
-## Non-goals for version 1
+## Known limitations
+
+- macOS has no Linux-equivalent aggregate CPU I/O-wait state. It is reported as unsupported (`iowait_pct: null`) rather than fabricated as zero.
+- Per-process inspection, historical telemetry, alerting, and web dashboards are explicitly out of scope for version 1.
+
+## Non-goals
 
 `gregg` is not intended to become a replacement for htop, btop, Glances, Netdata, or a general monitoring platform. Version 1 excludes per-process inspection, remote command execution, historical databases, alerting, web dashboards, service discovery, plugins, Prometheus emulation, TLS automation, and public-internet hardening.
 
-## Planning
+## Contributing
 
-The implementation roadmap and execution-ready phase plans are stored in [`plans/`](plans/). Work should follow the phase acceptance criteria and preserve the scope boundaries above.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
@@ -121,9 +161,6 @@ The project is released under the [MIT License](LICENSE). Every published
 crate inherits the same license expression from the workspace root.
 
 ## Local development
-
-Phase 1 enforces the following on every commit through CI. Phase 2 adds the
-Linux collector, which is tested on `ubuntu-latest` in CI:
 
 ```text
 cargo fmt --all -- --check

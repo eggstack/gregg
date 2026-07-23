@@ -7,7 +7,7 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "README.md"
 description = "Compact keyboard-first terminal monitor that polls greggd endpoints and renders each system in four rows."
 keywords = ["tui", "monitoring", "metrics", "ratatui", "cli"]
 categories = ["command-line-utilities", "visualization"]
@@ -18,7 +18,7 @@ name = "gregg"
 path = "src/main.rs"
 
 [dependencies]
-gregg-protocol = { version = "0.1.0", path = "../gregg-protocol" }
+gregg-protocol = { version = "1.0.0", path = "../gregg-protocol" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,7 +37,7 @@ unicode-width = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
-gregg-protocol = { version = "0.1.0", path = "../gregg-protocol", features = ["test_support"] }
+gregg-protocol = { version = "1.0.0", path = "../gregg-protocol", features = ["test_support"] }
 
 [lints]
 workspace = true
