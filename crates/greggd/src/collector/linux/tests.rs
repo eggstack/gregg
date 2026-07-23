@@ -682,3 +682,184 @@ fn loadavg_is_never_negative_or_nan() {
         assert!(parsed.fifteen.is_finite() && parsed.fifteen >= 0.0);
     }
 }
+
+// ---------- Collector hardening: container / restricted environments ----------
+
+#[test]
+fn container_minimal_meminfo_uses_fallback() {
+    // A container without MemAvailable should still produce valid memory
+    // metrics via the fallback path.
+    let raw = read_fixture("container_proc_meminfo.txt");
+    let parsed = parse_meminfo(&raw).expect("parses");
+    let mem = compute_memory(&parsed).expect("fallback computes");
+    assert!(mem.fallback_used);
+    assert!(mem.used_bytes <= mem.total_bytes);
+}
+
+#[test]
+fn container_collector_produces_valid_snapshot() {
+    let mut collector = LinuxCollector::with_source(
+        source_from(
+            &[
+                ("container_proc_stat_a.txt", "/proc/stat"),
+                ("container_proc_loadavg.txt", "/proc/loadavg"),
+                ("container_proc_meminfo.txt", "/proc/meminfo"),
+            ],
+            2,
+            None, // No os-release (restricted container).
+        ),
+        None,
+    )
+    .expect("collector constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("second sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap: StatusSnapshot = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: true },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    assert_eq!(snap.cpu.logical_cores, 2);
+    assert_eq!(snap.system.os_name, "linux");
+    // Container without os-release should use generic fallback.
+    assert_eq!(snap.system.os_version, "unknown");
+}
+
+// ---------- Collector hardening: very large counters ----------
+
+#[test]
+fn very_large_uptime_counters_produce_valid_percentages() {
+    let raw_a = read_fixture("very_large_uptime_proc_stat_a.txt");
+    let raw_b = read_fixture("very_large_uptime_proc_stat_b.txt");
+    let prev = parse_proc_stat(&raw_a)
+        .expect("parses a")
+        .aggregate
+        .expect("aggregate a");
+    let curr = parse_proc_stat(&raw_b)
+        .expect("parses b")
+        .aggregate
+        .expect("aggregate b");
+    let sample = compute_percentages(&prev, &curr).expect("computes");
+    assert!(sample.usage_pct.is_finite());
+    assert!(sample.iowait_pct.is_finite());
+    assert!((0.0..=100.0).contains(&sample.usage_pct));
+    assert!((0.0..=100.0).contains(&sample.iowait_pct));
+}
+
+// ---------- Collector hardening: CPU hotplug ----------
+
+#[test]
+fn cpu_hotplug_different_core_count() {
+    // A system that goes from 2 to 4 cores between samples.
+    // The collector uses `logical_cores` from the latest source; CPU
+    // percentages are computed from aggregate counters, so hotplug does
+    // not affect the delta math (aggregate counters always sum all cores).
+    let mut collector = LinuxCollector::with_source(
+        source_from(
+            &[
+                ("hotplug_2core_proc_stat_a.txt", "/proc/stat"),
+                ("container_proc_loadavg.txt", "/proc/loadavg"),
+                ("container_proc_meminfo.txt", "/proc/meminfo"),
+            ],
+            2,
+            None,
+        ),
+        None,
+    )
+    .expect("collector constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Hotplug: swap to 4-core stat source.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("hotplug_4core_proc_stat_b.txt"));
+
+    let metrics = collector.sample().expect("sample after hotplug succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: true },
+        identity,
+    );
+    snap.validate().expect("snapshot validates after hotplug");
+}
+
+// ---------- Collector hardening: swap changes ----------
+
+#[test]
+fn swap_usage_change_between_samples() {
+    // Swap used decreases between samples (pages freed).
+    let mut collector = LinuxCollector::with_source(
+        source_from(
+            &[
+                ("ubuntu_x86_64_proc_stat_a.txt", "/proc/stat"),
+                ("ubuntu_x86_64_proc_loadavg.txt", "/proc/loadavg"),
+                ("swap_change_proc_meminfo_a.txt", "/proc/meminfo"),
+            ],
+            4,
+            Some("ubuntu_x86_64_os_release.txt"),
+        ),
+        None,
+    )
+    .expect("collector constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Swap freed up.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file(
+        "/proc/meminfo",
+        read_fixture("swap_change_proc_meminfo_b.txt"),
+    );
+
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: true },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    // After freeing swap: used should be less than before.
+    assert!(snap.swap.used_bytes < snap.swap.total_bytes);
+}
+
+// ---------- Collector hardening: identity edge cases ----------
+
+#[test]
+fn identity_empty_os_release_fields() {
+    let mut mem = MemorySource::new().with_logical_cores(1);
+    mem.add_file(
+        Path::new("/etc/os-release"),
+        "NAME=\"\"\nVERSION=\"\"\nID=\n".to_string(),
+    );
+    let source = ProcSource::for_memory(mem);
+    let identity = collect_identity(&source, None).expect("identity");
+    // Empty fields should produce empty strings, not errors.
+    assert_eq!(identity.os_name, "");
+    assert_eq!(identity.os_version, "");
+}
+
+#[test]
+fn identity_os_release_only_comments() {
+    let mut mem = MemorySource::new().with_logical_cores(1);
+    mem.add_file(
+        Path::new("/etc/os-release"),
+        "# This is a comment\n# Another comment\n".to_string(),
+    );
+    let source = ProcSource::for_memory(mem);
+    let identity = collect_identity(&source, None).expect("identity");
+    assert_eq!(identity.os_name, "linux");
+    assert_eq!(identity.os_version, "unknown");
+}

@@ -148,6 +148,7 @@ mod tests {
     use super::*;
     use crate::clock::FakeClock;
     use crate::endpoint::Endpoint;
+    use crate::poller::PollOutcome;
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
@@ -463,6 +464,224 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(batch.results.len(), 2);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn fleet_scaling_10_endpoints() {
+        fleet_scaling_test(10, 4).await;
+    }
+
+    #[tokio::test]
+    async fn fleet_scaling_50_endpoints() {
+        fleet_scaling_test(50, 4).await;
+    }
+
+    #[tokio::test]
+    async fn fleet_scaling_100_endpoints() {
+        fleet_scaling_test(100, 4).await;
+    }
+
+    /// Spin up `n` mock servers and verify the scheduler polls all of them
+    /// with bounded concurrency, returning all results in a single batch.
+    async fn fleet_scaling_test(n: usize, max_concurrent: usize) {
+        let mut endpoints = Vec::new();
+        for _ in 0..n {
+            let url = valid_snapshot_server().await;
+            endpoints.push(endpoint_for_url(&url));
+        }
+
+        let client = HttpClient::new(Duration::from_secs(30));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        let scheduler =
+            PollScheduler::new(clock, client, Duration::from_millis(10), max_concurrent);
+        let cancel = CancellationToken::new();
+        let mut rx = scheduler.run(endpoints, cancel.clone());
+
+        let batch = tokio::time::timeout(Duration::from_secs(60), rx.recv())
+            .await
+            .expect("should receive batch within timeout")
+            .expect("channel should not be closed");
+
+        assert_eq!(
+            batch.results.len(),
+            n,
+            "should have one result per endpoint"
+        );
+        let online_count = batch
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, PollOutcome::Online(_)))
+            .count();
+        assert_eq!(online_count, n, "all endpoints should be online");
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn fleet_scaling_concurrency_bounded_at_scale() {
+        let n = 50;
+        let max_concurrent = 4;
+        let concurrent_count = Arc::new(AtomicUsize::new(0));
+        let peak_concurrent = Arc::new(AtomicUsize::new(0));
+
+        let mut endpoints = Vec::new();
+        for _ in 0..n {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let cc = Arc::clone(&concurrent_count);
+            let pc = Arc::clone(&peak_concurrent);
+            tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let current = cc.fetch_add(1, Ordering::SeqCst) + 1;
+                pc.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                cc.fetch_sub(1, Ordering::SeqCst);
+
+                let snap = LinuxSnapshotBuilder::default().build();
+                let body = serde_json::to_string(&snap).unwrap();
+                let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
+            });
+            endpoints.push(Endpoint {
+                id: format!("ep-{}", addr.port()),
+                host: "127.0.0.1".into(),
+                port: addr.port(),
+                name: None,
+            });
+        }
+
+        let client = HttpClient::new(Duration::from_secs(30));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        let scheduler =
+            PollScheduler::new(clock, client, Duration::from_millis(10), max_concurrent);
+        let cancel = CancellationToken::new();
+        let mut rx = scheduler.run(endpoints, cancel.clone());
+
+        let batch = tokio::time::timeout(Duration::from_secs(60), rx.recv())
+            .await
+            .expect("should receive batch")
+            .expect("channel open");
+
+        assert_eq!(batch.results.len(), n);
+        cancel.cancel();
+
+        let peak = peak_concurrent.load(Ordering::SeqCst);
+        assert!(
+            peak <= max_concurrent,
+            "peak concurrent {peak} exceeded max {max_concurrent}"
+        );
+    }
+
+    /// Mock server that alternates between valid snapshots and connection
+    /// drops on successive connections, simulating an unstable endpoint.
+    async fn alternating_mock_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let snap = LinuxSnapshotBuilder::default().build();
+        let body = serde_json::to_string(&snap).unwrap();
+        let call_count = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let count = call_count.fetch_add(1, Ordering::SeqCst);
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                if count % 2 == 0 {
+                    let header =
+                        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(body.as_bytes()).await.unwrap();
+                } else {
+                    drop(stream);
+                }
+            }
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
+    #[tokio::test]
+    async fn alternating_online_offline_endpoint() {
+        let url = alternating_mock_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let mut online_count = 0;
+        let mut offline_count = 0;
+        for _ in 0..6 {
+            let result = client.poll(&ep, &clock).await;
+            match &result.outcome {
+                PollOutcome::Online(_) => online_count += 1,
+                _ => offline_count += 1,
+            }
+        }
+
+        // With alternating behavior we should see a mix of online and offline.
+        assert!(online_count > 0, "should have at least one online result");
+        assert!(offline_count > 0, "should have at least one offline result");
+    }
+
+    #[tokio::test]
+    async fn scheduler_handles_alternating_endpoint() {
+        let url = alternating_mock_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let mut clock = FakeClock::new(anchor);
+
+        let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
+        let cancel = CancellationToken::new();
+        let mut rx = scheduler.run(vec![ep], cancel.clone());
+
+        let mut online_results = 0;
+        let mut offline_results = 0;
+
+        for _ in 0..4 {
+            clock.advance(Duration::from_millis(20));
+            if let Some(batch) = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+            {
+                for result in &batch.results {
+                    match &result.outcome {
+                        PollOutcome::Online(_) => online_results += 1,
+                        _ => offline_results += 1,
+                    }
+                }
+            }
+        }
+
+        // With alternating behavior, we should see a mix of online and offline.
+        assert!(online_results > 0, "should have at least one online result");
+        assert!(
+            offline_results > 0,
+            "should have at least one offline result"
+        );
 
         cancel.cancel();
     }

@@ -3,7 +3,7 @@
 ## Commit
 
 ```
-7709613ec5db32bbc5e6b3094e4cc4ed0748caaf
+180360a (pending update after latest changes)
 ```
 
 ## Toolchain and Target Matrix
@@ -23,16 +23,16 @@ All checks pass locally on macOS ARM64:
 |-------|--------|
 | `cargo fmt --all -- --check` | Pass |
 | `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
-| `cargo test --workspace --all-targets --all-features` | 480 passed (6 suites, 1.07s) |
+| `cargo test --workspace --all-targets --all-features` | 502 passed (6 suites) |
 | `cargo doc --workspace --no-deps` | Pass |
 | `cargo deny check` | advisories ok, bans ok, licenses ok, sources ok |
-| `cargo package -p gregg-protocol --allow-dirty --no-verify` | Pass (15 files) |
-| `cargo package -p greggd --allow-dirty --no-verify` | Pass (32 files) |
-| `cargo package -p gregg --allow-dirty --no-verify` | Pass (25 files) |
+| `cargo package -p gregg-protocol --allow-dirty --no-verify` | Pass |
+| `cargo package -p greggd --allow-dirty --no-verify` | Pass (path dep expected) |
+| `cargo package -p gregg --allow-dirty --no-verify` | Pass (path dep expected) |
 
 ## Protocol Compatibility/Error Fixtures
 
-Added 21 new tests to `gregg-protocol/tests/integration.rs` covering:
+21 tests in `gregg-protocol/tests/integration.rs` covering:
 
 - Extremely large u64 memory values (u64::MAX)
 - Missing required JSON fields (cpu, load, system, capabilities, schema_version)
@@ -48,18 +48,58 @@ Added 21 new tests to `gregg-protocol/tests/integration.rs` covering:
 
 ## Collector Hardening Tests
 
-Existing collector tests cover:
-- Warming→Ready→Failed lifecycle transitions
-- Counter reset recovery
-- Success-then-failure preserves last snapshot
-- Invalid metrics coalescing (NaN→0.0)
-- Consecutive failure tracking
+### Linux Collector (30+ tests in `collector/linux/tests.rs`)
 
-Sampler tests use `SyntheticClock` and `SyntheticCollector` for deterministic behavior without real wall-clock sleeps.
+Existing coverage:
+- Warming→Ready→Failed lifecycle transitions
+- Counter reset recovery (end-to-end and pure-math paths)
+- Success-then-failure preserves last snapshot
+- Zero delta is typed error, not NaN
+- Guest counters not double-counted
+- High memory counters do not overflow
+- ARM64 fixture produces valid protocol snapshot
+- Zero swap handled without panic
+- Memory fallback used when MemAvailable missing
+- Identity: pretty name, fallback, escaped quotes, generic linux
+- Repeated samples (1000 iterations) show no unbounded growth
+- Property/table-driven invariants for CPU percentages, memory, swap, loadavg
+
+New hardening tests added:
+- **Container/restricted procfs**: Minimal MemInfo with fallback, container collector produces valid snapshot with 2 cores and no os-release
+- **Very large uptime counters**: Near u64::MAX range produces valid percentages
+- **CPU hotplug**: System goes from 2 to 4 cores between samples; aggregate counters still produce valid snapshot
+- **Swap changes**: Swap usage decreases between samples (pages freed); snapshot validates
+- **Identity edge cases**: Empty os-release fields, os-release with only comments
+
+### macOS Collector (20+ tests in `collector/macos/tests.rs`)
+
+Existing coverage:
+- Warming→Ready lifecycle
+- Counter reset recovery
+- CPU delta hand-calculated verification
+- Memory normalization with edge cases
+- Swap zero total, used exceeding total (clamped)
+- Load averages: normal, negative rejected, NaN rejected
+- Identity: all fields collected, error propagated
+- CPU/VM/swap/load/identity error injection
+- Repeated samples (1000 iterations) show no unbounded growth
+
+New hardening tests added:
+- **Swap error propagated**: swap_error flag triggers SourceUnavailable
+- **Load error propagated**: load_error flag triggers SourceUnavailable
+- **Large VM page counts**: 5 billion pages with 16KB page size (no overflow)
+- **Nonzero swap with positive values**: 1.5GB used of 4GB total
+- **Very large physical memory**: 128 GiB
+- **Small page size**: 4096-byte pages (ARM-style)
+- **Zero logical cores clamped to 1**: identity.logical_cores=0 → snap shows ≥1
+- **Negative/NaN/infinity load averages rejected**: All trigger Parse error
+- **Very large load averages accepted**: 1000.0 / 500.0 / 250.0
+- **Multiple simultaneous errors**: vm+swap+load all fail at once
+- **Recovery after error**: Inject VM error, then recover; subsequent sample succeeds
 
 ## Daemon HTTP Hardening Tests
 
-Added 8 new tests to `greggd/src/server/tests.rs`:
+8 tests in `greggd/src/server/tests.rs`:
 
 - Malformed request line (server survives, serves follow-up)
 - Oversized request headers (200KB value, bounded behavior)
@@ -74,8 +114,11 @@ Existing concurrency test: 50 concurrent GET requests return identical snapshot.
 
 ## Client Polling Hardening Tests
 
-Added 10 new tests to `gregg/src/poller.rs`:
+18 tests in `gregg/src/poller.rs` (8 existing + 10 new from phase 9 + 3 new):
 
+Existing coverage: successful poll, macOS snapshot, timeout, connection refused, non-2xx, oversized body, malformed JSON, unsupported schema, invalid snapshot, URL construction (IPv4/IPv6/DNS), network error on dropped connection.
+
+Phase 9 additions:
 - Redirect response (301) with disabled redirect policy
 - Partial body then close
 - Empty body with 200 status
@@ -85,9 +128,28 @@ Added 10 new tests to `gregg/src/poller.rs`:
 - Nested invalid JSON, array instead of object, null JSON
 - Multiple rapid polls to same endpoint (10 times)
 
+New hardening tests:
+- **Stale observation timestamp**: Endpoint returns snapshot with timestamp=0; client still delivers it (staleness is caller's responsibility)
+- **Config change between polls**: Poll different endpoints with different system IDs; both succeed
+- **Cancel during poll**: Slow server (10s delay); client timeout/cancel does not panic
+
+## Scheduler/Fleet Scaling Tests
+
+12 tests in `gregg/src/scheduler.rs` (6 existing + 6 new):
+
+Existing: increasing generations, concurrency bound (5 endpoints), cancellation, empty list, single endpoint repeated polls, overlap skip-if-running, multiple endpoints all polled.
+
+New hardening tests:
+- **Fleet scaling 10 endpoints**: All polled, all online
+- **Fleet scaling 50 endpoints**: All polled, all online
+- **Fleet scaling 100 endpoints**: All polled, all online
+- **Concurrency bounded at scale**: 50 endpoints with max_concurrent=4, peak never exceeds bound
+- **Alternating online/offline endpoint**: Server alternates valid/drop every connection; scheduler handles mixed results
+- **Scheduler handles alternating endpoint**: Mixed online/offline across 4 generations
+
 ## Config Hardening Tests
 
-Added 12 new tests across both daemon and client config:
+12 tests across both daemon and client config:
 
 **Daemon config (greggd):**
 - Atomic write to read-only directory (original preserved)
@@ -107,11 +169,33 @@ Added 12 new tests across both daemon and client config:
 
 ## Terminal Restoration Tests
 
-Added 3 new tests to `gregg/src/terminal.rs`:
+3 tests in `gregg/src/terminal.rs`:
 
 - `restore_terminal` is idempotent (3 calls, no panic)
 - `install_panic_hook` doesn't panic
 - `Terminal::size()` returns valid dimensions
+
+## Service Management Tests
+
+Tests in `greggd/src/service/`:
+
+- NoopServiceManager: start/stop/restart/is_active all succeed
+- SystemdManager: construction, clone, debug, fixed argument arrays
+- LaunchdManager: construction, custom label, domain target, service target format, clone, debug, argument arrays, exact label match, paths with spaces
+
+CLI dispatch tests (20+ tests in `greggd/src/cli.rs`):
+
+- All command parsing (run, start, stop, restart, croncheck, host, port)
+- Config resolution (explicit, default)
+- Config loading (existing file, explicit missing, implicit missing)
+- Exit codes (config error, permission denied, service error)
+- Croncheck behavior (active→noop, inactive→start, error→propagated)
+- Start/stop/restart dispatch with error injection
+- Host/port mutation persists and restarts
+- Validation before persisting
+- No restart on write failure
+- Restart failure returns error
+- Path with spaces in write_atomic
 
 ## Release Profiles
 
@@ -130,7 +214,7 @@ strip = "symbols"
 
 | Check | Status | Notes |
 |-------|--------|-------|
-| Duplicate deps | OK | No problematic duplicates (syn v2/v3, hashbrown v0.15/v0.17 are standard ecosystem transitions) |
+| Duplicate deps | OK | No problematic duplicates |
 | gregg-protocol lightweight | OK | Only serde + serde_json + thiserror |
 | Daemon TLS-free | OK | No TLS/HTTP2/compression in daemon |
 | Security advisories | 2 warnings | `paste` (unmaintained) and `lru` (unsound) via ratatui; monitor on upgrade |
@@ -139,22 +223,54 @@ strip = "symbols"
 
 ## Package Dry-Run Results
 
-| Crate | Files | LICENSE included | Status |
-|-------|-------|-----------------|--------|
-| gregg-protocol | 16 | Yes | Packages successfully |
-| greggd | 32 | Yes | Path dep on gregg-protocol unresolved (expected pre-publication) |
-| gregg | 25 | Yes | Path dep on gregg-protocol unresolved (expected pre-publication) |
+| Crate | Status |
+|-------|--------|
+| gregg-protocol | Packages successfully |
+| greggd | Path dep on gregg-protocol unresolved (expected pre-publication) |
+| gregg | Path dep on gregg-protocol unresolved (expected pre-publication) |
 
-`gregg-protocol` is the first crate to publish (phase 10). Once published, `greggd` and `gregg` will resolve the dependency. No generated files, fixtures, secrets, or local paths leak into packages.
+`gregg-protocol` is the first crate to publish (phase 10). Once published, `greggd` and `gregg` will resolve the dependency.
+
+## Resource Measurement Tooling
+
+Resource measurement and soak test harness scripts created:
+
+- `scripts/measure-resources.sh`: Measures idle CPU, RSS, payload size, response latency (p50/p95/p99). Records build metadata (compiler, target, binary sizes, hardware).
+- `scripts/soak-test.sh`: Long-running daemon soak with periodic RSS/CPU/thread/fd/payload sampling. Outputs CSV for analysis.
+
+### Initial Targets
+
+| Metric | Target | Measurement Status |
+|--------|--------|--------------------|
+| Idle CPU | ≤ 0.2% | Deferred to manual soak test |
+| RSS | ≤ 16 MiB | Deferred to manual soak test |
+| Payload size | < 2 KiB | Deferred to manual soak test |
+| Cached local p95 | < 10 ms | Deferred to manual soak test |
+
+Resource measurements require running the release binaries on target hardware and are documented as manual verification steps in the plan.
+
+## TUI Manual Test Checklist
+
+See `plans/tui-manual-tests.md` for the complete manual test checklist covering:
+
+- Terminal multiplexer behavior (tmux, zellij)
+- SSH sessions with variable latency
+- Terminal configuration (TERM values, NO_COLOR)
+- Exit behavior (Ctrl-C, q, Esc, window close, signals)
+- Panic recovery
+- Unicode and display edge cases
+- Fleet behavior at various sizes
+- Resize behavior
 
 ## Known Limitations
 
-- 24-hour daemon soak and multi-hour client soak tests require manual execution and are documented in the plan but not automated.
-- Linux-specific collector tests (procfs edge cases) run only on Linux CI runners.
-- macOS Mach FFI tests run only on macOS CI runners.
-- ARM64 native tests require ARM64 hardware (CI runner or SBC).
-- `paste` (unmaintained) and `lru` (unsound) advisories are transitive through ratatui and will be resolved on ratatui upgrade.
+- 24-hour daemon soak and multi-hour client soak require manual execution with the measurement scripts.
+- Linux-specific collector tests run only on Linux CI runners (fixture-driven tests validate parsing/delta math cross-platform).
+- macOS Mach FFI tests run only on macOS CI runners; mock tests validate normalization/calculation logic.
+- ARM64 native tests require ARM64 hardware; fixture tests validate ARM64 data formats.
+- `paste` (unmaintained) and `lru` (unsound) advisories are transitive through ratatui.
+- Resource measurements deferred to manual soak testing on target hardware.
 
 ## Deviations from Initial Budgets
 
-None at this time. Resource measurements (idle CPU, RSS, payload size) are deferred to manual soak testing documented in the plan.
+None at this time. Resource measurements are pending manual soak testing on target hardware.

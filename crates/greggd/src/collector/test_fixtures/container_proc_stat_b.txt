@@ -1,0 +1,10 @@
+Container-style proc stat: second sample with valid delta.
+cpu  80 0 40 1100 15 3 2 0 0 0
+cpu0 40 0 20 550 7 1 1 0 0 0
+cpu1 40 0 20 550 8 2 1 0 0 0
+intr 1200 0 0 0 0
+ctxt 110000
+btime 1700000000
+processes 110
+procs_running 1
+procs_blocked 0

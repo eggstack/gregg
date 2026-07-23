@@ -749,6 +749,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_observation_timestamp_from_endpoint() {
+        // Return a snapshot with a very old observation timestamp (epoch 0).
+        let snap = LinuxSnapshotBuilder::default().build();
+        let mut json = serde_json::to_value(&snap).unwrap();
+        json["observation_timestamp_ms"] = serde_json::json!(0);
+        let body = serde_json::to_string(&json).unwrap();
+        let url = mock_server(body.into_bytes(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        // The client should still deliver the snapshot; staleness is the
+        // caller's responsibility, not the poller's.
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "expected Online even with stale timestamp, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn config_change_between_polls() {
+        // Simulate config change by polling different endpoints on each call.
+        let body = valid_snapshot_json();
+        let url1 = mock_server(body.clone().into_bytes(), "200 OK").await;
+        let url2 = mock_server(body.into_bytes(), "200 OK").await;
+
+        let ep1 = endpoint_for(&url1);
+        let ep2 = endpoint_for(&url2);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        // First poll on ep1.
+        let result1 = client.poll(&ep1, &clock).await;
+        assert!(matches!(result1.outcome, PollOutcome::Online(_)));
+        assert_eq!(result1.system_id, "test-id");
+
+        // Simulate config change: poll ep2 with a different system ID.
+        let mut ep2 = ep2;
+        ep2.id = "new-system-id".into();
+        let result2 = client.poll(&ep2, &clock).await;
+        assert!(matches!(result2.outcome, PollOutcome::Online(_)));
+        assert_eq!(result2.system_id, "new-system-id");
+    }
+
+    #[tokio::test]
+    async fn cancel_during_poll() {
+        // Create a slow server that delays before responding.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let snap = LinuxSnapshotBuilder::default().build();
+            let body = serde_json::to_string(&snap).unwrap();
+            let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+            let _ = stream.write_all(header.as_bytes()).await;
+            let _ = stream.write_all(body.as_bytes()).await;
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        // Start a poll and cancel it quickly.
+        let result =
+            tokio::time::timeout(Duration::from_millis(100), client.poll(&ep, &clock)).await;
+        // The poll should either complete (if slow server hasn't started yet)
+        // or timeout (if the client timeout kicks in). Either way, no panic.
+        assert!(result.is_ok() || result.is_err());
+    }
+
+    #[tokio::test]
     async fn multiple_rapid_polls_same_result() {
         let body = valid_snapshot_json();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

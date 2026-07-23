@@ -252,3 +252,235 @@ fn protocol_snapshot_validates_with_mock_values() {
     assert!(!snap.capabilities.cpu_iowait);
     assert!(snap.cpu.iowait_pct.is_none());
 }
+
+// ---------- Collector hardening: error injection scenarios ----------
+
+#[test]
+fn swap_error_propagated() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    collector.source_mut().swap_error = true;
+    let err = collector.sample().expect_err("swap error");
+    assert_eq!(err.kind, CollectErrorKind::SourceUnavailable);
+}
+
+#[test]
+fn load_error_propagated() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    collector.source_mut().load_error = true;
+    let err = collector.sample().expect_err("load error");
+    assert_eq!(err.kind, CollectErrorKind::SourceUnavailable);
+}
+
+#[test]
+fn large_vm_page_counts_no_overflow() {
+    // Test with very large page counts to ensure no overflow in
+    // page_size arithmetic.
+    let mut mock = MockNativeQueries::success();
+    mock.vm = RawVmStats {
+        free_count: 1_000_000_000,
+        active_count: 2_000_000_000,
+        inactive_count: 1_500_000_000,
+        wire_count: 500_000_000,
+        page_size: 16_384,
+    };
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    assert!(snap.memory.used_bytes <= snap.memory.total_bytes);
+}
+
+#[test]
+fn nonzero_swap_positive_values() {
+    let mut mock = MockNativeQueries::success();
+    mock.swap = RawSwapUsage {
+        total_bytes: 4_000_000_000,
+        used_bytes: 1_500_000_000,
+    };
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    assert_eq!(snap.swap.total_bytes, 4_000_000_000);
+    assert_eq!(snap.swap.used_bytes, 1_500_000_000);
+    assert!(snap.swap.usage_pct > 0.0);
+}
+
+#[test]
+fn very_large_physical_memory() {
+    let mut mock = MockNativeQueries::success();
+    mock.identity.physical_memory_bytes = 128_000_000_000; // 128 GiB
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, Some("big-mac")).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    assert_eq!(snap.memory.total_bytes, 128_000_000_000);
+}
+
+#[test]
+fn small_page_size_works() {
+    // Some architectures use 4096-byte pages.
+    let mut mock = MockNativeQueries::success();
+    mock.vm.page_size = 4096;
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+}
+
+#[test]
+fn zero_logical_cores_clamped_to_one() {
+    let mut mock = MockNativeQueries::success();
+    mock.identity.logical_cores = 0;
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    // Logical cores should be at least 1.
+    assert!(snap.cpu.logical_cores >= 1);
+}
+
+#[test]
+fn negative_load_averages_rejected() {
+    let mut mock = MockNativeQueries::success();
+    mock.load = [-0.5, 1.0, 0.5];
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let err = collector.sample().expect_err("negative load");
+    assert_eq!(err.kind, CollectErrorKind::Parse);
+}
+
+#[test]
+fn nan_load_averages_rejected() {
+    let mut mock = MockNativeQueries::success();
+    mock.load = [f64::NAN, 1.0, 0.5];
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let err = collector.sample().expect_err("nan load");
+    assert_eq!(err.kind, CollectErrorKind::Parse);
+}
+
+#[test]
+fn infinity_load_averages_rejected() {
+    let mut mock = MockNativeQueries::success();
+    mock.load = [f64::INFINITY, 1.0, 0.5];
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let err = collector.sample().expect_err("infinity load");
+    assert_eq!(err.kind, CollectErrorKind::Parse);
+}
+
+#[test]
+fn very_large_load_averages_accepted() {
+    let mut mock = MockNativeQueries::success();
+    mock.load = [1000.0, 500.0, 250.0];
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates");
+    assert!((snap.load.one - 1000.0).abs() < 1e-3);
+}
+
+#[test]
+fn multiple_errors_in_single_sample() {
+    // Multiple subsystems fail simultaneously.
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    collector.source_mut().vm_error = true;
+    collector.source_mut().swap_error = true;
+    collector.source_mut().load_error = true;
+    // First subsystem to fail wins; we just need to confirm it errors.
+    let err = collector.sample().expect_err("multiple errors");
+    assert_eq!(err.kind, CollectErrorKind::SourceUnavailable);
+}
+
+#[test]
+fn recovery_after_error() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+
+    // Inject error.
+    collector.source_mut().vm_error = true;
+    let err = collector.sample().expect_err("vm error");
+    assert_eq!(err.kind, CollectErrorKind::SourceUnavailable);
+
+    // Recover.
+    collector.source_mut().vm_error = false;
+    let metrics = collector.sample().expect("recovery succeeds");
+    let identity = collector.identity().expect("identity");
+    let snap = metrics.into_snapshot(
+        gregg_protocol::SCHEMA_VERSION_V1,
+        1_716_460_800_000,
+        1000,
+        MetricCapabilities { cpu_iowait: false },
+        identity,
+    );
+    snap.validate().expect("snapshot validates after recovery");
+}

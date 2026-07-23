@@ -1,0 +1,12 @@
+CPU hotplug: system now has 4 cores (2 new cores appeared).
+cpu  200 0 100 8000 40 6 2 0 0 0
+cpu0 50 0 25 2000 10 1 0 0 0 0
+cpu1 50 0 25 2000 10 2 1 0 0 0
+cpu2 50 0 25 2000 10 2 0 0 0 0
+cpu3 50 0 25 2000 10 1 1 0 0 0
+intr 7000 0 0 0 0
+ctxt 1100000
+btime 1716460800
+processes 600
+procs_running 1
+procs_blocked 0

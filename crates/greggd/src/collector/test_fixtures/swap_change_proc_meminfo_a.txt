@@ -1,0 +1,9 @@
+Swap state A: some swap used.
+MemTotal:       16384000 kB
+MemAvailable:   10240000 kB
+MemFree:         6000000 kB
+Buffers:         500000 kB
+Cached:          3000000 kB
+SReclaimable:    200000 kB
+SwapTotal:       4096000 kB
+SwapFree:        2048000 kB

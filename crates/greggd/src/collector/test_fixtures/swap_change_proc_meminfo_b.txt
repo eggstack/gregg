@@ -1,0 +1,9 @@
+Swap state B: swap freed up (used decreased).
+MemTotal:       16384000 kB
+MemAvailable:   12288000 kB
+MemFree:         8000000 kB
+Buffers:         500000 kB
+Cached:          3000000 kB
+SReclaimable:    200000 kB
+SwapTotal:       4096000 kB
+SwapFree:        3584000 kB
