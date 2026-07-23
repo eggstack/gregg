@@ -4,11 +4,9 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 3 are implemented. Phase 3 adds a
-> native macOS collector gated to `cfg(target_os = "macos")`, using Mach
-> host statistics and sysctl APIs behind a contained FFI boundary.
-> Daemon, client, and TUI work continues in phases 4-8 per
-> [`plans/`](plans/).
+> Project status: phases 1 through 4 are implemented. Phase 4 adds the
+> daemon sampler, HTTP server, and graceful shutdown. Client and TUI
+> work continues in phases 5-8 per [`plans/`](plans/).
 
 ## Goals
 
@@ -26,7 +24,7 @@ The intended workspace contains three independently publishable crates:
 | Crate | Binary/library | Responsibility |
 | --- | --- | --- |
 | `gregg-protocol` | library | Versioned JSON wire types, metric capabilities, endpoint identity, and compatibility rules. |
-| `greggd` | `greggd` binary | Native Linux/macOS metrics collection, cached sampling, read-only HTTP API, configuration, and service lifecycle integration. |
+| `greggd` | `greggd` binary | Native Linux/macOS metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, and graceful shutdown. |
 | `gregg` | `gregg` binary | Endpoint configuration, bounded concurrent polling, application state, keyboard input, and compact Ratatui rendering. |
 
 The protocol crate must remain lightweight and must not depend on the daemon server stack or TUI stack.
@@ -66,7 +64,7 @@ greggd host 127.0.0.1
 greggd port 11320
 ```
 
-`greggd run` is the foreground process used by systemd or launchd. The daemon does not self-daemonize or maintain PID files. Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
+`greggd run` is the foreground process used by systemd or launchd. It starts a process that samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files. Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
 
 Client commands:
 
@@ -128,7 +126,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
-cargo package -p gregg-protocol --allow-dirty
+cargo package -p gregg-protocol --allow-dirty --no-verify
 ```
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current

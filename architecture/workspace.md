@@ -44,6 +44,32 @@ The daemon's collector lives under `crates/greggd/src/collector/`. Platform-spec
 collectors are `cfg(target_os = ...)`-gated and share the `SystemCollector` trait
 defined in `collector/mod.rs`. Only one platform module is compiled per target.
 
+## HTTP server module
+
+The daemon's HTTP server lives under `crates/greggd/src/server/`. It serves three
+read-only endpoints:
+
+- `/` — returns the cached `StatusSnapshot` as JSON.
+- `/v1/status` — identical to `/`, included for forward-compatible versioning.
+- `/healthz` — returns a `HealthResponse` indicating `Ready`, `Warming`, or `Failed`.
+
+The server serves cached immutable snapshots and never triggers metric collection.
+
+## Sampler module
+
+The sampler lives under `crates/greggd/src/sampler/`. It owns the sampling cadence
+and a `Clock` trait for time abstraction. The periodic sampling loop calls the
+collector, computes deltas, and stamps `observed_at_unix_ms` and
+`sample_interval_ms` on the resulting `StatusSnapshot`. The sampler manages the
+readiness lifecycle: `Warming` until the first delta is available, then `Ready`.
+On collector error the sampler transitions to `Failed`.
+
+## Daemon entry point
+
+The `run()` entry point in `crates/greggd/src/lib.rs` wires together the collector,
+sampler, HTTP server, and signal handlers (SIGTERM/SIGINT). It starts the sampler
+loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
+
 ## MSRV
 
 The workspace declares `rust-version = "1.75"` in `[workspace.package]` and

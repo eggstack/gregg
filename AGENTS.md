@@ -65,6 +65,8 @@ development and CI.
 
 Dependencies must solve a concrete version-1 requirement. Disable unused default features, especially in HTTP clients and servers. The daemon needs plain HTTP/1 on a trusted local network; do not add TLS, cookies, proxy support, HTTP/2, multipart handling, compression, or remote-control surfaces without an approved scope change.
 
+The daemon now uses axum, tokio, tracing, and serde_json for the HTTP server, async runtime, structured logging, and JSON serialization respectively.
+
 `greggd` now exposes a `lib` target so integration tests can exercise the
 collector without depending on internal-only paths.
 

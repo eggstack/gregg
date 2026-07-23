@@ -124,3 +124,11 @@ The macOS implementation arrives in phase 3 and lives behind
 APIs through a contained FFI module. For collector semantics and
 acceptance criteria, see
 [`plans/003-macos-metrics-collector.md`](../plans/003-macos-metrics-collector.md).
+
+## Sampler and HTTP server
+
+The sampler owns cadence and clock. It periodically calls the collector,
+computes deltas, and produces immutable `StatusSnapshot` values that are
+cached by the HTTP server. The HTTP server serves these cached snapshots
+and never triggers metric collection. This separation ensures collection
+cadence is decoupled from request handling.

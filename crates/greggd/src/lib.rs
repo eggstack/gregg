@@ -6,3 +6,6 @@
 //! reports its protocol schema version so the workspace remains packageable.
 
 pub mod collector;
+pub mod run;
+pub mod sampler;
+pub mod server;

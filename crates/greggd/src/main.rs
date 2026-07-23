@@ -1,12 +1,17 @@
-//! `greggd` skeleton.
+//! `greggd` binary entry point.
 //!
-//! Phase 2 adds the Linux collector module. Phase 3 adds the macOS
-//! collector. Phase 4 wires the sampler and HTTP server. Until then the
-//! binary only reports its protocol schema version so the workspace remains
-//! packageable.
+//! Selects the native collector at compile time and delegates to the
+//! foreground [`greggd::run`] entry point.
 
-use gregg_protocol::SCHEMA_VERSION_V1;
+#[cfg(target_os = "linux")]
+type NativeCollector = greggd::collector::linux::LinuxCollector;
 
-fn main() {
-    println!("greggd skeleton (protocol schema version {SCHEMA_VERSION_V1})");
+#[cfg(target_os = "macos")]
+type NativeCollector = greggd::collector::macos::MacOsCollector;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = greggd::run::RunConfig::default();
+    let collector = NativeCollector::new(None)?;
+    greggd::run::run(collector, config).await
 }
