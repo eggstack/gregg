@@ -1,6 +1,6 @@
 //! `greggd` skeleton.
 //!
-//! Phase 2 adds the Linux collector module. Phase 3 will add the macOS
+//! Phase 2 adds the Linux collector module. Phase 3 adds the macOS
 //! collector. Phase 4 wires the sampler and HTTP server. Until then the
 //! binary only reports its protocol schema version so the workspace remains
 //! packageable.

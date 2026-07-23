@@ -4,9 +4,10 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 and 2 are implemented. Phase 2 adds a Linux
-> metrics collector gated to `cfg(target_os = "linux")`, CI-clean on
-> Linux + macOS. Daemon, client, and TUI work continues in phases 3-8 per
+> Project status: phases 1 through 3 are implemented. Phase 3 adds a
+> native macOS collector gated to `cfg(target_os = "macos")`, using Mach
+> host statistics and sysctl APIs behind a contained FFI boundary.
+> Daemon, client, and TUI work continues in phases 4-8 per
 > [`plans/`](plans/).
 
 ## Goals

@@ -57,5 +57,6 @@ behaviour stay aligned with local development.
 The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
 changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
-through the workspace lint table; macOS collector FFI is the only planned
-exception and will be scoped to one module in a later phase.
+through the workspace lint table; the macOS collector FFI module
+(`crates/greggd/src/collector/macos/ffi.rs`) is the only exception and
+uses `#![allow(unsafe_code)]` with documented safety invariants.

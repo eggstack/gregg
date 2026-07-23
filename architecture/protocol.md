@@ -113,7 +113,14 @@ a clock; the sampler (phase 4) does.
 
 The Linux implementation lives behind `cfg(target_os = "linux")` and
 reads procfs/sysfs only. No external commands are executed. The macOS
-implementation arrives in phase 3.
+implementation lives behind `cfg(target_os = "macos")` and uses Mach
+host statistics and sysctl APIs through a contained FFI module.
 
 For collector semantics and acceptance criteria, see
 [`plans/002-linux-metrics-collector.md`](../plans/002-linux-metrics-collector.md).
+
+The macOS implementation arrives in phase 3 and lives behind
+`cfg(target_os = "macos")`. It uses Mach host statistics and sysctl
+APIs through a contained FFI module. For collector semantics and
+acceptance criteria, see
+[`plans/003-macos-metrics-collector.md`](../plans/003-macos-metrics-collector.md).

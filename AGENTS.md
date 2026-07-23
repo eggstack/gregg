@@ -71,8 +71,9 @@ collector without depending on internal-only paths.
 The workspace enables `clippy::pedantic` as a warning (not an error) so
 contributors see style suggestions without breaking the build on unrelated
 changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`;
-macOS collector FFI is the only planned exception and will be scoped to one
-module in a later phase.
+the macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`)
+is the only exception and uses `#![allow(unsafe_code)]` with documented
+safety invariants on every unsafe block.
 
 Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs. External tools may be used only as diagnostic references in tests or development documentation.
 
