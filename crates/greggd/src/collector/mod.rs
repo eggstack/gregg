@@ -78,6 +78,11 @@ impl CollectedMetrics {
         system: SystemIdentity,
     ) -> StatusSnapshot {
         let cpu_usage_pct = self.cpu_usage_pct.unwrap_or(0.0);
+        let cpu_usage_pct = if cpu_usage_pct.is_finite() {
+            cpu_usage_pct
+        } else {
+            0.0
+        };
         let cpu_iowait_pct = if capabilities.cpu_iowait {
             Some(self.cpu_iowait_pct.unwrap_or(0.0))
         } else {

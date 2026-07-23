@@ -72,16 +72,22 @@ async fn set_warming_clears_snapshot() {
 }
 
 #[tokio::test]
-async fn set_failed_marks_failed() {
+async fn set_failed_preserves_snapshot() {
     let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap.clone()).await;
+
     state.set_failed("collector crashed").await;
 
     assert!(!state.ready.load(Ordering::Acquire));
-    assert!(state.snapshot().await.is_none());
+    // Snapshot is preserved for stale-serving.
+    let stored = state.snapshot().await.unwrap();
+    assert_eq!(*stored, snap);
     let health = state.health().await;
     assert_eq!(health.state, ReadinessState::Failed);
     assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(health.message.as_deref(), Some("collector crashed"));
+    assert_eq!(state.consecutive_failures(), 1);
 }
 
 // ===== Config Validation Tests =====
@@ -224,12 +230,30 @@ async fn healthz_warming_returns_503() {
 }
 
 #[tokio::test]
-async fn post_status_returns_404() {
+async fn post_status_returns_405() {
     let state = ServerState::new();
     let app = build_test_router(state);
     let response = app.oneshot(post("/v1/status")).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+#[tokio::test]
+async fn post_unknown_route_returns_404() {
+    let state = ServerState::new();
+    let app = build_test_router(state);
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/nonexistent")
+                .body(Body::from(""))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -332,4 +356,135 @@ async fn concurrent_requests_return_same_snapshot() {
     }
 
     server.abort();
+}
+
+// ===== Stale Snapshot Tests =====
+
+fn fresh_snapshot() -> StatusSnapshot {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "millis from SystemTime is well within u64 range"
+    )]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(now)
+        .build()
+}
+
+#[tokio::test]
+async fn stale_snapshot_served_when_within_age() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap.clone()).await;
+
+    // Simulate a failure — snapshot is preserved.
+    state.set_failed("collector error").await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+
+    // Snapshot is within the max age, so it should be served.
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed, snap);
+}
+
+#[tokio::test]
+async fn stale_snapshot_rejected_when_max_failures_exceeded() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap.clone()).await;
+
+    // Simulate 3 failures — hits the threshold.
+    state.set_failed("failure 1").await;
+    state.set_failed("failure 2").await;
+    state.set_failed("failure 3").await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+
+    // Snapshot is stale due to failure count.
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
+}
+
+#[tokio::test]
+async fn healthz_reflects_stale_snapshot() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap).await;
+
+    state.set_failed("failure 1").await;
+    state.set_failed("failure 2").await;
+    state.set_failed("failure 3").await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/healthz")).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
+}
+
+#[tokio::test]
+async fn snapshot_preserved_after_single_failure_not_stale() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap.clone()).await;
+
+    state.set_failed("failure 1").await;
+
+    let app = build_test_router(state);
+
+    // /v1/status still serves the snapshot (only 1 failure, threshold is 3).
+    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed, snap);
+
+    // /healthz reports failed.
+    let response = app.oneshot(get("/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn warming_state_serves_503_regardless_of_stale_policy() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(3600));
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Warming);
+}
+
+#[tokio::test]
+async fn failure_count_resets_on_recovery() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap.clone()).await;
+
+    state.set_failed("failure 1").await;
+    state.set_failed("failure 2").await;
+
+    // Recovery — reset count.
+    state.update_snapshot(snap.clone()).await;
+    assert_eq!(state.consecutive_failures(), 0);
+
+    state.set_failed("failure 1").await;
+    assert_eq!(state.consecutive_failures(), 1);
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }

@@ -5,13 +5,14 @@
 //! config discovery and service-manager commands around this entry point.
 
 use std::net::IpAddr;
+use std::sync::Arc;
 
-use gregg_protocol::SCHEMA_VERSION_V1;
+use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::collector::SystemCollector;
-use crate::sampler::{Clock, RealClock, Sampler};
+use crate::sampler::{RealClock, Sampler};
 use crate::server::{Config as ServerConfig, ServerState};
 
 /// Daemon run configuration.
@@ -57,6 +58,8 @@ pub async fn run<C: SystemCollector + 'static>(
     info!(
         version = env!("CARGO_PKG_VERSION"),
         schema_version = SCHEMA_VERSION_V1,
+        os = std::env::consts::OS,
+        arch = std::env::consts::ARCH,
         "greggd starting"
     );
 
@@ -64,6 +67,7 @@ pub async fn run<C: SystemCollector + 'static>(
         host: config.host,
         port: config.port,
         sample_interval_ms: config.sample_interval_ms,
+        ..ServerConfig::default()
     };
     if let Err(e) = server_config.validate() {
         eprintln!("configuration error: {e}");
@@ -94,7 +98,14 @@ pub async fn run<C: SystemCollector + 'static>(
         let mut sampler = Sampler::with_interval(collector, RealClock, interval_ms)?;
 
         tokio::spawn(async move {
-            run_sampler_loop(&mut sampler, &state, interval_ms, shutdown_rx).await;
+            sampler
+                .run(shutdown_rx, |readiness, snap| {
+                    let state = state.clone();
+                    tokio::spawn(async move {
+                        sync_sampler_state(&state, readiness, snap).await;
+                    });
+                })
+                .await;
         })
     };
 
@@ -122,44 +133,24 @@ pub async fn run<C: SystemCollector + 'static>(
     Ok(())
 }
 
-/// Run the sampling loop, syncing state to the shared [`ServerState`].
-///
-/// This runs the sampler's collection cycle on the configured interval and
-/// publishes snapshots to the HTTP server state after each successful sample.
-async fn run_sampler_loop<C: SystemCollector, Clk: Clock>(
-    sampler: &mut Sampler<C, Clk>,
+/// Sync sampler state to the shared [`ServerState`].
+async fn sync_sampler_state(
     server_state: &ServerState,
-    interval_ms: u64,
-    mut shutdown: broadcast::Receiver<()>,
+    readiness: ReadinessState,
+    snap: Option<Arc<gregg_protocol::StatusSnapshot>>,
 ) {
-    use gregg_protocol::ReadinessState;
-
-    loop {
-        sampler.sample_once();
-
-        // Sync sampler state to the shared server state.
-        match sampler.readiness() {
-            ReadinessState::Ready => {
-                if let Some(snap) = sampler.snapshot() {
-                    server_state.update_snapshot((*snap).clone()).await;
-                }
-            }
-            ReadinessState::Warming => {
-                server_state.set_warming().await;
-            }
-            ReadinessState::Failed => {
-                let health = sampler.health_response();
-                let msg = health.message.unwrap_or_else(|| "collector failure".into());
-                server_state.set_failed(&msg).await;
+    match readiness {
+        ReadinessState::Ready => {
+            if let Some(snap) = snap {
+                server_state.update_snapshot((*snap).clone()).await;
             }
         }
-
-        tokio::select! {
-            () = tokio::time::sleep(std::time::Duration::from_millis(interval_ms)) => {}
-            _ = shutdown.recv() => {
-                tracing::info!("sampler shutting down");
-                break;
-            }
+        ReadinessState::Warming => {
+            server_state.set_warming().await;
+        }
+        ReadinessState::Failed => {
+            let msg = "collector failure";
+            server_state.set_failed(msg).await;
         }
     }
 }

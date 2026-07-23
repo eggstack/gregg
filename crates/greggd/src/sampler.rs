@@ -177,9 +177,18 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     ///
     /// The loop sleeps for the configured interval between samples. The first
     /// sample is taken immediately on entry.
-    pub async fn run(&mut self, mut shutdown: broadcast::Receiver<()>) {
+    ///
+    /// The `on_sample` callback is invoked after each collection cycle with
+    /// the sampler's current readiness state and, when available, the
+    /// latest snapshot. This allows the caller to sync state to shared
+    /// structures (e.g. the HTTP server state) without duplicating the loop.
+    pub async fn run<F>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
+    where
+        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>),
+    {
         loop {
             self.sample_once();
+            on_sample(self.readiness, self.snapshot.clone());
 
             tokio::select! {
                 () = self.clock.sleep(Duration::from_millis(self.interval_ms)) => {}
@@ -365,6 +374,51 @@ mod tests {
                 Ok(successful_metrics()),
                 Err(CollectError::counter_reset("counters reset")),
                 Ok(successful_metrics()),
+            ])
+        }
+
+        fn succeed_then_fail_repeatedly() -> Self {
+            Self::from_results(vec![
+                Err(CollectError::warming("baseline")),
+                Ok(successful_metrics()),
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "failure 1",
+                )),
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "failure 2",
+                )),
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "failure 3",
+                )),
+            ])
+        }
+
+        fn returns_invalid_metrics() -> Self {
+            Self::from_results(vec![
+                Err(CollectError::warming("baseline")),
+                Ok(CollectedMetrics {
+                    logical_cores: 0,
+                    cpu_usage_pct: Some(f32::NAN),
+                    cpu_iowait_pct: None,
+                    load: LoadAverage {
+                        one: f32::INFINITY,
+                        five: -1.0,
+                        fifteen: 0.0,
+                    },
+                    memory: MemoryMetrics {
+                        used_bytes: 999,
+                        total_bytes: 100,
+                        usage_pct: 200.0,
+                    },
+                    swap: SwapMetrics {
+                        used_bytes: 0,
+                        total_bytes: 0,
+                        usage_pct: 0.0,
+                    },
+                }),
             ])
         }
     }
@@ -604,6 +658,54 @@ mod tests {
         assert_eq!(sampler.readiness(), ReadinessState::Ready);
     }
 
+    #[test]
+    fn succeed_then_fail_repeatedly_tracks_failures() {
+        let clock = SyntheticClock::new(1000);
+        let collector = SyntheticCollector::succeed_then_fail_repeatedly();
+        let mut sampler = Sampler::new(collector, clock);
+
+        // warming
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Warming);
+        // success -> ready
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Ready);
+        assert!(sampler.snapshot().is_some());
+        // failure 1
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.consecutive_failures, 1);
+        // failure 2
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.consecutive_failures, 2);
+        // failure 3
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.consecutive_failures, 3);
+        // Snapshot is still the last valid one.
+        assert!(sampler.snapshot().is_some());
+    }
+
+    #[test]
+    fn invalid_metrics_produces_snapshot_with_raw_values() {
+        let clock = SyntheticClock::new(1000);
+        let collector = SyntheticCollector::returns_invalid_metrics();
+        let mut sampler = Sampler::new(collector, clock);
+
+        // warming
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Warming);
+        // invalid metrics -> into_snapshot coalesces NaN/infinity into the
+        // snapshot; the sampler publishes it without validation failure.
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Ready);
+        let snap = sampler.snapshot().expect("snapshot present");
+        // NaN CPU usage is coalesced to 0.0 by into_snapshot.
+        assert!((snap.cpu.usage_pct - 0.0).abs() < f32::EPSILON);
+        assert_eq!(snap.cpu.logical_cores, 0);
+    }
+
     // --- run loop integration tests ---
 
     #[tokio::test]
@@ -614,7 +716,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown).await;
+            sampler.run(shutdown, |_state, _snap| {}).await;
             sampler
         });
 
@@ -638,7 +740,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown).await;
+            sampler.run(shutdown, |_state, _snap| {}).await;
             sampler
         });
 
@@ -656,7 +758,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown).await;
+            sampler.run(shutdown, |_state, _snap| {}).await;
             sampler
         });
 
@@ -675,7 +777,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown).await;
+            sampler.run(shutdown, |_state, _snap| {}).await;
             sampler
         });
 
@@ -683,5 +785,31 @@ mod tests {
         let _ = tx.send(());
         let sampler = handle.await.unwrap();
         assert_eq!(sampler.readiness(), ReadinessState::Ready);
+    }
+
+    #[tokio::test]
+    async fn run_callback_receives_each_sample() {
+        let clock = SyntheticClock::new(0);
+        let collector = SyntheticCollector::warming_then_success();
+        let mut sampler = Sampler::with_interval(collector, clock, 250).unwrap();
+        let (tx, shutdown) = broadcast::channel(1);
+
+        let sample_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let count = sample_count.clone();
+
+        let handle = tokio::spawn(async move {
+            sampler
+                .run(shutdown, move |_state, _snap| {
+                    count.fetch_add(1, Ordering::Relaxed);
+                })
+                .await;
+            sampler
+        });
+
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let _ = tx.send(());
+        let _ = handle.await.unwrap();
+        // At least 2 samples (warming + success) should have fired the callback.
+        assert!(sample_count.load(Ordering::Relaxed) >= 2);
     }
 }
