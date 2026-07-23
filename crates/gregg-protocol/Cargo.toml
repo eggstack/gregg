@@ -1,0 +1,29 @@
+[package]
+name = "gregg-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Versioned JSON wire types, metric capabilities, and identity structures shared by the gregg daemon and client."
+keywords = ["metrics", "monitoring", "system", "protocol", "serde"]
+categories = ["api-bindings", "data-structures", "encoding"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "tests/fixtures/*.json"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"], default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+thiserror = { version = "1.0", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1.0", features = ["std"] }
+
+[features]
+default = []
+test_support = []
+
+[lints]
+workspace = true

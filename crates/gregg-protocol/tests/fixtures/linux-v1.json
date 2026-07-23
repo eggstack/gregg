@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "observed_at_unix_ms": 1716460800000,
+  "sample_interval_ms": 1000,
+  "capabilities": { "cpu_iowait": true },
+  "system": {
+    "name": "deadpool",
+    "hostname": "deadpool.local",
+    "os_name": "linux",
+    "os_version": "Ubuntu 24.04",
+    "kernel_name": "Linux",
+    "kernel_release": "6.8.0-31-generic",
+    "architecture": "x86_64"
+  },
+  "cpu": {
+    "logical_cores": 8,
+    "usage_pct": 25.2,
+    "iowait_pct": 0.4
+  },
+  "load": { "one": 1.32, "five": 0.91, "fifteen": 0.62 },
+  "memory": {
+    "used_bytes": 5900000000,
+    "total_bytes": 15600000000,
+    "usage_pct": 37.8205
+  },
+  "swap": {
+    "used_bytes": 0,
+    "total_bytes": 4000000000,
+    "usage_pct": 0.0
+  }
+}

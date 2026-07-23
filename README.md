@@ -4,7 +4,10 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: architecture and version-1 implementation planning. The crates and binaries described below are not implemented yet.
+> Project status: phase 1 (workspace, package metadata, schema-version-1
+> protocol crate) is implemented and CI-clean on macOS. Collector, daemon,
+> client, and TUI work begins in phases 2 through 8 per
+> [`plans/`](plans/).
 
 ## Goals
 
@@ -111,4 +114,21 @@ The implementation roadmap and execution-ready phase plans are stored in [`plans
 
 ## License
 
-A project license will be selected before crate manifests are made publishable. Every published crate must declare the same repository, license expression, rust-version policy, and versioning policy before the first crates.io release.
+The project is released under the [MIT License](LICENSE). Every published
+crate inherits the same license expression from the workspace root.
+
+## Local development
+
+Phase 1 enforces the following on every commit through CI:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+cargo doc --workspace --no-deps
+cargo package -p gregg-protocol --allow-dirty
+```
+
+The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
+stable Rust release. `rust-version` in every member manifest is set from the
+workspace `rust-version = "1.75"`.

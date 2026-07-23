@@ -24,7 +24,7 @@ When implementation reveals a conflict, preserve the narrow product objective an
 
 ## Intended workspace boundaries
 
-The workspace should converge on:
+The workspace is already established as:
 
 ```text
 crates/
@@ -32,6 +32,10 @@ crates/
 ├── greggd/
 └── gregg/
 ```
+
+Root manifests live in `Cargo.toml`. The Rust toolchain is pinned in
+`rust-toolchain.toml`. CI lives in `.github/workflows/ci.yml`. Phase-level
+architectural decisions are recorded under `architecture/`.
 
 Dependency direction is one-way:
 
@@ -54,7 +58,18 @@ Keep these internal boundaries explicit:
 
 Prefer stable Rust and declare a workspace `rust-version` before publication. Avoid nightly-only language or Cargo features.
 
+The workspace pins `rust-version = "1.75"` in `[workspace.package]` and
+inherits it into every member manifest. `rust-toolchain.toml` pins the
+current stable channel so formatting and lint behaviour match local
+development and CI.
+
 Dependencies must solve a concrete version-1 requirement. Disable unused default features, especially in HTTP clients and servers. The daemon needs plain HTTP/1 on a trusted local network; do not add TLS, cookies, proxy support, HTTP/2, multipart handling, compression, or remote-control surfaces without an approved scope change.
+
+The workspace enables `clippy::pedantic` as a warning (not an error) so
+contributors see style suggestions without breaking the build on unrelated
+changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`;
+macOS collector FFI is the only planned exception and will be scoped to one
+module in a later phase.
 
 Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs. External tools may be used only as diagnostic references in tests or development documentation.
 
@@ -72,6 +87,13 @@ The HTTP schema is a compatibility contract, not an incidental serialization for
 - Breaking semantic or structural changes require an explicit schema-version decision and migration tests.
 
 macOS has no Linux-equivalent aggregate CPU `iowait` state. Report it as unsupported/null; never fabricate `0.0`.
+
+The schema-version-1 wire types are implemented in `gregg-protocol` and
+documented in [`architecture/protocol.md`](architecture/protocol.md) and in
+the rustdoc on each public type. Validation lives behind a `validate()`
+method that returns structured `ValidationViolation`s rather than failing
+through serde, so additive forward-compatible fields do not silently tighten
+or loosen existing validation.
 
 ## CLI and configuration rules
 

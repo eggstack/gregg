@@ -1,0 +1,25 @@
+[package]
+name = "gregg"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
+description = "Compact keyboard-first terminal monitor that polls greggd endpoints and renders each system in four rows."
+keywords = ["tui", "monitoring", "metrics", "ratatui", "cli"]
+categories = ["command-line-utilities", "visualization"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+
+[[bin]]
+name = "gregg"
+path = "src/main.rs"
+
+[dependencies]
+gregg-protocol = { version = "0.1.0", path = "../gregg-protocol" }
+thiserror = { version = "1.0", default-features = false }
+
+[lints]
+workspace = true
