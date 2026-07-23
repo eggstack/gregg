@@ -607,3 +607,547 @@ fn fixture_paths_exist() {
         );
     }
 }
+
+#[test]
+fn extremely_large_u64_memory_parses_and_validates() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: u64::MAX,
+            total_bytes: u64::MAX,
+            usage_pct: 100.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    snap.validate()
+        .expect("u64::MAX used==total with 100.0% validates");
+}
+
+#[test]
+fn extremely_large_memory_json_round_trips() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 18446744073709551615, "total_bytes": 18446744073709551615, "usage_pct": 100.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let snap: StatusSnapshot = serde_json::from_str(json).expect("large u64 parses");
+    snap.validate()
+        .expect("large u64 memory with used==total validates");
+}
+
+#[test]
+fn missing_required_json_field_cpu_is_rejected() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(result.is_err(), "missing cpu field must fail to parse");
+}
+
+#[test]
+fn missing_required_json_field_load_is_rejected() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(result.is_err(), "missing load field must fail to parse");
+}
+
+#[test]
+fn missing_required_json_field_system_is_rejected() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(result.is_err(), "missing system field must fail to parse");
+}
+
+#[test]
+fn missing_required_json_field_capabilities_is_rejected() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(
+        result.is_err(),
+        "missing capabilities field must fail to parse"
+    );
+}
+
+#[test]
+fn missing_required_json_field_schema_version_is_rejected() {
+    let json = r#"{
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(
+        result.is_err(),
+        "missing schema_version field must fail to parse"
+    );
+}
+
+#[test]
+fn truncated_json_body_is_rejected() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": false },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_
+    "#;
+    let result = serde_json::from_str::<StatusSnapshot>(json);
+    assert!(result.is_err(), "truncated JSON must fail to parse");
+}
+
+#[test]
+fn truncated_json_mid_object_is_rejected() {
+    let json = r#"{"schema_version":1,"observed_at_unix_ms":1,"sample_interval_ms":1000,"capabilities":{"cpu_iowait":false},"system":{"name":"h","hostname":"h.local","os_name":"linux","os_version":"1","kernel_name":"Linux","kernel_release":"1.0","architecture":"x86_64"},"cpu":{"logical_cores":1,"usage_pct":0.0,"iowait_pct":null},"load":{"one":0.0,"five":0.0,"fifteen":0.0},"memory":{"used_bytes":0,"total_bytes":1,"usage_pct":0.0},"swap":{"used_bytes":0,"total_bytes":0,"usage_pct":0.0}}"#;
+    let result = serde_json::from_str::<StatusSnapshot>(&json[..json.len() - 20]);
+    assert!(result.is_err(), "truncated JSON at end must fail to parse");
+}
+
+#[test]
+fn empty_json_body_is_rejected() {
+    let result = serde_json::from_str::<StatusSnapshot>("{}");
+    assert!(result.is_err(), "empty JSON object must fail to parse");
+}
+
+#[test]
+fn oversized_valid_json_parses() {
+    let long_name = "x".repeat(10_000);
+    let json = format!(
+        r#"{{
+            "schema_version": 1,
+            "observed_at_unix_ms": 1,
+            "sample_interval_ms": 1000,
+            "capabilities": {{ "cpu_iowait": false }},
+            "system": {{
+                "name": "{long_name}", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+                "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+            }},
+            "cpu": {{ "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null }},
+            "load": {{ "one": 0.0, "five": 0.0, "fifteen": 0.0 }},
+            "memory": {{ "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 }},
+            "swap": {{ "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }}
+        }}"#,
+    );
+    let snap: StatusSnapshot = serde_json::from_str(&json).expect("large but valid JSON parses");
+    snap.validate()
+        .expect("oversized valid snapshot with long name validates");
+}
+
+#[test]
+fn health_response_with_unknown_additive_fields_is_ignored() {
+    let json = r#"{
+        "schema_version": 1,
+        "state": "ready",
+        "future_field": "hello",
+        "another_future": 42,
+        "nested_unknown": { "a": true },
+        "snapshot": {
+            "schema_version": 1,
+            "observed_at_unix_ms": 1,
+            "sample_interval_ms": 1000,
+            "capabilities": { "cpu_iowait": false },
+            "system": {
+                "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+                "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+            },
+            "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+            "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+            "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+            "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+        }
+    }"#;
+    let health: HealthResponse =
+        serde_json::from_str(json).expect("unknown health fields ignored on parse");
+    assert_eq!(health.state, ReadinessState::Ready);
+    assert!(health.snapshot.is_some());
+}
+
+#[test]
+fn version_skew_rejects_wrong_schema_version() {
+    let snap = StatusSnapshot {
+        schema_version: 0,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    let err = snap.validate().unwrap_err();
+    assert!(err
+        .iter()
+        .any(|v| matches!(v.kind, ViolationKind::UnsupportedSchemaVersion { found: 0 })));
+}
+
+#[test]
+fn multiple_simultaneous_violations_all_reported() {
+    let snap = StatusSnapshot {
+        schema_version: 99,
+        observed_at_unix_ms: 0,
+        sample_interval_ms: 0,
+        capabilities: MetricCapabilities { cpu_iowait: true },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 0,
+            usage_pct: f32::NAN,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: -1.0,
+            five: 0.0,
+            fifteen: f32::INFINITY,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 100,
+            total_bytes: 50,
+            usage_pct: 101.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 10,
+            total_bytes: 5,
+            usage_pct: f32::NAN,
+        },
+    };
+    let err = snap.validate().unwrap_err();
+    assert!(
+        err.len() >= 10,
+        "expected at least 10 violations, got {}",
+        err.len()
+    );
+    let fields: Vec<&str> = err.iter().map(|v| v.field.as_str()).collect();
+    assert!(fields.contains(&"schema_version"));
+    assert!(fields.contains(&"observed_at_unix_ms"));
+    assert!(fields.contains(&"sample_interval_ms"));
+    assert!(fields.contains(&"cpu.logical_cores"));
+    assert!(fields.contains(&"cpu.usage_pct"));
+    assert!(fields.contains(&"cpu.iowait_pct"));
+    assert!(fields.contains(&"load.one"));
+    assert!(fields.contains(&"load.fifteen"));
+    assert!(fields.contains(&"memory.used_bytes"));
+    assert!(fields.contains(&"memory.usage_pct"));
+    assert!(fields.contains(&"swap.used_bytes"));
+    assert!(fields.contains(&"swap.usage_pct"));
+}
+
+#[test]
+fn boundary_percentage_zero_exactly_is_valid() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    snap.validate().expect("0.0% boundary is valid");
+}
+
+#[test]
+fn boundary_percentage_one_hundred_exactly_is_valid() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 100.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 1,
+            total_bytes: 1,
+            usage_pct: 100.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 1,
+            total_bytes: 1,
+            usage_pct: 100.0,
+        },
+    };
+    snap.validate().expect("100.0% boundary is valid");
+}
+
+#[test]
+fn null_iowait_with_capability_true_from_json() {
+    let json = r#"{
+        "schema_version": 1,
+        "observed_at_unix_ms": 1,
+        "sample_interval_ms": 1000,
+        "capabilities": { "cpu_iowait": true },
+        "system": {
+            "name": "h", "hostname": "h.local", "os_name": "linux", "os_version": "1",
+            "kernel_name": "Linux", "kernel_release": "1.0", "architecture": "x86_64"
+        },
+        "cpu": { "logical_cores": 1, "usage_pct": 0.0, "iowait_pct": null },
+        "load": { "one": 0.0, "five": 0.0, "fifteen": 0.0 },
+        "memory": { "used_bytes": 0, "total_bytes": 1, "usage_pct": 0.0 },
+        "swap": { "used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0 }
+    }"#;
+    let snap: StatusSnapshot =
+        serde_json::from_str(json).expect("null iowait with capability true parses");
+    let err = snap.validate().unwrap_err();
+    assert!(
+        err.iter()
+            .any(|v| matches!(v.kind, ViolationKind::IowaitCapabilityMismatch)),
+        "null iowait with capability true must produce IowaitCapabilityMismatch"
+    );
+}
+
+#[test]
+fn negative_load_average_is_rejected() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: -0.5,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    let err = snap.validate().unwrap_err();
+    assert!(err.iter().any(|v| v.field == "load.one"));
+}
+
+#[test]
+fn nan_load_average_is_rejected() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: f32::NAN,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    let err = snap.validate().unwrap_err();
+    assert!(err.iter().any(|v| v.field == "load.five"));
+}
+
+#[test]
+fn very_large_load_average_is_valid() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 99999.0,
+            five: 50000.0,
+            fifteen: 25000.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    snap.validate()
+        .expect("very large positive load averages are valid");
+}
+
+#[test]
+fn infinite_load_average_is_rejected() {
+    let snap = StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("h"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: f32::INFINITY,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    };
+    let err = snap.validate().unwrap_err();
+    assert!(err.iter().any(|v| v.field == "load.fifteen"));
+}

@@ -56,16 +56,26 @@ pub fn render_bar(
     f.render_widget(line, area);
 }
 
-/// Truncate a string to at most `max_chars` characters.
-fn truncate_str(s: &str, max_chars: u16) -> String {
-    let max = max_chars as usize;
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
+/// Truncate a string to at most `max_width` display columns.
+fn truncate_str(s: &str, max_width: u16) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    let max = max_width as usize;
+    let mut width = 0usize;
+    let mut end = 0usize;
+    for (i, ch) in s.char_indices() {
+        let w = ch.width().unwrap_or(0);
+        if width + w > max {
+            break;
         }
+        width += w;
+        end = i + ch.len_utf8();
+    }
+    if end >= s.len() {
+        s.to_string()
+    } else if end > 0 {
         format!("{}…", &s[..end])
+    } else {
+        String::new()
     }
 }

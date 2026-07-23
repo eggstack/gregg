@@ -112,6 +112,7 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         Key::Char('G') => Some(Action::SelectLast),
         Key::PageDown | Key::Char('f') if !event.ctrl => Some(Action::PageDown),
         Key::PageUp | Key::Char('b') if !event.ctrl => Some(Action::PageUp),
+        Key::Char('q') | Key::Esc => Some(Action::Quit),
         _ => None,
     }
 }
@@ -311,6 +312,28 @@ mod tests {
             shift: false,
         });
         assert!(matches!(action, Some(crate::action::Action::PageUp)));
+    }
+
+    #[test]
+    fn key_to_action_q_quits() {
+        let action = key_to_action(KeyEvent {
+            key: Key::Char('q'),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+        assert!(matches!(action, Some(crate::action::Action::Quit)));
+    }
+
+    #[test]
+    fn key_to_action_esc_quits() {
+        let action = key_to_action(KeyEvent {
+            key: Key::Esc,
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+        assert!(matches!(action, Some(crate::action::Action::Quit)));
     }
 
     #[test]

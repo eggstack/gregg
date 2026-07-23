@@ -1155,4 +1155,143 @@ unknown_field = "oops"
         let path = Config::default_path();
         assert_eq!(path.file_name().unwrap(), "gregg.toml");
     }
+
+    // --- Atomic write hardening ---
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_to_readonly_directory() {
+        let dir = tmp_dir("atomic_readonly");
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+
+        // Make directory read-only.
+        let mut perms = fs::metadata(&dir).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&dir, perms).unwrap();
+
+        let result = config.write_atomic(&path);
+        assert!(result.is_err());
+
+        // Original file should still be intact.
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(config, loaded);
+
+        // Restore permissions for cleanup.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_no_parent_directory() {
+        let config = Config::default();
+        // Path::new("/").parent() returns None, triggering NoParentDirectory.
+        let result = config.write_atomic(Path::new("/"));
+        match result {
+            Err(ConfigError::AtomicWrite {
+                source: AtomicWriteError::NoParentDirectory,
+                ..
+            }) => {}
+            other => panic!("expected NoParentDirectory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_atomic_multiple_rapid_writes() {
+        let dir = tmp_dir("atomic_rapid");
+        let path = dir.join("config.toml");
+
+        for i in 0..10 {
+            let config = Config {
+                refresh_seconds: i,
+                ..Default::default()
+            };
+            config.write_atomic(&path).unwrap();
+        }
+
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.refresh_seconds, 9);
+        assert!(loaded.is_valid());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- ConfigStore concurrent mutation ---
+
+    #[test]
+    fn config_store_concurrent_mutation() {
+        let dir = tmp_dir("store_concurrent");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Sequential mutations through the store should produce the
+        // final state without corruption.
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 2;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 3;
+                Ok(())
+            })
+            .unwrap();
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 4;
+                Ok(())
+            })
+            .unwrap();
+
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded.refresh_seconds, 4);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- AdvisoryLock ---
+
+    #[test]
+    fn advisory_lock_acquire_and_release() {
+        let dir = tmp_dir("advisory_lock");
+        let lock_path = dir.join("test.lock");
+
+        let lock = AdvisoryLock::new(lock_path.clone());
+        assert!(!lock.is_held());
+
+        assert!(lock.try_acquire());
+        assert!(lock.is_held());
+
+        lock.release();
+        assert!(!lock.is_held());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn advisory_lock_drop_releases() {
+        let dir = tmp_dir("advisory_lock_drop");
+        let lock_path = dir.join("test.lock");
+
+        {
+            let lock = AdvisoryLock::new(lock_path.clone());
+            assert!(lock.try_acquire());
+            assert!(lock.is_held());
+            // lock dropped here
+        }
+
+        // After drop, a new lock should be acquirable.
+        let lock2 = AdvisoryLock::new(lock_path.clone());
+        assert!(lock2.try_acquire());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

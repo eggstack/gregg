@@ -28,3 +28,8 @@ missing_panics_doc = "allow"
 
 [workspace.metadata]
 "docs.rs" = { all-features = true }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

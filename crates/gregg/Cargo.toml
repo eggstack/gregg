@@ -31,6 +31,7 @@ tokio-util = "0.7"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", default-features = false, features = ["event-stream"] }
 futures-util = { version = "0.3", default-features = false }
+unicode-width = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

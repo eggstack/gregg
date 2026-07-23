@@ -555,4 +555,249 @@ mod tests {
         let err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
         assert!(is_connection_refused(&err));
     }
+
+    #[tokio::test]
+    async fn redirect_response_301() {
+        let url = mock_server(b"redirect".to_vec(), "301 Moved Permanently").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(matches!(result.outcome, PollOutcome::HttpStatus(301)));
+    }
+
+    #[tokio::test]
+    async fn partial_body_then_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 1024\r\n\r\npartial";
+            let _ = stream.write_all(header.as_bytes()).await;
+            drop(stream);
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(
+                result.outcome,
+                PollOutcome::NetworkError | PollOutcome::DecodeError
+            ),
+            "expected NetworkError or DecodeError, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_body_with_200() {
+        let url = mock_server(Vec::new(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::DecodeError),
+            "expected DecodeError, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn wrong_content_type_with_valid_json() {
+        let body = valid_snapshot_json();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "expected Online, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn large_valid_json_under_64k() {
+        let long_name = "x".repeat(60_000);
+        let snap = LinuxSnapshotBuilder::default().build();
+        let mut json = serde_json::to_value(&snap).unwrap();
+        json["system"]["name"] = serde_json::json!(long_name);
+        let body = serde_json::to_string(&json).unwrap();
+        assert!(body.len() < 64 * 1024);
+        let url = mock_server(body.into_bytes(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "expected Online, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn unicode_in_system_name() {
+        let snap = LinuxSnapshotBuilder::default().build();
+        let mut json = serde_json::to_value(&snap).unwrap();
+        json["system"]["name"] = serde_json::json!("日本語サーバー");
+        let body = serde_json::to_string(&json).unwrap();
+        let url = mock_server(body.into_bytes(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "expected Online, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_invalid_json() {
+        let url = mock_server(b"{\"nested\": {\"invalid\": true}}".to_vec(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::DecodeError),
+            "expected DecodeError, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn array_instead_of_object() {
+        let url = mock_server(b"[1, 2, 3]".to_vec(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::DecodeError),
+            "expected DecodeError, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn null_json() {
+        let url = mock_server(b"null".to_vec(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::DecodeError),
+            "expected DecodeError, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_rapid_polls_same_result() {
+        let body = valid_snapshot_json();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let status_line = "200 OK".to_string();
+        tokio::spawn(async move {
+            for _ in 0..10 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let body = body.clone();
+                let status_line = status_line.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let mut total = 0;
+                    loop {
+                        let n = stream.read(&mut buf[total..]).await.unwrap();
+                        total += n;
+                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let header = format!(
+                        "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    stream.write_all(body.as_bytes()).await.unwrap();
+                });
+            }
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let mut outcomes = Vec::new();
+        for _ in 0..10 {
+            let result = client.poll(&ep, &clock).await;
+            outcomes.push(result.outcome.clone());
+        }
+        for outcome in &outcomes {
+            assert!(
+                matches!(outcome, PollOutcome::Online(_)),
+                "expected Online for all polls, got {outcome:?}",
+            );
+        }
+    }
 }

@@ -183,3 +183,48 @@ changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
 through the workspace lint table; the macOS collector FFI module
 (`crates/greggd/src/collector/macos/ffi.rs`) is the only exception and
 uses `#![allow(unsafe_code)]` with documented safety invariants.
+
+## Release profiles
+
+The workspace defines a release profile in `Cargo.toml`:
+
+```toml
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+```
+
+This optimises for binary size and runtime performance. Thin LTO keeps
+incremental build times reasonable; `codegen-units = 1` enables better
+cross-crate optimisation; symbol stripping reduces binary size.
+
+## Supply-chain policy
+
+`deny.toml` configures `cargo-deny` for advisory checking, licence auditing,
+and dependency bans:
+
+- **Advisories:** unmaintained crates are a workspace-level concern; yanked
+  crates produce warnings.
+- **Licences:** only MIT, Apache-2.0, Unicode-3.0, Unicode-DFS-2016,
+  BSD-2-Clause, BSD-3-Clause, ISC, Zlib, and CDLA-Permissive-2.0 are allowed.
+- **Bans:** multiple versions of the same crate produce warnings.
+- **Sources:** only crates.io is permitted; unknown registries and git sources
+  are denied.
+
+## Testing strategy
+
+The workspace enforces these checks locally and in CI:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+cargo doc --workspace --no-deps
+```
+
+Platform-specific collector tests use deterministic fixtures and mock
+collectors (`MockNativeQueries`) so they run on any platform. Native FFI
+tests run only on macOS runners. TUI buffer tests cover narrow, medium, wide,
+mixed online/offline, and resize cases without sleeping for production refresh
+intervals.

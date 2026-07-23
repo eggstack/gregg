@@ -26,6 +26,13 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     let entries = layout::compute_viewport(state, area);
 
+    // Compute how many rows the entries consume.
+    let entries_bottom = entries.last().map_or(area.y, |e| e.rect.y + e.rect.height);
+    let extra_rows = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(entries_bottom);
+
     for entry in &entries {
         let system = &state.systems[entry.index];
         match system.reachability {
@@ -36,6 +43,11 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 system_block::render_offline(f, entry.rect, system, entry.is_selected);
             }
         }
+    }
+
+    // Show a key hint only when there is at least one extra row below entries.
+    if extra_rows >= 1 {
+        diagnostics::render_key_hint(f, area);
     }
 }
 
@@ -641,7 +653,8 @@ mod tests {
         let config = test_config(&["s1"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        let output = render_state(&state, 80, 8);
+        // Height 4 = exactly one online system, no room for key hint.
+        let output = render_state(&state, 80, 4);
         let nonblank = count_nonblank_lines(&output);
         assert_eq!(nonblank, 4, "one online system should use exactly 4 rows");
     }
@@ -651,7 +664,8 @@ mod tests {
         let config = test_config(&["s1"]);
         let mut state = AppState::from_config(&config);
         apply_offline(&mut state, 0);
-        let output = render_state(&state, 80, 4);
+        // Height 1 = exactly one offline system, no room for key hint.
+        let output = render_state(&state, 80, 1);
         let nonblank = count_nonblank_lines(&output);
         assert_eq!(nonblank, 1, "one offline system should use exactly 1 row");
     }
@@ -660,7 +674,8 @@ mod tests {
     fn pending_system_uses_one_row() {
         let config = test_config(&["s1"]);
         let state = AppState::from_config(&config);
-        let output = render_state(&state, 80, 4);
+        // Height 1 = exactly one pending system, no room for key hint.
+        let output = render_state(&state, 80, 1);
         let nonblank = count_nonblank_lines(&output);
         assert_eq!(nonblank, 1, "one pending system should use exactly 1 row");
     }
@@ -672,7 +687,8 @@ mod tests {
         apply_online(&mut state, 0, linux_snap());
         apply_offline(&mut state, 1);
         // c is pending (default).
-        let output = render_state(&state, 80, 16);
+        // Height 6 = exactly 4 + 1 + 1, no room for key hint.
+        let output = render_state(&state, 80, 6);
         let nonblank = count_nonblank_lines(&output);
         // 4 (online a) + 1 (offline b) + 1 (pending c) = 6
         assert_eq!(
@@ -1119,11 +1135,70 @@ mod tests {
             }],
         });
 
-        let output = render_state(&state, 80, 8);
+        // Height 4 = minimum, 2 offline systems + key hint in remaining space.
+        let output = render_state(&state, 80, 4);
         assert!(output.contains('x'), "should contain x: {output}");
         assert!(output.contains('y'), "should contain y: {output}");
+        // 2 offline rows + 1 key hint row = 3 nonblank lines.
         let nonblank = count_nonblank_lines(&output);
-        assert_eq!(nonblank, 2, "two offline systems should use 2 rows");
+        assert_eq!(nonblank, 3, "two offline systems + hint = 3 rows");
+    }
+
+    #[test]
+    fn resize_round_trip_wide_narrow_wide() {
+        let config = test_config(&["srv"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+
+        // Wide → narrow → wide should not crash and should adapt content.
+        let wide = render_state(&state, 120, 24);
+        let narrow = render_state(&state, 32, 8);
+        let wide_again = render_state(&state, 120, 24);
+
+        // Wide should have architecture info.
+        assert!(
+            wide.contains("x86_64"),
+            "wide: {}",
+            wide.lines().next().unwrap()
+        );
+        // Narrow should NOT have architecture info (dropped at < 80).
+        assert!(
+            !narrow.contains("x86_64"),
+            "narrow should drop arch: {}",
+            narrow.lines().next().unwrap()
+        );
+        // Wide again should restore architecture info.
+        assert!(
+            wide_again.contains("x86_64"),
+            "wide again: {}",
+            wide_again.lines().next().unwrap()
+        );
+    }
+
+    #[test]
+    fn key_hint_appears_when_extra_space() {
+        let config = test_config(&["s1"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        // 12 rows: 4 for system, 8 extra → hint should appear.
+        let output = render_state(&state, 80, 12);
+        assert!(
+            output.contains("j/k:select"),
+            "key hint should appear with extra space:\n{output}"
+        );
+    }
+
+    #[test]
+    fn key_hint_absent_when_no_extra_space() {
+        let config = test_config(&["s1"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        // 4 rows: exactly one system, no extra space.
+        let output = render_state(&state, 80, 4);
+        assert!(
+            !output.contains("j/k:select"),
+            "key hint should not appear when no extra space:\n{output}"
+        );
     }
 
     #[test]

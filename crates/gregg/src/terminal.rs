@@ -85,3 +85,33 @@ fn restore_terminal() {
     let _ = disable_raw_mode();
     let _ = stdout.flush();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_terminal_is_idempotent() {
+        restore_terminal();
+        restore_terminal();
+        restore_terminal();
+    }
+
+    #[test]
+    fn install_panic_hook_does_not_panic() {
+        HOOK_INSTALLED.call_once(|| {
+            let original_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                restore_terminal();
+                original_hook(info);
+            }));
+        });
+    }
+
+    #[test]
+    fn terminal_size_returns_valid_dimensions() {
+        let (cols, rows) = Terminal::size().expect("terminal size should succeed");
+        assert!(cols > 0, "columns should be > 0, got {cols}");
+        assert!(rows > 0, "rows should be > 0, got {rows}");
+    }
+}

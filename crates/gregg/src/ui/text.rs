@@ -90,6 +90,10 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
 }
 
 /// Return the display name for a system.
+///
+/// If a name was configured by the operator, it is preferred for stable
+/// identity in the TUI regardless of what the daemon reports. The
+/// endpoint host is used as a fallback when no configured name exists.
 fn display_name(system: &SystemState) -> &str {
     system
         .configured_name

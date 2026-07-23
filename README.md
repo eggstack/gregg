@@ -4,11 +4,11 @@
 
 The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux or macOS systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
-> Project status: phases 1 through 8 are implemented. Phase 8 adds
-> the compact Ratatui TUI with keyboard-first navigation, 4-row
-> online system rendering, 1-row offline rendering, width degradation,
-> terminal resize handling, and comprehensive buffer tests.
-> Performance hardening continues in phase 9 per [`plans/`](plans/).
+> Project status: phases 1 through 9 are implemented. Phase 9 adds
+> protocol compatibility fixtures, collector/daemon/client hardening
+> tests, release profiles (thin LTO, symbol stripping), supply-chain
+> policy via cargo-deny, and comprehensive package validation.
+> Phase 10 handles crates.io publication per [`plans/`](plans/).
 
 ## Goals
 
@@ -130,8 +130,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
+cargo deny check
 cargo package -p gregg-protocol --allow-dirty --no-verify
 cargo package -p greggd --allow-dirty --no-verify
+cargo package -p gregg --allow-dirty --no-verify
 ```
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current

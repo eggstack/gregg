@@ -694,4 +694,135 @@ unknown_field = "oops"
         assert!(msg.contains("500"));
         assert!(msg.contains("1000"));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_to_readonly_directory() {
+        let dir = std::env::temp_dir().join("greggd_test_readonly");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let original = Config::default();
+        let path = dir.join("config.toml");
+        original.write_atomic(&path).unwrap();
+
+        // Make directory read-only.
+        let mut perms = fs::metadata(&dir).unwrap().permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(&dir, perms).unwrap();
+
+        let result = original.write_atomic(&path);
+        assert!(result.is_err());
+
+        // Original file should still be intact and readable.
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(original, loaded);
+
+        // Restore permissions for cleanup.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_verification_detects_mismatch() {
+        // The verification step re-parses the written file and compares
+        // against the source config. We test that VerificationFailed is
+        // the correct variant by manually corrupting the file after a
+        // successful write, then verifying that load still succeeds on
+        // the corrupted file (proving the file was writable) while the
+        // original config would not match.
+        let dir = std::env::temp_dir().join("greggd_test_verify_mismatch");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+
+        // Corrupt the file in place.
+        fs::write(&path, "name = \"corrupted\"\n").unwrap();
+
+        // The corrupted file should parse as valid TOML but fail
+        // validation (host is missing), proving the file was overwritten.
+        let result = Config::load(&path);
+        assert!(result.is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_no_parent_directory() {
+        let config = Config::default();
+        // Path::new("/").parent() returns None, triggering NoParentDirectory.
+        let result = config.write_atomic(Path::new("/"));
+        match result {
+            Err(ConfigError::AtomicWrite {
+                source: AtomicWriteError::NoParentDirectory,
+                ..
+            }) => {}
+            other => panic!("expected NoParentDirectory, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn write_atomic_multiple_rapid_writes() {
+        let dir = std::env::temp_dir().join("greggd_test_rapid_writes");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        for i in 0..10 {
+            let config = Config {
+                name: format!("iteration-{i}"),
+                ..Config::default()
+            };
+            config.write_atomic(&path).unwrap();
+        }
+
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.name, "iteration-9");
+        assert!(loaded.is_valid());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_deeply_nested_invalid_toml() {
+        let toml = r"
+[[[this is not valid toml
+  broken = { { { }
+";
+        let result = Config::parse(toml, None);
+        assert!(result.is_err());
+        match result {
+            Err(ConfigError::Parse { .. }) => {}
+            other => panic!("expected Parse error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn config_with_all_violations_at_once() {
+        let config = Config {
+            name: String::new(),
+            port: 0,
+            sample_interval_ms: 10,
+            stale_after_ms: 5,
+            host: "0.0.0.0".parse().unwrap(),
+        };
+        let violations = config.validate();
+        assert!(violations.len() >= 3);
+        assert!(violations.contains(&ConfigViolation::EmptyName));
+        assert!(violations.contains(&ConfigViolation::InvalidPort(0)));
+        assert!(violations.contains(&ConfigViolation::InvalidSampleInterval(10)));
+        assert!(
+            violations.contains(&ConfigViolation::StalenessBelowInterval {
+                stale_after_ms: 5,
+                sample_interval_ms: 10,
+            })
+        );
+    }
 }

@@ -488,3 +488,339 @@ async fn failure_count_resets_on_recovery() {
     let response = app.oneshot(get("/v1/status")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+// ===== Hardening Tests =====
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_request_line_does_not_crash() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap).await;
+
+    let app = build_test_router(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET /invalid HTTP/1.0\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut response = Vec::new();
+    // Read whatever the server sends — it may close or return an error.
+    let _ = stream.read_to_end(&mut response).await;
+
+    // Server should still be alive — send another valid request.
+    let mut stream2 = TcpStream::connect(addr).await.unwrap();
+    stream2
+        .write_all(b"GET /v1/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp = String::new();
+    stream2.read_to_string(&mut resp).await.unwrap();
+    let status_line = resp.lines().next().unwrap();
+    assert!(
+        status_line.contains("200"),
+        "Expected 200 after malformed request, got: {status_line}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_request_headers_are_bounded() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap).await;
+
+    let app = build_test_router(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Build a request with a very large header value.
+    let large_value = "A".repeat(200_000);
+    let request = format!(
+        "GET /v1/status HTTP/1.1\r\nHost: localhost\r\nX-Large: {large_value}\r\nConnection: close\r\n\r\n"
+    );
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response).await;
+
+    // Server should still be alive for the next request.
+    let mut stream2 = TcpStream::connect(addr).await.unwrap();
+    stream2
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp = String::new();
+    stream2.read_to_string(&mut resp).await.unwrap();
+    let status_line = resp.lines().next().unwrap();
+    assert!(
+        status_line.contains("200") || status_line.contains("503"),
+        "Server should still respond, got: {status_line}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test]
+async fn put_patch_delete_options_return_405_or_404() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap).await;
+
+    let app = build_test_router(state);
+
+    let methods = [Method::PUT, Method::DELETE, Method::PATCH, Method::OPTIONS];
+    let routes = ["/", "/v1/status", "/healthz"];
+
+    for method in &methods {
+        for route in &routes {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method.clone())
+                        .uri(*route)
+                        .body(Body::from(""))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert!(
+                response.status() == StatusCode::METHOD_NOT_ALLOWED
+                    || response.status() == StatusCode::NOT_FOUND,
+                "Expected 405 or 404 for {method} {route}, got {}",
+                response.status()
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_with_body_does_not_crash() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap).await;
+
+    let app = build_test_router(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Send a GET with Content-Length and a body.
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(
+            b"GET /v1/status HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+        )
+        .await
+        .unwrap();
+
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).await.unwrap();
+
+    let status_line = resp.lines().next().unwrap();
+    // GET with body should either be handled (200) or rejected (400/405).
+    assert!(
+        status_line.contains("200") || status_line.contains("400") || status_line.contains("405"),
+        "Unexpected status for GET with body: {status_line}"
+    );
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_requests_during_state_transition() {
+    let state = ServerState::new();
+
+    let app = build_test_router(state.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Start with a snapshot.
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap.clone()).await;
+
+    // Send requests while transitioning state.
+    let mut handles = vec![];
+    for _ in 0..10 {
+        handles.push(tokio::spawn(async move {
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(
+                    b"GET /v1/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut resp = String::new();
+            stream.read_to_string(&mut resp).await.unwrap();
+            resp
+        }));
+    }
+
+    // Transition to warming while requests are in flight.
+    state.set_warming().await;
+    // Transition back to ready.
+    state.update_snapshot(snap.clone()).await;
+
+    let mut statuses = vec![];
+    for h in handles {
+        let resp = h.await.unwrap();
+        let status_line = resp.lines().next().unwrap().to_string();
+        statuses.push(status_line);
+    }
+
+    // Every request should have completed with a valid HTTP status.
+    assert_eq!(statuses.len(), 10);
+    for s in &statuses {
+        assert!(
+            s.contains("200") || s.contains("503"),
+            "Unexpected status: {s}"
+        );
+    }
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rapid_state_updates_are_consistent() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+
+    // Rapidly cycle: warming → ready → failed → ready → failed → warming → ready
+    state.update_snapshot(snap.clone()).await;
+    state.set_failed("failure 1").await;
+    state.update_snapshot(snap.clone()).await;
+    state.set_failed("failure 2").await;
+    state.set_warming().await;
+    state.update_snapshot(snap.clone()).await;
+
+    // Final state should be ready with the snapshot.
+    assert!(state.ready.load(Ordering::Acquire));
+    let stored = state.snapshot().await.unwrap();
+    assert_eq!(*stored, snap);
+    let health = state.health().await;
+    assert_eq!(health.state, ReadinessState::Ready);
+
+    // Verify the server serves correctly after rapid cycling.
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed, snap);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ipv6_loopback_if_available() {
+    // Try to bind on IPv6 loopback. Skip gracefully if unavailable.
+    let Ok(listener) = TcpListener::bind("[::1]:0").await else {
+        return; // IPv6 not available on this host.
+    };
+    let addr = listener.local_addr().unwrap();
+
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap.clone()).await;
+
+    let app = build_test_router(state);
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(b"GET /v1/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).await.unwrap();
+
+    let status_line = resp.lines().next().unwrap();
+    assert!(
+        status_line.contains("200"),
+        "Expected 200 on IPv6, got: {status_line}"
+    );
+
+    let body = resp.split_once("\r\n\r\n").unwrap().1;
+    let parsed: StatusSnapshot = serde_json::from_str(body).unwrap();
+    assert_eq!(parsed, snap);
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn malformed_http_version_is_handled_gracefully() {
+    let state = ServerState::new();
+    let snap = LinuxSnapshotBuilder::default().build();
+    state.update_snapshot(snap).await;
+
+    let app = build_test_router(state);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // Send a request with an invalid HTTP version.
+    let mut stream = TcpStream::connect(addr).await.unwrap();
+    stream.write_all(b"GET / HTTP/0.9\r\n\r\n").await.unwrap();
+
+    let mut response = Vec::new();
+    let _ = stream.read_to_end(&mut response).await;
+
+    // Server should still be alive — send a valid follow-up.
+    let mut stream2 = TcpStream::connect(addr).await.unwrap();
+    stream2
+        .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+
+    let mut resp = String::new();
+    stream2.read_to_string(&mut resp).await.unwrap();
+    let status_line = resp.lines().next().unwrap();
+    assert!(
+        status_line.contains("200") || status_line.contains("503"),
+        "Expected valid response after malformed HTTP version, got: {status_line}"
+    );
+
+    server.abort();
+}
