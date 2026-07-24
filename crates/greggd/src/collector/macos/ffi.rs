@@ -932,13 +932,17 @@ mod native_tests {
         let warm_err = collector.sample().expect_err("first sample warms");
         assert_eq!(warm_err.kind, CollectErrorKind::Warming);
 
-        // 4. Wait the minimum deterministic interval for counters to advance.
-        //    On macOS, Mach CPU counters are cumulative since boot and advance
-        //    continuously, so even a short sleep is sufficient.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // 5. Perform a second sample.
-        let metrics = collector.sample().expect("second sample succeeds");
+        // 4. Wait for counters to advance, then sample.  On virtualized Intel
+        //    runners Mach counters may not advance as quickly, so we retry on
+        //    CounterReset (which re-establishes the baseline internally).
+        let metrics = loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            match collector.sample() {
+                Ok(m) => break m,
+                Err(e) if e.kind == CollectErrorKind::CounterReset => {}
+                Err(e) => panic!("second sample fails: {e:?}"),
+            }
+        };
 
         // 6. Validate the complete protocol snapshot.
         let snap = metrics.into_snapshot(
