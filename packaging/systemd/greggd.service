@@ -6,6 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=greggd
+Group=greggd
+RuntimeDirectory=gregg
 ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml
 Restart=on-failure
 RestartSec=5

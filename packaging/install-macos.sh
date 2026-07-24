@@ -47,7 +47,7 @@ die() {
 
 # Find the binary.
 if [[ -z "$BINARY_PATH" ]]; then
-    BINARY_PATH="$(cd "$(dirname "$0")/../.." && pwd)/target/release/greggd"
+    BINARY_PATH="$(cd "$(dirname "$0")/.." && pwd)/target/release/greggd"
 fi
 
 [[ -f "$BINARY_PATH" ]] || die "binary not found: $BINARY_PATH"
@@ -117,7 +117,7 @@ echo "  Created log file: $LOG_FILE"
 #   sudo launchctl bootstrap system "$PLIST_FILE"
 echo ""
 echo "To enable and start the service:"
-echo "  sudo launchctl bootstrap system $PLIST_FILE"
+echo "  sudo launchctl bootstrap system \"$PLIST_FILE\""
 
 echo ""
 echo "Installation complete."

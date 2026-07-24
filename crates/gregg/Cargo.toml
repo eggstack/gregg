@@ -18,7 +18,7 @@ name = "gregg"
 path = "src/main.rs"
 
 [dependencies]
-gregg-protocol = { version = "1.0.0", path = "../gregg-protocol" }
+gregg-protocol = { version = "1.0.1", path = "../gregg-protocol" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

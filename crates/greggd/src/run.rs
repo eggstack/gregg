@@ -32,6 +32,7 @@ use crate::server::{Config as ServerConfig, ServerState};
 ///
 /// Returns an error if configuration is invalid or the server fails
 /// to start.
+#[allow(clippy::too_many_lines)]
 pub async fn run<C: SystemCollector + 'static>(
     collector: C,
     config: Config,
@@ -97,9 +98,12 @@ pub async fn run<C: SystemCollector + 'static>(
             sampler
                 .run(shutdown_rx, |readiness, snap| {
                     let state = state.clone();
-                    tokio::spawn(async move {
+                    async move {
+                        // Await state updates inline — no detached spawns.
+                        // This ensures ordered state updates and that no
+                        // update races with shutdown.
                         sync_sampler_state(&state, readiness, snap).await;
-                    });
+                    }
                 })
                 .await;
         })
@@ -112,14 +116,23 @@ pub async fn run<C: SystemCollector + 'static>(
     };
 
     // Supervise: wait for shutdown signal, server failure, or sampler failure.
+    // An unexpected clean exit (Ok) from either task without a shutdown signal
+    // is treated as a failure — the server and sampler should only exit when
+    // the shutdown signal is received.
+    let mut server_handle = Some(server_handle);
+    let mut sampler_handle = Some(sampler_handle);
+
     tokio::select! {
         signal_result = wait_for_shutdown_signal() => {
             info!(reason = %signal_result, "shutdown signal received");
         }
-        result = server_handle => {
+        result = async { server_handle.take().unwrap().await } => {
             match result {
                 Ok(Ok(())) => {
-                    info!("HTTP server exited cleanly");
+                    // Server exited cleanly without a shutdown signal — unexpected.
+                    eprintln!("HTTP server exited unexpectedly");
+                    let _ = shutdown_tx.send(());
+                    return Err("HTTP server exited unexpectedly".into());
                 }
                 Ok(Err(e)) => {
                     eprintln!("HTTP server error: {e}");
@@ -133,10 +146,13 @@ pub async fn run<C: SystemCollector + 'static>(
                 }
             }
         }
-        result = sampler_handle => {
+        result = async { sampler_handle.take().unwrap().await } => {
             match result {
                 Ok(()) => {
-                    info!("sampler exited cleanly");
+                    // Sampler exited cleanly without a shutdown signal — unexpected.
+                    eprintln!("sampler exited unexpectedly");
+                    let _ = shutdown_tx.send(());
+                    return Err("sampler exited unexpectedly".into());
                 }
                 Err(e) => {
                     eprintln!("sampler task panicked: {e}");
@@ -150,8 +166,37 @@ pub async fn run<C: SystemCollector + 'static>(
     // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());
 
+    // Joined shutdown: wait for both tasks to complete, with a timeout.
+    join_tasks(server_handle, sampler_handle).await;
+
     info!("greggd stopped");
     Ok(())
+}
+
+/// Wait for both the server and sampler tasks to complete, with a timeout.
+/// Logs the outcome of each task.
+async fn join_tasks(
+    server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    sampler_handle: Option<tokio::task::JoinHandle<()>>,
+) {
+    let join_timeout = Duration::from_secs(10);
+
+    if let Some(handle) = server_handle {
+        match tokio::time::timeout(join_timeout, handle).await {
+            Ok(Ok(Ok(()))) => info!("HTTP server shut down cleanly"),
+            Ok(Ok(Err(e))) => eprintln!("HTTP server error during shutdown: {e}"),
+            Ok(Err(e)) => eprintln!("HTTP server task panicked during shutdown: {e}"),
+            Err(_) => eprintln!("HTTP server did not shut down within timeout"),
+        }
+    }
+
+    if let Some(handle) = sampler_handle {
+        match tokio::time::timeout(join_timeout, handle).await {
+            Ok(Ok(())) => info!("sampler shut down cleanly"),
+            Ok(Err(e)) => eprintln!("sampler error during shutdown: {e}"),
+            Err(_) => eprintln!("sampler did not shut down within timeout"),
+        }
+    }
 }
 
 /// Sync sampler state to the shared [`ServerState`].

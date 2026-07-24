@@ -146,11 +146,11 @@ impl From<&ConfigError> for ExitCode {
             ConfigError::Io { source, .. } if source.kind() == std::io::ErrorKind::NotFound => {
                 Self::NotFound
             }
-            ConfigError::Io { .. } | ConfigError::Parse { .. } | ConfigError::Validation(_) => {
-                Self::ConfigError
-            }
-            ConfigError::AtomicWrite { .. } => Self::ConfigError,
-            ConfigError::LockPoisoned => Self::OperationError,
+            ConfigError::Io { .. }
+            | ConfigError::Parse { .. }
+            | ConfigError::Validation(_)
+            | ConfigError::AtomicWrite { .. } => Self::ConfigError,
+            ConfigError::LockPoisoned | ConfigError::LockTimeout { .. } => Self::OperationError,
         }
     }
 }
@@ -200,17 +200,17 @@ fn cmd_add(
     let spec = EndpointSpec::parse(endpoint_str)?;
 
     let result = store.mutate_with_result(|config| {
-        let port = if spec.port_was_explicit {
+        let resolved_port = if spec.port_was_explicit {
             spec.port
         } else {
             config.default_port
         };
 
-        // Check for exact duplicate.
+        // Check for exact duplicate using the resolved port.
         let existing_idx = config
             .systems
             .iter()
-            .position(|s| s.host == spec.host && s.port == port);
+            .position(|s| s.host == spec.host && s.port == resolved_port);
 
         if let Some(idx) = existing_idx {
             if replace {
@@ -218,19 +218,16 @@ fn cmd_add(
             } else {
                 return Err(ConfigError::Validation(vec![
                     crate::config::ConfigViolation::DuplicateAddress {
-                        address: crate::endpoint::display_address(&spec.host, port),
+                        address: crate::endpoint::display_address(&spec.host, resolved_port),
                     },
                 ]));
             }
         }
 
-        let port_was_explicit = spec.port_was_explicit;
-        let ep = spec.into_endpoint();
         let entry = crate::config::SystemEntry {
-            id: ep.id,
-            host: ep.host,
-            port: ep.port,
-            port_was_explicit,
+            id: uuid::Uuid::new_v4().to_string(),
+            host: spec.host.clone(),
+            port: resolved_port,
             name: name.map(std::string::ToString::to_string),
         };
         config.systems.push(entry);
@@ -621,13 +618,12 @@ mod tests {
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems[0].port, 11310);
-        assert!(!config.systems[0].port_was_explicit);
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn add_with_explicit_port_stores_flag() {
+    fn add_with_explicit_port_stores_port() {
         let dir = tmp_dir("add_explicit_port");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
@@ -636,23 +632,119 @@ mod tests {
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems[0].port, 8080);
-        assert!(config.systems[0].port_was_explicit);
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn add_with_default_port_value_explicit_is_marked_explicit() {
+    fn add_with_explicit_default_port_stores_port() {
         let dir = tmp_dir("add_explicit_default");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        // Explicitly specifying the default port should still be marked explicit.
+        // Explicitly specifying the default port should still store 11310.
         cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems[0].port, 11310);
-        assert!(config.systems[0].port_was_explicit);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_portless_with_non_default_port_stores_configured_port() {
+        let dir = tmp_dir("add_non_default_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Set a non-default default_port.
+        store
+            .mutate(|config| {
+                config.default_port = 12000;
+                Ok(())
+            })
+            .unwrap();
+
+        // Add without explicit port — should use the configured default_port.
+        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 12000);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_explicit_port_overrides_non_default_configured_port() {
+        let dir = tmp_dir("add_explicit_override");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Set a non-default default_port.
+        store
+            .mutate(|config| {
+                config.default_port = 12000;
+                Ok(())
+            })
+            .unwrap();
+
+        // Add with explicit port — should store the explicit port, not the default.
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 11310);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_detection_uses_resolved_port() {
+        let dir = tmp_dir("dup_resolved_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Set a non-default default_port.
+        store
+            .mutate(|config| {
+                config.default_port = 12000;
+                Ok(())
+            })
+            .unwrap();
+
+        // Add without explicit port — stores 12000.
+        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+
+        // Adding the same host without explicit port should be a duplicate.
+        let result = cmd_add(&store, "192.168.1.1", None, false);
+        assert!(result.is_err(), "duplicate should be rejected");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replace_uses_resolved_port() {
+        let dir = tmp_dir("replace_resolved_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Set a non-default default_port.
+        store
+            .mutate(|config| {
+                config.default_port = 12000;
+                Ok(())
+            })
+            .unwrap();
+
+        // Add without explicit port — stores 12000.
+        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+
+        // Replace with a name — should replace the resolved address.
+        cmd_add(&store, "192.168.1.1", Some("Replaced"), true).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems.len(), 1);
+        assert_eq!(config.systems[0].name.as_deref(), Some("Replaced"));
+        assert_eq!(config.systems[0].port, 12000);
 
         let _ = fs::remove_dir_all(&dir);
     }

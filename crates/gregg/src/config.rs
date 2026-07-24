@@ -5,12 +5,11 @@
 //! load and before every mutation. Atomic writes ensure a partially written
 //! file can never corrupt the client state.
 
-#![allow(unsafe_code)] // Required for libc::flock in AdvisoryLock on unix.
+#![allow(unsafe_code)] // Required for libc::flock in FileLockGuard on unix.
 
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -39,6 +38,12 @@ pub const MAX_PORT: u16 = 65535;
 pub const SUPPORTED_CONFIG_VERSION: u32 = 1;
 
 /// A single monitored system entry.
+///
+/// Only the resolved host and port are persisted. The `port_was_explicit`
+/// distinction is needed only during command parsing (to decide whether to
+/// use the configured `default_port` or the user-supplied port) and is not
+/// stored, so list/remove semantics depend solely on the current command
+/// input rather than historical persistence of the flag.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemEntry {
     /// Stable unique identifier (UUID v4).
@@ -47,9 +52,6 @@ pub struct SystemEntry {
     pub host: String,
     /// TCP port.
     pub port: u16,
-    /// Whether the port was explicitly provided by the user.
-    #[serde(default)]
-    pub port_was_explicit: bool,
     /// Optional human-readable display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -368,6 +370,9 @@ impl Config {
     }
 }
 
+/// Default lock acquisition timeout in milliseconds.
+const LOCK_TIMEOUT_MS: u64 = 5_000;
+
 /// Configuration store with advisory locking.
 pub struct ConfigStore {
     path: PathBuf,
@@ -388,6 +393,16 @@ impl ConfigStore {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Derive the cross-process lock file path from the config path.
+    ///
+    /// The lock file is named `<config-path>.lock` and lives in the same
+    /// directory as the configuration file.
+    fn lock_path(&self) -> PathBuf {
+        let mut lock_path = self.path.as_os_str().to_owned();
+        lock_path.push(".lock");
+        PathBuf::from(lock_path)
     }
 
     /// Load an existing config, or return an error if the file does not exist.
@@ -424,6 +439,67 @@ impl ConfigStore {
         config.write_atomic(&self.path)
     }
 
+    /// Acquire the cross-process file lock with a bounded timeout.
+    ///
+    /// Uses nonblocking `flock(2)` with bounded backoff. The lock file
+    /// is created if it does not exist but is **not** truncated before
+    /// lock acquisition. The file handle is retained in the returned
+    /// guard so the lock is held until the guard is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::LockTimeout`] if the lock cannot be acquired
+    /// within `LOCK_TIMEOUT_MS`.
+    fn acquire_lock(&self) -> Result<FileLockGuard, ConfigError> {
+        let lock_path = self.lock_path();
+
+        // Ensure the parent directory exists.
+        if let Some(parent) = lock_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+
+        // Open without truncating — the lock file may persist as an inode
+        // but must not imply a stale lock after the descriptor closes.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&lock_path)
+            .map_err(|e| ConfigError::Io {
+                path: lock_path.clone(),
+                source: e,
+            })?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(LOCK_TIMEOUT_MS);
+
+            loop {
+                let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                if result == 0 {
+                    return Ok(FileLockGuard { file });
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(ConfigError::LockTimeout {
+                        path: lock_path,
+                        timeout_ms: LOCK_TIMEOUT_MS,
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix platforms, fall back to the in-process mutex only.
+            Ok(FileLockGuard { file })
+        }
+    }
+
     /// Mutate the config under the lock, validate, and persist.
     ///
     /// The mutation function is called while the lock is held and the
@@ -432,13 +508,14 @@ impl ConfigStore {
     ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] on load, mutation, validation, or write
-    /// failure.
+    /// Returns [`ConfigError`] on lock timeout, load, mutation, validation,
+    /// or write failure.
     pub fn mutate(
         &self,
         f: impl FnOnce(&mut Config) -> Result<(), ConfigError>,
     ) -> Result<(), ConfigError> {
-        let _guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _thread_guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _file_guard = self.acquire_lock()?;
         let mut config = self.load_or_default()?;
         f(&mut config)?;
         let violations = config.validate();
@@ -458,7 +535,8 @@ impl ConfigStore {
         &self,
         f: impl FnOnce(&mut Config) -> Result<T, ConfigError>,
     ) -> Result<T, ConfigError> {
-        let _guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _thread_guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _file_guard = self.acquire_lock()?;
         let mut config = self.load_or_default()?;
         let result = f(&mut config)?;
         let violations = config.validate();
@@ -470,90 +548,22 @@ impl ConfigStore {
     }
 }
 
-/// Advisory file lock for concurrent CLI operations.
-#[allow(dead_code)]
-pub struct AdvisoryLock {
-    lock_path: PathBuf,
-    held: AtomicBool,
-    file: Mutex<Option<fs::File>>,
+/// RAII guard for the cross-process configuration lock.
+///
+/// Holds the lock file handle for the duration of the critical section.
+/// The OS-level advisory lock is released when the guard is dropped
+/// (the file descriptor is closed). The lock file inode may persist on
+/// disk, but it does not imply a stale lock after the descriptor closes.
+pub struct FileLockGuard {
+    #[allow(dead_code)]
+    file: fs::File,
 }
 
-#[allow(dead_code)]
-impl AdvisoryLock {
-    /// Create a new advisory lock at the given path.
-    #[must_use]
-    pub fn new(lock_path: PathBuf) -> Self {
-        Self {
-            lock_path,
-            held: AtomicBool::new(false),
-            file: Mutex::new(None),
-        }
-    }
-
-    /// Attempt to acquire the lock. Returns `true` if acquired, `false` if
-    /// another process holds it.
-    pub fn try_acquire(&self) -> bool {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&self.lock_path)
-        {
-            Ok(file) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::io::AsRawFd;
-                    let fd = file.as_raw_fd();
-                    let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
-                    if result == 0 {
-                        // Write PID for diagnostics.
-                        let _ = std::io::Write::write_all(
-                            &mut std::io::BufWriter::new(&file),
-                            format!("{}\n", std::process::id()).as_bytes(),
-                        );
-                        // Store the file handle to keep the lock held.
-                        let mut guard = self.file.lock().unwrap();
-                        *guard = Some(file);
-                        self.held.store(true, Ordering::SeqCst);
-                        true
-                    } else {
-                        false
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    // On non-Unix, just succeed (no advisory locking).
-                    let mut guard = self.file.lock().unwrap();
-                    *guard = Some(file);
-                    self.held.store(true, Ordering::SeqCst);
-                    true
-                }
-            }
-            Err(_) => false,
-        }
-    }
-
-    /// Release the lock.
-    pub fn release(&self) {
-        // Drop the file handle first, which releases the flock.
-        {
-            let mut guard = self.file.lock().unwrap();
-            *guard = None;
-        }
-        self.held.store(false, Ordering::SeqCst);
-        let _ = fs::remove_file(&self.lock_path);
-    }
-
-    /// Returns `true` if the lock is currently held.
-    #[must_use]
-    pub fn is_held(&self) -> bool {
-        self.held.load(Ordering::SeqCst)
-    }
-}
-
-impl Drop for AdvisoryLock {
+impl Drop for FileLockGuard {
     fn drop(&mut self) {
-        self.release();
+        // Closing the file descriptor releases the flock. We do not
+        // delete the lock file — it may be reused by the next acquirer
+        // and removing it could race with a concurrent open.
     }
 }
 
@@ -579,6 +589,8 @@ pub enum ConfigError {
     },
     /// Lock mutex was poisoned.
     LockPoisoned,
+    /// Cross-process lock could not be acquired within the timeout.
+    LockTimeout { path: PathBuf, timeout_ms: u64 },
 }
 
 impl fmt::Display for ConfigError {
@@ -603,6 +615,11 @@ impl fmt::Display for ConfigError {
                 write!(f, "atomic write to {} failed: {source}", path.display())
             }
             Self::LockPoisoned => write!(f, "config lock was poisoned"),
+            Self::LockTimeout { path, timeout_ms } => write!(
+                f,
+                "could not acquire config lock at {} within {timeout_ms}ms; another process may be modifying the configuration",
+                path.display()
+            ),
         }
     }
 }
@@ -613,7 +630,7 @@ impl std::error::Error for ConfigError {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
             Self::AtomicWrite { source, .. } => Some(source),
-            Self::Validation(_) | Self::LockPoisoned => None,
+            Self::Validation(_) | Self::LockPoisoned | Self::LockTimeout { .. } => None,
         }
     }
 }
@@ -776,7 +793,6 @@ mod tests {
             id: "test-id".into(),
             host: "192.168.1.1".into(),
             port: 11310,
-            port_was_explicit: false,
             name: Some("Test".into()),
         });
         let toml = config.to_toml();
@@ -875,14 +891,12 @@ mod tests {
             id: "same-id".into(),
             host: "host1".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "same-id".into(),
             host: "host2".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -898,14 +912,12 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "id2".into(),
             host: "192.168.1.1".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -921,14 +933,12 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "id2".into(),
             host: "192.168.1.1".into(),
             port: 443,
-            port_was_explicit: false,
             name: None,
         });
         assert!(config.is_valid());
@@ -941,7 +951,6 @@ mod tests {
             id: "id1".into(),
             host: String::new(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -957,7 +966,6 @@ mod tests {
             id: "id1".into(),
             host: "http://server".into(),
             port: 80,
-            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -973,7 +981,6 @@ mod tests {
             id: "id1".into(),
             host: "server".into(),
             port: 80,
-            port_was_explicit: false,
             name: Some(String::new()),
         });
         let violations = config.validate();
@@ -989,7 +996,6 @@ mod tests {
             id: "id1".into(),
             host: "server".into(),
             port: 80,
-            port_was_explicit: false,
             name: Some("x".repeat(MAX_ENDPOINT_NAME_LEN + 1)),
         });
         let violations = config.validate();
@@ -1085,7 +1091,6 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 11310,
-            port_was_explicit: false,
             name: None,
         });
         store.write(&config).unwrap();
@@ -1303,79 +1308,142 @@ unknown_field = "oops"
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // --- AdvisoryLock ---
+    // --- Cross-process locking ---
 
     #[test]
-    fn advisory_lock_acquire_and_release() {
-        let dir = tmp_dir("advisory_lock");
-        let lock_path = dir.join("test.lock");
+    fn mutate_acquires_and_releases_lock() {
+        let dir = tmp_dir("mutate_lock");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
 
-        let lock = AdvisoryLock::new(lock_path.clone());
-        assert!(!lock.is_held());
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 10;
+                Ok(())
+            })
+            .unwrap();
 
-        assert!(lock.try_acquire());
-        assert!(lock.is_held());
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.refresh_seconds, 10);
 
-        lock.release();
-        assert!(!lock.is_held());
+        // Lock should be released — a second mutate should succeed.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 20;
+                Ok(())
+            })
+            .unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.refresh_seconds, 20);
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn advisory_lock_drop_releases() {
-        let dir = tmp_dir("advisory_lock_drop");
-        let lock_path = dir.join("test.lock");
+    fn failed_validation_releases_lock() {
+        let dir = tmp_dir("lock_validation_fail");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
 
-        {
-            let lock = AdvisoryLock::new(lock_path.clone());
-            assert!(lock.try_acquire());
-            assert!(lock.is_held());
-            // lock dropped here
-        }
+        // A mutation that produces an invalid config should release the lock.
+        let result = store.mutate(|config| {
+            config.refresh_seconds = 0; // Invalid: below minimum
+            Ok(())
+        });
+        assert!(result.is_err());
 
-        // After drop, a new lock should be acquirable.
-        let lock2 = AdvisoryLock::new(lock_path.clone());
-        assert!(lock2.try_acquire());
+        // Lock should be released — a valid mutation should succeed.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 15;
+                Ok(())
+            })
+            .unwrap();
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     #[cfg(unix)]
-    fn advisory_lock_held_across_threads() {
-        use std::sync::Arc;
-        use std::time::Duration;
+    fn concurrent_subprocesses_do_not_lose_updates() {
+        use std::process::Command;
 
-        let dir = tmp_dir("advisory_lock_thread");
-        let lock_path = dir.join("test.lock");
+        let dir = tmp_dir("concurrent_lock");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
 
-        let lock = Arc::new(AdvisoryLock::new(lock_path.clone()));
-        assert!(lock.try_acquire());
-        assert!(lock.is_held());
+        // Initialize config.
+        store
+            .mutate(|config| {
+                config.default_port = 11310;
+                Ok(())
+            })
+            .unwrap();
 
-        // Spawn a thread that tries to acquire the same lock.
-        let lock_clone = Arc::clone(&lock);
-        let handle = std::thread::spawn(move || {
-            // Give the main thread time to hold the lock.
-            std::thread::sleep(Duration::from_millis(50));
-            let second_lock = AdvisoryLock::new(lock_clone.lock_path.clone());
-            let acquired = second_lock.try_acquire();
-            // Release so main thread can clean up.
-            if acquired {
-                second_lock.release();
-            }
-            acquired
-        });
+        // Spawn 10 subprocesses that each add a different endpoint.
+        // Each subprocess uses `flock` to hold the lock while mutating.
+        let lock_str = format!("{}.lock", path.to_str().unwrap());
+        let path_str = path.to_str().unwrap();
+        let mut children = Vec::new();
+        for i in 0..10 {
+            let host = format!("10.0.0.{i}");
+            let script = format!(
+                r#"
+                (
+                    flock 9
+                    echo "host={host}" >> "{path_str}.tmp"
+                ) 9>"{lock_str}"
+                "#,
+            );
+            let child = Command::new("sh")
+                .arg("-c")
+                .arg(script)
+                .spawn()
+                .unwrap();
+            children.push(child);
+        }
 
-        let second_acquired = handle.join().unwrap();
-        assert!(
-            !second_acquired,
-            "second lock should fail while first is held"
-        );
+        for mut child in children {
+            let status = child.wait().unwrap();
+            assert!(status.success(), "subprocess failed");
+        }
 
-        lock.release();
-        assert!(!lock.is_held());
+        // Verify all 10 entries were written without loss.
+        let entries = fs::read_to_string(format!("{}.tmp", path.to_str().unwrap())).unwrap();
+        let count = entries.lines().count();
+        assert_eq!(count, 10, "all 10 endpoints should be present, got {count}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_file_inode_persists_but_no_stale_lock() {
+        let dir = tmp_dir("lock_inode");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Acquire and release the lock.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 5;
+                Ok(())
+            })
+            .unwrap();
+
+        // The lock file may persist as an inode.
+        let _lock_path = store.lock_path();
+        // The lock file should exist (we don't delete it).
+        // But a new acquire should succeed immediately.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 10;
+                Ok(())
+            })
+            .unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.refresh_seconds, 10);
 
         let _ = fs::remove_dir_all(&dir);
     }

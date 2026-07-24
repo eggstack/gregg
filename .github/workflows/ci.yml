@@ -12,7 +12,7 @@ env:
 
 jobs:
   check:
-    name: ${{ matrix.os }} ${{ matrix.toolchain }}
+    name: ${{ matrix.os }} ${{ matrix.toolchain }} ${{ matrix.expected_arch }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,10 +20,13 @@ jobs:
         include:
           - os: ubuntu-latest
             toolchain: stable
+            expected_arch: x86_64
           - os: macos-15
             toolchain: stable
-          - os: macos-latest
+            expected_arch: arm64
+          - os: macos-15-intel
             toolchain: stable
+            expected_arch: x86_64
 
     steps:
       - name: Check out sources
@@ -47,6 +50,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      - name: Verify architecture
+        run: |
+          echo "Observed architecture: $(uname -m)"
+          echo "Rust version:"
+          rustc -vV
+          OBSERVED="$(uname -m)"
+          if [ "$OBSERVED" != "${{ matrix.expected_arch }}" ]; then
+            echo "ERROR: expected arch ${{ matrix.expected_arch }}, got $OBSERVED"
+            exit 1
+          fi
+
       - name: Format check
         run: cargo fmt --all -- --check
 
@@ -60,13 +74,81 @@ jobs:
         run: cargo doc --workspace --no-deps
 
       - name: Package gregg-protocol
-        run: cargo package -p gregg-protocol --allow-dirty --no-verify
+        run: cargo package -p gregg-protocol
 
       - name: Package greggd
-        run: cargo package -p greggd --allow-dirty --no-verify
+        run: cargo package -p greggd
 
       - name: Package gregg
-        run: cargo package -p gregg --allow-dirty --no-verify
+        run: cargo package -p gregg
+
+      - name: Inspect package contents
+        run: |
+          cargo package -p gregg-protocol --list
+          cargo package -p greggd --list
+          cargo package -p gregg --list
+
+      - name: Unpack and build packages
+        run: |
+          TMPDIR=$(mktemp -d)
+          for crate in gregg-protocol greggd gregg; do
+            cargo package -p $crate
+            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
+            mkdir -p "$TMPDIR/$crate"
+            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
+            echo "=== Contents of $crate ==="
+            ls -la "$TMPDIR/$crate"/*
+          done
+          rm -rf "$TMPDIR"
+
+      - name: Install binary crates from packages
+        run: |
+          TMPDIR=$(mktemp -d)
+          for crate in greggd gregg; do
+            cargo package -p $crate
+            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
+            mkdir -p "$TMPDIR/$crate"
+            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
+            INSTALL_DIR="$TMPDIR/install-$crate"
+            mkdir -p "$INSTALL_DIR"
+            cargo install --path "$TMPDIR/$crate"/* --root "$INSTALL_DIR" --locked
+          done
+          rm -rf "$TMPDIR"
+
+      - name: Smoke test installed binaries
+        run: |
+          TMPDIR=$(mktemp -d)
+          for crate in greggd gregg; do
+            cargo package -p $crate
+            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
+            mkdir -p "$TMPDIR/$crate"
+            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
+            INSTALL_DIR="$TMPDIR/install-$crate"
+            mkdir -p "$INSTALL_DIR"
+            cargo install --path "$TMPDIR/$crate"/* --root "$INSTALL_DIR" --locked
+          done
+          "$TMPDIR/install-greggd/bin/greggd" --help
+          "$TMPDIR/install-greggd/bin/greggd" run --help
+          "$TMPDIR/install-gregg/bin/gregg" --help
+          "$TMPDIR/install-gregg/bin/gregg" list
+          rm -rf "$TMPDIR"
+
+      - name: Native macOS collector smoke
+        if: runner.os == 'macOS'
+        run: |
+          cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
+
+      - name: Native Linux collector smoke
+        if: runner.os == 'Linux'
+        run: |
+          cargo test -p greggd --all-features -- collector::linux
+
+      - name: Shellcheck installer scripts
+        if: runner.os == 'Linux'
+        uses: ludeeus/shellcheck-action@v1.3.0
+        with:
+          scripts: packaging/install-linux.sh packaging/install-macos.sh
+          shell: bash
 
       - name: Deny
         if: runner.os == 'Linux'
@@ -98,3 +180,9 @@ jobs:
 
       - name: Check compilation
         run: cargo check --workspace --all-features
+
+      - name: Package build under MSRV
+        run: |
+          cargo package -p gregg-protocol
+          cargo package -p greggd
+          cargo package -p gregg

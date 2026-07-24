@@ -160,8 +160,8 @@ impl HttpClient {
                     latency,
                 };
             };
-            body.extend_from_slice(&c);
-            if body.len() > MAX_RESPONSE_BYTES {
+            // Check BEFORE appending to avoid allocating beyond the cap.
+            if body.len() + c.len() > MAX_RESPONSE_BYTES {
                 let latency = start.elapsed();
                 return PollResult {
                     system_id: endpoint.id.clone(),
@@ -170,6 +170,7 @@ impl HttpClient {
                     latency,
                 };
             }
+            body.extend_from_slice(&c);
         }
 
         let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(&body) else {
@@ -463,6 +464,47 @@ mod tests {
         let body = vec![b'x'; 65 * 1024];
         let url = mock_server(body, "200 OK").await;
         let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(matches!(result.outcome, PollOutcome::BodyTooLarge));
+    }
+
+    #[tokio::test]
+    async fn oversized_body_chunked_delivery() {
+        // Send a body in two chunks via raw TCP: first a chunk under the
+        // cap, then a second chunk that pushes the total over. The
+        // check-before-append must reject before allocating beyond the cap.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // First chunk: 60 KiB (under the 64 KiB cap).
+            let first = vec![b'x'; 60 * 1024];
+            // Second chunk: 10 KiB (pushes total to 70 KiB, over the cap).
+            let second = vec![b'x'; 10 * 1024];
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 71680\r\n\r\n";
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(&first).await.unwrap();
+            stream.write_all(&second).await.unwrap();
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
         let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 

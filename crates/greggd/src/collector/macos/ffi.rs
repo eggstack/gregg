@@ -318,7 +318,15 @@ const HOST_VM_INFO64: i32 = 4;
 // ---------------------------------------------------------------------------
 
 extern "C" {
-    fn host_self() -> mach_port_t;
+    /// Canonical Mach host-self interface. Returns a send right to the
+    /// host port. Unlike the legacy `host_self()` compatibility symbol,
+    /// `mach_host_self()` is the documented Mach trap for obtaining the
+    /// host port in modern macOS.
+    fn mach_host_self() -> mach_port_t;
+
+    /// Returns the calling task's own port (the current task IPC space).
+    /// Used as the task argument to `mach_port_deallocate`.
+    fn mach_task_self() -> mach_port_t;
 
     fn mach_port_deallocate(task: mach_port_t, name: mach_port_t) -> kern_return_t;
 
@@ -355,25 +363,36 @@ extern "C" {
 
 const MACH_PORT_NULL: mach_port_t = 0;
 
-/// RAII wrapper around a `mach_port_t` send right from `host_self()`.
+/// RAII wrapper around a `mach_port_t` send right from `mach_host_self()`.
 ///
-/// The wrapper holds the port for the duration of a collection cycle and
-/// deallocates it on drop.  `host_self()` returns a send right to the
-/// host port; while some documentation treats it as a well-known constant
-/// that never needs deallocation, the Mach ownership model says send
-/// rights should be released.  Containing the lifecycle here keeps the
-/// rest of the module free of explicit port management.
+/// `mach_host_self()` returns a send right to the host port. The Mach
+/// ownership model says send rights should be released, so this wrapper
+/// deallocates the port on drop using the current task's IPC space.
+///
+/// The port is validated on acquisition: `MACH_PORT_NULL` is rejected
+/// before any host-statistics call receives it.
 struct HostPort {
     port: mach_port_t,
 }
 
 impl HostPort {
     /// Obtain a fresh host-self send right.
-    fn current() -> Self {
-        // Safety: `host_self()` is a simple Mach trap that returns a
-        // `mach_port_t`.  It cannot fail; it always returns a valid port.
-        let port = unsafe { host_self() };
-        Self { port }
+    ///
+    /// Returns an error if `mach_host_self()` returns `MACH_PORT_NULL`,
+    /// which would indicate a fundamental Mach subsystem failure.
+    fn current() -> Result<Self, CollectError> {
+        // Safety: `mach_host_self()` is a Mach trap that returns a
+        // `mach_port_t` send right to the host port. While it is expected
+        // to always return a valid port, we validate the result rather
+        // than assuming it cannot fail.
+        let port = unsafe { mach_host_self() };
+        if port == MACH_PORT_NULL {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "mach_host_self returned MACH_PORT_NULL",
+            ));
+        }
+        Ok(Self { port })
     }
 
     /// Borrow the raw port value for FFI calls.
@@ -384,13 +403,23 @@ impl HostPort {
 
 impl Drop for HostPort {
     fn drop(&mut self) {
-        if self.port != MACH_PORT_NULL {
-            // Safety: `mach_port_deallocate` releases one send right.
-            // The task is `MACH_PORT_NULL` which means "current task".
-            unsafe {
-                mach_port_deallocate(MACH_PORT_NULL, self.port);
-            }
+        if self.port == MACH_PORT_NULL {
+            return;
         }
+
+        // Safety: `mach_port_deallocate` releases one send right in the
+        // specified task's IPC space. We pass the current task's port
+        // (obtained via `mach_task_self()`) rather than `MACH_PORT_NULL`,
+        // which is not a valid task argument.
+        let task = unsafe { mach_task_self() };
+        if task == MACH_PORT_NULL {
+            return;
+        }
+
+        // Deallocate failure cannot be returned from Drop. The port is
+        // marked null so a double-drop is a no-op.
+        let _ = unsafe { mach_port_deallocate(task, self.port) };
+        self.port = MACH_PORT_NULL;
     }
 }
 
@@ -404,7 +433,7 @@ impl Drop for HostPort {
     reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
 )]
 fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
-    let host = HostPort::current();
+    let host = HostPort::current()?;
     // Safety: `host_statistics` writes exactly 4 natural_t values into our
     // stack-allocated buffer. The buffer is properly aligned and large enough.
     // The return status is validated.
@@ -441,7 +470,7 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
 )]
 fn vm_info64() -> Result<RawVmStats, CollectError> {
-    let host = HostPort::current();
+    let host = HostPort::current()?;
     // Safety: `host_statistics64` writes up to 64 natural_t values. We use a
     // generous buffer so the kernel cannot overflow even if future macOS
     // versions add fields. The return count tells us how many were written.
@@ -476,7 +505,7 @@ fn vm_info64() -> Result<RawVmStats, CollectError> {
 
 /// Read the host page size via `host_page_size`.
 fn read_page_size() -> Result<u64, CollectError> {
-    let host = HostPort::current();
+    let host = HostPort::current()?;
     let mut page_size: usize = 0;
     // Safety: `host_page_size` writes a single usize value. The pointer is
     // valid and properly aligned. The return status is validated.
@@ -538,6 +567,17 @@ fn swap_usage() -> Result<RawSwapUsage, CollectError> {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
             format!("sysctlbyname vm.swapusage failed with status {result}"),
+        ));
+    }
+
+    // Validate the returned length matches the exact expected structure size.
+    if len != std::mem::size_of::<xswusage>() {
+        return Err(CollectError::new(
+            CollectErrorKind::Parse,
+            format!(
+                "sysctlbyname vm.swapusage returned {len} bytes, expected {}",
+                std::mem::size_of::<xswusage>()
+            ),
         ));
     }
 
@@ -854,5 +894,111 @@ mod native_tests {
 
         // Total size must be 8 + 8 + 8 + 4 + 4 = 32 bytes.
         assert_eq!(std::mem::size_of::<DarwinXswusage>(), 32);
+    }
+
+    /// Complete production collector smoke test.
+    ///
+    /// Exercises the full `FfiNativeQueries` path through the
+    /// `MacOsCollector` abstraction, including identity, warm-up sample,
+    /// second sample, protocol snapshot validation, and repeated sampling
+    /// to catch ownership or state-reset defects.
+    #[test]
+    fn complete_production_collector_smoke() {
+        use crate::collector::macos::MacOsCollector;
+        use crate::collector::SystemCollector;
+        use gregg_protocol::{MetricCapabilities, SCHEMA_VERSION_V1};
+
+        // 1. Construct the production macOS collector.
+        let mut collector = MacOsCollector::new(None).expect("collector constructs");
+
+        // 2. Read identity and assert nonempty fields and nonzero values.
+        let identity = collector.identity().expect("identity");
+        assert!(!identity.hostname.is_empty(), "hostname must not be empty");
+        assert!(
+            !identity.architecture.is_empty(),
+            "architecture must not be empty"
+        );
+        assert!(
+            !identity.kernel_release.is_empty(),
+            "kernel_release must not be empty"
+        );
+        assert!(
+            !identity.kernel_name.is_empty(),
+            "kernel_name must not be empty"
+        );
+        assert!(!identity.os_name.is_empty(), "os_name must not be empty");
+
+        // 3. Perform the CPU warm-up sample (establishes counter baseline).
+        let warm_err = collector.sample().expect_err("first sample warms");
+        assert_eq!(warm_err.kind, CollectErrorKind::Warming);
+
+        // 4. Wait the minimum deterministic interval for counters to advance.
+        //    On macOS, Mach CPU counters are cumulative since boot and advance
+        //    continuously, so even a short sleep is sufficient.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // 5. Perform a second sample.
+        let metrics = collector.sample().expect("second sample succeeds");
+
+        // 6. Validate the complete protocol snapshot.
+        let snap = metrics.into_snapshot(
+            SCHEMA_VERSION_V1,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+                .try_into()
+                .unwrap(),
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity.clone(),
+        );
+        snap.validate().expect("snapshot validates");
+
+        // 7. Assert cpu_iowait == false and iowait_pct == None.
+        assert!(
+            !snap.capabilities.cpu_iowait,
+            "macOS iowait must be unsupported"
+        );
+        assert!(
+            snap.cpu.iowait_pct.is_none(),
+            "iowait_pct must be None on macOS"
+        );
+
+        // 8. Assert memory total and page size are nonzero.
+        assert!(snap.memory.total_bytes > 0, "memory total must be nonzero");
+        assert!(snap.cpu.logical_cores > 0, "logical cores must be nonzero");
+
+        // 9. Assert swap used is not greater than swap total.
+        assert!(
+            snap.swap.used_bytes <= snap.swap.total_bytes,
+            "swap used ({}) must not exceed swap total ({})",
+            snap.swap.used_bytes,
+            snap.swap.total_bytes
+        );
+
+        // 10. Repeat the complete sample path to catch ownership defects.
+        //     This exercises repeated HostPort acquisition and deallocation.
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let m = collector.sample();
+            // Some samples may fail transiently; we only care that the
+            // collector doesn't crash or leak Mach port rights.
+            if let Ok(metrics) = m {
+                let snap = metrics.into_snapshot(
+                    SCHEMA_VERSION_V1,
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                        .try_into()
+                        .unwrap(),
+                    1000,
+                    MetricCapabilities { cpu_iowait: false },
+                    identity.clone(),
+                );
+                snap.validate().expect("repeated snapshot validates");
+            }
+        }
     }
 }

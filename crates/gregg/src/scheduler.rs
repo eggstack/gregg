@@ -71,9 +71,17 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     /// The main polling loop.
     ///
     /// Performs the first generation immediately (no initial sleep), then
-    /// alternates between sleeping for `refresh_interval` and polling.
-    /// A `RefreshNow` signal on `refresh_rx` triggers an immediate
-    /// generation without resetting the periodic timer.
+    /// alternates between waiting for the next interval tick or a
+    /// `RefreshNow` signal. Each trigger produces exactly one generation.
+    ///
+    /// Timer semantics: uses `tokio::time::interval` with
+    /// `MissedTickPolicy::Skip`, which maintains a fixed cadence. A
+    /// manual refresh does **not** reset the periodic schedule — the next
+    /// periodic generation fires at the next scheduled interval boundary.
+    ///
+    /// When the refresh channel closes (`recv()` returns `None`), the
+    /// refresh branch is permanently disabled to avoid polling a closed
+    /// receiver.
     async fn poll_loop(
         self,
         endpoints: Vec<Endpoint>,
@@ -87,8 +95,15 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
 
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let mut generation: u64 = 0;
+        let mut refresh_open = true;
 
-        // E2: Perform the first poll immediately without sleeping.
+        // Use a fixed-cadence interval so manual refresh does not reset
+        // the periodic schedule. Skip missed ticks if a generation runs
+        // long, preserving the no-overlap invariant.
+        let mut interval = tokio::time::interval(self.refresh_interval);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // First generation is immediate (no initial sleep).
         generation = generation.saturating_add(1);
         let batch = self
             .poll_generation(&endpoints, &semaphore, generation)
@@ -97,45 +112,46 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             return;
         }
 
+        // Consume the interval's initial immediate tick so the next tick
+        // fires at the first interval boundary, not immediately.
+        interval.tick().await;
+
         loop {
-            // Sleep for the refresh interval, but also listen for
-            // RefreshNow signals and cancellation.
             tokio::select! {
                 biased;
 
                 () = cancel.cancelled() => break,
 
-                msg = refresh_rx.recv() => {
-                    // Channel closed — no more refresh signals.
-                    // Treat as: just continue the periodic loop.
-                    if msg.is_none() {
-                        // refresh_rx dropped; keep going with periodic only.
-                        // We fall through to the sleep below.
-                    } else {
-                        // RefreshNow: run a generation immediately.
-                        generation = generation.saturating_add(1);
-                        let batch = self
-                            .poll_generation(&endpoints, &semaphore, generation)
-                            .await;
-                        if tx.send(batch).await.is_err() {
-                            break;
+                // RefreshNow signal (Ctrl-R). Disabled permanently when
+                // the channel closes to avoid busy-polling a closed receiver.
+                msg = refresh_rx.recv(), if refresh_open => {
+                    match msg {
+                        Some(()) => {
+                            generation = generation.saturating_add(1);
+                            let batch = self
+                                .poll_generation(&endpoints, &semaphore, generation)
+                                .await;
+                            if tx.send(batch).await.is_err() {
+                                break;
+                            }
                         }
-                        // After a manual refresh, continue to the periodic sleep.
+                        None => {
+                            // Channel closed — disable this branch permanently.
+                            refresh_open = false;
+                        }
                     }
                 }
 
-                () = tokio::time::sleep(self.refresh_interval) => {}
-            }
-
-            // Periodic generation after the sleep (or after a refresh).
-            generation = generation.saturating_add(1);
-            let batch = self
-                .poll_generation(&endpoints, &semaphore, generation)
-                .await;
-
-            // Try to send the batch. If the receiver is dropped, break.
-            if tx.send(batch).await.is_err() {
-                break;
+                // Periodic tick at the fixed cadence.
+                _ = interval.tick() => {
+                    generation = generation.saturating_add(1);
+                    let batch = self
+                        .poll_generation(&endpoints, &semaphore, generation)
+                        .await;
+                    if tx.send(batch).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -897,5 +913,215 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].system_id, "panic-ep");
         assert_eq!(results[0].outcome, PollOutcome::Cancelled);
+    }
+
+    /// C1: One manual refresh signal produces exactly one additional
+    /// generation — not two (the old bug caused a fall-through to the
+    /// periodic generation).
+    #[tokio::test]
+    async fn one_refresh_signal_produces_one_generation() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        // Use a very long refresh interval so only RefreshNow triggers polls.
+        let scheduler = PollScheduler::new(clock, client, Duration::from_secs(3600), 4);
+        let cancel = CancellationToken::new();
+        let (refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // Consume the immediate first batch (generation 1).
+        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first batch")
+            .expect("channel open");
+        assert_eq!(batch1.generation, 1);
+
+        // Send a single RefreshNow signal.
+        refresh_tx.send(()).await.unwrap();
+
+        // Should receive exactly one additional batch (generation 2).
+        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("refresh batch")
+            .expect("channel open");
+        assert_eq!(batch2.generation, 2);
+
+        // There should be NO generation 3 arriving shortly after.
+        // The old bug would produce a second generation from the fall-through.
+        let result = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+        assert!(
+            result.is_err() || result.unwrap().is_none(),
+            "should not receive a third batch from a single refresh signal"
+        );
+
+        cancel.cancel();
+    }
+
+    /// C2: Closing the refresh channel does not cause a busy loop.
+    /// Only periodic generations should occur at the configured interval.
+    #[tokio::test]
+    async fn closed_refresh_channel_does_not_busy_loop() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        let scheduler = PollScheduler::new(clock, client, Duration::from_millis(50), 4);
+        let cancel = CancellationToken::new();
+        let (refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // Consume the immediate first batch (generation 1).
+        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first batch")
+            .expect("channel open");
+        assert_eq!(batch1.generation, 1);
+        let _t1 = std::time::Instant::now();
+
+        // Drop the refresh sender to close the channel.
+        drop(refresh_tx);
+
+        // Wait for the periodic generation (generation 2).
+        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("second batch")
+            .expect("channel open");
+        assert_eq!(batch2.generation, 2);
+        let t2 = std::time::Instant::now();
+
+        // Wait for the next periodic generation (generation 3).
+        let batch3 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("third batch")
+            .expect("channel open");
+        assert_eq!(batch3.generation, 3);
+        let t3 = std::time::Instant::now();
+
+        // Verify the interval between generations 2 and 3 is approximately
+        // 50ms (the configured interval), not a tight loop.
+        let elapsed = t3.saturating_duration_since(t2);
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "generations should be spaced by the interval, not busy-looping; elapsed = {elapsed:?}"
+        );
+
+        cancel.cancel();
+    }
+
+    /// C3: Periodic cadence after manual refresh matches documentation.
+    /// Manual refresh does NOT reset the periodic timer — the next periodic
+    /// generation fires at the next scheduled interval boundary.
+    #[tokio::test]
+    async fn manual_refresh_does_not_reset_periodic_cadence() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        // Use a 100ms refresh interval.
+        let scheduler = PollScheduler::new(clock, client, Duration::from_millis(100), 4);
+        let cancel = CancellationToken::new();
+        let (refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // Consume the immediate first batch (generation 1).
+        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first batch")
+            .expect("channel open");
+        assert_eq!(batch1.generation, 1);
+        let t1 = std::time::Instant::now();
+
+        // Wait for the periodic generation (generation 2) at ~100ms.
+        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("second batch")
+            .expect("channel open");
+        assert_eq!(batch2.generation, 2);
+        let _t2 = std::time::Instant::now();
+
+        // Send a manual refresh immediately after generation 2.
+        refresh_tx.send(()).await.unwrap();
+
+        // Should receive the manual refresh batch (generation 3) promptly.
+        let batch3 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("refresh batch")
+            .expect("channel open");
+        assert_eq!(batch3.generation, 3);
+        let _t3 = std::time::Instant::now();
+
+        // The next periodic generation (generation 4) should fire at the
+        // next scheduled interval boundary, NOT 100ms after the manual refresh.
+        // Since the manual refresh happened right after generation 2, and
+        // the interval is 100ms, generation 4 should arrive at approximately
+        // 200ms from the start (two interval boundaries).
+        let batch4 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("fourth batch")
+            .expect("channel open");
+        assert_eq!(batch4.generation, 4);
+        let t4 = std::time::Instant::now();
+
+        // Generation 4 should arrive at approximately 200ms from start,
+        // not 200ms from the manual refresh (which would be ~300ms).
+        let elapsed_from_start = t4.saturating_duration_since(t1);
+        assert!(
+            elapsed_from_start < Duration::from_millis(250),
+            "periodic cadence should not be reset by manual refresh; \
+             elapsed from start = {elapsed_from_start:?}"
+        );
+
+        cancel.cancel();
+    }
+
+    /// C1: Three rapid Ctrl-R signals each produce exactly one generation.
+    #[tokio::test]
+    async fn three_rapid_refresh_signals_produce_three_generations() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        // Use a short client timeout so failed polls (after the mock server
+        // handles its one connection) don't stall the test.
+        let client = HttpClient::new(Duration::from_millis(100));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        // Use a very long refresh interval so only RefreshNow triggers polls.
+        let scheduler = PollScheduler::new(clock, client, Duration::from_secs(3600), 4);
+        let cancel = CancellationToken::new();
+        let (refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // Consume the immediate first batch (generation 1).
+        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first batch")
+            .expect("channel open");
+
+        // Send 3 rapid refresh signals.
+        for _ in 0..3 {
+            refresh_tx.send(()).await.unwrap();
+        }
+
+        // Should receive exactly 3 additional batches (generations 2-4).
+        let mut generations = Vec::new();
+        for _ in 0..3 {
+            let batch = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .expect("batch")
+                .expect("channel open");
+            generations.push(batch.generation);
+        }
+
+        // Generations should be 2 through 4, in order.
+        assert_eq!(generations, vec![2, 3, 4]);
+
+        cancel.cancel();
     }
 }

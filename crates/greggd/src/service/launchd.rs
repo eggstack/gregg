@@ -4,6 +4,21 @@
 //! appropriate to supported macOS versions. Command construction is
 //! centralized and testable. Paths with spaces are passed as
 //! argument-array elements, not shell-quoted strings.
+//!
+//! ## State semantics
+//!
+//! launchd has three relevant states:
+//!
+//! - **`NotLoaded`** — the plist is not loaded into launchd (not installed
+//!   or previously bootouted).
+//! - **`Loaded`** — the plist is loaded but the service is not currently
+//!   running (e.g. it crashed or was stopped via `kickstart -p`).
+//! - **`Running`** — the service is loaded and has at least one running
+//!   process.
+//!
+//! `start()` bootstraps if `NotLoaded`, kickstarts if `Loaded`, and is a
+//! no-op if `Running`. `restart()` always bootouts and re-bootstraps.
+//! `is_active()` returns true only when `Running`.
 
 use std::process::Command;
 
@@ -12,6 +27,17 @@ use super::{ServiceError, ServiceManager};
 /// The launchd service label for greggd.
 const SERVICE_LABEL: &str = "com.eggstack.greggd";
 
+/// The launchd state of the greggd service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceState {
+    /// The plist is not loaded into launchd.
+    NotLoaded,
+    /// The plist is loaded but the service is not running.
+    Loaded,
+    /// The service is loaded and running.
+    Running,
+}
+
 /// Service manager backed by macOS launchd.
 #[derive(Debug, Clone)]
 pub struct LaunchdManager {
@@ -19,6 +45,9 @@ pub struct LaunchdManager {
     /// The target domain for launchctl commands. Defaults to
     /// `system/$(domainname -A)` for system daemons.
     domain: Option<String>,
+    /// The path to the plist file, used by `bootstrap` and `start`
+    /// when the service is not yet loaded.
+    plist_path: Option<String>,
 }
 
 impl LaunchdManager {
@@ -28,6 +57,7 @@ impl LaunchdManager {
         Self {
             label: SERVICE_LABEL.to_owned(),
             domain: None,
+            plist_path: None,
         }
     }
 
@@ -37,6 +67,21 @@ impl LaunchdManager {
         Self {
             label: label.into(),
             domain,
+            plist_path: None,
+        }
+    }
+
+    /// Create a manager with a custom plist path (for `start` bootstrap).
+    #[must_use]
+    pub fn with_plist(
+        label: impl Into<String>,
+        domain: Option<String>,
+        plist_path: impl Into<String>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            domain,
+            plist_path: Some(plist_path.into()),
         }
     }
 
@@ -59,10 +104,7 @@ impl LaunchdManager {
     }
 
     /// Run a launchctl command with the given arguments.
-    #[allow(
-        clippy::unused_self,
-        reason = "kept for API consistency with systemd adapter"
-    )]
+    #[allow(clippy::unused_self)]
     fn run_launchctl(&self, args: &[&str]) -> Result<(), ServiceError> {
         let output = Command::new("launchctl").args(args).output().map_err(|e| {
             ServiceError::ExecFailed {
@@ -113,35 +155,42 @@ impl LaunchdManager {
         self.run_launchctl(&["kickstart", "-k", &target])
     }
 
-    /// Check if the service is loaded by parsing `launchctl list`.
-    fn check_loaded(&self) -> Result<bool, ServiceError> {
+    /// Query the current launchd state of the service.
+    ///
+    /// Uses `launchctl print` to determine whether the service is loaded
+    /// and running. Returns [`ServiceState::NotLoaded`] if the service
+    /// is not loaded, [`ServiceState::Loaded`] if loaded but not running,
+    /// and [`ServiceState::Running`] if loaded and running.
+    pub fn state(&self) -> Result<ServiceState, ServiceError> {
+        let target = self.service_target();
+
+        // `launchctl print <target>` succeeds if the service is loaded.
+        // If it fails, the service is not loaded.
         let output = Command::new("launchctl")
-            .args(["list"])
+            .args(["print", &target])
             .output()
             .map_err(|e| ServiceError::ExecFailed {
-                command: "launchctl list".into(),
+                command: format!("launchctl print {target}"),
                 source: e,
             })?;
 
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-            return Err(ServiceError::CommandFailed {
-                command: "launchctl list".into(),
-                exit_status: output.status.code(),
-                stderr,
-            });
+            return Ok(ServiceState::NotLoaded);
         }
 
+        // Parse the output to determine if the service is running.
+        // `launchctl print` output includes "state = running" or
+        // "state = spawned" or "state = waiting" etc.
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // A loaded service appears as a line with the label as a distinct
-        // whitespace-delimited field. We split on whitespace and match the
-        // last field (the label) exactly to avoid false positives from partial
-        // matches (e.g., "com.eggstack.greggd-test" matching "com.eggstack.greggd").
-        Ok(stdout.lines().any(|line| {
-            line.split_whitespace()
-                .last()
-                .is_some_and(|field| field == self.label)
-        }))
+        let is_running = stdout
+            .lines()
+            .any(|line| line.trim_start().starts_with("state = running"));
+
+        if is_running {
+            Ok(ServiceState::Running)
+        } else {
+            Ok(ServiceState::Loaded)
+        }
     }
 }
 
@@ -153,7 +202,27 @@ impl Default for LaunchdManager {
 
 impl ServiceManager for LaunchdManager {
     fn start(&self) -> Result<(), ServiceError> {
-        self.kickstart()
+        match self.state()? {
+            ServiceState::Running => {
+                // Already running — idempotent no-op.
+                Ok(())
+            }
+            ServiceState::Loaded => {
+                // Loaded but not running — kickstart.
+                self.kickstart()
+            }
+            ServiceState::NotLoaded => {
+                // Not loaded — bootstrap if we have a plist path.
+                match &self.plist_path {
+                    Some(plist) => self.bootstrap(plist),
+                    None => Err(ServiceError::CommandFailed {
+                        command: "launchctl bootstrap".into(),
+                        exit_status: None,
+                        stderr: "service not loaded and no plist path configured".into(),
+                    }),
+                }
+            }
+        }
     }
 
     fn stop(&self) -> Result<(), ServiceError> {
@@ -161,11 +230,35 @@ impl ServiceManager for LaunchdManager {
     }
 
     fn restart(&self) -> Result<(), ServiceError> {
-        self.kickstart()
+        match self.state()? {
+            ServiceState::NotLoaded => {
+                // Not loaded — bootstrap if we have a plist path.
+                match &self.plist_path {
+                    Some(plist) => self.bootstrap(plist),
+                    None => Err(ServiceError::CommandFailed {
+                        command: "launchctl bootstrap".into(),
+                        exit_status: None,
+                        stderr: "service not loaded and no plist path configured".into(),
+                    }),
+                }
+            }
+            ServiceState::Loaded | ServiceState::Running => {
+                // Bootout then bootstrap to ensure a clean restart.
+                self.bootout()?;
+                match &self.plist_path {
+                    Some(plist) => self.bootstrap(plist),
+                    None => Err(ServiceError::CommandFailed {
+                        command: "launchctl bootstrap".into(),
+                        exit_status: None,
+                        stderr: "service not loaded and no plist path configured".into(),
+                    }),
+                }
+            }
+        }
     }
 
     fn is_active(&self) -> Result<bool, ServiceError> {
-        self.check_loaded()
+        Ok(matches!(self.state()?, ServiceState::Running))
     }
 }
 
@@ -178,6 +271,7 @@ mod tests {
         let manager = LaunchdManager::new();
         assert_eq!(manager.label, "com.eggstack.greggd");
         assert!(manager.domain.is_none());
+        assert!(manager.plist_path.is_none());
     }
 
     #[test]
@@ -185,6 +279,22 @@ mod tests {
         let manager = LaunchdManager::with_label("com.test.greggd", Some("system".into()));
         assert_eq!(manager.label, "com.test.greggd");
         assert_eq!(manager.domain, Some("system".into()));
+        assert!(manager.plist_path.is_none());
+    }
+
+    #[test]
+    fn launchd_manager_with_plist() {
+        let manager = LaunchdManager::with_plist(
+            "com.test.greggd",
+            Some("system".into()),
+            "/Library/LaunchDaemons/com.test.greggd.plist",
+        );
+        assert_eq!(manager.label, "com.test.greggd");
+        assert_eq!(manager.domain, Some("system".into()));
+        assert_eq!(
+            manager.plist_path,
+            Some("/Library/LaunchDaemons/com.test.greggd.plist".to_owned())
+        );
     }
 
     #[test]
@@ -211,6 +321,7 @@ mod tests {
         let cloned = manager.clone();
         assert_eq!(manager.label, cloned.label);
         assert_eq!(manager.domain, cloned.domain);
+        assert_eq!(manager.plist_path, cloned.plist_path);
     }
 
     #[test]
@@ -218,6 +329,15 @@ mod tests {
         let manager = LaunchdManager::new();
         let debug = format!("{manager:?}");
         assert!(debug.contains("LaunchdManager"));
+    }
+
+    #[test]
+    fn service_state_enum_variants() {
+        assert_eq!(ServiceState::NotLoaded, ServiceState::NotLoaded);
+        assert_eq!(ServiceState::Loaded, ServiceState::Loaded);
+        assert_eq!(ServiceState::Running, ServiceState::Running);
+        assert_ne!(ServiceState::NotLoaded, ServiceState::Loaded);
+        assert_ne!(ServiceState::Loaded, ServiceState::Running);
     }
 
     #[test]
@@ -243,7 +363,7 @@ mod tests {
         let line_with_suffix = "  12345  0  com.eggstack.greggd-test";
         let line_exact = "  12345  0  com.eggstack.greggd";
 
-        // Our new matching logic: split on whitespace, match last field exactly.
+        // Our matching logic: split on whitespace, match last field exactly.
         let matches_suffix = line_with_suffix
             .split_whitespace()
             .last()
@@ -269,5 +389,31 @@ mod tests {
         assert!(!target.contains(' '));
         // The plist path with spaces would be passed as a separate &str element
         // in the run_launchctl(&["bootstrap", &target, plist_path]) call.
+    }
+
+    #[test]
+    fn start_state_transitions_documented() {
+        // Document the expected start() behavior for each state:
+        // - NotLoaded + plist_path: bootstrap
+        // - NotLoaded + no plist_path: error
+        // - Loaded: kickstart
+        // - Running: no-op
+        // This is a documentation test — the actual behavior is tested
+        // in integration tests with a real launchd.
+        let manager_no_plist = LaunchdManager::new();
+        let manager_with_plist = LaunchdManager::with_plist(
+            "com.eggstack.greggd",
+            None,
+            "/Library/LaunchDaemons/com.eggstack.greggd.plist",
+        );
+
+        // Both managers should have the correct label.
+        assert_eq!(manager_no_plist.label, "com.eggstack.greggd");
+        assert_eq!(manager_with_plist.label, "com.eggstack.greggd");
+
+        // The manager without a plist path should not be able to bootstrap.
+        assert!(manager_no_plist.plist_path.is_none());
+        // The manager with a plist path should be able to bootstrap.
+        assert!(manager_with_plist.plist_path.is_some());
     }
 }

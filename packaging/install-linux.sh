@@ -43,9 +43,15 @@ die() {
 
 [[ $EUID -eq 0 ]] || die "this script must be run as root (use sudo)"
 
+# Create dedicated service user if it doesn't exist.
+if ! id -u greggd >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin greggd
+    echo "  Created system user: greggd"
+fi
+
 # Find the binary.
 if [[ -z "$BINARY_PATH" ]]; then
-    BINARY_PATH="$(cd "$(dirname "$0")/../.." && pwd)/target/release/greggd"
+    BINARY_PATH="$(cd "$(dirname "$0")/.." && pwd)/target/release/greggd"
 fi
 
 [[ -f "$BINARY_PATH" ]] || die "binary not found: $BINARY_PATH"
@@ -89,6 +95,10 @@ fi
 # Install binary.
 install -m 755 "$BINARY_PATH" "${BIN_DIR}/greggd"
 echo "  Installed binary: ${BIN_DIR}/greggd"
+
+# Set config ownership for the service user.
+chown -R greggd:greggd "$CONFIG_DIR"
+echo "  Set config ownership: greggd:greggd"
 
 # Install systemd unit.
 if [[ -f "$UNIT_SOURCE" ]]; then

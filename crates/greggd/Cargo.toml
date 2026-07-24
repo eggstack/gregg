@@ -22,7 +22,7 @@ name = "greggd"
 path = "src/lib.rs"
 
 [dependencies]
-gregg-protocol = { version = "1.0.0", path = "../gregg-protocol" }
+gregg-protocol = { version = "1.0.1", path = "../gregg-protocol" }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs"] }
 tracing = "0.1"

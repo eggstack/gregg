@@ -144,7 +144,8 @@ All three crates must be independently packageable with `cargo package`. Publica
 
 Before release, manifests must use crates.io-resolvable dependency versions rather than path-only dependencies, while retaining local `path` entries where Cargo permits combined `version` and `path` declarations. Each package needs complete metadata, included files, license expression, repository URL, readme, keywords/categories, and an intentional feature set.
 
-Never publish from a dirty tree. Verify package contents with `cargo package --list` and install packaged binaries into clean temporary environments before tagging version 1.0.0.
+Never publish from a dirty tree. Verify package contents with `cargo package --list` and
+install packaged binaries into clean temporary environments before tagging a release.
 
 ## Change discipline
 

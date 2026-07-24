@@ -180,15 +180,17 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     ///
     /// The `on_sample` callback is invoked after each collection cycle with
     /// the sampler's current readiness state and, when available, the
-    /// latest snapshot. This allows the caller to sync state to shared
-    /// structures (e.g. the HTTP server state) without duplicating the loop.
-    pub async fn run<F>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
+    /// latest snapshot. The callback returns a future that is **awaited
+    /// inline** before the next sleep, ensuring ordered state updates
+    /// (no detached tasks that could race with shutdown).
+    pub async fn run<F, Fut>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
     where
-        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>),
+        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>) -> Fut,
+        Fut: std::future::Future<Output = ()>,
     {
         loop {
             self.sample_once();
-            on_sample(self.readiness, self.snapshot.clone());
+            on_sample(self.readiness, self.snapshot.clone()).await;
 
             tokio::select! {
                 () = self.clock.sleep(Duration::from_millis(self.interval_ms)) => {}
@@ -723,7 +725,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| {}).await;
+            sampler.run(shutdown, |_state, _snap| async {}).await;
             sampler
         });
 
@@ -747,7 +749,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| {}).await;
+            sampler.run(shutdown, |_state, _snap| async {}).await;
             sampler
         });
 
@@ -765,7 +767,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| {}).await;
+            sampler.run(shutdown, |_state, _snap| async {}).await;
             sampler
         });
 
@@ -784,7 +786,7 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| {}).await;
+            sampler.run(shutdown, |_state, _snap| async {}).await;
             sampler
         });
 
@@ -808,6 +810,7 @@ mod tests {
             sampler
                 .run(shutdown, move |_state, _snap| {
                     count.fetch_add(1, Ordering::Relaxed);
+                    async {}
                 })
                 .await;
             sampler

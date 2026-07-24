@@ -28,6 +28,7 @@ pub struct Endpoint {
 
 impl Endpoint {
     /// Create a new endpoint with a generated UUID.
+    #[allow(dead_code)]
     pub fn new(host: String, port: u16, name: Option<String>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
@@ -308,6 +309,7 @@ impl EndpointSpec {
     }
 
     /// Consume the spec and produce an [`Endpoint`] with a generated UUID.
+    #[allow(dead_code)]
     #[must_use]
     pub fn into_endpoint(self) -> Endpoint {
         Endpoint::new(self.host, self.port, self.name)

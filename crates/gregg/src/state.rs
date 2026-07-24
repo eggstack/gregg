@@ -425,7 +425,6 @@ mod tests {
                 id: (*id).to_string(),
                 host: format!("host{i}.local"),
                 port: 11310 + u16::try_from(i).unwrap(),
-                port_was_explicit: false,
                 name: Some(format!("System {i}")),
             });
         }
@@ -756,7 +755,6 @@ mod tests {
             id: "a".into(),
             host: "host0.local".into(),
             port: 11310,
-            port_was_explicit: false,
             name: None,
         });
 
