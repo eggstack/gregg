@@ -472,7 +472,7 @@ async fn warming_state_serves_503_regardless_of_stale_policy() {
 
 #[tokio::test]
 async fn stale_snapshot_by_age_returns_503() {
-    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(1));
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
 
     // Build a snapshot with a timestamp far in the past (but non-zero).
     let snap = LinuxSnapshotBuilder::default()
@@ -481,7 +481,7 @@ async fn stale_snapshot_by_age_returns_503() {
     state.update_snapshot(snap).await;
 
     // Sleep briefly so the snapshot exceeds max_snapshot_age.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -511,7 +511,7 @@ async fn fresh_snapshot_returns_200() {
 
 #[tokio::test]
 async fn recovery_after_stale_by_age_returns_200() {
-    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(1));
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
 
     // Publish a stale snapshot (timestamp far in the past, but non-zero).
     let stale_snap = LinuxSnapshotBuilder::default()
@@ -519,7 +519,7 @@ async fn recovery_after_stale_by_age_returns_200() {
         .build();
     state.update_snapshot(stale_snap).await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Should be stale now.
     let app = build_test_router(state.clone());

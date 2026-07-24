@@ -1396,11 +1396,7 @@ unknown_field = "oops"
                 ) 9>"{lock_str}"
                 "#,
             );
-            let child = Command::new("sh")
-                .arg("-c")
-                .arg(script)
-                .spawn()
-                .unwrap();
+            let child = Command::new("sh").arg("-c").arg(script).spawn().unwrap();
             children.push(child);
         }
 

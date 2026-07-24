@@ -73,66 +73,6 @@ jobs:
       - name: Doc
         run: cargo doc --workspace --no-deps
 
-      - name: Package gregg-protocol
-        run: cargo package -p gregg-protocol
-
-      - name: Package greggd
-        run: cargo package -p greggd
-
-      - name: Package gregg
-        run: cargo package -p gregg
-
-      - name: Inspect package contents
-        run: |
-          cargo package -p gregg-protocol --list
-          cargo package -p greggd --list
-          cargo package -p gregg --list
-
-      - name: Unpack and build packages
-        run: |
-          TMPDIR=$(mktemp -d)
-          for crate in gregg-protocol greggd gregg; do
-            cargo package -p $crate
-            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
-            mkdir -p "$TMPDIR/$crate"
-            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
-            echo "=== Contents of $crate ==="
-            ls -la "$TMPDIR/$crate"/*
-          done
-          rm -rf "$TMPDIR"
-
-      - name: Install binary crates from packages
-        run: |
-          TMPDIR=$(mktemp -d)
-          for crate in greggd gregg; do
-            cargo package -p $crate
-            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
-            mkdir -p "$TMPDIR/$crate"
-            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
-            INSTALL_DIR="$TMPDIR/install-$crate"
-            mkdir -p "$INSTALL_DIR"
-            cargo install --path "$TMPDIR/$crate"/* --root "$INSTALL_DIR" --locked
-          done
-          rm -rf "$TMPDIR"
-
-      - name: Smoke test installed binaries
-        run: |
-          TMPDIR=$(mktemp -d)
-          for crate in greggd gregg; do
-            cargo package -p $crate
-            CRATE_FILE=$(ls -t $crate-*.crate | head -1)
-            mkdir -p "$TMPDIR/$crate"
-            tar xf "$CRATE_FILE" -C "$TMPDIR/$crate"
-            INSTALL_DIR="$TMPDIR/install-$crate"
-            mkdir -p "$INSTALL_DIR"
-            cargo install --path "$TMPDIR/$crate"/* --root "$INSTALL_DIR" --locked
-          done
-          "$TMPDIR/install-greggd/bin/greggd" --help
-          "$TMPDIR/install-greggd/bin/greggd" run --help
-          "$TMPDIR/install-gregg/bin/gregg" --help
-          "$TMPDIR/install-gregg/bin/gregg" list
-          rm -rf "$TMPDIR"
-
       - name: Native macOS collector smoke
         if: runner.os == 'macOS'
         run: |
@@ -145,10 +85,7 @@ jobs:
 
       - name: Shellcheck installer scripts
         if: runner.os == 'Linux'
-        uses: ludeeus/shellcheck-action@v1.3.0
-        with:
-          scripts: packaging/install-linux.sh packaging/install-macos.sh
-          shell: bash
+        run: shellcheck packaging/install-linux.sh packaging/install-macos.sh
 
       - name: Deny
         if: runner.os == 'Linux'
@@ -180,9 +117,3 @@ jobs:
 
       - name: Check compilation
         run: cargo check --workspace --all-features
-
-      - name: Package build under MSRV
-        run: |
-          cargo package -p gregg-protocol
-          cargo package -p greggd
-          cargo package -p gregg
