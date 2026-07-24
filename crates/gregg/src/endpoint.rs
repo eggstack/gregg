@@ -95,6 +95,8 @@ pub struct EndpointSpec {
     pub host: String,
     /// TCP port (may be the default).
     pub port: u16,
+    /// Whether the port was explicitly provided in the input.
+    pub port_was_explicit: bool,
     /// Optional display name.
     pub name: Option<String>,
 }
@@ -219,6 +221,7 @@ impl EndpointSpec {
                 Ok(Self {
                     host: normalize_host(input_str)?,
                     port: DEFAULT_PORT,
+                    port_was_explicit: false,
                     name: None,
                 })
             }
@@ -229,6 +232,7 @@ impl EndpointSpec {
                 Ok(Self {
                     host: normalize_host(host_part)?,
                     port,
+                    port_was_explicit: true,
                     name: None,
                 })
             }
@@ -243,6 +247,7 @@ impl EndpointSpec {
                     Ok(Self {
                         host: normalize_host(input_str)?,
                         port: DEFAULT_PORT,
+                        port_was_explicit: false,
                         name: None,
                     })
                 } else {
@@ -252,6 +257,7 @@ impl EndpointSpec {
                     Ok(Self {
                         host: normalize_host(host_part)?,
                         port,
+                        port_was_explicit: true,
                         name: None,
                     })
                 }
@@ -296,6 +302,7 @@ impl EndpointSpec {
         Ok(Self {
             host: normalize_host(addr_part)?,
             port,
+            port_was_explicit: true,
             name: None,
         })
     }
@@ -393,6 +400,7 @@ mod tests {
         let spec = EndpointSpec::parse("192.168.1.1").unwrap();
         assert_eq!(spec.host, "192.168.1.1");
         assert_eq!(spec.port, DEFAULT_PORT);
+        assert!(!spec.port_was_explicit);
         assert!(spec.name.is_none());
     }
 
@@ -401,6 +409,7 @@ mod tests {
         let spec = EndpointSpec::parse("192.168.1.1:8080").unwrap();
         assert_eq!(spec.host, "192.168.1.1");
         assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -408,6 +417,7 @@ mod tests {
         let spec = EndpointSpec::parse("127.0.0.1:11310").unwrap();
         assert_eq!(spec.host, "127.0.0.1");
         assert_eq!(spec.port, 11310);
+        assert!(spec.port_was_explicit);
     }
 
     // --- Valid DNS parsing ---
@@ -417,6 +427,7 @@ mod tests {
         let spec = EndpointSpec::parse("server.local").unwrap();
         assert_eq!(spec.host, "server.local");
         assert_eq!(spec.port, DEFAULT_PORT);
+        assert!(!spec.port_was_explicit);
     }
 
     #[test]
@@ -424,6 +435,7 @@ mod tests {
         let spec = EndpointSpec::parse("server.local:9090").unwrap();
         assert_eq!(spec.host, "server.local");
         assert_eq!(spec.port, 9090);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -431,6 +443,7 @@ mod tests {
         let spec = EndpointSpec::parse("macmini.local:11320").unwrap();
         assert_eq!(spec.host, "macmini.local");
         assert_eq!(spec.port, 11320);
+        assert!(spec.port_was_explicit);
     }
 
     // --- Valid IPv6 parsing ---
@@ -440,6 +453,7 @@ mod tests {
         let spec = EndpointSpec::parse("[::1]:8080").unwrap();
         assert_eq!(spec.host, "::1");
         assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -447,6 +461,7 @@ mod tests {
         let spec = EndpointSpec::parse("[fe80::1%25eth0]:8080").unwrap();
         assert_eq!(spec.host, "fe80::1%25eth0");
         assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -454,6 +469,7 @@ mod tests {
         let spec = EndpointSpec::parse("::1").unwrap();
         assert_eq!(spec.host, "::1");
         assert_eq!(spec.port, DEFAULT_PORT);
+        assert!(!spec.port_was_explicit);
     }
 
     // --- Rejection tests ---
@@ -717,6 +733,7 @@ mod tests {
         let spec = EndpointSpec::parse("192.168.1.1:8080  ").unwrap();
         assert_eq!(spec.host, "192.168.1.1");
         assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -724,6 +741,7 @@ mod tests {
         let spec = EndpointSpec::parse("  192.168.1.1:8080").unwrap();
         assert_eq!(spec.host, "192.168.1.1");
         assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]
@@ -731,6 +749,7 @@ mod tests {
         let spec = EndpointSpec::parse("::1").unwrap();
         assert_eq!(spec.host, "::1");
         assert_eq!(spec.port, DEFAULT_PORT);
+        assert!(!spec.port_was_explicit);
     }
 
     #[test]
@@ -738,6 +757,7 @@ mod tests {
         let spec = EndpointSpec::parse("[fe80::1%25eth0]:443").unwrap();
         assert_eq!(spec.host, "fe80::1%25eth0");
         assert_eq!(spec.port, 443);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]

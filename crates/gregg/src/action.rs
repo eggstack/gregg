@@ -103,6 +103,7 @@ mod tests {
             id: "test-id".into(),
             host: "192.168.1.1".into(),
             port: 11310,
+            port_was_explicit: false,
             name: None,
         });
         let action = Action::ConfigReloaded(config);

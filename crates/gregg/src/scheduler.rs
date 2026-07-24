@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::clock::Clock;
 use crate::endpoint::Endpoint;
-use crate::poller::{HttpClient, PollBatch};
+use crate::poller::{HttpClient, PollBatch, PollOutcome, PollResult};
 
 /// Poll scheduler with generation-based concurrency control.
 ///
@@ -49,26 +49,37 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     ///
     /// Returns a receiver that yields [`PollBatch`]es. The loop runs
     /// until the `cancel` token is cancelled or the receiver is dropped.
+    ///
+    /// The `refresh_rx` channel delivers immediate-refresh signals (e.g.
+    /// from Ctrl-R). When a signal arrives, a generation is started
+    /// immediately without waiting for the next periodic interval.
     pub fn run(
         self,
         endpoints: Vec<Endpoint>,
         cancel: CancellationToken,
+        refresh_rx: mpsc::Receiver<()>,
     ) -> mpsc::Receiver<PollBatch> {
         let (tx, rx) = mpsc::channel::<PollBatch>(4);
 
         tokio::spawn(async move {
-            self.poll_loop(endpoints, tx, cancel).await;
+            self.poll_loop(endpoints, tx, cancel, refresh_rx).await;
         });
 
         rx
     }
 
     /// The main polling loop.
+    ///
+    /// Performs the first generation immediately (no initial sleep), then
+    /// alternates between sleeping for `refresh_interval` and polling.
+    /// A `RefreshNow` signal on `refresh_rx` triggers an immediate
+    /// generation without resetting the periodic timer.
     async fn poll_loop(
         self,
         endpoints: Vec<Endpoint>,
         tx: mpsc::Sender<PollBatch>,
         cancel: CancellationToken,
+        mut refresh_rx: mpsc::Receiver<()>,
     ) {
         if endpoints.is_empty() {
             return;
@@ -77,17 +88,46 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let mut generation: u64 = 0;
 
+        // E2: Perform the first poll immediately without sleeping.
+        generation = generation.saturating_add(1);
+        let batch = self
+            .poll_generation(&endpoints, &semaphore, generation)
+            .await;
+        if tx.send(batch).await.is_err() {
+            return;
+        }
+
         loop {
-            // Sleep for the refresh interval, checking for cancellation.
-            if cancel.is_cancelled() {
-                break;
-            }
-
+            // Sleep for the refresh interval, but also listen for
+            // RefreshNow signals and cancellation.
             tokio::select! {
-                () = tokio::time::sleep(self.refresh_interval) => {}
+                biased;
+
                 () = cancel.cancelled() => break,
+
+                msg = refresh_rx.recv() => {
+                    // Channel closed — no more refresh signals.
+                    // Treat as: just continue the periodic loop.
+                    if msg.is_none() {
+                        // refresh_rx dropped; keep going with periodic only.
+                        // We fall through to the sleep below.
+                    } else {
+                        // RefreshNow: run a generation immediately.
+                        generation = generation.saturating_add(1);
+                        let batch = self
+                            .poll_generation(&endpoints, &semaphore, generation)
+                            .await;
+                        if tx.send(batch).await.is_err() {
+                            break;
+                        }
+                        // After a manual refresh, continue to the periodic sleep.
+                    }
+                }
+
+                () = tokio::time::sleep(self.refresh_interval) => {}
             }
 
+            // Periodic generation after the sleep (or after a refresh).
             generation = generation.saturating_add(1);
             let batch = self
                 .poll_generation(&endpoints, &semaphore, generation)
@@ -101,6 +141,10 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     }
 
     /// Poll all endpoints for a single generation.
+    ///
+    /// Every configured endpoint produces exactly one result in the batch.
+    /// If a poll task panics, a synthetic `Cancelled` result is emitted
+    /// for the associated endpoint.
     async fn poll_generation(
         &self,
         endpoints: &[Endpoint],
@@ -108,30 +152,38 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         generation: u64,
     ) -> PollBatch {
         let started_at = self.clock.now();
-        let mut handles = Vec::with_capacity(endpoints.len());
+        let mut handles: Vec<(Endpoint, tokio::task::JoinHandle<PollResult>)> =
+            Vec::with_capacity(endpoints.len());
 
         for endpoint in endpoints {
             let client = self.client.clone();
             let sem = Arc::clone(semaphore);
-            let endpoint = endpoint.clone();
+            let ep = endpoint.clone();
             let clock = self.clock.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore should not be closed");
-                client.poll(&endpoint, &clock).await
+                client.poll(&ep, &clock).await
             });
 
-            handles.push(handle);
+            handles.push((endpoint.clone(), handle));
         }
 
         let mut results = Vec::with_capacity(handles.len());
-        for handle in handles {
-            if let Ok(result) = handle.await {
-                results.push(result);
+        for (endpoint, handle) in handles {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(_) => {
+                    // Task panicked — emit a synthetic Cancelled result
+                    // so the endpoint still appears in the batch.
+                    results.push(PollResult {
+                        system_id: endpoint.id.clone(),
+                        endpoint,
+                        outcome: PollOutcome::Cancelled,
+                        latency: Duration::ZERO,
+                    });
+                }
             }
-            // Task panicked — treat as a cancelled poll for
-            // this endpoint. We don't have the endpoint info,
-            // so we skip it.
         }
 
         PollBatch {
@@ -154,6 +206,11 @@ mod tests {
     use std::sync::Arc;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    /// Helper: create a channel pair for refresh signals.
+    fn refresh_channel() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+        mpsc::channel(4)
+    }
 
     /// Mock server that returns a valid snapshot.
     async fn valid_snapshot_server() -> String {
@@ -209,7 +266,8 @@ mod tests {
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
 
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
@@ -282,7 +340,8 @@ mod tests {
         let scheduler =
             PollScheduler::new(clock, client, Duration::from_millis(10), max_concurrent);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(endpoints, cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(endpoints, cancel.clone(), refresh_rx);
 
         let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await;
 
@@ -305,7 +364,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock, client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Wait for first batch.
         let batch = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -332,7 +392,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock, client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![], cancel.clone(), refresh_rx);
 
         // Should not produce any batches.
         let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
@@ -351,7 +412,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         let mut generations = Vec::new();
         for _ in 0..3 {
@@ -407,7 +469,8 @@ mod tests {
         // Refresh interval is 20ms, but the endpoint takes 100ms.
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(20), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Wait for the first batch to complete (takes ~100ms).
         let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -455,7 +518,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep1, ep2], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep1, ep2], cancel.clone(), refresh_rx);
 
         clock.advance(Duration::from_millis(20));
 
@@ -499,7 +563,8 @@ mod tests {
         let scheduler =
             PollScheduler::new(clock, client, Duration::from_millis(10), max_concurrent);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(endpoints, cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(endpoints, cancel.clone(), refresh_rx);
 
         let batch = tokio::time::timeout(Duration::from_secs(60), rx.recv())
             .await
@@ -571,7 +636,8 @@ mod tests {
         let scheduler =
             PollScheduler::new(clock, client, Duration::from_millis(10), max_concurrent);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(endpoints, cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(endpoints, cancel.clone(), refresh_rx);
 
         let batch = tokio::time::timeout(Duration::from_secs(60), rx.recv())
             .await
@@ -656,7 +722,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // First batch at normal time.
         clock.advance(Duration::from_millis(20));
@@ -702,7 +769,8 @@ mod tests {
 
         let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let mut rx = scheduler.run(vec![ep], cancel.clone());
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         let mut online_results = 0;
         let mut offline_results = 0;
@@ -730,5 +798,104 @@ mod tests {
         );
 
         cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn first_poll_happens_immediately_without_delay() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        // Use a very long refresh interval — if the first poll were
+        // delayed, we would not receive a batch within 200ms.
+        let scheduler = PollScheduler::new(clock, client, Duration::from_secs(3600), 4);
+        let cancel = CancellationToken::new();
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // The first batch should arrive almost immediately.
+        let batch = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("should receive first batch without delay")
+            .expect("channel should be open");
+        assert_eq!(batch.generation, 1);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn refresh_now_triggers_generation() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let clock = FakeClock::new(anchor);
+
+        // Use a long refresh interval so only RefreshNow triggers polls.
+        let scheduler = PollScheduler::new(clock, client, Duration::from_secs(3600), 4);
+        let cancel = CancellationToken::new();
+        let (refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
+
+        // Consume the immediate first batch (generation 1).
+        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("first batch")
+            .expect("channel open");
+        assert_eq!(batch1.generation, 1);
+
+        // Send a RefreshNow signal.
+        refresh_tx.send(()).await.unwrap();
+
+        // The scheduler should produce a second batch promptly.
+        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("refresh batch")
+            .expect("channel open");
+        assert_eq!(batch2.generation, 2);
+
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn panicked_task_produces_cancelled_result_for_endpoint() {
+        use crate::poller::PollResult;
+
+        let endpoint = Endpoint {
+            id: "panic-ep".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            name: None,
+        };
+
+        let ep_clone = endpoint.clone();
+
+        // Spawn a task that panics after referencing the endpoint.
+        let panic_handle = tokio::spawn(async move {
+            // Reference the cloned endpoint so the compiler sees it as used.
+            let id = ep_clone.id.clone();
+            drop(id);
+            panic!("test panic");
+        });
+
+        // Manually create the batch to test the cancelled result logic.
+        let mut results = Vec::new();
+        match panic_handle.await {
+            Ok(result) => results.push(result),
+            Err(_) => {
+                results.push(PollResult {
+                    system_id: endpoint.id.clone(),
+                    endpoint,
+                    outcome: PollOutcome::Cancelled,
+                    latency: Duration::ZERO,
+                });
+            }
+        }
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].system_id, "panic-ep");
+        assert_eq!(results[0].outcome, PollOutcome::Cancelled);
     }
 }

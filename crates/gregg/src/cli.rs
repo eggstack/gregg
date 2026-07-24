@@ -200,10 +200,10 @@ fn cmd_add(
     let spec = EndpointSpec::parse(endpoint_str)?;
 
     let result = store.mutate_with_result(|config| {
-        let port = if spec.port == crate::endpoint::DEFAULT_PORT {
-            config.default_port
-        } else {
+        let port = if spec.port_was_explicit {
             spec.port
+        } else {
+            config.default_port
         };
 
         // Check for exact duplicate.
@@ -224,11 +224,13 @@ fn cmd_add(
             }
         }
 
+        let port_was_explicit = spec.port_was_explicit;
         let ep = spec.into_endpoint();
         let entry = crate::config::SystemEntry {
             id: ep.id,
             host: ep.host,
             port: ep.port,
+            port_was_explicit,
             name: name.map(std::string::ToString::to_string),
         };
         config.systems.push(entry);
@@ -268,16 +270,16 @@ fn cmd_list(store: &ConfigStore, json: bool) -> Result<(), Box<dyn std::error::E
 
 fn cmd_remove(store: &ConfigStore, endpoint_str: &str) -> Result<(), Box<dyn std::error::Error>> {
     let spec = EndpointSpec::parse(endpoint_str)?;
-    let port = if spec.port == crate::endpoint::DEFAULT_PORT {
-        None // Host-only removal
-    } else {
+    let exact_port = if spec.port_was_explicit {
         Some(spec.port)
+    } else {
+        None // Host-only removal
     };
 
     let result = store.mutate_with_result(|config| {
         let original_len = config.systems.len();
 
-        if let Some(port) = port {
+        if let Some(port) = exact_port {
             // Exact endpoint removal.
             config
                 .systems
@@ -604,6 +606,90 @@ mod tests {
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems.len(), 1);
         assert_eq!(config.systems[0].name.as_deref(), Some("New"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_without_explicit_port_uses_default_port() {
+        let dir = tmp_dir("add_default_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Add without explicit port — should use default_port.
+        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 11310);
+        assert!(!config.systems[0].port_was_explicit);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_with_explicit_port_stores_flag() {
+        let dir = tmp_dir("add_explicit_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "192.168.1.1:8080", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 8080);
+        assert!(config.systems[0].port_was_explicit);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_with_default_port_value_explicit_is_marked_explicit() {
+        let dir = tmp_dir("add_explicit_default");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        // Explicitly specifying the default port should still be marked explicit.
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 11310);
+        assert!(config.systems[0].port_was_explicit);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_without_explicit_port_removes_all_for_host() {
+        let dir = tmp_dir("remove_host_all");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "192.168.1.1:8080", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:9090", None, false).unwrap();
+
+        // Remove without explicit port — should remove both.
+        cmd_remove(&store, "192.168.1.1").unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems.len(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_with_explicit_port_removes_only_exact_match() {
+        let dir = tmp_dir("remove_exact_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "192.168.1.1:8080", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:9090", None, false).unwrap();
+
+        // Remove with explicit port — should only remove 8080.
+        cmd_remove(&store, "192.168.1.1:8080").unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems.len(), 1);
+        assert_eq!(config.systems[0].port, 9090);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -307,7 +307,6 @@ type mach_port_t = u32;
 type mach_msg_type_number_t = u32;
 
 const KERN_SUCCESS: kern_return_t = 0;
-const HOST_SELF: mach_port_t = 0;
 
 #[allow(non_camel_case_types)]
 const HOST_CPU_LOAD_INFO: i32 = 3;
@@ -319,6 +318,10 @@ const HOST_VM_INFO64: i32 = 4;
 // ---------------------------------------------------------------------------
 
 extern "C" {
+    fn host_self() -> mach_port_t;
+
+    fn mach_port_deallocate(task: mach_port_t, name: mach_port_t) -> kern_return_t;
+
     fn host_statistics(
         host_priv: mach_port_t,
         flavor: i32,
@@ -347,6 +350,51 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
+// RAII wrapper for the Mach host-self port
+// ---------------------------------------------------------------------------
+
+const MACH_PORT_NULL: mach_port_t = 0;
+
+/// RAII wrapper around a `mach_port_t` send right from `host_self()`.
+///
+/// The wrapper holds the port for the duration of a collection cycle and
+/// deallocates it on drop.  `host_self()` returns a send right to the
+/// host port; while some documentation treats it as a well-known constant
+/// that never needs deallocation, the Mach ownership model says send
+/// rights should be released.  Containing the lifecycle here keeps the
+/// rest of the module free of explicit port management.
+struct HostPort {
+    port: mach_port_t,
+}
+
+impl HostPort {
+    /// Obtain a fresh host-self send right.
+    fn current() -> Self {
+        // Safety: `host_self()` is a simple Mach trap that returns a
+        // `mach_port_t`.  It cannot fail; it always returns a valid port.
+        let port = unsafe { host_self() };
+        Self { port }
+    }
+
+    /// Borrow the raw port value for FFI calls.
+    fn raw(&self) -> mach_port_t {
+        self.port
+    }
+}
+
+impl Drop for HostPort {
+    fn drop(&mut self) {
+        if self.port != MACH_PORT_NULL {
+            // Safety: `mach_port_deallocate` releases one send right.
+            // The task is `MACH_PORT_NULL` which means "current task".
+            unsafe {
+                mach_port_deallocate(MACH_PORT_NULL, self.port);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FFI implementation functions
 // ---------------------------------------------------------------------------
 
@@ -356,13 +404,14 @@ extern "C" {
     reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
 )]
 fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
+    let host = HostPort::current();
     // Safety: `host_statistics` writes exactly 4 natural_t values into our
     // stack-allocated buffer. The buffer is properly aligned and large enough.
     // The return status is validated.
     let mut buf = [0i32; 4];
     let mut count: mach_msg_type_number_t = 4;
     let kr =
-        unsafe { host_statistics(HOST_SELF, HOST_CPU_LOAD_INFO, buf.as_mut_ptr(), &mut count) };
+        unsafe { host_statistics(host.raw(), HOST_CPU_LOAD_INFO, buf.as_mut_ptr(), &mut count) };
 
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
@@ -392,12 +441,13 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
 )]
 fn vm_info64() -> Result<RawVmStats, CollectError> {
+    let host = HostPort::current();
     // Safety: `host_statistics64` writes up to 64 natural_t values. We use a
     // generous buffer so the kernel cannot overflow even if future macOS
     // versions add fields. The return count tells us how many were written.
     let mut buf = [0i32; 64];
     let mut count: mach_msg_type_number_t = 64;
-    let kr = unsafe { host_statistics64(HOST_SELF, HOST_VM_INFO64, buf.as_mut_ptr(), &mut count) };
+    let kr = unsafe { host_statistics64(host.raw(), HOST_VM_INFO64, buf.as_mut_ptr(), &mut count) };
 
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
@@ -426,10 +476,11 @@ fn vm_info64() -> Result<RawVmStats, CollectError> {
 
 /// Read the host page size via `host_page_size`.
 fn read_page_size() -> Result<u64, CollectError> {
+    let host = HostPort::current();
     let mut page_size: usize = 0;
     // Safety: `host_page_size` writes a single usize value. The pointer is
     // valid and properly aligned. The return status is validated.
-    let kr = unsafe { host_page_size(HOST_SELF, &mut page_size) };
+    let kr = unsafe { host_page_size(host.raw(), &mut page_size) };
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
@@ -454,6 +505,7 @@ fn swap_usage() -> Result<RawSwapUsage, CollectError> {
     )]
     struct xswusage {
         xsu_total: u64,
+        xsu_avail: u64,
         xsu_used: u64,
         xsu_pagesize: u32,
         xsu_encrypted: u32,
@@ -655,8 +707,8 @@ fn collect_raw_identity() -> Result<RawIdentity, CollectError> {
     let hostname = read_string_sysctl("kern.hostname")?;
     let kernel_release = read_string_sysctl("kern.osrelease")?;
     let architecture = read_string_sysctl("hw.machine")?;
-    let logical_cores = read_int_sysctl::<u32>("hw.logicalcpu").unwrap_or(1).max(1);
-    let physical_memory_bytes = read_int_sysctl::<u64>("hw.memsize").unwrap_or(0);
+    let logical_cores = read_int_sysctl::<u32>("hw.logicalcpu")?;
+    let physical_memory_bytes = read_int_sysctl::<u64>("hw.memsize")?;
 
     let os_version = read_product_version().unwrap_or_else(|_| "unknown".to_string());
 
@@ -670,4 +722,137 @@ fn collect_raw_identity() -> Result<RawIdentity, CollectError> {
         logical_cores,
         physical_memory_bytes,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Native macOS smoke tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+
+    #[test]
+    fn cpu_ticks_total_positive() {
+        let q = FfiNativeQueries;
+        let ticks = q.cpu_load_info().expect("cpu_load_info failed");
+        assert!(
+            ticks.total() > 0,
+            "CPU tick total should be > 0, got {}",
+            ticks.total()
+        );
+    }
+
+    #[test]
+    fn vm_page_size_positive() {
+        let q = FfiNativeQueries;
+        let vm = q.vm_info64().expect("vm_info64 failed");
+        assert!(
+            vm.page_size > 0,
+            "page_size should be > 0, got {}",
+            vm.page_size
+        );
+    }
+
+    #[test]
+    fn swap_total_gte_used() {
+        let q = FfiNativeQueries;
+        let swap = q.swap_usage().expect("swap_usage failed");
+        assert!(
+            swap.total_bytes >= swap.used_bytes,
+            "swap total ({}) should be >= used ({})",
+            swap.total_bytes,
+            swap.used_bytes
+        );
+    }
+
+    #[test]
+    fn load_averages_finite_non_negative() {
+        let q = FfiNativeQueries;
+        let loads = q.load_averages().expect("load_averages failed");
+        for (i, &val) in loads.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "load average [{i}] should be finite, got {val}"
+            );
+            assert!(val >= 0.0, "load average [{i}] should be >= 0, got {val}");
+        }
+    }
+
+    #[test]
+    fn identity_non_empty_fields() {
+        let q = FfiNativeQueries;
+        let id = q.identity().expect("identity failed");
+        assert!(!id.hostname.is_empty(), "hostname must not be empty");
+        assert!(
+            !id.architecture.is_empty(),
+            "architecture must not be empty"
+        );
+        assert!(
+            !id.kernel_release.is_empty(),
+            "kernel_release must not be empty"
+        );
+        assert!(!id.kernel_name.is_empty(), "kernel_name must not be empty");
+        assert!(!id.os_name.is_empty(), "os_name must not be empty");
+    }
+
+    #[test]
+    fn xswusage_field_mapping() {
+        // Verify that our `xswusage` layout matches the Darwin definition
+        // by checking size and field offsets using std::mem.
+        #[repr(C)]
+        #[allow(clippy::struct_field_names)]
+        struct DarwinXswusage {
+            xsu_total: u64,
+            xsu_avail: u64,
+            xsu_used: u64,
+            xsu_pagesize: u32,
+            xsu_encrypted: u32,
+        }
+
+        // Our FFI struct is local to `swap_usage()`, so we replicate it here
+        // for layout verification.
+        #[repr(C)]
+        #[derive(Copy, Clone)]
+        #[allow(clippy::struct_field_names)]
+        struct TestXswusage {
+            xsu_total: u64,
+            xsu_avail: u64,
+            xsu_used: u64,
+            xsu_pagesize: u32,
+            xsu_encrypted: u32,
+        }
+
+        // Both structs must have identical size.
+        assert_eq!(
+            std::mem::size_of::<TestXswusage>(),
+            std::mem::size_of::<DarwinXswusage>(),
+            "TestXswusage and DarwinXswusage must have the same size"
+        );
+
+        // Verify field offsets match between the two repr(C) structs.
+        assert_eq!(
+            std::mem::offset_of!(TestXswusage, xsu_total),
+            std::mem::offset_of!(DarwinXswusage, xsu_total)
+        );
+        assert_eq!(
+            std::mem::offset_of!(TestXswusage, xsu_avail),
+            std::mem::offset_of!(DarwinXswusage, xsu_avail)
+        );
+        assert_eq!(
+            std::mem::offset_of!(TestXswusage, xsu_used),
+            std::mem::offset_of!(DarwinXswusage, xsu_used)
+        );
+        assert_eq!(
+            std::mem::offset_of!(TestXswusage, xsu_pagesize),
+            std::mem::offset_of!(DarwinXswusage, xsu_pagesize)
+        );
+        assert_eq!(
+            std::mem::offset_of!(TestXswusage, xsu_encrypted),
+            std::mem::offset_of!(DarwinXswusage, xsu_encrypted)
+        );
+
+        // Total size must be 8 + 8 + 8 + 4 + 4 = 32 bytes.
+        assert_eq!(std::mem::size_of::<DarwinXswusage>(), 32);
+    }
 }

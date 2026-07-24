@@ -7,9 +7,14 @@ The project is intentionally narrow. A lightweight daemon, `greggd`, runs on des
 ## Installation
 
 ```text
-cargo install gregg-protocol   # library crate, not needed directly
 cargo install greggd           # daemon
 cargo install gregg            # client + TUI
+```
+
+`gregg-protocol` is a library crate for Cargo dependencies; it is not installed directly. If you are building a tool that consumes the Gregg JSON contract, add `gregg-protocol` as a dependency in your `Cargo.toml`:
+
+```toml
+gregg-protocol = "1.0"
 ```
 
 ## Supported targets

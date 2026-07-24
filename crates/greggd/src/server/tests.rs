@@ -468,6 +468,76 @@ async fn warming_state_serves_503_regardless_of_stale_policy() {
     assert_eq!(parsed.state, ReadinessState::Warming);
 }
 
+// ===== Age-Based Staleness Tests =====
+
+#[tokio::test]
+async fn stale_snapshot_by_age_returns_503() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(1));
+
+    // Build a snapshot with a timestamp far in the past (but non-zero).
+    let snap = LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(1)
+        .build();
+    state.update_snapshot(snap).await;
+
+    // Sleep briefly so the snapshot exceeds max_snapshot_age.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+
+    // HTTP status is 503 even though the internal health state may
+    // still say Ready (no explicit failure was recorded).
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+    assert!(parsed.is_object());
+}
+
+#[tokio::test]
+async fn fresh_snapshot_returns_200() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+    let snap = fresh_snapshot();
+    state.update_snapshot(snap.clone()).await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed, snap);
+}
+
+#[tokio::test]
+async fn recovery_after_stale_by_age_returns_200() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(1));
+
+    // Publish a stale snapshot (timestamp far in the past, but non-zero).
+    let stale_snap = LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(1)
+        .build();
+    state.update_snapshot(stale_snap).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    // Should be stale now.
+    let app = build_test_router(state.clone());
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Recovery: publish a fresh snapshot.
+    let fresh_snap = fresh_snapshot();
+    state.update_snapshot(fresh_snap.clone()).await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed, fresh_snap);
+}
+
 #[tokio::test]
 async fn failure_count_resets_on_recovery() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);

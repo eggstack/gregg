@@ -245,16 +245,19 @@ impl ServerState {
 
 /// Run the HTTP server until `shutdown` fires.
 ///
+/// The caller must provide an already-bound [`TcpListener`] so that bind
+/// failures are surfaced before any tasks are spawned.
+///
 /// # Errors
 ///
-/// Returns [`ServerError::Bind`] if the address cannot be bound, or
-/// [`ServerError::Runtime`] if the server encounters an I/O error.
+/// Returns [`ServerError::Runtime`] if the server encounters an I/O error
+/// while running.
 pub async fn serve(
-    config: Config,
+    listener: TcpListener,
     state: ServerState,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), ServerError> {
-    let addr = config.socket_addr();
+    let addr = listener.local_addr().expect("listener has local addr");
 
     let app = Router::new()
         .route("/", get(status_handler))
@@ -263,7 +266,6 @@ pub async fn serve(
         .fallback(fallback_handler)
         .with_state(state);
 
-    let listener = TcpListener::bind(addr).await.map_err(ServerError::Bind)?;
     info!("greggd listening on {addr}");
 
     axum::serve(listener, app)

@@ -70,8 +70,10 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         ctrl_c_cancel.cancel();
     });
 
+    let (refresh_tx, refresh_rx) = tokio::sync::mpsc::channel::<()>(4);
+
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
-    let mut batch_rx = scheduler.run(endpoints, cancel.clone());
+    let mut batch_rx = scheduler.run(endpoints, cancel.clone(), refresh_rx);
 
     let mut terminal = terminal::Terminal::init()?;
     let (event_stream, mut event_rx) = input::EventStream::new();
@@ -90,6 +92,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         &mut batch_rx,
         &mut event_rx,
         &cancel,
+        &refresh_tx,
     )
     .await;
 
@@ -106,6 +109,7 @@ async fn run_event_loop(
     batch_rx: &mut tokio::sync::mpsc::Receiver<poller::PollBatch>,
     event_rx: &mut tokio::sync::mpsc::Receiver<event::Event>,
     cancel: &tokio_util::sync::CancellationToken,
+    refresh_tx: &tokio::sync::mpsc::Sender<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initial render.
     terminal.draw(|f| ui::render(f, app_state))?;
@@ -135,7 +139,11 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
-                            app_state.apply_action(action);
+                            if matches!(action, action::Action::RefreshNow) {
+                                let _ = refresh_tx.try_send(());
+                            } else {
+                                app_state.apply_action(action);
+                            }
                         }
                     }
                     None => break,

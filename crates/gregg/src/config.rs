@@ -47,6 +47,9 @@ pub struct SystemEntry {
     pub host: String,
     /// TCP port.
     pub port: u16,
+    /// Whether the port was explicitly provided by the user.
+    #[serde(default)]
+    pub port_was_explicit: bool,
     /// Optional human-readable display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -301,7 +304,11 @@ impl Config {
         })?;
 
         let content = self.to_toml();
-        let temp_name = format!(".gregg-{}.toml.tmp", std::process::id());
+        let temp_name = format!(
+            ".gregg-{}-{}.toml.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
         let temp_path = dir.join(&temp_name);
 
         fs::write(&temp_path, content.as_bytes()).map_err(|e| {
@@ -341,6 +348,21 @@ impl Config {
                 source: AtomicWriteError::Io(e),
             }
         })?;
+
+        // fsync the parent directory to ensure the rename is durable.
+        #[cfg(unix)]
+        {
+            let dir_file = fs::OpenOptions::new().read(true).open(dir).map_err(|e| {
+                ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+            dir_file.sync_all().map_err(|e| ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::Io(e),
+            })?;
+        }
 
         Ok(())
     }
@@ -453,6 +475,7 @@ impl ConfigStore {
 pub struct AdvisoryLock {
     lock_path: PathBuf,
     held: AtomicBool,
+    file: Mutex<Option<fs::File>>,
 }
 
 #[allow(dead_code)]
@@ -463,6 +486,7 @@ impl AdvisoryLock {
         Self {
             lock_path,
             held: AtomicBool::new(false),
+            file: Mutex::new(None),
         }
     }
 
@@ -482,12 +506,15 @@ impl AdvisoryLock {
                     let fd = file.as_raw_fd();
                     let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                     if result == 0 {
-                        self.held.store(true, Ordering::SeqCst);
                         // Write PID for diagnostics.
                         let _ = std::io::Write::write_all(
                             &mut std::io::BufWriter::new(&file),
                             format!("{}\n", std::process::id()).as_bytes(),
                         );
+                        // Store the file handle to keep the lock held.
+                        let mut guard = self.file.lock().unwrap();
+                        *guard = Some(file);
+                        self.held.store(true, Ordering::SeqCst);
                         true
                     } else {
                         false
@@ -496,6 +523,8 @@ impl AdvisoryLock {
                 #[cfg(not(unix))]
                 {
                     // On non-Unix, just succeed (no advisory locking).
+                    let mut guard = self.file.lock().unwrap();
+                    *guard = Some(file);
                     self.held.store(true, Ordering::SeqCst);
                     true
                 }
@@ -506,6 +535,11 @@ impl AdvisoryLock {
 
     /// Release the lock.
     pub fn release(&self) {
+        // Drop the file handle first, which releases the flock.
+        {
+            let mut guard = self.file.lock().unwrap();
+            *guard = None;
+        }
         self.held.store(false, Ordering::SeqCst);
         let _ = fs::remove_file(&self.lock_path);
     }
@@ -742,6 +776,7 @@ mod tests {
             id: "test-id".into(),
             host: "192.168.1.1".into(),
             port: 11310,
+            port_was_explicit: false,
             name: Some("Test".into()),
         });
         let toml = config.to_toml();
@@ -840,12 +875,14 @@ mod tests {
             id: "same-id".into(),
             host: "host1".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "same-id".into(),
             host: "host2".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -861,12 +898,14 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "id2".into(),
             host: "192.168.1.1".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -882,12 +921,14 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         config.systems.push(SystemEntry {
             id: "id2".into(),
             host: "192.168.1.1".into(),
             port: 443,
+            port_was_explicit: false,
             name: None,
         });
         assert!(config.is_valid());
@@ -900,6 +941,7 @@ mod tests {
             id: "id1".into(),
             host: String::new(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -915,6 +957,7 @@ mod tests {
             id: "id1".into(),
             host: "http://server".into(),
             port: 80,
+            port_was_explicit: false,
             name: None,
         });
         let violations = config.validate();
@@ -930,6 +973,7 @@ mod tests {
             id: "id1".into(),
             host: "server".into(),
             port: 80,
+            port_was_explicit: false,
             name: Some(String::new()),
         });
         let violations = config.validate();
@@ -945,6 +989,7 @@ mod tests {
             id: "id1".into(),
             host: "server".into(),
             port: 80,
+            port_was_explicit: false,
             name: Some("x".repeat(MAX_ENDPOINT_NAME_LEN + 1)),
         });
         let violations = config.validate();
@@ -1040,6 +1085,7 @@ mod tests {
             id: "id1".into(),
             host: "192.168.1.1".into(),
             port: 11310,
+            port_was_explicit: false,
             name: None,
         });
         store.write(&config).unwrap();
@@ -1291,6 +1337,63 @@ unknown_field = "oops"
         // After drop, a new lock should be acquirable.
         let lock2 = AdvisoryLock::new(lock_path.clone());
         assert!(lock2.try_acquire());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn advisory_lock_held_across_threads() {
+        use std::sync::Arc;
+        use std::time::Duration;
+
+        let dir = tmp_dir("advisory_lock_thread");
+        let lock_path = dir.join("test.lock");
+
+        let lock = Arc::new(AdvisoryLock::new(lock_path.clone()));
+        assert!(lock.try_acquire());
+        assert!(lock.is_held());
+
+        // Spawn a thread that tries to acquire the same lock.
+        let lock_clone = Arc::clone(&lock);
+        let handle = std::thread::spawn(move || {
+            // Give the main thread time to hold the lock.
+            std::thread::sleep(Duration::from_millis(50));
+            let second_lock = AdvisoryLock::new(lock_clone.lock_path.clone());
+            let acquired = second_lock.try_acquire();
+            // Release so main thread can clean up.
+            if acquired {
+                second_lock.release();
+            }
+            acquired
+        });
+
+        let second_acquired = handle.join().unwrap();
+        assert!(
+            !second_acquired,
+            "second lock should fail while first is held"
+        );
+
+        lock.release();
+        assert!(!lock.is_held());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Atomic write hardening ---
+
+    #[test]
+    fn write_atomic_uses_collision_resistant_temp_name() {
+        let dir = tmp_dir("atomic_collision_resistant");
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+
+        // Verify no temp files remain.
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(Result::ok).collect();
+        assert_eq!(entries.len(), 1, "should only have the final config file");
+        assert_eq!(entries[0].file_name().to_str().unwrap(), "config.toml");
 
         let _ = fs::remove_dir_all(&dir);
     }

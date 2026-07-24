@@ -5,14 +5,17 @@
 //! [`crate::config::Config`] for all runtime parameters.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
+use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tracing::info;
 
 use crate::collector::SystemCollector;
 use crate::config::Config;
 use crate::sampler::{RealClock, Sampler};
+use crate::server::error::ServerError;
 use crate::server::{Config as ServerConfig, ServerState};
 
 /// Run the daemon with the given collector and configuration.
@@ -66,11 +69,23 @@ pub async fn run<C: SystemCollector + 'static>(
     info!(
         listen_addr = %server_config.socket_addr(),
         sample_interval_ms = interval_ms,
+        stale_after_ms = config.stale_after_ms(),
         "effective configuration"
     );
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
-    let server_state = ServerState::new();
+
+    // Wire stale_after_ms from daemon config into the server state.
+    let server_state =
+        ServerState::with_stale_policy(0, Duration::from_millis(config.stale_after_ms()));
+
+    // Bind the TCP listener before spawning tasks so bind failures
+    // are surfaced immediately rather than silently lost.
+    let addr = server_config.socket_addr();
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        eprintln!("failed to bind {addr}: {e}");
+        Box::new(ServerError::Bind(e)) as Box<dyn std::error::Error>
+    })?;
 
     // Spawn the sampler task.
     let sampler_handle = {
@@ -90,25 +105,50 @@ pub async fn run<C: SystemCollector + 'static>(
         })
     };
 
-    // Spawn the HTTP server task.
+    // Spawn the HTTP server task with the pre-bound listener.
     let server_handle = {
         let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(crate::server::serve(
-            server_config,
-            server_state,
-            shutdown_rx,
-        ))
+        tokio::spawn(crate::server::serve(listener, server_state, shutdown_rx))
     };
 
-    // Wait for Ctrl-C or SIGTERM.
-    let signal_result = wait_for_shutdown_signal().await;
-    info!(reason = %signal_result, "shutdown signal received");
+    // Supervise: wait for shutdown signal, server failure, or sampler failure.
+    tokio::select! {
+        signal_result = wait_for_shutdown_signal() => {
+            info!(reason = %signal_result, "shutdown signal received");
+        }
+        result = server_handle => {
+            match result {
+                Ok(Ok(())) => {
+                    info!("HTTP server exited cleanly");
+                }
+                Ok(Err(e)) => {
+                    eprintln!("HTTP server error: {e}");
+                    let _ = shutdown_tx.send(());
+                    return Err(Box::new(e));
+                }
+                Err(e) => {
+                    eprintln!("HTTP server task panicked: {e}");
+                    let _ = shutdown_tx.send(());
+                    return Err(Box::new(e));
+                }
+            }
+        }
+        result = sampler_handle => {
+            match result {
+                Ok(()) => {
+                    info!("sampler exited cleanly");
+                }
+                Err(e) => {
+                    eprintln!("sampler task panicked: {e}");
+                    let _ = shutdown_tx.send(());
+                    return Err(Box::new(e));
+                }
+            }
+        }
+    }
 
-    // Notify all tasks to shut down.
+    // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());
-
-    // Wait for both tasks to finish.
-    let _ = tokio::join!(sampler_handle, server_handle);
 
     info!("greggd stopped");
     Ok(())

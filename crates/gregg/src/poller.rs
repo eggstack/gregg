@@ -11,6 +11,7 @@
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
+use futures_util::StreamExt;
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
 use crate::clock::Clock;
@@ -133,24 +134,42 @@ impl HttpClient {
             };
         }
 
-        let Ok(body) = response.bytes().await else {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::NetworkError,
-                latency,
-            };
-        };
+        // Reject immediately if Content-Length is known to exceed the cap.
+        if let Some(content_length) = response.content_length() {
+            if content_length > MAX_RESPONSE_BYTES as u64 {
+                let latency = start.elapsed();
+                return PollResult {
+                    system_id: endpoint.id.clone(),
+                    endpoint: endpoint.clone(),
+                    outcome: PollOutcome::BodyTooLarge,
+                    latency,
+                };
+            }
+        }
 
-        if body.len() > MAX_RESPONSE_BYTES {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::BodyTooLarge,
-                latency,
+        // Stream the body in chunks, tracking cumulative size.
+        let mut stream = response.bytes_stream();
+        let mut body = Vec::new();
+        while let Some(chunk_result) = stream.next().await {
+            let Ok(c) = chunk_result else {
+                let latency = start.elapsed();
+                return PollResult {
+                    system_id: endpoint.id.clone(),
+                    endpoint: endpoint.clone(),
+                    outcome: PollOutcome::NetworkError,
+                    latency,
+                };
             };
+            body.extend_from_slice(&c);
+            if body.len() > MAX_RESPONSE_BYTES {
+                let latency = start.elapsed();
+                return PollResult {
+                    system_id: endpoint.id.clone(),
+                    endpoint: endpoint.clone(),
+                    outcome: PollOutcome::BodyTooLarge,
+                    latency,
+                };
+            }
         }
 
         let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(&body) else {

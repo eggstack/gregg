@@ -114,6 +114,7 @@ mod tests {
                 id: format!("id-{i}"),
                 host: format!("host{i}.local"),
                 port: 11310,
+                port_was_explicit: false,
                 name: Some((*name).to_string()),
             });
         }
@@ -630,6 +631,7 @@ mod tests {
             id: "unicode-1".into(),
             host: "host1.local".into(),
             port: 11310,
+            port_was_explicit: false,
             name: Some("サーバー①".into()),
         });
         let mut state = AppState::from_config(&config);
@@ -979,6 +981,7 @@ mod tests {
             id: "no-name".into(),
             host: "10.0.0.1".into(),
             port: 11310,
+            port_was_explicit: false,
             name: None,
         });
         let mut state = AppState::from_config(&config);
