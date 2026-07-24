@@ -110,6 +110,11 @@ mod tests {
 
     #[test]
     fn terminal_size_returns_valid_dimensions() {
+        use std::io::IsTerminal;
+        if !std::io::stdout().is_terminal() {
+            eprintln!("skipping: no TTY attached");
+            return;
+        }
         let (cols, rows) = Terminal::size().expect("terminal size should succeed");
         assert!(cols > 0, "columns should be > 0, got {cols}");
         assert!(rows > 0, "rows should be > 0, got {rows}");
@@ -141,6 +146,8 @@ mod tests {
 
     #[test]
     fn panic_hook_does_not_interfere_with_normal_operation() {
+        use std::io::IsTerminal;
+
         // Install the panic hook and then verify normal operations work.
         HOOK_INSTALLED.call_once(|| {
             let original_hook = std::panic::take_hook();
@@ -152,6 +159,10 @@ mod tests {
 
         // These should all succeed without triggering the panic hook.
         restore_terminal();
+        if !std::io::stdout().is_terminal() {
+            eprintln!("skipping terminal size check: no TTY attached");
+            return;
+        }
         let (cols, rows) = Terminal::size().expect("size should work");
         assert!(cols > 0);
         assert!(rows > 0);

@@ -109,7 +109,7 @@ fn zero_swap_is_handled_without_panic() {
     assert_eq!(swap.total_bytes, 0);
     assert_eq!(swap.used_bytes, 0);
     let metrics = swap.into_metrics();
-    assert!(metrics.usage_pct == 0.0);
+    assert_eq!(metrics.usage_pct, 0.0);
 }
 
 #[test]
@@ -434,7 +434,7 @@ fn zero_swap_host_produces_valid_snapshot() {
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.swap.used_bytes, 0);
     assert_eq!(snap.swap.total_bytes, 0);
-    assert!(snap.swap.usage_pct == 0.0);
+    assert_eq!(snap.swap.usage_pct, 0.0);
 }
 
 #[test]
