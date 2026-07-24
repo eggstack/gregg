@@ -9,6 +9,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **launchd stop idempotency** (`greggd`): `greggd stop` now returns success
+  when the service is already unloaded, instead of failing with a launchd
+  not-found error. This makes stop safe to call unconditionally in scripts
+  and automation.
+- **Client config permissions** (`gregg`): All atomic configuration writes now
+  enforce `0600` (owner read/write only) permissions on the final config file,
+  preventing other users from reading endpoint credentials or host lists.
+- **Lock-file truncation** (`gregg`): The advisory lock file is no longer
+  truncated during acquisition. Previous behavior could silently drop lock
+  content on concurrent access; the fix preserves existing file content.
+- **Release-candidate workflow** (`.github/workflows/release-candidate.yml`):
+  Candidate refs are now resolved to immutable commit SHAs before comparison,
+  so tag and branch inputs work correctly. Package verification is staged
+  (`gregg-protocol` first, then `greggd` and `gregg`) so binary crates can
+  resolve the indexed protocol dependency.
+- **Installed daemon loopback verification** (`scripts/verify-installed-daemon.sh`):
+  New script that installs the daemon from a clean root, starts it, verifies
+  the HTTP `/healthz` endpoint responds on loopback, and stops the service.
+  Replaces the previous masked `|| true` smoke test.
+
 - **macOS FFI** (`greggd`): `mach_host_self()` and `mach_task_self()` are now
   declared as foreign functions instead of being assumed to exist. `HostPort::current()`
   returns `Result` and rejects `MACH_PORT_NULL`. `Drop` releases via

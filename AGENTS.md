@@ -132,6 +132,11 @@ cargo doc --workspace --no-deps
 
 Platform-specific CI should run on Linux and macOS. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
+The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
+validates that a clean `cargo install` produces a working daemon binary that
+responds to HTTP health checks on loopback. Use it as part of release-candidate
+evidence instead of ad-hoc `|| true` smoke tests.
+
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 
 ## crates.io release constraints
