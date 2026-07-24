@@ -10,7 +10,7 @@ homepage.workspace = true
 readme = "README.md"
 description = "Lightweight Linux and macOS metrics daemon that exposes a read-only JSON API for the gregg client."
 keywords = ["metrics", "daemon", "system", "monitoring"]
-categories = ["api-bindings", "system-utilities"]
+categories = ["command-line-utilities", "command-line-interface"]
 include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "../../packaging/**/*"]
 
 [[bin]]
