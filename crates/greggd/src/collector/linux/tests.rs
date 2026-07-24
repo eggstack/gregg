@@ -749,10 +749,7 @@ fn container_collector_produces_valid_snapshot() {
         .source_mut()
         .memory_source_mut()
         .expect("memory source");
-    inner.add_file(
-        "/proc/stat",
-        read_fixture("container_proc_stat_b.txt"),
-    );
+    inner.add_file("/proc/stat", read_fixture("container_proc_stat_b.txt"));
 
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
