@@ -361,10 +361,7 @@ async fn concurrent_requests_return_same_snapshot() {
 // ===== Stale Snapshot Tests =====
 
 fn fresh_snapshot() -> StatusSnapshot {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "millis from SystemTime is well within u64 range"
-    )]
+    #[allow(clippy::cast_possible_truncation)]
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

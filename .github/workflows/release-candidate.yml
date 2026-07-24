@@ -4,14 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       candidate_ref:
-        description: "Git ref (commit SHA or tag) to verify"
+        description: "Immutable commit SHA or annotated tag to verify"
         required: true
         type: string
-      run_soak:
-        description: "Run 24-hour soak tests (Linux and macOS)"
-        required: false
-        type: boolean
-        default: false
+      stage:
+        description: "Explicit release-gate stage"
+        required: true
+        type: choice
+        default: protocol-prepublish
+        options:
+          - protocol-prepublish
+          - protocol-index-check
+          - binary-prepublish
+          - native-evidence
+          - operational-evidence
+          - postpublish-verify
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,388 +26,501 @@ env:
 
 jobs:
   resolve:
-    name: Resolve candidate
+    name: Resolve immutable candidate
     runs-on: ubuntu-latest
     outputs:
       candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
       candidate_version: ${{ steps.resolve.outputs.candidate_version }}
       short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
-      - name: Check out candidate (full history)
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_ref }}
           fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Resolve ref to full SHA
-        id: resolve
+      - uses: dtolnay/rust-toolchain@stable
+      - id: resolve
         run: |
-          CANDIDATE_SHA="$(git rev-parse "${{ inputs.candidate_ref }}^{commit}")"
-          SHORT_SHA="$(echo "$CANDIDATE_SHA" | cut -c1-8)"
-          VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
-          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
-          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
-          echo "candidate_version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Resolved: $CANDIDATE_SHA (short: $SHORT_SHA) version=$VERSION"
+          set -euo pipefail
+          candidate_sha="$(git rev-parse "${{ inputs.candidate_ref }}^{commit}")"
+          short_sha="$(git rev-parse --short=8 "${{ inputs.candidate_ref }}^{commit}")"
+          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
+          test "${candidate_sha}" = "$(git rev-parse HEAD)"
+          test "${version}" = "1.0.1"
+          grep -Eq 'gregg-protocol[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"1\.0\.1"' crates/greggd/Cargo.toml
+          grep -Eq 'gregg-protocol[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"1\.0\.1"' crates/gregg/Cargo.toml
+          test -z "$(git status --porcelain)"
+          test -f Cargo.lock
+          echo "candidate_sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
+          echo "short_sha=${short_sha}" >> "${GITHUB_OUTPUT}"
+          echo "candidate_version=${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Verify workspace version is 1.0.1
-        run: |
-          VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
-          if [ "$VERSION" != "1.0.1" ]; then
-            echo "ERROR: workspace version is '$VERSION', expected '1.0.1'"
-            exit 1
-          fi
-
-      - name: Verify all inter-crate dependencies are 1.0.1
-        run: |
-          for CRATE_TOML in crates/greggd/Cargo.toml crates/gregg/Cargo.toml; do
-            # Extract gregg-protocol version from [dependencies] section only.
-            # Handles inline table format: gregg-protocol = { version = "1.0.1", ... }
-            PROTO_VER="$(awk '/^\[dependencies\]/{found=1} found && /gregg-protocol/{s=$0; gsub(/.*version *= *"/, "", s); gsub(/".*/, "", s); print s; exit}' "$CRATE_TOML")"
-            if [ -z "$PROTO_VER" ]; then
-              echo "ERROR: $CRATE_TOML does not declare a gregg-protocol dependency"
-              exit 1
-            fi
-            if [ "$PROTO_VER" != "1.0.1" ]; then
-              echo "ERROR: $CRATE_TOML declares gregg-protocol version '$PROTO_VER', expected '1.0.1'"
-              exit 1
-            fi
-            echo "OK: $CRATE_TOML -> gregg-protocol $PROTO_VER"
-          done
-
-      - name: Verify worktree is clean
-        run: |
-          DIRTY="$(git status --porcelain)"
-          if [ -n "$DIRTY" ]; then
-            echo "ERROR: worktree is dirty after checkout:"
-            echo "$DIRTY"
-            exit 1
-          fi
-          echo "Worktree is clean"
-
-      - name: Verify Cargo.lock is present and consistent
-        run: |
-          if [ ! -f Cargo.lock ]; then
-            echo "ERROR: Cargo.lock is not present"
-            exit 1
-          fi
-          cargo generate-lockfile --locked 2>&1 || {
-            echo "ERROR: Cargo.lock is inconsistent"
-            exit 1
-          }
-          if [ -n "$(git status --porcelain Cargo.lock)" ]; then
-            echo "ERROR: Cargo.lock changed after generate-lockfile --locked"
-            exit 1
-          fi
-          echo "Cargo.lock is present and consistent"
-
-  package-verification-protocol:
-    name: Package verification — gregg-protocol
+  source-ci:
+    name: Source CI and shell validation
+    needs: resolve
+    if: ${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' || inputs.stage == 'native-evidence' }}
     runs-on: ubuntu-latest
-    needs: [resolve]
     steps:
-      - name: Check out candidate by SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        continue-on-error: true
+      - name: Standard gates
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features
+          cargo doc --workspace --no-deps
+      - name: Shell gates
+        run: |
+          set -euo pipefail
+          for script in scripts/*.sh packaging/*.sh; do bash -n "${script}"; done
+          command -v shellcheck >/dev/null 2>&1
+          shellcheck scripts/*.sh packaging/*.sh
+          bash scripts/test-verify-installed-daemon.sh
+      - name: Dependency policy
+        uses: EmbarkStudios/cargo-deny-action@v2
+      - name: Record duplicate dependency tree
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          cargo tree -d | tee evidence/duplicate-dependencies.txt
+      - name: Candidate metadata
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "${{ needs.resolve.outputs.candidate_version }}" \
+            --arg stage source-ci --arg run_id "${GITHUB_RUN_ID}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" --arg os "${RUNNER_OS}" \
+            --arg arch "$(uname -m)" --arg rustc "$(rustc --version)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,rustc:$rustc}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rc-protocol-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rc-protocol-${{ needs.resolve.outputs.short_sha }}-
+          name: source-ci-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
 
-      - name: Record environment
-        run: |
-          echo "=== Commit SHA ==="
-          git rev-parse HEAD
-          echo "=== Rust version ==="
-          rustc -vV
-          cargo --version
-          echo "=== OS and architecture ==="
-          uname -a
-
-      - name: List package contents
-        run: cargo package -p gregg-protocol --list
-
-      - name: Build package archive
-        run: cargo package -p gregg-protocol
-
-      - name: Locate and checksum archive
-        run: |
-          VERSION="$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "gregg-protocol") | .version')"
-          ARCHIVE="target/package/gregg-protocol-${VERSION}.crate"
-          echo "Archive: $ARCHIVE"
-          sha256sum "$ARCHIVE"
-          echo "ARCHIVE_PATH=$ARCHIVE" >> "$GITHUB_ENV"
-
-      - name: Unpack archive into clean directory
-        run: |
-          mkdir -p /tmp/protocol-verify
-          tar -xzf "$ARCHIVE_PATH" -C /tmp/protocol-verify
-          echo "=== Unpacked contents ==="
-          ls -la /tmp/protocol-verify/
-
-      - name: Inspect normalized Cargo.toml
-        run: |
-          echo "=== Normalized Cargo.toml ==="
-          cat /tmp/protocol-verify/*/Cargo.toml
-
-      - name: Build unpacked source
-        run: |
-          cd /tmp/protocol-verify/*/
-          cargo build --all-features 2>&1
-
-      - name: Test unpacked source
-        run: |
-          cd /tmp/protocol-verify/*/
-          cargo test --all-features 2>&1
-
-  package-verification-binaries:
-    name: Package verification — ${{ matrix.crate }}
+  protocol-prepublish:
+    name: Protocol prepublication
+    needs: [resolve, source-ci]
+    if: ${{ always() && inputs.stage == 'protocol-prepublish' && needs.source-ci.result == 'success' }}
     runs-on: ubuntu-latest
-    needs: [resolve, package-verification-protocol]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Package, unpack, and build protocol
+        run: |
+          set -euo pipefail
+          mkdir -p evidence unpacked
+          cargo package -p gregg-protocol --list | tee evidence/package-list.txt
+          cargo package -p gregg-protocol
+          archive="target/package/gregg-protocol-${{ needs.resolve.outputs.candidate_version }}.crate"
+          test -f "${archive}"
+          sha256sum "${archive}" | tee evidence/package.sha256
+          stat -c '%s' "${archive}" > evidence/package.size
+          tar -xzf "${archive}" -C unpacked
+          package_dir="unpacked/gregg-protocol-${{ needs.resolve.outputs.candidate_version }}"
+          cp "${package_dir}/Cargo.toml" evidence/normalized-Cargo.toml
+          cargo build --manifest-path "${package_dir}/Cargo.toml" --all-features
+          cargo test --manifest-path "${package_dir}/Cargo.toml" --all-features
+          rustup toolchain install 1.75 --profile minimal
+          cargo +1.75 build --manifest-path "${package_dir}/Cargo.toml" --all-features
+          mkdir -p consumer/src
+          printf '[package]\nname="consumer"\nversion="0.0.0"\nedition="2021"\n[dependencies]\ngregg-protocol={path="%s"}\n' "$PWD/${package_dir}" > consumer/Cargo.toml
+          : > consumer/src/main.rs
+          cargo check --manifest-path consumer/Cargo.toml
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "${{ needs.resolve.outputs.candidate_version }}" \
+            --arg stage protocol-prepublish --arg run_id "${GITHUB_RUN_ID}" \
+            --arg attempt "${GITHUB_RUN_ATTEMPT}" --arg os "${RUNNER_OS}" \
+            --arg arch "$(uname -m)" --arg checksum "$(cut -d' ' -f1 evidence/package.sha256)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,package:"gregg-protocol",checksum:$checksum}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: protocol-prepublish-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  protocol-index-check:
+    name: Indexed protocol prerequisite
+    needs: resolve
+    if: ${{ inputs.stage == 'protocol-index-check' || inputs.stage == 'binary-prepublish' || inputs.stage == 'postpublish-verify' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve crates.io record and consumer
+        run: |
+          set -euo pipefail
+          mkdir -p evidence consumer/src
+          curl --fail --silent --show-error https://crates.io/api/v1/crates/gregg-protocol/1.0.1 > evidence/registry.json
+          jq -e '.version.num == "1.0.1" and .version.yanked == false and (.version.cksum | type == "string")' evidence/registry.json >/dev/null
+          cat > consumer/Cargo.toml <<'EOF'
+          [package]
+          name = "consumer"
+          version = "0.0.0"
+          edition = "2021"
+          [dependencies]
+          gregg-protocol = "=1.0.1"
+          EOF
+          : > consumer/src/main.rs
+          cargo generate-lockfile --manifest-path consumer/Cargo.toml
+          cargo check --manifest-path consumer/Cargo.toml --locked
+          cargo tree --manifest-path consumer/Cargo.toml --locked | tee evidence/consumer-tree.txt
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "1.0.1" --arg stage protocol-index-check \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            --arg checksum "$(jq -r '.version.cksum' evidence/registry.json)" \
+            --arg published "$(jq -r '.version.created_at' evidence/registry.json)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,registry_checksum:$checksum,published_at:$published,yanked:false}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: protocol-index-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  binary-prepublish:
+    name: Binary package gate
+    needs: [resolve, source-ci, protocol-index-check]
+    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.source-ci.result == 'success' && needs.protocol-index-check.result == 'success' }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         crate: [greggd, gregg]
     steps:
-      - name: Check out candidate by SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rc-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rc-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-
-
-      - name: Record environment
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Unpack, install, and smoke package
         run: |
-          echo "=== Commit SHA ==="
-          git rev-parse HEAD
-          echo "=== Rust version ==="
-          rustc -vV
-          cargo --version
-          echo "=== OS and architecture ==="
-          uname -a
-
-      - name: List package contents
-        run: cargo package -p ${{ matrix.crate }} --list
-
-      - name: Build package archive
-        run: cargo package -p ${{ matrix.crate }}
-
-      - name: Locate and checksum archive
-        run: |
-          CRATE_NAME="${{ matrix.crate }}"
-          VERSION="$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "'"$CRATE_NAME"'") | .version')"
-          ARCHIVE="target/package/${CRATE_NAME}-${VERSION}.crate"
-          echo "Archive: $ARCHIVE"
-          sha256sum "$ARCHIVE"
-          echo "ARCHIVE_PATH=$ARCHIVE" >> "$GITHUB_ENV"
-
-      - name: Unpack archive into clean directory
-        run: |
-          mkdir -p /tmp/${{ matrix.crate }}-verify
-          tar -xzf "$ARCHIVE_PATH" -C /tmp/${{ matrix.crate }}-verify
-          echo "=== Unpacked contents ==="
-          ls -la /tmp/${{ matrix.crate }}-verify/
-
-      - name: Inspect normalized Cargo.toml
-        run: |
-          echo "=== Normalized Cargo.toml ==="
-          cat /tmp/${{ matrix.crate }}-verify/*/Cargo.toml
-
-      - name: Build unpacked source
-        run: |
-          cd /tmp/${{ matrix.crate }}-verify/*/
-          cargo build --all-features 2>&1
-
-      - name: Test unpacked source
-        run: |
-          cd /tmp/${{ matrix.crate }}-verify/*/
-          cargo test --all-features 2>&1
-
-      - name: Install binary from clean root
-        run: |
-          TEMP_ROOT="/tmp/${{ matrix.crate }}-install"
-          mkdir -p "$TEMP_ROOT"
-          cd /tmp/${{ matrix.crate }}-verify/*/
-          cargo install --path . --locked --root "$TEMP_ROOT" 2>&1
-          echo "=== Installed binaries ==="
-          ls -la "$TEMP_ROOT/bin/"
-
-      - name: Smoke test installed binary
-        run: |
-          TEMP_ROOT="/tmp/${{ matrix.crate }}-install"
-          "$TEMP_ROOT/bin/${{ matrix.crate }}" --help 2>&1
-          if [ "${{ matrix.crate }}" = "greggd" ]; then
-            "$TEMP_ROOT/bin/greggd" --version 2>&1
+          set -euo pipefail
+          mkdir -p evidence unpacked
+          cargo package -p "${{ matrix.crate }}" --list | tee "evidence/${{ matrix.crate }}-package-list.txt"
+          cargo package -p "${{ matrix.crate }}"
+          archive="target/package/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}.crate"
+          test -f "${archive}"
+          sha256sum "${archive}" | tee "evidence/${{ matrix.crate }}.sha256"
+          stat -c '%s' "${archive}" > "evidence/${{ matrix.crate }}.size"
+          tar -xzf "${archive}" -C unpacked
+          package_dir="unpacked/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}"
+          cp "${package_dir}/Cargo.toml" "evidence/${{ matrix.crate }}-normalized-Cargo.toml"
+          cargo generate-lockfile --manifest-path "${package_dir}/Cargo.toml"
+          cargo build --manifest-path "${package_dir}/Cargo.toml" --all-features
+          cargo test --manifest-path "${package_dir}/Cargo.toml" --all-features
+          install_root="${RUNNER_TEMP}/${{ matrix.crate }}-install"
+          rm -rf "${install_root}"
+          cargo install --path "${package_dir}" --root "${install_root}"
+          binary="${install_root}/bin/${{ matrix.crate }}"
+          test -x "${binary}"
+          sha256sum "${binary}" | tee "evidence/${{ matrix.crate }}-installed.sha256"
+          stat -c '%s' "${binary}" > "evidence/${{ matrix.crate }}-installed.size"
+          "${binary}" --help
+          if [[ "${{ matrix.crate }}" == greggd ]]; then
+            ./scripts/verify-installed-daemon.sh "${binary}"
           fi
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "${{ needs.resolve.outputs.candidate_version }}" \
+            --arg stage "binary-prepublish-${{ matrix.crate }}" \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,crate:"${{ matrix.crate }}"}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
 
-  msrv-package:
-    name: MSRV package build — ${{ matrix.crate }}
+  binary-msrv:
+    name: Binary MSRV gate
+    needs: [resolve, protocol-index-check]
+    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.protocol-index-check.result == 'success' }}
     runs-on: ubuntu-latest
-    needs: [resolve]
     strategy:
       fail-fast: false
       matrix:
-        crate: [gregg-protocol, greggd, gregg]
+        crate: [greggd, gregg]
     steps:
-      - name: Check out candidate by SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Install Rust 1.75
-        uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.75"
-
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        continue-on-error: true
+      - name: Build unpacked binary under Rust 1.75
+        run: |
+          set -euo pipefail
+          mkdir -p evidence unpacked
+          cargo package -p "${{ matrix.crate }}"
+          archive="target/package/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}.crate"
+          tar -xzf "${archive}" -C unpacked
+          package_dir="unpacked/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}"
+          cargo generate-lockfile --manifest-path "${package_dir}/Cargo.toml"
+          cargo +1.75 build --manifest-path "${package_dir}/Cargo.toml" --all-features
+          cargo +1.75 test --manifest-path "${package_dir}/Cargo.toml" --all-features
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "${{ needs.resolve.outputs.candidate_version }}" \
+            --arg stage "binary-msrv-${{ matrix.crate }}" \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,crate:"${{ matrix.crate }}",rust:"1.75"}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-
-
-      - name: Build unpacked protocol package under Rust 1.75
-        if: matrix.crate == 'gregg-protocol'
-        run: |
-          cargo package -p ${{ matrix.crate }}
-          ARCHIVE="target/package/${{ matrix.crate }}-$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "${{ matrix.crate }}") | .version').crate"
-          mkdir -p /tmp/msrv-verify
-          tar -xzf "$ARCHIVE" -C /tmp/msrv-verify
-          cd /tmp/msrv-verify/*/
-          cargo build --all-features 2>&1
-
-      - name: Build unpacked binary package under Rust 1.75
-        if: matrix.crate != 'gregg-protocol'
-        run: |
-          cargo package -p ${{ matrix.crate }}
-          ARCHIVE="target/package/${{ matrix.crate }}-$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "${{ matrix.crate }}") | .version').crate"
-          mkdir -p /tmp/msrv-verify
-          tar -xzf "$ARCHIVE" -C /tmp/msrv-verify
-          cd /tmp/msrv-verify/*/
-          cargo build --all-features 2>&1
+          name: msrv-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
 
   native-evidence:
-    name: Native evidence — ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    needs: [resolve]
+    name: Native platform evidence
+    needs: [resolve, source-ci]
+    if: ${{ inputs.stage == 'native-evidence' && needs.source-ci.result == 'success' }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: x86_64
-            name: linux-x86_64
-          - os: macos-15
-            arch: arm64
+          - runner: ubuntu-latest
+            expected_arch: x86_64
+            name: linux-x86-64
+          - runner: ubuntu-24.04-arm
+            expected_arch: aarch64
+            name: linux-arm64
+          - runner: macos-15
+            expected_arch: arm64
             name: macos-arm64
-          - os: macos-15-intel
-            arch: x86_64
+          - runner: macos-15-intel
+            expected_arch: x86_64
             name: macos-intel
     steps:
-      - name: Check out candidate by SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        continue-on-error: true
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-rc-native-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rc-native-${{ needs.resolve.outputs.short_sha }}-
-
-      - name: Verify architecture
+      - name: Assert native architecture and run gates
         run: |
-          OBSERVED="$(uname -m)"
-          if [ "$OBSERVED" != "${{ matrix.arch }}" ]; then
-            echo "ERROR: expected arch ${{ matrix.arch }}, got $OBSERVED"
-            exit 1
-          fi
-
-      - name: Full workspace test
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Native collector smoke
-        run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.expected_arch }}"
+          uname -a
+          cargo test --workspace --all-targets --all-features
+          cargo build --release -p greggd -p gregg
+          if [[ "${{ matrix.name }}" == linux-* ]]; then
             cargo test -p greggd --all-features -- collector::linux
           else
             cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
           fi
-
-      - name: Release build
-        run: cargo build --release -p greggd -p gregg
-
-      - name: Daemon loopback smoke
+          bash scripts/verify-installed-daemon.sh target/release/greggd
+      - name: Candidate metadata
         run: |
-          cargo build --release -p greggd
-          ./scripts/verify-installed-daemon.sh ./target/release/greggd
+          set -euo pipefail
+          mkdir -p evidence
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "1.0.1" --arg stage "native-${{ matrix.name }}" \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.name }}-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
 
-  soak:
-    name: 24-hour soak
-    runs-on: ubuntu-latest
-    needs: [resolve, package-verification-protocol, package-verification-binaries, native-evidence]
-    if: inputs.run_soak == true
+  operational-evidence:
+    name: Protected operational evidence
+    needs: resolve
+    if: ${{ inputs.stage == 'operational-evidence' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: [self-hosted, gregg-operational]
+    environment: gregg-operational
     steps:
-      - name: Check out candidate by SHA
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Run soak test
+          fetch-depth: 0
+      - name: Run host-owned package gates
         run: |
-          ./scripts/soak-test.sh 2>&1
+          set -euo pipefail
+          test -n "${GREGG_OPERATIONAL_HOST:-}"
+          test -x "${GREGG_INSTALLED_GREGGD:?set GREGG_INSTALLED_GREGGD}"
+          scripts/measure-resources.sh --daemon "${GREGG_INSTALLED_GREGGD}" --duration-secs "${GREGG_RESOURCE_DURATION_SECS:-30}"
+          scripts/soak-test.sh --daemon "${GREGG_INSTALLED_GREGGD}" --duration-minutes "${GREGG_SOAK_DURATION_MINUTES:-1440}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: operational-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: |
+            resource-measurement-*
+            soak-results-*
+          if-no-files-found: error
+
+  systemd-lifecycle:
+    name: Protected systemd lifecycle
+    needs: resolve
+    if: ${{ inputs.stage == 'operational-evidence' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: [self-hosted, linux, gregg-systemd]
+    environment: gregg-systemd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+      - name: Exercise native systemd lifecycle
+        run: |
+          set -euo pipefail
+          test -n "${GREGG_SYSTEMD_HOST:-}"
+          test -x "${GREGG_SYSTEMD_BINARY:?set GREGG_SYSTEMD_BINARY to package-installed greggd}"
+          mkdir -p evidence
+          {
+            uname -a
+            sudo packaging/install-linux.sh "${GREGG_SYSTEMD_BINARY}"
+            sudo systemctl enable --now greggd
+            sudo systemctl is-active --quiet greggd
+            curl --fail --silent http://127.0.0.1:11310/healthz
+            sudo systemctl stop greggd
+            if sudo systemctl is-active --quiet greggd; then exit 1; fi
+            sudo systemctl start greggd
+            sudo systemctl is-active --quiet greggd
+            sudo systemctl restart greggd
+            sudo systemctl is-active --quiet greggd
+            sudo /usr/local/bin/greggd croncheck
+            sudo systemctl stop greggd
+            sudo /usr/local/bin/greggd croncheck
+            sudo systemctl is-active --quiet greggd
+            sudo systemctl disable --now greggd
+          } 2>&1 | tee evidence/systemd-transcript.txt
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "1.0.1" --arg stage systemd-lifecycle \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: systemd-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  launchd-lifecycle:
+    name: Protected launchd lifecycle
+    needs: resolve
+    if: ${{ inputs.stage == 'operational-evidence' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')) }}
+    runs-on: [self-hosted, macos, gregg-launchd]
+    environment: gregg-launchd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+      - name: Exercise native launchd lifecycle
+        run: |
+          set -euo pipefail
+          test -n "${GREGG_LAUNCHD_HOST:-}"
+          test -x "${GREGG_LAUNCHD_BINARY:?set GREGG_LAUNCHD_BINARY to package-installed greggd}"
+          mkdir -p evidence
+          {
+            uname -a
+            sudo packaging/install-macos.sh "${GREGG_LAUNCHD_BINARY}"
+            sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
+            sudo launchctl print system/com.eggstack.greggd
+            curl --fail --silent http://127.0.0.1:11310/healthz
+            sudo /usr/local/bin/greggd stop
+            sudo /usr/local/bin/greggd stop
+            sudo /usr/local/bin/greggd start
+            sudo launchctl print system/com.eggstack.greggd
+            sudo /usr/local/bin/greggd restart
+            sudo launchctl print system/com.eggstack.greggd
+            sudo /usr/local/bin/greggd croncheck
+            sudo /usr/local/bin/greggd stop
+          } 2>&1 | tee evidence/launchd-transcript.txt
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "1.0.1" --arg stage launchd-lifecycle \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: launchd-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  postpublish-verify:
+    name: Postpublication registry installs
+    needs: [resolve, protocol-index-check]
+    if: ${{ always() && inputs.stage == 'postpublish-verify' && needs.protocol-index-check.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install and exercise published binaries
+        run: |
+          set -euo pipefail
+          mkdir -p evidence "${RUNNER_TEMP}/greggd" "${RUNNER_TEMP}/gregg"
+          cargo install greggd --version "=1.0.1" --locked --root "${RUNNER_TEMP}/greggd"
+          cargo install gregg --version "=1.0.1" --locked --root "${RUNNER_TEMP}/gregg"
+          "${RUNNER_TEMP}/greggd/bin/greggd" --help
+          "${RUNNER_TEMP}/greggd/bin/greggd" --version
+          "${RUNNER_TEMP}/gregg/bin/gregg" --help
+          "${RUNNER_TEMP}/gregg/bin/gregg" --version
+          ./scripts/verify-installed-daemon.sh "${RUNNER_TEMP}/greggd/bin/greggd"
+          client_config="${RUNNER_TEMP}/gregg.toml"
+          "${RUNNER_TEMP}/gregg/bin/gregg" --config "${client_config}" add 127.0.0.1:9 --name registry-smoke
+          test "$(stat -c '%a' "${client_config}")" = 600
+          sha256sum "${RUNNER_TEMP}/greggd/bin/greggd" "${RUNNER_TEMP}/gregg/bin/gregg" | tee evidence/installed.sha256
+          jq -n --arg candidate_sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --arg version "1.0.1" --arg stage postpublish-verify \
+            --arg run_id "${GITHUB_RUN_ID}" --arg attempt "${GITHUB_RUN_ATTEMPT}" \
+            --arg os "${RUNNER_OS}" --arg arch "$(uname -m)" \
+            '{candidate_sha:$candidate_sha,version:$version,stage:$stage,run_id:$run_id,attempt:$attempt,os:$os,architecture:$arch,registry_install:true}' \
+            > evidence/candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: postpublish-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  aggregate:
+    name: Aggregate candidate evidence
+    needs: [resolve, source-ci, protocol-prepublish, protocol-index-check, binary-prepublish, binary-msrv, native-evidence, operational-evidence, systemd-lifecycle, launchd-lifecycle, postpublish-verify]
+    if: ${{ always() && needs.resolve.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          path: evidence
+          pattern: "*-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}"
+          merge-multiple: false
+          if-no-artifact-found: error
+      - name: Validate and aggregate metadata
+        run: |
+          set -euo pipefail
+          bash scripts/aggregate-candidate-evidence.sh evidence "${{ needs.resolve.outputs.candidate_sha }}" aggregate-candidate.json
+          cat aggregate-candidate.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aggregate-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: aggregate-candidate.json
+          if-no-files-found: error

@@ -20,7 +20,11 @@
 //! no-op if `Running`. `restart()` always bootouts and re-bootstraps.
 //! `is_active()` returns true only when `Running`.
 
-use std::process::Command;
+use std::{
+    fmt, io,
+    process::{Command, Output},
+    sync::Arc,
+};
 
 use super::{ServiceError, ServiceManager};
 
@@ -45,8 +49,23 @@ pub enum ServiceState {
     Running,
 }
 
+/// Narrow seam around launchctl output, keeping command execution injectable
+/// for deterministic state-machine tests.
+trait LaunchctlRunner: Send + Sync {
+    fn output(&self, args: &[&str]) -> io::Result<Output>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CommandLaunchctlRunner;
+
+impl LaunchctlRunner for CommandLaunchctlRunner {
+    fn output(&self, args: &[&str]) -> io::Result<Output> {
+        Command::new("launchctl").args(args).output()
+    }
+}
+
 /// Service manager backed by macOS launchd.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LaunchdManager {
     label: String,
     /// The target domain for launchctl commands. Defaults to
@@ -55,6 +74,18 @@ pub struct LaunchdManager {
     /// The path to the plist file, used by `bootstrap` and `start`
     /// when the service is not yet loaded.
     plist_path: Option<String>,
+    runner: Arc<dyn LaunchctlRunner>,
+}
+
+impl fmt::Debug for LaunchdManager {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LaunchdManager")
+            .field("label", &self.label)
+            .field("domain", &self.domain)
+            .field("plist_path", &self.plist_path)
+            .finish_non_exhaustive()
+    }
 }
 
 impl LaunchdManager {
@@ -66,11 +97,12 @@ impl LaunchdManager {
     /// without a repository checkout or current working directory.
     #[must_use]
     pub fn production() -> Self {
-        Self {
-            label: SERVICE_LABEL.to_owned(),
-            domain: None,
-            plist_path: Some(INSTALLED_PLIST_PATH.to_owned()),
-        }
+        Self::with_runner(
+            SERVICE_LABEL.to_owned(),
+            None,
+            Some(INSTALLED_PLIST_PATH.to_owned()),
+            Arc::new(CommandLaunchctlRunner),
+        )
     }
 
     /// Create a new manager with default system domain and no plist path.
@@ -78,21 +110,18 @@ impl LaunchdManager {
     /// Primarily for testing. Production code should use [`Self::production`].
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            label: SERVICE_LABEL.to_owned(),
-            domain: None,
-            plist_path: None,
-        }
+        Self::with_runner(
+            SERVICE_LABEL.to_owned(),
+            None,
+            None,
+            Arc::new(CommandLaunchctlRunner),
+        )
     }
 
     /// Create a manager with a custom label and domain (for testing).
     #[must_use]
     pub fn with_label(label: impl Into<String>, domain: Option<String>) -> Self {
-        Self {
-            label: label.into(),
-            domain,
-            plist_path: None,
-        }
+        Self::with_runner(label.into(), domain, None, Arc::new(CommandLaunchctlRunner))
     }
 
     /// Create a manager with a custom plist path (for `start` bootstrap).
@@ -102,10 +131,25 @@ impl LaunchdManager {
         domain: Option<String>,
         plist_path: impl Into<String>,
     ) -> Self {
-        Self {
-            label: label.into(),
+        Self::with_runner(
+            label.into(),
             domain,
-            plist_path: Some(plist_path.into()),
+            Some(plist_path.into()),
+            Arc::new(CommandLaunchctlRunner),
+        )
+    }
+
+    fn with_runner(
+        label: String,
+        domain: Option<String>,
+        plist_path: Option<String>,
+        runner: Arc<dyn LaunchctlRunner>,
+    ) -> Self {
+        Self {
+            label,
+            domain,
+            plist_path,
+            runner,
         }
     }
 
@@ -128,14 +172,18 @@ impl LaunchdManager {
     }
 
     /// Run a launchctl command with the given arguments.
-    #[allow(clippy::unused_self)]
-    fn run_launchctl(&self, args: &[&str]) -> Result<(), ServiceError> {
-        let output = Command::new("launchctl").args(args).output().map_err(|e| {
-            ServiceError::ExecFailed {
+    fn run_launchctl_output(&self, args: &[&str]) -> Result<Output, ServiceError> {
+        self.runner
+            .output(args)
+            .map_err(|e| ServiceError::ExecFailed {
                 command: format!("launchctl {}", args.join(" ")),
                 source: e,
-            }
-        })?;
+            })
+    }
+
+    /// Run a launchctl command and return its success or captured failure.
+    fn run_launchctl(&self, args: &[&str]) -> Result<(), ServiceError> {
+        let output = self.run_launchctl_output(args)?;
 
         if output.status.success() {
             Ok(())
@@ -242,13 +290,7 @@ impl LaunchdManager {
         let args_ref: Vec<&str> = args.iter().map(String::as_str).collect();
         let target = self.service_target();
 
-        let output = Command::new("launchctl")
-            .args(&args_ref)
-            .output()
-            .map_err(|e| ServiceError::ExecFailed {
-                command: format!("launchctl print {target}"),
-                source: e,
-            })?;
+        let output = self.run_launchctl_output(&args_ref)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -643,106 +685,245 @@ mod tests {
         assert!(prod.plist_path.is_some());
     }
 
-    // --- stop idempotency tests ---
-    //
-    // These tests verify the stop() logic without actually invoking launchctl.
-    // The stop() method queries state via launchctl print and then conditionally
-    // calls bootout. The state machine is tested here at the argument/structure
-    // level.
+    #[cfg(unix)]
+    mod fake_runner_tests {
+        use std::{
+            collections::VecDeque,
+            os::unix::process::ExitStatusExt,
+            process::Output,
+            sync::{Arc, Mutex},
+        };
 
-    #[test]
-    fn stop_state_aware_not_loaded_never_calls_bootout() {
-        // Verify that stop() checks state before calling bootout.
-        // The implementation queries state first and returns Ok(()) for NotLoaded
-        // without constructing bootout args. This test verifies the argument
-        // contract: bootout args use the service target, which is distinct from
-        // the domain target.
-        let manager = LaunchdManager::new();
-        let bootout_args = manager.bootout_args();
-        // Bootout uses the service target format.
-        assert_eq!(bootout_args, vec!["bootout", "system/com.eggstack.greggd"]);
-    }
+        use super::*;
 
-    #[test]
-    fn stop_loaded_calls_bootout_exactly_once() {
-        // When state is Loaded, stop() calls self.bootout() exactly once.
-        // Verify bootout args are deterministic and uncorrupted.
-        let manager = LaunchdManager::new();
-        let bootout_args = manager.bootout_args();
-        assert_eq!(bootout_args[0], "bootout");
-        assert_eq!(bootout_args[1], "system/com.eggstack.greggd");
-        // bootout should take exactly 2 args (command + service target).
-        assert_eq!(bootout_args.len(), 2);
-    }
+        struct FakeResponse {
+            status: i32,
+            stdout: Vec<u8>,
+            stderr: Vec<u8>,
+        }
 
-    #[test]
-    fn stop_running_calls_bootout_exactly_once() {
-        // When state is Running, stop() calls self.bootout() exactly once
-        // (same path as Loaded). Verify argument consistency.
-        let manager = LaunchdManager::new();
-        let bootout1 = manager.bootout_args();
-        let bootout2 = manager.bootout_args();
-        assert_eq!(bootout1, bootout2);
-    }
+        impl FakeResponse {
+            fn success(stdout: &str) -> Self {
+                Self {
+                    status: 0,
+                    stdout: stdout.as_bytes().to_vec(),
+                    stderr: Vec::new(),
+                }
+            }
 
-    #[test]
-    fn stop_service_target_does_not_change() {
-        // The service target passed to bootout must remain consistent
-        // regardless of state. Ensure the target construction is stable.
-        let manager = LaunchdManager::new();
-        let target = manager.service_target();
-        assert_eq!(target, "system/com.eggstack.greggd");
-        assert_eq!(manager.bootout_args()[1], target);
-    }
+            fn failure(stderr: &str) -> Self {
+                Self {
+                    status: 1,
+                    stdout: Vec::new(),
+                    stderr: stderr.as_bytes().to_vec(),
+                }
+            }
 
-    #[test]
-    #[cfg_attr(
-        not(target_os = "macos"),
-        doc = "`stop()` implementation is state-aware (verified on macOS)"
-    )]
-    fn stop_implementation_is_state_aware() {
-        // Verify the stop() method signature is state-aware by construction:
-        // it queries state(), then conditionally calls bootout(). This test
-        // ensures the implementation remains a match-based branching flow.
-        // We verify the call-chain components are wired correctly.
-        let manager = LaunchdManager::new();
+            fn into_output(self) -> Output {
+                Output {
+                    status: std::process::ExitStatus::from_raw(self.status),
+                    stdout: self.stdout,
+                    stderr: self.stderr,
+                }
+            }
+        }
 
-        // state() uses print_args() → "print" + service_target.
-        let print_args = manager.print_args();
-        assert_eq!(print_args, vec!["print", "system/com.eggstack.greggd"]);
+        struct FakeRunner {
+            responses: Mutex<VecDeque<FakeResponse>>,
+            calls: Mutex<Vec<Vec<String>>>,
+        }
 
-        // bootout() uses bootout_args() → "bootout" + service_target.
-        let bootout_args = manager.bootout_args();
-        assert_eq!(bootout_args, vec!["bootout", "system/com.eggstack.greggd"]);
+        impl FakeRunner {
+            fn new(responses: impl IntoIterator<Item = FakeResponse>) -> Arc<Self> {
+                Arc::new(Self {
+                    responses: Mutex::new(responses.into_iter().collect()),
+                    calls: Mutex::new(Vec::new()),
+                })
+            }
 
-        // The two paths are independently constructed and do not share state.
-        assert_ne!(print_args.first(), bootout_args.first());
-    }
+            fn calls(&self) -> Vec<Vec<String>> {
+                self.calls.lock().unwrap().clone()
+            }
+        }
 
-    #[test]
-    fn stop_uses_correct_service_target_for_all_states() {
-        // Regardless of state, the service target used by stop() (through
-        // bootout_args) must be consistent and correctly formatted.
-        let manager = LaunchdManager::new();
-        let target = manager.service_target();
-        // The service target combines domain and label.
-        assert!(target.starts_with("system/"));
-        assert!(target.ends_with("com.eggstack.greggd"));
-        // The label is a suffix, not substring.
-        assert_eq!(target.strip_prefix("system/").unwrap(), manager.label);
-    }
+        impl LaunchctlRunner for FakeRunner {
+            fn output(&self, args: &[&str]) -> io::Result<Output> {
+                self.calls
+                    .lock()
+                    .unwrap()
+                    .push(args.iter().map(ToString::to_string).collect());
+                self.responses
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .map(FakeResponse::into_output)
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::UnexpectedEof, "fake script exhausted")
+                    })
+            }
+        }
 
-    #[test]
-    fn stop_idempotence_logical_flow() {
-        // Two consecutive calls to stop() should handle the NotLoaded case
-        // idempotently. The first stop (if starting from Loaded/Running) calls
-        // bootout; the second stop sees NotLoaded and returns Ok without
-        // bootout. This test verifies that the state query is wired to the
-        // correct service target, so a subsequent NotLoaded check uses the
-        // same target identity.
-        let manager = LaunchdManager::new();
-        let target1 = manager.service_target();
-        let target2 = manager.service_target();
-        assert_eq!(target1, target2, "service target must be stable");
+        fn manager(runner: Arc<FakeRunner>, plist_path: Option<&str>) -> LaunchdManager {
+            LaunchdManager::with_runner(
+                SERVICE_LABEL.to_owned(),
+                None,
+                plist_path.map(str::to_owned),
+                runner,
+            )
+        }
+
+        fn not_loaded() -> FakeResponse {
+            FakeResponse::failure("Could not find service\n")
+        }
+
+        fn loaded() -> FakeResponse {
+            FakeResponse::success("domain = system\n")
+        }
+
+        fn running() -> FakeResponse {
+            FakeResponse::success("state = running\n")
+        }
+
+        fn success() -> FakeResponse {
+            FakeResponse::success("")
+        }
+
+        #[test]
+        fn stop_not_loaded_queries_once_without_bootout() {
+            let runner = FakeRunner::new([not_loaded()]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            assert!(manager.stop().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![vec!["print", "system/com.eggstack.greggd"]]
+            );
+        }
+
+        #[test]
+        fn stop_loaded_queries_then_boots_out_once() {
+            let runner = FakeRunner::new([loaded(), success()]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            assert!(manager.stop().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootout", "system/com.eggstack.greggd"],
+                ]
+            );
+        }
+
+        #[test]
+        fn stop_running_queries_then_boots_out_once() {
+            let runner = FakeRunner::new([running(), success()]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            assert!(manager.stop().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootout", "system/com.eggstack.greggd"],
+                ]
+            );
+        }
+
+        #[test]
+        fn stop_propagates_state_query_error_without_bootout() {
+            let runner = FakeRunner::new([FakeResponse::failure("permission denied\n")]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            let error = manager.stop().unwrap_err();
+            assert!(matches!(
+                error,
+                ServiceError::CommandFailed {
+                    command,
+                    stderr,
+                    ..
+                } if command == "launchctl print system/com.eggstack.greggd"
+                    && stderr == "permission denied\n"
+            ));
+            assert_eq!(
+                runner.calls(),
+                vec![vec!["print", "system/com.eggstack.greggd"]]
+            );
+        }
+
+        #[test]
+        fn stop_propagates_bootout_error() {
+            let runner = FakeRunner::new([loaded(), FakeResponse::failure("bootout denied\n")]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            let error = manager.stop().unwrap_err();
+            assert!(matches!(
+                error,
+                ServiceError::CommandFailed {
+                    command,
+                    stderr,
+                    ..
+                } if command == "launchctl bootout system/com.eggstack.greggd"
+                    && stderr == "bootout denied\n"
+            ));
+            assert_eq!(runner.calls().len(), 2);
+            assert_eq!(
+                runner.calls()[1],
+                vec!["bootout", "system/com.eggstack.greggd"]
+            );
+        }
+
+        #[test]
+        fn consecutive_stops_are_idempotent_after_bootout() {
+            let runner = FakeRunner::new([loaded(), success(), not_loaded()]);
+            let manager = manager(Arc::clone(&runner), None);
+
+            assert!(manager.stop().is_ok());
+            assert!(manager.stop().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootout", "system/com.eggstack.greggd"],
+                    vec!["print", "system/com.eggstack.greggd"],
+                ]
+            );
+        }
+
+        #[test]
+        fn start_after_stop_bootstraps_with_exact_space_containing_path() {
+            let plist = "/Library/Application Support/gregg/greggd.plist";
+            let runner = FakeRunner::new([loaded(), success(), not_loaded(), success()]);
+            let manager = manager(Arc::clone(&runner), Some(plist));
+
+            assert!(manager.stop().is_ok());
+            assert!(manager.start().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootout", "system/com.eggstack.greggd"],
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootstrap", "system", plist],
+                ]
+            );
+        }
+
+        #[test]
+        fn restart_running_boots_out_then_bootstraps() {
+            let plist = "/Library/Application Support/gregg/greggd.plist";
+            let runner = FakeRunner::new([running(), success(), success()]);
+            let manager = manager(Arc::clone(&runner), Some(plist));
+
+            assert!(manager.restart().is_ok());
+            assert_eq!(
+                runner.calls(),
+                vec![
+                    vec!["print", "system/com.eggstack.greggd"],
+                    vec!["bootout", "system/com.eggstack.greggd"],
+                    vec!["bootstrap", "system", plist],
+                ]
+            );
+        }
     }
 }

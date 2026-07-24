@@ -162,10 +162,7 @@ fn parse_loadavg(raw: &str) -> Result<LoadAverage, CollectError> {
                 format!("loadavg {label} is not finite/non-negative"),
             ));
         }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "load averages bounded by host CPU count and probe interval; f32 has ample headroom"
-        )]
+        #[allow(clippy::cast_possible_truncation)]
         let as_f32 = parsed as f32;
         Ok(as_f32)
     };

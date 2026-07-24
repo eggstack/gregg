@@ -4,11 +4,7 @@
 ///
 /// Returns `0.0` when `total` is zero to avoid division by zero. The result
 /// is clamped to the closed interval `0.0..=100.0`.
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    reason = "byte counts > 2^52 saturate to 100% anyway; protocol saturation is documented"
-)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub(crate) fn percent(used: u64, total: u64) -> f32 {
     if total == 0 {
         0.0

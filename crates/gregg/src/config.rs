@@ -9,12 +9,68 @@
 
 use std::fmt;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+#[cfg(all(test, unix))]
+use std::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
 use crate::endpoint::{Endpoint, DEFAULT_PORT, MAX_ENDPOINT_NAME_LEN};
+
+#[cfg(all(test, unix))]
+thread_local! {
+    static FAIL_NEXT_PERMISSION_SET: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Create a replacement file with user-only permissions before exposing any
+/// configuration bytes to it.
+fn create_secure_temp_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        options.mode(0o600);
+    }
+
+    let file = options.open(path)?;
+
+    #[cfg(unix)]
+    if let Err(error) = set_secure_permissions(&file) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn set_secure_permissions(file: &fs::File) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(test)]
+    {
+        if FAIL_NEXT_PERMISSION_SET.with(|fail| fail.replace(false)) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected permission-setting failure",
+            ));
+        }
+    }
+
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(all(test, unix))]
+fn inject_permission_set_failure() {
+    FAIL_NEXT_PERMISSION_SET.with(|fail| fail.set(true));
+}
 
 /// Minimum allowed refresh interval in seconds.
 pub const MIN_REFRESH_SECONDS: u64 = 1;
@@ -314,22 +370,11 @@ impl Config {
         let temp_path = dir.join(&temp_name);
 
         {
-            use std::io::Write;
-
-            let mut file = fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-                .map_err(|e| ConfigError::AtomicWrite {
+            let mut file =
+                create_secure_temp_file(&temp_path).map_err(|e| ConfigError::AtomicWrite {
                     path: path.to_path_buf(),
                     source: AtomicWriteError::Io(e),
                 })?;
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
-            }
 
             file.write_all(content.as_bytes()).map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
@@ -339,7 +384,15 @@ impl Config {
                 }
             })?;
 
-            // Flush on Unix.
+            file.flush().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+
+            // Sync the replacement before renaming it into place.
             #[cfg(unix)]
             {
                 file.sync_all().map_err(|e| {
@@ -359,13 +412,6 @@ impl Config {
                 source: AtomicWriteError::Io(e),
             }
         })?;
-
-        // Enforce user-only permissions on the final file.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
-        }
 
         // fsync the parent directory to ensure the rename is durable.
         #[cfg(unix)]
@@ -612,21 +658,38 @@ impl ConfigStore {
         );
         let temp_path = dir.join(&temp_name);
 
-        // Serialize the current config to the temp file.
-        let content = config.to_toml();
-        fs::write(&temp_path, content.as_bytes()).map_err(|e| {
-            let _ = fs::remove_file(&temp_path);
-            ConfigError::AtomicWrite {
-                path: self.path.clone(),
-                source: AtomicWriteError::Io(e),
-            }
-        })?;
-
-        // Set user-only permissions on the temp file.
-        #[cfg(unix)]
         {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600));
+            // Create the editor-visible file securely before serializing any
+            // current configuration into it.
+            let mut file =
+                create_secure_temp_file(&temp_path).map_err(|e| ConfigError::AtomicWrite {
+                    path: self.path.clone(),
+                    source: AtomicWriteError::Io(e),
+                })?;
+            let content = config.to_toml();
+            file.write_all(content.as_bytes()).map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                ConfigError::AtomicWrite {
+                    path: self.path.clone(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+            file.flush().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                ConfigError::AtomicWrite {
+                    path: self.path.clone(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+
+            #[cfg(unix)]
+            file.sync_all().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                ConfigError::AtomicWrite {
+                    path: self.path.clone(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
         }
 
         // Step 4-5: Invoke the editor on the temporary file.
@@ -1636,6 +1699,12 @@ unknown_field = "oops"
         let original = Config::default();
         store.write(&original).unwrap();
         let original_bytes = fs::read(&path).unwrap();
+        #[cfg(unix)]
+        let original_mode = {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777
+        };
 
         // Editor writes invalid TOML.
         let result = store.edit_transaction(|temp_path| {
@@ -1649,6 +1718,15 @@ unknown_field = "oops"
 
         // Original bytes unchanged.
         assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                original_mode
+            );
+        }
         assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1663,6 +1741,12 @@ unknown_field = "oops"
         let original = Config::default();
         store.write(&original).unwrap();
         let original_bytes = fs::read(&path).unwrap();
+        #[cfg(unix)]
+        let original_mode = {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777
+        };
 
         // Editor writes TOML with an invalid value (refresh_seconds = 0).
         let result = store.edit_transaction(|temp_path| {
@@ -1678,6 +1762,15 @@ unknown_field = "oops"
 
         // Original bytes unchanged.
         assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                original_mode
+            );
+        }
         assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
 
         let _ = fs::remove_dir_all(&dir);
@@ -1692,6 +1785,12 @@ unknown_field = "oops"
         let original = Config::default();
         store.write(&original).unwrap();
         let original_bytes = fs::read(&path).unwrap();
+        #[cfg(unix)]
+        let original_mode = {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777
+        };
 
         // Editor "exits nonzero" — closure returns an error.
         let result = store.edit_transaction(|temp_path| {
@@ -1704,6 +1803,15 @@ unknown_field = "oops"
 
         // Original bytes unchanged.
         assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                original_mode
+            );
+        }
         assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
 
         let _ = fs::remove_dir_all(&dir);
@@ -2044,6 +2152,65 @@ unknown_field = "oops"
         // Original permissions unchanged.
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, original_mode, "edit failure must preserve 0600");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn edit_transaction_editor_sees_secure_temp_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_editor_visible");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+        store.write(&Config::default()).unwrap();
+
+        store
+            .edit_transaction(|temp_path| {
+                let mode = fs::metadata(temp_path).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "editor temp must start user-only");
+                assert_eq!(Config::load(temp_path).unwrap(), Config::default());
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(count_temp_files(&dir), 0, "editor temp must be cleaned up");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_permission_failure_is_fatal_and_cleans_temp() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_injected_failure");
+        let path = dir.join("config.toml");
+        let original = Config::default();
+        original.write_atomic(&path).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+        let original_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+
+        inject_permission_set_failure();
+        let result = Config {
+            refresh_seconds: 10,
+            ..original
+        }
+        .write_atomic(&path);
+
+        match result {
+            Err(ConfigError::AtomicWrite {
+                source: AtomicWriteError::Io(error),
+                ..
+            }) => assert_eq!(error.kind(), io::ErrorKind::PermissionDenied),
+            other => panic!("expected permission failure, got {other:?}"),
+        }
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            original_mode
+        );
+        assert_eq!(count_temp_files(&dir), 0, "failed temp must be cleaned up");
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -125,7 +125,7 @@ fn unquote(value: &str) -> String {
 
 /// Convenience for source-level tests: build a minimal [`SystemIdentity`]
 /// from raw identity fields without going through the procfs paths.
-#[allow(dead_code, reason = "used by integration tests")]
+#[allow(dead_code)]
 pub fn synthetic_identity(
     name: &str,
     hostname: &str,
@@ -147,7 +147,7 @@ pub fn synthetic_identity(
 }
 
 /// Light-weight `os-release` fixture loader for source-level tests.
-#[allow(dead_code, reason = "used by integration tests")]
+#[allow(dead_code)]
 pub fn os_release_sample() -> &'static str {
     r#"NAME="Ubuntu"
 VERSION="24.04 LTS (Noble Numbat)"

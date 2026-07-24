@@ -25,9 +25,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   (`gregg-protocol` first, then `greggd` and `gregg`) so binary crates can
   resolve the indexed protocol dependency.
 - **Installed daemon loopback verification** (`scripts/verify-installed-daemon.sh`):
-  New script that installs the daemon from a clean root, starts it, verifies
-  the HTTP `/healthz` endpoint responds on loopback, and stops the service.
-  Replaces the previous masked `|| true` smoke test.
+  The verifier now accepts an explicit executable, writes the flat daemon TOML
+  schema, validates bounded health/status responses, and checks the reaped
+  child exit status. Package installation remains the responsibility of the
+  release workflow, which passes a clean-root package-installed binary.
 
 - **macOS FFI** (`greggd`): `mach_host_self()` and `mach_task_self()` are now
   declared as foreign functions instead of being assumed to exist. `HostPort::current()`
@@ -76,6 +77,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   --no-verify` from all `cargo package` invocations so packages are verified
   and the working tree must be clean. Added shellcheck step for installer
   scripts.
+- **Rust 1.75 dependency resolution** (`gregg`, `greggd`): Added documented
+  compatibility-only bounds for the existing CLI, HTTP, URL, UUID, terminal,
+  TOML, and crypto dependency graphs where current transitive releases exceed
+  the declared MSRV. Fresh package and workspace resolution now stays below
+  the edition-2024 and Rust-1.85-only dependency lines while retaining current
+  active TLS fixes.
 
 ## [1.0.0] - 2026-07-23
 

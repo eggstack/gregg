@@ -1,6 +1,10 @@
 [advisories]
 unmaintained = "workspace"
 yanked = "warn"
+# The only remaining advisory is in reqwest's disabled optional HTTP/3
+# dependency. Its fixed release requires Rust 1.85, while this workspace's
+# declared MSRV is Rust 1.75; the feature is not enabled by any workspace crate.
+ignore = ["RUSTSEC-2026-0185"]
 
 [licenses]
 unused-allowed-license = "warn"

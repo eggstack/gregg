@@ -63,7 +63,7 @@ inherits it into every member manifest. `rust-toolchain.toml` pins the
 current stable channel so formatting and lint behaviour match local
 development and CI.
 
-Dependencies must solve a concrete version-1 requirement. Disable unused default features, especially in HTTP clients and servers. The daemon needs plain HTTP/1 on a trusted local network; do not add TLS, cookies, proxy support, HTTP/2, multipart handling, compression, or remote-control surfaces without an approved scope change.
+Dependencies must solve a concrete version-1 requirement. Disable unused default features, especially in HTTP clients and servers. Compatibility-only upper bounds are permitted when fresh transitive resolution would exceed the declared Rust 1.75 MSRV; document those bounds in the manifest and verify them from unpacked packages. The daemon needs plain HTTP/1 on a trusted local network; do not add TLS, cookies, proxy support, HTTP/2, multipart handling, compression, or remote-control surfaces without an approved scope change.
 
 The daemon now uses axum, tokio, tracing, serde_json, serde, toml, and clap for the HTTP server, async runtime, structured logging, JSON serialization, configuration serialization/parsing, and CLI argument parsing respectively.
 
@@ -74,14 +74,20 @@ collector without depending on internal-only paths.
 
 The workspace enables `clippy::pedantic` as a warning (not an error) so
 contributors see style suggestions without breaking the build on unrelated
-changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`;
-the macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`)
-is the only exception and uses `#![allow(unsafe_code)]` with documented
-safety invariants on every unsafe block.
+changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`.
+The macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`)
+and the client's narrowly scoped Unix `flock` wrapper are the only exceptions;
+each uses `#![allow(unsafe_code)]` with documented safety invariants on every
+unsafe block. No unsafe pointers or borrowed foreign buffers cross either
+boundary.
 
 Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs. External tools may be used only as diagnostic references in tests or development documentation.
 
-Unsafe Rust is permitted only where required for macOS FFI. Contain it in a small module, document every safety invariant, validate returned lengths/status values, and expose owned safe Rust values. No unsafe pointers or borrowed foreign buffers may cross the FFI boundary.
+Unsafe Rust is permitted only where required for macOS FFI or the client's
+narrow Unix file-lock wrapper. Contain it in small modules, document every
+safety invariant, validate returned lengths/status values, and expose owned
+safe Rust values. No unsafe pointers or borrowed foreign buffers may cross
+either boundary.
 
 ## Protocol rules
 
@@ -133,9 +139,13 @@ cargo doc --workspace --no-deps
 Platform-specific CI should run on Linux and macOS. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
 The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
-validates that a clean `cargo install` produces a working daemon binary that
-responds to HTTP health checks on loopback. Use it as part of release-candidate
-evidence instead of ad-hoc `|| true` smoke tests.
+verifies a supplied executable; it does not perform package installation. The
+release workflow must unpack the `.crate`, install it into an empty `--root`,
+record the installed binary checksum and size, and pass that exact path to the
+verifier. Source-built verifier runs are separate native evidence. The
+verifier checks bounded readiness, protocol fields, and the reaped child exit
+status; cleanup-only best-effort operations must not mask a release-gate
+failure.
 
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 

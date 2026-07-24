@@ -170,15 +170,9 @@ pub fn compute_percentages(
     // `2^53` would lose sub-tick precision, but the percentage computation
     // saturates and the validator rejects out-of-range results, so the
     // truncation is benign.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "counter deltas below 2^53 USER_HZ preserve sub-tick precision; saturating percentages absorb the rest"
-    )]
+    #[allow(clippy::cast_precision_loss)]
     let usage_pct = (delta_busy as f64) * 100.0 / (delta_total as f64);
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "see usage_pct rationale; same arithmetic"
-    )]
+    #[allow(clippy::cast_precision_loss)]
     let iowait_pct = (delta_iowait as f64) * 100.0 / (delta_total as f64);
 
     let finalize = |value: f64| -> Result<f32, CollectError> {
@@ -191,10 +185,7 @@ pub fn compute_percentages(
         // Clamp tiny overshoot from rounding; tolerate `1e-9` to keep the
         // result within `0.0..=100.0` after `f64 -> f32` conversion.
         let clamped = value.clamp(0.0, 100.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "clamped f64 in [0.0, 100.0] always fits in f32"
-        )]
+        #[allow(clippy::cast_possible_truncation)]
         let as_f32 = clamped as f32;
         if !as_f32.is_finite() || !(0.0..=100.0).contains(&as_f32) {
             return Err(CollectError::new(

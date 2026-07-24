@@ -144,10 +144,7 @@ impl MacNativeQueries for FfiNativeQueries {
 /// Mock native queries for unit tests. All fields are public so tests can
 /// inject different values between successive calls.
 #[derive(Debug)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "test mock with per-endpoint error flags"
-)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct MockNativeQueries {
     pub cpu: RawCpuTicks,
     pub vm: RawVmStats,
@@ -428,10 +425,7 @@ impl Drop for HostPort {
 // ---------------------------------------------------------------------------
 
 /// Read cumulative CPU tick counters from Mach `host_statistics`.
-#[allow(
-    clippy::cast_sign_loss,
-    reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
-)]
+#[allow(clippy::cast_sign_loss)]
 fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     let host = HostPort::current()?;
     // Safety: `host_statistics` writes exactly 4 natural_t values into our
@@ -465,10 +459,7 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
 }
 
 /// Read VM statistics from Mach `host_statistics64`.
-#[allow(
-    clippy::cast_sign_loss,
-    reason = "Mach natural_t values are always non-negative; i32 ABI is the documented API"
-)]
+#[allow(clippy::cast_sign_loss)]
 fn vm_info64() -> Result<RawVmStats, CollectError> {
     let host = HostPort::current()?;
     // Safety: `host_statistics64` writes up to 64 natural_t values. We use a
@@ -516,10 +507,7 @@ fn read_page_size() -> Result<u64, CollectError> {
             format!("host_page_size failed with status {kr}"),
         ));
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "page size fits in u64 on all supported macOS targets"
-    )]
+    #[allow(clippy::cast_possible_truncation)]
     Ok(page_size as u64)
 }
 
@@ -527,11 +515,7 @@ fn read_page_size() -> Result<u64, CollectError> {
 fn swap_usage() -> Result<RawSwapUsage, CollectError> {
     #[repr(C)]
     #[derive(Copy, Clone, Default)]
-    #[allow(
-        non_camel_case_types,
-        clippy::struct_field_names,
-        reason = "C ABI struct field names match the macOS xswusage definition"
-    )]
+    #[allow(non_camel_case_types, clippy::struct_field_names)]
     struct xswusage {
         xsu_total: u64,
         xsu_avail: u64,

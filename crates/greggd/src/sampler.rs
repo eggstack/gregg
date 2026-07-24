@@ -51,10 +51,7 @@ pub trait Clock: Send + Sync {
 pub struct RealClock;
 
 impl Clock for RealClock {
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "u128 millis from SystemTime is well within u64 range"
-    )]
+    #[allow(clippy::cast_possible_truncation)]
     fn now_unix_ms(&self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -313,10 +310,7 @@ mod tests {
         }
 
         fn sleep(&self, dur: Duration) -> SleepFuture {
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "test durations are small and fit in u64"
-            )]
+            #[allow(clippy::cast_possible_truncation)]
             self.advance(dur.as_millis() as u64);
             Box::pin(async move {
                 tokio::time::sleep(dur).await;

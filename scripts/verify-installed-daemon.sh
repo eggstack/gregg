@@ -1,161 +1,304 @@
 #!/usr/bin/env bash
-# verify-installed-daemon.sh — Loopback smoke test for greggd.
+# verify-installed-daemon.sh — bounded loopback smoke test for greggd.
 #
-# Starts greggd in foreground mode, polls /healthz and /v1/status,
-# validates the JSON response shape, then sends SIGTERM for a clean exit.
+# The caller owns the package-install boundary. This script verifies the
+# supplied executable and never falls back to a workspace build.
 #
 # Usage:
 #   ./scripts/verify-installed-daemon.sh <greggd-binary-path> [port]
 #
-# Exit codes:
-#   0 — all checks passed
-#   1 — any check failed
+# Environment overrides are intended for deterministic tests:
+#   STARTUP_DEADLINE_SECS, SHUTDOWN_DEADLINE_SECS, POLL_INTERVAL_SECS
 
 set -euo pipefail
 
-BINARY="${1:?Usage: $0 <greggd-binary-path> [port]}"
-PORT="${2:-0}"
-STARTUP_DEADLINE_SECS=5
+BINARY="${1:-}"
+REQUESTED_PORT="${2:-0}"
+STARTUP_DEADLINE_SECS="${STARTUP_DEADLINE_SECS:-10}"
+SHUTDOWN_DEADLINE_SECS="${SHUTDOWN_DEADLINE_SECS:-10}"
+POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-0.2}"
+MAX_PORT_ATTEMPTS="${MAX_PORT_ATTEMPTS:-5}"
+ALLOW_PORT_RETRY=0
 
-# --- helpers ----------------------------------------------------------------
+TEMP_DIR=""
+CONFIG_FILE=""
+LOG_FILE=""
+GREGGD_PID=""
+KILLER_PID=""
 
-die() { echo "FATAL: $*" >&2; exit 1; }
+die() {
+    echo "FATAL: $*" >&2
+    if [[ -n "${CONFIG_FILE}" && -f "${CONFIG_FILE}" ]]; then
+        echo "=== effective greggd config ===" >&2
+        cat "${CONFIG_FILE}" >&2
+    fi
+    if [[ -n "${LOG_FILE}" && -f "${LOG_FILE}" ]]; then
+        echo "=== greggd log ===" >&2
+        cat "${LOG_FILE}" >&2
+    fi
+    exit 1
+}
 
 cleanup() {
-    if [ -n "${GREGGD_PID:-}" ] && kill -0 "$GREGGD_PID" 2>/dev/null; then
-        kill "$GREGGD_PID" 2>/dev/null || true
-        wait "$GREGGD_PID" 2>/dev/null || true
+    # Cleanup must never replace the verifier's original exit status.
+    set +e
+    if [[ -n "${KILLER_PID}" ]]; then
+        kill "${KILLER_PID}" 2>/dev/null
+        wait "${KILLER_PID}" 2>/dev/null
     fi
-    if [ -n "${TEMP_DIR:-}" ] && [ -d "${TEMP_DIR:-}" ]; then
-        rm -rf "$TEMP_DIR"
+    if [[ -n "${GREGGD_PID}" ]]; then
+        kill -KILL "${GREGGD_PID}" 2>/dev/null
+        wait "${GREGGD_PID}" 2>/dev/null
     fi
+    if [[ -n "${TEMP_DIR}" && -d "${TEMP_DIR}" ]]; then
+        rm -rf "${TEMP_DIR}"
+    fi
+    set -e
 }
 trap cleanup EXIT
 
-# --- setup ------------------------------------------------------------------
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
 
-[ -x "$BINARY" ] || die "binary not found or not executable: $BINARY"
+is_positive_integer() {
+    [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
 
-TEMP_DIR="$(mktemp -d)"
-CONFIG_FILE="$TEMP_DIR/greggd.toml"
+is_nonnegative_number() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
 
-if [ "$PORT" -eq 0 ] 2>/dev/null; then
-    # Select a free port by binding to port 0 and reading the assigned port.
-    PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null \
-        || ss -tlnH | awk '{print $4}' | sed 's/.*://' | sort -n | tail -1 | awk '{print $1+1}')"
-fi
+allocate_port() {
+    python3 - <<'PY'
+import socket
 
-cat > "$CONFIG_FILE" <<TOML
-[server]
-port = ${PORT}
-refresh_ms = 1000
-stale_after_ms = 10000
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
 
-[[systems]]
+write_config() {
+    local port="$1"
+    cat >"${CONFIG_FILE}" <<TOML
 name = "loopback-test"
+host = "127.0.0.1"
+port = ${port}
+sample_interval_ms = 1000
+stale_after_ms = 10000
 TOML
+}
 
-# --- start greggd in background --------------------------------------------
+fetch() {
+    local url="$1"
+    local body_path="$2"
+    local result
+    local curl_status
 
-"$BINARY" run --config "$CONFIG_FILE" > "$TEMP_DIR/greggd.log" 2>&1 &
-GREGGD_PID=$!
-echo "greggd started (PID=$GREGGD_PID) on port $PORT"
+    set +e
+    result="$(curl --silent --show-error --connect-timeout 1 --max-time 2 \
+        --output "${body_path}" --write-out '%{http_code}' "${url}" 2>"${TEMP_DIR}/curl.err")"
+    curl_status=$?
+    set -e
 
-# --- poll /healthz with bounded deadline -----------------------------------
-
-ELAPSED=0
-while [ "$ELAPSED" -lt "$STARTUP_DEADLINE_SECS" ]; do
-    if ! kill -0 "$GREGGD_PID" 2>/dev/null; then
-        echo "greggd exited during startup" >&2
-        cat "$TEMP_DIR/greggd.log" >&2
-        exit 1
+    if ((curl_status != 0)); then
+        FETCH_REASON="connection failure (curl exit ${curl_status}: $(tr '\n' ' ' <"${TEMP_DIR}/curl.err"))"
+        FETCH_STATUS="000"
+        return 1
     fi
 
-    HTTP_CODE="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/healthz" 2>/dev/null || true)"
-    if [ "$HTTP_CODE" = "200" ]; then
-        echo "/healthz returned 200 after ${ELAPSED}s"
-        break
+    FETCH_STATUS="${result}"
+    FETCH_REASON="HTTP ${result}"
+    return 0
+}
+
+validate_health() {
+    local body_path="$1"
+    jq -e '
+        .schema_version == 1 and
+        (.state == "ready" or .state == "warming" or .state == "failed")
+    ' "${body_path}" >/dev/null 2>&1 || die "/healthz returned malformed JSON"
+}
+
+validate_status() {
+    local body_path="$1"
+    jq -e '
+        .schema_version == 1 and
+        (.observed_at_unix_ms | type == "number" and . > 0) and
+        (.sample_interval_ms | type == "number" and . > 0) and
+        (.capabilities.cpu_iowait | type == "boolean") and
+        (.system.name | type == "string" and length > 0) and
+        (.system.hostname | type == "string" and length > 0) and
+        (.system.architecture | type == "string" and length > 0) and
+        (.cpu.logical_cores | type == "number" and . > 0) and
+        (.cpu.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100) and
+        ((.capabilities.cpu_iowait and (.cpu.iowait_pct | type == "number" and isfinite and . >= 0 and . <= 100)) or
+         ((.capabilities.cpu_iowait | not) and (.cpu.iowait_pct == null))) and
+        (.load.one | type == "number" and isfinite and . >= 0) and
+        (.load.five | type == "number" and isfinite and . >= 0) and
+        (.load.fifteen | type == "number" and isfinite and . >= 0) and
+        (.memory.total_bytes | type == "number" and . >= 0) and
+        (.memory.used_bytes | type == "number" and . >= 0 and . <= $total_memory) and
+        (.memory.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100) and
+        (.swap.total_bytes | type == "number" and . >= 0) and
+        (.swap.used_bytes | type == "number" and . >= 0 and . <= $total_swap) and
+        (.swap.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100)
+    ' --argjson total_memory "$(jq '.memory.total_bytes' "${body_path}")" \
+      --argjson total_swap "$(jq '.swap.total_bytes' "${body_path}")" \
+      "${body_path}" >/dev/null 2>&1 || die "/v1/status failed protocol field validation"
+}
+
+retry_after_bind_collision() {
+    if ((ALLOW_PORT_RETRY == 1)) && grep -Eiq 'address already in use|already allocated|cannot assign requested address' "${LOG_FILE}"; then
+        echo "Port collision detected; retrying with a new isolated port" >&2
+        set +e
+        wait "${GREGGD_PID}" 2>/dev/null
+        set -e
+        GREGGD_PID=""
+        return 0
+    fi
+    return 1
+}
+
+start_and_verify() {
+    local port="$1"
+    local attempt="$2"
+    local health_body="${TEMP_DIR}/health-${attempt}.json"
+    local status_body="${TEMP_DIR}/status-${attempt}.json"
+    local elapsed=0
+    local health_state=""
+    local shutdown_status
+
+    LOG_FILE="${TEMP_DIR}/greggd-${attempt}.log"
+    write_config "${port}"
+    : >"${LOG_FILE}"
+
+    "${BINARY}" run --config "${CONFIG_FILE}" >"${LOG_FILE}" 2>&1 &
+    GREGGD_PID=$!
+    echo "greggd started (PID=${GREGGD_PID}) on port ${port}"
+
+    while awk "BEGIN { exit !(${elapsed} < ${STARTUP_DEADLINE_SECS}) }"; do
+        if ! kill -0 "${GREGGD_PID}" 2>/dev/null; then
+            if retry_after_bind_collision; then
+                return 75
+            fi
+            die "greggd exited during startup"
+        fi
+
+        if fetch "http://127.0.0.1:${port}/healthz" "${health_body}"; then
+            if [[ "${FETCH_STATUS}" == "200" ]]; then
+                validate_health "${health_body}"
+                health_state="$(jq -r '.state' "${health_body}")"
+                if [[ "${health_state}" == "ready" ]]; then
+                    echo "/healthz returned 200/ready after ${elapsed}s"
+                    break
+                fi
+                die "/healthz returned 200 with state ${health_state}, expected ready"
+            elif [[ "${FETCH_STATUS}" == "503" ]]; then
+                validate_health "${health_body}"
+                health_state="$(jq -r '.state' "${health_body}")"
+                echo "/healthz is still ${health_state} after ${elapsed}s"
+            else
+                die "/healthz returned unexpected ${FETCH_STATUS}"
+            fi
+        else
+            echo "/healthz ${FETCH_REASON}" >&2
+        fi
+
+        sleep "${POLL_INTERVAL_SECS}"
+        elapsed="$(awk -v current="${elapsed}" -v interval="${POLL_INTERVAL_SECS}" 'BEGIN { printf "%.3f", current + interval }')"
+    done
+
+    if ! [[ "${health_state}" == "ready" ]]; then
+        die "/healthz did not become ready within ${STARTUP_DEADLINE_SECS}s"
     fi
 
-    sleep 1
-    ELAPSED=$((ELAPSED + 1))
-done
+    if ! fetch "http://127.0.0.1:${port}/v1/status" "${status_body}"; then
+        die "failed to fetch /v1/status: ${FETCH_REASON}"
+    fi
+    [[ "${FETCH_STATUS}" == "200" ]] || die "/v1/status returned HTTP ${FETCH_STATUS}"
+    validate_status "${status_body}"
 
-if [ "$ELAPSED" -ge "$STARTUP_DEADLINE_SECS" ]; then
-    echo "ERROR: /healthz did not return 200 within ${STARTUP_DEADLINE_SECS}s" >&2
-    cat "$TEMP_DIR/greggd.log" >&2
-    exit 1
+    echo "/v1/status JSON validation passed"
+    echo "  schema_version: $(jq -r '.schema_version' "${status_body}")"
+    echo "  system.name: $(jq -r '.system.name' "${status_body}")"
+    echo "  system.hostname: $(jq -r '.system.hostname' "${status_body}")"
+    echo "  system.architecture: $(jq -r '.system.architecture' "${status_body}")"
+    echo "  cpu.logical_cores: $(jq -r '.cpu.logical_cores' "${status_body}")"
+    echo "  cpu.usage_pct: $(jq -r '.cpu.usage_pct' "${status_body}")"
+
+    echo "Sending SIGTERM to greggd (PID=${GREGGD_PID})"
+    kill -TERM "${GREGGD_PID}" || die "failed to send SIGTERM to greggd"
+
+    # A separate timer provides a bounded wait while the shell wait builtin
+    # reaps the actual child and exposes its true exit status.
+    local timeout_marker="${TEMP_DIR}/shutdown-timeout"
+    (
+        sleep "${SHUTDOWN_DEADLINE_SECS}"
+        if kill -0 "${GREGGD_PID}" 2>/dev/null; then
+            : >"${timeout_marker}"
+            kill -KILL "${GREGGD_PID}" 2>/dev/null
+        fi
+    ) &
+    KILLER_PID=$!
+
+    set +e
+    wait "${GREGGD_PID}"
+    shutdown_status=$?
+    set -e
+
+    set +e
+    kill "${KILLER_PID}" 2>/dev/null
+    wait "${KILLER_PID}" 2>/dev/null
+    set -e
+    KILLER_PID=""
+    GREGGD_PID=""
+
+    if [[ -e "${timeout_marker}" ]]; then
+        die "greggd did not terminate within ${SHUTDOWN_DEADLINE_SECS}s"
+    fi
+    if ((shutdown_status != 0)); then
+        die "greggd exited with status ${shutdown_status} after SIGTERM"
+    fi
+
+    echo "greggd exited cleanly with status 0"
+}
+
+require_command curl
+require_command jq
+require_command python3
+
+[[ -n "${BINARY}" ]] || die "usage: $0 <greggd-binary-path> [port]"
+[[ -x "${BINARY}" ]] || die "binary not found or not executable: ${BINARY}"
+is_nonnegative_number "${STARTUP_DEADLINE_SECS}" || die "invalid STARTUP_DEADLINE_SECS"
+is_nonnegative_number "${SHUTDOWN_DEADLINE_SECS}" || die "invalid SHUTDOWN_DEADLINE_SECS"
+is_positive_integer "${MAX_PORT_ATTEMPTS}" || die "invalid MAX_PORT_ATTEMPTS"
+
+umask 077
+TEMP_DIR="$(mktemp -d)"
+CONFIG_FILE="${TEMP_DIR}/greggd.toml"
+
+if [[ "${REQUESTED_PORT}" != "0" ]]; then
+    [[ "${REQUESTED_PORT}" =~ ^[0-9]+$ ]] || die "invalid port: ${REQUESTED_PORT}"
+    ((REQUESTED_PORT >= 1 && REQUESTED_PORT <= 65535)) || die "port out of range: ${REQUESTED_PORT}"
+    start_and_verify "${REQUESTED_PORT}" 1
+else
+    ALLOW_PORT_RETRY=1
+    verified=0
+    for attempt in $(seq 1 "${MAX_PORT_ATTEMPTS}"); do
+        PORT="$(allocate_port)"
+        if start_and_verify "${PORT}" "${attempt}"; then
+            verified=1
+            break
+        else
+            status=$?
+            if ((status != 75)); then
+                exit "${status}"
+            fi
+        fi
+    done
+    ((verified == 1)) || die "all ${MAX_PORT_ATTEMPTS} isolated port attempts failed"
 fi
 
-# --- query /v1/status and validate JSON ------------------------------------
-
-STATUS_BODY="$(curl -sf "http://127.0.0.1:${PORT}/v1/status" 2>/dev/null)" \
-    || die "failed to fetch /v1/status"
-
-# Validate required top-level fields exist.
-for FIELD in schema_version observed_at_unix_ms sample_interval_ms capabilities system cpu load memory swap; do
-    if ! echo "$STATUS_BODY" | jq -e ".$FIELD" > /dev/null 2>&1; then
-        die "/v1/status missing required field: $FIELD"
-    fi
-done
-
-# Validate schema_version == 1
-SV="$(echo "$STATUS_BODY" | jq -r '.schema_version')"
-if [ "$SV" != "1" ]; then
-    die "schema_version is $SV, expected 1"
-fi
-
-# Validate system identity fields.
-for FIELD in name hostname os_name os_version kernel_name kernel_release architecture; do
-    if ! echo "$STATUS_BODY" | jq -e ".system.$FIELD" > /dev/null 2>&1; then
-        die "/v1/status.system missing required field: $FIELD"
-    fi
-done
-
-# Validate CPU metrics.
-CORES="$(echo "$STATUS_BODY" | jq -r '.cpu.logical_cores')"
-if [ -z "$CORES" ] || [ "$CORES" = "null" ]; then
-    die "/v1/status.cpu.logical_cores is missing or null"
-fi
-
-USAGE="$(echo "$STATUS_BODY" | jq -r '.cpu.usage_pct')"
-if [ -z "$USAGE" ] || [ "$USAGE" = "null" ]; then
-    die "/v1/status.cpu.usage_pct is missing or null"
-fi
-
-# Validate load averages.
-for FIELD in load_1 load_5 load_15; do
-    if ! echo "$STATUS_BODY" | jq -e ".load.$FIELD" > /dev/null 2>&1; then
-        die "/v1/status.load missing required field: $FIELD"
-    fi
-done
-
-# Validate memory and swap have at least one field.
-if ! echo "$STATUS_BODY" | jq -e '.memory.total_bytes' > /dev/null 2>&1; then
-    die "/v1/status.memory.total_bytes is missing"
-fi
-
-echo "/v1/status JSON validation passed"
-echo "  schema_version: $SV"
-echo "  system.name: $(echo "$STATUS_BODY" | jq -r '.system.name')"
-echo "  cpu.logical_cores: $CORES"
-echo "  cpu.usage_pct: $USAGE"
-
-# --- send SIGTERM and wait for clean exit -----------------------------------
-
-echo "Sending SIGTERM to greggd (PID=$GREGGD_PID)"
-kill -TERM "$GREGGD_PID" 2>/dev/null || true
-WAIT_SECS=0
-MAX_WAIT=5
-while kill -0 "$GREGGD_PID" 2>/dev/null; do
-    if [ "$WAIT_SECS" -ge "$MAX_WAIT" ]; then
-        echo "WARN: greggd did not exit within ${MAX_WAIT}s, sending SIGKILL" >&2
-        kill -9 "$GREGGD_PID" 2>/dev/null || true
-        exit 1
-    fi
-    sleep 1
-    WAIT_SECS=$((WAIT_SECS + 1))
-done
-
-echo "greggd exited cleanly after ${WAIT_SECS}s"
-echo "=== All checks passed ==="
+echo "=== all installed-daemon checks passed ==="

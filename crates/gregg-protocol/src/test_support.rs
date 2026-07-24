@@ -323,11 +323,7 @@ impl MacosSnapshotBuilder {
     }
 }
 
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    reason = "byte counts > 2^52 are clamped and the percentage saturates anyway"
-)]
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn percent(used: u64, total: u64) -> f32 {
     if total == 0 {
         0.0

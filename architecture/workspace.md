@@ -174,15 +174,20 @@ inherits it in every member manifest. Nightly-only language or Cargo features
 must not be used. The Rust toolchain pinned in `rust-toolchain.toml` is the
 current stable release; CI installs the same channel so formatting and lint
 behaviour stay aligned with local development.
+Compatibility-only dependency bounds keep fresh workspace and package-source
+resolution within that MSRV; the release workflow checks both the committed
+lockfile and newly generated locks from unpacked crates.
 
 ## Lints
 
 The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
 changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
-through the workspace lint table; the macOS collector FFI module
-(`crates/greggd/src/collector/macos/ffi.rs`) is the only exception and
-uses `#![allow(unsafe_code)]` with documented safety invariants.
+through the workspace lint table. The macOS collector FFI module
+(`crates/greggd/src/collector/macos/ffi.rs`) and the client's narrowly scoped
+Unix `flock` wrapper are the only exceptions; both use
+`#![allow(unsafe_code)]` with documented safety invariants. No unsafe pointers
+or borrowed foreign buffers cross those boundaries.
 
 ## Release profiles
 

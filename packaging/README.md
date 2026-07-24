@@ -136,7 +136,12 @@ System installation and mutation of system config/service state generally requir
 - **Service lifecycle commands** (`start`, `stop`, `restart`, `croncheck`) delegate to the native service manager and require appropriate privileges.
 - **Config mutation commands** (`host`, `port`) atomically persist the config and restart the service, requiring write access to the config directory and service manager privileges.
 
-The systemd unit runs as root with `NoNewPrivileges=true` and comprehensive filesystem/capability restrictions. This is intentional: the daemon needs read access to `/proc` and `/sys` for metrics collection, and bind access to the configured port. Running as a dedicated system user is possible but adds installation complexity; the current model relies on systemd's security hardening to limit the blast radius.
+The systemd unit runs as the dedicated `greggd` user with
+`NoNewPrivileges=true` and comprehensive filesystem/capability restrictions.
+The installer creates that user, assigns configuration ownership to it, and
+keeps the daemon in the foreground under systemd. The service lifecycle still
+requires administrator privileges, while `greggd run --config <path>` remains
+usable unprivileged for development and tests.
 
 ## Development Mode
 

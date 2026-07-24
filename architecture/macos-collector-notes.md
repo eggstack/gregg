@@ -125,7 +125,7 @@ falls back to `"unknown"` rather than fabricating a value.
 
 ## CI validation
 
-CI runs on both Intel (`macos-13`) and Apple Silicon (`macos-latest`). All
+CI runs on both Intel (`macos-15-intel`) and Apple Silicon (`macos-15`). All
 collector tests use `MockNativeQueries` for deterministic arithmetic; native FFI
 tests run only on macOS runners and validate that real Mach and sysctl calls
 succeed.

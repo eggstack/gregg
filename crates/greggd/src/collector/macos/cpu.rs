@@ -53,10 +53,7 @@ pub fn compute_cpu_percentages(
         ));
     }
 
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "counter deltas below 2^53 preserve sub-tick precision; saturating percentages absorb the rest"
-    )]
+    #[allow(clippy::cast_precision_loss)]
     let usage_pct = (delta_busy as f64) * 100.0 / (delta_total as f64);
 
     let finalize = |value: f64| -> Result<f32, CollectError> {
@@ -67,10 +64,7 @@ pub fn compute_cpu_percentages(
             ));
         }
         let clamped = value.clamp(0.0, 100.0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "clamped f64 in [0.0, 100.0] always fits in f32"
-        )]
+        #[allow(clippy::cast_possible_truncation)]
         let as_f32 = clamped as f32;
         if !as_f32.is_finite() || !(0.0..=100.0).contains(&as_f32) {
             return Err(CollectError::new(

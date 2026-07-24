@@ -5,7 +5,7 @@
 //! the same crate root regardless of the working directory used to launch
 //! `cargo test`.
 
-#![allow(dead_code, reason = "exercised by integration tests")]
+#![allow(dead_code)]
 
 use std::fs;
 use std::path::PathBuf;

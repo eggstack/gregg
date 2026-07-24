@@ -29,10 +29,7 @@ use crate::server::error::{ServerConfigError, ServerError};
 pub mod error;
 
 /// Current time as milliseconds since the Unix epoch.
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "millis from SystemTime is well within u64 range"
-)]
+#[allow(clippy::cast_possible_truncation)]
 fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -220,10 +217,7 @@ impl ServerState {
             let guard = self.snapshot.read().await;
             if let Some(ref snap) = *guard {
                 let age_ms = now_unix_ms.saturating_sub(snap.observed_at_unix_ms);
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "millis from Duration is well within u64 range"
-                )]
+                #[allow(clippy::cast_possible_truncation)]
                 if age_ms >= self.max_snapshot_age.as_millis() as u64 {
                     return true;
                 }

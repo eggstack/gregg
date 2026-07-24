@@ -176,10 +176,17 @@ cargo deny check
 cargo build --release
 ```
 
-For release-candidate package verification (checksums, unpacked builds, clean
-installs, MSRV gates), use the manually-dispatchable workflow at
-`.github/workflows/release-candidate.yml`. Do not rely on `cargo package
---allow-dirty` as release evidence.
+For release-candidate verification, use the manually dispatched staged workflow
+at `.github/workflows/release-candidate.yml`. Run `protocol-prepublish` before
+publication, then prove the indexed `gregg-protocol 1.0.1` with
+`protocol-index-check` before running `binary-prepublish` or binary MSRV gates.
+The native and protected operational stages are separate evidence runs, and
+`postpublish-verify` installs the published binaries from crates.io.
+
+The workflow owns package installation: it unpacks each `.crate`, installs into
+an empty root, records checksum and size, and passes the installed `greggd`
+path to `scripts/verify-installed-daemon.sh`. That verifier only tests a
+supplied binary and never falls back to `target/release/greggd`.
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the
