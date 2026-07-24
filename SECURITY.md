@@ -11,8 +11,7 @@
 If you discover a security vulnerability in gregg, please report it
 responsibly. **Do not open a public GitHub issue for security reports.**
 
-Instead, please email the maintainers at the address listed in the
-repository ownership. Include:
+Instead, please email dbowman91@proton.me. Include:
 
 - A description of the vulnerability
 - Steps to reproduce
