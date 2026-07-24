@@ -903,6 +903,7 @@ mod native_tests {
     /// second sample, protocol snapshot validation, and repeated sampling
     /// to catch ownership or state-reset defects.
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn complete_production_collector_smoke() {
         use crate::collector::macos::MacOsCollector;
         use crate::collector::SystemCollector;
@@ -935,11 +936,32 @@ mod native_tests {
         // 4. Wait for counters to advance, then sample.  On virtualized Intel
         //    runners Mach counters may not advance as quickly, so we retry on
         //    CounterReset (which re-establishes the baseline internally).
+        //    Bounded to 20 attempts / 10 seconds to avoid hanging CI.
+        let start = std::time::Instant::now();
+        let max_attempts: u32 = 20;
+        let max_elapsed = std::time::Duration::from_secs(10);
         let metrics = loop {
             std::thread::sleep(std::time::Duration::from_millis(200));
+            let elapsed = start.elapsed();
             match collector.sample() {
                 Ok(m) => break m,
-                Err(e) if e.kind == CollectErrorKind::CounterReset => {}
+                Err(e) if e.kind == CollectErrorKind::CounterReset => {
+                    let attempts = u32::try_from(elapsed.as_millis() / 200).unwrap() + 1;
+                    if attempts >= max_attempts || elapsed >= max_elapsed {
+                        eprintln!(
+                            "complete_production_collector_smoke: CounterReset \
+                             after {attempts} attempts, \
+                             {elapsed:?} elapsed, \
+                             arch={}, \
+                             last_err_kind={:?}",
+                            identity.architecture, e.kind,
+                        );
+                        panic!(
+                            "second sample failed after {attempts} attempts: \
+                             CounterReset"
+                        );
+                    }
+                }
                 Err(e) => panic!("second sample fails: {e:?}"),
             }
         };
