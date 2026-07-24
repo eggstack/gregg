@@ -69,6 +69,7 @@ jobs:
         run: cargo package -p gregg --allow-dirty --no-verify
 
       - name: Deny
+        if: runner.os == 'Linux'
         uses: EmbarkStudios/cargo-deny-action@v2
 
   msrv:
