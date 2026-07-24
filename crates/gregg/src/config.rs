@@ -313,34 +313,43 @@ impl Config {
         );
         let temp_path = dir.join(&temp_name);
 
-        fs::write(&temp_path, content.as_bytes()).map_err(|e| {
-            let _ = fs::remove_file(&temp_path);
-            ConfigError::AtomicWrite {
-                path: path.to_path_buf(),
-                source: AtomicWriteError::Io(e),
-            }
-        })?;
-
-        // Flush on Unix.
-        #[cfg(unix)]
         {
-            let file = fs::OpenOptions::new()
+            use std::io::Write;
+
+            let mut file = fs::OpenOptions::new()
                 .write(true)
+                .create_new(true)
                 .open(&temp_path)
-                .map_err(|e| {
-                    let _ = fs::remove_file(&temp_path);
-                    ConfigError::AtomicWrite {
-                        path: path.to_path_buf(),
-                        source: AtomicWriteError::Io(e),
-                    }
+                .map_err(|e| ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
                 })?;
-            file.sync_all().map_err(|e| {
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file.set_permissions(fs::Permissions::from_mode(0o600));
+            }
+
+            file.write_all(content.as_bytes()).map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
                 ConfigError::AtomicWrite {
                     path: path.to_path_buf(),
                     source: AtomicWriteError::Io(e),
                 }
             })?;
+
+            // Flush on Unix.
+            #[cfg(unix)]
+            {
+                file.sync_all().map_err(|e| {
+                    let _ = fs::remove_file(&temp_path);
+                    ConfigError::AtomicWrite {
+                        path: path.to_path_buf(),
+                        source: AtomicWriteError::Io(e),
+                    }
+                })?;
+            }
         }
 
         fs::rename(&temp_path, path).map_err(|e| {
@@ -350,6 +359,13 @@ impl Config {
                 source: AtomicWriteError::Io(e),
             }
         })?;
+
+        // Enforce user-only permissions on the final file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        }
 
         // fsync the parent directory to ensure the rename is durable.
         #[cfg(unix)]
@@ -465,7 +481,7 @@ impl ConfigStore {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&lock_path)
             .map_err(|e| ConfigError::Io {
                 path: lock_path.clone(),
@@ -1890,6 +1906,214 @@ unknown_field = "oops"
         // Original bytes unchanged.
         assert_eq!(fs::read(&path).unwrap(), original_bytes);
         assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Config file permission tests (Unix only) ---
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_creates_new_config_with_0600_perms() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_new_file");
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+
+        let metadata = fs::metadata(&path).unwrap();
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "new config file must be user-only 0600");
+
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(config, loaded);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_preserves_0600_on_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_overwrite");
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+
+        let mode1 = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode1, 0o600);
+
+        config.write_atomic(&path).unwrap();
+        let mode2 = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode2, 0o600, "overwrite must preserve 0600");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_does_not_expose_broad_permission_temp_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_no_leak");
+        let path = dir.join("config.toml");
+
+        let config = Config::default();
+
+        // Verify no broad-permission temp files remain after write.
+        for entry in fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.contains(".tmp") {
+                let mode = entry.metadata().unwrap().permissions().mode() & 0o777;
+                panic!("temp file {name} should not remain: mode {mode:o}");
+            }
+        }
+
+        config.write_atomic(&path).unwrap();
+
+        // After write, only the config file should exist, and no temp files.
+        let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(Result::ok).collect();
+        assert_eq!(entries.len(), 1, "only config file should remain");
+        assert!(!entries[0].file_name().to_string_lossy().contains(".tmp"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn edit_transaction_preserves_0600_perms() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_edit");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let config = Config::default();
+        store.write(&config).unwrap();
+        let mode1 = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode1, 0o600);
+
+        store
+            .edit_transaction(|temp_path| {
+                let mut config = Config::load(temp_path)?;
+                config.refresh_seconds = 30;
+                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                    path: temp_path.to_path_buf(),
+                    source: e,
+                })?;
+                Ok(())
+            })
+            .unwrap();
+
+        let mode2 = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode2, 0o600, "edit must preserve 0600");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn edit_transaction_failure_preserves_original_perms_and_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_edit_fail");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let config = Config::default();
+        store.write(&config).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+        let original_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(original_mode, 0o600);
+
+        let result = store.edit_transaction(|temp_path| {
+            Err(ConfigError::EditorFailed {
+                path: temp_path.to_path_buf(),
+                message: "simulated".to_string(),
+            })
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        // Original permissions unchanged.
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, original_mode, "edit failure must preserve 0600");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_file_is_not_active_config_file() {
+        let dir = tmp_dir("perms_lock_file");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let config = Config::default();
+        store.write(&config).unwrap();
+
+        // The lock file should exist after a mutate.
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 15;
+                Ok(())
+            })
+            .unwrap();
+
+        let lock_path = store.lock_path();
+        // Lock file is not the config file.
+        assert_ne!(lock_path, path);
+        // Lock file path ends with .lock.
+        assert!(lock_path.to_string_lossy().ends_with(".lock"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mutate_preserves_0600_through_store() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_mutate");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 20;
+                Ok(())
+            })
+            .unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "mutate through store must produce 0600");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn repeated_writes_preserve_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("perms_repeated");
+        let path = dir.join("config.toml");
+
+        for i in 1..=5 {
+            let config = Config {
+                refresh_seconds: i,
+                ..Default::default()
+            };
+            config.write_atomic(&path).unwrap();
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "write {i} must produce 0600");
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
