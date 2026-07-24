@@ -173,10 +173,13 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
 cargo deny check
-cargo package -p gregg-protocol --allow-dirty --no-verify
-cargo package -p greggd --allow-dirty --no-verify
-cargo package -p gregg --allow-dirty --no-verify
+cargo build --release
 ```
+
+For release-candidate package verification (checksums, unpacked builds, clean
+installs, MSRV gates), use the manually-dispatchable workflow at
+`.github/workflows/release-candidate.yml`. Do not rely on `cargo package
+--allow-dirty` as release evidence.
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the
