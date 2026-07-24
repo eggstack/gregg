@@ -230,6 +230,14 @@ fn warming_then_valid_sample_produces_protocol_snapshot() {
     )
     .expect("collector constructs");
     let _ = collector.sample().expect_err("warming");
+
+    // Swap to second sample so CPU counters advance.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("ubuntu_x86_64_proc_stat_b.txt"));
+
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
     let snap: StatusSnapshot = metrics.into_snapshot(
@@ -393,6 +401,14 @@ fn arm64_fixture_produces_protocol_snapshot() {
     )
     .expect("collector constructs");
     let _ = collector.sample().expect_err("warming");
+
+    // Swap to second sample so CPU counters advance.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("arm64_proc_stat_b.txt"));
+
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
     let snap = metrics.into_snapshot(
@@ -429,6 +445,14 @@ fn zero_swap_host_produces_valid_snapshot() {
     )
     .expect("collector constructs");
     let _ = collector.sample().expect_err("warming");
+
+    // Swap to second sample so CPU counters advance.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("zero_swap_proc_stat_b.txt"));
+
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
     let snap = metrics.into_snapshot(
@@ -457,7 +481,7 @@ fn identity_uses_pretty_name_when_present() {
     );
     let identity = collect_identity(&source, None).expect("identity");
     assert_eq!(identity.os_name, "Ubuntu 24.04 LTS");
-    assert_eq!(identity.os_version, "Ubuntu 24.04 LTS");
+    assert_eq!(identity.os_version, "24.04 LTS (Noble Numbat)");
 }
 
 #[test]
@@ -719,6 +743,17 @@ fn container_collector_produces_valid_snapshot() {
     )
     .expect("collector constructs");
     let _ = collector.sample().expect_err("warming");
+
+    // Swap to second sample so CPU counters advance.
+    let inner = collector
+        .source_mut()
+        .memory_source_mut()
+        .expect("memory source");
+    inner.add_file(
+        "/proc/stat",
+        read_fixture("container_proc_stat_b.txt"),
+    );
+
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
     let snap: StatusSnapshot = metrics.into_snapshot(
@@ -818,11 +853,12 @@ fn swap_usage_change_between_samples() {
     .expect("collector constructs");
     let _ = collector.sample().expect_err("warming");
 
-    // Swap freed up.
+    // Swap freed up; also advance CPU counters so the second sample succeeds.
     let inner = collector
         .source_mut()
         .memory_source_mut()
         .expect("memory source");
+    inner.add_file("/proc/stat", read_fixture("ubuntu_x86_64_proc_stat_b.txt"));
     inner.add_file(
         "/proc/meminfo",
         read_fixture("swap_change_proc_meminfo_b.txt"),
@@ -851,6 +887,7 @@ fn identity_empty_os_release_fields() {
         Path::new("/etc/os-release"),
         "NAME=\"\"\nVERSION=\"\"\nID=\n".to_string(),
     );
+    mem.add_file(Path::new("/proc/sys/kernel/hostname"), "test-host\n");
     let source = ProcSource::for_memory(mem);
     let identity = collect_identity(&source, None).expect("identity");
     // Empty fields should produce empty strings, not errors.
@@ -865,6 +902,7 @@ fn identity_os_release_only_comments() {
         Path::new("/etc/os-release"),
         "# This is a comment\n# Another comment\n".to_string(),
     );
+    mem.add_file(Path::new("/proc/sys/kernel/hostname"), "test-host\n");
     let source = ProcSource::for_memory(mem);
     let identity = collect_identity(&source, None).expect("identity");
     assert_eq!(identity.os_name, "linux");
