@@ -3,6 +3,15 @@
 //! Wires the native collector, periodic sampler, HTTP server, signal handling,
 //! and structured logging into a single foreground process. Uses the validated
 //! [`crate::config::Config`] for all runtime parameters.
+//!
+//! ## Supervision model
+//!
+//! The daemon runs two critical tasks: the HTTP server and the periodic
+//! sampler. A `tokio::select!` observes whichever completes first (or a
+//! shutdown signal) and produces an outcome value. After the select, a
+//! single bounded deadline governs cleanup of any still-running task. If the
+//! deadline expires, the remaining task is aborted. The original outcome is
+//! preserved as the daemon's exit result regardless of cleanup failures.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,6 +27,48 @@ use crate::sampler::{RealClock, Sampler};
 use crate::server::error::ServerError;
 use crate::server::{Config as ServerConfig, ServerState};
 
+/// Single deadline for joining remaining tasks after the select fires.
+/// Using one deadline (rather than per-task timeouts) prevents the total
+/// cleanup window from multiplying when multiple tasks are still running.
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Outcome of the supervision `select!`.
+///
+/// Each variant captures the result of the branch that fired. After the
+/// select, [`RunOutcome::into_result`] converts this into the daemon's
+/// exit result, while [`join_remaining_tasks`] cleans up any surviving
+/// task within [`SHUTDOWN_DEADLINE`].
+#[derive(Debug)]
+pub(crate) enum RunOutcome {
+    /// A shutdown signal was received — normal exit.
+    #[allow(dead_code)]
+    Signal(&'static str),
+    /// The HTTP server task completed (or panicked).
+    Server(Result<Result<(), ServerError>, tokio::task::JoinError>),
+    /// The sampler task completed (or panicked).
+    Sampler(Result<(), tokio::task::JoinError>),
+}
+
+impl RunOutcome {
+    /// Convert the outcome into the daemon's exit result.
+    ///
+    /// A signal yields success. An unexpected clean exit (the task returned
+    /// `Ok` without a shutdown signal) is treated as a failure — the server
+    /// and sampler should only exit when the shutdown signal is received.
+    /// Errors and panics are propagated as failures.
+    #[allow(clippy::match_same_arms)]
+    fn into_result(self) -> Result<(), Box<dyn std::error::Error>> {
+        match self {
+            Self::Signal(_) => Ok(()),
+            Self::Server(Ok(Ok(()))) => Err("HTTP server exited unexpectedly".into()),
+            Self::Server(Ok(Err(e))) => Err(Box::new(e)),
+            Self::Server(Err(e)) => Err(Box::new(e)),
+            Self::Sampler(Ok(())) => Err("sampler exited unexpectedly".into()),
+            Self::Sampler(Err(e)) => Err(Box::new(e)),
+        }
+    }
+}
+
 /// Run the daemon with the given collector and configuration.
 ///
 /// This is the main entry point for `greggd run`. It:
@@ -25,8 +76,9 @@ use crate::server::{Config as ServerConfig, ServerState};
 /// 1. Initializes structured logging.
 /// 2. Validates configuration.
 /// 3. Starts the periodic sampler and HTTP server.
-/// 4. Handles Ctrl-C / SIGTERM for graceful shutdown.
-/// 5. Logs the shutdown reason and exits cleanly.
+/// 4. Supervises: waits for a shutdown signal, server failure, or sampler
+///    failure, then joins surviving tasks within a bounded deadline.
+/// 5. Logs the shutdown reason and exits.
 ///
 /// # Errors
 ///
@@ -116,85 +168,159 @@ pub async fn run<C: SystemCollector + 'static>(
     };
 
     // Supervise: wait for shutdown signal, server failure, or sampler failure.
-    // An unexpected clean exit (Ok) from either task without a shutdown signal
-    // is treated as a failure — the server and sampler should only exit when
-    // the shutdown signal is received.
+    // The select produces an outcome; common cleanup runs after the select
+    // so no critical-task branch can bypass task joining.
     let mut server_handle = Some(server_handle);
     let mut sampler_handle = Some(sampler_handle);
 
-    tokio::select! {
-        signal_result = wait_for_shutdown_signal() => {
-            info!(reason = %signal_result, "shutdown signal received");
-        }
-        result = async { server_handle.take().unwrap().await } => {
-            match result {
-                Ok(Ok(())) => {
-                    // Server exited cleanly without a shutdown signal — unexpected.
-                    eprintln!("HTTP server exited unexpectedly");
-                    let _ = shutdown_tx.send(());
-                    return Err("HTTP server exited unexpectedly".into());
-                }
-                Ok(Err(e)) => {
-                    eprintln!("HTTP server error: {e}");
-                    let _ = shutdown_tx.send(());
-                    return Err(Box::new(e));
-                }
-                Err(e) => {
-                    eprintln!("HTTP server task panicked: {e}");
-                    let _ = shutdown_tx.send(());
-                    return Err(Box::new(e));
-                }
-            }
-        }
-        result = async { sampler_handle.take().unwrap().await } => {
-            match result {
-                Ok(()) => {
-                    // Sampler exited cleanly without a shutdown signal — unexpected.
-                    eprintln!("sampler exited unexpectedly");
-                    let _ = shutdown_tx.send(());
-                    return Err("sampler exited unexpectedly".into());
-                }
-                Err(e) => {
-                    eprintln!("sampler task panicked: {e}");
-                    let _ = shutdown_tx.send(());
-                    return Err(Box::new(e));
-                }
-            }
-        }
-    }
+    let outcome = supervise(
+        &mut server_handle,
+        &mut sampler_handle,
+        wait_for_shutdown_signal(),
+    )
+    .await;
 
     // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());
 
-    // Joined shutdown: wait for both tasks to complete, with a timeout.
-    join_tasks(server_handle, sampler_handle).await;
+    // Join surviving tasks within a single bounded deadline.
+    join_remaining_tasks(server_handle, sampler_handle).await;
 
     info!("greggd stopped");
-    Ok(())
+    outcome.into_result()
 }
 
-/// Wait for both the server and sampler tasks to complete, with a timeout.
-/// Logs the outcome of each task.
-async fn join_tasks(
+/// Supervise the server and sampler tasks.
+///
+/// Uses `tokio::select!` to wait for whichever of the three branches
+/// completes first: a shutdown signal, the server task, or the sampler
+/// task. The selected handle is taken out of its `Option` after the select
+/// so it is not joined twice by [`join_remaining_tasks`].
+///
+/// The `shutdown` future allows tests to inject a controlled signal
+/// (e.g. `std::future::pending()` to never fire, or an immediately-ready
+/// future to simulate a signal).
+pub(crate) async fn supervise<S>(
+    server_handle: &mut Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    sampler_handle: &mut Option<tokio::task::JoinHandle<()>>,
+    shutdown: S,
+) -> RunOutcome
+where
+    S: std::future::Future<Output = &'static str>,
+{
+    // Borrow the handles without taking them so that a non-selected branch
+    // does not consume its handle. The selected handle is taken after the
+    // select completes.
+    let outcome = {
+        let mut server_fut = server_handle.as_mut().unwrap();
+        let mut sampler_fut = sampler_handle.as_mut().unwrap();
+
+        tokio::select! {
+            signal_result = shutdown => {
+                info!(reason = %signal_result, "shutdown signal received");
+                RunOutcome::Signal(signal_result)
+            }
+            result = &mut server_fut => {
+                match result {
+                    Ok(Ok(())) => {
+                        // Server exited cleanly without a shutdown signal — unexpected.
+                        eprintln!("HTTP server exited unexpectedly");
+                        RunOutcome::Server(Ok(Ok(())))
+                    }
+                    Ok(Err(e)) => {
+                        eprintln!("HTTP server error: {e}");
+                        RunOutcome::Server(Ok(Err(e)))
+                    }
+                    Err(e) => {
+                        eprintln!("HTTP server task panicked: {e}");
+                        RunOutcome::Server(Err(e))
+                    }
+                }
+            }
+            result = &mut sampler_fut => {
+                match result {
+                    Ok(()) => {
+                        // Sampler exited cleanly without a shutdown signal — unexpected.
+                        eprintln!("sampler exited unexpectedly");
+                        RunOutcome::Sampler(Ok(()))
+                    }
+                    Err(e) => {
+                        eprintln!("sampler task panicked: {e}");
+                        RunOutcome::Sampler(Err(e))
+                    }
+                }
+            }
+        }
+    };
+
+    // Take the selected handle so it is not joined again by
+    // join_remaining_tasks. Non-selected handles remain in their Options.
+    match &outcome {
+        RunOutcome::Server(_) => {
+            let _ = server_handle.take();
+        }
+        RunOutcome::Sampler(_) => {
+            let _ = sampler_handle.take();
+        }
+        RunOutcome::Signal(_) => {}
+    }
+
+    outcome
+}
+
+/// Join any still-running critical tasks within a single bounded deadline.
+///
+/// After the `select!` fires, one handle has already been consumed (taken
+/// out of its `Option`). This function joins the remaining handle(s).
+/// If a task does not complete within `deadline`, it is aborted
+/// and its cancellation is awaited.
+///
+/// Cleanup failures are logged but do not override the original outcome.
+pub(crate) async fn join_remaining_tasks(
     server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
     sampler_handle: Option<tokio::task::JoinHandle<()>>,
 ) {
-    let join_timeout = Duration::from_secs(10);
+    join_remaining_tasks_with_deadline(server_handle, sampler_handle, SHUTDOWN_DEADLINE).await;
+}
 
-    if let Some(handle) = server_handle {
-        match tokio::time::timeout(join_timeout, handle).await {
-            Ok(Ok(Ok(()))) => info!("HTTP server shut down cleanly"),
-            Ok(Ok(Err(e))) => eprintln!("HTTP server error during shutdown: {e}"),
-            Ok(Err(e)) => eprintln!("HTTP server task panicked during shutdown: {e}"),
-            Err(_) => eprintln!("HTTP server did not shut down within timeout"),
+/// Like [`join_remaining_tasks`] but with an explicit deadline, for testing.
+pub(crate) async fn join_remaining_tasks_with_deadline(
+    server_handle: Option<tokio::task::JoinHandle<Result<(), ServerError>>>,
+    sampler_handle: Option<tokio::task::JoinHandle<()>>,
+    deadline: Duration,
+) {
+    let deadline_instant = tokio::time::Instant::now() + deadline;
+
+    if let Some(mut handle) = server_handle {
+        tokio::select! {
+            result = &mut handle => {
+                match result {
+                    Ok(Ok(())) => info!("HTTP server shut down cleanly"),
+                    Ok(Err(e)) => eprintln!("HTTP server error during shutdown: {e}"),
+                    Err(e) => eprintln!("HTTP server task panicked during shutdown: {e}"),
+                }
+            }
+            () = tokio::time::sleep_until(deadline_instant) => {
+                eprintln!("HTTP server did not shut down within deadline; aborting");
+                handle.abort();
+                let _ = handle.await;
+            }
         }
     }
 
-    if let Some(handle) = sampler_handle {
-        match tokio::time::timeout(join_timeout, handle).await {
-            Ok(Ok(())) => info!("sampler shut down cleanly"),
-            Ok(Err(e)) => eprintln!("sampler error during shutdown: {e}"),
-            Err(_) => eprintln!("sampler did not shut down within timeout"),
+    if let Some(mut handle) = sampler_handle {
+        tokio::select! {
+            result = &mut handle => {
+                match result {
+                    Ok(()) => info!("sampler shut down cleanly"),
+                    Err(e) => eprintln!("sampler error during shutdown: {e}"),
+                }
+            }
+            () = tokio::time::sleep_until(deadline_instant) => {
+                eprintln!("sampler did not shut down within deadline; aborting");
+                handle.abort();
+                let _ = handle.await;
+            }
         }
     }
 }
@@ -222,26 +348,30 @@ async fn sync_sampler_state(
 }
 
 /// Wait for a platform-appropriate shutdown signal.
-async fn wait_for_shutdown_signal() -> &'static str {
+fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-        let mut sigint =
-            signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
+        async move {
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
 
-        tokio::select! {
-            _ = sigterm.recv() => "SIGTERM",
-            _ = sigint.recv() => "SIGINT",
+            tokio::select! {
+                _ = sigterm.recv() => "SIGTERM",
+                _ = sigint.recv() => "SIGINT",
+            }
         }
     }
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("failed to listen for Ctrl-C");
-        "Ctrl-C"
+        async {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
+        }
     }
 }
 
@@ -255,4 +385,296 @@ fn init_logging() {
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// Spawn a server-like task that returns the given result.
+    fn spawn_server(
+        result: Result<(), ServerError>,
+    ) -> tokio::task::JoinHandle<Result<(), ServerError>> {
+        tokio::spawn(async move { result })
+    }
+
+    /// Spawn a server-like task that sleeps briefly before returning.
+    fn spawn_server_slow(
+        result: Result<(), ServerError>,
+    ) -> tokio::task::JoinHandle<Result<(), ServerError>> {
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            result
+        })
+    }
+
+    /// Spawn a sampler-like task that returns Ok.
+    fn spawn_sampler_ok() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {})
+    }
+
+    /// Spawn a sampler-like task that sleeps briefly before returning.
+    fn spawn_sampler_slow() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        })
+    }
+
+    /// Spawn a sampler-like task that panics.
+    fn spawn_sampler_panic() -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async {
+            panic!("sampler panic");
+        })
+    }
+
+    /// Spawn a server-like task that panics.
+    fn spawn_server_panic() -> tokio::task::JoinHandle<Result<(), ServerError>> {
+        tokio::spawn(async {
+            panic!("server panic");
+        })
+    }
+
+    /// Spawn a server-like task that never completes (non-cooperative).
+    fn spawn_server_never() -> tokio::task::JoinHandle<Result<(), ServerError>> {
+        tokio::spawn(async {
+            std::future::pending::<()>().await;
+            Ok(())
+        })
+    }
+
+    #[tokio::test]
+    async fn server_error_shuts_down_and_joins_sampler() {
+        let mut server = Some(spawn_server(Err(ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "test",
+        )))));
+        let mut sampler = Some(spawn_sampler_slow());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        // Server should have been taken (consumed).
+        assert!(server.is_none());
+        // Sampler should still be present (not yet joined).
+        assert!(sampler.is_some());
+
+        // The outcome should be a server error.
+        match &outcome {
+            RunOutcome::Server(Ok(Err(_))) => {}
+            other => panic!("expected Server error, got {other:?}"),
+        }
+
+        // Join remaining tasks.
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn server_panic_shuts_down_and_joins_sampler() {
+        let mut server = Some(spawn_server_panic());
+        let mut sampler = Some(spawn_sampler_slow());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        assert!(server.is_none());
+        assert!(sampler.is_some());
+
+        match &outcome {
+            RunOutcome::Server(Err(_)) => {}
+            other => panic!("expected Server panic, got {other:?}"),
+        }
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn unexpected_clean_server_exit_is_failure_and_joins_sampler() {
+        let mut server = Some(spawn_server(Ok(())));
+        let mut sampler = Some(spawn_sampler_slow());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        assert!(server.is_none());
+        assert!(sampler.is_some());
+
+        match &outcome {
+            RunOutcome::Server(Ok(Ok(()))) => {}
+            other => panic!("expected Server Ok(Ok(())), got {other:?}"),
+        }
+
+        // The outcome should be a failure.
+        assert!(outcome.into_result().is_err());
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn sampler_panic_shuts_down_and_joins_server() {
+        let mut server = Some(spawn_server_slow(Ok(())));
+        let mut sampler = Some(spawn_sampler_panic());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        assert!(sampler.is_none());
+        assert!(server.is_some());
+
+        match &outcome {
+            RunOutcome::Sampler(Err(_)) => {}
+            other => panic!("expected Sampler panic, got {other:?}"),
+        }
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn unexpected_clean_sampler_exit_is_failure_and_joins_server() {
+        let mut server = Some(spawn_server_slow(Ok(())));
+        let mut sampler = Some(spawn_sampler_ok());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        assert!(sampler.is_none());
+        assert!(server.is_some());
+
+        match &outcome {
+            RunOutcome::Sampler(Ok(())) => {}
+            other => panic!("expected Sampler Ok(()), got {other:?}"),
+        }
+
+        // The outcome should be a failure.
+        assert!(outcome.into_result().is_err());
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn signal_shutdown_joins_both_tasks_and_returns_success() {
+        let mut server = Some(spawn_server(Ok(())));
+        let mut sampler = Some(spawn_sampler_ok());
+
+        // Use an immediately-ready shutdown future.
+        let shutdown = async { "test-signal" };
+
+        let outcome = supervise(&mut server, &mut sampler, shutdown).await;
+
+        // Both handles should still be present (neither was selected).
+        assert!(server.is_some());
+        assert!(sampler.is_some());
+
+        match &outcome {
+            RunOutcome::Signal(s) => assert_eq!(*s, "test-signal"),
+            other => panic!("expected Signal, got {other:?}"),
+        }
+
+        // The outcome should be success.
+        assert!(outcome.into_result().is_ok());
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn non_cooperative_task_is_aborted_after_deadline() {
+        // Create a server task that never completes.
+        let mut server = Some(spawn_server_never());
+        let mut sampler = Some(spawn_sampler_ok());
+
+        // Use an immediately-ready shutdown future so the select fires
+        // on the signal branch, leaving both tasks running.
+        let shutdown = async { "test-signal" };
+
+        let outcome = supervise(&mut server, &mut sampler, shutdown).await;
+
+        // Both handles should still be present.
+        assert!(server.is_some());
+        assert!(sampler.is_some());
+
+        // join_remaining_tasks should abort the non-cooperative server
+        // after a short deadline.
+        join_remaining_tasks_with_deadline(server, sampler, Duration::from_millis(100)).await;
+
+        // Outcome should be success (signal).
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[tokio::test]
+    async fn original_error_preserved_after_cleanup() {
+        let server_error = ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "original error",
+        ));
+        let mut server = Some(spawn_server(Err(server_error)));
+        let mut sampler = Some(spawn_sampler_slow());
+
+        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+
+        // The outcome should be the original server error.
+        let result = outcome.into_result();
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("AddrInUse") || err.contains("bind") || err.contains("Bind"),
+            "expected original error in: {err}"
+        );
+
+        join_remaining_tasks(server, sampler).await;
+    }
+
+    #[tokio::test]
+    async fn join_remaining_tasks_handles_none() {
+        // Verify join_remaining_tasks handles None gracefully.
+        let none: Option<tokio::task::JoinHandle<Result<(), ServerError>>> = None;
+        let none2: Option<tokio::task::JoinHandle<()>> = None;
+        join_remaining_tasks(none, none2).await;
+
+        // Also verify it handles a completed task.
+        let done = Some(spawn_server(Ok(())));
+        let done2: Option<tokio::task::JoinHandle<()>> = None;
+        join_remaining_tasks(done, done2).await;
+    }
+
+    #[test]
+    fn run_outcome_signal_is_success() {
+        let outcome = RunOutcome::Signal("SIGTERM");
+        assert!(outcome.into_result().is_ok());
+    }
+
+    #[test]
+    fn run_outcome_server_error_is_failure() {
+        let outcome = RunOutcome::Server(Ok(Err(ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "test",
+        )))));
+        assert!(outcome.into_result().is_err());
+    }
+
+    #[test]
+    fn run_outcome_server_clean_exit_is_failure() {
+        let outcome = RunOutcome::Server(Ok(Ok(())));
+        assert!(outcome.into_result().is_err());
+    }
+
+    #[tokio::test]
+    async fn run_outcome_server_panic_is_failure() {
+        let join_error = spawn_server_panic().await.unwrap_err();
+        let outcome = RunOutcome::Server(Err(join_error));
+        assert!(outcome.into_result().is_err());
+    }
+
+    #[test]
+    fn run_outcome_sampler_clean_exit_is_failure() {
+        let outcome = RunOutcome::Sampler(Ok(()));
+        assert!(outcome.into_result().is_err());
+    }
+
+    #[tokio::test]
+    async fn run_outcome_sampler_panic_is_failure() {
+        let join_error = spawn_sampler_panic().await.unwrap_err();
+        let outcome = RunOutcome::Sampler(Err(join_error));
+        assert!(outcome.into_result().is_err());
+    }
+
+    #[test]
+    fn shutdown_deadline_is_bounded() {
+        assert!(SHUTDOWN_DEADLINE >= Duration::from_secs(5));
+        assert!(SHUTDOWN_DEADLINE <= Duration::from_secs(30));
+    }
 }
