@@ -102,6 +102,7 @@ fn rejects_meminfo_with_available_exceeding_total() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn zero_swap_is_handled_without_panic() {
     let raw = read_fixture("zero_swap_proc_meminfo.txt");
     let parsed = parse_meminfo(&raw).expect("parses");
@@ -407,6 +408,7 @@ fn arm64_fixture_produces_protocol_snapshot() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)]
 fn zero_swap_host_produces_valid_snapshot() {
     let mut collector = LinuxCollector::with_source(
         source_from(

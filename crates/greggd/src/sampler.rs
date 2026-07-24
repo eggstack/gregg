@@ -711,7 +711,14 @@ mod tests {
     #[tokio::test]
     async fn run_warms_then_becomes_ready() {
         let clock = SyntheticClock::new(0);
-        let collector = SyntheticCollector::warming_then_success();
+        let collector = SyntheticCollector::from_results(vec![
+            Err(CollectError::warming("baseline")),
+            Ok(successful_metrics()),
+            Ok(successful_metrics()),
+            Ok(successful_metrics()),
+            Ok(successful_metrics()),
+            Ok(successful_metrics()),
+        ]);
         let mut sampler = Sampler::with_interval(collector, clock, 250).unwrap();
         let (tx, shutdown) = broadcast::channel(1);
 
@@ -720,7 +727,7 @@ mod tests {
             sampler
         });
 
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
         let _ = tx.send(());
         let sampler = handle.await.unwrap();
         assert_eq!(sampler.readiness(), ReadinessState::Ready);
