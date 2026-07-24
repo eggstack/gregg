@@ -147,7 +147,7 @@ pub fn platform_service_manager() -> Box<dyn ServiceManager> {
     }
     #[cfg(target_os = "macos")]
     {
-        Box::new(launchd::LaunchdManager::new())
+        Box::new(launchd::LaunchdManager::production())
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
