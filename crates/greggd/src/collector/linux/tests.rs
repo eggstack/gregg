@@ -32,6 +32,11 @@ fn source_from(
     for (fixture_name, path) in fixtures {
         mem = mem.with_file(Path::new(path), read_fixture(fixture_name));
     }
+    // The hostname is required by LinuxCollector::with_source via identity
+    // collection. Provide a synthetic one unless the caller already included it.
+    if !mem.has_file("/proc/sys/kernel/hostname") {
+        mem = mem.with_file(Path::new("/proc/sys/kernel/hostname"), "test-host\n");
+    }
     let mut source = ProcSource::for_memory(mem);
     if let Some(name) = os_release_fixture {
         let path = Path::new("/etc/os-release").to_path_buf();

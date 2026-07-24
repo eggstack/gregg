@@ -314,6 +314,12 @@ impl MemorySource {
         self.files.insert(path.into(), content.into());
     }
 
+    /// Returns `true` if the given path has been registered as a fixture.
+    #[must_use]
+    pub fn has_file(&self, path: &str) -> bool {
+        self.files.contains_key(Path::new(path))
+    }
+
     /// Set the logical core count returned by [`Self::available_parallelism`].
     #[must_use]
     pub fn with_logical_cores(mut self, cores: usize) -> Self {
