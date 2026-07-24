@@ -391,6 +391,7 @@ impl ConfigStore {
 
     /// Return the config path.
     #[must_use]
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -546,6 +547,100 @@ impl ConfigStore {
         self.write(&config)?;
         Ok(result)
     }
+
+    /// Run a transactional config edit under the cross-process lock.
+    ///
+    /// This implements the full read-edit-validate-commit sequence:
+    ///
+    /// 1. Acquire the in-process mutex and OS file lock.
+    /// 2. Load the current valid configuration, or create a default in memory.
+    /// 3. Serialize it to a temporary file in the destination directory.
+    /// 4. Invoke the editor (via `edit`) on the temporary file.
+    /// 5. If the editor exits nonzero, delete the temporary file and leave
+    ///    the live config unchanged.
+    /// 6. Parse the complete edited file (rejecting unknown fields).
+    /// 7. Reject validation violations.
+    /// 8. Atomically replace the live config using the durable write path.
+    /// 9. Clean up the temporary file on all paths.
+    ///
+    /// The live config file is **never** opened directly in the editor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError`] on lock timeout, load, editor, parse,
+    /// validation, or write failure.
+    pub fn edit_transaction(
+        &self,
+        edit: impl FnOnce(&Path) -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
+        let _thread_guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _file_guard = self.acquire_lock()?;
+
+        // Step 2: Load current config or create default.
+        let config = self.load_or_default()?;
+
+        // Step 3: Serialize to a temporary file in the destination directory.
+        let dir = self.path.parent().ok_or_else(|| ConfigError::AtomicWrite {
+            path: self.path.clone(),
+            source: AtomicWriteError::NoParentDirectory,
+        })?;
+        fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
+            path: self.path.clone(),
+            source: AtomicWriteError::Io(e),
+        })?;
+
+        let temp_name = format!(
+            ".gregg-edit-{}-{}.toml.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        );
+        let temp_path = dir.join(&temp_name);
+
+        // Serialize the current config to the temp file.
+        let content = config.to_toml();
+        fs::write(&temp_path, content.as_bytes()).map_err(|e| {
+            let _ = fs::remove_file(&temp_path);
+            ConfigError::AtomicWrite {
+                path: self.path.clone(),
+                source: AtomicWriteError::Io(e),
+            }
+        })?;
+
+        // Set user-only permissions on the temp file.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600));
+        }
+
+        // Step 4-5: Invoke the editor on the temporary file.
+        let edit_result = edit(&temp_path);
+
+        if let Err(e) = edit_result {
+            // Editor failed — clean up and leave live config unchanged.
+            let _ = fs::remove_file(&temp_path);
+            return Err(e);
+        }
+
+        // Step 6: Parse the complete edited file.
+        let parse_result = Config::load(&temp_path);
+
+        // Step 9: Clean up the temporary file on all paths.
+        let _ = fs::remove_file(&temp_path);
+
+        let edited = parse_result?;
+
+        // Step 7: Reject validation violations.
+        let violations = edited.validate();
+        if !violations.is_empty() {
+            return Err(ConfigError::Validation(violations));
+        }
+
+        // Step 8: Atomically replace the live config.
+        self.write(&edited)?;
+
+        Ok(())
+    }
 }
 
 /// RAII guard for the cross-process configuration lock.
@@ -591,6 +686,8 @@ pub enum ConfigError {
     LockPoisoned,
     /// Cross-process lock could not be acquired within the timeout.
     LockTimeout { path: PathBuf, timeout_ms: u64 },
+    /// The editor could not be launched or exited with a nonzero status.
+    EditorFailed { path: PathBuf, message: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -620,6 +717,9 @@ impl fmt::Display for ConfigError {
                 "could not acquire config lock at {} within {timeout_ms}ms; another process may be modifying the configuration",
                 path.display()
             ),
+            Self::EditorFailed { path, message } => {
+                write!(f, "editor failed on {}: {message}", path.display())
+            }
         }
     }
 }
@@ -630,7 +730,10 @@ impl std::error::Error for ConfigError {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
             Self::AtomicWrite { source, .. } => Some(source),
-            Self::Validation(_) | Self::LockPoisoned | Self::LockTimeout { .. } => None,
+            Self::Validation(_)
+            | Self::LockPoisoned
+            | Self::LockTimeout { .. }
+            | Self::EditorFailed { .. } => None,
         }
     }
 }
@@ -1458,6 +1561,335 @@ unknown_field = "oops"
         let entries: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(Result::ok).collect();
         assert_eq!(entries.len(), 1, "should only have the final config file");
         assert_eq!(entries[0].file_name().to_str().unwrap(), "config.toml");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- edit_transaction tests ---
+
+    /// Helper: count temp files in a directory.
+    fn count_temp_files(dir: &Path) -> usize {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .is_some_and(|n| n.contains(".tmp") || n.contains("gregg-edit"))
+            })
+            .count()
+    }
+
+    #[test]
+    fn edit_transaction_valid_edit_commits() {
+        let dir = tmp_dir("edit_valid");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor writes valid TOML with a changed refresh_seconds.
+        store
+            .edit_transaction(|temp_path| {
+                let mut config = Config::load(temp_path)?;
+                config.refresh_seconds = 30;
+                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                    path: temp_path.to_path_buf(),
+                    source: e,
+                })?;
+                Ok(())
+            })
+            .unwrap();
+
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded.refresh_seconds, 30);
+        assert_ne!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_invalid_toml_preserves_original() {
+        let dir = tmp_dir("edit_invalid_toml");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor writes invalid TOML.
+        let result = store.edit_transaction(|temp_path| {
+            fs::write(temp_path, "this is not valid {{{").map_err(|e| ConfigError::Io {
+                path: temp_path.to_path_buf(),
+                source: e,
+            })?;
+            Ok(())
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_validation_failure_preserves_original() {
+        let dir = tmp_dir("edit_validation_fail");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor writes TOML with an invalid value (refresh_seconds = 0).
+        let result = store.edit_transaction(|temp_path| {
+            let mut config = Config::load(temp_path)?;
+            config.refresh_seconds = 0; // Invalid: below minimum
+            fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                path: temp_path.to_path_buf(),
+                source: e,
+            })?;
+            Ok(())
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_nonzero_editor_exit_preserves_original() {
+        let dir = tmp_dir("edit_nonzero_exit");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor "exits nonzero" — closure returns an error.
+        let result = store.edit_transaction(|temp_path| {
+            Err(ConfigError::EditorFailed {
+                path: temp_path.to_path_buf(),
+                message: "editor exited with status: 1".to_string(),
+            })
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_editor_launch_failure_preserves_original() {
+        let dir = tmp_dir("edit_launch_fail");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor "launch fails" — closure returns an error.
+        let result = store.edit_transaction(|temp_path| {
+            Err(ConfigError::EditorFailed {
+                path: temp_path.to_path_buf(),
+                message: "failed to launch editor: not found".to_string(),
+            })
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_missing_config_starts_from_default() {
+        let dir = tmp_dir("edit_missing_config");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        // No config file exists yet.
+        assert!(!path.exists());
+
+        // Editor writes valid TOML (just the default).
+        store
+            .edit_transaction(|temp_path| {
+                let config = Config::load(temp_path)?;
+                // Verify the temp file started from defaults.
+                assert_eq!(config, Config::default());
+                // Write it back unchanged.
+                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                    path: temp_path.to_path_buf(),
+                    source: e,
+                })?;
+                Ok(())
+            })
+            .unwrap();
+
+        // Config file should now exist with default values.
+        assert!(path.exists());
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded, Config::default());
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_temp_files_removed_on_success_and_failure() {
+        let dir = tmp_dir("edit_temp_cleanup");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+
+        // Success path.
+        store
+            .edit_transaction(|temp_path| {
+                fs::write(temp_path, Config::default().to_toml()).map_err(|e| ConfigError::Io {
+                    path: temp_path.to_path_buf(),
+                    source: e,
+                })?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count_temp_files(&dir), 0, "no temp files after success");
+
+        // Failure path (invalid TOML).
+        let _ = store.edit_transaction(|temp_path| {
+            fs::write(temp_path, "invalid {{{").map_err(|e| ConfigError::Io {
+                path: temp_path.to_path_buf(),
+                source: e,
+            })?;
+            Ok(())
+        });
+        assert_eq!(count_temp_files(&dir), 0, "no temp files after failure");
+
+        // Failure path (editor error).
+        let _ = store.edit_transaction(|temp_path| {
+            Err(ConfigError::EditorFailed {
+                path: temp_path.to_path_buf(),
+                message: "fail".to_string(),
+            })
+        });
+        assert_eq!(
+            count_temp_files(&dir),
+            0,
+            "no temp files after editor error"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_concurrent_mutation_no_lost_updates() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tmp_dir("edit_concurrent");
+        let path = dir.join("config.toml");
+        let store = Arc::new(ConfigStore::new(path.clone()));
+
+        // Initialize config.
+        store
+            .mutate(|c| {
+                c.refresh_seconds = 5;
+                Ok(())
+            })
+            .unwrap();
+
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Start an edit_transaction that holds the lock briefly.
+        let store1 = store.clone();
+        let edit_handle = thread::spawn(move || {
+            store1
+                .edit_transaction(|temp_path| {
+                    // Hold the lock briefly to simulate editor interaction.
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                    let mut config = Config::load(temp_path)?;
+                    config.refresh_seconds = 20;
+                    fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                        path: temp_path.to_path_buf(),
+                        source: e,
+                    })?;
+                    Ok(())
+                })
+                .unwrap();
+        });
+
+        // Give the edit thread time to acquire the lock.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Try a concurrent mutate — it should block until edit completes,
+        // then see the updated config.
+        let store2 = store.clone();
+        let mutate_handle = thread::spawn(move || {
+            store2
+                .mutate(|c| {
+                    c.refresh_seconds = 30;
+                    Ok(())
+                })
+                .unwrap();
+        });
+
+        edit_handle.join().unwrap();
+        mutate_handle.join().unwrap();
+
+        // The final config should reflect the mutate (30), not the edit (20).
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded.refresh_seconds, 30);
+        assert_ne!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_rejects_unknown_fields() {
+        let dir = tmp_dir("edit_unknown_fields");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Editor writes TOML with an unknown field.
+        let result = store.edit_transaction(|temp_path| {
+            let config = Config::load(temp_path)?;
+            let toml = config.to_toml();
+            // Append an unknown field.
+            let modified = format!("{toml}\nunknown_field = \"oops\"\n");
+            fs::write(temp_path, modified).map_err(|e| ConfigError::Io {
+                path: temp_path.to_path_buf(),
+                source: e,
+            })?;
+            Ok(())
+        });
+        assert!(result.is_err());
+
+        // Original bytes unchanged.
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(count_temp_files(&dir), 0, "no temp files should remain");
 
         let _ = fs::remove_dir_all(&dir);
     }

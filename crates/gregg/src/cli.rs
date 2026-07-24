@@ -151,6 +151,7 @@ impl From<&ConfigError> for ExitCode {
             | ConfigError::Validation(_)
             | ConfigError::AtomicWrite { .. } => Self::ConfigError,
             ConfigError::LockPoisoned | ConfigError::LockTimeout { .. } => Self::OperationError,
+            ConfigError::EditorFailed { .. } => Self::EditorError,
         }
     }
 }
@@ -313,53 +314,34 @@ fn cmd_refresh(store: &ConfigStore, seconds: u64) -> Result<(), Box<dyn std::err
 }
 
 fn cmd_edit(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
-    // Ensure a config file exists.
-    let path = store.path().to_path_buf();
-    if !path.exists() {
-        let default = Config::default();
-        store.write(&default)?;
-    }
-
-    // Resolve editor.
-    let editor = resolve_editor().ok_or_else(|| {
-        Box::new(ConfigError::Io {
-            path: path.clone(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "no editor found; set $VISUAL or $EDITOR",
-            ),
-        }) as Box<dyn std::error::Error>
-    })?;
-
-    // Launch editor.
-    let status = std::process::Command::new(&editor)
-        .arg(&path)
-        .status()
-        .map_err(|e| {
-            Box::new(ConfigError::Io {
-                path: path.clone(),
-                source: e,
-            }) as Box<dyn std::error::Error>
+    store.edit_transaction(|path| {
+        // Resolve editor.
+        let editor = resolve_editor().ok_or_else(|| ConfigError::EditorFailed {
+            path: path.to_path_buf(),
+            message: "no editor found; set $VISUAL or $EDITOR".to_string(),
         })?;
 
-    if !status.success() {
-        return Err(Box::new(ConfigError::Io {
-            path: path.clone(),
-            source: std::io::Error::other(format!("editor exited with status: {status}")),
-        }) as Box<dyn std::error::Error>);
-    }
+        // Launch editor on the temporary file (never the live file).
+        let status = std::process::Command::new(&editor)
+            .arg(path)
+            .status()
+            .map_err(|e| ConfigError::EditorFailed {
+                path: path.to_path_buf(),
+                message: format!("failed to launch editor: {e}"),
+            })?;
 
-    // Reload and validate.
-    match Config::load(&path) {
-        Ok(_) => {
-            eprintln!("configuration validated successfully");
-            Ok(())
+        if !status.success() {
+            return Err(ConfigError::EditorFailed {
+                path: path.to_path_buf(),
+                message: format!("editor exited with status: {status}"),
+            });
         }
-        Err(e) => {
-            eprintln!("warning: edited config is invalid: {e}");
-            Err(Box::new(e))
-        }
-    }
+
+        Ok(())
+    })?;
+
+    eprintln!("configuration validated successfully");
+    Ok(())
 }
 
 /// Resolve the editor to use, checking $VISUAL, $EDITOR, then fallbacks.
