@@ -18,28 +18,95 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  package-verification:
-    name: Package verification — ${{ matrix.crate }}
+  resolve:
+    name: Resolve candidate
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        crate: [gregg-protocol, greggd, gregg]
+    outputs:
+      candidate_sha: ${{ steps.resolve.outputs.candidate_sha }}
+      candidate_version: ${{ steps.resolve.outputs.candidate_version }}
+      short_sha: ${{ steps.resolve.outputs.short_sha }}
     steps:
-      - name: Check out candidate
+      - name: Check out candidate (full history)
         uses: actions/checkout@v4
         with:
           ref: ${{ inputs.candidate_ref }}
           fetch-depth: 0
 
-      - name: Verify checked-out commit matches candidate
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Resolve ref to full SHA
+        id: resolve
         run: |
-          CHECKED_OUT="$(git rev-parse HEAD)"
-          if [ "$CHECKED_OUT" != "${{ inputs.candidate_ref }}" ]; then
-            echo "ERROR: checked-out commit $CHECKED_OUT does not match candidate ${{ inputs.candidate_ref }}"
+          CANDIDATE_SHA="$(git rev-parse "${{ inputs.candidate_ref }}^{commit}")"
+          SHORT_SHA="$(echo "$CANDIDATE_SHA" | cut -c1-8)"
+          VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
+          echo "candidate_sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "candidate_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved: $CANDIDATE_SHA (short: $SHORT_SHA) version=$VERSION"
+
+      - name: Verify workspace version is 1.0.1
+        run: |
+          VERSION="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
+          if [ "$VERSION" != "1.0.1" ]; then
+            echo "ERROR: workspace version is '$VERSION', expected '1.0.1'"
             exit 1
           fi
-          echo "Verified: $CHECKED_OUT"
+
+      - name: Verify all inter-crate dependencies are 1.0.1
+        run: |
+          for CRATE_TOML in crates/greggd/Cargo.toml crates/gregg/Cargo.toml; do
+            # Extract gregg-protocol version from [dependencies] section only.
+            # Handles inline table format: gregg-protocol = { version = "1.0.1", ... }
+            PROTO_VER="$(awk '/^\[dependencies\]/{found=1} found && /gregg-protocol/{s=$0; gsub(/.*version *= *"/, "", s); gsub(/".*/, "", s); print s; exit}' "$CRATE_TOML")"
+            if [ -z "$PROTO_VER" ]; then
+              echo "ERROR: $CRATE_TOML does not declare a gregg-protocol dependency"
+              exit 1
+            fi
+            if [ "$PROTO_VER" != "1.0.1" ]; then
+              echo "ERROR: $CRATE_TOML declares gregg-protocol version '$PROTO_VER', expected '1.0.1'"
+              exit 1
+            fi
+            echo "OK: $CRATE_TOML -> gregg-protocol $PROTO_VER"
+          done
+
+      - name: Verify worktree is clean
+        run: |
+          DIRTY="$(git status --porcelain)"
+          if [ -n "$DIRTY" ]; then
+            echo "ERROR: worktree is dirty after checkout:"
+            echo "$DIRTY"
+            exit 1
+          fi
+          echo "Worktree is clean"
+
+      - name: Verify Cargo.lock is present and consistent
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "ERROR: Cargo.lock is not present"
+            exit 1
+          fi
+          cargo generate-lockfile --locked 2>&1 || {
+            echo "ERROR: Cargo.lock is inconsistent"
+            exit 1
+          }
+          if [ -n "$(git status --porcelain Cargo.lock)" ]; then
+            echo "ERROR: Cargo.lock changed after generate-lockfile --locked"
+            exit 1
+          fi
+          echo "Cargo.lock is present and consistent"
+
+  package-verification-protocol:
+    name: Package verification — gregg-protocol
+    runs-on: ubuntu-latest
+    needs: [resolve]
+    steps:
+      - name: Check out candidate by SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -54,9 +121,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-rc-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-rc-protocol-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rc-${{ matrix.crate }}-
+            ${{ runner.os }}-rc-protocol-${{ needs.resolve.outputs.short_sha }}-
 
       - name: Record environment
         run: |
@@ -67,9 +134,84 @@ jobs:
           cargo --version
           echo "=== OS and architecture ==="
           uname -a
-          uname -m
-          echo "=== Cargo metadata ==="
-          cargo metadata --format-version 1 | head -c 2000
+
+      - name: List package contents
+        run: cargo package -p gregg-protocol --list
+
+      - name: Build package archive
+        run: cargo package -p gregg-protocol
+
+      - name: Locate and checksum archive
+        run: |
+          VERSION="$(cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "gregg-protocol") | .version')"
+          ARCHIVE="target/package/gregg-protocol-${VERSION}.crate"
+          echo "Archive: $ARCHIVE"
+          sha256sum "$ARCHIVE"
+          echo "ARCHIVE_PATH=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - name: Unpack archive into clean directory
+        run: |
+          mkdir -p /tmp/protocol-verify
+          tar -xzf "$ARCHIVE_PATH" -C /tmp/protocol-verify
+          echo "=== Unpacked contents ==="
+          ls -la /tmp/protocol-verify/
+
+      - name: Inspect normalized Cargo.toml
+        run: |
+          echo "=== Normalized Cargo.toml ==="
+          cat /tmp/protocol-verify/*/Cargo.toml
+
+      - name: Build unpacked source
+        run: |
+          cd /tmp/protocol-verify/*/
+          cargo build --all-features 2>&1
+
+      - name: Test unpacked source
+        run: |
+          cd /tmp/protocol-verify/*/
+          cargo test --all-features 2>&1
+
+  package-verification-binaries:
+    name: Package verification — ${{ matrix.crate }}
+    runs-on: ubuntu-latest
+    needs: [resolve, package-verification-protocol]
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [greggd, gregg]
+    steps:
+      - name: Check out candidate by SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-rc-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rc-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-
+
+      - name: Record environment
+        run: |
+          echo "=== Commit SHA ==="
+          git rev-parse HEAD
+          echo "=== Rust version ==="
+          rustc -vV
+          cargo --version
+          echo "=== OS and architecture ==="
+          uname -a
 
       - name: List package contents
         run: cargo package -p ${{ matrix.crate }} --list
@@ -108,8 +250,7 @@ jobs:
           cd /tmp/${{ matrix.crate }}-verify/*/
           cargo test --all-features 2>&1
 
-      - name: Install binary from clean root (greggd and gregg only)
-        if: matrix.crate != 'gregg-protocol'
+      - name: Install binary from clean root
         run: |
           TEMP_ROOT="/tmp/${{ matrix.crate }}-install"
           mkdir -p "$TEMP_ROOT"
@@ -118,8 +259,7 @@ jobs:
           echo "=== Installed binaries ==="
           ls -la "$TEMP_ROOT/bin/"
 
-      - name: Smoke test installed binary (greggd and gregg only)
-        if: matrix.crate != 'gregg-protocol'
+      - name: Smoke test installed binary
         run: |
           TEMP_ROOT="/tmp/${{ matrix.crate }}-install"
           "$TEMP_ROOT/bin/${{ matrix.crate }}" --help 2>&1
@@ -130,24 +270,17 @@ jobs:
   msrv-package:
     name: MSRV package build — ${{ matrix.crate }}
     runs-on: ubuntu-latest
+    needs: [resolve]
     strategy:
       fail-fast: false
       matrix:
         crate: [gregg-protocol, greggd, gregg]
     steps:
-      - name: Check out candidate
+      - name: Check out candidate by SHA
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_ref }}
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Verify checked-out commit matches candidate
-        run: |
-          CHECKED_OUT="$(git rev-parse HEAD)"
-          if [ "$CHECKED_OUT" != "${{ inputs.candidate_ref }}" ]; then
-            echo "ERROR: checked-out commit $CHECKED_OUT does not match candidate ${{ inputs.candidate_ref }}"
-            exit 1
-          fi
 
       - name: Install Rust 1.75
         uses: dtolnay/rust-toolchain@master
@@ -162,9 +295,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-
+            ${{ runner.os }}-rc-msrv-${{ matrix.crate }}-${{ needs.resolve.outputs.short_sha }}-
 
       - name: Build unpacked protocol package under Rust 1.75
         if: matrix.crate == 'gregg-protocol'
@@ -189,6 +322,7 @@ jobs:
   native-evidence:
     name: Native evidence — ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    needs: [resolve]
     strategy:
       fail-fast: false
       matrix:
@@ -203,19 +337,11 @@ jobs:
             arch: x86_64
             name: macos-intel
     steps:
-      - name: Check out candidate
+      - name: Check out candidate by SHA
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_ref }}
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 0
-
-      - name: Verify checked-out commit matches candidate
-        run: |
-          CHECKED_OUT="$(git rev-parse HEAD)"
-          if [ "$CHECKED_OUT" != "${{ inputs.candidate_ref }}" ]; then
-            echo "ERROR: checked-out commit $CHECKED_OUT does not match candidate ${{ inputs.candidate_ref }}"
-            exit 1
-          fi
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -230,9 +356,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-rc-native-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-rc-native-${{ needs.resolve.outputs.short_sha }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-rc-native-
+            ${{ runner.os }}-rc-native-${{ needs.resolve.outputs.short_sha }}-
 
       - name: Verify architecture
         run: |
@@ -259,18 +385,18 @@ jobs:
       - name: Daemon loopback smoke
         run: |
           cargo build --release -p greggd
-          /tmp/greggd-loopback-test.sh 2>&1 || true
+          ./scripts/verify-installed-daemon.sh ./target/release/greggd
 
   soak:
     name: 24-hour soak
     runs-on: ubuntu-latest
-    needs: [package-verification, native-evidence]
+    needs: [resolve, package-verification-protocol, package-verification-binaries, native-evidence]
     if: inputs.run_soak == true
     steps:
-      - name: Check out candidate
+      - name: Check out candidate by SHA
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.candidate_ref }}
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
