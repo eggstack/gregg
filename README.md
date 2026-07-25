@@ -176,6 +176,16 @@ cargo deny check
 cargo build --release
 ```
 
+The sustained workload evidence runner exercises the production polling and
+state-reduction path for a configurable duration:
+
+```text
+python3 scripts/run-mixed-fleet-sustained.py \
+  --duration-seconds 2 \
+  --sample-interval-seconds 0.2 \
+  --evidence-dir target/sustained-smoke
+```
+
 For release-candidate verification, use the manually dispatched staged workflow
 at `.github/workflows/release-candidate.yml`. Run `protocol-prepublish` before
 publication, then prove the indexed `gregg-protocol 1.0.1` with

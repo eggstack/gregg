@@ -588,39 +588,53 @@ jobs:
           ref: ${{ needs.resolve.outputs.candidate_sha }}
           fetch-depth: 1
       - uses: dtolnay/rust-toolchain@stable
-      - name: Run sustained mixed-fleet state engine
+      - name: Initialize evidence directory
+        run: mkdir -p evidence
+      - name: Build and run sustained workload
+        run: |
+          set -euo pipefail
+          python3 scripts/run-mixed-fleet-sustained.py \
+            --duration-seconds 30 \
+            --sample-interval-seconds 5 \
+            --evidence-dir evidence \
+            --profile debug
+      - name: Run short scheduler/state/poller unit tests
+        run: |
+          set -euo pipefail
+          cargo test -p gregg --all-targets --all-features scheduler -- --nocapture 2>&1 | tee evidence/scheduler-tests.txt
+          cargo test -p gregg --all-targets --all-features state -- --nocapture 2>&1 | tee evidence/state-tests.txt
+          cargo test -p gregg --all-targets --all-features poller -- --nocapture 2>&1 | tee evidence/poller-tests.txt
+      - name: Candidate metadata
         run: |
           set -euo pipefail
           mkdir -p evidence
-          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          start_monotonic="$(python3 -c 'import time; print(time.monotonic_ns())')"
-          # Run the functional fleet tests.
-          cargo test -p gregg --all-targets --all-features mixed_fleet -- --nocapture 2>&1 | tee evidence/fleet-transition.txt
-          # Run scheduler, state, and poller tests for sustained coverage.
-          cargo test -p gregg --all-targets --all-features scheduler -- --nocapture 2>&1 | tee evidence/scheduler-transient.txt
-          cargo test -p gregg --all-targets --all-features state -- --nocapture 2>&1 | tee evidence/state-reduction.txt
-          cargo test -p gregg --all-targets --all-features poller -- --nocapture 2>&1 | tee evidence/poller-generations.txt
-          # Record resource samples during the run.
-          ps -o rss=,vsz=,pid=,comm= -C gregg 2>/dev/null > evidence/resource-samples.txt || true
-          ps -o rss=,vsz=,pid=,comm= -C greggd 2>/dev/null >> evidence/resource-samples.txt || true
-          completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          end_monotonic="$(python3 -c 'import time; print(time.monotonic_ns())')"
-          observed_secs="$(python3 -c "import sys; print(int((int(sys.argv[2]) - int(sys.argv[1])) / 1_000_000_000))" "${start_monotonic}" "${end_monotonic}")"
-          # Enforce minimum qualifying duration (30 seconds for CI smoke).
-          min_duration=30
-          if ((observed_secs < min_duration)); then
-            echo "FATAL: sustained run took ${observed_secs}s, minimum is ${min_duration}s" >&2
-            exit 1
+          # Read actual values from the sustained summary.
+          summary="evidence/sustained-summary.json"
+          requested_duration="$(python3 -c "import json; d=json.load(open('${summary}')); print(d['requested_duration_secs'])")"
+          observed_duration="$(python3 -c "import json; d=json.load(open('${summary}')); print(d['observed_duration_secs'])")"
+          completed_generations="$(python3 -c "import json; d=json.load(open('${summary}')); print(d['completed_generations'])")"
+          resource_sample_count="$(python3 -c "import json; d=json.load(open('evidence/resource-samples.jsonl')); print(sum(1 for _ in open('evidence/resource-samples.jsonl')))" 2>/dev/null || echo 0)"
+          # Fallback if summary-based count fails.
+          if [ "${resource_sample_count}" = "0" ]; then
+            resource_sample_count="$(wc -l < evidence/resource-samples.jsonl 2>/dev/null || echo 0)"
           fi
-          jq -n --arg observed "${observed_secs}" --arg min "${min_duration}" \
-            '[{name:"fleet-transition.txt",role:"sustained-transitions"},{name:"scheduler-transient.txt",role:"scheduler-bounded"},{name:"state-reduction.txt",role:"state-reduction"},{name:"poller-generations.txt",role:"poller-generations"},{name:"resource-samples.txt",role:"resource-samples"}]' > evidence/artifacts.json
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n \
+            --arg requested "${requested_duration}" \
+            --arg observed "${observed_duration}" \
+            --arg generations "${completed_generations}" \
+            --arg samples "${resource_sample_count}" \
+            '[{name:"sustained-summary.json",role:"sustained-summary"},{name:"resource-samples.jsonl",role:"resource-samples"},{name:"workload-stdout.txt",role:"workload-stdout"},{name:"workload-stderr.txt",role:"workload-stderr"},{name:"scheduler-tests.txt",role:"scheduler-tests"},{name:"state-tests.txt",role:"state-tests"},{name:"poller-tests.txt",role:"poller-tests"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
             --release-version "${{ needs.resolve.outputs.candidate_version }}" --stage mixed-fleet-sustained \
             --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --job-name mixed-fleet-sustained --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
-            --started-at "${started_at}" --completed-at "${completed_at}" --artifacts-json evidence/artifacts.json \
-            --note "mode=release" --note "qualifying_duration_secs=30" --note "observed_duration_secs=${observed_secs}"
+            --started-at "${started_at}" --completed-at "${started_at}" --artifacts-json evidence/artifacts.json \
+            --note "requested_duration_secs=${requested_duration}" \
+            --note "observed_duration_secs=${observed_duration}" \
+            --note "resource_sample_count=${resource_sample_count}" \
+            --note "completed_generations=${completed_generations}"
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json \
             --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version "${{ needs.resolve.outputs.candidate_version }}"
       - uses: actions/upload-artifact@v4

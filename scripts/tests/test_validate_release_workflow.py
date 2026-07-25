@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -23,11 +24,13 @@ _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 
 WorkflowViolation = _mod.WorkflowViolation
+_build_job_stage_map = _mod._build_job_stage_map
 _check_dependency_closure = _mod._check_dependency_closure
 _extract_dispatch_options = _mod._extract_dispatch_options
 _extract_jobs = _mod._extract_jobs
 _jobs_reachable_for_stage = _mod._jobs_reachable_for_stage
 _parse_if_condition = _mod._parse_if_condition
+_validate_stage_contract = _mod._validate_stage_contract
 validate_workflow = _mod.validate_workflow
 
 
@@ -57,6 +60,11 @@ def _parse_jobs(workflow_yaml: str) -> dict:
     import yaml
     data = yaml.safe_load(workflow_yaml)
     return _extract_jobs(data)
+
+
+def _parse_data(workflow_yaml: str) -> dict:
+    import yaml
+    return yaml.safe_load(workflow_yaml)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +315,501 @@ class TestTruthTable(unittest.TestCase):
         for stage, expected_jobs in self.STAGE_TRUTH_TABLE.items():
             for job_name in expected_jobs:
                 self.assertIn(job_name, jobs, f"truth table references nonexistent job '{job_name}' for stage '{stage}'")
+
+
+# ---------------------------------------------------------------------------
+# Tests: unknown dispatch options and unsupported expressions
+# ---------------------------------------------------------------------------
+
+class TestUnknownDispatchOptions(unittest.TestCase):
+
+    def test_unknown_dispatch_option_detected(self):
+        """A dispatch option not in the truth table is rejected by the validator."""
+        import yaml
+        workflow_path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release-candidate.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        # The truth table inside validate_workflow is hardcoded; this test confirms
+        # that the validator's extraction function captures unknown options.
+        modified = workflow_text.replace(
+            "          - postpublish-verify\n",
+            "          - postpublish-verify\n          - unknown-future-stage\n",
+        )
+        options = _extract_dispatch_options(modified)
+        self.assertIn("unknown-future-stage", options)
+
+    def test_unknown_dispatch_option_rejected_by_validator(self):
+        """The full validator rejects workflows with unknown dispatch options."""
+        import yaml
+        workflow_path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release-candidate.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        modified = workflow_text.replace(
+            "          - postpublish-verify\n",
+            "          - postpublish-verify\n          - unknown-future-stage\n",
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False, dir=workflow_path.parent) as f:
+            f.write(modified)
+            f.flush()
+            # Temporarily override the WORKFLOW constant
+            original_workflow = _mod.WORKFLOW
+            try:
+                _mod.WORKFLOW = Path(f.name)
+                violations = validate_workflow()
+                unknown = [v for v in violations if v.category == "unknown-dispatch-option"]
+                self.assertTrue(len(unknown) > 0, f"Expected unknown-dispatch-option violations, got: {[str(v) for v in violations]}")
+            finally:
+                _mod.WORKFLOW = original_workflow
+
+
+class TestUnsupportedExpressions(unittest.TestCase):
+
+    def test_unsupported_expression_detected(self):
+        """A job with an unsupported if expression is flagged."""
+        jobs = {
+            "resolve": {
+                "needs": [],
+                "if_raw": "always()",
+                "if_parsed": _parse_if_condition("always()"),
+                "strategy": None,
+            },
+            "weird": {
+                "needs": ["resolve"],
+                "if_raw": "${{ github.event_name == 'push' && inputs.stage == 'foo' }}",
+                "if_parsed": _parse_if_condition("${{ github.event_name == 'push' && inputs.stage == 'foo' }}"),
+                "strategy": None,
+            },
+        }
+        violations = _check_dependency_closure("weird", "foo", jobs, set(), [])
+        unsupported = [v for v in violations if v.category == "unsupported-expression"]
+        self.assertTrue(len(unsupported) > 0)
+
+
+# ---------------------------------------------------------------------------
+# Tests: negative cases from plan Step 7
+# ---------------------------------------------------------------------------
+
+class TestNegativeCases(unittest.TestCase):
+
+    def _build_jobs(self, defs: dict[str, dict]) -> dict:
+        jobs = {}
+        for name, d in defs.items():
+            if_raw = d.get("if", "always()")
+            needs = d.get("needs", [])
+            parsed = _parse_if_condition(if_raw)
+            jobs[name] = {
+                "needs": needs,
+                "if_raw": if_raw,
+                "if_parsed": parsed,
+                "strategy": None,
+            }
+        return jobs
+
+    def test_baseline_sustained_dependency_defect(self):
+        """Negative case 1: baseline sustained dependency defect."""
+        jobs = self._build_jobs({
+            "resolve": {"needs": [], "if": "always()"},
+            "source-ci": {
+                "needs": ["resolve"],
+                "if": "${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' }}",
+            },
+            "mixed-fleet-sustained": {
+                "needs": ["resolve", "source-ci"],
+                "if": "${{ inputs.stage == 'mixed-fleet-sustained' && needs.source-ci.result == 'success' }}",
+            },
+        })
+        violations = _check_dependency_closure("mixed-fleet-sustained", "mixed-fleet-sustained", jobs, set(), [])
+        skipped = [v for v in violations if v.category == "skipped-required-dependency"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("source-ci", skipped[0].message)
+
+    def test_missing_needs_job(self):
+        """Negative case 2: job references a nonexistent dependency."""
+        jobs = self._build_jobs({
+            "a": {"needs": ["nonexistent"], "if": "${{ inputs.stage == 'x' }}"},
+        })
+        violations = _check_dependency_closure("a", "x", jobs, set(), [])
+        missing = [v for v in violations if v.category == "missing-job"]
+        self.assertEqual(len(missing), 1)
+
+    def test_mutually_exclusive_dependency_condition(self):
+        """Negative case 3: dependency runs for one stage, consumer requires it for another."""
+        jobs = self._build_jobs({
+            "resolve": {"needs": [], "if": "always()"},
+            "dep-a": {"needs": ["resolve"], "if": "${{ inputs.stage == 'stage-a' }}"},
+            "consumer-b": {
+                "needs": ["resolve", "dep-a"],
+                "if": "${{ always() && inputs.stage == 'stage-b' && needs.dep-a.result == 'success' }}",
+            },
+        })
+        violations = _check_dependency_closure("consumer-b", "stage-b", jobs, set(), [])
+        skipped = [v for v in violations if v.category == "skipped-required-dependency"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("dep-a", skipped[0].message)
+
+    def test_unknown_dispatch_option_via_extract(self):
+        """Negative case 4: unknown dispatch option detected in extraction."""
+        # _extract_dispatch_options reads from the options: list, not from job if-conditions.
+        # Create a workflow with an unknown option in the dispatch list.
+        custom_base = """
+name: test
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        type: choice
+        options:
+          - known-option
+          - unknown-option
+"""
+        workflow = custom_base + "\njobs:\n  resolve:\n    if: always()\n    runs-on: ubuntu-latest\n"
+        options = _extract_dispatch_options(workflow)
+        self.assertIn("known-option", options)
+        self.assertIn("unknown-option", options)
+
+    def test_required_stage_removed(self):
+        """Negative case 5: required stage has no producing job in the workflow."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  source-ci:
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        requirements = {
+            "pre_tag_required_stages": ["source-ci", "protocol-prepublish", "missing-stage-x"],
+        }
+        violations = _validate_stage_contract(
+            ["protocol-prepublish", "binary-prepublish"], jobs, data, requirements
+        )
+        missing = [v for v in violations if v.category == "missing-required-stage"]
+        missing_names = [v.stage for v in missing]
+        self.assertIn("missing-stage-x", missing_names)
+        self.assertIn("protocol-prepublish", missing_names)
+
+    def test_malformed_if_expression(self):
+        """Negative case 6: unsupported/malformed if expression fails closed."""
+        result = _parse_if_condition("${{ some_complex_github_expr('foo') }}")
+        # Should be marked unsupported
+        self.assertFalse(result["supported"])
+
+    def test_dependency_cycle(self):
+        """Negative case 7: dependency cycle."""
+        jobs = self._build_jobs({
+            "a": {"needs": ["b"], "if": "${{ inputs.stage == 'x' }}"},
+            "b": {"needs": ["a"], "if": "${{ inputs.stage == 'x' }}"},
+        })
+        violations = _check_dependency_closure("a", "x", jobs, set(), [])
+        cycles = [v for v in violations if v.category == "cycle"]
+        self.assertTrue(len(cycles) > 0)
+
+    def test_skipped_dependency_requiring_success(self):
+        """Negative case 8: job requires success from a skipped dependency."""
+        jobs = self._build_jobs({
+            "resolve": {"needs": [], "if": "always()"},
+            "gate": {"needs": ["resolve"], "if": "${{ inputs.stage == 'alpha' }}"},
+            "consumer": {
+                "needs": ["resolve", "gate"],
+                "if": "${{ always() && inputs.stage == 'beta' && needs.gate.result == 'success' }}",
+            },
+        })
+        violations = _check_dependency_closure("consumer", "beta", jobs, set(), [])
+        skipped = [v for v in violations if v.category == "skipped-required-dependency"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("gate", skipped[0].message)
+
+
+# ---------------------------------------------------------------------------
+# Tests: positive cases from plan Step 7
+# ---------------------------------------------------------------------------
+
+class TestPositiveCases(unittest.TestCase):
+
+    def _build_jobs(self, defs: dict[str, dict]) -> dict:
+        jobs = {}
+        for name, d in defs.items():
+            if_raw = d.get("if", "always()")
+            needs = d.get("needs", [])
+            parsed = _parse_if_condition(if_raw)
+            jobs[name] = {
+                "needs": needs,
+                "if_raw": if_raw,
+                "if_parsed": parsed,
+                "strategy": None,
+            }
+        return jobs
+
+    def test_current_corrected_workflow(self):
+        """Positive case 1: the corrected workflow passes the validator."""
+        violations = validate_workflow()
+        critical = [v for v in violations if v.category not in ("missing-script",)]
+        self.assertEqual(len(critical), 0, f"Violations: {[str(v) for v in critical]}")
+
+    def test_unconditional_dependency(self):
+        """Positive case 2: unconditional dependency always reachable."""
+        jobs = self._build_jobs({
+            "resolve": {"needs": [], "if": "always()"},
+            "always-dep": {"needs": ["resolve"], "if": "always()"},
+            "consumer": {
+                "needs": ["resolve", "always-dep"],
+                "if": "${{ always() && inputs.stage == 'x' }}",
+            },
+        })
+        violations = _check_dependency_closure("consumer", "x", jobs, set(), [])
+        critical = [v for v in violations if v.category in ("skipped-required-dependency", "cycle", "missing-job")]
+        self.assertEqual(len(critical), 0)
+
+    def test_matrix_job_with_native_artifacts(self):
+        """Positive case 3: matrix job with multiple architecture artifacts."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  native-source:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'native-evidence' }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            name: linux-x86-64
+          - runner: ubuntu-24.04-arm
+            name: linux-arm64
+    steps:
+      - run: |
+          python3 scripts/validate-release-evidence.py write-candidate --stage "native-source-${{ matrix.name }}"
+""")
+        data = _parse_data(workflow_yaml)
+        job_stage_map = _build_job_stage_map(data)
+        # The matrix job should produce stage names for each architecture
+        stages = job_stage_map.get("native-source", [])
+        # With the matrix expansion, we expect at least linux-x86-64 and linux-arm64
+        self.assertTrue(len(stages) > 0, f"Expected stages from matrix job, got {stages}")
+
+    def test_protected_stage_with_separate_dispatch_input(self):
+        """Positive case 4: protected stage whose package input is a separate dispatch input."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  operational-evidence:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'operational-evidence' && inputs.package_run_id != '' }}"
+    runs-on: ubuntu-latest
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        # operational-evidence should be reachable when stage matches
+        self.assertTrue(_jobs_reachable_for_stage("operational-evidence", jobs, "operational-evidence"))
+        # Its dependency (resolve) should be reachable too
+        self.assertTrue(_jobs_reachable_for_stage("resolve", jobs, "operational-evidence"))
+        # Check dependency closure passes
+        violations = _check_dependency_closure("operational-evidence", "operational-evidence", jobs, set(), [])
+        critical = [v for v in violations if v.category in ("skipped-required-dependency", "cycle", "missing-job")]
+        self.assertEqual(len(critical), 0)
+
+
+# ---------------------------------------------------------------------------
+# Tests: _build_job_stage_map
+# ---------------------------------------------------------------------------
+
+class TestBuildJobStageMap(unittest.TestCase):
+
+    def test_simple_job(self):
+        """A non-matrix job with a --stage argument."""
+        data = _parse_data(_make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  source-ci:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          python3 scripts/validate-release-evidence.py write-candidate --stage source-ci
+"""))
+        stage_map = _build_job_stage_map(data)
+        self.assertIn("source-ci", stage_map["source-ci"])
+
+    def test_matrix_job_expansion(self):
+        """A matrix job expands placeholders in --stage arguments."""
+        data = _parse_data(_make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  binary-prepublish:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'binary-prepublish' }}"
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        crate: [greggd, gregg]
+    steps:
+      - run: |
+          python3 scripts/validate-release-evidence.py write-candidate --stage "binary-prepublish-${{ matrix.crate }}"
+"""))
+        stage_map = _build_job_stage_map(data)
+        self.assertIn("binary-prepublish-greggd", stage_map["binary-prepublish"])
+        self.assertIn("binary-prepublish-gregg", stage_map["binary-prepublish"])
+
+
+# ---------------------------------------------------------------------------
+# Tests: _validate_stage_contract
+# ---------------------------------------------------------------------------
+
+class TestValidateStageContract(unittest.TestCase):
+
+    def test_missing_required_stage_detected(self):
+        """A required stage with no producing job is flagged."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  source-ci:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage source-ci
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        requirements = {
+            "pre_tag_required_stages": ["source-ci", "protocol-prepublish", "nonexistent-stage"],
+        }
+        violations = _validate_stage_contract(
+            ["protocol-prepublish"], jobs, data, requirements
+        )
+        missing = [v for v in violations if v.category == "missing-required-stage"]
+        self.assertTrue(any("nonexistent-stage" in v.stage for v in missing))
+
+    def test_undocumented_stage_detected(self):
+        """A job producing a stage not in requirements is flagged."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  source-ci:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage source-ci
+  extra-job:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage extra-unlisted-stage
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        requirements = {
+            "pre_tag_required_stages": ["source-ci"],
+        }
+        violations = _validate_stage_contract(
+            ["protocol-prepublish"], jobs, data, requirements
+        )
+        undocumented = [v for v in violations if v.category == "undocumented-stage"]
+        self.assertTrue(any("extra-unlisted-stage" in v.stage for v in undocumented))
+
+    def test_duplicate_stage_producer_detected(self):
+        """Two jobs producing the same stage for the same dispatch is flagged."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  job-a:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage shared-stage
+  job-b:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage shared-stage
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        requirements = {
+            "pre_tag_required_stages": ["shared-stage"],
+        }
+        violations = _validate_stage_contract(
+            ["protocol-prepublish"], jobs, data, requirements
+        )
+        dupes = [v for v in violations if v.category == "duplicate-stage-producer"]
+        self.assertTrue(len(dupes) > 0)
+
+    def test_no_producer_for_dispatch_option(self):
+        """A dispatch option with no reachable producing job is flagged."""
+        workflow_yaml = _make_workflow("""
+  resolve:
+    if: always()
+    runs-on: ubuntu-latest
+  source-ci:
+    needs: [resolve]
+    if: "${{ inputs.stage == 'protocol-prepublish' }}"
+    runs-on: ubuntu-latest
+    steps:
+      - run: python3 scripts/validate-release-evidence.py write-candidate --stage source-ci
+""")
+        data = _parse_data(workflow_yaml)
+        jobs = _extract_jobs(data)
+        requirements = {
+            "pre_tag_required_stages": ["source-ci"],
+        }
+        violations = _validate_stage_contract(
+            ["protocol-prepublish", "binary-prepublish"], jobs, data, requirements
+        )
+        no_producer = [v for v in violations if v.category == "no-producer"]
+        self.assertTrue(any("binary-prepublish" in v.stage for v in no_producer))
+
+    def test_actual_workflow_contract_passes(self):
+        """The real workflow and requirements contract should pass validation."""
+        import yaml
+        workflow_path = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "release-candidate.yml"
+        workflow_text = workflow_path.read_text(encoding="utf-8")
+        workflow_data = yaml.safe_load(workflow_text)
+        dispatch_options = _extract_dispatch_options(workflow_text)
+        jobs = _extract_jobs(workflow_data)
+        requirements = {
+            "pre_tag_required_stages": [
+                "source-ci", "protocol-prepublish", "protocol-index-check",
+                "binary-prepublish-greggd", "binary-prepublish-gregg",
+                "binary-msrv-greggd", "binary-msrv-gregg",
+                "native-source-linux-x86-64", "native-source-linux-arm64",
+                "native-source-macos-arm64", "native-source-macos-intel",
+                "native-package-linux-x86-64", "native-package-linux-arm64",
+                "native-package-macos-arm64", "native-package-macos-intel",
+                "mixed-fleet-functional", "mixed-fleet-sustained",
+                "systemd-lifecycle", "launchd-lifecycle",
+                "resource-linux", "resource-macos-arm64",
+                "soak-linux-24h", "soak-macos-arm64-24h",
+            ],
+            "final_required_stages": [
+                "source-ci", "protocol-prepublish", "protocol-index-check",
+                "binary-prepublish-greggd", "binary-prepublish-gregg",
+                "binary-msrv-greggd", "binary-msrv-gregg",
+                "native-source-linux-x86-64", "native-source-linux-arm64",
+                "native-source-macos-arm64", "native-source-macos-intel",
+                "native-package-linux-x86-64", "native-package-linux-arm64",
+                "native-package-macos-arm64", "native-package-macos-intel",
+                "mixed-fleet-functional", "mixed-fleet-sustained",
+                "systemd-lifecycle", "launchd-lifecycle",
+                "resource-linux", "resource-macos-arm64",
+                "soak-linux-24h", "soak-macos-arm64-24h",
+                "postpublish-verify",
+            ],
+        }
+        violations = _validate_stage_contract(dispatch_options, jobs, workflow_data, requirements)
+        critical = [v for v in violations if v.category not in ("missing-script",)]
+        self.assertEqual(len(critical), 0, f"Contract violations: {[str(v) for v in critical]}")
 
 
 if __name__ == "__main__":

@@ -233,3 +233,13 @@ collectors (`MockNativeQueries`) so they run on any platform. Native FFI
 tests run only on macOS runners. TUI buffer tests cover narrow, medium, wide,
 mixed online/offline, and resize cases without sleeping for production refresh
 intervals.
+
+The sustained workload driver (`crates/gregg/src/sustained_workload.rs`) is a
+`#[cfg(test)]` ignored test that exercises the production `PollScheduler`,
+`HttpClient`, and `AppState` reducer against deterministic fixture servers for a
+configured duration. It validates generation invariants, online/offline
+transitions, and bounded concurrency, then writes a machine-readable summary.
+The external runner (`scripts/run-mixed-fleet-sustained.py`) builds the test
+binary, launches the workload, samples process resources via `/proc`, and
+enforces duration and evidence requirements. Positive and negative tests for the
+runner live in `scripts/tests/test_sustained_runner.py`.

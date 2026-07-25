@@ -14,6 +14,9 @@ mod ui;
 #[cfg(test)]
 mod mixed_fleet_evidence;
 
+#[cfg(test)]
+mod sustained_workload;
+
 use clap::Parser;
 
 #[tokio::main]

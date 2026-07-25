@@ -69,11 +69,23 @@ def _parse_if_condition(if_str: str) -> dict[str, Any]:
         result["unconditional"] = True
         return result
 
-    # Check for always() && ... pattern
+    # Check for always() && ... pattern — strip it before unsupported check
     always_prefix = re.match(r"always\(\)\s*&&\s*(.*)", expr, re.DOTALL)
     if always_prefix:
         result["always"] = True
         expr = always_prefix.group(1).strip()
+
+    # Detect unsupported expression patterns before partial parsing.
+    # These patterns are not handled by the constrained parser and must fail closed.
+    # Note: always() is handled above; we only flag other function calls or references.
+    if re.search(r"github\.\w+", expr):
+        result["supported"] = False
+        return result
+    # Detect any function call other than always()
+    func_match = re.search(r"\b\w+\(", expr)
+    if func_match and func_match.group() != "always(":
+        result["supported"] = False
+        return result
 
     # Extract stage condition: inputs.stage == 'value'
     stage_match = re.search(r"inputs\.stage\s*==\s*'([^']+)'", expr)
@@ -93,10 +105,14 @@ def _parse_if_condition(if_str: str) -> dict[str, Any]:
     if "inputs.stage" not in expr:
         result["unconditional"] = True
 
-    # If we couldn't parse meaningful structure from a non-trivial expression, mark unsupported
-    if not result["stage"] and not result["unconditional"] and not result["always"] and not result["needs_results"]:
-        if expr not in ("always()", ""):
-            result["supported"] = False
+    # An expression that is not unconditional, not always, and has no stage condition
+    # contains conditions we cannot parse — fail closed.
+    if (
+        not result["unconditional"]
+        and not result["always"]
+        and not result["stage"]
+    ):
+        result["supported"] = False
 
     return result
 
@@ -253,9 +269,70 @@ def _check_dependency_closure(
     return violations
 
 
+def _build_job_stage_map(workflow_data: dict[str, Any]) -> dict[str, list[str]]:
+    """Build a mapping from job name to the list of evidence stage names it produces.
+
+    This is derived from the workflow YAML: each job's ``--stage`` argument to
+    ``validate-release-evidence.py write-candidate`` identifies the stage(s) it
+    emits.  Matrix jobs expand the ``${{ matrix.<field> }}`` placeholder.
+    """
+    jobs = workflow_data.get("jobs", {})
+    stage_map: dict[str, list[str]] = {}
+
+    for job_name, job_def in jobs.items():
+        stages: list[str] = []
+        strategy = job_def.get("strategy", {})
+        matrix = strategy.get("matrix", {}) if strategy else {}
+        includes = matrix.get("include", [])
+
+        steps = job_def.get("steps", [])
+        for step in steps:
+            run_text = step.get("run", "")
+            # Find --stage arguments in validate-release-evidence.py write-candidate invocations.
+            # The value may be quoted (single or double) or unquoted.
+            for m in re.finditer(
+                r"--stage\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))", run_text
+            ):
+                raw = m.group(1) or m.group(2) or m.group(3)
+                # Expand matrix placeholders: e.g. binary-prepublish-${{ matrix.crate }}
+                field_match = re.search(r"\$\{\{\s*matrix\.(\w+)\s*\}\}", raw)
+                if field_match:
+                    field = field_match.group(1)
+                    if includes:
+                        # matrix.include: list of dicts with field values
+                        for inc in includes:
+                            if field in inc:
+                                expanded = re.sub(
+                                    r"\$\{\{\s*matrix\.\w+\s*\}\}",
+                                    str(inc[field]),
+                                    raw,
+                                )
+                                stages.append(expanded)
+                    else:
+                        # matrix.field: [v1, v2, ...] pattern
+                        field_values = matrix.get(field, [])
+                        if isinstance(field_values, list):
+                            for val in field_values:
+                                expanded = re.sub(
+                                    r"\$\{\{\s*matrix\.\w+\s*\}\}",
+                                    str(val),
+                                    raw,
+                                )
+                                stages.append(expanded)
+                        else:
+                            stages.append(raw)
+                else:
+                    stages.append(raw)
+
+        stage_map[job_name] = sorted(set(stages)) if stages else []
+
+    return stage_map
+
+
 def _validate_stage_contract(
     dispatch_options: list[str],
     jobs: dict[str, dict[str, Any]],
+    workflow_data: dict[str, Any],
     requirements: dict[str, Any],
 ) -> list[WorkflowViolation]:
     """Validate consistency between dispatch options, jobs, and the requirements contract."""
@@ -266,7 +343,7 @@ def _validate_stage_contract(
         producers = [
             name for name, job in jobs.items()
             if _jobs_reachable_for_stage(name, jobs, option)
-            and name != "resolve"  # resolve is unconditional
+            and name != "resolve"
         ]
         if not producers:
             violations.append(WorkflowViolation(
@@ -275,27 +352,60 @@ def _validate_stage_contract(
                 stage=option,
             ))
 
-    # Required stages in the requirements contract must be producible
+    # Map jobs to the evidence stages they produce
+    job_stage_map = _build_job_stage_map(workflow_data)
+
+    # Build reverse map: stage name -> list of jobs that produce it
+    stage_producers: dict[str, list[str]] = {}
+    for job_name, stages in job_stage_map.items():
+        for stage_name in stages:
+            stage_producers.setdefault(stage_name, []).append(job_name)
+
+    # Check required stages have at least one producer
     required_stages = requirements.get("pre_tag_required_stages", [])
     for stage_name in required_stages:
-        # Check if any dispatch option produces a job that emits this stage
-        # This is a heuristic: the stage name appears in the job's evidence stage parameter
-        found = False
-        for job_name, job_def in jobs.items():
-            job_stage = job_def["if_parsed"]["stage"]
-            if isinstance(job_stage, list):
-                for s in job_stage:
-                    if s == stage_name or stage_name.startswith(s):
-                        found = True
-                        break
-            elif job_stage == stage_name or stage_name.startswith(str(job_stage)):
-                found = True
-            # Also check if stage name appears in the job name or if_raw
-            if stage_name in job_name or stage_name in job_def["if_raw"]:
-                found = True
-                break
-        # Note: some required stages are emitted inside jobs that run for a different dispatch stage
-        # (e.g., matrix jobs produce stage-specific evidence). We don't fail here for those.
+        if stage_name not in stage_producers:
+            violations.append(WorkflowViolation(
+                "missing-required-stage",
+                f"required stage '{stage_name}' has no producing job in the workflow",
+                stage=stage_name,
+            ))
+
+    # Check every produced stage is in the requirements (unless auxiliary)
+    # "Auxiliary" stages are those that a matrix job emits as side-effects
+    # (e.g. systemd-lifecycle, launchd-lifecycle are operational-evidence sub-stages).
+    required_set = set(required_stages)
+    # Also include final_required_stages — jobs that run in the finalize workflow
+    # may produce stages only listed there.
+    required_set.update(requirements.get("final_required_stages", []))
+    for job_name, stages in job_stage_map.items():
+        for stage_name in stages:
+            if stage_name not in required_set:
+                violations.append(WorkflowViolation(
+                    "undocumented-stage",
+                    f"job '{job_name}' produces stage '{stage_name}' not in "
+                    f"release requirements contract",
+                    job=job_name,
+                    stage=stage_name,
+                ))
+
+    # Check for duplicate logical stage producers (same dispatch path, same stage)
+    for stage_name, producers in stage_producers.items():
+        if len(producers) > 1:
+            # Determine which dispatch stages each producer is reachable from
+            dispatch_overlap: dict[str, list[str]] = {}
+            for producer in producers:
+                for option in dispatch_options:
+                    if _jobs_reachable_for_stage(producer, jobs, option):
+                        dispatch_overlap.setdefault(option, []).append(producer)
+            for option, overlapping in dispatch_overlap.items():
+                if len(overlapping) > 1:
+                    violations.append(WorkflowViolation(
+                        "duplicate-stage-producer",
+                        f"dispatch stage '{option}' has multiple jobs producing "
+                        f"'{stage_name}': {', '.join(sorted(overlapping))}",
+                        stage=option,
+                    ))
 
     return violations
 
@@ -412,7 +522,7 @@ def validate_workflow() -> list[WorkflowViolation]:
 
     # Validate requirements contract consistency
     requirements = json.loads(REQUIREMENTS.read_text(encoding="utf-8"))
-    contract_violations = _validate_stage_contract(dispatch_options, jobs, requirements)
+    contract_violations = _validate_stage_contract(dispatch_options, jobs, workflow_data, requirements)
     violations.extend(contract_violations)
 
     return violations
