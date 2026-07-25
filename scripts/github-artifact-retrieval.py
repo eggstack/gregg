@@ -153,7 +153,6 @@ def validate_selection(selection: dict[str, Any]) -> None:
     if not isinstance(runs, dict) or not runs:
         fail("selection.runs must be a nonempty object")
 
-    seen_artifact_names: set[str] = set()
     for stage_name, run_info in runs.items():
         if not isinstance(run_info, dict):
             fail(f"selection.runs.{stage_name} must be an object")
@@ -187,9 +186,6 @@ def validate_selection(selection: dict[str, Any]) -> None:
             if name in run_artifact_names:
                 fail(f"selection.runs.{stage_name} has duplicate artifact name: {name}")
             run_artifact_names.add(name)
-            if name in seen_artifact_names:
-                fail(f"artifact name {name} appears in multiple runs")
-            seen_artifact_names.add(name)
 
             artifact_id = artifact.get("artifact_id")
             if artifact_id is not None:
@@ -384,14 +380,54 @@ def download_artifact(
     return artifact
 
 
+def build_provenance_index(artifact_cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Scan extracted artifacts for provenance, lockfile, and archive files.
+
+    Returns a deterministic index mapping logical stage names to file paths
+    so downstream consumers do not need filesystem heuristics.
+    """
+    index: dict[str, Any] = {"packages": {}}
+    for artifact_key, artifact in sorted(artifact_cache.items()):
+        extract_dir = Path(artifact.get("extraction_path", ""))
+        if not extract_dir.is_dir():
+            continue
+        for stage in artifact.get("logical_stages", []):
+            stage_entry: dict[str, Any] = {"artifact_key": artifact_key}
+            # Find provenance file.
+            provenance_files = sorted(extract_dir.rglob("package-provenance.json"))
+            if provenance_files:
+                stage_entry["provenance_path"] = str(provenance_files[0])
+            # Find lockfile.
+            lockfile_files = sorted(extract_dir.rglob("Cargo.lock"))
+            if lockfile_files:
+                stage_entry["lockfile_path"] = str(lockfile_files[0])
+            # Find .crate archives.
+            archive_files = sorted(extract_dir.rglob("*.crate"))
+            if archive_files:
+                stage_entry["archive_path"] = str(archive_files[0])
+            # Map stage to package name for provenance lookup.
+            for package in ("gregg-protocol", "greggd", "gregg"):
+                if package in stage or f"binary-{package}" in stage:
+                    index["packages"].setdefault(package, []).append({
+                        "stage": stage,
+                        **stage_entry,
+                    })
+                    break
+    return index
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--selection", required=True, type=Path, help="Run selection JSON file")
     parser.add_argument("--repo", required=True, help="Repository full name (owner/repo)")
     parser.add_argument("--output", required=True, type=Path, help="Output retrieved manifest path")
     parser.add_argument("--api-base-url", default=GITHUB_API_DEFAULT, help="GitHub API base URL (for testing)")
-    parser.add_argument("--token", default="", help="GitHub token (for testing)")
+    parser.add_argument("--token", default="", help="GitHub token; defaults to GITHUB_TOKEN env var")
     args = parser.parse_args()
+
+    token = args.token or os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        fail("no GitHub token supplied: pass --token or set GITHUB_TOKEN")
 
     selection = read_json(args.selection)
     validate_selection(selection)
@@ -401,49 +437,106 @@ def main() -> int:
     runs = selection["runs"]
     tooling_sha = selection.get("tooling_sha", expected_sha)
 
-    stages: list[dict[str, Any]] = []
+    # Collect unique (run_id, attempt, workflow_name) tuples and their artifacts.
+    unique_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
+    stage_artifact_map: dict[str, list[tuple[str, str, dict[str, Any]]]] = {}
     for stage_name, run_info in runs.items():
         run_id = str(run_info["run_id"])
         attempt = str(run_info["attempt"])
         workflow_name = run_info.get("workflow_name", "release-candidate")
-        artifacts_spec = run_info["artifacts"]
+        key = (run_id, attempt, workflow_name)
+        if key not in unique_runs:
+            unique_runs[key] = {
+                "run_id": run_id,
+                "attempt": attempt,
+                "workflow_name": workflow_name,
+                "artifact_specs": [],
+                "stage_names": [],
+            }
+        entry = unique_runs[key]
+        entry["stage_names"].append(stage_name)
+        for a in run_info["artifacts"]:
+            name = a["name"]
+            if name not in {x["name"] for x in entry["artifact_specs"]}:
+                entry["artifact_specs"].append(a)
+        stage_artifact_map.setdefault(stage_name, [])
+        for a in run_info["artifacts"]:
+            stage_artifact_map[stage_name].append((run_id, attempt, a))
 
-        expected_names = [a["name"] for a in artifacts_spec]
-        explicit_ids = {}
-        for a in artifacts_spec:
-            if "artifact_id" in a:
-                explicit_ids[a["name"]] = int(a["artifact_id"])
-
-        run_meta = api_request(args.api_base_url, args.token, f"/repos/{args.repo}/actions/runs/{run_id}")
+    # Validate and download each unique run once.
+    run_cache: dict[tuple[str, str], dict[str, Any]] = {}
+    artifact_cache: dict[str, dict[str, Any]] = {}
+    stages: list[dict[str, Any]] = []
+    for (run_id, attempt, workflow_name), info in unique_runs.items():
+        run_meta = api_request(args.api_base_url, token, f"/repos/{args.repo}/actions/runs/{run_id}")
         validated_run = validate_run_metadata(
             run_meta,
             expected_repo=args.repo,
             expected_workflow=workflow_name,
             expected_attempt=attempt,
         )
+        run_cache[(run_id, attempt)] = validated_run
+
+        expected_names = [a["name"] for a in info["artifact_specs"]]
+        explicit_ids = {}
+        for a in info["artifact_specs"]:
+            if "artifact_id" in a:
+                explicit_ids[a["name"]] = int(a["artifact_id"])
 
         artifacts = resolve_artifacts(
-            args.api_base_url, args.token, args.repo, run_id,
+            args.api_base_url, token, args.repo, run_id,
             expected_names, explicit_ids,
         )
 
-        download_dir = args.output.parent / f"downloads-{stage_name}"
+        download_dir = args.output.parent.parent / f".retrieval-downloads-{run_id}"
         download_dir.mkdir(parents=True, exist_ok=True)
 
         for artifact in artifacts:
-            download_artifact(
-                args.api_base_url, args.token, args.repo,
-                artifact, expected_sha, expected_version, download_dir,
-            )
+            artifact_key = f"{run_id}:{artifact['github_artifact_name']}"
+            if artifact_key not in artifact_cache:
+                download_artifact(
+                    args.api_base_url, token, args.repo,
+                    artifact, expected_sha, expected_version, download_dir,
+                )
+                artifact_cache[artifact_key] = artifact
+            else:
+                # Reuse cached artifact metadata.
+                artifact.update(artifact_cache[artifact_key])
 
-        stages.append({
-            "stage": stage_name,
-            "run": validated_run,
-            "artifacts": artifacts,
-        })
+    # Build per-stage manifest entries from the caches.
+    # Validate that every selection stage resolves to an artifact containing that stage.
+    all_stages_in_artifacts: dict[str, list[str]] = {}
+    for artifact_key, artifact in artifact_cache.items():
+        for ls in artifact.get("logical_stages", []):
+            all_stages_in_artifacts.setdefault(ls, []).append(artifact_key)
+
+    seen_stages: set[str] = set()
+    for (run_id, attempt, workflow_name), info in unique_runs.items():
+        validated_run = run_cache[(run_id, attempt)]
+        for stage_name in info["stage_names"]:
+            if stage_name in seen_stages:
+                continue
+            seen_stages.add(stage_name)
+            stage_artifacts = []
+            for a in info["artifact_specs"]:
+                artifact_key = f"{run_id}:{a['name']}"
+                if artifact_key in artifact_cache:
+                    stage_artifacts.append(artifact_cache[artifact_key])
+            # Validate that at least one artifact for this stage contains the stage in its candidate metadata.
+            found_in = [k for k in stage_artifacts if stage_name in k.get("logical_stages", [])]
+            if not found_in:
+                fail(f"stage {stage_name} not found in any candidate metadata for run {run_id}; "
+                     f"found stages: {[a.get('logical_stages', []) for a in stage_artifacts]}")
+            stages.append({
+                "stage": stage_name,
+                "run": validated_run,
+                "artifacts": stage_artifacts,
+            })
 
     import datetime as dt
     retrieved_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+    provenance_index = build_provenance_index(artifact_cache)
 
     manifest = {
         "manifest_schema_version": 1,
@@ -452,9 +545,31 @@ def main() -> int:
         "tooling_sha": tooling_sha,
         "retrieved_at": retrieved_at,
         "stages": stages,
+        "provenance_index": provenance_index,
         "verdict": "pass",
     }
     write_json(args.output, manifest)
+
+    # Write provenance index as a separate file for downstream consumers.
+    provenance_index_path = args.output.parent / "provenance-index.json"
+    write_json(provenance_index_path, provenance_index)
+
+    # Copy validated candidate.json files into the evidence directory under stage names
+    # so aggregation can discover them by scanning.
+    evidence_dir = args.output.parent
+    for stage_entry in stages:
+        stage_name = stage_entry["stage"]
+        for art in stage_entry["artifacts"]:
+            extract_dir = Path(art.get("extraction_path", ""))
+            if not extract_dir.is_dir():
+                continue
+            for candidate_path in extract_dir.rglob("candidate.json"):
+                candidate = read_json(candidate_path)
+                if candidate.get("stage") == stage_name:
+                    dest = evidence_dir / stage_name / "candidate.json"
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(candidate_path.read_bytes())
+
     print(f"retrieved {len(stages)} stages with {sum(len(s['artifacts']) for s in stages)} artifacts; wrote {args.output}")
     return 0
 

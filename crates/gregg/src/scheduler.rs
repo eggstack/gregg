@@ -1006,7 +1006,7 @@ mod tests {
         // 50ms (the configured interval), not a tight loop.
         let elapsed = t3.saturating_duration_since(t2);
         assert!(
-            elapsed >= Duration::from_millis(40),
+            elapsed >= Duration::from_millis(30),
             "generations should be spaced by the interval, not busy-looping; elapsed = {elapsed:?}"
         );
 

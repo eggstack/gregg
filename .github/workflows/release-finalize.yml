@@ -73,14 +73,16 @@ jobs:
       - name: Merge package provenance
         run: |
           set -euo pipefail
-          protocol_provenance="$(find evidence -name package-provenance.json -path '*protocol*' -print -quit 2>/dev/null)"
-          daemon_provenance="$(find evidence -name package-provenance.json -path '*greggd*' -print -quit 2>/dev/null)"
-          client_provenance="$(find evidence -name package-provenance.json -path '*gregg*' -print -quit 2>/dev/null)"
-          if [[ -n "$protocol_provenance" && -n "$daemon_provenance" && -n "$client_provenance" ]]; then
-            python3 scripts/merge-package-provenance.py \
-              --protocol "$protocol_provenance" --daemon "$daemon_provenance" --client "$client_provenance" \
-              --expected-sha "${{ inputs.candidate_sha }}" --release-version "${{ inputs.release_version }}" \
-              --output evidence/v1.0.1-package-provenance.json
+          if [[ -f evidence/provenance-index.json ]]; then
+            protocol_provenance="$(jq -r '.packages["gregg-protocol"][0].provenance_path // empty' evidence/provenance-index.json)"
+            daemon_provenance="$(jq -r '.packages["greggd"][0].provenance_path // empty' evidence/provenance-index.json)"
+            client_provenance="$(jq -r '.packages["gregg"][0].provenance_path // empty' evidence/provenance-index.json)"
+            if [[ -n "$protocol_provenance" && -n "$daemon_provenance" && -n "$client_provenance" ]]; then
+              python3 scripts/merge-package-provenance.py \
+                --protocol "$protocol_provenance" --daemon "$daemon_provenance" --client "$client_provenance" \
+                --expected-sha "${{ inputs.candidate_sha }}" --release-version "${{ inputs.release_version }}" \
+                --output evidence/v1.0.1-package-provenance.json
+            fi
           fi
       - name: Generate manifest
         run: |
@@ -138,6 +140,7 @@ jobs:
           path: |
             evidence/v1.0.1-release-manifest.json
             evidence/retrieved-manifest.json
+            evidence/provenance-index.json
             evidence/v1.0.1-package-provenance.json
             evidence/manifest.sha256
           if-no-files-found: error

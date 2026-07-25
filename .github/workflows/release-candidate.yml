@@ -491,13 +491,17 @@ jobs:
           set -euo pipefail
           test -d package-artifact/greggd/evidence
           test -d package-artifact/gregg/evidence
-          greggd_archive="$(find package-artifact/greggd -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          gregg_archive="$(find package-artifact/gregg -type f -name 'gregg-1.0.1.crate' -print -quit)"
-          greggd_provenance="$(find package-artifact/greggd -type f -name package-provenance.json -print -quit)"
-          gregg_provenance="$(find package-artifact/gregg -type f -name package-provenance.json -print -quit)"
-          greggd_lockfile="$(find package-artifact/greggd -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
-          gregg_lockfile="$(find package-artifact/gregg -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
-          test -n "${greggd_archive}" -a -n "${gregg_archive}" -a -n "${greggd_provenance}" -a -n "${gregg_provenance}" -a -n "${greggd_lockfile}" -a -n "${gregg_lockfile}"
+          greggd_archive="package-artifact/greggd/target/package/greggd-1.0.1.crate"
+          gregg_archive="package-artifact/gregg/target/package/gregg-1.0.1.crate"
+          greggd_provenance="package-artifact/greggd/evidence/package-provenance.json"
+          gregg_provenance="package-artifact/gregg/evidence/package-provenance.json"
+          greggd_lockfile="package-artifact/greggd/evidence/greggd-Cargo.lock"
+          gregg_lockfile="package-artifact/gregg/evidence/gregg-Cargo.lock"
+          test -f "${greggd_archive}" || greggd_archive="$(find package-artifact/greggd -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          test -f "${gregg_archive}" || gregg_archive="$(find package-artifact/gregg -type f -name 'gregg-1.0.1.crate' -print -quit)"
+          test -f "${greggd_lockfile}" || greggd_lockfile="$(find package-artifact/greggd -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
+          test -f "${gregg_lockfile}" || gregg_lockfile="$(find package-artifact/gregg -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
+          test -n "${greggd_archive}" -a -n "${gregg_archive}" -a -f "${greggd_provenance}" -a -f "${gregg_provenance}" -a -n "${greggd_lockfile}" -a -n "${gregg_lockfile}"
           echo "greggd_archive=${greggd_archive}" >> "${GITHUB_ENV}"
           echo "gregg_archive=${gregg_archive}" >> "${GITHUB_ENV}"
           echo "greggd_provenance=${greggd_provenance}" >> "${GITHUB_ENV}"
@@ -589,19 +593,34 @@ jobs:
           set -euo pipefail
           mkdir -p evidence
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          start_monotonic="$(python3 -c 'import time; print(time.monotonic_ns())')"
+          # Run the functional fleet tests.
           cargo test -p gregg --all-targets --all-features mixed_fleet -- --nocapture 2>&1 | tee evidence/fleet-transition.txt
+          # Run scheduler, state, and poller tests for sustained coverage.
           cargo test -p gregg --all-targets --all-features scheduler -- --nocapture 2>&1 | tee evidence/scheduler-transient.txt
           cargo test -p gregg --all-targets --all-features state -- --nocapture 2>&1 | tee evidence/state-reduction.txt
           cargo test -p gregg --all-targets --all-features poller -- --nocapture 2>&1 | tee evidence/poller-generations.txt
+          # Record resource samples during the run.
+          ps -o rss=,vsz=,pid=,comm= -C gregg 2>/dev/null > evidence/resource-samples.txt || true
+          ps -o rss=,vsz=,pid=,comm= -C greggd 2>/dev/null >> evidence/resource-samples.txt || true
           completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n '[{name:"fleet-transition.txt",role:"sustained-transitions"},{name:"scheduler-transient.txt",role:"scheduler-bounded"},{name:"state-reduction.txt",role:"state-reduction"},{name:"poller-generations.txt",role:"poller-generations"}]' > evidence/artifacts.json
+          end_monotonic="$(python3 -c 'import time; print(time.monotonic_ns())')"
+          observed_secs="$(python3 -c "import sys; print(int((int(sys.argv[2]) - int(sys.argv[1])) / 1_000_000_000))" "${start_monotonic}" "${end_monotonic}")"
+          # Enforce minimum qualifying duration (30 seconds for CI smoke).
+          min_duration=30
+          if ((observed_secs < min_duration)); then
+            echo "FATAL: sustained run took ${observed_secs}s, minimum is ${min_duration}s" >&2
+            exit 1
+          fi
+          jq -n --arg observed "${observed_secs}" --arg min "${min_duration}" \
+            '[{name:"fleet-transition.txt",role:"sustained-transitions"},{name:"scheduler-transient.txt",role:"scheduler-bounded"},{name:"state-reduction.txt",role:"state-reduction"},{name:"poller-generations.txt",role:"poller-generations"},{name:"resource-samples.txt",role:"resource-samples"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
             --release-version "${{ needs.resolve.outputs.candidate_version }}" --stage mixed-fleet-sustained \
             --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --job-name mixed-fleet-sustained --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
             --started-at "${started_at}" --completed-at "${completed_at}" --artifacts-json evidence/artifacts.json \
-            --note "mode=release" --note "qualifying_duration_secs=30"
+            --note "mode=release" --note "qualifying_duration_secs=30" --note "observed_duration_secs=${observed_secs}"
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json \
             --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version "${{ needs.resolve.outputs.candidate_version }}"
       - uses: actions/upload-artifact@v4
@@ -634,9 +653,11 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${GREGG_OPERATIONAL_HOST:-}"
-          archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
-          test -n "${archive}" -a -n "${provenance}"
+          archive="package-artifact/target/package/greggd-1.0.1.crate"
+          provenance="package-artifact/evidence/package-provenance.json"
+          test -f "${archive}" || archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          test -f "${provenance}" || provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
+          test -f "${archive}" -a -f "${provenance}"
           scripts/install-verified-package.sh --manifest "${provenance}" --package greggd --archive "${archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-operational" --lockfile "package-artifact/evidence/greggd-Cargo.lock"
           binary="${RUNNER_TEMP}/greggd-operational/bin/greggd"
           scripts/verify-package-provenance.sh --manifest "${provenance}" --package greggd --archive "${archive}" --binary "${binary}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --allow-platform-binary --output evidence-package.json
@@ -676,9 +697,11 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = arm64
           mkdir -p evidence
-          archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
-          test -n "${archive}" -a -n "${provenance}"
+          archive="package-artifact/target/package/greggd-1.0.1.crate"
+          provenance="package-artifact/evidence/package-provenance.json"
+          test -f "${archive}" || archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          test -f "${provenance}" || provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
+          test -f "${archive}" -a -f "${provenance}"
           scripts/install-verified-package.sh --manifest "${provenance}" --package greggd --archive "${archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-operational" --lockfile "package-artifact/evidence/greggd-Cargo.lock"
           binary="${RUNNER_TEMP}/greggd-operational/bin/greggd"
           scripts/verify-package-provenance.sh --manifest "${provenance}" --package greggd --archive "${archive}" --binary "${binary}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --allow-platform-binary --output evidence-package.json
@@ -727,9 +750,11 @@ jobs:
           export GREGG_EXPECTED_VERSION="1.0.1"
           bash scripts/preflight-protected-host.sh 2>&1 | tee evidence/preflight.txt
           mkdir -p "${GREGG_MARKER_DIR}"
-          archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
-          test -n "${archive}" -a -n "${provenance}"
+          archive="package-artifact/target/package/greggd-1.0.1.crate"
+          provenance="package-artifact/evidence/package-provenance.json"
+          test -f "${archive}" || archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          test -f "${provenance}" || provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
+          test -f "${archive}" -a -f "${provenance}"
           scripts/install-verified-package.sh --manifest "${provenance}" --package greggd --archive "${archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-systemd" --lockfile "package-artifact/evidence/greggd-Cargo.lock"
           binary="${RUNNER_TEMP}/greggd-systemd/bin/greggd"
           scripts/verify-package-provenance.sh --manifest "${provenance}" --package greggd --archive "${archive}" --binary "${binary}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --allow-platform-binary --output evidence/package-provenance.json
@@ -820,9 +845,11 @@ jobs:
           export GREGG_EXPECTED_VERSION="1.0.1"
           bash scripts/preflight-protected-host.sh 2>&1 | tee evidence/preflight.txt
           mkdir -p "${GREGG_MARKER_DIR}"
-          archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
-          test -n "${archive}" -a -n "${provenance}"
+          archive="package-artifact/target/package/greggd-1.0.1.crate"
+          provenance="package-artifact/evidence/package-provenance.json"
+          test -f "${archive}" || archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          test -f "${provenance}" || provenance="$(find package-artifact -type f -name package-provenance.json -print -quit)"
+          test -f "${archive}" -a -f "${provenance}"
           scripts/install-verified-package.sh --manifest "${provenance}" --package greggd --archive "${archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-launchd" --lockfile "package-artifact/evidence/greggd-Cargo.lock"
           binary="${RUNNER_TEMP}/greggd-launchd/bin/greggd"
           scripts/verify-package-provenance.sh --manifest "${provenance}" --package greggd --archive "${archive}" --binary "${binary}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --allow-platform-binary --output evidence/package-provenance.json
@@ -955,10 +982,12 @@ jobs:
           scripts/aggregate-release-evidence.sh "${args[@]}"
           # Merge three-crate package provenance when all binary packages are present.
           if [[ "${{ inputs.stage }}" == "binary-prepublish" ]]; then
-            protocol_provenance="$(find evidence -name package-provenance.json -path '*protocol*' -print -quit 2>/dev/null || true)"
-            daemon_provenance="$(find evidence -name package-provenance.json -path '*binary-greggd*' -print -quit 2>/dev/null || true)"
-            client_provenance="$(find evidence -name package-provenance.json -path '*binary-gregg*' -print -quit 2>/dev/null || true)"
-            if [[ -n "$protocol_provenance" && -n "$daemon_provenance" && -n "$client_provenance" ]]; then
+            short_sha="${{ needs.resolve.outputs.short_sha }}"
+            attempt="${{ github.run_attempt }}"
+            protocol_provenance="evidence/protocol-prepublish-${short_sha}-${attempt}/evidence/package-provenance.json"
+            daemon_provenance="evidence/binary-greggd-${short_sha}-${attempt}/evidence/package-provenance.json"
+            client_provenance="evidence/binary-gregg-${short_sha}-${attempt}/evidence/package-provenance.json"
+            if [[ -f "$protocol_provenance" && -f "$daemon_provenance" && -f "$client_provenance" ]]; then
               python3 scripts/merge-package-provenance.py \
                 --protocol "$protocol_provenance" --daemon "$daemon_provenance" --client "$client_provenance" \
                 --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version "${{ needs.resolve.outputs.candidate_version }}" \

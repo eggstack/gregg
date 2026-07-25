@@ -91,6 +91,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   separate daemon/client download roots and package-specific provenance,
   mixed-fleet-sustained evidence stage, fail-closed protected cleanup with
   explicit verdict steps, and immutable finalizer tooling identity.
+- **Release orchestration** (Phase 19): Final integration closure: retrieval
+  CLI now reads `GITHUB_TOKEN` from the environment when `--token` is omitted,
+  multi-stage artifacts (resource + soak) share the same operational artifact
+  without duplicate downloads, stage mapping validates candidate metadata
+  inside downloaded artifacts, provenance and registry materialization uses
+  deterministic paths from a provenance index instead of filesystem heuristics,
+  mixed-fleet-sustained job measures actual runtime duration and resource
+  sampling, and end-to-end mocked integration test exercises retrieval through
+  pre-tag aggregation.
 
 ## [1.0.0] - 2026-07-23
 

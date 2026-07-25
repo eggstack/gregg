@@ -376,6 +376,23 @@ class EvidenceTests(unittest.TestCase):
         }
         module.validate_selection(valid)  # Should not raise.
 
+    def test_selection_allows_shared_artifacts_across_stages(self) -> None:
+        """Phase 19: Multiple logical stages may reference the same artifact from the same run."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("github_retrieval", ROOT / "scripts" / "github-artifact-retrieval.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        shared = {
+            "candidate_sha": SHA,
+            "release_version": "1.0.1",
+            "runs": {
+                "resource-linux": {"run_id": 1018, "attempt": 1, "artifacts": [{"name": "operational-abc-1"}]},
+                "soak-linux-24h": {"run_id": 1018, "attempt": 1, "artifacts": [{"name": "operational-abc-1"}]},
+            },
+        }
+        module.validate_selection(shared)  # Should not raise.
+
     def test_safe_zip_extraction_rejects_traversal(self) -> None:
         """B3: Safe ZIP extraction rejects path traversal."""
         import importlib.util
@@ -631,6 +648,254 @@ class EvidenceTests(unittest.TestCase):
         self.assertIn("git rev-parse HEAD", finalize)
         self.assertNotIn("ref: main", finalize)
         self.assertNotIn("ref: ${{ github.ref }}", finalize)
+
+    def test_retrieval_cli_consumes_github_token_env(self) -> None:
+        """Phase 19: retrieval CLI consumes GITHUB_TOKEN when --token is omitted."""
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            selection_path = directory / "sel.json"
+            selection_path.write_text(json.dumps({
+                "candidate_sha": SHA,
+                "release_version": "1.0.1",
+                "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}},
+            }), encoding="utf-8")
+            output_path = directory / "out.json"
+            # Without GITHUB_TOKEN and without --token, should fail with clear diagnostic.
+            result = run(
+                "python3", str(ROOT / "scripts" / "github-artifact-retrieval.py"),
+                "--selection", str(selection_path), "--repo", "owner/repo",
+                "--output", str(output_path), "--api-base-url", "http://127.0.0.1:1",
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("token", result.stderr.lower())
+
+    def test_retrieval_cli_uses_token_flag_over_env(self) -> None:
+        """Phase 19: --token flag takes precedence over GITHUB_TOKEN env."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("github_retrieval", ROOT / "scripts" / "github-artifact-retrieval.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        valid = {
+            "candidate_sha": SHA,
+            "release_version": "1.0.1",
+            "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}},
+        }
+        module.validate_selection(valid)  # Should not raise.
+
+    def test_end_to_end_retrieval_and_aggregation(self) -> None:
+        """Phase 19: Mocked end-to-end retrieval through pre-tag aggregation."""
+        import http.server
+        import threading
+        import zipfile
+
+        def e2e_candidate(stage: str, run_id: str = "100", attempt: str = "1") -> dict[str, object]:
+            return {
+                "schema_version": 1, "candidate_sha": SHA, "release_version": "1.0.1",
+                "stage": stage, "workflow_run_id": run_id, "workflow_run_attempt": attempt,
+                "job_name": stage, "runner_os": "Linux", "runner_architecture": "x86_64",
+                "started_at": "2026-07-24T00:00:00Z", "completed_at": "2026-07-24T00:01:00Z",
+                "result": "success", "source_identity_mode": "pre-tag-full-sha",
+                "source": {"ref_input": SHA, "tag_object_sha": None, "peeled_commit_sha": SHA},
+                "artifacts": [{"name": f"{stage}.log", "role": "transcript", "artifact_id": f"artifact-{stage}"}],
+                "executables": [], "notes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+
+            # Create mock artifacts: ZIP files containing candidate.json files.
+            artifact_dir = directory / "artifacts"
+            artifact_dir.mkdir()
+
+            # Source CI artifact.
+            source_ci_zip = artifact_dir / "artifact-5001.zip"
+            with zipfile.ZipFile(source_ci_zip, "w") as zf:
+                zf.writestr("evidence/candidate.json", json.dumps(e2e_candidate("source-ci", "1001", "1")))
+
+            # Operational artifact with resource + soak stages.
+            operational_zip = artifact_dir / "artifact-5002.zip"
+            with zipfile.ZipFile(operational_zip, "w") as zf:
+                zf.writestr("resource/candidate.json", json.dumps(e2e_candidate("resource-linux", "1018", "1")))
+                zf.writestr("soak/candidate.json", json.dumps(e2e_candidate("soak-linux-24h", "1018", "1")))
+
+            # Create mock GitHub API server.
+            api_calls: list[str] = []
+
+            class MockHandler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    api_calls.append(self.path)
+                    if self.path == "/repos/owner/repo/actions/runs/1001":
+                        self._json_response({
+                            "id": 1001, "status": "completed", "conclusion": "success",
+                            "run_attempt": 1, "repository": {"full_name": "owner/repo"},
+                            "name": "release-candidate", "event": "workflow_dispatch",
+                            "actor": {"login": "tester"},
+                            "html_url": "https://github.com/owner/repo/runs/1001",
+                            "head_sha": SHA, "head_branch": "main",
+                        })
+                    elif self.path == "/repos/owner/repo/actions/runs/1018":
+                        self._json_response({
+                            "id": 1018, "status": "completed", "conclusion": "success",
+                            "run_attempt": 1, "repository": {"full_name": "owner/repo"},
+                            "name": "release-candidate", "event": "workflow_dispatch",
+                            "actor": {"login": "tester"},
+                            "html_url": "https://github.com/owner/repo/runs/1018",
+                            "head_sha": SHA, "head_branch": "main",
+                        })
+                    elif self.path == "/repos/owner/repo/actions/runs/1001/artifacts":
+                        self._json_response({"artifacts": [
+                            {"id": 5001, "name": "source-ci-abcdef01-1", "size_in_bytes": 100,
+                             "created_at": "2026-07-24T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z", "expired": False},
+                        ]})
+                    elif self.path == "/repos/owner/repo/actions/runs/1018/artifacts":
+                        self._json_response({"artifacts": [
+                            {"id": 5002, "name": "operational-abcdef01-1", "size_in_bytes": 200,
+                             "created_at": "2026-07-24T00:00:00Z", "expires_at": "2099-01-01T00:00:00Z", "expired": False},
+                        ]})
+                    elif self.path == "/repos/owner/repo/actions/artifacts/5001/zip":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        data = source_ci_zip.read_bytes()
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    elif self.path == "/repos/owner/repo/actions/artifacts/5002/zip":
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        data = operational_zip.read_bytes()
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def _json_response(self, data: dict) -> None:
+                    body = json.dumps(data).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, format: str, *args: object) -> None:
+                    pass  # Suppress request logging.
+
+            server = http.server.HTTPServer(("127.0.0.1", 0), MockHandler)
+            port = server.server_address[1]
+            server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+            server_thread.start()
+
+            try:
+                # Create selection file.
+                selection = {
+                    "candidate_sha": SHA,
+                    "release_version": "1.0.1",
+                    "mode": "pre-tag",
+                    "runs": {
+                        "source-ci": {
+                            "run_id": 1001, "attempt": 1,
+                            "workflow_name": "release-candidate",
+                            "artifacts": [{"name": "source-ci-abcdef01-1"}],
+                        },
+                        "resource-linux": {
+                            "run_id": 1018, "attempt": 1,
+                            "workflow_name": "release-candidate",
+                            "artifacts": [{"name": "operational-abcdef01-1"}],
+                        },
+                        "soak-linux-24h": {
+                            "run_id": 1018, "attempt": 1,
+                            "workflow_name": "release-candidate",
+                            "artifacts": [{"name": "operational-abcdef01-1"}],
+                        },
+                    },
+                }
+                selection_path = directory / "selection.json"
+                selection_path.write_text(json.dumps(selection), encoding="utf-8")
+                retrieved_manifest_path = directory / "evidence" / "retrieved-manifest.json"
+
+                # Run retrieval CLI.
+                result = run(
+                    "python3", str(ROOT / "scripts" / "github-artifact-retrieval.py"),
+                    "--selection", str(selection_path),
+                    "--repo", "owner/repo",
+                    "--output", str(retrieved_manifest_path),
+                    "--api-base-url", f"http://127.0.0.1:{port}",
+                    "--token", "test-token",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                # Verify retrieved manifest.
+                manifest = json.loads(retrieved_manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(manifest["candidate_sha"], SHA)
+                self.assertEqual(len(manifest["stages"]), 3)
+                stage_names = {s["stage"] for s in manifest["stages"]}
+                self.assertEqual(stage_names, {"source-ci", "resource-linux", "soak-linux-24h"})
+                # Verify artifact identity is recorded.
+                for stage_entry in manifest["stages"]:
+                    for art in stage_entry["artifacts"]:
+                        self.assertIn("github_artifact_id", art)
+                        self.assertIn("downloaded_zip_sha256", art)
+                        self.assertIn("downloaded_zip_size_bytes", art)
+                # Verify provenance index exists.
+                self.assertIn("provenance_index", manifest)
+
+                # Retrieval script copies candidate.json files into evidence dir.
+                evidence_dir = directory / "evidence"
+                for stage in ("source-ci", "resource-linux", "soak-linux-24h"):
+                    self.assertTrue((evidence_dir / stage / "candidate.json").exists(),
+                                    f"candidate.json for {stage} not found in evidence dir")
+
+                # Run pre-tag aggregation using the retrieved manifest.
+                output_manifest = directory / "release-manifest.json"
+                result = run(
+                    "python3", str(VALIDATOR), "aggregate",
+                    "--evidence-dir", str(evidence_dir),
+                    "--expected-sha", SHA, "--release-version", "1.0.1",
+                    "--output", str(output_manifest),
+                    "--required-stage", "source-ci",
+                    "--required-stage", "resource-linux",
+                    "--required-stage", "soak-linux-24h",
+                    "--retrieved-manifest", str(retrieved_manifest_path),
+                    "--mode", "pre-tag",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agg_manifest = json.loads(output_manifest.read_text(encoding="utf-8"))
+                self.assertEqual(agg_manifest["mode"], "pre-tag")
+                self.assertIsNone(agg_manifest["tag"])
+                # Verify github_artifact populated from retrieved manifest.
+                for stage in agg_manifest["stages"]:
+                    if "github_artifact" in stage:
+                        self.assertIsInstance(stage["github_artifact"]["id"], int)
+
+                # Verify final mode fails without publication inputs.
+                final_output = directory / "final-manifest.json"
+                result = run(
+                    "python3", str(VALIDATOR), "aggregate",
+                    "--evidence-dir", str(evidence_dir),
+                    "--expected-sha", SHA, "--release-version", "1.0.1",
+                    "--output", str(final_output),
+                    "--required-stage", "source-ci",
+                    "--required-stage", "resource-linux",
+                    "--required-stage", "soak-linux-24h",
+                    "--retrieved-manifest", str(retrieved_manifest_path),
+                    "--mode", "final",
+                    "--tag-name", "v1.0.1", "--tag-object-sha", "a" * 40, "--peeled-commit-sha", SHA,
+                    "--tagger-name", "T", "--tagger-email", "t@t", "--tagger-timestamp", "2026-07-24T00:00:00Z",
+                    "--tag-object-content-sha256", "b" * 64,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("provenance", result.stderr.lower())
+
+                # Verify API was called for each unique run only once.
+                run_api_calls = [c for c in api_calls if "/actions/runs/" in c and "/artifacts" not in c]
+                self.assertEqual(len(run_api_calls), 2)  # 1001 and 1018, not 3 (1018 deduplicated).
+
+            finally:
+                server.shutdown()
 
 
 if __name__ == "__main__":

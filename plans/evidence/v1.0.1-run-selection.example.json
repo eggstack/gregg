@@ -150,6 +150,14 @@
         {"name": "operational-abcdef01-1"}
       ]
     },
+    "soak-linux-24h": {
+      "run_id": 1018,
+      "attempt": 1,
+      "workflow_name": "release-candidate",
+      "artifacts": [
+        {"name": "operational-abcdef01-1"}
+      ]
+    },
     "resource-macos-arm64": {
       "run_id": 1019,
       "attempt": 1,
@@ -158,16 +166,8 @@
         {"name": "operational-macos-abcdef01-1"}
       ]
     },
-    "soak-linux-24h": {
-      "run_id": 1020,
-      "attempt": 1,
-      "workflow_name": "release-candidate",
-      "artifacts": [
-        {"name": "operational-abcdef01-1"}
-      ]
-    },
     "soak-macos-arm64-24h": {
-      "run_id": 1021,
+      "run_id": 1019,
       "attempt": 1,
       "workflow_name": "release-candidate",
       "artifacts": [
