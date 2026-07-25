@@ -28,6 +28,8 @@ def main() -> int:
     for line in text.splitlines():
         if "install-verified-package.sh" in line and "--candidate-sha" not in line:
             fail("package installation is not bound to the resolved candidate SHA")
+        if "install-verified-package.sh" in line and "--lockfile" not in line:
+            fail("package installation does not require the verified lockfile")
         if "verify-package-provenance.sh" in line and "--candidate-sha" not in line:
             fail("package provenance verification is not bound to the resolved candidate SHA")
     if text.find("actions/checkout@v4", text.find("postpublish-verify")) == -1:
@@ -39,7 +41,7 @@ def main() -> int:
         if not (ROOT / script).is_file():
             fail(f"workflow references missing repository script: {script}")
     requirements = (ROOT / "plans/evidence/release-requirements.json").read_text(encoding="utf-8")
-    for stage in ("native-linux-arm64", "native-macos-intel", "soak-linux-24h", "postpublish-verify"):
+    for stage in ("native-source-linux-arm64", "native-source-macos-intel", "native-package-linux-x86-64", "native-package-macos-arm64", "soak-linux-24h", "postpublish-verify"):
         if stage not in requirements:
             fail(f"mandatory stage missing from requirements: {stage}")
     for manifest in (ROOT / "crates/greggd/Cargo.toml", ROOT / "crates/gregg/Cargo.toml"):

@@ -8,7 +8,7 @@
     "schema_version", "candidate_sha", "release_version", "stage",
     "workflow_run_id", "workflow_run_attempt", "job_name", "runner_os",
     "runner_architecture", "started_at", "completed_at", "result",
-    "source", "artifacts", "executables", "notes"
+    "source", "source_identity_mode", "artifacts", "executables", "notes"
   ],
   "properties": {
     "schema_version": {"const": 1},
@@ -23,16 +23,37 @@
     "started_at": {"type": "string", "format": "date-time"},
     "completed_at": {"type": "string", "format": "date-time"},
     "result": {"enum": ["success", "failure", "skipped"]},
+    "source_identity_mode": {"enum": ["pre-tag-full-sha", "annotated-tag"]},
     "source": {
       "type": "object",
       "required": ["ref_input", "tag_object_sha", "peeled_commit_sha"],
       "properties": {
         "ref_input": {"type": "string", "minLength": 1},
         "tag_object_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
-        "peeled_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        "peeled_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "tagger_name": {"type": ["string", "null"]},
+        "tagger_email": {"type": ["string", "null"]},
+        "tagger_timestamp": {"type": ["string", "null"]},
+        "tagger_timestamp_original": {"type": ["string", "null"]},
+        "tag_object_content_sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+        "head_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"}
       }
     },
-    "artifacts": {"type": "array"},
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "role"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "role": {"type": "string", "minLength": 1},
+          "sha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": ["integer", "null"], "minimum": 0},
+          "media_type": {"type": ["string", "null"]},
+          "path": {"type": ["string", "null"]}
+        }
+      }
+    },
     "executables": {"type": "array"},
     "notes": {"type": "array", "items": {"type": "string"}}
   }

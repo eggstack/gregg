@@ -43,7 +43,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
         if mode == "offline" or (mode == "recover" and call == 1):
             self.send_error(503, "offline fixture")
             return
-        if mode == "error":
+        if mode == "error" or (mode == "healthy-to-failure" and call == 2):
             self.send_error(500, "error fixture")
             return
         if mode == "malformed":

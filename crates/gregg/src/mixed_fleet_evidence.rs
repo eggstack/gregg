@@ -86,6 +86,7 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         "stale",
         "recover",
         "offline",
+        "healthy-to-failure",
     ];
     let mut fixtures = Vec::new();
     let mut endpoints = Vec::new();
@@ -210,6 +211,19 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         Reachability::Online
     );
     println!("fleet-transition generation=2 recover=online");
+
+    // The healthy-to-failure endpoint was online in generation 1 and should
+    // now be offline after transitioning to HTTP 500 on the second call.
+    assert_eq!(
+        state
+            .systems
+            .iter()
+            .find(|item| item.id == "healthy-to-failure")
+            .unwrap()
+            .reachability,
+        Reachability::Offline
+    );
+    println!("fleet-transition generation=2 healthy-to-failure=offline");
 
     cancel.cancel();
     drop(refresh_tx);

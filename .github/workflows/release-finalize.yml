@@ -1,0 +1,155 @@
+name: release-finalize
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Frozen candidate SHA (lowercase 40-char)"
+        required: true
+        type: string
+      release_version:
+        description: "Release version (fixed to 1.0.1)"
+        required: true
+        type: string
+        default: "1.0.1"
+      selection_file:
+        description: "Path to checked-in run selection JSON (e.g. plans/evidence/v1.0.1-run-selection.json)"
+        required: true
+        type: string
+      mode:
+        description: "pre-tag review or final postpublication aggregation"
+        required: true
+        type: choice
+        default: final
+        options:
+          - pre-tag
+          - final
+      tag_name:
+        description: "Annotated tag name (final mode only, e.g. v1.0.1)"
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  finalize:
+    name: Final cross-run aggregation
+    runs-on: ubuntu-latest
+    environment: gregg-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.candidate_sha }}" =~ ^[0-9a-f]{40}$ ]] || { echo "FATAL: candidate_sha must be a lowercase 40-character SHA" >&2; exit 1; }
+          [[ "${{ inputs.release_version }}" == "1.0.1" ]] || { echo "FATAL: release_version must be 1.0.1" >&2; exit 1; }
+          test -f "${{ inputs.selection_file }}" || { echo "FATAL: selection file not found" >&2; exit 1; }
+          if [[ "${{ inputs.mode }}" == "final" ]]; then
+            [[ "${{ inputs.tag_name }}" == "v1.0.1" ]] || { echo "FATAL: final mode requires tag_name v1.0.1" >&2; exit 1; }
+          fi
+      - name: Retrieve and validate cross-run evidence
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p evidence final
+          python3 scripts/github-artifact-retrieval.py \
+            --selection "${{ inputs.selection_file }}" \
+            --repo "${{ github.repository }}" \
+            --workflow-name "release-candidate" \
+            --output evidence/retrieved-manifest.json \
+            --expected-artifact-names source-ci protocol-prepublish protocol-index-check binary-prepublish-greggd binary-prepublish-gregg binary-msrv-greggd binary-msrv-gregg native-source-linux-x86-64 native-source-linux-arm64 native-source-macos-arm64 native-source-macos-intel native-package-linux-x86-64 native-package-linux-arm64 native-package-macos-arm64 native-package-macos-intel mixed-fleet-functional mixed-fleet-sustained systemd-lifecycle launchd-lifecycle resource-linux resource-macos-arm64 soak-linux-24h soak-macos-arm64-24h postpublish-verify
+      - name: Merge package provenance
+        run: |
+          set -euo pipefail
+          protocol_provenance="$(find evidence -name package-provenance.json -path '*protocol*' -print -quit 2>/dev/null || true)"
+          daemon_provenance="$(find evidence -name package-provenance.json -path '*greggd*' -print -quit 2>/dev/null || true)"
+          client_provenance="$(find evidence -name package-provenance.json -path '*gregg*' -print -quit 2>/dev/null || true)"
+          if [[ -n "$protocol_provenance" && -n "$daemon_provenance" && -n "$client_provenance" ]]; then
+            python3 scripts/merge-package-provenance.py \
+              --protocol "$protocol_provenance" --daemon "$daemon_provenance" --client "$client_provenance" \
+              --expected-sha "${{ inputs.candidate_sha }}" --release-version "${{ inputs.release_version }}" \
+              --output evidence/v1.0.1-package-provenance.json
+          fi
+      - name: Generate final manifest
+        run: |
+          set -euo pipefail
+          tag_args=()
+          if [[ "${{ inputs.mode }}" == "final" ]]; then
+            tag_object_sha="$(git rev-parse 'v1.0.1^{tag}' 2>/dev/null || echo '')"
+            peeled_commit_sha="$(git rev-parse 'v1.0.1^{commit}' 2>/dev/null || echo '')"
+            tagger_name="$(git for-each-ref --format='%(taggername)' refs/tags/v1.0.1)"
+            tagger_email="$(git for-each-ref --format='%(taggeremail)' refs/tags/v1.0.1)"
+            tagger_timestamp="$(git for-each-ref --format='%(taggerdate:iso8601-strict)' refs/tags/v1.0.1)"
+            tagger_timestamp_normalized="$(python3 -c '
+import datetime as dt, sys
+raw = sys.argv[1].strip()
+if not raw:
+    sys.exit(1)
+try:
+    parsed = dt.datetime.fromisoformat(raw)
+except ValueError:
+    parsed = dt.datetime.strptime(raw, "%Y-%m-%d %H:%M:%S%z")
+if parsed.utcoffset() is None:
+    parsed = parsed.replace(tzinfo=dt.timezone.utc)
+print(parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+' "$tagger_timestamp")"
+            tag_object_content_sha="$(git cat-file tag v1.0.1 | sha256sum | awk '{print $1}')"
+            tag_args+=(--tag-name "v1.0.1" --tag-object-sha "$tag_object_sha" --peeled-commit-sha "$peeled_commit_sha" --tagger-name "$tagger_name" --tagger-email "$tagger_email" --tagger-timestamp "$tagger_timestamp_normalized" --tag-object-content-sha256 "$tag_object_content_sha")
+          fi
+          scripts/aggregate-release-evidence.sh \
+            --evidence-dir evidence \
+            --expected-sha "${{ inputs.candidate_sha }}" \
+            --release-version "${{ inputs.release_version }}" \
+            --output evidence/v1.0.1-release-manifest.json \
+            --required-stage source-ci \
+            --required-stage protocol-prepublish \
+            --required-stage protocol-index-check \
+            --required-stage binary-prepublish-greggd \
+            --required-stage binary-prepublish-gregg \
+            --required-stage binary-msrv-greggd \
+            --required-stage binary-msrv-gregg \
+            --required-stage native-source-linux-x86-64 \
+            --required-stage native-source-linux-arm64 \
+            --required-stage native-source-macos-arm64 \
+            --required-stage native-source-macos-intel \
+            --required-stage native-package-linux-x86-64 \
+            --required-stage native-package-linux-arm64 \
+            --required-stage native-package-macos-arm64 \
+            --required-stage native-package-macos-intel \
+            --required-stage mixed-fleet-functional \
+            --required-stage mixed-fleet-sustained \
+            --required-stage systemd-lifecycle \
+            --required-stage launchd-lifecycle \
+            --required-stage resource-linux \
+            --required-stage resource-macos-arm64 \
+            --required-stage soak-linux-24h \
+            --required-stage soak-macos-arm64-24h \
+            --required-stage postpublish-verify \
+            "${tag_args[@]}" \
+            --package-provenance evidence/v1.0.1-package-provenance.json \
+            --registry-summary evidence/registry-summary.json \
+            --disposition evidence/1.0.0-disposition.json \
+            --final
+      - name: Record manifest checksum
+        run: |
+          set -euo pipefail
+          sha256sum evidence/v1.0.1-release-manifest.json | tee evidence/manifest.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-manifest-${{ inputs.candidate_sha }}
+          path: |
+            evidence/v1.0.1-release-manifest.json
+            evidence/v1.0.1-package-provenance.json
+            evidence/manifest.sha256
+          if-no-files-found: error

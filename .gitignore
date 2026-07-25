@@ -5,3 +5,6 @@ Cargo.lock.bak
 .idea/
 .vscode/
 .poolside/
+__pycache__/
+*.pyc
+target/

@@ -17,6 +17,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 RESULTS = {"success", "failure", "skipped"}
+SOURCE_MODES = {"pre-tag-full-sha", "annotated-tag"}
 
 
 class EvidenceError(ValueError):
@@ -82,6 +83,7 @@ def validate_candidate(
     expected_sha: str | None = None,
     expected_version: str | None = None,
     expected_architecture: str | None = None,
+    expected_source_mode: str | None = None,
     require_success: bool = True,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
@@ -114,6 +116,12 @@ def validate_candidate(
             f"{expected_architecture}"
         )
 
+    source_mode = value.get("source_identity_mode")
+    if source_mode not in SOURCE_MODES:
+        fail(f"source_identity_mode must be one of {sorted(SOURCE_MODES)}")
+    if expected_source_mode is not None and source_mode != expected_source_mode:
+        fail(f"source_identity_mode {source_mode} does not match expected {expected_source_mode}")
+
     started = timestamp(value.get("started_at"), "started_at")
     completed = timestamp(value.get("completed_at"), "completed_at")
     if completed < started:
@@ -134,6 +142,18 @@ def validate_candidate(
     if sha(source.get("peeled_commit_sha"), "source.peeled_commit_sha") != candidate_sha:
         fail("source.peeled_commit_sha must equal candidate_sha")
 
+    if source_mode == "annotated-tag":
+        for field in ("tagger_name", "tagger_email", "tagger_timestamp", "tag_object_content_sha256"):
+            val = source.get(field)
+            if not isinstance(val, str) or not val.strip():
+                fail(f"annotated-tag source.{field} must be a nonempty string")
+        timestamp(source.get("tagger_timestamp"), "source.tagger_timestamp")
+        sha256(source.get("tag_object_content_sha256"), "source.tag_object_content_sha256")
+    else:
+        for field in ("tagger_name", "tagger_email", "tagger_timestamp", "tag_object_content_sha256"):
+            if source.get(field) is not None:
+                fail(f"pre-tag-full-sha source.{field} must be null, not present")
+
     artifacts = value.get("artifacts")
     if not isinstance(artifacts, list):
         fail("artifacts must be an array")
@@ -141,10 +161,18 @@ def validate_candidate(
         if not isinstance(artifact, dict):
             fail(f"artifacts[{index}] must be an object")
         string(artifact, "name")
+        string(artifact, "role")
         if "artifact_id" in artifact:
             string(artifact, "artifact_id")
-        if "sha256" in artifact:
+        if "sha256" in artifact and artifact["sha256"] is not None:
             sha256(artifact["sha256"], f"artifacts[{index}].sha256")
+        if "size_bytes" in artifact and artifact["size_bytes"] is not None:
+            if not isinstance(artifact["size_bytes"], int) or artifact["size_bytes"] < 0:
+                fail(f"artifacts[{index}].size_bytes must be a non-negative integer")
+        if "media_type" in artifact and artifact["media_type"] is not None:
+            string(artifact, "media_type")
+        if "path" in artifact and artifact["path"] is not None:
+            string(artifact, "path")
 
     executables = value.get("executables")
     if not isinstance(executables, list):
@@ -207,6 +235,11 @@ def validate_package_provenance(
         sha256(record.get("sha256"), f"package provenance {package} sha256")
         if not isinstance(record.get("size_bytes"), int) or record["size_bytes"] <= 0:
             fail(f"package provenance {package} size_bytes must be positive")
+        if "verification_lockfile" in record:
+            string(record, "verification_lockfile")
+            sha256(record.get("verification_lockfile_sha256"), f"package provenance {package} lockfile sha256")
+            if not isinstance(record.get("verification_lockfile_size_bytes"), int) or record["verification_lockfile_size_bytes"] <= 0:
+                fail(f"package provenance {package} lockfile size must be positive")
         if "installed_binary_sha256" in record:
             sha256(record["installed_binary_sha256"], f"package provenance {package} installed binary sha256")
             if not isinstance(record.get("installed_binary_size_bytes"), int) or record["installed_binary_size_bytes"] <= 0:
@@ -403,6 +436,8 @@ def validate_manifest(
         validate_package_provenance(
             value["package_provenance"], expected_sha=candidate_sha, expected_version=version
         )
+    elif tag is not None and "tag_object_content_sha256" in tag:
+        fail("final manifest with complete tag identity must include package provenance")
     if value.get("registry") is not None:
         validate_registry_summary(value["registry"], expected_version=version)
     if value.get("version_1_0_0_disposition") is not None:
@@ -446,10 +481,17 @@ def write_candidate(args: argparse.Namespace) -> None:
         "started_at": args.started_at or now,
         "completed_at": args.completed_at or now,
         "result": args.result,
+        "source_identity_mode": args.source_identity_mode,
         "source": {
             "ref_input": args.ref_input or candidate_sha,
             "tag_object_sha": args.tag_object_sha,
             "peeled_commit_sha": args.peeled_commit_sha or candidate_sha,
+            "tagger_name": args.tagger_name,
+            "tagger_email": args.tagger_email,
+            "tagger_timestamp": args.tagger_timestamp,
+            "tagger_timestamp_original": args.tagger_timestamp_original,
+            "tag_object_content_sha256": args.tag_object_content_sha256,
+            "head_sha": args.head_sha,
         },
         "artifacts": artifacts,
         "executables": executables,
@@ -468,6 +510,7 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--expected-sha")
     command.add_argument("--expected-version")
     command.add_argument("--expected-architecture")
+    command.add_argument("--expected-source-mode")
     command.add_argument("--allow-failure", action="store_true")
 
     command = sub.add_parser("write-candidate")
@@ -480,12 +523,19 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--job-name", required=True)
     command.add_argument("--runner-os", required=True)
     command.add_argument("--runner-architecture", required=True)
+    command.add_argument("--source-identity-mode", choices=sorted(SOURCE_MODES), default="pre-tag-full-sha")
     command.add_argument("--started-at")
     command.add_argument("--completed-at")
     command.add_argument("--result", choices=sorted(RESULTS), default="success")
     command.add_argument("--ref-input")
     command.add_argument("--tag-object-sha")
     command.add_argument("--peeled-commit-sha")
+    command.add_argument("--tagger-name")
+    command.add_argument("--tagger-email")
+    command.add_argument("--tagger-timestamp")
+    command.add_argument("--tagger-timestamp-original")
+    command.add_argument("--tag-object-content-sha256")
+    command.add_argument("--head-sha")
     command.add_argument("--artifacts-json")
     command.add_argument("--executable", action="append", nargs=3, default=[], metavar=("NAME", "SHA256", "SIZE"))
     command.add_argument("--note", action="append", default=[])
@@ -526,6 +576,7 @@ def main() -> int:
                 expected_sha=args.expected_sha,
                 expected_version=args.expected_version,
                 expected_architecture=args.expected_architecture,
+                expected_source_mode=args.expected_source_mode,
                 require_success=not args.allow_failure,
             )
             print(f"valid candidate metadata: {args.path}")
