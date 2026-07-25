@@ -53,7 +53,7 @@ fn start_fixture(mode: &str) -> (FixtureProcess, u16) {
         .expect("start deterministic fleet fixture");
     let mut fixture = FixtureProcess { child, log_path };
     let address = SocketAddr::from(([127, 0, 0, 1], port));
-    for _ in 0..100 {
+    for _ in 0..200 {
         if TcpStream::connect_timeout(&address, Duration::from_millis(10)).is_ok() {
             return (fixture, port);
         }
