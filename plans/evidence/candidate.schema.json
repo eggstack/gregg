@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/eggstack/gregg/releases/candidate-evidence-v1.schema.json",
+  "title": "Gregg release candidate evidence",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version", "candidate_sha", "release_version", "stage",
+    "workflow_run_id", "workflow_run_attempt", "job_name", "runner_os",
+    "runner_architecture", "started_at", "completed_at", "result",
+    "source", "artifacts", "executables", "notes"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "candidate_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "release_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "stage": {"type": "string", "minLength": 1},
+    "workflow_run_id": {"type": "string", "minLength": 1},
+    "workflow_run_attempt": {"type": "string", "minLength": 1},
+    "job_name": {"type": "string", "minLength": 1},
+    "runner_os": {"type": "string", "minLength": 1},
+    "runner_architecture": {"type": "string", "minLength": 1},
+    "started_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "result": {"enum": ["success", "failure", "skipped"]},
+    "source": {
+      "type": "object",
+      "required": ["ref_input", "tag_object_sha", "peeled_commit_sha"],
+      "properties": {
+        "ref_input": {"type": "string", "minLength": 1},
+        "tag_object_sha": {"type": ["string", "null"], "pattern": "^[0-9a-f]{40}$"},
+        "peeled_commit_sha": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+      }
+    },
+    "artifacts": {"type": "array"},
+    "executables": {"type": "array"},
+    "notes": {"type": "array", "items": {"type": "string"}}
+  }
+}

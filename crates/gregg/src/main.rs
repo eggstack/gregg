@@ -11,6 +11,9 @@ mod state;
 mod terminal;
 mod ui;
 
+#[cfg(test)]
+mod mixed_fleet_evidence;
+
 use clap::Parser;
 
 #[tokio::main]

@@ -1,0 +1,29 @@
+{
+  "release_version": "1.0.1",
+  "required_stages": [
+    "source-ci",
+    "protocol-prepublish",
+    "protocol-index-check",
+    "binary-prepublish-greggd",
+    "binary-prepublish-gregg",
+    "binary-msrv-greggd",
+    "binary-msrv-gregg",
+    "native-linux-x86-64",
+    "native-linux-arm64",
+    "native-macos-arm64",
+    "native-macos-intel",
+    "systemd-lifecycle",
+    "launchd-lifecycle",
+    "resource-linux",
+    "resource-macos-arm64",
+    "soak-linux-24h",
+    "soak-macos-arm64-24h",
+    "mixed-fleet-client",
+    "postpublish-verify"
+  ],
+  "rerun_policy": {
+    "selection_required_for_duplicate_successes": true,
+    "only_successful_attempts_qualify": true,
+    "source_change_invalidates_prior_evidence": true
+  }
+}

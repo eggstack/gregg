@@ -1,43 +1,28 @@
 #!/usr/bin/env bash
-# Aggregate candidate.json files downloaded from one release workflow run.
-#
-# Usage: aggregate-candidate-evidence.sh <evidence-dir> <candidate-sha> <output>
-
+# Backward-compatible per-dispatch entry point for canonical aggregation.
 set -euo pipefail
 
 EVIDENCE_DIR="${1:-}"
 EXPECTED_SHA="${2:-}"
 OUTPUT_PATH="${3:-}"
+shift $(( $# >= 3 ? 3 : $# ))
+RELEASE_VERSION=""
+REQUIRED_STAGES=()
 
-die() {
-    echo "FATAL: $*" >&2
-    exit 1
-}
-
-[[ -d "${EVIDENCE_DIR}" ]] || die "evidence directory does not exist: ${EVIDENCE_DIR}"
-[[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "candidate SHA must be a full 40-character SHA"
-[[ -n "${OUTPUT_PATH}" ]] || die "usage: $0 <evidence-dir> <candidate-sha> <output>"
-
-mapfile -t METADATA_FILES < <(find "${EVIDENCE_DIR}" -type f -name candidate.json -print | sort)
-(( ${#METADATA_FILES[@]} > 0 )) || die "no candidate.json files found under ${EVIDENCE_DIR}"
-
-for metadata in "${METADATA_FILES[@]}"; do
-    jq -e --arg expected "${EXPECTED_SHA}" \
-        '.candidate_sha == $expected and (.version | type == "string") and (.stage | type == "string")' \
-        "${metadata}" >/dev/null \
-        || die "mixed or malformed candidate metadata: ${metadata}"
+while (($# > 0)); do
+    case "$1" in
+        --release-version) [[ $# -ge 2 ]] || exit 2; RELEASE_VERSION="$2"; shift 2 ;;
+        --required-stage) [[ $# -ge 2 ]] || exit 2; REQUIRED_STAGES+=("$2"); shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
 done
 
-mkdir -p "$(dirname "${OUTPUT_PATH}")"
-jq -n \
-    --arg candidate_sha "${EXPECTED_SHA}" \
-    --slurpfile jobs <(jq -s '.' "${METADATA_FILES[@]}") \
-    '{candidate_sha: $candidate_sha, jobs: $jobs[0]}' \
-    >"${OUTPUT_PATH}"
+[[ -n "$EVIDENCE_DIR" && -n "$EXPECTED_SHA" && -n "$OUTPUT_PATH" && -n "$RELEASE_VERSION" ]] || {
+    echo "usage: $0 <evidence-dir> <candidate-sha> <output> --release-version VERSION --required-stage STAGE ..." >&2
+    exit 2
+}
+((${#REQUIRED_STAGES[@]} > 0)) || { echo "at least one --required-stage is required" >&2; exit 2; }
 
-jq -e --arg expected "${EXPECTED_SHA}" \
-    '.candidate_sha == $expected and (.jobs | length > 0) and all(.jobs[]; .candidate_sha == $expected)' \
-    "${OUTPUT_PATH}" >/dev/null \
-    || die "aggregate manifest failed self-validation"
-
-echo "Wrote aggregate candidate manifest: ${OUTPUT_PATH}"
+args=(aggregate --evidence-dir "$EVIDENCE_DIR" --expected-sha "$EXPECTED_SHA" --release-version "$RELEASE_VERSION" --output "$OUTPUT_PATH")
+for stage in "${REQUIRED_STAGES[@]}"; do args+=(--required-stage "$stage"); done
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-release-evidence.py" "${args[@]}"

@@ -49,7 +49,7 @@ unicode-width = "0.2"
 libc = "0.2"
 
 [dev-dependencies]
-gregg-protocol = { version = "1.0.0", path = "../gregg-protocol", features = ["test_support"] }
+gregg-protocol = { version = "1.0.1", path = "../gregg-protocol", features = ["test_support"] }
 
 [lints]
 workspace = true

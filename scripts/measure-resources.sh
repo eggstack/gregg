@@ -8,6 +8,15 @@
 set -euo pipefail
 
 DAEMON=""
+MODE="smoke"
+CANDIDATE_SHA=""
+RELEASE_VERSION=""
+STAGE=""
+RUN_ID="local"
+ATTEMPT="1"
+JOB_NAME="resource-measurement"
+PROVENANCE=""
+PACKAGE="greggd"
 PORT=0
 DURATION_SECS=30
 INTERVAL_SECS=5
@@ -24,6 +33,22 @@ die() {
     exit 1
 }
 
+file_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
+}
+
+file_size() {
+    if stat -c '%s' "$1" >/dev/null 2>&1; then
+        stat -c '%s' "$1"
+    else
+        stat -f '%z' "$1"
+    fi
+}
+
 cleanup() {
     set +e
     if [[ -n "${DAEMON_PID}" ]]; then
@@ -38,7 +63,7 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-    echo "usage: $0 --daemon <path> [--port <port>] [--duration-secs <n>] [--output-dir <dir>]" >&2
+    echo "usage: $0 --daemon <path> --candidate-sha SHA --release-version VERSION --stage STAGE [options]" >&2
     exit 2
 }
 
@@ -47,6 +72,16 @@ while (($# > 0)); do
         --daemon)
             (($# >= 2)) || usage
             DAEMON="$2"
+            shift 2
+            ;;
+        --mode|--candidate-sha|--release-version|--stage|--run-id|--attempt|--job-name|--provenance|--package)
+            (($# >= 2)) || usage
+            case "$1" in
+                --mode) MODE="$2" ;; --candidate-sha) CANDIDATE_SHA="$2" ;;
+                --release-version) RELEASE_VERSION="$2" ;; --stage) STAGE="$2" ;;
+                --run-id) RUN_ID="$2" ;; --attempt) ATTEMPT="$2" ;; --job-name) JOB_NAME="$2" ;;
+                --provenance) PROVENANCE="$2" ;; --package) PACKAGE="$2" ;;
+            esac
             shift 2
             ;;
         --port)
@@ -76,9 +111,16 @@ while (($# > 0)); do
 done
 
 [[ -x "${DAEMON}" ]] || die "daemon is not executable: ${DAEMON}"
+[[ "${MODE}" == smoke || "${MODE}" == release ]] || die "mode must be smoke or release"
+[[ "${CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]] || die "candidate SHA must be a lowercase full 40-character SHA"
+[[ -n "${RELEASE_VERSION}" && -n "${STAGE}" ]] || die "release version and stage are required"
 [[ "${PORT}" =~ ^[0-9]+$ ]] && ((PORT <= 65535)) || die "invalid port: ${PORT}"
 [[ "${DURATION_SECS}" =~ ^[1-9][0-9]*$ ]] || die "invalid duration: ${DURATION_SECS}"
 [[ "${INTERVAL_SECS}" =~ ^[1-9][0-9]*$ ]] || die "invalid interval: ${INTERVAL_SECS}"
+if [[ "${MODE}" == release ]]; then
+    ((DURATION_SECS >= 1800)) || die "release resource measurements require at least 1800 seconds"
+    [[ -n "${PROVENANCE}" ]] || die "release resource measurements require --provenance"
+fi
 command -v curl >/dev/null 2>&1 || die "required command not found: curl"
 command -v jq >/dev/null 2>&1 || die "required command not found: jq"
 command -v python3 >/dev/null 2>&1 || die "required command not found: python3"
@@ -108,6 +150,7 @@ stale_after_ms = 10000
 TOML
 
 STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+START_MONOTONIC="$(python3 -c 'import time; print(time.monotonic_ns())')"
 "${DAEMON}" run --config "${CONFIG_PATH}" >"${TEMP_DIR}/greggd.log" 2>&1 &
 DAEMON_PID=$!
 ready=0
@@ -131,22 +174,9 @@ done
 ((ready == 1)) || die "greggd did not become ready"
 
 CSV_PATH="${OUTPUT_DIR}/resource-samples.csv"
-SUMMARY_PATH="${OUTPUT_DIR}/summary.json"
+SUMMARY_PATH="${OUTPUT_DIR}/resource-summary.json"
 METADATA_PATH="${OUTPUT_DIR}/candidate.json"
 printf 'timestamp,elapsed_secs,rss_kb,cpu_pct,threads,fd_count,payload_bytes,latency_ms\n' >"${CSV_PATH}"
-
-cat >"${METADATA_PATH}" <<JSON
-{
-  "candidate_sha": "${CANDIDATE_SHA:-unknown}",
-  "started_at": "${STARTED_AT}",
-  "host_os": "$(uname -s)",
-  "host_architecture": "$(uname -m)",
-  "daemon": "${DAEMON}",
-  "port": ${PORT},
-  "duration_secs": ${DURATION_SECS},
-  "interval_secs": ${INTERVAL_SECS}
-}
-JSON
 
 for ((elapsed = 0; elapsed < DURATION_SECS; elapsed += INTERVAL_SECS)); do
     kill -0 "${DAEMON_PID}" 2>/dev/null || die "greggd exited during measurement"
@@ -181,16 +211,27 @@ for ((elapsed = 0; elapsed < DURATION_SECS; elapsed += INTERVAL_SECS)); do
 
     if ((elapsed + INTERVAL_SECS < DURATION_SECS)); then
         sleep "${INTERVAL_SECS}"
+    elif [[ "${MODE}" == "release" ]]; then
+        sleep "$((DURATION_SECS - elapsed))"
     fi
 done
 
-python3 - "${CSV_PATH}" "${SUMMARY_PATH}" <<'PY'
+COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+END_MONOTONIC="$(python3 -c 'import time; print(time.monotonic_ns())')"
+OBSERVED_SECS="$(python3 - "${START_MONOTONIC}" "${END_MONOTONIC}" <<'PY'
+import sys
+
+print(int((int(sys.argv[2]) - int(sys.argv[1])) / 1_000_000_000))
+PY
+)"
+
+python3 - "${CSV_PATH}" "${SUMMARY_PATH}" "${MODE}" "${DURATION_SECS}" "${OBSERVED_SECS}" "${INTERVAL_SECS}" "${STARTED_AT}" "${COMPLETED_AT}" "${START_MONOTONIC}" "${END_MONOTONIC}" <<'PY'
 import csv
 import json
 import statistics
 import sys
 
-csv_path, summary_path = sys.argv[1:]
+csv_path, summary_path, mode, configured, observed, interval, started_at, completed_at, monotonic_start, monotonic_end = sys.argv[1:]
 with open(csv_path, newline="", encoding="utf-8") as handle:
     rows = list(csv.DictReader(handle))
 
@@ -206,6 +247,12 @@ def percentile(items, fraction):
 
 summary = {
     "samples": len(rows),
+    "configured_duration_secs": int(configured),
+    "observed_duration_secs": int(observed),
+    "started_at": started_at,
+    "completed_at": completed_at,
+    "monotonic_start_ns": int(monotonic_start),
+    "monotonic_end_ns": int(monotonic_end),
     "rss_kb_max": max(values("rss_kb"), default=None),
     "cpu_pct_avg": statistics.fmean(values("cpu_pct")) if values("cpu_pct") else None,
     "latency_ms_p50": percentile(values("latency_ms"), 0.50),
@@ -213,10 +260,37 @@ summary = {
     "latency_ms_p99": percentile(values("latency_ms"), 0.99),
     "payload_bytes_max": max((int(row["payload_bytes"]) for row in rows), default=None),
 }
+summary["minimum_expected_samples"] = (summary["configured_duration_secs"] + int(interval) - 1) // int(interval)
+summary["thresholds"] = {"rss_kb_max": 16384, "cpu_pct_avg": 0.2, "payload_bytes_max": 2048, "latency_ms_p95": 10.0}
+summary["qualification"] = {
+    "duration": summary["observed_duration_secs"] >= summary["configured_duration_secs"],
+    "samples": summary["samples"] >= summary["minimum_expected_samples"],
+    "rss": summary["rss_kb_max"] is not None and summary["rss_kb_max"] <= summary["thresholds"]["rss_kb_max"],
+    "cpu": summary["cpu_pct_avg"] is not None and summary["cpu_pct_avg"] <= summary["thresholds"]["cpu_pct_avg"],
+    "payload": summary["payload_bytes_max"] is not None and summary["payload_bytes_max"] <= summary["thresholds"]["payload_bytes_max"],
+    "latency": summary["latency_ms_p95"] is not None and summary["latency_ms_p95"] <= summary["thresholds"]["latency_ms_p95"],
+}
+summary["result"] = "pass" if all(summary["qualification"].values()) else "fail"
 with open(summary_path, "w", encoding="utf-8") as handle:
     json.dump(summary, handle, indent=2, sort_keys=True)
     handle.write("\n")
 print(json.dumps(summary, indent=2, sort_keys=True))
+if mode == "release" and summary["result"] != "pass":
+    raise SystemExit("resource qualification failed")
 PY
+
+jq -n --arg summary "$(basename "${SUMMARY_PATH}")" --arg samples "$(basename "${CSV_PATH}")" '[{name:$summary},{name:$samples}]' >"${TEMP_DIR}/artifacts.json"
+metadata_args=(
+    write-candidate --output "${METADATA_PATH}" --candidate-sha "${CANDIDATE_SHA}" --release-version "${RELEASE_VERSION}"
+    --stage "${STAGE}" --workflow-run-id "${RUN_ID}" --workflow-run-attempt "${ATTEMPT}"
+    --job-name "${JOB_NAME}" --runner-os "$(uname -s)" --runner-architecture "$(uname -m)"
+    --started-at "${STARTED_AT}" --completed-at "${COMPLETED_AT}" --artifacts-json "${TEMP_DIR}/artifacts.json"
+    --executable "${PACKAGE}" "$(file_sha256 "${DAEMON}")" "$(file_size "${DAEMON}")"
+    --note "mode=${MODE}"
+)
+if [[ -n "${PROVENANCE}" ]]; then
+    metadata_args+=(--note "provenance=${PROVENANCE}")
+fi
+python3 "$(dirname "${BASH_SOURCE[0]}")/validate-release-evidence.py" "${metadata_args[@]}"
 
 echo "Resource measurement complete: ${OUTPUT_DIR}"
