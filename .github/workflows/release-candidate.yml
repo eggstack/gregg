@@ -81,7 +81,7 @@ jobs:
   source-ci:
     name: Source CI and shell validation
     needs: resolve
-    if: ${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' || inputs.stage == 'native-evidence' || inputs.stage == 'mixed-fleet-client' }}
+    if: ${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' || inputs.stage == 'native-evidence' || inputs.stage == 'mixed-fleet-client' || inputs.stage == 'mixed-fleet-sustained' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
