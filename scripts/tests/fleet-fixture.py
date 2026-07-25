@@ -92,6 +92,8 @@ def main() -> int:
     FixtureHandler.default_mode = args.default_mode
     args.log.parent.mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), FixtureHandler)
+    actual_port = server.server_address[1]
+    print(f"PORT={actual_port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

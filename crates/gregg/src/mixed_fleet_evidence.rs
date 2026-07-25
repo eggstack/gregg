@@ -30,27 +30,53 @@ impl Drop for FixtureProcess {
     }
 }
 
-fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind fixture port");
-    listener.local_addr().expect("fixture address").port()
-}
-
 fn start_fixture(mode: &str) -> (FixtureProcess, u16) {
-    let port = free_port();
     let log_path =
         std::env::temp_dir().join(format!("gregg-fleet-{}-{mode}.jsonl", std::process::id()));
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/fleet-fixture.py");
-    let child = Command::new("python3")
+    let mut child = Command::new("python3")
         .arg(script)
         .arg("--port")
-        .arg(port.to_string())
+        .arg("0")
         .arg("--log")
         .arg(&log_path)
         .arg("--default-mode")
         .arg(mode)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .expect("start deterministic fleet fixture");
+    let port = {
+        use std::io::BufRead;
+        let stdout = child.stdout.as_mut().expect("fixture stdout piped");
+        let reader = std::io::BufReader::new(stdout);
+        let mut port: Option<u16> = None;
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if let Some(rest) = line.strip_prefix("PORT=") {
+                if let Ok(p) = rest.parse::<u16>() {
+                    port = Some(p);
+                    break;
+                }
+            }
+        }
+        if let Some(p) = port {
+            p
+        } else {
+            let stderr = child
+                .stderr
+                .take()
+                .map(|mut s| {
+                    use std::io::Read;
+                    let mut buf = String::new();
+                    let _ = s.read_to_string(&mut buf);
+                    buf
+                })
+                .unwrap_or_default();
+            panic!("fleet fixture {mode} did not report a port: {stderr}");
+        }
+    };
     let mut fixture = FixtureProcess { child, log_path };
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     for _ in 0..200 {
