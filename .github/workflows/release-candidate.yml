@@ -18,6 +18,7 @@ on:
           - binary-prepublish
           - native-evidence
           - mixed-fleet-client
+          - mixed-fleet-sustained
           - operational-evidence
           - postpublish-verify
       package_run_id:
@@ -446,8 +447,8 @@ jobs:
 
   native-package-evidence:
     name: Package-native platform evidence
-    needs: [resolve, source-ci, binary-prepublish, protocol-index-check]
-    if: ${{ inputs.stage == 'native-evidence' && needs.source-ci.result == 'success' && needs.binary-prepublish.result == 'success' && needs.protocol-index-check.result == 'success' }}
+    needs: [resolve, source-ci]
+    if: ${{ inputs.stage == 'native-evidence' && needs.source-ci.result == 'success' && inputs.package_run_id != '' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -473,31 +474,44 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/download-artifact@v4
         with:
-          name: binary-greggd-${{ needs.resolve.outputs.short_sha }}-${{ needs.resolve.outputs.candidate_version }}
+          name: binary-greggd-${{ needs.resolve.outputs.short_sha }}-${{ inputs.package_run_attempt }}
           run-id: ${{ inputs.package_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          path: package-artifact
+          path: package-artifact/greggd
       - uses: actions/download-artifact@v4
         with:
-          name: binary-gregg-${{ needs.resolve.outputs.short_sha }}-${{ needs.resolve.outputs.candidate_version }}
+          name: binary-gregg-${{ needs.resolve.outputs.short_sha }}-${{ inputs.package_run_attempt }}
           run-id: ${{ inputs.package_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
-          path: package-artifact
+          path: package-artifact/gregg
+      - name: Validate selected package run
+        run: |
+          set -euo pipefail
+          test -d package-artifact/greggd/evidence
+          test -d package-artifact/gregg/evidence
+          greggd_archive="$(find package-artifact/greggd -type f -name 'greggd-1.0.1.crate' -print -quit)"
+          gregg_archive="$(find package-artifact/gregg -type f -name 'gregg-1.0.1.crate' -print -quit)"
+          greggd_provenance="$(find package-artifact/greggd -type f -name package-provenance.json -print -quit)"
+          gregg_provenance="$(find package-artifact/gregg -type f -name package-provenance.json -print -quit)"
+          greggd_lockfile="$(find package-artifact/greggd -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
+          gregg_lockfile="$(find package-artifact/gregg -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
+          test -n "${greggd_archive}" -a -n "${gregg_archive}" -a -n "${greggd_provenance}" -a -n "${gregg_provenance}" -a -n "${greggd_lockfile}" -a -n "${gregg_lockfile}"
+          echo "greggd_archive=${greggd_archive}" >> "${GITHUB_ENV}"
+          echo "gregg_archive=${gregg_archive}" >> "${GITHUB_ENV}"
+          echo "greggd_provenance=${greggd_provenance}" >> "${GITHUB_ENV}"
+          echo "gregg_provenance=${gregg_provenance}" >> "${GITHUB_ENV}"
+          echo "greggd_lockfile=${greggd_lockfile}" >> "${GITHUB_ENV}"
+          echo "gregg_lockfile=${gregg_lockfile}" >> "${GITHUB_ENV}"
       - name: Install and verify package-derived binaries
         run: |
           set -euo pipefail
           test "$(uname -m)" = "${{ matrix.expected_arch }}"
           mkdir -p evidence
           started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          greggd_archive="$(find package-artifact -type f -name 'greggd-1.0.1.crate' -print -quit)"
-          gregg_archive="$(find package-artifact -type f -name 'gregg-1.0.1.crate' -print -quit)"
-          provenance="$(find package-artifact -type f -name package-provenance.json -path '*greggd*' -print -quit)"
-          lockfile="$(find package-artifact -type f -name 'Cargo.lock' -path '*evidence*' -print -quit)"
-          test -n "${greggd_archive}" -a -n "${gregg_archive}" -a -n "${provenance}" -a -n "${lockfile}"
-          scripts/install-verified-package.sh --manifest "${provenance}" --package greggd --archive "${greggd_archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-pkg" --lockfile "${lockfile}"
-          scripts/install-verified-package.sh --manifest "${provenance}" --package gregg --archive "${gregg_archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/gregg-pkg" --lockfile "${lockfile}"
+          scripts/install-verified-package.sh --manifest "${greggd_provenance}" --package greggd --archive "${greggd_archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/greggd-pkg" --lockfile "${greggd_lockfile}"
+          scripts/install-verified-package.sh --manifest "${gregg_provenance}" --package gregg --archive "${gregg_archive}" --version 1.0.1 --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --root "${RUNNER_TEMP}/gregg-pkg" --lockfile "${gregg_lockfile}"
           greggd_binary="${RUNNER_TEMP}/greggd-pkg/bin/greggd"
           gregg_binary="${RUNNER_TEMP}/gregg-pkg/bin/gregg"
           "${greggd_binary}" --version | tee evidence/greggd-version.txt
@@ -556,6 +570,44 @@ jobs:
         if: always()
         with:
           name: mixed-fleet-client-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: error
+
+  mixed-fleet-sustained:
+    name: Mixed-fleet sustained evidence
+    needs: [resolve, source-ci]
+    if: ${{ inputs.stage == 'mixed-fleet-sustained' && needs.source-ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run sustained mixed-fleet state engine
+        run: |
+          set -euo pipefail
+          mkdir -p evidence
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cargo test -p gregg --all-targets --all-features mixed_fleet -- --nocapture 2>&1 | tee evidence/fleet-transition.txt
+          cargo test -p gregg --all-targets --all-features scheduler -- --nocapture 2>&1 | tee evidence/scheduler-transient.txt
+          cargo test -p gregg --all-targets --all-features state -- --nocapture 2>&1 | tee evidence/state-reduction.txt
+          cargo test -p gregg --all-targets --all-features poller -- --nocapture 2>&1 | tee evidence/poller-generations.txt
+          completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -n '[{name:"fleet-transition.txt",role:"sustained-transitions"},{name:"scheduler-transient.txt",role:"scheduler-bounded"},{name:"state-reduction.txt",role:"state-reduction"},{name:"poller-generations.txt",role:"poller-generations"}]' > evidence/artifacts.json
+          python3 scripts/validate-release-evidence.py write-candidate \
+            --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
+            --release-version "${{ needs.resolve.outputs.candidate_version }}" --stage mixed-fleet-sustained \
+            --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job-name mixed-fleet-sustained --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
+            --started-at "${started_at}" --completed-at "${completed_at}" --artifacts-json evidence/artifacts.json \
+            --note "mode=release" --note "qualifying_duration_secs=30"
+          python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json \
+            --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version "${{ needs.resolve.outputs.candidate_version }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mixed-fleet-sustained-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
           path: evidence
           if-no-files-found: error
 
@@ -661,7 +713,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           path: package-artifact
-      - name: Exercise native systemd lifecycle
+      - id: gate-systemd
+        name: Exercise native systemd lifecycle
         run: |
           set -euo pipefail
           test -n "${GREGG_SYSTEMD_HOST:-}"
@@ -704,15 +757,29 @@ jobs:
           jq -n '[{name:"systemd-transcript.txt",role:"lifecycle-transcript"},{name:"package-provenance.json",role:"package-provenance"},{name:"preflight.txt",role:"preflight"},{name:"systemd-cleanup.log",role:"cleanup"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 --stage systemd-lifecycle --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" --job-name systemd-lifecycle --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" --started-at "${started_at}" --completed-at "${completed_at}" --artifacts-json evidence/artifacts.json
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version 1.0.1
-      - name: Guaranteed cleanup
+      - id: cleanup-systemd
         if: always()
+        name: Cleanup protected host
         run: |
           set -euo pipefail
           export GREGG_SERVICE_NAME=greggd
           export GREGG_EXPECTED_PORT=11310
           export GREGG_MARKER_DIR="/tmp/gregg-release-run-systemd-${GITHUB_RUN_ID}"
           export GREGG_CLEANUP_LOG="evidence/systemd-cleanup.log"
-          bash scripts/cleanup-protected-host.sh || true
+          bash scripts/cleanup-protected-host.sh
+      - name: Enforce protected-host verdict
+        if: always()
+        run: |
+          gate_outcome="${{ steps.gate-systemd.outcome }}"
+          cleanup_outcome="${{ steps.cleanup-systemd.outcome }}"
+          if [[ "${gate_outcome}" != "success" ]]; then
+            echo "FATAL: gate step outcome was ${gate_outcome}" >&2
+          fi
+          if [[ "${cleanup_outcome}" != "success" ]]; then
+            echo "FATAL: cleanup step outcome was ${cleanup_outcome}" >&2
+          fi
+          test "${gate_outcome}" = "success"
+          test "${cleanup_outcome}" = "success"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -739,7 +806,8 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
           path: package-artifact
-      - name: Exercise native launchd lifecycle
+      - id: gate-launchd
+        name: Exercise native launchd lifecycle
         run: |
           set -euo pipefail
           test -n "${GREGG_LAUNCHD_HOST:-}"
@@ -778,15 +846,29 @@ jobs:
           jq -n '[{name:"launchd-transcript.txt",role:"lifecycle-transcript"},{name:"package-provenance.json",role:"package-provenance"},{name:"preflight.txt",role:"preflight"},{name:"launchd-cleanup.log",role:"cleanup"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 --stage launchd-lifecycle --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" --job-name launchd-lifecycle --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" --started-at "${started_at}" --completed-at "${completed_at}" --artifacts-json evidence/artifacts.json
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version 1.0.1
-      - name: Guaranteed cleanup
+      - id: cleanup-launchd
         if: always()
+        name: Cleanup protected host
         run: |
           set -euo pipefail
           export GREGG_SERVICE_NAME=greggd
           export GREGG_EXPECTED_PORT=11310
           export GREGG_MARKER_DIR="/tmp/gregg-release-run-launchd-${GITHUB_RUN_ID}"
           export GREGG_CLEANUP_LOG="evidence/launchd-cleanup.log"
-          bash scripts/cleanup-protected-host.sh || true
+          bash scripts/cleanup-protected-host.sh
+      - name: Enforce protected-host verdict
+        if: always()
+        run: |
+          gate_outcome="${{ steps.gate-launchd.outcome }}"
+          cleanup_outcome="${{ steps.cleanup-launchd.outcome }}"
+          if [[ "${gate_outcome}" != "success" ]]; then
+            echo "FATAL: gate step outcome was ${gate_outcome}" >&2
+          fi
+          if [[ "${cleanup_outcome}" != "success" ]]; then
+            echo "FATAL: cleanup step outcome was ${cleanup_outcome}" >&2
+          fi
+          test "${gate_outcome}" = "success"
+          test "${cleanup_outcome}" = "success"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -840,7 +922,7 @@ jobs:
 
   aggregate:
     name: Aggregate candidate evidence
-    needs: [resolve, source-ci, protocol-prepublish, protocol-index-check, binary-prepublish, binary-msrv, native-evidence, mixed-fleet-client, operational-evidence, operational-macos-evidence, systemd-lifecycle, launchd-lifecycle, postpublish-verify]
+    needs: [resolve, source-ci, protocol-prepublish, protocol-index-check, binary-prepublish, binary-msrv, native-evidence, native-package-evidence, mixed-fleet-client, mixed-fleet-sustained, operational-evidence, operational-macos-evidence, systemd-lifecycle, launchd-lifecycle, postpublish-verify]
     if: ${{ always() && needs.resolve.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
@@ -863,7 +945,7 @@ jobs:
             protocol-index-check) required=(protocol-index-check) ;;
             binary-prepublish) required=(source-ci protocol-index-check binary-prepublish-greggd binary-prepublish-gregg binary-msrv-greggd binary-msrv-gregg) ;;
             native-evidence) required=(source-ci native-source-linux-x86-64 native-source-linux-arm64 native-source-macos-arm64 native-source-macos-intel native-package-linux-x86-64 native-package-linux-arm64 native-package-macos-arm64 native-package-macos-intel) ;;
-            mixed-fleet-client) required=(source-ci mixed-fleet-functional) ;;
+            mixed-fleet-client) required=(source-ci mixed-fleet-functional mixed-fleet-sustained) ;;
             operational-evidence) required=(resource-linux resource-macos-arm64 soak-linux-24h soak-macos-arm64-24h systemd-lifecycle launchd-lifecycle) ;;
             postpublish-verify) required=(protocol-index-check postpublish-verify) ;;
             *) echo "unsupported aggregation stage" >&2; exit 1 ;;

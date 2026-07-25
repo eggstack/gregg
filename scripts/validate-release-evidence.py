@@ -267,6 +267,10 @@ def validate_registry_summary(
 
 def aggregate(args: argparse.Namespace) -> None:
     expected_sha = sha(args.expected_sha, "expected SHA")
+    mode = getattr(args, "mode", "pre-tag")
+    if mode not in ("pre-tag", "final"):
+        fail(f"mode must be pre-tag or final, got {mode}")
+
     candidates = []
     for path in files_under(Path(args.evidence_dir)):
         candidates.append(
@@ -282,14 +286,30 @@ def aggregate(args: argparse.Namespace) -> None:
         requirements = read_json(Path(args.requirements))
         if not isinstance(requirements, dict):
             fail("release requirements must be an object")
-        required_from_file = requirements.get("required_stages")
+        if mode == "pre-tag":
+            required_from_file = requirements.get("pre_tag_required_stages")
+        else:
+            required_from_file = requirements.get("final_required_stages")
         if not isinstance(required_from_file, list):
-            fail("release requirements must contain required_stages")
+            fail(f"release requirements must contain {mode.replace('-', '_')}_required_stages")
         if required and required != required_from_file:
             fail("explicit required stages do not match the machine-readable requirements")
         required = required_from_file
     if not required or len(set(required)) != len(required):
         fail("required stages must be a nonempty list without duplicates")
+
+    retrieved_manifest = None
+    retrieved_by_stage: dict[str, dict[str, Any]] = {}
+    if args.retrieved_manifest:
+        retrieved_manifest = read_json(Path(args.retrieved_manifest))
+        if not isinstance(retrieved_manifest, dict):
+            fail("retrieved manifest must be an object")
+        if retrieved_manifest.get("candidate_sha") != expected_sha:
+            fail("retrieved manifest candidate SHA does not match expected SHA")
+        for stage_entry in retrieved_manifest.get("stages", []):
+            stage_name = stage_entry.get("stage", "")
+            retrieved_by_stage[stage_name] = stage_entry
+
     selection = read_selection(args.selection)
     by_stage: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, candidate in candidates:
@@ -307,8 +327,8 @@ def aggregate(args: argparse.Namespace) -> None:
             fail(f"stage {stage} has multiple successful candidates; select one explicitly")
         chosen_path, chosen = options[0]
         if isinstance(chosen_selection, dict):
-            run_id = str(chosen_selection.get("workflow_run_id"))
-            attempt = str(chosen_selection.get("workflow_run_attempt"))
+            run_id = str(chosen_selection.get("workflow_run_id", chosen_selection.get("run_id", "")))
+            attempt = str(chosen_selection.get("workflow_run_attempt", chosen_selection.get("attempt", "")))
             matches = [
                 item for item in options
                 if item[1]["workflow_run_id"] == run_id
@@ -318,15 +338,47 @@ def aggregate(args: argparse.Namespace) -> None:
                 fail(f"selection for {stage} does not identify a supplied successful attempt")
             chosen_path, chosen = matches[0]
 
-        stage_entries.append({
+        github_artifact: dict[str, Any] | None = None
+        if stage in retrieved_by_stage:
+            retrieved_stage = retrieved_by_stage[stage]
+            retrieved_run_id = str(retrieved_stage.get("run", {}).get("run_id", ""))
+            retrieved_attempt = str(retrieved_stage.get("run", {}).get("run_attempt", ""))
+            if chosen["workflow_run_id"] != retrieved_run_id:
+                fail(f"stage {stage} candidate run_id {chosen['workflow_run_id']} does not match retrieved run_id {retrieved_run_id}")
+            if chosen["workflow_run_attempt"] != retrieved_attempt:
+                fail(f"stage {stage} candidate attempt {chosen['workflow_run_attempt']} does not match retrieved attempt {retrieved_attempt}")
+            artifacts = retrieved_stage.get("artifacts", [])
+            if artifacts:
+                first = artifacts[0]
+                github_artifact = {
+                    "id": first.get("github_artifact_id"),
+                    "name": first.get("github_artifact_name"),
+                    "zip_sha256": first.get("downloaded_zip_sha256"),
+                    "zip_size_bytes": first.get("downloaded_zip_size_bytes"),
+                }
+
+        content_artifacts = []
+        for item in chosen.get("artifacts", []):
+            content_artifacts.append({
+                "name": item.get("name", ""),
+                "role": item.get("role", ""),
+                "sha256": item.get("sha256"),
+                "size_bytes": item.get("size_bytes"),
+            })
+
+        entry: dict[str, Any] = {
             "stage": stage,
             "workflow_run_id": chosen["workflow_run_id"],
             "workflow_run_attempt": chosen["workflow_run_attempt"],
             "artifact_ids": selected_artifacts(chosen, chosen_selection if isinstance(chosen_selection, dict) else None),
             "metadata_path": str(chosen_path),
             "metadata_sha256": hashlib.sha256(chosen_path.read_bytes()).hexdigest(),
+            "content_artifacts": content_artifacts,
             "candidate": chosen,
-        })
+        }
+        if github_artifact is not None:
+            entry["github_artifact"] = github_artifact
+        stage_entries.append(entry)
 
     tag = None
     if any((args.tag_name, args.tag_object_sha, args.peeled_commit_sha, args.tagger_name, args.tagger_email, args.tagger_timestamp, args.tag_object_content_sha256)):
@@ -352,7 +404,9 @@ def aggregate(args: argparse.Namespace) -> None:
     packages = read_json(Path(args.package_provenance)) if args.package_provenance else None
     registry = read_json(Path(args.registry_summary)) if args.registry_summary else None
     disposition = read_json(Path(args.disposition)) if args.disposition else None
-    if args.final:
+    tooling_sha = args.tooling_sha if hasattr(args, "tooling_sha") and args.tooling_sha else expected_sha
+
+    if mode == "final":
         if tag is None:
             fail("final aggregation requires annotated tag identity")
         if not all(tag.get(name) for name in ("tagger_name", "tagger_email", "tagger_timestamp", "tag_object_content_sha256")):
@@ -365,12 +419,16 @@ def aggregate(args: argparse.Namespace) -> None:
         registry = validate_registry_summary(registry, expected_version=args.release_version)
         if not isinstance(disposition, dict) or set(disposition) != {"gregg-protocol", "greggd", "gregg"}:
             fail("final aggregation requires a 1.0.0 disposition for every crate")
+        if "postpublish-verify" not in by_stage:
+            fail("final aggregation requires postpublish-verify evidence")
 
     manifest = {
         "manifest_schema_version": 1,
         "release_version": args.release_version,
         "candidate_sha": expected_sha,
+        "tooling_sha": tooling_sha,
         "tag": tag,
+        "mode": mode,
         "required_stages": required,
         "stages": stage_entries,
         "rerun_selection": selection,
@@ -379,13 +437,13 @@ def aggregate(args: argparse.Namespace) -> None:
         "version_1_0_0_disposition": disposition,
         "verdict": "pass",
     }
-    validate_manifest(manifest, expected_sha=expected_sha, expected_version=args.release_version)
+    validate_manifest(manifest, expected_sha=expected_sha, expected_version=args.release_version, mode=mode)
     write_json(Path(args.output), manifest)
-    print(f"validated {len(stage_entries)} stages; wrote {args.output}")
+    print(f"validated {len(stage_entries)} stages ({mode} mode); wrote {args.output}")
 
 
 def validate_manifest(
-    value: Any, *, expected_sha: str | None = None, expected_version: str | None = None
+    value: Any, *, expected_sha: str | None = None, expected_version: str | None = None, mode: str = "pre-tag"
 ) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("manifest_schema_version") != 1:
         fail("manifest_schema_version must be 1")
@@ -396,12 +454,20 @@ def validate_manifest(
     if expected_version is not None and version != expected_version:
         fail("manifest release version does not match expected version")
 
+    tooling_sha = value.get("tooling_sha")
+    if tooling_sha is not None:
+        sha(tooling_sha, "manifest tooling_sha")
+
     required = value.get("required_stages")
     stages = value.get("stages")
     if not isinstance(required, list) or not required or not all(isinstance(item, str) for item in required):
         fail("manifest required_stages must be a nonempty string array")
     if not isinstance(stages, list) or len(stages) != len(required):
         fail("manifest must contain exactly one selected entry for every required stage")
+
+    manifest_mode = value.get("mode", "pre-tag")
+    if manifest_mode not in ("pre-tag", "final"):
+        fail(f"manifest mode must be pre-tag or final, got {manifest_mode}")
 
     seen = set()
     for entry in stages:
@@ -416,6 +482,16 @@ def validate_manifest(
         ids = entry.get("artifact_ids")
         if not isinstance(ids, list) or not ids or not all(isinstance(item, str) and item for item in ids):
             fail(f"manifest stage {stage} has no artifact IDs")
+        content_artifacts = entry.get("content_artifacts")
+        if content_artifacts is not None:
+            if not isinstance(content_artifacts, list):
+                fail(f"manifest stage {stage} content_artifacts must be an array")
+        github_artifact = entry.get("github_artifact")
+        if github_artifact is not None:
+            if not isinstance(github_artifact, dict):
+                fail(f"manifest stage {stage} github_artifact must be an object")
+            if github_artifact.get("id") is not None and not isinstance(github_artifact["id"], int):
+                fail(f"manifest stage {stage} github_artifact.id must be an integer")
         validate_candidate(entry.get("candidate"), expected_sha=candidate_sha, expected_version=version)
 
     if seen != set(required):
@@ -548,6 +624,9 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--required-stage", action="append", default=[])
     command.add_argument("--requirements")
     command.add_argument("--selection")
+    command.add_argument("--retrieved-manifest")
+    command.add_argument("--mode", choices=["pre-tag", "final"], default="pre-tag")
+    command.add_argument("--tooling-sha")
     command.add_argument("--tag-name")
     command.add_argument("--tag-object-sha")
     command.add_argument("--peeled-commit-sha")
@@ -564,6 +643,7 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("path", type=Path)
     command.add_argument("--expected-sha")
     command.add_argument("--expected-version")
+    command.add_argument("--mode", choices=["pre-tag", "final"], default="pre-tag")
     return parser
 
 
@@ -585,7 +665,7 @@ def main() -> int:
         elif args.command == "aggregate":
             aggregate(args)
         elif args.command == "validate-manifest":
-            validate_manifest(read_json(args.path), expected_sha=args.expected_sha, expected_version=args.expected_version)
+            validate_manifest(read_json(args.path), expected_sha=args.expected_sha, expected_version=args.expected_version, mode=args.mode)
             print(f"valid release manifest: {args.path}")
         return 0
     except EvidenceError as error:

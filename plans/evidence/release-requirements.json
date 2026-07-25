@@ -1,6 +1,31 @@
 {
   "release_version": "1.0.1",
-  "required_stages": [
+  "pre_tag_required_stages": [
+    "source-ci",
+    "protocol-prepublish",
+    "protocol-index-check",
+    "binary-prepublish-greggd",
+    "binary-prepublish-gregg",
+    "binary-msrv-greggd",
+    "binary-msrv-gregg",
+    "native-source-linux-x86-64",
+    "native-source-linux-arm64",
+    "native-source-macos-arm64",
+    "native-source-macos-intel",
+    "native-package-linux-x86-64",
+    "native-package-linux-arm64",
+    "native-package-macos-arm64",
+    "native-package-macos-intel",
+    "mixed-fleet-functional",
+    "mixed-fleet-sustained",
+    "systemd-lifecycle",
+    "launchd-lifecycle",
+    "resource-linux",
+    "resource-macos-arm64",
+    "soak-linux-24h",
+    "soak-macos-arm64-24h"
+  ],
+  "final_required_stages": [
     "source-ci",
     "protocol-prepublish",
     "protocol-index-check",

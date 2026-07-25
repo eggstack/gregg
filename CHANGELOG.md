@@ -83,6 +83,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   the declared MSRV. Fresh package and workspace resolution now stays below
   the edition-2024 and Rust-1.85-only dependency lines while retaining current
   active TLS fixes.
+- **Release orchestration** (Phase 18): Corrected executable release-workflow
+  defects: per-run artifact selection with pre-network validation, end-to-end
+  artifact download with safe ZIP extraction and all-candidate validation,
+  numeric GitHub artifact identity propagation into final manifests, pre-tag
+  and final aggregation mode separation, package-native dispatch repair with
+  separate daemon/client download roots and package-specific provenance,
+  mixed-fleet-sustained evidence stage, fail-closed protected cleanup with
+  explicit verdict steps, and immutable finalizer tooling identity.
 
 ## [1.0.0] - 2026-07-23
 
