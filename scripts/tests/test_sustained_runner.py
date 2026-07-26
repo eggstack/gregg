@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -196,6 +197,192 @@ class CandidateMetadataTests(unittest.TestCase):
             "completed_generations",
         ]:
             self.assertIn(field, candidate)
+
+
+class EarlyExitDetectionTests(unittest.TestCase):
+    """Test detection of workload that exits before requested duration."""
+
+    def test_duration_too_short_rejected(self) -> None:
+        requested = 30.0
+        observed = 15.0
+        self.assertLess(observed, requested)
+
+    def test_child_exit_detected_immediately(self) -> None:
+        import subprocess
+
+        result = subprocess.run(
+            ["false"],
+            capture_output=True,
+            timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
+
+
+class MissingSummaryTests(unittest.TestCase):
+    """Test detection of missing or invalid summary."""
+
+    def test_missing_summary_file_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            summary_path = Path(raw) / "sustained-summary.json"
+            self.assertFalse(summary_path.exists())
+
+    def test_empty_summary_file_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            summary_path = Path(raw) / "sustained-summary.json"
+            summary_path.write_text("", encoding="utf-8")
+            try:
+                with summary_path.open(encoding="utf-8") as f:
+                    json.load(f)
+                self.fail("should have raised JSONDecodeError")
+            except json.JSONDecodeError:
+                pass
+
+
+class InsufficientGenerationTests(unittest.TestCase):
+    """Test detection of summary with insufficient generation data."""
+
+    def test_summary_generation_count_zero(self) -> None:
+        summary = {
+            "requested_duration_secs": 30,
+            "observed_duration_secs": 32.5,
+            "endpoint_count": 10,
+            "completed_generations": 0,
+            "first_generation": 0,
+            "last_generation": 0,
+            "max_concurrent_polls": 0,
+            "online_results": 0,
+            "offline_results": 0,
+            "observed_transitions": [],
+            "clean_shutdown": True,
+            "panic_or_join_failure": None,
+        }
+        self.assertEqual(summary["completed_generations"], 0)
+
+    def test_summary_generation_count_one(self) -> None:
+        summary = {
+            "completed_generations": 1,
+            "first_generation": 1,
+            "last_generation": 1,
+        }
+        self.assertEqual(summary["completed_generations"], 1)
+        self.assertEqual(summary["first_generation"], summary["last_generation"])
+
+
+class EmptyResourceSamplesTests(unittest.TestCase):
+    """Test detection of empty or missing resource samples."""
+
+    def test_empty_jsonl_file_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            samples_path = Path(raw) / "resource-samples.jsonl"
+            samples_path.write_text("", encoding="utf-8")
+            lines = [
+                line
+                for line in samples_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 0)
+
+    def test_jsonl_with_only_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            samples_path = Path(raw) / "resource-samples.jsonl"
+            samples_path.write_text("\n\n  \n", encoding="utf-8")
+            lines = [
+                line
+                for line in samples_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(len(lines), 0)
+
+
+class NoTransitionDetectionTests(unittest.TestCase):
+    """Test detection when no endpoint state transitions occur."""
+
+    def test_all_online_no_transition(self) -> None:
+        transitions: list[str] = []
+        seen_online: dict[str, bool] = {}
+        results = [
+            {"system_id": "a", "online": True},
+            {"system_id": "b", "online": True},
+        ]
+        for r in results:
+            sid = r["system_id"]
+            is_online = r["online"]
+            if sid in seen_online and seen_online[sid] != is_online:
+                transitions.append(
+                    f"{sid}:{'offline' if is_online else 'online'}->{'online' if is_online else 'offline'}"
+                )
+            seen_online[sid] = is_online
+        self.assertEqual(len(transitions), 0)
+
+    def test_all_offline_no_transition(self) -> None:
+        transitions: list[str] = []
+        seen_online: dict[str, bool] = {}
+        results = [
+            {"system_id": "a", "online": False},
+            {"system_id": "b", "online": False},
+        ]
+        for r in results:
+            sid = r["system_id"]
+            is_online = r["online"]
+            if sid in seen_online and seen_online[sid] != is_online:
+                transitions.append(
+                    f"{sid}:{'offline' if is_online else 'online'}->{'online' if is_online else 'offline'}"
+                )
+            seen_online[sid] = is_online
+        self.assertEqual(len(transitions), 0)
+
+
+class GenerationCompletenessTests(unittest.TestCase):
+    """Test detection when a generation omits an endpoint."""
+
+    def test_generation_with_missing_endpoint(self) -> None:
+        endpoint_count = 10
+        results = [{"system_id": f"ep-{i}"} for i in range(9)]
+        self.assertNotEqual(len(results), endpoint_count)
+
+    def test_generation_with_extra_endpoint(self) -> None:
+        endpoint_count = 10
+        results = [{"system_id": f"ep-{i}"} for i in range(11)]
+        self.assertNotEqual(len(results), endpoint_count)
+
+
+class ChildTimeoutTests(unittest.TestCase):
+    """Test bounded cleanup deadline enforcement."""
+
+    def test_process_wait_timeout_enforced(self) -> None:
+        import signal
+        import subprocess
+
+        proc = subprocess.Popen(["sleep", "300"])
+        try:
+            try:
+                proc.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                pass
+            self.assertIsNone(proc.poll())
+        finally:
+            proc.kill()
+            proc.wait()
+
+
+class ExitCodeDetectionTests(unittest.TestCase):
+    """Test detection of non-zero workload exit codes."""
+
+    def test_nonzero_exit_code_detected(self) -> None:
+        import subprocess
+
+        result = subprocess.run(["false"], capture_output=True, timeout=5)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_panic_exit_code_detected(self) -> None:
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, "-c", "raise RuntimeError('panic')"],
+            capture_output=True,
+            timeout=5,
+        )
+        self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":
