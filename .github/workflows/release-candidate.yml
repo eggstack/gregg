@@ -121,7 +121,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence
-          jq -n '[{name:"duplicate-dependencies.txt",artifact_id:"dependency-tree"},{name:"shell-gates.txt",artifact_id:"shell-gates"}]' > evidence/artifacts.json
+          jq -n '[{name:"duplicate-dependencies.txt",role:"duplicate-dependencies"},{name:"shell-gates.txt",role:"shell-gates"}]' > evidence/artifacts.json
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
