@@ -987,6 +987,7 @@ jobs:
             binary-prepublish) required=(source-ci protocol-index-check binary-prepublish-greggd binary-prepublish-gregg binary-msrv-greggd binary-msrv-gregg) ;;
             native-evidence) required=(source-ci native-source-linux-x86-64 native-source-linux-arm64 native-source-macos-arm64 native-source-macos-intel native-package-linux-x86-64 native-package-linux-arm64 native-package-macos-arm64 native-package-macos-intel) ;;
             mixed-fleet-client) required=(source-ci mixed-fleet-functional mixed-fleet-sustained) ;;
+            mixed-fleet-sustained) required=(source-ci mixed-fleet-sustained) ;;
             operational-evidence) required=(resource-linux resource-macos-arm64 soak-linux-24h soak-macos-arm64-24h systemd-lifecycle launchd-lifecycle) ;;
             postpublish-verify) required=(protocol-index-check postpublish-verify) ;;
             *) echo "unsupported aggregation stage" >&2; exit 1 ;;
