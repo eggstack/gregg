@@ -66,7 +66,7 @@ jobs:
           git checkout --detach "${candidate_sha}"
           test "$(git rev-parse HEAD)" = "${candidate_sha}"
           short_sha="$(git rev-parse --short=8 "${candidate_sha}")"
-          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.workspace_packages[0].version')"
+          version="$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[0].version')"
           test "${candidate_sha}" = "$(git rev-parse HEAD)"
           test "${version}" = "1.0.1"
           test "$(grep -Ec 'gregg-protocol[[:space:]]*=[[:space:]]*\{[^}]*version[[:space:]]*=[[:space:]]*"1\.0\.1"' crates/greggd/Cargo.toml)" = 2
