@@ -122,13 +122,24 @@ def find_test_binary(profile: str) -> Path:
     # Parse the output to find the test binary path.
     # cargo test --no-run prints lines like:
     #   Finished test [unoptimized + debuginfo] target(s) in 0.05s
+    #   Executable unittests src/main.rs (target/debug/deps/gregg-HASH)
     #   Executable: path/to/binary (or just the path)
-    for line in result.stdout.splitlines():
+    # Note: cargo may print to stdout or stderr depending on version.
+    combined_output = result.stdout + "\n" + result.stderr
+    for line in combined_output.splitlines():
         line = line.strip()
         if line.startswith("Executable:") or line.startswith("Running:"):
             parts = line.split(None, 1)
             if len(parts) >= 2:
                 return Path(parts[1])
+        # Handle "Executable unittests src/main.rs (path/to/binary)"
+        if line.startswith("Executable "):
+            idx = line.rfind("(")
+            if idx >= 0:
+                path_str = line[idx + 1 :].rstrip(")")
+                candidate = Path(path_str)
+                if candidate.exists() and candidate.is_file():
+                    return candidate
         # Some cargo versions just print the path.
         if line and not line.startswith(("Finished", "Compiling", "Downloading", "Downloaded")):
             candidate = Path(line)
@@ -146,7 +157,7 @@ def find_test_binary(profile: str) -> Path:
     deps_dir = search_dir / "deps"
     if deps_dir.exists():
         for f in sorted(deps_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-            if f.name.startswith("gregg-") and f.name.endswith("-") and f.is_file():
+            if f.name.startswith("gregg-") and f.is_file():
                 # Check if it's executable and contains the test.
                 try:
                     check = subprocess.run(
