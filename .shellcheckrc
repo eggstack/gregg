@@ -1,0 +1,3 @@
+# Disable info-level warnings that are acceptable for this project.
+disable=SC2015  # A && B || C is not if-then-else
+disable=SC2012  # Use find instead of ls
