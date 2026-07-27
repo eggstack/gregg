@@ -11,8 +11,6 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -23,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 use crate::clock::RealClock;
 use crate::config::{Config, SystemEntry};
 use crate::endpoint::Endpoint;
+#[cfg(test)]
+use crate::poller::PollActivityObserver;
 use crate::poller::{HttpClient, PollOutcome};
 use crate::scheduler::PollScheduler;
 use crate::state::AppState;
@@ -189,11 +189,11 @@ async fn mixed_fleet_sustained_workload() {
 
     // Test-only concurrency observer: tracks peak active poll count.
     // The peak value is read after shutdown to record observed_max_concurrent_polls.
-    let peak_polls = Arc::new(AtomicUsize::new(0));
+    let observer = PollActivityObserver::new();
 
     let scheduler = PollScheduler::new(
         RealClock,
-        HttpClient::new(Duration::from_secs(2)),
+        HttpClient::new_with_observer(Duration::from_secs(2), observer.clone()),
         Duration::from_millis(200),
         4,
     );
@@ -333,7 +333,7 @@ async fn mixed_fleet_sustained_workload() {
         first_generation,
         last_generation,
         configured_max_concurrent_polls: 4,
-        observed_max_concurrent_polls: peak_polls.load(Ordering::Relaxed),
+        observed_max_concurrent_polls: observer.peak(),
         online_results,
         offline_results,
         observed_transitions,

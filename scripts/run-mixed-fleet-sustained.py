@@ -291,7 +291,16 @@ def run_sustained(
     exit_code = proc.returncode
     print(f"Workload exited with code {exit_code}")
 
-    # Step 7: Validate the workload summary.
+    # Step 7: Reject nonzero exit before accepting any summary evidence.
+    if exit_code != 0:
+        print(
+            f"FATAL: workload process exited with nonzero code {exit_code}; "
+            "a valid-looking summary does not satisfy evidence requirements",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Step 8: Validate the workload summary.
     if not summary_path.exists():
         print("FATAL: sustained summary not written", file=sys.stderr)
         sys.exit(1)
@@ -344,7 +353,7 @@ def run_sustained(
         )
         sys.exit(1)
 
-    # Endpoint count must be positive.
+    # Endpoint count must be positive and match the configured workload.
     if summary["endpoint_count"] <= 0:
         print(
             f"FATAL: endpoint_count {summary['endpoint_count']} must be positive",

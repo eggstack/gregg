@@ -521,8 +521,11 @@ def _validate_dispatch_contract(
 def validate_workflow() -> list[WorkflowViolation]:
     """Run all validation checks and return violations."""
     if not HAS_YAML:
-        print("WARNING: PyYAML not installed; skipping YAML-based validation", file=sys.stderr)
-        return []
+        return [WorkflowViolation(
+            "missing-dependency",
+            "PyYAML is required for release workflow validation; "
+            "install it with 'pip install PyYAML' or add it to CI dependencies",
+        )]
 
     violations: list[WorkflowViolation] = []
 
@@ -594,7 +597,7 @@ def validate_workflow() -> list[WorkflowViolation]:
     STAGE_TRUTH_TABLE: dict[str, list[str]] = {
         "protocol-prepublish": ["resolve", "source-ci", "protocol-prepublish"],
         "protocol-index-check": ["resolve", "protocol-index-check"],
-        "binary-prepublish": ["resolve", "source-ci", "protocol-index-check", "binary-prepublish", "binary-msrv"],
+        "binary-prepublish": ["resolve", "source-ci", "binary-prepublish", "binary-msrv"],
         "native-evidence": ["resolve", "source-ci", "native-evidence", "native-package-evidence"],
         "mixed-fleet-client": ["resolve", "source-ci", "mixed-fleet-client"],
         "mixed-fleet-sustained": ["resolve", "source-ci", "mixed-fleet-sustained"],

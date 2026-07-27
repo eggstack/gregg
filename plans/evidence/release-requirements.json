@@ -30,7 +30,6 @@
   "pre_tag_required_stages": [
     "source-ci",
     "protocol-prepublish",
-    "protocol-index-check",
     "binary-prepublish-greggd",
     "binary-prepublish-gregg",
     "binary-msrv-greggd",

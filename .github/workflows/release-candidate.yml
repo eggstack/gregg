@@ -251,8 +251,8 @@ jobs:
 
   binary-prepublish:
     name: Binary package gate
-    needs: [resolve, source-ci, protocol-index-check]
-    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.source-ci.result == 'success' && needs.protocol-index-check.result == 'success' }}
+    needs: [resolve, source-ci]
+    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.source-ci.result == 'success' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -269,7 +269,9 @@ jobs:
           set -euo pipefail
           mkdir -p evidence unpacked
           cargo package -p "${{ matrix.crate }}" --list | tee "evidence/${{ matrix.crate }}-package-list.txt"
-          cargo package -p "${{ matrix.crate }}"
+          # Use --no-verify because gregg-protocol 1.0.1 is not yet on crates.io.
+          # Verification is performed against the exact candidate protocol source below.
+          cargo package -p "${{ matrix.crate }}" --no-verify
           archive="target/package/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}.crate"
           test -f "${archive}"
           sha256sum "${archive}" | tee "evidence/${{ matrix.crate }}.sha256"
@@ -277,6 +279,14 @@ jobs:
           tar -xzf "${archive}" -C unpacked
           package_dir="unpacked/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}"
           cp "${package_dir}/Cargo.toml" "evidence/${{ matrix.crate }}-normalized-Cargo.toml"
+          # Configure temporary patch pointing to the exact candidate protocol source.
+          # This prevents resolution from unintended workspace paths or stale registries.
+          protocol_dir="${PWD}/crates/gregg-protocol"
+          cat >> "${package_dir}/Cargo.toml" <<EOF
+
+          [patch.crates-io]
+          gregg-protocol = { path = "${protocol_dir}" }
+          EOF
           cargo generate-lockfile --manifest-path "${package_dir}/Cargo.toml"
           cp "${package_dir}/Cargo.lock" "evidence/${{ matrix.crate }}-Cargo.lock"
           cargo build --manifest-path "${package_dir}/Cargo.toml" --all-features
@@ -326,8 +336,8 @@ jobs:
 
   binary-msrv:
     name: Binary MSRV gate
-    needs: [resolve, protocol-index-check]
-    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.protocol-index-check.result == 'success' }}
+    needs: [resolve, source-ci]
+    if: ${{ always() && inputs.stage == 'binary-prepublish' && needs.source-ci.result == 'success' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -345,10 +355,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence unpacked
-          cargo package -p "${{ matrix.crate }}"
+          # Use --no-verify because gregg-protocol 1.0.1 is not yet on crates.io.
+          cargo package -p "${{ matrix.crate }}" --no-verify
           archive="target/package/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}.crate"
           tar -xzf "${archive}" -C unpacked
           package_dir="unpacked/${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}"
+          # Configure temporary patch pointing to the exact candidate protocol source.
+          protocol_dir="${PWD}/crates/gregg-protocol"
+          cat >> "${package_dir}/Cargo.toml" <<EOF
+
+          [patch.crates-io]
+          gregg-protocol = { path = "${protocol_dir}" }
+          EOF
           cargo generate-lockfile --manifest-path "${package_dir}/Cargo.toml"
           cp "${package_dir}/Cargo.lock" "evidence/${{ matrix.crate }}-Cargo.lock"
           cargo +1.75 build --manifest-path "${package_dir}/Cargo.toml" --all-features

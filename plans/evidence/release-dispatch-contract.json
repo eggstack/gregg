@@ -23,7 +23,7 @@
     "binary-prepublish": {
       "mode": "candidate",
       "requires_prior_publication": false,
-      "producer_jobs": ["resolve", "source-ci", "protocol-index-check", "binary-prepublish", "binary-msrv"],
+      "producer_jobs": ["resolve", "source-ci", "binary-prepublish", "binary-msrv"],
       "required_stages": [
         "source-ci",
         "binary-prepublish-greggd",

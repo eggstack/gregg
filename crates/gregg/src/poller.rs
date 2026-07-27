@@ -9,6 +9,10 @@
 //! leaking error chains to the caller.
 
 use std::net::IpAddr;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
@@ -16,6 +20,59 @@ use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
 use crate::clock::Clock;
 use crate::endpoint::Endpoint;
+
+/// Test-only concurrency observer for measuring active poll count.
+///
+/// Tracks the number of currently in-flight polls and the peak observed
+/// concurrency. The guard increments immediately before the production
+/// request future begins and decrements on every return path.
+#[cfg(test)]
+#[derive(Clone)]
+pub struct PollActivityObserver {
+    active: Arc<AtomicUsize>,
+    peak: Arc<AtomicUsize>,
+}
+
+#[cfg(test)]
+impl PollActivityObserver {
+    /// Create a new observer with zeroed counters.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            active: Arc::new(AtomicUsize::new(0)),
+            peak: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// Return a guard that increments the active count on creation
+    /// and decrements it on drop.
+    #[must_use]
+    pub fn guard(&self) -> PollActivityGuard<'_> {
+        let prev = self.active.fetch_add(1, Ordering::SeqCst);
+        let new_active = prev + 1;
+        self.peak.fetch_max(new_active, Ordering::SeqCst);
+        PollActivityGuard { observer: self }
+    }
+
+    /// Return the peak observed concurrency.
+    #[must_use]
+    pub fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
+    }
+}
+
+/// RAII guard that decrements the active poll count on drop.
+#[cfg(test)]
+pub struct PollActivityGuard<'a> {
+    observer: &'a PollActivityObserver,
+}
+
+#[cfg(test)]
+impl Drop for PollActivityGuard<'_> {
+    fn drop(&mut self) {
+        self.observer.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 /// Maximum allowed response body size in bytes (64 KiB).
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
@@ -81,6 +138,8 @@ pub struct PollBatch {
 #[derive(Clone)]
 pub struct HttpClient {
     client: reqwest::Client,
+    #[cfg(test)]
+    observer: Option<PollActivityObserver>,
 }
 
 impl HttpClient {
@@ -98,7 +157,32 @@ impl HttpClient {
             .pool_max_idle_per_host(4)
             .build()
             .expect("reqwest client builder should not fail");
-        Self { client }
+        Self {
+            client,
+            #[cfg(test)]
+            observer: None,
+        }
+    }
+
+    /// Create a test-only HTTP client with a concurrency observer.
+    ///
+    /// The observer increments a counter immediately before each poll
+    /// request and decrements it on every return path, including errors
+    /// and cancellation. This allows measuring observed peak concurrency
+    /// around the production poll path.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new_with_observer(timeout: Duration, observer: PollActivityObserver) -> Self {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .pool_max_idle_per_host(4)
+            .build()
+            .expect("reqwest client builder should not fail");
+        Self {
+            client,
+            observer: Some(observer),
+        }
     }
 
     /// Poll a single endpoint and return a [`PollResult`].
@@ -106,6 +190,12 @@ impl HttpClient {
     /// This method is async-safe for concurrent use. Each invocation
     /// creates its own request and reads its own response body.
     pub async fn poll(&self, endpoint: &Endpoint, clock: &impl Clock) -> PollResult {
+        // In test builds, acquire the concurrency guard before the request
+        // so that active count reflects in-flight HTTP polls, not batch
+        // result processing.
+        #[cfg(test)]
+        let _guard = self.observer.as_ref().map(|o| o.guard());
+
         let url = status_url(&endpoint.host, endpoint.port);
         let start = clock.now();
 

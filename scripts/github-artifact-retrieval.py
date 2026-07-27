@@ -423,23 +423,38 @@ def build_provenance_index(artifact_cache: dict[str, dict[str, Any]]) -> dict[st
             if not isinstance(packages, dict):
                 continue
             for package_name in packages:
-                if package_name not in index["packages"]:
-                    index["packages"][package_name] = {
+                if package_name in index["packages"]:
+                    existing_stage = index["packages"][package_name].get("stage", "unknown")
+                    current_stage = artifact.get("logical_stages", ["unknown"])[0] if artifact.get("logical_stages") else "unknown"
+                    fail(
+                        f"duplicate provenance for package '{package_name}': "
+                        f"already indexed from stage '{existing_stage}', "
+                        f"conflicting record in stage '{current_stage}'"
+                    )
+                index["packages"][package_name] = {
                         "stage": artifact.get("logical_stages", ["unknown"])[0]
                         if artifact.get("logical_stages")
                         else "unknown",
                         "provenance_path": str(prov_path),
                         "artifact_key": artifact_key,
                     }
-            # Find lockfile.
+            # Find lockfile — match by package name in filename when possible.
             lockfile_files = sorted(extract_dir.rglob("Cargo.lock"))
             if lockfile_files:
-                # Try to find the package-specific lockfile.
                 for package_name in packages:
                     if package_name in index["packages"]:
-                        index["packages"][package_name]["lockfile_path"] = str(
-                            lockfile_files[0]
-                        )
+                        # Try to find a lockfile named after the package
+                        # (e.g., greggd-Cargo.lock, gregg-Cargo.lock).
+                        pkg_lockfiles = [
+                            lf for lf in lockfile_files
+                            if lf.stem.startswith(package_name) or lf.parent.name == package_name
+                        ]
+                        if pkg_lockfiles:
+                            index["packages"][package_name]["lockfile_path"] = str(pkg_lockfiles[0])
+                        elif lockfile_files:
+                            index["packages"][package_name]["lockfile_path"] = str(
+                                lockfile_files[0]
+                            )
             # Find .crate archives.
             archive_files = sorted(extract_dir.rglob("*.crate"))
             if archive_files:

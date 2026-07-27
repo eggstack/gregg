@@ -325,6 +325,20 @@ def aggregate(args: argparse.Namespace) -> None:
         chosen_selection = selection.get(stage)
         if len(options) > 1 and not isinstance(chosen_selection, dict):
             fail(f"stage {stage} has multiple successful candidates; select one explicitly")
+        if len(options) > 1:
+            # Validate that selection uniquely identifies one candidate.
+            run_id = str(chosen_selection.get("workflow_run_id", chosen_selection.get("run_id", "")))
+            attempt = str(chosen_selection.get("workflow_run_attempt", chosen_selection.get("attempt", "")))
+            matches = [
+                item for item in options
+                if item[1]["workflow_run_id"] == run_id
+                and item[1]["workflow_run_attempt"] == attempt
+            ]
+            if len(matches) > 1:
+                fail(
+                    f"stage {stage} has multiple candidates matching run {run_id} "
+                    f"attempt {attempt}; each stage must resolve to exactly one candidate"
+                )
         chosen_path, chosen = options[0]
         if isinstance(chosen_selection, dict):
             run_id = str(chosen_selection.get("workflow_run_id", chosen_selection.get("run_id", "")))
@@ -348,14 +362,27 @@ def aggregate(args: argparse.Namespace) -> None:
             if chosen["workflow_run_attempt"] != retrieved_attempt:
                 fail(f"stage {stage} candidate attempt {chosen['workflow_run_attempt']} does not match retrieved attempt {retrieved_attempt}")
             artifacts = retrieved_stage.get("artifacts", [])
-            if artifacts:
-                first = artifacts[0]
-                github_artifact = {
-                    "id": first.get("github_artifact_id"),
-                    "name": first.get("github_artifact_name"),
-                    "zip_sha256": first.get("downloaded_zip_sha256"),
-                    "zip_size_bytes": first.get("downloaded_zip_size_bytes"),
-                }
+            if not artifacts:
+                fail(
+                    f"stage {stage} in retrieved manifest has no artifacts; "
+                    "immutable artifact identity is mandatory when a retrieved manifest is supplied"
+                )
+            first = artifacts[0]
+            # Require all identity fields.
+            if not first.get("github_artifact_id"):
+                fail(f"stage {stage} retrieved artifact is missing github_artifact_id")
+            if not first.get("github_artifact_name"):
+                fail(f"stage {stage} retrieved artifact is missing github_artifact_name")
+            if not first.get("downloaded_zip_sha256"):
+                fail(f"stage {stage} retrieved artifact is missing downloaded_zip_sha256")
+            if not first.get("downloaded_zip_size_bytes"):
+                fail(f"stage {stage} retrieved artifact is missing downloaded_zip_size_bytes")
+            github_artifact = {
+                "id": first.get("github_artifact_id"),
+                "name": first.get("github_artifact_name"),
+                "zip_sha256": first.get("downloaded_zip_sha256"),
+                "zip_size_bytes": first.get("downloaded_zip_size_bytes"),
+            }
 
         content_artifacts = []
         for item in chosen.get("artifacts", []):
@@ -492,6 +519,12 @@ def validate_manifest(
                 fail(f"manifest stage {stage} github_artifact must be an object")
             if github_artifact.get("id") is not None and not isinstance(github_artifact["id"], int):
                 fail(f"manifest stage {stage} github_artifact.id must be an integer")
+            if not github_artifact.get("name"):
+                fail(f"manifest stage {stage} github_artifact.name must be a nonempty string")
+            if not github_artifact.get("zip_sha256") or not SHA256_RE.fullmatch(str(github_artifact["zip_sha256"])):
+                fail(f"manifest stage {stage} github_artifact.zip_sha256 must be a lowercase 64-character SHA-256")
+            if not isinstance(github_artifact.get("zip_size_bytes"), int) or github_artifact["zip_size_bytes"] <= 0:
+                fail(f"manifest stage {stage} github_artifact.zip_size_bytes must be a positive integer")
         validate_candidate(entry.get("candidate"), expected_sha=candidate_sha, expected_version=version)
 
     if seen != set(required):

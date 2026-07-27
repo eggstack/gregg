@@ -823,7 +823,9 @@ class EvidenceTests(unittest.TestCase):
                 }
                 selection_path = directory / "selection.json"
                 selection_path.write_text(json.dumps(selection), encoding="utf-8")
-                retrieved_manifest_path = directory / "evidence" / "retrieved-manifest.json"
+                evidence_dir = directory / "evidence"
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                retrieved_manifest_path = evidence_dir / "retrieved-manifest.json"
 
                 # Run retrieval CLI.
                 result = run(
@@ -852,7 +854,6 @@ class EvidenceTests(unittest.TestCase):
                 self.assertIn("provenance_index", manifest)
 
                 # Retrieval script copies candidate.json files into evidence dir.
-                evidence_dir = directory / "evidence"
                 for stage in ("source-ci", "resource-linux", "soak-linux-24h"):
                     self.assertTrue((evidence_dir / stage / "candidate.json").exists(),
                                     f"candidate.json for {stage} not found in evidence dir")
@@ -903,6 +904,347 @@ class EvidenceTests(unittest.TestCase):
                 run_api_calls = [c for c in api_calls if "/actions/runs/" in c and "/artifacts" not in c]
                 self.assertEqual(len(run_api_calls), 2)  # 1001 and 1018, not 3 (1018 deduplicated).
 
+            finally:
+                server.shutdown()
+
+    def test_full_candidate_mode_covers_all_stage_classes(self) -> None:
+        """Covers all required stage classes in candidate/pre-tag mode."""
+        import http.server
+        import threading
+        import zipfile
+
+        ALL_CANDIDATE_STAGES = [
+            "source-ci", "protocol-prepublish",
+            "binary-prepublish-greggd", "binary-prepublish-gregg",
+            "binary-msrv-greggd", "binary-msrv-gregg",
+            "native-source-linux-x86-64", "native-source-linux-arm64",
+            "native-source-macos-arm64", "native-source-macos-intel",
+            "native-package-linux-x86-64", "native-package-linux-arm64",
+            "native-package-macos-arm64", "native-package-macos-intel",
+            "mixed-fleet-functional", "mixed-fleet-sustained",
+            "systemd-lifecycle", "launchd-lifecycle",
+            "resource-linux", "resource-macos-arm64",
+            "soak-linux-24h", "soak-macos-arm64-24h",
+        ]
+
+        def full_candidate(stage: str, run_id: str = "100", attempt: str = "1") -> dict:
+            return {
+                "schema_version": 1, "candidate_sha": SHA, "release_version": "1.0.1",
+                "stage": stage, "workflow_run_id": run_id, "workflow_run_attempt": attempt,
+                "job_name": stage, "runner_os": "Linux", "runner_architecture": "x86_64",
+                "started_at": "2026-07-24T00:00:00Z", "completed_at": "2026-07-24T00:01:00Z",
+                "result": "success", "source_identity_mode": "pre-tag-full-sha",
+                "source": {"ref_input": SHA, "tag_object_sha": None, "peeled_commit_sha": SHA},
+                "artifacts": [{"name": f"{stage}.log", "role": "transcript", "artifact_id": f"artifact-{stage}"}],
+                "executables": [], "notes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            artifact_dir = directory / "artifacts"
+            artifact_dir.mkdir()
+
+            # Create one ZIP per stage group (shared artifacts within a run).
+            # Run 1001: source-ci, protocol-prepublish, binary-*, msrv-*
+            # Run 1002: native-source-*, native-package-*
+            # Run 1003: mixed-fleet-*
+            # Run 1004: resource-*, soak-*, systemd, launchd
+            runs_stages = {
+                1001: ["source-ci", "protocol-prepublish",
+                        "binary-prepublish-greggd", "binary-prepublish-gregg",
+                        "binary-msrv-greggd", "binary-msrv-gregg"],
+                1002: ["native-source-linux-x86-64", "native-source-linux-arm64",
+                        "native-source-macos-arm64", "native-source-macos-intel",
+                        "native-package-linux-x86-64", "native-package-linux-arm64",
+                        "native-package-macos-arm64", "native-package-macos-intel"],
+                1003: ["mixed-fleet-functional", "mixed-fleet-sustained"],
+                1004: ["resource-linux", "resource-macos-arm64",
+                        "soak-linux-24h", "soak-macos-arm64-24h",
+                        "systemd-lifecycle", "launchd-lifecycle"],
+            }
+
+            zips: dict[int, Path] = {}
+            for run_id, stages in runs_stages.items():
+                zip_path = artifact_dir / f"artifact-{run_id}.zip"
+                with zipfile.ZipFile(zip_path, "w") as zf:
+                    for stage in stages:
+                        zf.writestr(f"{stage}/candidate.json", json.dumps(full_candidate(stage, str(run_id))))
+                zips[run_id] = zip_path
+
+            # Build mock API server.
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    if "/actions/runs/" in self.path and "/artifacts" not in self.path:
+                        run_id = self.path.split("/actions/runs/")[1].split("/")[0]
+                        self._json({
+                            "id": int(run_id), "status": "completed", "conclusion": "success",
+                            "run_attempt": 1, "repository": {"full_name": "o/r"},
+                            "name": "release-candidate", "event": "workflow_dispatch",
+                            "actor": {"login": "t"}, "html_url": "", "head_sha": SHA, "head_branch": "m",
+                        })
+                    elif "/actions/runs/" in self.path and "/artifacts" in self.path:
+                        run_id = self.path.split("/actions/runs/")[1].split("/")[0]
+                        self._json({"artifacts": [
+                            {"id": int(run_id) * 100, "name": f"artifact-{run_id}",
+                             "size_in_bytes": 100, "created_at": "2026-07-24T00:00:00Z",
+                             "expires_at": "2099-01-01T00:00:00Z", "expired": False}
+                        ]})
+                    elif "/actions/artifacts/" in self.path and "/zip" in self.path:
+                        art_id = self.path.split("/actions/artifacts/")[1].split("/")[0]
+                        run_id = int(art_id) // 100
+                        data = zips[run_id].read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def _json(self, d):
+                    body = json.dumps(d).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *a): pass
+
+            server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+            port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            try:
+                # Build selection covering all stage classes.
+                runs = {}
+                for run_id, stages in runs_stages.items():
+                    for stage in stages:
+                        runs[stage] = {
+                            "run_id": run_id, "attempt": 1,
+                            "workflow_name": "release-candidate",
+                            "artifacts": [{"name": f"artifact-{run_id}"}],
+                        }
+                selection = {
+                    "candidate_sha": SHA, "release_version": "1.0.1",
+                    "mode": "pre-tag", "runs": runs,
+                }
+                sel_path = directory / "selection.json"
+                sel_path.write_text(json.dumps(selection))
+                evidence_dir = directory / "evidence"
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                retrieved_manifest_path = evidence_dir / "retrieved-manifest.json"
+
+                result = run(
+                    "python3", str(ROOT / "scripts" / "github-artifact-retrieval.py"),
+                    "--selection", str(sel_path), "--repo", "o/r",
+                    "--output", str(retrieved_manifest_path),
+                    "--api-base-url", f"http://127.0.0.1:{port}", "--token", "t",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                manifest = json.loads(retrieved_manifest_path.read_text())
+                self.assertEqual(len(manifest["stages"]), len(ALL_CANDIDATE_STAGES))
+
+                # Run aggregation.
+                output = directory / "manifest.json"
+                req_args = []
+                for stage in ALL_CANDIDATE_STAGES:
+                    req_args.extend(["--required-stage", stage])
+                result = run(
+                    "python3", str(VALIDATOR), "aggregate",
+                    "--evidence-dir", str(evidence_dir),
+                    "--expected-sha", SHA, "--release-version", "1.0.1",
+                    "--output", str(output), *req_args,
+                    "--retrieved-manifest", str(retrieved_manifest_path),
+                    "--mode", "pre-tag",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agg = json.loads(output.read_text())
+                self.assertEqual(agg["mode"], "pre-tag")
+                self.assertEqual(len(agg["stages"]), len(ALL_CANDIDATE_STAGES))
+            finally:
+                server.shutdown()
+
+    def test_final_mode_succeeds_with_all_publication_evidence(self) -> None:
+        """Covers final-mode aggregation with complete publication evidence."""
+        import http.server
+        import threading
+        import zipfile
+
+        FINAL_STAGES = ["source-ci", "protocol-prepublish", "protocol-index-check",
+                        "binary-prepublish-greggd", "binary-prepublish-gregg",
+                        "mixed-fleet-functional", "mixed-fleet-sustained",
+                        "resource-linux", "soak-linux-24h",
+                        "systemd-lifecycle", "launchd-lifecycle",
+                        "native-source-linux-x86-64", "native-source-linux-arm64",
+                        "native-source-macos-arm64", "native-source-macos-intel",
+                        "native-package-linux-x86-64", "native-package-linux-arm64",
+                        "native-package-macos-arm64", "native-package-macos-intel",
+                        "binary-msrv-greggd", "binary-msrv-gregg",
+                        "resource-macos-arm64", "soak-macos-arm64-24h",
+                        "postpublish-verify"]
+
+        def final_candidate(stage: str, run_id: str = "100", attempt: str = "1") -> dict:
+            return {
+                "schema_version": 1, "candidate_sha": SHA, "release_version": "1.0.1",
+                "stage": stage, "workflow_run_id": run_id, "workflow_run_attempt": attempt,
+                "job_name": stage, "runner_os": "Linux", "runner_architecture": "x86_64",
+                "started_at": "2026-07-24T00:00:00Z", "completed_at": "2026-07-24T00:01:00Z",
+                "result": "success", "source_identity_mode": "pre-tag-full-sha",
+                "source": {"ref_input": SHA, "tag_object_sha": None, "peeled_commit_sha": SHA},
+                "artifacts": [{"name": f"{stage}.log", "role": "transcript", "artifact_id": f"artifact-{stage}"}],
+                "executables": [], "notes": [],
+            }
+
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            artifact_dir = directory / "artifacts"
+            artifact_dir.mkdir()
+
+            # Create ZIP with all stages in one artifact (same run).
+            zip_path = artifact_dir / "artifact-5001.zip"
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                for stage in FINAL_STAGES:
+                    zf.writestr(f"{stage}/candidate.json", json.dumps(final_candidate(stage, "1001")))
+
+            class Handler(http.server.BaseHTTPRequestHandler):
+                def do_GET(self) -> None:
+                    if "/actions/runs/1001" in self.path and "/artifacts" not in self.path:
+                        self._json({
+                            "id": 1001, "status": "completed", "conclusion": "success",
+                            "run_attempt": 1, "repository": {"full_name": "o/r"},
+                            "name": "release-candidate", "event": "workflow_dispatch",
+                            "actor": {"login": "t"}, "html_url": "", "head_sha": SHA, "head_branch": "m",
+                        })
+                    elif "/actions/runs/1001/artifacts" in self.path:
+                        self._json({"artifacts": [
+                            {"id": 5001, "name": "final-artifact",
+                             "size_in_bytes": 200, "created_at": "2026-07-24T00:00:00Z",
+                             "expires_at": "2099-01-01T00:00:00Z", "expired": False}
+                        ]})
+                    elif "/actions/artifacts/5001/zip" in self.path:
+                        data = zip_path.read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/zip")
+                        self.send_header("Content-Length", str(len(data)))
+                        self.end_headers()
+                        self.wfile.write(data)
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+
+                def _json(self, d):
+                    body = json.dumps(d).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+                def log_message(self, *a): pass
+
+            server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+            port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            try:
+                runs = {stage: {"run_id": 1001, "attempt": 1, "workflow_name": "release-candidate",
+                                "artifacts": [{"name": "final-artifact"}]}
+                        for stage in FINAL_STAGES}
+                selection = {"candidate_sha": SHA, "release_version": "1.0.1", "mode": "final", "runs": runs}
+                sel_path = directory / "selection.json"
+                sel_path.write_text(json.dumps(selection))
+                evidence_dir = directory / "evidence"
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                retrieved_manifest_path = evidence_dir / "retrieved-manifest.json"
+
+                result = run(
+                    "python3", str(ROOT / "scripts" / "github-artifact-retrieval.py"),
+                    "--selection", str(sel_path), "--repo", "o/r",
+                    "--output", str(retrieved_manifest_path),
+                    "--api-base-url", f"http://127.0.0.1:{port}", "--token", "t",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                # Create package provenance for all three crates.
+                for pkg in ("gregg-protocol", "greggd", "gregg"):
+                    archive = directory / f"{pkg}-1.0.1.crate"
+                    archive.write_bytes(f"{pkg}-archive".encode())
+                    provenance_args = [
+                        "python3", str(ROOT / "scripts" / "write-package-provenance.py"),
+                        "--output", str(directory / f"{pkg}-provenance.json"),
+                        "--candidate-sha", SHA, "--release-version", "1.0.1",
+                        "--package", pkg, str(archive),
+                    ]
+                    # Binary packages need a binary and lockfile.
+                    if pkg in ("greggd", "gregg"):
+                        binary = directory / pkg
+                        binary.write_text(f"#!/bin/sh\necho {pkg} 1.0.1\n", encoding="utf-8")
+                        binary.chmod(0o755)
+                        lockfile = directory / f"{pkg}-Cargo.lock"
+                        lockfile.write_text(f"{pkg}-lockfile", encoding="utf-8")
+                        provenance_args.extend([str(binary), str(lockfile)])
+                    result = run(*provenance_args)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                merged = directory / "merged-provenance.json"
+                result = run("python3", str(ROOT / "scripts" / "merge-package-provenance.py"),
+                    "--protocol", str(directory / "gregg-protocol-provenance.json"),
+                    "--daemon", str(directory / "greggd-provenance.json"),
+                    "--client", str(directory / "gregg-provenance.json"),
+                    "--expected-sha", SHA, "--release-version", "1.0.1",
+                    "--output", str(merged))
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+                # Create registry summary and disposition.
+                registry_summary = [
+                    {"crate": "gregg-protocol", "version": "1.0.1", "yanked": False,
+                     "checksum": "a" * 64, "published_at": "2026-07-24T00:00:00Z"},
+                    {"crate": "greggd", "version": "1.0.1", "yanked": False,
+                     "checksum": "b" * 64, "published_at": "2026-07-24T00:00:00Z"},
+                    {"crate": "gregg", "version": "1.0.1", "yanked": False,
+                     "checksum": "c" * 64, "published_at": "2026-07-24T00:00:00Z"},
+                ]
+                (directory / "registry-summary.json").write_text(json.dumps(registry_summary))
+                disposition = {
+                    "gregg-protocol": {"version": "1.0.1", "yanked": False,
+                                       "checksum": "a" * 64, "observed_at": "2026-07-24T00:00:00Z"},
+                    "greggd": {"version": "1.0.1", "yanked": False,
+                               "checksum": "b" * 64, "observed_at": "2026-07-24T00:00:00Z"},
+                    "gregg": {"version": "1.0.1", "yanked": False,
+                              "checksum": "c" * 64, "observed_at": "2026-07-24T00:00:00Z"},
+                }
+                (directory / "disposition.json").write_text(json.dumps(disposition))
+
+                # Run final-mode aggregation.
+                output = directory / "final-manifest.json"
+                req_args = []
+                for stage in FINAL_STAGES:
+                    req_args.extend(["--required-stage", stage])
+                result = run(
+                    "python3", str(VALIDATOR), "aggregate",
+                    "--evidence-dir", str(evidence_dir),
+                    "--expected-sha", SHA, "--release-version", "1.0.1",
+                    "--output", str(output), *req_args,
+                    "--retrieved-manifest", str(retrieved_manifest_path),
+                    "--mode", "final",
+                    "--tag-name", "v1.0.1", "--tag-object-sha", "a" * 40,
+                    "--peeled-commit-sha", SHA,
+                    "--tagger-name", "T", "--tagger-email", "t@t",
+                    "--tagger-timestamp", "2026-07-24T00:00:00Z",
+                    "--tag-object-content-sha256", "b" * 64,
+                    "--package-provenance", str(merged),
+                    "--registry-summary", str(directory / "registry-summary.json"),
+                    "--disposition", str(directory / "disposition.json"),
+                    "--final",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                agg = json.loads(output.read_text())
+                self.assertEqual(agg["mode"], "final")
+                self.assertIsNotNone(agg["tag"])
+                self.assertIsNotNone(agg["package_provenance"])
+                self.assertIsNotNone(agg["registry"])
+                self.assertIsNotNone(agg["version_1_0_0_disposition"])
             finally:
                 server.shutdown()
 
