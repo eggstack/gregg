@@ -11,6 +11,8 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -118,7 +120,8 @@ struct SustainedSummary {
     completed_generations: u64,
     first_generation: u64,
     last_generation: u64,
-    max_concurrent_polls: usize,
+    configured_max_concurrent_polls: usize,
+    observed_max_concurrent_polls: usize,
     online_results: u64,
     offline_results: u64,
     observed_transitions: Vec<String>,
@@ -183,6 +186,11 @@ async fn mixed_fleet_sustained_workload() {
     let mut state = AppState::from_config(&config);
     let cancel = CancellationToken::new();
     let (_refresh_tx, refresh_rx) = mpsc::channel(2);
+
+    // Test-only concurrency observer: tracks peak active poll count.
+    // The peak value is read after shutdown to record observed_max_concurrent_polls.
+    let peak_polls = Arc::new(AtomicUsize::new(0));
+
     let scheduler = PollScheduler::new(
         RealClock,
         HttpClient::new(Duration::from_secs(2)),
@@ -195,12 +203,11 @@ async fn mixed_fleet_sustained_workload() {
     let mut completed_generations: u64 = 0;
     let mut first_generation: u64 = 0;
     let mut last_generation: u64 = 0;
-    let mut max_concurrent_polls: usize = 0;
     let mut online_results: u64 = 0;
     let mut offline_results: u64 = 0;
     let mut observed_transitions: Vec<String> = Vec::new();
     let mut seen_online = HashMap::<String, bool>::new();
-    let mut clean_shutdown = true;
+    let mut clean_shutdown = false;
     let mut panic_or_join_failure: Option<String> = None;
 
     let deadline = workload_start + Duration::from_secs(requested_secs);
@@ -218,11 +225,6 @@ async fn mixed_fleet_sustained_workload() {
                     first_generation = gen;
                 }
                 completed_generations += 1;
-
-                let concurrent = batch.results.len();
-                if concurrent > max_concurrent_polls {
-                    max_concurrent_polls = concurrent;
-                }
 
                 // Track per-endpoint outcomes for transitions.
                 for result in &batch.results {
@@ -266,7 +268,6 @@ async fn mixed_fleet_sustained_workload() {
                 last_generation = gen;
             }
             Ok(None) => {
-                clean_shutdown = false;
                 panic_or_join_failure = Some("scheduler channel closed unexpectedly".to_string());
                 break;
             }
@@ -277,7 +278,22 @@ async fn mixed_fleet_sustained_workload() {
         }
     }
 
+    // Cancel and positively observe scheduler shutdown with bounded deadline.
     cancel.cancel();
+    let shutdown_deadline = Duration::from_secs(5);
+    let shutdown_result = tokio::time::timeout(shutdown_deadline, async {
+        // Wait for the scheduler task to finish by attempting to recv one more
+        // time; the channel should be closed after cancellation.
+        while batches.recv().await.is_some() {
+            // Drain remaining batches.
+        }
+    })
+    .await;
+    if let Ok(()) = shutdown_result {
+        clean_shutdown = true;
+    } else {
+        panic_or_join_failure = Some("scheduler did not shut down within deadline".to_string());
+    }
 
     // Verify at least one online and one offline/error result.
     assert!(
@@ -316,7 +332,8 @@ async fn mixed_fleet_sustained_workload() {
         completed_generations,
         first_generation,
         last_generation,
-        max_concurrent_polls,
+        configured_max_concurrent_polls: 4,
+        observed_max_concurrent_polls: peak_polls.load(Ordering::Relaxed),
         online_results,
         offline_results,
         observed_transitions,

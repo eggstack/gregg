@@ -310,7 +310,7 @@ def run_sustained(
         "completed_generations",
         "first_generation",
         "last_generation",
-        "max_concurrent_polls",
+        "observed_max_concurrent_polls",
         "online_results",
         "offline_results",
         "observed_transitions",
@@ -320,6 +320,134 @@ def run_sustained(
     if missing:
         print(
             f"FATAL: sustained summary missing fields: {missing}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # --- Semantic validation of summary values ---
+
+    # requested_duration_secs must equal configured duration.
+    if summary["requested_duration_secs"] != duration_secs:
+        print(
+            f"FATAL: requested_duration_secs {summary['requested_duration_secs']} "
+            f"!= configured {duration_secs}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # observed_duration_secs must be >= requested.
+    if summary["observed_duration_secs"] < requested_secs:
+        print(
+            f"FATAL: observed_duration_secs {summary['observed_duration_secs']} "
+            f"< requested {requested_secs}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Endpoint count must be positive.
+    if summary["endpoint_count"] <= 0:
+        print(
+            f"FATAL: endpoint_count {summary['endpoint_count']} must be positive",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # At least two complete generations required.
+    if summary["completed_generations"] < 2:
+        print(
+            f"FATAL: completed_generations {summary['completed_generations']} must be >= 2",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # first_generation must be > 0.
+    if summary["first_generation"] <= 0:
+        print(
+            f"FATAL: first_generation {summary['first_generation']} must be > 0",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # last_generation must be >= first_generation.
+    if summary["last_generation"] < summary["first_generation"]:
+        print(
+            f"FATAL: last_generation {summary['last_generation']} "
+            f"< first_generation {summary['first_generation']}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Generation count must be internally consistent.
+    expected_count = summary["last_generation"] - summary["first_generation"] + 1
+    if summary["completed_generations"] != expected_count:
+        print(
+            f"FATAL: completed_generations {summary['completed_generations']} "
+            f"!= last-first+1 ({expected_count})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # At least one online result.
+    if summary["online_results"] <= 0:
+        print(
+            f"FATAL: online_results {summary['online_results']} must be > 0",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # At least one offline/error result.
+    if summary["offline_results"] <= 0:
+        print(
+            f"FATAL: offline_results {summary['offline_results']} must be > 0",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Observed transitions must be a nonempty list of strings.
+    transitions = summary["observed_transitions"]
+    if not isinstance(transitions, list) or not transitions:
+        print(
+            "FATAL: observed_transitions must be a nonempty array",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    for t in transitions:
+        if not isinstance(t, str) or not t:
+            print(
+                f"FATAL: observed_transitions contains non-string entry: {t!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # clean_shutdown must be true.
+    if summary.get("clean_shutdown") is not True:
+        print(
+            f"FATAL: clean_shutdown must be true, got {summary.get('clean_shutdown')!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # panic_or_join_failure must be null.
+    if summary.get("panic_or_join_failure") is not None:
+        print(
+            f"FATAL: panic_or_join_failure must be null, got {summary.get('panic_or_join_failure')!r}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Observed concurrency must be positive and not exceed configured limit.
+    configured_max = 4
+    observed_max = summary.get("observed_max_concurrent_polls", 0)
+    if observed_max <= 0:
+        print(
+            f"FATAL: observed_max_concurrent_polls {observed_max} must be > 0",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if observed_max > configured_max:
+        print(
+            f"FATAL: observed_max_concurrent_polls {observed_max} "
+            f"exceeds configured limit {configured_max}",
             file=sys.stderr,
         )
         sys.exit(1)

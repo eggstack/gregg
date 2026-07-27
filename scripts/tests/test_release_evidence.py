@@ -331,12 +331,12 @@ class EvidenceTests(unittest.TestCase):
 
         # Short SHA.
         with self.assertRaises(module.RetrievalError) as ctx:
-            module.validate_selection({"candidate_sha": "abc123", "release_version": "1.0.1", "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}}})
+            module.validate_selection({"candidate_sha": "abc123", "release_version": "1.0.1", "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}}})
         self.assertIn("candidate_sha", str(ctx.exception))
 
         # Wrong version.
         with self.assertRaises(module.RetrievalError) as ctx:
-            module.validate_selection({"candidate_sha": SHA, "release_version": "2.0.0", "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}}})
+            module.validate_selection({"candidate_sha": SHA, "release_version": "2.0.0", "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}}})
         self.assertIn("1.0.1", str(ctx.exception))
 
         # Empty runs.
@@ -346,18 +346,23 @@ class EvidenceTests(unittest.TestCase):
 
         # Non-numeric run ID.
         with self.assertRaises(module.RetrievalError) as ctx:
-            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"s": {"run_id": "abc", "attempt": 1, "artifacts": [{"name": "a"}]}}})
+            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"source-ci": {"run_id": "abc", "attempt": 1, "artifacts": [{"name": "a"}]}}})
         self.assertIn("numeric", str(ctx.exception))
 
         # Empty artifact names.
         with self.assertRaises(module.RetrievalError) as ctx:
-            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": ""}]}}})
+            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": ""}]}}})
         self.assertIn("nonempty", str(ctx.exception))
 
         # Duplicate artifact name in run.
         with self.assertRaises(module.RetrievalError) as ctx:
-            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}, {"name": "a"}]}}})
+            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}, {"name": "a"}]}}})
         self.assertIn("duplicate", str(ctx.exception))
+
+        # Grouped alias rejected.
+        with self.assertRaises(module.RetrievalError) as ctx:
+            module.validate_selection({"candidate_sha": SHA, "release_version": "1.0.1", "runs": {"binary-prepublish": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}}})
+        self.assertIn("unknown stage", str(ctx.exception))
 
     def test_selection_validation_accepts_valid_input(self) -> None:
         """A2: Valid selection accepted."""
@@ -371,7 +376,7 @@ class EvidenceTests(unittest.TestCase):
             "release_version": "1.0.1",
             "runs": {
                 "source-ci": {"run_id": 1001, "attempt": 1, "artifacts": [{"name": "source-ci-abc-1"}]},
-                "binary-prepublish": {"run_id": 1002, "attempt": 1, "artifacts": [{"name": "binary-greggd-abc-1"}, {"name": "binary-gregg-abc-1"}]},
+                "binary-prepublish-greggd": {"run_id": 1002, "attempt": 1, "artifacts": [{"name": "binary-greggd-abc-1"}]},
             },
         }
         module.validate_selection(valid)  # Should not raise.
@@ -497,10 +502,14 @@ class EvidenceTests(unittest.TestCase):
     def test_native_workflow_static_invariants(self) -> None:
         """K4: Source-native and package-native stage names both exist; package-native jobs download artifacts."""
         workflow = (ROOT / ".github" / "workflows" / "release-candidate.yml").read_text(encoding="utf-8")
+        contract = json.loads((ROOT / "plans" / "evidence" / "release-dispatch-contract.json").read_text(encoding="utf-8"))
+        all_stages = set()
+        for dispatch in contract.get("dispatches", {}).values():
+            all_stages.update(dispatch.get("required_stages", []))
         for stage in ("native-source-linux-x86-64", "native-source-linux-arm64", "native-source-macos-arm64", "native-source-macos-intel"):
-            self.assertIn(stage, workflow, f"source-native stage {stage} missing from workflow")
+            self.assertIn(stage, all_stages, f"source-native stage {stage} missing from dispatch contract")
         for stage in ("native-package-linux-x86-64", "native-package-linux-arm64", "native-package-macos-arm64", "native-package-macos-intel"):
-            self.assertIn(stage, workflow, f"package-native stage {stage} missing from workflow")
+            self.assertIn(stage, all_stages, f"package-native stage {stage} missing from dispatch contract")
         self.assertIn("actions/download-artifact@v4", workflow)
         self.assertIn("--lockfile", workflow)
         for arch in ("x86_64", "aarch64", "arm64"):
@@ -680,7 +689,7 @@ class EvidenceTests(unittest.TestCase):
         valid = {
             "candidate_sha": SHA,
             "release_version": "1.0.1",
-            "runs": {"s": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}},
+            "runs": {"source-ci": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "a"}]}},
         }
         module.validate_selection(valid)  # Should not raise.
 

@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "release-candidate.yml"
 FINALIZE = ROOT / ".github" / "workflows" / "release-finalize.yml"
 REQUIREMENTS = ROOT / "plans" / "evidence" / "release-requirements.json"
+DISPATCH_CONTRACT = ROOT / "plans" / "evidence" / "release-dispatch-contract.json"
 
 
 class WorkflowViolation:
@@ -410,6 +411,113 @@ def _validate_stage_contract(
     return violations
 
 
+def _validate_dispatch_contract(
+    dispatch_options: list[str],
+    jobs: dict[str, dict[str, Any]],
+    requirements: dict[str, Any],
+) -> list[WorkflowViolation]:
+    """Validate the machine-readable dispatch contract against the workflow and requirements."""
+    violations: list[WorkflowViolation] = []
+
+    if not DISPATCH_CONTRACT.is_file():
+        violations.append(WorkflowViolation(
+            "missing-contract",
+            f"dispatch contract file not found: {DISPATCH_CONTRACT}",
+        ))
+        return violations
+
+    try:
+        contract = json.loads(DISPATCH_CONTRACT.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as error:
+        violations.append(WorkflowViolation(
+            "invalid-contract",
+            f"cannot parse dispatch contract: {error}",
+        ))
+        return violations
+
+    dispatches = contract.get("dispatches", {})
+    if not isinstance(dispatches, dict) or not dispatches:
+        violations.append(WorkflowViolation(
+            "invalid-contract",
+            "dispatch contract has no dispatches",
+        ))
+        return violations
+
+    # Every dispatch option must have a contract entry.
+    for option in dispatch_options:
+        if option not in dispatches:
+            violations.append(WorkflowViolation(
+                "missing-contract-entry",
+                f"dispatch option '{option}' has no entry in release-dispatch-contract.json",
+                stage=option,
+            ))
+
+    # Every contract entry must correspond to a dispatch option.
+    for entry_name in dispatches:
+        if entry_name not in dispatch_options:
+            violations.append(WorkflowViolation(
+                "orphan-contract-entry",
+                f"contract entry '{entry_name}' has no corresponding workflow dispatch option",
+                stage=entry_name,
+            ))
+
+    # Validate each contract entry.
+    required_stages_set = set(
+        requirements.get("pre_tag_required_stages", [])
+    )
+    required_stages_set.update(requirements.get("final_required_stages", []))
+
+    for entry_name, entry in dispatches.items():
+        if not isinstance(entry, dict):
+            violations.append(WorkflowViolation(
+                "invalid-contract-entry",
+                f"contract entry '{entry_name}' is not an object",
+                stage=entry_name,
+            ))
+            continue
+
+        # Validate required_stages.
+        entry_stages = entry.get("required_stages", [])
+        if not isinstance(entry_stages, list) or not entry_stages:
+            violations.append(WorkflowViolation(
+                "invalid-contract-entry",
+                f"contract entry '{entry_name}' has no required_stages",
+                stage=entry_name,
+            ))
+            continue
+
+        for stage in entry_stages:
+            if stage not in required_stages_set:
+                violations.append(WorkflowViolation(
+                    "unregistered-required-stage",
+                    f"contract entry '{entry_name}' requires stage '{stage}' "
+                    f"not found in release-requirements.json",
+                    stage=entry_name,
+                ))
+
+        # Validate producer_jobs are reachable.
+        producer_jobs = entry.get("producer_jobs", [])
+        for job_name in producer_jobs:
+            if job_name not in jobs:
+                violations.append(WorkflowViolation(
+                    "invalid-contract-entry",
+                    f"contract entry '{entry_name}' references non-existent job '{job_name}'",
+                    stage=entry_name,
+                    job=job_name,
+                ))
+
+        # Validate aggregation type.
+        agg = entry.get("aggregation", {})
+        if not isinstance(agg, dict) or agg.get("type") not in ("current-run", "cross-run"):
+            violations.append(WorkflowViolation(
+                "invalid-contract-entry",
+                f"contract entry '{entry_name}' has invalid aggregation type",
+                stage=entry_name,
+            ))
+
+    return violations
+
+
 def validate_workflow() -> list[WorkflowViolation]:
     """Run all validation checks and return violations."""
     if not HAS_YAML:
@@ -524,6 +632,10 @@ def validate_workflow() -> list[WorkflowViolation]:
     requirements = json.loads(REQUIREMENTS.read_text(encoding="utf-8"))
     contract_violations = _validate_stage_contract(dispatch_options, jobs, workflow_data, requirements)
     violations.extend(contract_violations)
+
+    # Validate machine-readable dispatch contract
+    dispatch_contract_violations = _validate_dispatch_contract(dispatch_options, jobs, requirements)
+    violations.extend(dispatch_contract_violations)
 
     return violations
 

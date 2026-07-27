@@ -81,7 +81,7 @@ jobs:
   source-ci:
     name: Source CI and shell validation
     needs: resolve
-    if: ${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' || inputs.stage == 'native-evidence' || inputs.stage == 'mixed-fleet-client' || inputs.stage == 'mixed-fleet-sustained' }}
+    if: ${{ inputs.stage == 'protocol-prepublish' || inputs.stage == 'binary-prepublish' || inputs.stage == 'native-evidence' || inputs.stage == 'mixed-fleet-client' || inputs.stage == 'mixed-fleet-sustained' || inputs.stage == 'postpublish-verify' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -974,21 +974,28 @@ jobs:
           pattern: "*-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}"
           merge-multiple: false
           if-no-artifact-found: error
+      - name: Resolve dispatch-local required stages
+        id: dispatch
+        run: |
+          set -euo pipefail
+          python3 -c "
+          import json, sys
+          contract = json.load(open('plans/evidence/release-dispatch-contract.json'))
+          stage = '${{ inputs.stage }}'
+          entry = contract['dispatches'].get(stage)
+          if entry is None:
+              print(f'ERROR: unknown dispatch stage {stage}', file=sys.stderr)
+              sys.exit(1)
+          for s in entry['required_stages']:
+              print(s)
+          " > dispatch-stages.txt
       - name: Validate and aggregate metadata
         run: |
           set -euo pipefail
           required=()
-          case "${{ inputs.stage }}" in
-            protocol-prepublish) required=(source-ci protocol-prepublish) ;;
-            protocol-index-check) required=(protocol-index-check) ;;
-            binary-prepublish) required=(source-ci protocol-index-check binary-prepublish-greggd binary-prepublish-gregg binary-msrv-greggd binary-msrv-gregg) ;;
-            native-evidence) required=(source-ci native-source-linux-x86-64 native-source-linux-arm64 native-source-macos-arm64 native-source-macos-intel native-package-linux-x86-64 native-package-linux-arm64 native-package-macos-arm64 native-package-macos-intel) ;;
-            mixed-fleet-client) required=(source-ci mixed-fleet-functional mixed-fleet-sustained) ;;
-            mixed-fleet-sustained) required=(source-ci mixed-fleet-sustained) ;;
-            operational-evidence) required=(resource-linux resource-macos-arm64 soak-linux-24h soak-macos-arm64-24h systemd-lifecycle launchd-lifecycle) ;;
-            postpublish-verify) required=(protocol-index-check postpublish-verify) ;;
-            *) echo "unsupported aggregation stage" >&2; exit 1 ;;
-          esac
+          while IFS= read -r stage; do
+            [[ -n "$stage" ]] && required+=("$stage")
+          done < dispatch-stages.txt
           args=(--evidence-dir evidence --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version "${{ needs.resolve.outputs.candidate_version }}" --output aggregate-candidate.json)
           for stage in "${required[@]}"; do args+=(--required-stage "${stage}"); done
           scripts/aggregate-release-evidence.sh "${args[@]}"

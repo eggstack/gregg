@@ -109,6 +109,24 @@ method that returns structured `ValidationViolation`s rather than failing
 through serde, so additive forward-compatible fields do not silently tighten
 or loosen existing validation.
 
+## Release orchestration rules
+
+The release pipeline is driven by a machine-readable dispatch contract at
+[`plans/evidence/release-dispatch-contract.json`](plans/evidence/release-dispatch-contract.json).
+Each `workflow_dispatch.stage` maps to reachable producer jobs, required logical
+stages, and boundary classification. The workflow's aggregate job reads this
+contract instead of a hardcoded shell `case` statement.
+
+Every selected run entry in the selection file must use an exact logical stage
+name (e.g. `binary-prepublish-greggd`), not a grouped alias (e.g.
+`binary-prepublish`). Each stage resolves to exactly one containing artifact.
+Package provenance is indexed by reading provenance document keys, not inferred
+from stage names.
+
+Candidate qualification does not require `gregg-protocol 1.0.1` to already exist
+on crates.io. Protocol publication occurs only after candidate qualification and
+tag procedure authorization.
+
 ## CLI and configuration rules
 
 Commands must be deterministic, scriptable, and return meaningful exit codes. Human-readable output goes to stdout; diagnostics go to stderr.

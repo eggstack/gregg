@@ -28,21 +28,35 @@
         {"name": "protocol-index-abcdef01-1"}
       ]
     },
-    "binary-prepublish": {
+    "binary-prepublish-greggd": {
       "run_id": 1004,
       "attempt": 1,
       "workflow_name": "release-candidate",
       "artifacts": [
-        {"name": "binary-greggd-abcdef01-1"},
+        {"name": "binary-greggd-abcdef01-1"}
+      ]
+    },
+    "binary-prepublish-gregg": {
+      "run_id": 1004,
+      "attempt": 1,
+      "workflow_name": "release-candidate",
+      "artifacts": [
         {"name": "binary-gregg-abcdef01-1"}
       ]
     },
-    "binary-msrv": {
+    "binary-msrv-greggd": {
       "run_id": 1005,
       "attempt": 1,
       "workflow_name": "release-candidate",
       "artifacts": [
-        {"name": "msrv-greggd-abcdef01-1"},
+        {"name": "msrv-greggd-abcdef01-1"}
+      ]
+    },
+    "binary-msrv-gregg": {
+      "run_id": 1005,
+      "attempt": 1,
+      "workflow_name": "release-candidate",
+      "artifacts": [
         {"name": "msrv-gregg-abcdef01-1"}
       ]
     },

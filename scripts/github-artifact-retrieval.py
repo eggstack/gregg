@@ -38,22 +38,33 @@ SUPPORTED_WORKFLOWS = {"release-candidate"}
 MAX_ZIP_ENTRIES = 1000
 MAX_EXTRACTED_BYTES = 512 * 1024 * 1024  # 512 MiB
 
-PRE_TAG_REQUIRED_STAGE_GROUPS = [
+PRE_TAG_REQUIRED_STAGES = [
     "source-ci",
     "protocol-prepublish",
     "protocol-index-check",
-    "binary-prepublish",
-    "binary-msrv",
-    "native-source",
-    "native-package",
-    "mixed-fleet",
+    "binary-prepublish-greggd",
+    "binary-prepublish-gregg",
+    "binary-msrv-greggd",
+    "binary-msrv-gregg",
+    "native-source-linux-x86-64",
+    "native-source-linux-arm64",
+    "native-source-macos-arm64",
+    "native-source-macos-intel",
+    "native-package-linux-x86-64",
+    "native-package-linux-arm64",
+    "native-package-macos-arm64",
+    "native-package-macos-intel",
+    "mixed-fleet-functional",
+    "mixed-fleet-sustained",
     "systemd-lifecycle",
     "launchd-lifecycle",
-    "resource",
-    "soak",
+    "resource-linux",
+    "resource-macos-arm64",
+    "soak-linux-24h",
+    "soak-macos-arm64-24h",
 ]
 
-FINAL_EXTRA_STAGE_GROUPS = [
+FINAL_EXTRA_STAGES = [
     "postpublish-verify",
 ]
 
@@ -152,6 +163,15 @@ def validate_selection(selection: dict[str, Any]) -> None:
     runs = selection.get("runs")
     if not isinstance(runs, dict) or not runs:
         fail("selection.runs must be a nonempty object")
+
+    # Reject grouped aliases that do not correspond to exact logical stage names.
+    all_valid_stages = set(PRE_TAG_REQUIRED_STAGES) | set(FINAL_EXTRA_STAGES)
+    for stage_name in runs:
+        if stage_name not in all_valid_stages:
+            fail(
+                f"selection.runs has unknown stage '{stage_name}'; "
+                f"each entry must be an exact logical stage name, not a grouped alias"
+            )
 
     for stage_name, run_info in runs.items():
         if not isinstance(run_info, dict):
@@ -383,36 +403,51 @@ def download_artifact(
 def build_provenance_index(artifact_cache: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Scan extracted artifacts for provenance, lockfile, and archive files.
 
-    Returns a deterministic index mapping logical stage names to file paths
-    so downstream consumers do not need filesystem heuristics.
+    Returns a deterministic index mapping package names (derived from validated
+    provenance document keys, NOT stage names) to file paths so downstream
+    consumers do not need filesystem heuristics.
     """
     index: dict[str, Any] = {"packages": {}}
     for artifact_key, artifact in sorted(artifact_cache.items()):
         extract_dir = Path(artifact.get("extraction_path", ""))
         if not extract_dir.is_dir():
             continue
-        for stage in artifact.get("logical_stages", []):
-            stage_entry: dict[str, Any] = {"artifact_key": artifact_key}
-            # Find provenance file.
-            provenance_files = sorted(extract_dir.rglob("package-provenance.json"))
-            if provenance_files:
-                stage_entry["provenance_path"] = str(provenance_files[0])
+        # Find provenance file and read its package keys directly.
+        provenance_files = sorted(extract_dir.rglob("package-provenance.json"))
+        for prov_path in provenance_files:
+            try:
+                prov_data = json.loads(prov_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            packages = prov_data.get("packages", {})
+            if not isinstance(packages, dict):
+                continue
+            for package_name in packages:
+                if package_name not in index["packages"]:
+                    index["packages"][package_name] = {
+                        "stage": artifact.get("logical_stages", ["unknown"])[0]
+                        if artifact.get("logical_stages")
+                        else "unknown",
+                        "provenance_path": str(prov_path),
+                        "artifact_key": artifact_key,
+                    }
             # Find lockfile.
             lockfile_files = sorted(extract_dir.rglob("Cargo.lock"))
             if lockfile_files:
-                stage_entry["lockfile_path"] = str(lockfile_files[0])
+                # Try to find the package-specific lockfile.
+                for package_name in packages:
+                    if package_name in index["packages"]:
+                        index["packages"][package_name]["lockfile_path"] = str(
+                            lockfile_files[0]
+                        )
             # Find .crate archives.
             archive_files = sorted(extract_dir.rglob("*.crate"))
             if archive_files:
-                stage_entry["archive_path"] = str(archive_files[0])
-            # Map stage to package name for provenance lookup.
-            for package in ("gregg-protocol", "greggd", "gregg"):
-                if package in stage or f"binary-{package}" in stage:
-                    index["packages"].setdefault(package, []).append({
-                        "stage": stage,
-                        **stage_entry,
-                    })
-                    break
+                for package_name in packages:
+                    if package_name in index["packages"]:
+                        index["packages"][package_name]["archive_path"] = str(
+                            archive_files[0]
+                        )
     return index
 
 
@@ -504,12 +539,8 @@ def main() -> int:
                 artifact.update(artifact_cache[artifact_key])
 
     # Build per-stage manifest entries from the caches.
-    # Validate that every selection stage resolves to an artifact containing that stage.
-    all_stages_in_artifacts: dict[str, list[str]] = {}
-    for artifact_key, artifact in artifact_cache.items():
-        for ls in artifact.get("logical_stages", []):
-            all_stages_in_artifacts.setdefault(ls, []).append(artifact_key)
-
+    # Validate that every selection stage resolves to exactly one artifact.
+    stages: list[dict[str, Any]] = []
     seen_stages: set[str] = set()
     for (run_id, attempt, workflow_name), info in unique_runs.items():
         validated_run = run_cache[(run_id, attempt)]
@@ -517,20 +548,28 @@ def main() -> int:
             if stage_name in seen_stages:
                 continue
             seen_stages.add(stage_name)
-            stage_artifacts = []
+            # Map artifact_key -> artifact for this run's artifacts.
+            stage_artifact_map: dict[str, dict[str, Any]] = {}
             for a in info["artifact_specs"]:
                 artifact_key = f"{run_id}:{a['name']}"
                 if artifact_key in artifact_cache:
-                    stage_artifacts.append(artifact_cache[artifact_key])
-            # Validate that at least one artifact for this stage contains the stage in its candidate metadata.
-            found_in = [k for k in stage_artifacts if stage_name in k.get("logical_stages", [])]
-            if not found_in:
+                    stage_artifact_map[artifact_key] = artifact_cache[artifact_key]
+            # Find which artifact(s) contain this stage in their candidate metadata.
+            found_keys = [k for k, art in stage_artifact_map.items()
+                         if stage_name in art.get("logical_stages", [])]
+            if not found_keys:
                 fail(f"stage {stage_name} not found in any candidate metadata for run {run_id}; "
-                     f"found stages: {[a.get('logical_stages', []) for a in stage_artifacts]}")
+                     f"found stages: {[art.get('logical_stages', []) for art in stage_artifact_map.values()]}")
+            if len(found_keys) > 1:
+                fail(f"stage {stage_name} found in multiple artifacts for run {run_id}: {found_keys}; "
+                     f"each stage must resolve to exactly one artifact")
+            # Bind to the single containing artifact.
+            bound_key = found_keys[0]
+            bound_artifact = artifact_cache[bound_key]
             stages.append({
                 "stage": stage_name,
                 "run": validated_run,
-                "artifacts": stage_artifacts,
+                "artifacts": [bound_artifact],
             })
 
     import datetime as dt
