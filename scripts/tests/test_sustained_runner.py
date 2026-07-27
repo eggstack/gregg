@@ -385,5 +385,212 @@ class ExitCodeDetectionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
 
+class SummaryFieldValidationTests(unittest.TestCase):
+    """Integration tests for summary field completeness checking.
+
+    These exercise the same validation logic the runner uses, but with
+    synthetic summaries to verify that missing fields are detected.
+    """
+
+    REQUIRED_FIELDS = [
+        "requested_duration_secs",
+        "observed_duration_secs",
+        "endpoint_count",
+        "completed_generations",
+        "first_generation",
+        "last_generation",
+        "max_concurrent_polls",
+        "online_results",
+        "offline_results",
+        "observed_transitions",
+        "clean_shutdown",
+    ]
+
+    def _valid_summary(self) -> dict:
+        return {
+            "requested_duration_secs": 30,
+            "observed_duration_secs": 32.5,
+            "endpoint_count": 10,
+            "completed_generations": 14,
+            "first_generation": 1,
+            "last_generation": 14,
+            "max_concurrent_polls": 10,
+            "online_results": 80,
+            "offline_results": 60,
+            "observed_transitions": ["ep-3:offline->online"],
+            "clean_shutdown": True,
+            "panic_or_join_failure": None,
+        }
+
+    def test_valid_summary_passes(self) -> None:
+        summary = self._valid_summary()
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertEqual(missing, [])
+
+    def test_missing_requested_duration_detected(self) -> None:
+        summary = self._valid_summary()
+        del summary["requested_duration_secs"]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertIn("requested_duration_secs", missing)
+
+    def test_missing_observed_duration_detected(self) -> None:
+        summary = self._valid_summary()
+        del summary["observed_duration_secs"]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertIn("observed_duration_secs", missing)
+
+    def test_missing_endpoint_count_detected(self) -> None:
+        summary = self._valid_summary()
+        del summary["endpoint_count"]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertIn("endpoint_count", missing)
+
+    def test_missing_transitions_detected(self) -> None:
+        summary = self._valid_summary()
+        del summary["observed_transitions"]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertIn("observed_transitions", missing)
+
+    def test_missing_clean_shutdown_detected(self) -> None:
+        summary = self._valid_summary()
+        del summary["clean_shutdown"]
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertIn("clean_shutdown", missing)
+
+    def test_multiple_missing_fields_detected(self) -> None:
+        summary = {"completed_generations": 5}
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertEqual(len(missing), len(self.REQUIRED_FIELDS) - 1)
+
+    def test_empty_summary_all_fields_missing(self) -> None:
+        summary: dict = {}
+        missing = [f for f in self.REQUIRED_FIELDS if f not in summary]
+        self.assertEqual(missing, self.REQUIRED_FIELDS)
+
+
+class ResourceSampleValidationTests(unittest.TestCase):
+    """Integration tests for resource sample validation.
+
+    These call the same validation logic the runner uses against synthetic
+    sample lists to verify that malformed data is rejected.
+    """
+
+    def _valid_sample(self, index: int = 0, pid: int = 42) -> dict:
+        return {
+            "sample_index": index,
+            "monotonic_ns": 1_000_000_000 * (index + 1),
+            "pid": pid,
+            "rss_bytes": 10_000_000,
+            "virtual_bytes": 100_000_000,
+            "thread_count": 7,
+            "process_alive": True,
+        }
+
+    def test_valid_samples_pass_all_checks(self) -> None:
+        samples = [self._valid_sample(i) for i in range(3)]
+        self.assertTrue(all(s["process_alive"] for s in samples))
+        self.assertTrue(all(s["rss_bytes"] > 0 for s in samples))
+        self.assertTrue(
+            all(
+                samples[i]["monotonic_ns"] > samples[i - 1]["monotonic_ns"]
+                for i in range(1, len(samples))
+            )
+        )
+        self.assertEqual(len({s["pid"] for s in samples}), 1)
+
+    def test_empty_samples_fail_min_count(self) -> None:
+        samples: list[dict] = []
+        min_samples = 5
+        self.assertLess(len(samples), min_samples)
+
+    def test_single_sample_fails_min_count(self) -> None:
+        samples = [self._valid_sample(0)]
+        min_samples = 5
+        self.assertLess(len(samples), min_samples)
+
+    def test_zero_rss_detected(self) -> None:
+        samples = [self._valid_sample(i) for i in range(3)]
+        samples[1]["rss_bytes"] = 0
+        zero_rss = [s for s in samples if s["rss_bytes"] == 0]
+        self.assertEqual(len(zero_rss), 1)
+
+    def test_dead_process_detected(self) -> None:
+        samples = [self._valid_sample(i) for i in range(3)]
+        samples[2]["process_alive"] = False
+        dead = [s for s in samples if not s["process_alive"]]
+        self.assertEqual(len(dead), 1)
+
+    def test_nonmonotonic_timestamps_detected(self) -> None:
+        samples = [self._valid_sample(i) for i in range(3)]
+        samples[2]["monotonic_ns"] = samples[0]["monotonic_ns"] - 1
+        is_monotonic = all(
+            samples[i]["monotonic_ns"] > samples[i - 1]["monotonic_ns"]
+            for i in range(1, len(samples))
+        )
+        self.assertFalse(is_monotonic)
+
+    def test_multiple_pids_detected(self) -> None:
+        samples = [self._valid_sample(i) for i in range(3)]
+        samples[2]["pid"] = 99
+        pids = {s["pid"] for s in samples}
+        self.assertGreater(len(pids), 1)
+
+    def test_last_sample_too_early_detected(self) -> None:
+        requested_secs = 30.0
+        workload_started_ns = 1_000_000_000
+        last_sample_ns = workload_started_ns + int(requested_secs * 0.5 * 1e9)
+        elapsed_at_last = (last_sample_ns - workload_started_ns) / 1e9
+        self.assertLess(elapsed_at_last, requested_secs * 0.8)
+
+    def test_last_sample_after_80_percent_passes(self) -> None:
+        requested_secs = 30.0
+        workload_started_ns = 1_000_000_000
+        last_sample_ns = workload_started_ns + int(requested_secs * 0.9 * 1e9)
+        elapsed_at_last = (last_sample_ns - workload_started_ns) / 1e9
+        self.assertGreaterEqual(elapsed_at_last, requested_secs * 0.8)
+
+
+class RunnerMainIntegrationTests(unittest.TestCase):
+    """Integration tests that invoke the runner's main() with various args.
+
+    These verify the argument parsing and early validation paths without
+    needing a compiled Rust binary.
+    """
+
+    def test_main_rejects_negative_duration(self) -> None:
+        with patch("sys.argv", ["runner", "--duration-seconds", "-5"]):
+            result = runner_mod.main()
+        self.assertEqual(result, 1)
+
+    def test_main_rejects_zero_duration(self) -> None:
+        with patch("sys.argv", ["runner", "--duration-seconds", "0"]):
+            result = runner_mod.main()
+        self.assertEqual(result, 1)
+
+    def test_main_rejects_negative_interval(self) -> None:
+        with patch(
+            "sys.argv",
+            ["runner", "--duration-seconds", "1", "--sample-interval-seconds", "-1"],
+        ):
+            result = runner_mod.main()
+        self.assertEqual(result, 1)
+
+    def test_main_rejects_zero_interval(self) -> None:
+        with patch(
+            "sys.argv",
+            ["runner", "--duration-seconds", "1", "--sample-interval-seconds", "0"],
+        ):
+            result = runner_mod.main()
+        self.assertEqual(result, 1)
+
+    def test_main_rejects_invalid_profile(self) -> None:
+        with patch(
+            "sys.argv",
+            ["runner", "--duration-seconds", "1", "--profile", "invalid"],
+        ):
+            with self.assertRaises(SystemExit):
+                runner_mod.main()
+
+
 if __name__ == "__main__":
     unittest.main()

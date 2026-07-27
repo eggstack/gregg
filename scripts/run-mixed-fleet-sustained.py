@@ -38,7 +38,6 @@ def sample_proc_status(pid: int) -> dict[str, Any] | None:
     process_alive, or None if the process is gone.
     """
     status_path = Path(f"/proc/{pid}/status")
-    stat_path = Path(f"/proc/{pid}/stat")
 
     if not status_path.exists():
         return None
@@ -199,8 +198,6 @@ def run_sustained(
     samples_path = evidence_dir / "resource-samples.jsonl"
     stdout_path = evidence_dir / "workload-stdout.txt"
     stderr_path = evidence_dir / "workload-stderr.txt"
-    artifacts_path = evidence_dir / "artifacts.json"
-    candidate_path = evidence_dir / "candidate.json"
 
     # Clean previous evidence.
     for p in [summary_path, samples_path, stdout_path, stderr_path]:
@@ -275,8 +272,18 @@ def run_sustained(
         except subprocess.TimeoutExpired:
             pass
 
-    # Step 6: Wait for exit.
-    proc.wait()
+    # Step 6: Wait for exit with bounded cleanup deadline.
+    cleanup_deadline = 10.0
+    try:
+        proc.wait(timeout=cleanup_deadline)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5.0)
+        print(
+            f"FATAL: workload did not exit within {cleanup_deadline}s cleanup deadline",
+            file=sys.stderr,
+        )
+        sys.exit(1)
     workload_completed_ns = monotonic_ns()
     stdout_file.close()
     stderr_file.close()
@@ -294,6 +301,27 @@ def run_sustained(
             summary = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         print(f"FATAL: cannot parse sustained summary: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    required_fields = [
+        "requested_duration_secs",
+        "observed_duration_secs",
+        "endpoint_count",
+        "completed_generations",
+        "first_generation",
+        "last_generation",
+        "max_concurrent_polls",
+        "online_results",
+        "offline_results",
+        "observed_transitions",
+        "clean_shutdown",
+    ]
+    missing = [f for f in required_fields if f not in summary]
+    if missing:
+        print(
+            f"FATAL: sustained summary missing fields: {missing}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     # Step 8: Validate duration.
@@ -366,35 +394,7 @@ def run_sustained(
         )
         sys.exit(1)
 
-    # Step 10: Write artifacts metadata.
-    artifact_list = [
-        {"name": "sustained-summary.json", "role": "sustained-summary"},
-        {"name": "resource-samples.jsonl", "role": "resource-samples"},
-        {"name": "workload-stdout.txt", "role": "workload-stdout"},
-        {"name": "workload-stderr.txt", "role": "workload-stderr"},
-    ]
-    with artifacts_path.open("w", encoding="utf-8") as f:
-        json.dump(artifact_list, f, indent=2, sort_keys=True)
-        f.write("\n")
-
-    # Step 11: Write candidate metadata.
-    completed_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    candidate = {
-        "schema_version": 1,
-        "stage": "mixed-fleet-sustained",
-        "requested_duration_secs": int(requested_secs),
-        "observed_duration_secs": round(observed_secs, 2),
-        "resource_sample_count": len(samples),
-        "completed_generations": summary.get("completed_generations", 0),
-        "note": f"requested_duration_secs={int(requested_secs)} "
-        f"observed_duration_secs={round(observed_secs, 2)} "
-        f"resource_sample_count={len(samples)} "
-        f"completed_generations={summary.get('completed_generations', 0)}",
-    }
-    with candidate_path.open("w", encoding="utf-8") as f:
-        json.dump(candidate, f, indent=2, sort_keys=True)
-        f.write("\n")
-
+    # Step 10: Report results.
     print(f"\nEvidence written to {evidence_dir}/")
     print(f"  Summary: {summary.get('completed_generations', 0)} generations")
     print(f"  Samples: {len(samples)}")
