@@ -30,12 +30,57 @@ impl Drop for FixtureProcess {
     }
 }
 
-fn start_fixture(mode: &str) -> (FixtureProcess, u16) {
+fn read_port(child: &mut Child, mode: &str) -> u16 {
+    use std::io::BufRead;
+    let stdout = child.stdout.as_mut().expect("fixture stdout piped");
+    let reader = std::io::BufReader::new(stdout);
+    let mut port: Option<u16> = None;
+    for line in reader.lines() {
+        let Ok(line) = line else { break };
+        if let Some(rest) = line.strip_prefix("PORT=") {
+            if let Ok(p) = rest.parse::<u16>() {
+                port = Some(p);
+                break;
+            }
+        }
+    }
+    if let Some(p) = port {
+        p
+    } else {
+        let stderr = child
+            .stderr
+            .take()
+            .map(|mut s| {
+                use std::io::Read;
+                let mut buf = String::new();
+                let _ = s.read_to_string(&mut buf);
+                buf
+            })
+            .unwrap_or_default();
+        panic!("fleet fixture {mode} did not report a port: {stderr}");
+    }
+}
+
+fn wait_for_ready(fixture: &mut FixtureProcess, mode: &str, port: u16) {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    for _ in 0..200 {
+        if TcpStream::connect_timeout(&address, Duration::from_millis(10)).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        if let Ok(Some(status)) = fixture.child.try_wait() {
+            panic!("fleet fixture {mode} exited before readiness: {status}");
+        }
+    }
+    panic!("fleet fixture {mode} did not become ready");
+}
+
+fn spawn_fixture(mode: &str) -> (Child, PathBuf) {
     let log_path =
         std::env::temp_dir().join(format!("gregg-fleet-{}-{mode}.jsonl", std::process::id()));
     let script =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/tests/fleet-fixture.py");
-    let mut child = Command::new("python3")
+    let child = Command::new("python3")
         .arg(script)
         .arg("--port")
         .arg("0")
@@ -46,49 +91,34 @@ fn start_fixture(mode: &str) -> (FixtureProcess, u16) {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .expect("start deterministic fleet fixture");
-    let port = {
-        use std::io::BufRead;
-        let stdout = child.stdout.as_mut().expect("fixture stdout piped");
-        let reader = std::io::BufReader::new(stdout);
-        let mut port: Option<u16> = None;
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
-            if let Some(rest) = line.strip_prefix("PORT=") {
-                if let Ok(p) = rest.parse::<u16>() {
-                    port = Some(p);
-                    break;
-                }
-            }
-        }
-        if let Some(p) = port {
-            p
-        } else {
-            let stderr = child
-                .stderr
-                .take()
-                .map(|mut s| {
-                    use std::io::Read;
-                    let mut buf = String::new();
-                    let _ = s.read_to_string(&mut buf);
-                    buf
-                })
-                .unwrap_or_default();
-            panic!("fleet fixture {mode} did not report a port: {stderr}");
-        }
-    };
-    let mut fixture = FixtureProcess { child, log_path };
-    let address = SocketAddr::from(([127, 0, 0, 1], port));
-    for _ in 0..200 {
-        if TcpStream::connect_timeout(&address, Duration::from_millis(10)).is_ok() {
-            return (fixture, port);
-        }
-        std::thread::sleep(Duration::from_millis(10));
-        if let Ok(Some(status)) = fixture.child.try_wait() {
-            panic!("fleet fixture {mode} exited before readiness: {status}");
-        }
+        .unwrap_or_else(|e| panic!("start fleet fixture {mode}: {e}"));
+    (child, log_path)
+}
+
+fn start_fixtures_parallel(modes: &[&str]) -> Vec<(FixtureProcess, u16)> {
+    let mut pending: Vec<(String, Child, PathBuf)> = Vec::with_capacity(modes.len());
+    for mode in modes {
+        let (child, log_path) = spawn_fixture(mode);
+        pending.push((String::from(*mode), child, log_path));
     }
-    panic!("fleet fixture {mode} did not become ready");
+
+    let handles: Vec<_> = pending
+        .into_iter()
+        .map(|(mode, child, log_path)| {
+            std::thread::spawn(move || {
+                let mut child = child;
+                let port = read_port(&mut child, &mode);
+                let mut fixture = FixtureProcess { child, log_path };
+                wait_for_ready(&mut fixture, &mode, port);
+                (fixture, port)
+            })
+        })
+        .collect();
+
+    handles
+        .into_iter()
+        .map(|h| h.join().expect("fixture thread panicked"))
+        .collect()
 }
 
 fn endpoint(id: &str, port: u16, name: &str) -> Endpoint {
@@ -114,12 +144,12 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         "offline",
         "healthy-to-failure",
     ];
-    let mut fixtures = Vec::new();
-    let mut endpoints = Vec::new();
-    for mode in modes {
-        let (fixture, port) = start_fixture(mode);
+    let results = start_fixtures_parallel(&modes);
+    let mut fixtures = Vec::with_capacity(results.len());
+    let mut endpoints = Vec::with_capacity(results.len() + 1);
+    for (i, (fixture, port)) in results.into_iter().enumerate() {
         fixtures.push(fixture);
-        endpoints.push(endpoint(mode, port, mode));
+        endpoints.push(endpoint(modes[i], port, modes[i]));
     }
     // Port 9 is intentionally not a fixture: it exercises connection refusal.
     endpoints.push(endpoint("refused", 9, "refused"));
