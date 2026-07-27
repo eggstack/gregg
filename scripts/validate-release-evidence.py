@@ -232,15 +232,22 @@ def validate_package_provenance(
         if not isinstance(package, str) or not isinstance(record, dict):
             fail("package provenance entries must be named objects")
         string(record, "archive")
+        string(record, "archive_path")
+        if Path(record["archive_path"]).is_absolute() or ".." in Path(record["archive_path"]).parts:
+            fail(f"package provenance {package} archive_path must stay within artifact root")
         sha256(record.get("sha256"), f"package provenance {package} sha256")
         if not isinstance(record.get("size_bytes"), int) or record["size_bytes"] <= 0:
             fail(f"package provenance {package} size_bytes must be positive")
         if "verification_lockfile" in record:
             string(record, "verification_lockfile")
+            string(record, "verification_lockfile_path")
+            if Path(record["verification_lockfile_path"]).is_absolute() or ".." in Path(record["verification_lockfile_path"]).parts:
+                fail(f"package provenance {package} verification_lockfile_path escapes artifact root")
             sha256(record.get("verification_lockfile_sha256"), f"package provenance {package} lockfile sha256")
             if not isinstance(record.get("verification_lockfile_size_bytes"), int) or record["verification_lockfile_size_bytes"] <= 0:
                 fail(f"package provenance {package} lockfile size must be positive")
         if "installed_binary_sha256" in record:
+            string(record, "installed_binary_path")
             sha256(record["installed_binary_sha256"], f"package provenance {package} installed binary sha256")
             if not isinstance(record.get("installed_binary_size_bytes"), int) or record["installed_binary_size_bytes"] <= 0:
                 fail(f"package provenance {package} installed binary size must be positive")
@@ -261,7 +268,33 @@ def validate_registry_summary(
         if record.get("yanked") is not False:
             fail(f"registry record {crate} is yanked or missing yank state")
         sha256(record.get("checksum"), f"registry record {crate} checksum")
-        string(record, "published_at")
+        timestamp(record.get("published_at"), f"registry record {crate} published_at")
+    return value
+
+
+def validate_disposition(value: Any) -> dict[str, Any]:
+    """Validate the explicit disposition ledger for the published 1.0.0 crates."""
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        fail("1.0.0 disposition schema_version must be 1")
+    timestamp(value.get("observed_at"), "1.0.0 disposition observed_at")
+    crates = value.get("crates")
+    if not isinstance(crates, dict) or set(crates) != {"gregg-protocol", "greggd", "gregg"}:
+        fail("1.0.0 disposition must contain exactly the three crate records")
+    for crate, record in crates.items():
+        if not isinstance(record, dict):
+            fail(f"1.0.0 disposition record {crate} must be an object")
+        if record.get("version") != "1.0.0":
+            fail(f"1.0.0 disposition record {crate} must describe version 1.0.0")
+        if not isinstance(record.get("yanked"), bool):
+            fail(f"1.0.0 disposition record {crate}.yanked must be boolean")
+        sha256(record.get("checksum"), f"1.0.0 disposition record {crate}.checksum")
+        timestamp(record.get("published_at"), f"1.0.0 disposition record {crate}.published_at")
+        if record.get("decision") not in {"retain", "yank"}:
+            fail(f"1.0.0 disposition record {crate}.decision must be retain or yank")
+        if record["decision"] == "yank" and record["yanked"] is not True:
+            fail(f"1.0.0 disposition yank decision for {crate} is not observed as executed")
+        if record["decision"] == "retain" and record["yanked"] is True and not record.get("ledger_note"):
+            fail(f"1.0.0 disposition retain decision for already-yanked {crate} needs ledger_note")
     return value
 
 
@@ -311,6 +344,18 @@ def aggregate(args: argparse.Namespace) -> None:
             retrieved_by_stage[stage_name] = stage_entry
 
     selection = read_selection(args.selection)
+    selection_record = None
+    if args.selection:
+        selection_bytes = Path(args.selection).read_bytes()
+        selection_record = {
+            "source": args.selection_source,
+            "sha256": hashlib.sha256(selection_bytes).hexdigest(),
+            "size_bytes": len(selection_bytes),
+            "workflow_run_id": args.selection_workflow_run_id,
+            "workflow_run_attempt": args.selection_workflow_run_attempt,
+        }
+    elif isinstance(retrieved_manifest, dict):
+        selection_record = retrieved_manifest.get("selection")
     by_stage: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, candidate in candidates:
         by_stage.setdefault(candidate["stage"], []).append((path, candidate))
@@ -444,8 +489,7 @@ def aggregate(args: argparse.Namespace) -> None:
         if set(packages["packages"]) != {"gregg-protocol", "greggd", "gregg"}:
             fail("package provenance must contain all three crates")
         registry = validate_registry_summary(registry, expected_version=args.release_version)
-        if not isinstance(disposition, dict) or set(disposition) != {"gregg-protocol", "greggd", "gregg"}:
-            fail("final aggregation requires a 1.0.0 disposition for every crate")
+        validate_disposition(disposition)
         if "postpublish-verify" not in by_stage:
             fail("final aggregation requires postpublish-verify evidence")
 
@@ -456,9 +500,11 @@ def aggregate(args: argparse.Namespace) -> None:
         "tooling_sha": tooling_sha,
         "tag": tag,
         "mode": mode,
+        "manifest_scope": "cross-run" if retrieved_manifest is not None else "current-run",
         "required_stages": required,
         "stages": stage_entries,
         "rerun_selection": selection,
+        "selection": selection_record,
         "package_provenance": packages,
         "registry": registry,
         "version_1_0_0_disposition": disposition,
@@ -496,7 +542,24 @@ def validate_manifest(
     if manifest_mode not in ("pre-tag", "final"):
         fail(f"manifest mode must be pre-tag or final, got {manifest_mode}")
 
+    manifest_scope = value.get("manifest_scope")
+    if manifest_scope not in {"current-run", "cross-run"}:
+        fail("manifest_scope must be current-run or cross-run")
+    if manifest_scope == "cross-run" and value.get("mode") not in {"pre-tag", "final"}:
+        fail("cross-run manifest must declare a release mode")
+    if manifest_scope == "cross-run":
+        selection = value.get("selection")
+        if not isinstance(selection, dict):
+            fail("cross-run manifest requires selection identity")
+        if selection.get("source") not in {"workflow-dispatch-base64", "selection-file"}:
+            fail("selection source is unsupported")
+        sha256(selection.get("sha256"), "selection.sha256")
+        if not isinstance(selection.get("size_bytes"), int) or selection["size_bytes"] <= 0:
+            fail("selection.size_bytes must be positive")
+        string(selection, "workflow_run_id")
+        string(selection, "workflow_run_attempt")
     seen = set()
+    artifact_ids: dict[int, tuple[str, str, str]] = {}
     for entry in stages:
         if not isinstance(entry, dict):
             fail("manifest stage entry must be an object")
@@ -514,17 +577,23 @@ def validate_manifest(
             if not isinstance(content_artifacts, list):
                 fail(f"manifest stage {stage} content_artifacts must be an array")
         github_artifact = entry.get("github_artifact")
+        if manifest_scope == "cross-run" and not isinstance(github_artifact, dict):
+            fail(f"manifest stage {stage} requires github_artifact identity")
         if github_artifact is not None:
             if not isinstance(github_artifact, dict):
                 fail(f"manifest stage {stage} github_artifact must be an object")
-            if github_artifact.get("id") is not None and not isinstance(github_artifact["id"], int):
-                fail(f"manifest stage {stage} github_artifact.id must be an integer")
+            if not isinstance(github_artifact.get("id"), int) or github_artifact["id"] <= 0:
+                fail(f"manifest stage {stage} github_artifact.id must be a positive integer")
             if not github_artifact.get("name"):
                 fail(f"manifest stage {stage} github_artifact.name must be a nonempty string")
             if not github_artifact.get("zip_sha256") or not SHA256_RE.fullmatch(str(github_artifact["zip_sha256"])):
                 fail(f"manifest stage {stage} github_artifact.zip_sha256 must be a lowercase 64-character SHA-256")
             if not isinstance(github_artifact.get("zip_size_bytes"), int) or github_artifact["zip_size_bytes"] <= 0:
                 fail(f"manifest stage {stage} github_artifact.zip_size_bytes must be a positive integer")
+            identity = (github_artifact["name"], github_artifact["zip_sha256"], str(github_artifact["zip_size_bytes"]))
+            previous = artifact_ids.setdefault(github_artifact["id"], identity)
+            if previous != identity:
+                fail(f"github artifact ID {github_artifact['id']} is reused with conflicting identity")
         validate_candidate(entry.get("candidate"), expected_sha=candidate_sha, expected_version=version)
 
     if seen != set(required):
@@ -550,9 +619,7 @@ def validate_manifest(
     if value.get("registry") is not None:
         validate_registry_summary(value["registry"], expected_version=version)
     if value.get("version_1_0_0_disposition") is not None:
-        disposition = value["version_1_0_0_disposition"]
-        if not isinstance(disposition, dict) or set(disposition) != {"gregg-protocol", "greggd", "gregg"}:
-            fail("manifest must contain a disposition for all three 1.0.0 crates")
+        validate_disposition(value["version_1_0_0_disposition"])
     if value.get("verdict") != "pass":
         fail("manifest verdict is not pass")
     return value
@@ -657,6 +724,9 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--required-stage", action="append", default=[])
     command.add_argument("--requirements")
     command.add_argument("--selection")
+    command.add_argument("--selection-source", default="selection-file")
+    command.add_argument("--selection-workflow-run-id", default="not-recorded")
+    command.add_argument("--selection-workflow-run-attempt", default="not-recorded")
     command.add_argument("--retrieved-manifest")
     command.add_argument("--mode", choices=["pre-tag", "final"], default="pre-tag")
     command.add_argument("--tooling-sha")

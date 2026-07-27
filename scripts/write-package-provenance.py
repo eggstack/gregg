@@ -40,6 +40,14 @@ def digest(path: Path) -> tuple[str, int]:
     return hasher.hexdigest(), size
 
 
+def declared_path(path: Path) -> str:
+    """Return a portable relative evidence path; never emit an absolute path."""
+    try:
+        return str(path.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return path.name
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
@@ -73,6 +81,7 @@ def main() -> int:
         archive_sha, archive_size = digest(archive)
         record: dict[str, object] = {
             "archive": archive.name,
+            "archive_path": declared_path(archive),
             "sha256": archive_sha,
             "size_bytes": archive_size,
         }
@@ -84,6 +93,7 @@ def main() -> int:
             record.update(
                 {
                     "installed_binary": binary.name,
+                    "installed_binary_path": declared_path(binary),
                     "installed_binary_sha256": binary_sha,
                     "installed_binary_size_bytes": binary_size,
                 }
@@ -96,6 +106,7 @@ def main() -> int:
             record.update(
                 {
                     "verification_lockfile": lockfile.name,
+                    "verification_lockfile_path": declared_path(lockfile),
                     "verification_lockfile_sha256": lockfile_sha,
                     "verification_lockfile_size_bytes": lockfile_size,
                 }

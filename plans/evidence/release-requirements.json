@@ -25,7 +25,9 @@
     "soak-macos-arm64-24h"
   ],
   "protocol_publication_required_stages": [
-    "protocol-index-check"
+    "protocol-index-check",
+    "registry-reverify-greggd",
+    "registry-reverify-gregg"
   ],
   "pre_tag_required_stages": [
     "source-ci",
@@ -55,6 +57,8 @@
     "source-ci",
     "protocol-prepublish",
     "protocol-index-check",
+    "registry-reverify-greggd",
+    "registry-reverify-gregg",
     "binary-prepublish-greggd",
     "binary-prepublish-gregg",
     "binary-msrv-greggd",

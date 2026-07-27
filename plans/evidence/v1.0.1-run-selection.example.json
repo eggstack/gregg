@@ -28,6 +28,18 @@
         {"name": "protocol-index-abcdef01-1"}
       ]
     },
+    "registry-reverify-greggd": {
+      "run_id": 1020,
+      "attempt": 1,
+      "workflow_name": "release-candidate",
+      "artifacts": [{"name": "registry-reverify-greggd-abcdef01-1"}]
+    },
+    "registry-reverify-gregg": {
+      "run_id": 1021,
+      "attempt": 1,
+      "workflow_name": "release-candidate",
+      "artifacts": [{"name": "registry-reverify-gregg-abcdef01-1"}]
+    },
     "binary-prepublish-greggd": {
       "run_id": 1004,
       "attempt": 1,

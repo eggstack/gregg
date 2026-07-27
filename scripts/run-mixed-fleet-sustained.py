@@ -26,9 +26,129 @@ from pathlib import Path
 from typing import Any
 
 
+CONFIGURED_MAX_CONCURRENT_POLLS = 4
+MIN_ENDPOINT_COUNT = 3
+
+
+class SustainedEvidenceError(ValueError):
+    """The sustained workload produced evidence that violates its contract."""
+
+
 def monotonic_ns() -> int:
     """Return a monotonic clock timestamp in nanoseconds."""
     return time.monotonic_ns()
+
+
+def _number(value: Any, name: str, *, integer: bool = False) -> int | float:
+    """Validate JSON numeric values without accepting bools or non-finite values."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SustainedEvidenceError(f"{name} must be a numeric value")
+    if not __import__("math").isfinite(value):
+        raise SustainedEvidenceError(f"{name} must be finite")
+    if integer and not isinstance(value, int):
+        raise SustainedEvidenceError(f"{name} must be an integer")
+    return value
+
+
+def validate_sustained_summary(
+    summary: object,
+    *,
+    requested_secs: float,
+    configured_endpoint_count: int,
+    configured_max_concurrent_polls: int,
+    externally_observed_secs: float,
+) -> dict[str, Any]:
+    """Validate the complete summary contract used by the runner and tests."""
+    if not isinstance(summary, dict):
+        raise SustainedEvidenceError("summary must be a JSON object")
+    required = {
+        "requested_duration_secs", "observed_duration_secs", "endpoint_count",
+        "completed_generations", "first_generation", "last_generation",
+        "configured_max_concurrent_polls", "observed_max_concurrent_polls",
+        "online_results", "offline_results", "observed_transitions",
+        "clean_shutdown", "panic_or_join_failure",
+    }
+    missing = sorted(required - summary.keys())
+    if missing:
+        raise SustainedEvidenceError(f"summary missing fields: {missing}")
+
+    requested = _number(summary["requested_duration_secs"], "requested_duration_secs")
+    observed = _number(summary["observed_duration_secs"], "observed_duration_secs")
+    if requested != requested_secs:
+        raise SustainedEvidenceError("requested_duration_secs does not match configured duration")
+    if observed < requested_secs:
+        raise SustainedEvidenceError("observed_duration_secs is shorter than requested duration")
+    external = _number(externally_observed_secs, "externally observed duration")
+    if external < requested_secs:
+        raise SustainedEvidenceError("externally observed duration is shorter than requested duration")
+
+    for name in ("endpoint_count", "completed_generations", "first_generation", "last_generation",
+                 "configured_max_concurrent_polls", "observed_max_concurrent_polls",
+                 "online_results", "offline_results"):
+        _number(summary[name], name, integer=True)
+    endpoint_count = summary["endpoint_count"]
+    if endpoint_count != configured_endpoint_count or endpoint_count < MIN_ENDPOINT_COUNT:
+        raise SustainedEvidenceError("endpoint_count does not match configured workload")
+    completed = summary["completed_generations"]
+    first = summary["first_generation"]
+    last = summary["last_generation"]
+    if completed < 2 or first <= 0 or last < first:
+        raise SustainedEvidenceError("invalid sustained generation range")
+    if completed != last - first + 1:
+        raise SustainedEvidenceError("completed_generations is inconsistent with generation range")
+    if summary["configured_max_concurrent_polls"] != configured_max_concurrent_polls:
+        raise SustainedEvidenceError("configured concurrency does not match workload contract")
+    observed_max = summary["observed_max_concurrent_polls"]
+    if observed_max <= 0 or observed_max > configured_max_concurrent_polls:
+        raise SustainedEvidenceError("observed concurrency is outside configured bounds")
+    if summary["online_results"] <= 0 or summary["offline_results"] <= 0:
+        raise SustainedEvidenceError("both online and offline results are required")
+    transitions = summary["observed_transitions"]
+    if not isinstance(transitions, list) or not transitions or not all(isinstance(item, str) and item for item in transitions):
+        raise SustainedEvidenceError("observed_transitions must be a nonempty array of strings")
+    if summary["clean_shutdown"] is not True:
+        raise SustainedEvidenceError("clean_shutdown must be true")
+    if summary["panic_or_join_failure"] is not None:
+        raise SustainedEvidenceError("panic_or_join_failure must be null")
+    return summary
+
+
+def validate_resource_samples(
+    samples: object,
+    *,
+    pid: int,
+    workload_started_ns: int,
+    workload_completed_ns: int,
+    requested_secs: float,
+    sample_interval_secs: float,
+) -> list[dict[str, Any]]:
+    """Validate resource samples captured for one sustained workload process."""
+    if not isinstance(samples, list):
+        raise SustainedEvidenceError("resource samples must be an array")
+    minimum = max(3, int(requested_secs / sample_interval_secs) - 1)
+    if len(samples) < minimum:
+        raise SustainedEvidenceError(f"only {len(samples)} resource samples, need at least {minimum}")
+    for index, sample in enumerate(samples):
+        if not isinstance(sample, dict):
+            raise SustainedEvidenceError(f"resource sample {index} must be an object")
+        for field in ("sample_index", "monotonic_ns", "pid", "rss_bytes", "virtual_bytes", "thread_count"):
+            _number(sample.get(field), f"sample {index}.{field}", integer=True)
+        if sample["sample_index"] != index:
+            raise SustainedEvidenceError("sample_index values must start at zero and be sequential")
+        if sample["pid"] != pid:
+            raise SustainedEvidenceError("resource samples reference more than one PID")
+        if sample["rss_bytes"] <= 0 or sample["virtual_bytes"] <= 0 or sample["thread_count"] <= 0:
+            raise SustainedEvidenceError(f"resource sample {index} has a non-positive metric")
+        if sample.get("process_alive") is not True:
+            raise SustainedEvidenceError(f"resource sample {index} does not prove process_alive")
+        if not workload_started_ns < sample["monotonic_ns"] <= workload_completed_ns:
+            raise SustainedEvidenceError(f"resource sample {index} is outside workload lifetime")
+        if index and sample["monotonic_ns"] <= samples[index - 1]["monotonic_ns"]:
+            raise SustainedEvidenceError("resource sample timestamps must be strictly increasing")
+    elapsed = (samples[-1]["monotonic_ns"] - workload_started_ns) / 1e9
+    if elapsed < requested_secs * 0.8:
+        raise SustainedEvidenceError("last resource sample does not cover 80% of requested runtime")
+    return samples
 
 
 def sample_proc_status(pid: int) -> dict[str, Any] | None:
@@ -312,159 +432,18 @@ def run_sustained(
         print(f"FATAL: cannot parse sustained summary: {e}", file=sys.stderr)
         sys.exit(1)
 
-    required_fields = [
-        "requested_duration_secs",
-        "observed_duration_secs",
-        "endpoint_count",
-        "completed_generations",
-        "first_generation",
-        "last_generation",
-        "observed_max_concurrent_polls",
-        "online_results",
-        "offline_results",
-        "observed_transitions",
-        "clean_shutdown",
-    ]
-    missing = [f for f in required_fields if f not in summary]
-    if missing:
-        print(
-            f"FATAL: sustained summary missing fields: {missing}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # --- Semantic validation of summary values ---
-
-    # requested_duration_secs must equal configured duration.
-    if summary["requested_duration_secs"] != duration_secs:
-        print(
-            f"FATAL: requested_duration_secs {summary['requested_duration_secs']} "
-            f"!= configured {duration_secs}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # observed_duration_secs must be >= requested.
-    if summary["observed_duration_secs"] < requested_secs:
-        print(
-            f"FATAL: observed_duration_secs {summary['observed_duration_secs']} "
-            f"< requested {requested_secs}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Endpoint count must be positive and match the configured workload.
-    if summary["endpoint_count"] <= 0:
-        print(
-            f"FATAL: endpoint_count {summary['endpoint_count']} must be positive",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # At least two complete generations required.
-    if summary["completed_generations"] < 2:
-        print(
-            f"FATAL: completed_generations {summary['completed_generations']} must be >= 2",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # first_generation must be > 0.
-    if summary["first_generation"] <= 0:
-        print(
-            f"FATAL: first_generation {summary['first_generation']} must be > 0",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # last_generation must be >= first_generation.
-    if summary["last_generation"] < summary["first_generation"]:
-        print(
-            f"FATAL: last_generation {summary['last_generation']} "
-            f"< first_generation {summary['first_generation']}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Generation count must be internally consistent.
-    expected_count = summary["last_generation"] - summary["first_generation"] + 1
-    if summary["completed_generations"] != expected_count:
-        print(
-            f"FATAL: completed_generations {summary['completed_generations']} "
-            f"!= last-first+1 ({expected_count})",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # At least one online result.
-    if summary["online_results"] <= 0:
-        print(
-            f"FATAL: online_results {summary['online_results']} must be > 0",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # At least one offline/error result.
-    if summary["offline_results"] <= 0:
-        print(
-            f"FATAL: offline_results {summary['offline_results']} must be > 0",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Observed transitions must be a nonempty list of strings.
-    transitions = summary["observed_transitions"]
-    if not isinstance(transitions, list) or not transitions:
-        print(
-            "FATAL: observed_transitions must be a nonempty array",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    for t in transitions:
-        if not isinstance(t, str) or not t:
-            print(
-                f"FATAL: observed_transitions contains non-string entry: {t!r}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # clean_shutdown must be true.
-    if summary.get("clean_shutdown") is not True:
-        print(
-            f"FATAL: clean_shutdown must be true, got {summary.get('clean_shutdown')!r}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # panic_or_join_failure must be null.
-    if summary.get("panic_or_join_failure") is not None:
-        print(
-            f"FATAL: panic_or_join_failure must be null, got {summary.get('panic_or_join_failure')!r}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Observed concurrency must be positive and not exceed configured limit.
-    configured_max = 4
-    observed_max = summary.get("observed_max_concurrent_polls", 0)
-    if observed_max <= 0:
-        print(
-            f"FATAL: observed_max_concurrent_polls {observed_max} must be > 0",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    if observed_max > configured_max:
-        print(
-            f"FATAL: observed_max_concurrent_polls {observed_max} "
-            f"exceeds configured limit {configured_max}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Step 8: Validate duration.
+    requested_secs = float(duration_secs)
     observed_ns = workload_completed_ns - workload_started_ns
     observed_secs = observed_ns / 1e9
-    requested_secs = float(duration_secs)
+
+    configured_endpoint_count = 10 if duration_secs >= 5 else 9
+    validate_sustained_summary(
+        summary,
+        requested_secs=requested_secs,
+        configured_endpoint_count=configured_endpoint_count,
+        configured_max_concurrent_polls=CONFIGURED_MAX_CONCURRENT_POLLS,
+        externally_observed_secs=observed_secs,
+    )
 
     print(f"Observed duration: {observed_secs:.1f}s (requested: {requested_secs:.0f}s)")
 
@@ -475,61 +454,14 @@ def run_sustained(
         )
         sys.exit(1)
 
-    # Step 9: Validate resource samples.
-    min_samples = max(3, int(requested_secs / sample_interval_secs) - 1)
-    if len(samples) < min_samples:
-        print(
-            f"FATAL: only {len(samples)} samples, need at least {min_samples}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # All samples must show process alive.
-    dead_samples = [s for s in samples if not s["process_alive"]]
-    if dead_samples:
-        print(
-            f"FATAL: {len(dead_samples)} samples show process not alive",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # All samples must have positive RSS.
-    zero_rss = [s for s in samples if s["rss_bytes"] == 0]
-    if zero_rss:
-        print(
-            f"FATAL: {len(zero_rss)} samples have zero RSS",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Monotonic timestamps.
-    for i in range(1, len(samples)):
-        if samples[i]["monotonic_ns"] <= samples[i - 1]["monotonic_ns"]:
-            print(
-                f"FATAL: non-monotonic timestamps at sample {i}",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-    # All samples must reference the same PID.
-    pids = {s["pid"] for s in samples}
-    if len(pids) > 1:
-        print(
-            f"FATAL: samples reference multiple PIDs: {pids}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # Last sample must occur after 80% of requested duration.
-    last_sample_ns = samples[-1]["monotonic_ns"]
-    elapsed_at_last = (last_sample_ns - workload_started_ns) / 1e9
-    if elapsed_at_last < requested_secs * 0.8:
-        print(
-            f"FATAL: last sample at {elapsed_at_last:.1f}s, "
-            f"need >= {requested_secs * 0.8:.1f}s (80% of {requested_secs:.0f}s)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    validate_resource_samples(
+        samples,
+        pid=proc.pid,
+        workload_started_ns=workload_started_ns,
+        workload_completed_ns=workload_completed_ns,
+        requested_secs=requested_secs,
+        sample_interval_secs=sample_interval_secs,
+    )
 
     # Step 10: Report results.
     print(f"\nEvidence written to {evidence_dir}/")
@@ -577,13 +509,17 @@ def main() -> int:
         print("FATAL: --sample-interval-seconds must be positive", file=sys.stderr)
         return 1
 
-    run_sustained(
-        duration_secs=args.duration_seconds,
-        sample_interval_secs=args.sample_interval_seconds,
-        evidence_dir=args.evidence_dir,
-        profile=args.profile,
-    )
-    return 0
+    try:
+        run_sustained(
+            duration_secs=args.duration_seconds,
+            sample_interval_secs=args.sample_interval_seconds,
+            evidence_dir=args.evidence_dir,
+            profile=args.profile,
+        )
+        return 0
+    except SustainedEvidenceError as error:
+        print(f"FATAL: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

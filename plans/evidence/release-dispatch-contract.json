@@ -20,6 +20,20 @@
         "type": "current-run"
       }
     },
+    "registry-reverify-greggd": {
+      "mode": "protocol-publication-boundary-2",
+      "requires_prior_publication": true,
+      "producer_jobs": ["resolve", "protocol-index-check", "registry-reverify-greggd"],
+      "required_stages": ["protocol-index-check", "registry-reverify-greggd"],
+      "aggregation": {"type": "current-run"}
+    },
+    "registry-reverify-gregg": {
+      "mode": "protocol-publication-boundary-2",
+      "requires_prior_publication": true,
+      "producer_jobs": ["resolve", "protocol-index-check", "registry-reverify-gregg"],
+      "required_stages": ["protocol-index-check", "registry-reverify-gregg"],
+      "aggregation": {"type": "current-run"}
+    },
     "binary-prepublish": {
       "mode": "candidate",
       "requires_prior_publication": false,

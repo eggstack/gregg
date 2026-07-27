@@ -16,6 +16,19 @@ use crate::clock::Clock;
 use crate::endpoint::Endpoint;
 use crate::poller::{HttpClient, PollBatch, PollOutcome, PollResult};
 
+/// The scheduler could not deliver a batch because its consumer disappeared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchedulerRunError {
+    /// The batch receiver was dropped while a batch was pending.
+    ReceiverDropped,
+}
+
+/// Receiver and completion handle for an observed scheduler run.
+pub(crate) struct SchedulerRunHandle {
+    pub(crate) batches: mpsc::Receiver<PollBatch>,
+    pub(crate) task: tokio::task::JoinHandle<Result<(), SchedulerRunError>>,
+}
+
 /// Poll scheduler with generation-based concurrency control.
 ///
 /// Spawns a background task that periodically polls all endpoints and
@@ -59,13 +72,22 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         cancel: CancellationToken,
         refresh_rx: mpsc::Receiver<()>,
     ) -> mpsc::Receiver<PollBatch> {
+        self.run_observed(endpoints, cancel, refresh_rx).batches
+    }
+
+    /// Start a polling loop while retaining a handle for positive shutdown observation.
+    pub(crate) fn run_observed(
+        self,
+        endpoints: Vec<Endpoint>,
+        cancel: CancellationToken,
+        refresh_rx: mpsc::Receiver<()>,
+    ) -> SchedulerRunHandle {
         let (tx, rx) = mpsc::channel::<PollBatch>(4);
 
-        tokio::spawn(async move {
-            self.poll_loop(endpoints, tx, cancel, refresh_rx).await;
-        });
+        let task =
+            tokio::spawn(async move { self.poll_loop(endpoints, tx, cancel, refresh_rx).await });
 
-        rx
+        SchedulerRunHandle { batches: rx, task }
     }
 
     /// The main polling loop.
@@ -88,9 +110,9 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         tx: mpsc::Sender<PollBatch>,
         cancel: CancellationToken,
         mut refresh_rx: mpsc::Receiver<()>,
-    ) {
+    ) -> Result<(), SchedulerRunError> {
         if endpoints.is_empty() {
-            return;
+            return Ok(());
         }
 
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
@@ -108,8 +130,11 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         let batch = self
             .poll_generation(&endpoints, &semaphore, generation)
             .await;
-        if tx.send(batch).await.is_err() {
-            return;
+        if tokio::select! {
+            result = tx.send(batch) => result.is_err(),
+            () = cancel.cancelled() => false,
+        } {
+            return Err(SchedulerRunError::ReceiverDropped);
         }
 
         // Consume the interval's initial immediate tick so the next tick
@@ -131,8 +156,11 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                             let batch = self
                                 .poll_generation(&endpoints, &semaphore, generation)
                                 .await;
-                            if tx.send(batch).await.is_err() {
-                                break;
+                            if tokio::select! {
+                                result = tx.send(batch) => result.is_err(),
+                                () = cancel.cancelled() => false,
+                            } {
+                                return Err(SchedulerRunError::ReceiverDropped);
                             }
                         }
                         None => {
@@ -148,12 +176,16 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                     let batch = self
                         .poll_generation(&endpoints, &semaphore, generation)
                         .await;
-                    if tx.send(batch).await.is_err() {
-                        break;
+                    if tokio::select! {
+                        result = tx.send(batch) => result.is_err(),
+                        () = cancel.cancelled() => false,
+                    } {
+                        return Err(SchedulerRunError::ReceiverDropped);
                     }
                 }
             }
         }
+        Ok(())
     }
 
     /// Poll all endpoints for a single generation.

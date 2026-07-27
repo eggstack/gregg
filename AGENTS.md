@@ -123,6 +123,19 @@ name (e.g. `binary-prepublish-greggd`), not a grouped alias (e.g.
 Package provenance is indexed by reading provenance document keys, not inferred
 from stage names.
 
+Cross-run manifests declare `manifest_scope`: current-run dispatch summaries
+are not release manifests, while pre-tag and final manifests require the
+retrieved numeric GitHub artifact ID, exact artifact name, ZIP digest, and ZIP
+size for every selected stage. Finalization checks out immutable tooling at the
+candidate SHA and receives future run selection as bounded, validated base64
+input; it must not read selection data from the frozen candidate tree.
+
+Boundary-2 dependent verification uses the exact Boundary-1 `.crate` bytes and
+must resolve, build, test, install, and exercise `gregg-protocol 1.0.1` from
+the crates.io registry. A checksum-only record is not re-verification. Package
+provenance declares exact relative archive and lockfile paths; traversal-order
+fallbacks are invalid.
+
 Candidate qualification does not require `gregg-protocol 1.0.1` to already exist
 on crates.io. Protocol publication occurs only after candidate qualification and
 tag procedure authorization.

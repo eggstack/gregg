@@ -24,7 +24,7 @@ use crate::endpoint::Endpoint;
 #[cfg(test)]
 use crate::poller::PollActivityObserver;
 use crate::poller::{HttpClient, PollOutcome};
-use crate::scheduler::PollScheduler;
+use crate::scheduler::{PollScheduler, SchedulerRunError};
 use crate::state::AppState;
 
 struct FixtureProcess {
@@ -197,7 +197,9 @@ async fn mixed_fleet_sustained_workload() {
         Duration::from_millis(200),
         4,
     );
-    let mut batches = scheduler.run(endpoints, cancel.clone(), refresh_rx);
+    let run = scheduler.run_observed(endpoints, cancel.clone(), refresh_rx);
+    let mut batches = run.batches;
+    let mut scheduler_task = run.task;
 
     let workload_start = Instant::now();
     let mut completed_generations: u64 = 0;
@@ -268,7 +270,8 @@ async fn mixed_fleet_sustained_workload() {
                 last_generation = gen;
             }
             Ok(None) => {
-                panic_or_join_failure = Some("scheduler channel closed unexpectedly".to_string());
+                panic_or_join_failure =
+                    Some("scheduler channel closed before cancellation".to_string());
                 break;
             }
             Err(_) => {
@@ -281,19 +284,22 @@ async fn mixed_fleet_sustained_workload() {
     // Cancel and positively observe scheduler shutdown with bounded deadline.
     cancel.cancel();
     let shutdown_deadline = Duration::from_secs(5);
-    let shutdown_result = tokio::time::timeout(shutdown_deadline, async {
-        // Wait for the scheduler task to finish by attempting to recv one more
-        // time; the channel should be closed after cancellation.
-        while batches.recv().await.is_some() {
-            // Drain remaining batches.
+    let shutdown_result = tokio::time::timeout(shutdown_deadline, &mut scheduler_task).await;
+    match shutdown_result {
+        Ok(Ok(Ok(()))) => clean_shutdown = true,
+        Ok(Ok(Err(SchedulerRunError::ReceiverDropped))) => {
+            panic_or_join_failure = Some("scheduler receiver dropped while sending".to_string());
         }
-    })
-    .await;
-    if let Ok(()) = shutdown_result {
-        clean_shutdown = true;
-    } else {
-        panic_or_join_failure = Some("scheduler did not shut down within deadline".to_string());
+        Ok(Err(error)) => {
+            panic_or_join_failure = Some(format!("scheduler task join failure: {error}"));
+        }
+        Err(_) => {
+            scheduler_task.abort();
+            let _ = scheduler_task.await;
+            panic_or_join_failure = Some("scheduler did not shut down within deadline".to_string());
+        }
     }
+    drop(batches);
 
     // Verify at least one online and one offline/error result.
     assert!(

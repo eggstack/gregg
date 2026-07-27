@@ -87,6 +87,50 @@ class SummaryValidationTests(unittest.TestCase):
             except json.JSONDecodeError:
                 pass
 
+    def valid_summary(self) -> dict[str, object]:
+        return {
+            "requested_duration_secs": 3.0,
+            "observed_duration_secs": 3.1,
+            "endpoint_count": 9,
+            "completed_generations": 3,
+            "first_generation": 1,
+            "last_generation": 3,
+            "configured_max_concurrent_polls": 4,
+            "observed_max_concurrent_polls": 2,
+            "online_results": 3,
+            "offline_results": 3,
+            "observed_transitions": ["recover:offline->online"],
+            "clean_shutdown": True,
+            "panic_or_join_failure": None,
+        }
+
+    def test_production_summary_validator_accepts_complete_summary(self) -> None:
+        result = runner_mod.validate_sustained_summary(
+            self.valid_summary(), requested_secs=3.0, configured_endpoint_count=9,
+            configured_max_concurrent_polls=4, externally_observed_secs=3.0,
+        )
+        self.assertEqual(result["endpoint_count"], 9)
+
+    def test_production_summary_validator_rejects_numeric_strings_and_bool_integers(self) -> None:
+        for field, value in (("online_results", "3"), ("completed_generations", True)):
+            summary = self.valid_summary()
+            summary[field] = value
+            with self.assertRaises(runner_mod.SustainedEvidenceError):
+                runner_mod.validate_sustained_summary(
+                    summary, requested_secs=3.0, configured_endpoint_count=9,
+                    configured_max_concurrent_polls=4, externally_observed_secs=3.0,
+                )
+
+    def test_production_summary_validator_rejects_endpoint_and_concurrency_mismatch(self) -> None:
+        for field, value in (("endpoint_count", 10), ("configured_max_concurrent_polls", 8)):
+            summary = self.valid_summary()
+            summary[field] = value
+            with self.assertRaises(runner_mod.SustainedEvidenceError):
+                runner_mod.validate_sustained_summary(
+                    summary, requested_secs=3.0, configured_endpoint_count=9,
+                    configured_max_concurrent_polls=4, externally_observed_secs=3.0,
+                )
+
 
 class SampleValidationTests(unittest.TestCase):
     """Test sample validation logic against synthetic data."""
@@ -149,6 +193,30 @@ class SampleValidationTests(unittest.TestCase):
             )
         )
         self.assertEqual(len({s["pid"] for s in samples}), 1)
+
+    def test_production_resource_validator_checks_complete_records(self) -> None:
+        samples = [
+            {"sample_index": i, "monotonic_ns": (i + 1) * 1_000_000_000,
+             "pid": 42, "rss_bytes": 1024, "virtual_bytes": 2048,
+             "thread_count": 1, "process_alive": True}
+            for i in range(3)
+        ]
+        self.assertEqual(
+            len(runner_mod.validate_resource_samples(
+                samples, pid=42, workload_started_ns=0,
+                workload_completed_ns=4_000_000_000, requested_secs=3.0,
+                sample_interval_secs=1.0,
+            )),
+            3,
+        )
+
+    def test_production_resource_validator_rejects_malformed_record(self) -> None:
+        with self.assertRaises(runner_mod.SustainedEvidenceError):
+            runner_mod.validate_resource_samples(
+                [{"sample_index": 0, "pid": 42, "monotonic_ns": 1}], pid=42,
+                workload_started_ns=0, workload_completed_ns=4_000_000_000,
+                requested_secs=3.0, sample_interval_secs=1.0,
+            )
 
 
 class DurationValidationTests(unittest.TestCase):
@@ -216,6 +284,19 @@ class EarlyExitDetectionTests(unittest.TestCase):
             timeout=5,
         )
         self.assertNotEqual(result.returncode, 0)
+
+    def test_real_runner_smoke_reaches_success_path(self) -> None:
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as raw:
+            result = subprocess.run(
+                ["python3", str(RUNNER), "--duration-seconds", "2",
+                 "--sample-interval-seconds", "0.25", "--evidence-dir", raw],
+                cwd=ROOT, capture_output=True, text=True, timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads((Path(raw) / "sustained-summary.json").read_text())
+            self.assertTrue(summary["clean_shutdown"])
 
 
 class MissingSummaryTests(unittest.TestCase):

@@ -12,8 +12,8 @@ on:
         required: true
         type: string
         default: "1.0.1"
-      selection_file:
-        description: "Path to checked-in run selection JSON (e.g. plans/evidence/v1.0.1-run-selection.json)"
+      selection_base64:
+        description: "Base64-encoded immutable run selection JSON"
         required: true
         type: string
       mode:
@@ -54,7 +54,6 @@ jobs:
           set -euo pipefail
           [[ "${{ inputs.candidate_sha }}" =~ ^[0-9a-f]{40}$ ]] || { echo "FATAL: candidate_sha must be a lowercase 40-character SHA" >&2; exit 1; }
           [[ "${{ inputs.release_version }}" == "1.0.1" ]] || { echo "FATAL: release_version must be 1.0.1" >&2; exit 1; }
-          test -f "${{ inputs.selection_file }}" || { echo "FATAL: selection file not found" >&2; exit 1; }
           actual_sha="$(git rev-parse HEAD)"
           test "${actual_sha}" = "${{ inputs.candidate_sha }}" || { echo "FATAL: checked-out SHA ${actual_sha} does not match candidate ${{ inputs.candidate_sha }}" >&2; exit 1; }
           if [[ "${{ inputs.mode }}" == "final" ]]; then
@@ -66,8 +65,16 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence final
+          selection_info="$(python3 scripts/decode-release-selection.py \
+            --base64 '${{ inputs.selection_base64 }}' \
+            --candidate-sha '${{ inputs.candidate_sha }}' \
+            --release-version '${{ inputs.release_version }}' \
+            --output evidence/release-run-selection.json)"
+          selection_sha="$(jq -r .sha256 <<<"${selection_info}")"
+          selection_size="$(jq -r .size_bytes <<<"${selection_info}")"
+          printf '%s\n' "selection_sha=${selection_sha}" "selection_size=${selection_size}" > evidence/selection-input.txt
           python3 scripts/github-artifact-retrieval.py \
-            --selection "${{ inputs.selection_file }}" \
+            --selection evidence/release-run-selection.json \
             --repo "${{ github.repository }}" \
             --output evidence/retrieved-manifest.json
       - name: Merge package provenance
@@ -90,11 +97,14 @@ jobs:
           CARGO_REGISTRY_DEFAULT_PROTOCOL: sparse
         run: |
           set -euo pipefail
-          # Query crates.io for current 1.0.1 records.
+          # Query the release registry records and the historical 1.0.0 records separately.
           for crate in gregg-protocol greggd gregg; do
             curl --fail --silent --show-error \
               "https://crates.io/api/v1/crates/${crate}/${{ inputs.release_version }}" \
               > "evidence/${crate}-registry.json"
+            curl --fail --silent --show-error \
+              "https://crates.io/api/v1/crates/${crate}/1.0.0" \
+              > "evidence/${crate}-1.0.0-registry.json"
           done
           # Build registry summary with role field.
           python3 -c "
@@ -116,21 +126,25 @@ jobs:
               json.dump(summary, f, indent=2, sort_keys=True)
               f.write('\n')
           "
-          # Build 1.0.0 disposition from observed crates.io state.
+          # Build the explicit operator disposition from the actual 1.0.0 responses.
           python3 -c "
+          import datetime as dt
           import json, sys
           crates = ['gregg-protocol', 'greggd', 'gregg']
-          disposition = {}
+          observed_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+          records = {}
           for crate in crates:
-              with open(f'evidence/{crate}-registry.json') as f:
+              with open(f'evidence/{crate}-1.0.0-registry.json') as f:
                   data = json.load(f)
               ver = data['version']
-              disposition[crate] = {
+              records[crate] = {
                   'version': ver['num'],
                   'yanked': ver['yanked'],
                   'checksum': ver['cksum'],
-                  'observed_at': ver['created_at'],
+                  'published_at': ver['created_at'],
+                  'decision': 'retain',
               }
+          disposition = {'schema_version': 1, 'observed_at': observed_at, 'crates': records}
           with open('evidence/1.0.0-disposition.json', 'w') as f:
               json.dump(disposition, f, indent=2, sort_keys=True)
               f.write('\n')
@@ -139,24 +153,13 @@ jobs:
           jq -n \
             '[{name:"registry-summary.json",role:"registry-summary"},{name:"1.0.0-disposition.json",role:"version-1.0.0-disposition"}]' \
             > evidence/postpublish-evidence-artifacts.json
-      - name: Archive re-verification (final mode)
+      - name: Materialize singleton evidence by role
         if: ${{ inputs.mode == 'final' }}
         run: |
           set -euo pipefail
-          # Re-verify the already-selected greggd and gregg archives against
-          # the actual registry protocol dependency (now published).
-          if [[ -f evidence/provenance-index.json ]]; then
-            for crate in greggd gregg; do
-              archive_path="$(jq -r ".packages[\"${crate}\"].archive_path // empty" evidence/provenance-index.json)"
-              if [[ -n "$archive_path" && -f "$archive_path" ]]; then
-                echo "Re-verifying ${crate} archive against registry protocol..."
-                # The archive was already verified at Boundary 1 against the local source.
-                # Here we record that re-verification occurred.
-                sha256sum "${archive_path}" > "evidence/${crate}-reverified.sha256"
-                echo "${crate} archive re-verification recorded"
-              fi
-            done
-          fi
+          python3 scripts/materialize-release-evidence.py \
+            --artifact-list evidence/postpublish-evidence-artifacts.json \
+            --root evidence --output evidence/role-index.json
       - name: Generate manifest
         run: |
           set -euo pipefail
@@ -169,6 +172,9 @@ jobs:
             --retrieved-manifest evidence/retrieved-manifest.json
             --mode "${{ inputs.mode }}"
             --tooling-sha "${tooling_sha}"
+            --selection-source workflow-dispatch-base64
+            --selection-workflow-run-id "${{ github.run_id }}"
+            --selection-workflow-run-attempt "${{ github.run_attempt }}"
             --requirements plans/evidence/release-requirements.json
           )
           if [[ "${{ inputs.mode }}" == "final" ]]; then

@@ -560,6 +560,7 @@ class EvidenceTests(unittest.TestCase):
                 "tooling_sha": SHA,
                 "tag": None,
                 "mode": "pre-tag",
+                "manifest_scope": "current-run",
                 "required_stages": ["one", "two"],
                 "stages": [
                     {"stage": "one", "workflow_run_id": "100", "workflow_run_attempt": "1",
@@ -1207,12 +1208,16 @@ class EvidenceTests(unittest.TestCase):
                 ]
                 (directory / "registry-summary.json").write_text(json.dumps(registry_summary))
                 disposition = {
-                    "gregg-protocol": {"version": "1.0.1", "yanked": False,
-                                       "checksum": "a" * 64, "observed_at": "2026-07-24T00:00:00Z"},
-                    "greggd": {"version": "1.0.1", "yanked": False,
-                               "checksum": "b" * 64, "observed_at": "2026-07-24T00:00:00Z"},
-                    "gregg": {"version": "1.0.1", "yanked": False,
-                              "checksum": "c" * 64, "observed_at": "2026-07-24T00:00:00Z"},
+                    "schema_version": 1,
+                    "observed_at": "2026-07-24T00:00:00Z",
+                    "crates": {
+                        "gregg-protocol": {"version": "1.0.0", "yanked": False,
+                                           "checksum": "a" * 64, "published_at": "2026-07-24T00:00:00Z", "decision": "retain"},
+                        "greggd": {"version": "1.0.0", "yanked": False,
+                                   "checksum": "b" * 64, "published_at": "2026-07-24T00:00:00Z", "decision": "retain"},
+                        "gregg": {"version": "1.0.0", "yanked": False,
+                                  "checksum": "c" * 64, "published_at": "2026-07-24T00:00:00Z", "decision": "retain"},
+                    },
                 }
                 (directory / "disposition.json").write_text(json.dumps(disposition))
 

@@ -64,6 +64,8 @@ PRE_TAG_REQUIRED_STAGES = [
     "soak-macos-arm64-24h",
 ]
 
+BOUNDARY_2_STAGES = ["registry-reverify-greggd", "registry-reverify-gregg"]
+
 FINAL_EXTRA_STAGES = [
     "postpublish-verify",
 ]
@@ -165,7 +167,7 @@ def validate_selection(selection: dict[str, Any]) -> None:
         fail("selection.runs must be a nonempty object")
 
     # Reject grouped aliases that do not correspond to exact logical stage names.
-    all_valid_stages = set(PRE_TAG_REQUIRED_STAGES) | set(FINAL_EXTRA_STAGES)
+    all_valid_stages = set(PRE_TAG_REQUIRED_STAGES) | set(BOUNDARY_2_STAGES) | set(FINAL_EXTRA_STAGES)
     for stage_name in runs:
         if stage_name not in all_valid_stages:
             fail(
@@ -438,31 +440,37 @@ def build_provenance_index(artifact_cache: dict[str, dict[str, Any]]) -> dict[st
                         "provenance_path": str(prov_path),
                         "artifact_key": artifact_key,
                     }
-            # Find lockfile — match by package name in filename when possible.
-            lockfile_files = sorted(extract_dir.rglob("Cargo.lock"))
-            if lockfile_files:
-                for package_name in packages:
-                    if package_name in index["packages"]:
-                        # Try to find a lockfile named after the package
-                        # (e.g., greggd-Cargo.lock, gregg-Cargo.lock).
-                        pkg_lockfiles = [
-                            lf for lf in lockfile_files
-                            if lf.stem.startswith(package_name) or lf.parent.name == package_name
-                        ]
-                        if pkg_lockfiles:
-                            index["packages"][package_name]["lockfile_path"] = str(pkg_lockfiles[0])
-                        elif lockfile_files:
-                            index["packages"][package_name]["lockfile_path"] = str(
-                                lockfile_files[0]
-                            )
-            # Find .crate archives.
-            archive_files = sorted(extract_dir.rglob("*.crate"))
-            if archive_files:
-                for package_name in packages:
-                    if package_name in index["packages"]:
-                        index["packages"][package_name]["archive_path"] = str(
-                            archive_files[0]
-                        )
+            for package_name, record in packages.items():
+                if package_name not in index["packages"]:
+                    continue
+                if not isinstance(record, dict):
+                    fail(f"provenance record for {package_name} is not an object")
+                archive_rel = record.get("archive_path")
+                if not isinstance(archive_rel, str) or not archive_rel:
+                    fail(f"provenance for {package_name} must declare archive_path")
+                archive = (extract_dir / archive_rel).resolve()
+                if extract_dir.resolve() not in archive.parents or not archive.is_file():
+                    fail(f"declared archive for {package_name} is missing or escapes artifact root")
+                archive_sha, archive_size = sha256_of_file(archive)
+                if archive_sha != record.get("sha256") or archive_size != record.get("size_bytes"):
+                    fail(f"declared archive digest/size mismatch for {package_name}")
+                if archive.name != record.get("archive") or archive.name != f"{package_name}-{prov_data.get('release_version')}.crate":
+                    fail(f"declared archive filename does not match {package_name}")
+                index["packages"][package_name]["archive_path"] = str(archive)
+                index["packages"][package_name]["archive_sha256"] = archive_sha
+                index["packages"][package_name]["archive_size_bytes"] = archive_size
+
+                lock_rel = record.get("verification_lockfile_path")
+                if package_name != "gregg-protocol" and (not isinstance(lock_rel, str) or not lock_rel):
+                    fail(f"binary package {package_name} must declare verification_lockfile_path")
+                if isinstance(lock_rel, str):
+                    lock = (extract_dir / lock_rel).resolve()
+                    if extract_dir.resolve() not in lock.parents or not lock.is_file():
+                        fail(f"declared lockfile for {package_name} is missing or escapes artifact root")
+                    lock_sha, lock_size = sha256_of_file(lock)
+                    if lock_sha != record.get("verification_lockfile_sha256") or lock_size != record.get("verification_lockfile_size_bytes"):
+                        fail(f"declared lockfile digest/size mismatch for {package_name}")
+                    index["packages"][package_name]["lockfile_path"] = str(lock)
     return index
 
 
@@ -598,6 +606,13 @@ def main() -> int:
         "candidate_sha": expected_sha,
         "tooling_sha": tooling_sha,
         "retrieved_at": retrieved_at,
+        "selection": {
+            "source": "selection-file",
+            "sha256": hashlib.sha256(args.selection.read_bytes()).hexdigest(),
+            "size_bytes": args.selection.stat().st_size,
+            "workflow_run_id": str(os.environ.get("GITHUB_RUN_ID", "retrieval")),
+            "workflow_run_attempt": str(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+        },
         "stages": stages,
         "provenance_index": provenance_index,
         "verdict": "pass",

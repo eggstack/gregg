@@ -15,6 +15,8 @@ on:
         options:
           - protocol-prepublish
           - protocol-index-check
+          - registry-reverify-greggd
+          - registry-reverify-gregg
           - binary-prepublish
           - native-evidence
           - mixed-fleet-client
@@ -204,7 +206,7 @@ jobs:
   protocol-index-check:
     name: Indexed protocol prerequisite
     needs: resolve
-    if: ${{ inputs.stage == 'protocol-index-check' || inputs.stage == 'binary-prepublish' || inputs.stage == 'postpublish-verify' }}
+    if: ${{ inputs.stage == 'protocol-index-check' || inputs.stage == 'registry-reverify-greggd' || inputs.stage == 'registry-reverify-gregg' || inputs.stage == 'binary-prepublish' || inputs.stage == 'postpublish-verify' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -231,7 +233,7 @@ jobs:
           cargo check --manifest-path consumer/Cargo.toml --locked
           cargo tree --manifest-path consumer/Cargo.toml --locked | tee evidence/consumer-tree.txt
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n '[{name:"registry.json",artifact_id:"registry-json"},{name:"consumer-tree.txt",artifact_id:"consumer-tree"}]' > evidence/artifacts.json
+          jq -n '[{name:"registry.json",role:"registry-summary"},{name:"consumer-tree.txt",role:"consumer-tree"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
             --release-version "1.0.1" --stage protocol-index-check --workflow-run-id "${GITHUB_RUN_ID}" \
@@ -248,6 +250,78 @@ jobs:
           name: protocol-index-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
           path: evidence
           if-no-files-found: error
+
+  registry-reverify-greggd:
+    name: Boundary-2 registry re-verification (greggd)
+    needs: [resolve, protocol-index-check]
+    if: ${{ always() && inputs.stage == 'registry-reverify-greggd' && needs.protocol-index-check.result == 'success' && inputs.package_run_id != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-greggd-${{ needs.resolve.outputs.short_sha }}-${{ inputs.package_run_attempt }}
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: boundary-1
+      - name: Re-verify exact Boundary-1 archive against registry
+        run: |
+          set -euo pipefail
+          archive="$(jq -r '.packages.greggd.archive_path' boundary-1/evidence/package-provenance.json)"
+          checksum="$(curl --fail --silent https://crates.io/api/v1/crates/gregg-protocol/1.0.1 | jq -r '.version.cksum')"
+          python3 scripts/registry-reverify.py --archive "boundary-1/${archive}" --package greggd \
+            --expected-sha256 "$(jq -r '.packages.greggd.sha256' boundary-1/evidence/package-provenance.json)" \
+            --protocol-checksum "${checksum}" --output evidence/registry-reverify-greggd.json
+          jq -n '[{name:"registry-reverify-greggd.json",role:"registry-reverify-greggd"}]' > evidence/artifacts.json
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
+            --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
+            --stage registry-reverify-greggd --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job-name registry-reverify-greggd --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
+            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-reverify-greggd-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
+
+  registry-reverify-gregg:
+    name: Boundary-2 registry re-verification (gregg)
+    needs: [resolve, protocol-index-check]
+    if: ${{ always() && inputs.stage == 'registry-reverify-gregg' && needs.protocol-index-check.result == 'success' && inputs.package_run_id != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.candidate_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: binary-gregg-${{ needs.resolve.outputs.short_sha }}-${{ inputs.package_run_attempt }}
+          run-id: ${{ inputs.package_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: boundary-1
+      - name: Re-verify exact Boundary-1 archive against registry
+        run: |
+          set -euo pipefail
+          archive="$(jq -r '.packages.gregg.archive_path' boundary-1/evidence/package-provenance.json)"
+          checksum="$(curl --fail --silent https://crates.io/api/v1/crates/gregg-protocol/1.0.1 | jq -r '.version.cksum')"
+          python3 scripts/registry-reverify.py --archive "boundary-1/${archive}" --package gregg \
+            --expected-sha256 "$(jq -r '.packages.gregg.sha256' boundary-1/evidence/package-provenance.json)" \
+            --protocol-checksum "${checksum}" --output evidence/registry-reverify-gregg.json
+          jq -n '[{name:"registry-reverify-gregg.json",role:"registry-reverify-gregg"}]' > evidence/artifacts.json
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
+            --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
+            --stage registry-reverify-gregg --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --job-name registry-reverify-gregg --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
+            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: registry-reverify-gregg-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
+          path: evidence
 
   binary-prepublish:
     name: Binary package gate
@@ -315,7 +389,7 @@ jobs:
             --package "${{ matrix.crate }}" "${archive}" "${binary}" "evidence/${{ matrix.crate }}-Cargo.lock" --metadata "evidence/${{ matrix.crate }}-metadata.json"
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           jq -n --arg archive "${{ matrix.crate }}-${{ needs.resolve.outputs.candidate_version }}.crate" \
-            '[{name:$archive,artifact_id:"package-archive"},{name:"package-provenance.json",artifact_id:"package-provenance"},{name:"Cargo.lock",artifact_id:"verification-lockfile"}]' > evidence/artifacts.json
+            '[{name:$archive,role:"package-archive"},{name:"package-provenance.json",role:"package-provenance"},{name:"Cargo.lock",role:"verification-lockfile"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
             --release-version "${{ needs.resolve.outputs.candidate_version }}" --stage "binary-prepublish-${{ matrix.crate }}" \
@@ -372,7 +446,7 @@ jobs:
           cargo +1.75 build --manifest-path "${package_dir}/Cargo.toml" --all-features
           cargo +1.75 test --manifest-path "${package_dir}/Cargo.toml" --all-features | tee "evidence/${{ matrix.crate }}-msrv.txt"
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n '[{name:"Cargo.lock",artifact_id:"msrv-lockfile"},{name:"msrv.txt",artifact_id:"msrv-transcript"}]' > evidence/artifacts.json
+          jq -n '[{name:"Cargo.lock",role:"msrv-lockfile"},{name:"msrv.txt",role:"msrv-transcript"}]' > evidence/artifacts.json
           python3 scripts/validate-release-evidence.py write-candidate \
             --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
             --release-version "${{ needs.resolve.outputs.candidate_version }}" --stage "binary-msrv-${{ matrix.crate }}" \
@@ -966,7 +1040,8 @@ jobs:
           test "$(stat -c '%a' "${client_config}")" = 600
           sha256sum "${RUNNER_TEMP}/greggd/bin/greggd" "${RUNNER_TEMP}/gregg/bin/gregg" | tee evidence/installed.sha256
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n '[{name:"registry-summary.json",artifact_id:"registry-summary"},{name:"installed-daemon-verifier.txt",artifact_id:"daemon-verifier"},{name:"installed.sha256",artifact_id:"binary-checksums"},{name:"greggd-install.txt",artifact_id:"greggd-install"},{name:"gregg-install.txt",artifact_id:"gregg-install"}]' > evidence/artifacts.json
+          jq -n '[{name:"registry-summary.json",role:"registry-summary"},{name:"installed-daemon-verifier.txt",role:"daemon-verifier"},{name:"installed.sha256",role:"binary-checksums"},{name:"greggd-install.txt",role:"greggd-install"},{name:"gregg-install.txt",role:"gregg-install"}]' > evidence/artifacts.json
+          python3 scripts/materialize-release-evidence.py --artifact-list evidence/artifacts.json --root evidence --output evidence/role-index.json
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 --stage postpublish-verify --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" --job-name postpublish-verify --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json --executable greggd "$(awk '/greggd/{print $1}' evidence/installed.sha256)" "$(stat -c '%s' "${RUNNER_TEMP}/greggd/bin/greggd")" --executable gregg "$(awk '/gregg/{print $1}' evidence/installed.sha256)" "$(stat -c '%s' "${RUNNER_TEMP}/gregg/bin/gregg")"
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version 1.0.1
       - uses: actions/upload-artifact@v4

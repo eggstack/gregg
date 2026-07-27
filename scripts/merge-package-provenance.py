@@ -83,6 +83,10 @@ def validate_provenance(value: dict, *, expected_sha: str, expected_version: str
     for field in ("archive", "sha256", "size_bytes"):
         if field not in record:
             fail(f"package {expected_package} is missing required field {field}")
+    if not isinstance(record.get("archive_path"), str) or not record["archive_path"]:
+        fail(f"package {expected_package} is missing archive_path")
+    if Path(record["archive_path"]).is_absolute() or ".." in Path(record["archive_path"]).parts:
+        fail(f"package {expected_package} archive_path escapes artifact root")
     if not isinstance(record["archive"], str) or not record["archive"]:
         fail(f"package {expected_package} archive must be a nonempty string")
     if not isinstance(record["sha256"], str) or not SHA256_RE.fullmatch(record["sha256"]):
@@ -96,6 +100,8 @@ def validate_provenance(value: dict, *, expected_sha: str, expected_version: str
         for field in ("verification_lockfile", "verification_lockfile_sha256", "verification_lockfile_size_bytes"):
             if field not in record:
                 fail(f"binary package {expected_package} is missing {field}")
+        if not isinstance(record.get("verification_lockfile_path"), str) or not record["verification_lockfile_path"]:
+            fail(f"binary package {expected_package} is missing verification_lockfile_path")
         if not isinstance(record["verification_lockfile"], str) or not record["verification_lockfile"]:
             fail(f"package {expected_package} verification_lockfile must be a nonempty string")
         if not isinstance(record["verification_lockfile_sha256"], str) or not SHA256_RE.fullmatch(record["verification_lockfile_sha256"]):

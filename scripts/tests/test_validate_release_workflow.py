@@ -289,6 +289,8 @@ class TestTruthTable(unittest.TestCase):
     STAGE_TRUTH_TABLE = {
         "protocol-prepublish": ["resolve", "source-ci", "protocol-prepublish"],
         "protocol-index-check": ["resolve", "protocol-index-check"],
+        "registry-reverify-greggd": ["resolve", "protocol-index-check", "registry-reverify-greggd"],
+        "registry-reverify-gregg": ["resolve", "protocol-index-check", "registry-reverify-gregg"],
         "binary-prepublish": ["resolve", "source-ci", "protocol-index-check", "binary-prepublish", "binary-msrv"],
         "native-evidence": ["resolve", "source-ci", "native-evidence", "native-package-evidence"],
         "mixed-fleet-client": ["resolve", "source-ci", "mixed-fleet-client"],
@@ -781,6 +783,7 @@ class TestValidateStageContract(unittest.TestCase):
         requirements = {
             "pre_tag_required_stages": [
                 "source-ci", "protocol-prepublish", "protocol-index-check",
+                "registry-reverify-greggd", "registry-reverify-gregg",
                 "binary-prepublish-greggd", "binary-prepublish-gregg",
                 "binary-msrv-greggd", "binary-msrv-gregg",
                 "native-source-linux-x86-64", "native-source-linux-arm64",

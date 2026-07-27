@@ -597,6 +597,8 @@ def validate_workflow() -> list[WorkflowViolation]:
     STAGE_TRUTH_TABLE: dict[str, list[str]] = {
         "protocol-prepublish": ["resolve", "source-ci", "protocol-prepublish"],
         "protocol-index-check": ["resolve", "protocol-index-check"],
+        "registry-reverify-greggd": ["resolve", "protocol-index-check", "registry-reverify-greggd"],
+        "registry-reverify-gregg": ["resolve", "protocol-index-check", "registry-reverify-gregg"],
         "binary-prepublish": ["resolve", "source-ci", "binary-prepublish", "binary-msrv"],
         "native-evidence": ["resolve", "source-ci", "native-evidence", "native-package-evidence"],
         "mixed-fleet-client": ["resolve", "source-ci", "mixed-fleet-client"],

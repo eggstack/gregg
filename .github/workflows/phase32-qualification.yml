@@ -1,0 +1,53 @@
+name: phase32-qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: "Exact implementation SHA to qualify"
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: Nonpublishing executable-closure qualification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Verify immutable checkout
+        run: test "$(git rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
+      - name: Local CI gates
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo test --workspace --all-targets --all-features
+          cargo doc --workspace --no-deps
+          python3 -m unittest discover -s scripts/tests -p 'test*.py'
+          python3 scripts/validate-release-workflow.py
+          for script in scripts/*.sh packaging/*.sh; do bash -n "$script"; done
+      - name: Real sustained smoke
+        run: |
+          set -euo pipefail
+          python3 scripts/run-mixed-fleet-sustained.py --duration-seconds 3 \
+            --sample-interval-seconds 0.25 --evidence-dir evidence/sustained-smoke
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: phase32-qualification-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
+          path: evidence
+          if-no-files-found: warn
