@@ -998,23 +998,24 @@ mod tests {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let body = body.clone();
                 let status_line = status_line.clone();
-                tokio::spawn(async move {
-                    let mut buf = vec![0u8; 4096];
-                    let mut total = 0;
-                    loop {
-                        let n = stream.read(&mut buf[total..]).await.unwrap();
-                        total += n;
-                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
-                            break;
-                        }
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    if n == 0 {
+                        return;
                     }
-                    let header = format!(
-                        "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n",
-                        body.len()
-                    );
-                    stream.write_all(header.as_bytes()).await.unwrap();
-                    stream.write_all(body.as_bytes()).await.unwrap();
-                });
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let header = format!(
+                    "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
             }
         });
 
