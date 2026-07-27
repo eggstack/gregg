@@ -252,6 +252,10 @@ def run_sustained(
         sample_ns = monotonic_ns()
         info = sample_proc_status(proc.pid)
         if info is not None:
+            # Discard samples taken while the process is already exiting;
+            # VmRSS can drop to zero during teardown.
+            if not info["process_alive"]:
+                break
             sample = {
                 "sample_index": sample_index,
                 "monotonic_ns": sample_ns,
