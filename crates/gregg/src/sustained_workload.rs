@@ -138,10 +138,12 @@ async fn mixed_fleet_sustained_workload() {
         .ok()
         .map(PathBuf::from);
 
-    let modes = [
+    // The `timeout` fixture sleeps 3 seconds, which exceeds short smoke-test
+    // durations.  Exclude it when the requested duration is too brief for it
+    // to contribute at least one result.
+    let mut modes: Vec<&str> = vec![
         "healthy",
         "slow",
-        "timeout",
         "malformed",
         "error",
         "stale",
@@ -149,9 +151,12 @@ async fn mixed_fleet_sustained_workload() {
         "offline",
         "healthy-to-failure",
     ];
+    if requested_secs >= 5 {
+        modes.insert(2, "timeout");
+    }
     let mut fixtures = Vec::new();
     let mut endpoints = Vec::new();
-    for mode in modes {
+    for &mode in &modes {
         let (fixture, port) = start_fixture(mode);
         fixtures.push(fixture);
         endpoints.push(endpoint_for(mode, port, mode));
@@ -212,7 +217,6 @@ async fn mixed_fleet_sustained_workload() {
                 if first_generation == 0 {
                     first_generation = gen;
                 }
-                last_generation = gen;
                 completed_generations += 1;
 
                 let concurrent = batch.results.len();
@@ -259,6 +263,7 @@ async fn mixed_fleet_sustained_workload() {
                     gen > last_generation || completed_generations == 1,
                     "generation numbers must be strictly increasing"
                 );
+                last_generation = gen;
             }
             Ok(None) => {
                 clean_shutdown = false;
