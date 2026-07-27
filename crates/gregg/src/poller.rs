@@ -990,46 +990,13 @@ mod tests {
     #[tokio::test]
     async fn multiple_rapid_polls_same_result() {
         let body = valid_snapshot_json();
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let status_line = "200 OK".to_string();
-        tokio::spawn(async move {
-            for _ in 0..10 {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let body = body.clone();
-                let status_line = status_line.clone();
-                let mut buf = vec![0u8; 4096];
-                let mut total = 0;
-                loop {
-                    let n = stream.read(&mut buf[total..]).await.unwrap();
-                    if n == 0 {
-                        return;
-                    }
-                    total += n;
-                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let header = format!(
-                    "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).await.unwrap();
-                stream.write_all(body.as_bytes()).await.unwrap();
-            }
-        });
-
-        let ep = Endpoint {
-            id: "test-id".into(),
-            host: "127.0.0.1".into(),
-            port: addr.port(),
-            name: None,
-        };
         let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let mut outcomes = Vec::new();
         for _ in 0..10 {
+            let url = mock_server(body.clone().into_bytes(), "200 OK").await;
+            let ep = endpoint_for(&url);
             let result = client.poll(&ep, &clock).await;
             outcomes.push(result.outcome.clone());
         }
