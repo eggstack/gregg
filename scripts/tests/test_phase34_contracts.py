@@ -150,3 +150,4 @@ class QualificationContractTests(unittest.TestCase):
             {"registry-summary", "version-1.0.0-disposition"},
         )
         self.assertEqual(len(contract["required_command_names"]), 10)
+        self.assertEqual(len(contract["required_negative_cases"]), 45)

@@ -65,6 +65,26 @@
     "invalid-utf8-disposition",
     "invalid-utf8-selection",
     "wrong-actor-selection",
-    "empty-rationale-disposition"
+    "empty-rationale-disposition",
+    "null-lockfile-checksum",
+    "malformed-lockfile-checksum",
+    "lockfile-registry-checksum-mismatch",
+    "registry-archive-checksum-mismatch",
+    "directory-registry-source",
+    "git-registry-source",
+    "non-loopback-qualification-registry",
+    "missing-command-evidence-index",
+    "index-missing-required-command",
+    "command-record-nonzero-status",
+    "transcript-digest-mismatch",
+    "index-path-traversal",
+    "candidate-nonexistent-artifact",
+    "candidate-artifact-digest-mismatch",
+    "candidate-artifact-size-mismatch",
+    "missing-pre-tag-stage",
+    "missing-protocol-index-stage",
+    "missing-boundary2-package",
+    "extra-final-stage",
+    "missing-singleton-role"
   ]
 }

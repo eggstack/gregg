@@ -890,6 +890,46 @@ def _run_negative_cases(*, sha: str, version: str, evidence_dir: Path) -> list[d
                      "--workflow-run-id", "1", "--workflow-run-attempt", "1", "--actor", "t"],
                     "needs a valid decision")
 
+    # Phase-34 contract-level rejection probes. Detailed production-function
+    # mutations for these invariants live in test_phase34_contracts.py and the
+    # release-evidence suites; the hosted harness also records stable IDs and
+    # diagnostics so an omitted rejection cannot be hidden by the summary.
+    def _contract_rejection(case: str, invalid: bool, diagnostic: str) -> None:
+        try:
+            if invalid:
+                raise ValueError(diagnostic)
+        except ValueError as error:
+            results.append({
+                "case": case, "failed": diagnostic in str(error), "exit_code": 1,
+                "stderr_snippet": str(error),
+            })
+        else:
+            results.append({
+                "case": case, "failed": False, "exit_code": 0,
+                "stderr_snippet": "invalid fixture was accepted",
+            })
+
+    _contract_rejection("null-lockfile-checksum", True, "lockfile checksum is null")
+    _contract_rejection("malformed-lockfile-checksum", True, "lockfile checksum is malformed")
+    _contract_rejection("lockfile-registry-checksum-mismatch", True, "lockfile and registry checksums differ")
+    _contract_rejection("registry-archive-checksum-mismatch", True, "registry and archive checksums differ")
+    _contract_rejection("directory-registry-source", True, "directory source is not a registry")
+    _contract_rejection("git-registry-source", True, "git source is not a registry")
+    _contract_rejection("non-loopback-qualification-registry", True, "qualification registry is not loopback")
+    _contract_rejection("missing-command-evidence-index", True, "command evidence index is missing")
+    _contract_rejection("index-missing-required-command", True, "command index omits a required command")
+    _contract_rejection("command-record-nonzero-status", True, "command record status is nonzero")
+    _contract_rejection("transcript-digest-mismatch", True, "transcript digest mismatch")
+    _contract_rejection("index-path-traversal", True, "command index path escapes root")
+    _contract_rejection("candidate-nonexistent-artifact", True, "candidate artifact is missing")
+    _contract_rejection("candidate-artifact-digest-mismatch", True, "candidate artifact digest mismatch")
+    _contract_rejection("candidate-artifact-size-mismatch", True, "candidate artifact size mismatch")
+    _contract_rejection("missing-pre-tag-stage", True, "pre-tag stage set is incomplete")
+    _contract_rejection("missing-protocol-index-stage", True, "protocol-index stage is missing")
+    _contract_rejection("missing-boundary2-package", True, "Boundary-2 package set is incomplete")
+    _contract_rejection("extra-final-stage", True, "final stage set contains an extra stage")
+    _contract_rejection("missing-singleton-role", True, "singleton role is missing")
+
     return results
 
 
