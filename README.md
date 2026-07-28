@@ -191,9 +191,8 @@ adds shellcheck, python tests, package content checks, and installed-binary
 loopback smoke. The `--release` tier adds clean-tree, version consistency,
 `cargo publish --dry-run` in dependency order, and publish dry-runs.
 
-Releases are performed manually. GitHub Actions verifies source changes and
-does not publish artifacts or releases. See `plans/039-manual-cratesio-and-github-release.md`
-for the operator runbook.
+Releases are published manually to crates.io and GitHub. CI never publishes.
+Maintainer instructions are in [RELEASING.md](RELEASING.md).
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the

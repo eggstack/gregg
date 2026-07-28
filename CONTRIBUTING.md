@@ -48,6 +48,12 @@ product contract.
 Keep commits scoped to one phase or one coherent corrective pass. Update
 documentation and tests with behavioral changes.
 
+## Release process
+
+Maintainers publish manually to crates.io, create annotated Git tags, and
+create GitHub Releases. CI never publishes. See [RELEASING.md](RELEASING.md)
+for the operator runbook.
+
 ## License
 
 By contributing, you agree that your contributions will be licensed under

@@ -167,6 +167,18 @@ Before release, manifests must use crates.io-resolvable dependency versions rath
 Never publish from a dirty tree. Verify package contents with `cargo package --list` and
 install packaged binaries into clean temporary environments before tagging a release.
 
+## Release policy
+
+Do not add automated publication, tagging, or GitHub Release creation to CI
+or repository scripts. Publication is a manual operator action documented in
+`RELEASING.md`. CI verifies source and product correctness only. This
+decision requires an explicit new plan to change.
+
+`cargo publish` must never appear in workflows, scripts, or checked-in
+automation. The only acceptable `cargo publish` invocations are in
+`RELEASING.md` as manual operator instructions and in `check-local.sh` as
+`--dry-run` checks.
+
 ## Change discipline
 
 Keep commits scoped to one plan or one coherent corrective pass. Update documentation and tests with behavioral changes. Avoid opportunistic refactors across crate boundaries unless they are necessary to satisfy current acceptance criteria.
