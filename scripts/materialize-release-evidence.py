@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -25,6 +26,7 @@ def main() -> int:
     parser.add_argument("--artifact-list", required=True, type=Path)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--materialize-dir", type=Path)
     args = parser.parse_args()
     try:
         entries = json.loads(args.artifact_list.read_text(encoding="utf-8"))
@@ -42,7 +44,26 @@ def main() -> int:
             if root not in path.parents or not path.is_file():
                 raise ValueError(f"declared evidence file is missing or escapes root: {entry['name']}")
             sha, size = digest(path)
-            roles[role] = {"name": entry["name"], "path": str(path.relative_to(root)), "sha256": sha, "size_bytes": size}
+            record: dict[str, object] = {
+                "name": entry["name"], "path": str(path.relative_to(root)),
+                "sha256": sha, "size_bytes": size,
+            }
+            for field in (
+                "stage", "workflow_run_id", "workflow_run_attempt",
+                "artifact_id", "artifact_name", "zip_sha256", "zip_size_bytes",
+            ):
+                if field in entry:
+                    record[field] = entry[field]
+            if args.materialize_dir:
+                destination_root = args.materialize_dir.resolve()
+                destination_root.mkdir(parents=True, exist_ok=True)
+                destination = destination_root / f"{role}{path.suffix}"
+                shutil.copyfile(path, destination)
+                copied_sha, copied_size = digest(destination)
+                if (copied_sha, copied_size) != (sha, size):
+                    raise ValueError(f"materialized role changed identity: {role}")
+                record["materialized_path"] = str(destination)
+            roles[role] = record
         if not roles:
             raise ValueError("artifact list is empty")
         args.output.parent.mkdir(parents=True, exist_ok=True)

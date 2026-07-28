@@ -19,7 +19,6 @@ import http.server
 import json
 import os
 import platform
-import shutil
 import signal
 import subprocess
 import sys
@@ -31,6 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
+sys.path.insert(0, str(SCRIPTS))
+from local_sparse_registry import LocalSparseRegistry  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -58,6 +59,11 @@ def _run(args: list[str], *, cwd: Path | None = None, env: dict[str, str] | None
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _file_identity(path: Path, _root: Path | None = None) -> dict[str, object]:
+    raw = path.read_bytes()
+    return {"sha256": _sha256(raw), "size_bytes": len(raw)}
 
 
 def _candidate(stage: str, sha: str, version: str = "1.0.1", run_id: str = "1001", attempt: str = "1") -> dict:
@@ -155,15 +161,21 @@ class MockGitHubAPI:
     def shutdown(self) -> None:
         if self._server:
             self._server.shutdown()
+            self._server.server_close()
         if self._thread:
             self._thread.join(timeout=5)
+            if self._thread.is_alive():
+                raise RuntimeError("mock GitHub API did not shut down")
 
 
 # ---------------------------------------------------------------------------
 # Chain: Candidate/pre-tag
 # ---------------------------------------------------------------------------
 
-def _run_candidate_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: MockGitHubAPI) -> dict:
+def _run_candidate_chain(
+    *, sha: str, version: str, evidence_dir: Path, mock_api: MockGitHubAPI,
+    stages: list[str], requirements: Path,
+) -> dict:
     """D2: Build a realistic synthetic pre-tag selection and run retrieval + aggregation.
 
     Uses separate per-binary artifacts to match production topology: one shared
@@ -173,47 +185,32 @@ def _run_candidate_chain(*, sha: str, version: str, evidence_dir: Path, mock_api
     candidate_dir = evidence_dir / "candidate"
     candidate_dir.mkdir(parents=True, exist_ok=True)
 
-    shared_stages = ["source-ci", "mixed-fleet-functional", "mixed-fleet-sustained"]
-    run_id = 2001
+    selection_runs: dict[str, dict] = {}
+    for offset, stage in enumerate(stages):
+        run_id = 2001 + offset
+        artifact_id = 5001 + offset
+        artifact_name = f"phase34-{stage}"
+        artifact_zip = candidate_dir / f"{artifact_name}.zip"
+        candidate = _candidate(stage, sha, run_id=str(run_id))
+        with zipfile.ZipFile(artifact_zip, "w") as archive:
+            archive.writestr(f"{stage}/candidate.json", json.dumps(candidate))
+            archive.writestr(f"{stage}/{stage}.json", json.dumps({"schema_version": 1, "stage": stage, "synthetic": True}))
+        mock_api.add_run(
+            run_id, stages=[stage], artifact_id=artifact_id,
+            artifact_name=artifact_name, zip_path=artifact_zip,
+        )
+        selection_runs[stage] = {
+            "run_id": run_id, "attempt": 1,
+            "workflow_name": "release-candidate",
+            "artifacts": [{"name": artifact_name}],
+        }
+        stage_dir = candidate_dir / stage
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(stage_dir / "candidate.json", candidate)
 
-    shared_artifact_id = 5001
-    shared_zip = candidate_dir / "shared-artifact.zip"
-    with zipfile.ZipFile(shared_zip, "w") as zf:
-        for stage in shared_stages:
-            zf.writestr(f"{stage}/candidate.json", json.dumps(_candidate(stage, sha, run_id=str(run_id))))
-    mock_api.add_run(run_id, stages=shared_stages, artifact_id=shared_artifact_id,
-                     artifact_name="shared-artifact", zip_path=shared_zip)
-
-    greggd_artifact_id = 5002
-    greggd_zip = candidate_dir / "greggd-artifact.zip"
-    with zipfile.ZipFile(greggd_zip, "w") as zf:
-        zf.writestr("binary-prepublish-greggd/candidate.json",
-                     json.dumps(_candidate("binary-prepublish-greggd", sha, run_id=str(run_id))))
-    mock_api.add_run(run_id, stages=["binary-prepublish-greggd"], artifact_id=greggd_artifact_id,
-                     artifact_name="binary-prepublish-greggd", zip_path=greggd_zip)
-
-    gregg_artifact_id = 5003
-    gregg_zip = candidate_dir / "gregg-artifact.zip"
-    with zipfile.ZipFile(gregg_zip, "w") as zf:
-        zf.writestr("binary-prepublish-gregg/candidate.json",
-                     json.dumps(_candidate("binary-prepublish-gregg", sha, run_id=str(run_id))))
-    mock_api.add_run(run_id, stages=["binary-prepublish-gregg"], artifact_id=gregg_artifact_id,
-                     artifact_name="binary-prepublish-gregg", zip_path=gregg_zip)
-
-    all_stages = shared_stages + ["binary-prepublish-greggd", "binary-prepublish-gregg"]
     selection = {
         "candidate_sha": sha, "release_version": version, "mode": "pre-tag",
-        "runs": {stage: {"run_id": run_id, "attempt": 1, "workflow_name": "release-candidate",
-                         "artifacts": [{"name": "shared-artifact"}]}
-                 for stage in shared_stages},
-    }
-    selection["runs"]["binary-prepublish-greggd"] = {
-        "run_id": run_id, "attempt": 1, "workflow_name": "release-candidate",
-        "artifacts": [{"name": "binary-prepublish-greggd"}],
-    }
-    selection["runs"]["binary-prepublish-gregg"] = {
-        "run_id": run_id, "attempt": 1, "workflow_name": "release-candidate",
-        "artifacts": [{"name": "binary-prepublish-gregg"}],
+        "runs": selection_runs,
     }
     selection_path = candidate_dir / "release-run-selection.json"
     _write_json(selection_path, selection)
@@ -244,22 +241,13 @@ def _run_candidate_chain(*, sha: str, version: str, evidence_dir: Path, mock_api
           "--selection-workflow-run-id", "9001",
           "--selection-workflow-run-attempt", "1"])
 
-    # Write candidate.json files into evidence dir for aggregation
-    for stage in all_stages:
-        stage_dir = candidate_dir / stage
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        (stage_dir / "candidate.json").write_text(json.dumps(_candidate(stage, sha, run_id=str(run_id))), encoding="utf-8")
-
     # Aggregate in pre-tag mode
     manifest_path = candidate_dir / "v1.0.1-release-manifest.json"
-    req_args = []
-    for stage in all_stages:
-        req_args.extend(["--required-stage", stage])
     _run([sys.executable, str(SCRIPTS / "validate-release-evidence.py"), "aggregate",
           "--evidence-dir", str(candidate_dir),
           "--expected-sha", sha, "--release-version", version,
           "--output", str(manifest_path),
-          *req_args,
+          "--requirements", str(requirements),
           "--retrieved-manifest", str(retrieved_path),
           "--selection", str(canonical_selection),
           "--selection-source", "workflow-dispatch-base64",
@@ -275,91 +263,23 @@ def _run_candidate_chain(*, sha: str, version: str, evidence_dir: Path, mock_api
     manifest_bytes = manifest_path.read_bytes()
     (candidate_dir / "manifest.sha256").write_text(_sha256(manifest_bytes), encoding="utf-8")
 
-    return {"candidate_dir": str(candidate_dir), "manifest_sha256": _sha256(manifest_bytes), "manifest_size": len(manifest_bytes)}
+    return {
+        "candidate_dir": str(candidate_dir.relative_to(evidence_dir)),
+        "manifest_path": str(manifest_path.relative_to(evidence_dir)),
+        "manifest_sha256": _sha256(manifest_bytes), "manifest_size": len(manifest_bytes),
+        "stages": stages, "stage_artifact_binding_count": len(stages),
+    }
 
 
 # ---------------------------------------------------------------------------
 # Chain: Boundary-2 (synthetic local registry)
 # ---------------------------------------------------------------------------
 
-class MockSparseRegistry:
-    """Minimal sparse registry server that serves one crate."""
-
-    def __init__(self, crate_path: Path, crate_sha: str, crate_version: str) -> None:
-        self.crate_path = crate_path
-        self.crate_sha = crate_sha
-        self.crate_version = crate_version
-        self._server: http.server.HTTPServer | None = None
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> int:
-        api = self
-
-        class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self) -> None:
-                path = self.path.lstrip("/")
-                # Sparse index: /{1}/{2}/{crate_name} (no /index suffix)
-                # Sparse download: /{crate_name}/{version}/download
-                # Config: /config.json
-                if path in ("gr/eg/gregg-protocol", "gr/eg/gregg_protocol"):
-                    entry = json.dumps({
-                        "name": "gregg-protocol",
-                        "vers": api.crate_version,
-                        "deps": [],
-                        "cksum": api.crate_sha,
-                        "features": {},
-                        "yanked": False,
-                        "links": None,
-                        "rust_version": None,
-                    })
-                    body = (entry + "\n").encode()
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                elif "/download" in path and "gregg-protocol" in path:
-                    data = api.crate_path.read_bytes()
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
-                elif path == "config.json":
-                    body = json.dumps({"dl": f"http://127.0.0.1:{api._port}/", "api": f"http://127.0.0.1:{api._port}/"}).encode()
-                    self.send_response(200)
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            def log_message(self, *a: object) -> None:
-                pass
-
-        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
-        self._port = self._server.server_address[1]
-        port = self._server.server_address[1]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-        return port
-
-    def shutdown(self) -> None:
-        if self._server:
-            self._server.shutdown()
-        if self._thread:
-            self._thread.join(timeout=5)
-
-
 def _build_local_registry_fixture(tmpdir: Path, *, sha: str, version: str) -> tuple[Path, dict[str, str]]:
     """D3: Build a minimal local Cargo registry with gregg-protocol 1.0.1.
 
-    Creates a directory-style source replacement containing an unpacked
-    gregg-protocol crate that Cargo can resolve from, and packages the
-    protocol crate for Boundary-2 archive verification.
+    Creates exact packaged bytes for a loopback sparse registry fixture.
     """
-    registry_root = tmpdir / "registry"
-    registry_root.mkdir(parents=True, exist_ok=True)
-
     protocol_dir = tmpdir / "protocol-crate"
     protocol_dir.mkdir(parents=True, exist_ok=True)
     (protocol_dir / "Cargo.toml").write_text(
@@ -378,35 +298,17 @@ def _build_local_registry_fixture(tmpdir: Path, *, sha: str, version: str) -> tu
     crate_sha = _sha256(crate_path.read_bytes())
     crate_size = crate_path.stat().st_size
 
-    # Build a directory-style source: unpacked crate directories
-    # format: registry_root/<crate_name>-<version>/ containing Cargo.toml + src/
-    crate_dir = registry_root / f"gregg-protocol-{version}"
-    crate_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(protocol_dir / "Cargo.toml", crate_dir / "Cargo.toml")
-    src_dir = crate_dir / "src"
-    src_dir.mkdir(exist_ok=True)
-    shutil.copy2(protocol_dir / "src" / "lib.rs", src_dir / "lib.rs")
-    # directory sources require .cargo-checksum.json with real SHA-256 hashes
-    checksums = {}
-    for f in sorted(crate_dir.rglob("*")):
-        if f.is_file() and f.name != ".cargo-checksum.json":
-            rel = str(f.relative_to(crate_dir))
-            checksums[rel] = _sha256(f.read_bytes())
-    (crate_dir / ".cargo-checksum.json").write_text(json.dumps({"files": checksums}), encoding="utf-8")
-
-    return crate_path, {"sha256": crate_sha, "size_bytes": crate_size}, registry_root
+    return crate_path, {"sha256": crate_sha, "size_bytes": crate_size}
 
 
 def _run_boundary2_chain(*, package: str, sha: str, version: str, evidence_dir: Path,
                          archive_path: Path, archive_sha: str, protocol_checksum: str,
                          registry_record: dict, protocol_crate_meta: dict,
-                         source_replacement_dir: Path | None = None) -> dict:
+                         registry_source: str, cargo_home: Path) -> dict:
     """D3: Run a single Boundary-2 verification chain against a real crate archive.
 
     Creates a tar.gz archive containing a Cargo.toml that depends on
-    gregg-protocol 1.0.1.  When source_replacement_dir is provided,
-    Cargo resolves the dependency through a local directory source
-    replacement so that build/test/install succeed without network access.
+    gregg-protocol 1.0.1 through the exact loopback sparse registry.
     The registry-reverify.py script validates the archive, generates a
     fresh lockfile, and runs build/test/install/help/version.
     """
@@ -425,7 +327,7 @@ def _run_boundary2_chain(*, package: str, sha: str, version: str, evidence_dir: 
     package_dir_name = f"{package}-{version}"
     cargo_toml = (
         f'[package]\nname = "{package}"\nversion = "{version}"\nedition = "2021"\n\n'
-        f'[dependencies]\ngregg-protocol = {{ version = "1.0.1" }}\n'
+        f'[dependencies]\ngregg-protocol = {{ version = "1.0.1", registry = "phase34-local-registry" }}\n'
     )
 
     with tempfile.TemporaryDirectory() as tar_tmp:
@@ -448,17 +350,23 @@ def _run_boundary2_chain(*, package: str, sha: str, version: str, evidence_dir: 
            "--expected-sha256", archive_sha_actual,
            "--protocol-checksum", protocol_checksum,
            "--registry-record", str(registry_record_path),
-           "--registry-source", "registry+https://github.com/rust-lang/crates.io-index",
+           "--registry-source", registry_source,
+           "--qualification-local-registry",
+           "--cargo-home", str(cargo_home),
            "--evidence-dir", str(command_evidence_dir),
            "--output", str(summary_path)]
-    if source_replacement_dir is not None:
-        cmd.extend(["--source-replacement-dir", str(source_replacement_dir)])
     _run(cmd, env=verify_env)
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["verification"] == "pass", f"Boundary-2 verification failed for {package}"
 
-    return {"summary_path": str(summary_path), "package": package}
+    return {
+        "summary_path": str(summary_path.relative_to(evidence_dir)), "package": package,
+        "index_path": str((command_evidence_dir / "command-evidence-index.json").relative_to(evidence_dir)),
+        "registry_checksum": summary["protocol_registry_checksum"],
+        "lockfile_checksum": summary["lockfile_protocol_checksum"],
+        "checksum_match": summary["checksum_match"],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -467,31 +375,37 @@ def _run_boundary2_chain(*, package: str, sha: str, version: str, evidence_dir: 
 
 def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: MockGitHubAPI,
                      candidate_manifest_path: Path, boundary2_summaries: list[dict],
-                     crate_paths: dict[str, Path]) -> dict:
+                     crate_paths: dict[str, Path], stages: list[str],
+                     requirements: Path) -> dict:
     """D4: Run the final synthetic cross-run chain."""
     final_dir = evidence_dir / "final"
     final_dir.mkdir(parents=True, exist_ok=True)
 
-    stages = ["source-ci", "binary-prepublish-greggd", "binary-prepublish-gregg",
-              "mixed-fleet-functional", "mixed-fleet-sustained",
-              "registry-reverify-greggd", "registry-reverify-gregg",
-              "protocol-index-check", "postpublish-verify"]
-
-    run_id = 3001
-    artifact_id = 6001
-    zip_path = final_dir / "final-artifact.zip"
-    with zipfile.ZipFile(zip_path, "w") as zf:
-        for stage in stages:
-            zf.writestr(f"{stage}/candidate.json", json.dumps(_candidate(stage, sha, run_id=str(run_id))))
-
-    mock_api.add_run(run_id, stages=stages, artifact_id=artifact_id, artifact_name="final-artifact", zip_path=zip_path)
+    selection_runs: dict[str, dict] = {}
+    for offset, stage in enumerate(stages):
+        run_id = 3001 + offset
+        artifact_id = 6001 + offset
+        artifact_name = f"phase34-final-{stage}"
+        zip_path = final_dir / f"{artifact_name}.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr(
+                f"{stage}/candidate.json",
+                json.dumps(_candidate(stage, sha, run_id=str(run_id))),
+            )
+        mock_api.add_run(
+            run_id, stages=[stage], artifact_id=artifact_id,
+            artifact_name=artifact_name, zip_path=zip_path,
+        )
+        selection_runs[stage] = {
+            "run_id": run_id, "attempt": 1,
+            "workflow_name": "release-candidate",
+            "artifacts": [{"name": artifact_name}],
+        }
 
     # Final selection
     selection = {
         "candidate_sha": sha, "release_version": version, "mode": "final",
-        "runs": {stage: {"run_id": run_id, "attempt": 1, "workflow_name": "release-candidate",
-                         "artifacts": [{"name": "final-artifact"}]}
-                 for stage in stages},
+        "runs": selection_runs,
     }
     selection_path = final_dir / "release-run-selection.json"
     _write_json(selection_path, selection)
@@ -524,7 +438,10 @@ def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: Mo
     for stage in stages:
         stage_dir = final_dir / stage
         stage_dir.mkdir(parents=True, exist_ok=True)
-        (stage_dir / "candidate.json").write_text(json.dumps(_candidate(stage, sha, run_id=str(run_id))), encoding="utf-8")
+        (stage_dir / "candidate.json").write_text(
+            json.dumps(_candidate(stage, sha, run_id=str(selection_runs[stage]["run_id"]))),
+            encoding="utf-8",
+        )
 
     # Package provenance for all three crates
     for pkg in ("gregg-protocol", "greggd", "gregg"):
@@ -582,7 +499,9 @@ def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: Mo
             "gregg": {"version": "1.0.0", "yanked": False, "checksum": "c" * 64, "published_at": "2026-01-01T00:00:00Z", "decision": "retain"},
         },
     }
-    _write_json(final_dir / "1.0.0-disposition.json", disposition)
+    postpublish_root = final_dir / "retrieved-postpublish"
+    postpublish_root.mkdir(parents=True, exist_ok=True)
+    _write_json(postpublish_root / "1.0.0-disposition.json", disposition)
 
     # Registry summary
     registry_summary = [
@@ -590,18 +509,54 @@ def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: Mo
         {"crate": "greggd", "version": version, "yanked": False, "checksum": "b" * 64, "published_at": "2026-07-24T00:00:00Z"},
         {"crate": "gregg", "version": version, "yanked": False, "checksum": "c" * 64, "published_at": "2026-07-24T00:00:00Z"},
     ]
-    _write_json(final_dir / "registry-summary.json", registry_summary)
+    _write_json(postpublish_root / "registry-summary.json", registry_summary)
+
+    postpublish_artifact = next(
+        item for item in mock_api.artifacts.values()
+        if item["name"] == "phase34-final-postpublish-verify"
+    )
+    postpublish_zip_sha = _sha256(postpublish_artifact["zip_path"].read_bytes())
+    singleton_artifacts = [
+        {
+            "name": "registry-summary.json", "role": "registry-summary",
+            "stage": "postpublish-verify",
+            "workflow_run_id": str(postpublish_artifact["run_id"]),
+            "workflow_run_attempt": "1",
+            "artifact_id": postpublish_artifact["id"],
+            "artifact_name": postpublish_artifact["name"],
+            "zip_sha256": postpublish_zip_sha,
+            "zip_size_bytes": postpublish_artifact["zip_path"].stat().st_size,
+        },
+        {
+            "name": "1.0.0-disposition.json", "role": "version-1.0.0-disposition",
+            "stage": "postpublish-verify",
+            "workflow_run_id": str(postpublish_artifact["run_id"]),
+            "workflow_run_attempt": "1",
+            "artifact_id": postpublish_artifact["id"],
+            "artifact_name": postpublish_artifact["name"],
+            "zip_sha256": postpublish_zip_sha,
+            "zip_size_bytes": postpublish_artifact["zip_path"].stat().st_size,
+        },
+    ]
+    singleton_list_path = final_dir / "singleton-artifacts.json"
+    _write_json(singleton_list_path, singleton_artifacts)
+    role_index_path = final_dir / "role-index.json"
+    materialized_dir = final_dir / "materialized"
+    _run([
+        sys.executable, str(SCRIPTS / "materialize-release-evidence.py"),
+        "--artifact-list", str(singleton_list_path),
+        "--root", str(postpublish_root),
+        "--output", str(role_index_path),
+        "--materialize-dir", str(materialized_dir),
+    ])
 
     # Aggregate in final mode
     manifest_path = final_dir / "v1.0.1-release-manifest.json"
-    req_args = []
-    for stage in stages:
-        req_args.extend(["--required-stage", stage])
     _run([sys.executable, str(SCRIPTS / "validate-release-evidence.py"), "aggregate",
           "--evidence-dir", str(final_dir),
           "--expected-sha", sha, "--release-version", version,
           "--output", str(manifest_path),
-          *req_args,
+          "--requirements", str(requirements),
           "--retrieved-manifest", str(retrieved_path),
           "--selection", str(canonical_selection),
           "--selection-source", "workflow-dispatch-base64",
@@ -614,8 +569,8 @@ def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: Mo
           "--tagger-timestamp", _now_iso(),
           "--tag-object-content-sha256", "b" * 64,
           "--package-provenance", str(merged),
-          "--registry-summary", str(final_dir / "registry-summary.json"),
-          "--disposition", str(final_dir / "1.0.0-disposition.json"),
+          "--registry-summary", str(materialized_dir / "registry-summary.json"),
+          "--disposition", str(materialized_dir / "version-1.0.0-disposition.json"),
           "--final"])
 
     # Validate final manifest
@@ -625,24 +580,17 @@ def _run_final_chain(*, sha: str, version: str, evidence_dir: Path, mock_api: Mo
     manifest_bytes = manifest_path.read_bytes()
     (final_dir / "manifest.sha256").write_text(_sha256(manifest_bytes), encoding="utf-8")
 
-    # D4: Materialize role-indexed evidence for the final chain
-    artifact_list = []
-    for fpath in sorted(final_dir.rglob("*")):
-        if fpath.is_file() and fpath.name != "role-index.json":
-            rel = str(fpath.relative_to(final_dir))
-            # Use slash-separated relative path as role to ensure uniqueness
-            role = rel.replace("/", "-").replace("\\", "-")
-            artifact_list.append({"name": rel, "role": role})
-    if artifact_list:
-        artifact_list_path = final_dir / "artifact-list.json"
-        _write_json(artifact_list_path, artifact_list)
-        role_index_path = final_dir / "role-index.json"
-        _run([sys.executable, str(SCRIPTS / "materialize-release-evidence.py"),
-              "--artifact-list", str(artifact_list_path),
-              "--root", str(final_dir),
-              "--output", str(role_index_path)])
-
-    return {"final_dir": str(final_dir), "manifest_sha256": _sha256(manifest_bytes), "manifest_size": len(manifest_bytes)}
+    return {
+        "final_dir": str(final_dir.relative_to(evidence_dir)),
+        "manifest_path": str(manifest_path.relative_to(evidence_dir)),
+        "manifest_sha256": _sha256(manifest_bytes), "manifest_size": len(manifest_bytes),
+        "stages": stages, "stage_artifact_binding_count": len(stages),
+        "role_index_path": str(role_index_path.relative_to(evidence_dir)),
+        "selection_path": str(canonical_selection.relative_to(evidence_dir)),
+        "selection_identity_path": str(identity_path.relative_to(evidence_dir)),
+        "disposition_decision_path": str(decision_path.relative_to(evidence_dir)),
+        "disposition_identity_path": str(decision_identity_path.relative_to(evidence_dir)),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -954,11 +902,32 @@ def main() -> int:
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--release-version", required=True)
     parser.add_argument("--evidence-dir", required=True, type=Path)
+    parser.add_argument("--requirements", required=True, type=Path)
+    parser.add_argument("--dispatch-contract", required=True, type=Path)
+    parser.add_argument("--qualification-contract", required=True, type=Path)
     args = parser.parse_args()
 
     if args.release_version != "1.0.1" or len(args.candidate_sha) != 40 or args.candidate_sha != args.candidate_sha.lower():
         parser.error("qualification requires a lowercase 40-character 1.0.1 candidate SHA")
     args.evidence_dir.mkdir(parents=True, exist_ok=True)
+    requirements = json.loads(args.requirements.read_text(encoding="utf-8"))
+    dispatch_contract = json.loads(args.dispatch_contract.read_text(encoding="utf-8"))
+    qualification_contract = json.loads(args.qualification_contract.read_text(encoding="utf-8"))
+    if requirements.get("release_version") != "1.0.1":
+        parser.error("release requirements must describe 1.0.1")
+    for key in ("pre_tag_required_stages", "protocol_publication_required_stages", "final_required_stages"):
+        stages = requirements.get(key)
+        if not isinstance(stages, list) or not stages or len(stages) != len(set(stages)):
+            parser.error(f"release requirements {key} must be nonempty and unique")
+    reachable = {
+        stage
+        for dispatch in dispatch_contract.get("dispatches", {}).values()
+        for stage in dispatch.get("required_stages", [])
+    }
+    if not set(requirements["final_required_stages"]).issubset(reachable):
+        parser.error("release requirements contain a stage unreachable from dispatch contract")
+    if qualification_contract.get("release_version") != "1.0.1":
+        parser.error("qualification contract must describe 1.0.1")
 
     actual = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     if actual != args.candidate_sha:
@@ -999,7 +968,11 @@ def main() -> int:
     mock_api = MockGitHubAPI(sha)
     mock_port = mock_api.start()
     try:
-        candidate_result = _run_candidate_chain(sha=sha, version=version, evidence_dir=args.evidence_dir, mock_api=mock_api)
+        candidate_result = _run_candidate_chain(
+            sha=sha, version=version, evidence_dir=args.evidence_dir,
+            mock_api=mock_api, stages=requirements["pre_tag_required_stages"],
+            requirements=args.requirements,
+        )
     finally:
         mock_api.shutdown()
 
@@ -1009,19 +982,48 @@ def main() -> int:
         b2_root = Path(b2_tmp)
 
         # Build local registry fixture with gregg-protocol 1.0.1
-        _crate_path, _crate_meta, registry_root = _build_local_registry_fixture(b2_root, sha=sha, version=version)
+        crate_path, crate_meta = _build_local_registry_fixture(b2_root, sha=sha, version=version)
 
-        protocol_checksum = _crate_meta["sha256"]
+        protocol_checksum = crate_meta["sha256"]
         registry_record = {"crate": "gregg-protocol", "version": {"num": "1.0.1", "yanked": False, "cksum": protocol_checksum, "created_at": "2026-01-01T00:00:00Z"}}
-
-        for pkg in ("greggd", "gregg"):
-            result = _run_boundary2_chain(
-                package=pkg, sha=sha, version=version,
-                evidence_dir=args.evidence_dir, archive_path=b2_root / f"{pkg}-1.0.1.crate",
-                archive_sha="unused", protocol_checksum=protocol_checksum,
-                registry_record=registry_record, protocol_crate_meta=_crate_meta,
-                source_replacement_dir=registry_root)
-            boundary2_results.append(result)
+        registry = LocalSparseRegistry(
+            b2_root / "sparse-registry", crate_path,
+            crate="gregg-protocol", version=version,
+        )
+        registry_source = registry.start()
+        try:
+            cargo_home = b2_root / "cargo-home"
+            registry.write_cargo_home(cargo_home, registry_source)
+            for pkg in ("greggd", "gregg"):
+                result = _run_boundary2_chain(
+                    package=pkg, sha=sha, version=version,
+                    evidence_dir=args.evidence_dir, archive_path=b2_root / f"{pkg}-1.0.1.crate",
+                    archive_sha="unused", protocol_checksum=protocol_checksum,
+                    registry_record=registry_record, protocol_crate_meta=crate_meta,
+                    registry_source=registry_source, cargo_home=cargo_home)
+                boundary2_results.append(result)
+        finally:
+            registry.shutdown()
+        protocol_publication_dir = args.evidence_dir / "protocol-publication"
+        protocol_publication_dir.mkdir(parents=True, exist_ok=True)
+        protocol_index_path = protocol_publication_dir / "protocol-index-check.json"
+        _write_json(protocol_index_path, {
+            "schema_version": 1, "stage": "protocol-index-check",
+            "package": "gregg-protocol", "release_version": version,
+            "registry_source": registry_source,
+            "registry_checksum": protocol_checksum,
+            "archive_sha256": protocol_checksum,
+            "checksum_match": True,
+            "consumer_resolution": {
+                item["package"]: {
+                    "registry_checksum": item["registry_checksum"],
+                    "lockfile_checksum": item["lockfile_checksum"],
+                    "checksum_match": item["checksum_match"],
+                }
+                for item in boundary2_results
+            },
+            "verdict": "pass",
+        })
 
     # Phase 3: Final chain
     mock_api2 = MockGitHubAPI(sha)
@@ -1040,7 +1042,9 @@ def main() -> int:
             sha=sha, version=version, evidence_dir=args.evidence_dir,
             mock_api=mock_api2,
             candidate_manifest_path=args.evidence_dir / "candidate" / "v1.0.1-release-manifest.json",
-            boundary2_summaries=boundary2_results, crate_paths=crate_paths)
+            boundary2_summaries=boundary2_results, crate_paths=crate_paths,
+            stages=requirements["final_required_stages"],
+            requirements=args.requirements)
     finally:
         mock_api2.shutdown()
 
@@ -1055,7 +1059,7 @@ def main() -> int:
     finished = _now_iso()
     files = []
     for path in sorted(args.evidence_dir.rglob("*")):
-        if path.is_file() and path.name not in ("qualification-summary.json", "qualification-commands.json"):
+        if path.is_file() and path.name != "qualification-summary.json":
             raw = path.read_bytes()
             files.append({"path": str(path.relative_to(args.evidence_dir)), "sha256": _sha256(raw),
                           "size_bytes": len(raw), "role": "qualification-output"})
@@ -1069,8 +1073,23 @@ def main() -> int:
         "started_at": started, "completed_at": finished,
         "runner": {"system": platform.system(), "machine": platform.machine(),
                    "python": platform.python_version()},
+        "contracts": {
+            "requirements": {**_file_identity(args.requirements, args.evidence_dir), "source_path": str(args.requirements)},
+            "dispatch": {**_file_identity(args.dispatch_contract, args.evidence_dir), "source_path": str(args.dispatch_contract)},
+            "qualification": {**_file_identity(args.qualification_contract, args.evidence_dir), "source_path": str(args.qualification_contract)},
+        },
+        "stage_sets": {
+            "pre_tag": requirements["pre_tag_required_stages"],
+            "protocol_publication": requirements["protocol_publication_required_stages"],
+            "final": requirements["final_required_stages"],
+        },
         "chains": {
             "candidate_pre_tag": candidate_result,
+            "protocol_publication": {
+                "stages": requirements["protocol_publication_required_stages"],
+                "protocol_index_path": str(protocol_index_path.relative_to(args.evidence_dir)),
+                "boundary_2": boundary2_results,
+            },
             "boundary_2": boundary2_results,
             "final": final_result,
         },

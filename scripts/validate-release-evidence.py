@@ -643,6 +643,43 @@ def write_candidate(args: argparse.Namespace) -> None:
     artifacts = read_json(Path(args.artifacts_json)) if args.artifacts_json else []
     if not isinstance(artifacts, list):
         fail("artifacts JSON must be an array")
+    if args.artifact_root:
+        root = Path(args.artifact_root).resolve()
+        seen_roles: set[str] = set()
+        seen_paths: dict[str, tuple[str, int]] = {}
+        for item in artifacts:
+            if not isinstance(item, dict):
+                fail("every artifact declaration must be an object")
+            role = item.get("role")
+            relative = item.get("path", item.get("name"))
+            if not isinstance(role, str) or not role:
+                fail("every local artifact requires a nonempty semantic role")
+            if role in seen_roles:
+                fail(f"duplicate singleton artifact role: {role}")
+            seen_roles.add(role)
+            if not isinstance(relative, str):
+                fail(f"artifact {role} requires a local path")
+            relpath = Path(relative)
+            if relpath.is_absolute() or ".." in relpath.parts:
+                fail(f"artifact {role} path escapes artifact root")
+            path = root / relpath
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as error:
+                fail(f"declared artifact {role} is missing: {error}")
+            if (root != resolved.parent and root not in resolved.parents) or path.is_symlink() or not resolved.is_file():
+                fail(f"artifact {role} path escapes artifact root or is not a regular file")
+            raw = resolved.read_bytes()
+            identity = (hashlib.sha256(raw).hexdigest(), len(raw))
+            if item.get("sha256") != identity[0] or item.get("size_bytes") != identity[1]:
+                fail(f"artifact {role} digest/size does not match local file")
+            if identity[1] == 0 and str(item.get("media_type", "")).endswith("json"):
+                fail(f"structured artifact {role} must not be empty")
+            canonical = resolved.relative_to(root).as_posix()
+            prior = seen_paths.get(canonical)
+            if prior is not None and prior != identity:
+                fail(f"artifact path {canonical} has conflicting identities")
+            seen_paths[canonical] = identity
     executables = []
     for item in args.executable:
         if len(item) != 3:
@@ -725,6 +762,7 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--tag-object-content-sha256")
     command.add_argument("--head-sha")
     command.add_argument("--artifacts-json")
+    command.add_argument("--artifact-root")
     command.add_argument("--executable", action="append", nargs=3, default=[], metavar=("NAME", "SHA256", "SIZE"))
     command.add_argument("--note", action="append", default=[])
 

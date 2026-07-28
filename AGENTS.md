@@ -136,6 +136,19 @@ the crates.io registry. A checksum-only record is not re-verification. Package
 provenance declares exact relative archive and lockfile paths; traversal-order
 fallbacks are invalid.
 
+Qualification substitutes only an explicit loopback sparse registry for
+crates.io and must still produce a checksum-bearing registry source record in
+`Cargo.lock`. Directory, path, git, vendored, and prewritten-lock substitutes
+are invalid. Every Boundary-2 command transcript is covered by a material
+`command-evidence-index.json`, and candidate metadata is derived from and
+checked against existing local files before upload.
+
+The nonpublishing qualification harness loads the production requirements and
+dispatch contracts. It may use synthetic stage evidence to prove orchestration,
+but it may not reduce the production pre-tag or final stage sets. Final
+singleton roles are indexed from retrieved artifact identity and materialized
+before aggregation; direct test-only input paths are invalid.
+
 Candidate qualification does not require `gregg-protocol 1.0.1` to already exist
 on crates.io. Protocol publication occurs only after candidate qualification and
 tag procedure authorization.

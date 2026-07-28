@@ -1,4 +1,4 @@
-name: phase32-qualification
+name: phase34-full-contract-qualification
 
 on:
   workflow_dispatch:
@@ -67,16 +67,24 @@ jobs:
           set -euo pipefail
           python3 scripts/run-release-orchestration-qualification.py \
             --candidate-sha "${{ inputs.candidate_sha }}" --release-version 1.0.1 \
+            --requirements plans/evidence/release-requirements.json \
+            --dispatch-contract plans/evidence/release-dispatch-contract.json \
+            --qualification-contract plans/evidence/phase34-qualification-contract.json \
             --evidence-dir evidence/orchestration
       - name: Validate qualification output
         run: |
           set -euo pipefail
+          date -u +%Y-%m-%dT%H:%M:%SZ > evidence/metadata/completed-at.txt
           python3 scripts/validate-qualification-output.py \
-            --summary evidence/orchestration/qualification-summary.json
+            --summary evidence/orchestration/qualification-summary.json \
+            --contract plans/evidence/phase34-qualification-contract.json \
+            --requirements plans/evidence/release-requirements.json \
+            --dispatch-contract plans/evidence/release-dispatch-contract.json \
+            --hosted-metadata-root evidence/metadata
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase32-qualification-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
+          name: phase34-full-contract-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
           path: evidence
           if-no-files-found: error

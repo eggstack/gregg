@@ -588,7 +588,7 @@ def validate_workflow() -> list[WorkflowViolation]:
     if "--mode" not in finalize_text:
         violations.append(WorkflowViolation("ordering", "release-finalize.yml does not pass --mode to aggregation"))
 
-    # Phase-33 qualification is a separate, exact-SHA, fail-closed gate.
+    # Phase-34 qualification is a separate, exact-SHA, full-contract, fail-closed gate.
     for required in ("run-release-orchestration-qualification.py", "validate-qualification-output.py", "cargo fmt", "cargo clippy", "cargo test", "cargo doc", "run-mixed-fleet-sustained.py"):
         if required not in qualification:
             violations.append(WorkflowViolation("qualification", f"phase qualification is missing {required}"))
@@ -598,6 +598,19 @@ def validate_workflow() -> list[WorkflowViolation]:
         violations.append(WorkflowViolation("qualification", "phase qualification upload must set if-no-files-found: error"))
     if "inputs.candidate_sha" not in qualification or 'git rev-parse HEAD' not in qualification:
         violations.append(WorkflowViolation("qualification", "phase qualification must verify the exact checkout SHA"))
+    for required in (
+        "--requirements plans/evidence/release-requirements.json",
+        "--dispatch-contract plans/evidence/release-dispatch-contract.json",
+        "--qualification-contract plans/evidence/phase34-qualification-contract.json",
+        "--contract plans/evidence/phase34-qualification-contract.json",
+        "--hosted-metadata-root evidence/metadata",
+    ):
+        if required not in qualification:
+            violations.append(WorkflowViolation("qualification", f"phase qualification is missing contract input {required}"))
+    if "--required-stage" in qualification:
+        violations.append(WorkflowViolation("qualification", "full-chain qualification must not accept reduced required stages"))
+    if "cargo publish" in qualification or re.search(r"\bgit\s+tag\b", qualification):
+        violations.append(WorkflowViolation("qualification", "qualification workflow must not publish or create tags"))
     if "--selection evidence/release-run-selection.json" not in finalize_text:
         violations.append(WorkflowViolation("selection-provenance", "finalizer must pass decoded selection explicitly to aggregation"))
     if "--selection-source workflow-dispatch-base64" not in finalize_text:
@@ -606,8 +619,9 @@ def validate_workflow() -> list[WorkflowViolation]:
         violations.append(WorkflowViolation("disposition", "finalizer must not hard-code a historical retain decision"))
     if "decode-release-disposition.py" not in finalize_text:
         violations.append(WorkflowViolation("disposition", "finalizer must validate explicit disposition input"))
-    if "--source-replacement-dir" in text:
-        violations.append(WorkflowViolation("fixture-mode", "production release workflow must not use --source-replacement-dir"))
+    for forbidden in ("--source-replacement-dir", "--qualification-local-registry", "--cargo-home"):
+        if forbidden in text or forbidden in finalize_text:
+            violations.append(WorkflowViolation("fixture-mode", f"production release workflow must not use {forbidden}"))
 
     # --- Graph-based DAG validation ---
 

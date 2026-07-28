@@ -278,13 +278,17 @@ jobs:
             --expected-sha256 "$(jq -r '.packages.greggd.sha256' boundary-1/evidence/package-provenance.json)" \
             --protocol-checksum "${checksum}" --registry-record evidence/protocol-registry-record.json \
             --evidence-dir evidence/command-evidence --output evidence/registry-reverify-greggd.json
-          jq -n '[{name:"registry-reverify-greggd.json",role:"registry-reverify-summary"},{name:"protocol-registry-record.json",role:"protocol-registry-record"},{name:"command-evidence/command-evidence-index.json",role:"command-evidence-index"},{name:"command-evidence/build.stdout",role:"build-transcript"},{name:"command-evidence/cargo-version.stdout",role:"command-versions"},{name:"command-evidence/normalized-manifest.json",role:"normalized-manifest"},{name:"command-evidence/lockfile-identity.json",role:"verification-lockfile"},{name:"command-evidence/archive-identity.json",role:"package-archive"},{name:"command-evidence/metadata.stdout",role:"resolution-proof"}]' > evidence/artifacts.json
+          python3 scripts/registry-reverify.py candidate-artifacts \
+            --index evidence/command-evidence/command-evidence-index.json \
+            --summary evidence/registry-reverify-greggd.json \
+            --artifact-root evidence --output evidence/artifacts.json
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
             --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
             --stage registry-reverify-greggd --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --job-name registry-reverify-greggd --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
-            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json
+            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json \
+            --artifact-root evidence
       - uses: actions/upload-artifact@v4
         with:
           name: registry-reverify-greggd-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
@@ -318,13 +322,17 @@ jobs:
             --expected-sha256 "$(jq -r '.packages.gregg.sha256' boundary-1/evidence/package-provenance.json)" \
             --protocol-checksum "${checksum}" --registry-record evidence/protocol-registry-record.json \
             --evidence-dir evidence/command-evidence --output evidence/registry-reverify-gregg.json
-          jq -n '[{name:"registry-reverify-gregg.json",role:"registry-reverify-summary"},{name:"protocol-registry-record.json",role:"protocol-registry-record"},{name:"command-evidence/command-evidence-index.json",role:"command-evidence-index"},{name:"command-evidence/build.stdout",role:"build-transcript"},{name:"command-evidence/cargo-version.stdout",role:"command-versions"},{name:"command-evidence/normalized-manifest.json",role:"normalized-manifest"},{name:"command-evidence/lockfile-identity.json",role:"verification-lockfile"},{name:"command-evidence/archive-identity.json",role:"package-archive"},{name:"command-evidence/metadata.stdout",role:"resolution-proof"}]' > evidence/artifacts.json
+          python3 scripts/registry-reverify.py candidate-artifacts \
+            --index evidence/command-evidence/command-evidence-index.json \
+            --summary evidence/registry-reverify-gregg.json \
+            --artifact-root evidence --output evidence/artifacts.json
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
             --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
             --stage registry-reverify-gregg --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
             --job-name registry-reverify-gregg --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" \
-            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json
+            --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json \
+            --artifact-root evidence
       - uses: actions/upload-artifact@v4
         with:
           name: registry-reverify-gregg-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
