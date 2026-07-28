@@ -162,6 +162,15 @@ Finalization must preserve `workflow-dispatch-base64` selection identity and
 require an explicit operator disposition input; it must not infer or hard-code
 `retain`/`yank` decisions.
 
+Phase 35 closes evidence-lineage and production-finalizer defects: Boundary-2
+candidates are real production-shaped artifacts retrieved through the same
+mock API path; package archives are built once and reused unchanged across all
+boundaries; the postpublish ZIP is a genuine selected artifact containing every
+candidate-declared file; final aggregation consumes only role-indexed
+materialized paths through the shared `prepare-final-release-inputs.py` helper.
+The production finalizer must not independently reconstruct postpublish
+source-of-record files.
+
 ## CLI and configuration rules
 
 Commands must be deterministic, scriptable, and return meaningful exit codes. Human-readable output goes to stdout; diagnostics go to stderr.

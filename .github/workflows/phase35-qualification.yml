@@ -1,4 +1,4 @@
-name: phase34-full-contract-qualification
+name: phase35-full-contract-qualification
 
 on:
   workflow_dispatch:
@@ -69,7 +69,7 @@ jobs:
             --candidate-sha "${{ inputs.candidate_sha }}" --release-version 1.0.1 \
             --requirements plans/evidence/release-requirements.json \
             --dispatch-contract plans/evidence/release-dispatch-contract.json \
-            --qualification-contract plans/evidence/phase34-qualification-contract.json \
+            --qualification-contract plans/evidence/phase35-qualification-contract.json \
             --evidence-dir evidence/orchestration
       - name: Validate qualification output
         run: |
@@ -77,7 +77,7 @@ jobs:
           date -u +%Y-%m-%dT%H:%M:%SZ > evidence/metadata/completed-at.txt
           python3 scripts/validate-qualification-output.py \
             --summary evidence/orchestration/qualification-summary.json \
-            --contract plans/evidence/phase34-qualification-contract.json \
+            --contract plans/evidence/phase35-qualification-contract.json \
             --requirements plans/evidence/release-requirements.json \
             --dispatch-contract plans/evidence/release-dispatch-contract.json \
             --hosted-metadata-root evidence/metadata
@@ -85,7 +85,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: phase34-full-contract-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
+          name: phase35-full-contract-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
           path: evidence
           if-no-files-found: error
           include-hidden-files: true

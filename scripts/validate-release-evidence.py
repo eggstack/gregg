@@ -66,6 +66,16 @@ def sha256(value: Any, name: str) -> str:
     return value
 
 
+def _sha256_of_file(path: Path) -> tuple[str, int]:
+    hasher = hashlib.sha256()
+    size = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            hasher.update(chunk)
+            size += len(chunk)
+    return hasher.hexdigest(), size
+
+
 def timestamp(value: Any, name: str) -> dt.datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         fail(f"{name} must be an RFC3339 UTC timestamp ending in Z")
@@ -500,8 +510,49 @@ def aggregate(args: argparse.Namespace) -> None:
         )
         if set(packages["packages"]) != {"gregg-protocol", "greggd", "gregg"}:
             fail("package provenance must contain all three crates")
-        registry = validate_registry_summary(registry, expected_version=args.release_version)
-        validate_disposition(disposition)
+
+        # E3: Final mode requires a role index with materialized singleton paths.
+        role_index_path = getattr(args, "role_index", None)
+        if not role_index_path:
+            fail("final aggregation requires --role-index")
+        role_index = read_json(Path(role_index_path))
+        if not isinstance(role_index, dict) or "roles" not in role_index:
+            fail("role index must be an object with a 'roles' field")
+        roles = role_index.get("roles", {})
+        if not isinstance(roles, dict):
+            fail("role index 'roles' must be an object")
+
+        # E3: Registry summary and disposition must come from the role index,
+        # never from direct paths in final mode.
+        if args.registry_summary or args.disposition:
+            fail("final aggregation must not accept direct registry/disposition paths; use --role-index")
+
+        registry_role = roles.get("registry-summary")
+        disposition_role = roles.get("version-1.0.0-disposition")
+        if not registry_role or not disposition_role:
+            fail("role index must contain registry-summary and version-1.0.0-disposition")
+
+        for role_name, role_record in (("registry-summary", registry_role),
+                                       ("version-1.0.0-disposition", disposition_role)):
+            materialized = role_record.get("materialized_path")
+            if not isinstance(materialized, str) or not materialized:
+                fail(f"role {role_name} has no materialized_path")
+            mat_path = Path(materialized)
+            if not mat_path.is_absolute():
+                mat_path = Path(role_index_path).parent / mat_path
+            if not mat_path.is_file():
+                fail(f"materialized role {role_name} is missing: {mat_path}")
+            mat_sha, mat_size = _sha256_of_file(mat_path)
+            if mat_sha != role_record.get("sha256") or mat_size != role_record.get("size_bytes"):
+                fail(f"materialized role {role_name} identity mismatch")
+
+        registry = validate_registry_summary(
+            read_json(Path(role_index_path).parent / registry_role["materialized_path"]),
+            expected_version=args.release_version,
+        )
+        disposition = validate_disposition(
+            read_json(Path(role_index_path).parent / disposition_role["materialized_path"]),
+        )
         if "postpublish-verify" not in by_stage:
             fail("final aggregation requires postpublish-verify evidence")
 
@@ -790,6 +841,8 @@ def make_parser() -> argparse.ArgumentParser:
     command.add_argument("--package-provenance")
     command.add_argument("--registry-summary")
     command.add_argument("--disposition")
+    command.add_argument("--role-index", type=Path,
+                         help="Role index with materialized singleton paths (final mode)")
     command.add_argument("--final", action="store_true")
 
     command = sub.add_parser("validate-manifest")

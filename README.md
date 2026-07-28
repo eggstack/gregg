@@ -198,8 +198,8 @@ an empty root, records checksum and size, and passes the installed `greggd`
 path to `scripts/verify-installed-daemon.sh`. That verifier only tests a
 supplied binary and never falls back to `target/release/greggd`.
 
-Phase-34 release-control qualification is nonpublishing and can be dispatched
-from `.github/workflows/phase32-qualification.yml` at an exact commit SHA. The
+Phase-35 release-control qualification is nonpublishing and can be dispatched
+from `.github/workflows/phase35-qualification.yml` at an exact commit SHA. The
 workflow runs the local gates, sustained smoke, and repository-owned
 full-contract qualification harness, then independently validates and uploads
 evidence fail-closed. The harness loads the production requirements and
@@ -214,6 +214,14 @@ Final singleton evidence is resolved by canonical role and materialized before
 aggregation. Boundary-2 unconditionally compares the generated lockfile
 checksum with the validated registry response and retains replayable command
 transcripts and their digests.
+
+Phase 35 closes the evidence-lineage and production-finalizer defects found
+after Phase 34: Boundary-2 candidates are real production-shaped artifacts
+retrieved through the same mock API path, package archives are built once and
+reused unchanged across all boundaries, the postpublish ZIP is a genuine
+selected artifact containing every candidate-declared file, and final
+aggregation consumes only role-indexed materialized paths through a shared
+preparation helper.
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the

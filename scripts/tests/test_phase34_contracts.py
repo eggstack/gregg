@@ -151,3 +151,83 @@ class QualificationContractTests(unittest.TestCase):
         )
         self.assertEqual(len(contract["required_command_names"]), 10)
         self.assertEqual(len(contract["required_negative_cases"]), 45)
+
+
+class Phase35QualificationContractTests(unittest.TestCase):
+    """Phase 35 supersedes Phase 34 for evidence-lineage and finalizer defects."""
+
+    def test_phase35_contract_names_every_mandatory_chain_and_singleton(self) -> None:
+        contract = json.loads(
+            (ROOT / "plans/evidence/phase35-qualification-contract.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            contract["required_chains"],
+            ["candidate_pre_tag", "protocol_publication", "boundary_2", "final"],
+        )
+        self.assertEqual(
+            set(contract["required_singleton_roles"]),
+            {"registry-summary", "version-1.0.0-disposition"},
+        )
+        self.assertEqual(len(contract["required_command_names"]), 10)
+        # Phase 35 adds cross-binding and restored Phase-34 rejection cases.
+        self.assertGreater(len(contract["required_negative_cases"]), 45)
+
+    def test_phase35_contract_preserves_all_phase34_negative_cases(self) -> None:
+        phase34 = json.loads(
+            (ROOT / "plans/evidence/phase34-qualification-contract.json").read_text(encoding="utf-8")
+        )
+        phase35 = json.loads(
+            (ROOT / "plans/evidence/phase35-qualification-contract.json").read_text(encoding="utf-8")
+        )
+        phase34_cases = set(phase34["required_negative_cases"])
+        phase35_cases = set(phase35["required_negative_cases"])
+        missing = phase34_cases - phase35_cases
+        self.assertEqual(missing, set(), f"Phase 35 dropped Phase 34 cases: {missing}")
+
+    def test_phase35_contract_includes_cross_binding_cases(self) -> None:
+        contract = json.loads(
+            (ROOT / "plans/evidence/phase35-qualification-contract.json").read_text(encoding="utf-8")
+        )
+        required_cross_binding = {
+            "boundary2-generic-replacement-greggd",
+            "boundary2-generic-replacement-gregg",
+            "boundary2-artifact-swapped-packages",
+            "boundary2-candidate-digest-mismatch",
+            "boundary2-selected-run-mismatch",
+            "boundary2-selected-attempt-mismatch",
+            "boundary2-selected-artifact-id-mismatch",
+            "boundary2-selected-zip-digest-mismatch",
+            "boundary1-boundary2-archive-mismatch-greggd",
+            "boundary1-boundary2-archive-mismatch-gregg",
+            "protocol-archive-registry-mismatch",
+            "final-provenance-archive-replacement",
+            "final-provenance-package-swap",
+            "postpublish-file-absent-from-zip",
+            "postpublish-manual-artifact-attribution",
+            "postpublish-candidate-role-missing",
+            "postpublish-candidate-role-wrong-path",
+            "postpublish-candidate-role-digest-mismatch",
+            "postpublish-role-wrong-stage",
+            "postpublish-duplicate-singleton-role",
+            "direct-final-registry-summary-path",
+            "direct-final-disposition-path",
+            "missing-final-role-index",
+            "role-index-not-from-retrieved-artifact",
+            "materialized-file-mutated",
+            "role-materialization-after-aggregate",
+            "contract-requirements-digest-mismatch",
+            "contract-dispatch-digest-mismatch",
+            "contract-qualification-digest-mismatch",
+            "hosted-implementation-sha-mismatch",
+            "final-sequence-order-invalid",
+        }
+        cases = set(contract["required_negative_cases"])
+        missing = required_cross_binding - cases
+        self.assertEqual(missing, set(), f"Phase 35 contract missing cases: {missing}")
+
+    def test_phase35_contract_no_duplicate_ids(self) -> None:
+        contract = json.loads(
+            (ROOT / "plans/evidence/phase35-qualification-contract.json").read_text(encoding="utf-8")
+        )
+        cases = contract["required_negative_cases"]
+        self.assertEqual(len(cases), len(set(cases)), "Phase 35 contract has duplicate negative-case IDs")

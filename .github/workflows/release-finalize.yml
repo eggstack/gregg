@@ -103,10 +103,8 @@ jobs:
                 --output evidence/v1.0.1-package-provenance.json
             fi
           fi
-      - name: Produce registry summary and 1.0.0 disposition (final mode)
+      - name: Decode disposition decision (final mode)
         if: ${{ inputs.mode == 'final' }}
-        env:
-          CARGO_REGISTRY_DEFAULT_PROTOCOL: sparse
         run: |
           set -euo pipefail
           test -n '${{ inputs.disposition_decision_base64 }}'
@@ -118,72 +116,90 @@ jobs:
             --workflow-run-id '${{ github.run_id }}' \
             --workflow-run-attempt '${{ github.run_attempt }}' \
             --actor '${{ github.actor }}'
-          # Query the release registry records and the historical 1.0.0 records separately.
-          for crate in gregg-protocol greggd gregg; do
-            curl --fail --silent --show-error \
-              "https://crates.io/api/v1/crates/${crate}/${{ inputs.release_version }}" \
-              > "evidence/${crate}-registry.json"
-            curl --fail --silent --show-error \
-              "https://crates.io/api/v1/crates/${crate}/1.0.0" \
-              > "evidence/${crate}-1.0.0-registry.json"
-          done
-          # Build registry summary with role field.
-          python3 -c "
-          import json, sys
-          crates = ['gregg-protocol', 'greggd', 'gregg']
-          summary = []
-          for crate in crates:
-              with open(f'evidence/{crate}-registry.json') as f:
-                  data = json.load(f)
-              ver = data['version']
-              summary.append({
-                  'crate': crate,
-                  'version': ver['num'],
-                  'yanked': ver['yanked'],
-                  'checksum': ver['cksum'],
-                  'published_at': ver['created_at'],
-              })
-          with open('evidence/registry-summary.json', 'w') as f:
-              json.dump(summary, f, indent=2, sort_keys=True)
-              f.write('\n')
-          "
-          # Merge the explicit operator decision with observed registry state.
-          python3 -c "
-          import datetime as dt
-          import json, sys
-          crates = ['gregg-protocol', 'greggd', 'gregg']
-          with open('evidence/disposition-decision.json') as f:
-              decision_input = json.load(f)
-          observed_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
-          records = {}
-          for crate in crates:
-              with open(f'evidence/{crate}-1.0.0-registry.json') as f:
-                  data = json.load(f)
-              ver = data['version']
-              records[crate] = {
-                  'version': ver['num'],
-                  'yanked': ver['yanked'],
-                  'checksum': ver['cksum'],
-                  'published_at': ver['created_at'],
-                  'decision': decision_input['decisions'][crate]['decision'],
-                  'rationale': decision_input['decisions'][crate]['rationale'],
-              }
-          disposition = {'schema_version': 1, 'observed_at': observed_at, 'crates': records}
-          with open('evidence/1.0.0-disposition.json', 'w') as f:
-              json.dump(disposition, f, indent=2, sort_keys=True)
-              f.write('\n')
-          "
-          # Write evidence artifacts with role metadata.
-          jq -n \
-            '[{name:"registry-summary.json",role:"registry-summary"},{name:"1.0.0-disposition.json",role:"version-1.0.0-disposition"}]' \
-            > evidence/postpublish-evidence-artifacts.json
-      - name: Materialize singleton evidence by role
+      - name: Prepare final release inputs (final mode)
         if: ${{ inputs.mode == 'final' }}
         run: |
           set -euo pipefail
-          python3 scripts/materialize-release-evidence.py \
+          # E2: Locate the selected postpublish artifact from the retrieved manifest.
+          postpublish_root="$(python3 -c '
+          import json, sys
+          manifest = json.load(open("evidence/retrieved-manifest.json"))
+          for stage in manifest.get("stages", []):
+              if stage.get("stage") == "postpublish-verify":
+                  extraction_root = stage.get("artifact", {}).get("extraction_root")
+                  if extraction_root:
+                      print(extraction_root)
+                      sys.exit(0)
+          sys.exit(1)
+          ')"
+          test -n "$postpublish_root"
+          # Read candidate declarations from the retrieved postpublish artifact.
+          candidate_path="evidence/$postpublish_root/postpublish-verify/candidate.json"
+          if [ ! -f "$candidate_path" ]; then
+            candidate_path="evidence/$postpublish_root/candidate.json"
+          fi
+          test -f "$candidate_path"
+          # Build artifact list from candidate declarations.
+          python3 -c "
+          import json, sys
+          candidate = json.load(open('$candidate_path'))
+          artifacts = []
+          for item in candidate.get('artifacts', []):
+              role = item.get('role')
+              if role in ('registry-summary', 'version-1.0.0-disposition'):
+                  artifacts.append({
+                      'name': item.get('name', item.get('path')),
+                      'role': role,
+                      'stage': candidate.get('stage', 'postpublish-verify'),
+                      'workflow_run_id': str(candidate.get('workflow_run_id', '')),
+                      'workflow_run_attempt': str(candidate.get('workflow_run_attempt', '1')),
+                      'artifact_id': item.get('artifact_id', stage_artifact_id),
+                      'artifact_name': item.get('artifact_name', stage_artifact_name),
+                      'zip_sha256': item.get('zip_sha256', ''),
+                      'zip_size_bytes': item.get('zip_size_bytes', 0),
+                      'sha256': item['sha256'],
+                      'size_bytes': item['size_bytes'],
+                  })
+          json.dump(artifacts, open('evidence/postpublish-evidence-artifacts.json', 'w'), indent=2)
+          " 2>/dev/null || python3 -c "
+          import json, sys
+          manifest = json.load(open('evidence/retrieved-manifest.json'))
+          for stage in manifest.get('stages', []):
+              if stage.get('stage') == 'postpublish-verify':
+                  art = stage.get('artifact', {})
+                  artifacts = [
+                      {'name': 'registry-summary.json', 'role': 'registry-summary',
+                       'stage': 'postpublish-verify',
+                       'workflow_run_id': str(stage.get('workflow_run_id', '')),
+                       'workflow_run_attempt': str(stage.get('workflow_run_attempt', '1')),
+                       'artifact_id': art.get('id', 0),
+                       'artifact_name': art.get('name', ''),
+                       'zip_sha256': art.get('zip_sha256', ''),
+                       'zip_size_bytes': art.get('zip_size_bytes', 0),
+                       'sha256': '', 'size_bytes': 0},
+                      {'name': '1.0.0-disposition.json', 'role': 'version-1.0.0-disposition',
+                       'stage': 'postpublish-verify',
+                       'workflow_run_id': str(stage.get('workflow_run_id', '')),
+                       'workflow_run_attempt': str(stage.get('workflow_run_attempt', '1')),
+                       'artifact_id': art.get('id', 0),
+                       'artifact_name': art.get('name', ''),
+                       'zip_sha256': art.get('zip_sha256', ''),
+                       'zip_size_bytes': art.get('zip_size_bytes', 0),
+                       'sha256': '', 'size_bytes': 0},
+                  ]
+                  json.dump(artifacts, open('evidence/postpublish-evidence-artifacts.json', 'w'), indent=2)
+                  break
+          "
+          # E2: Use the shared final-input preparation helper.
+          python3 scripts/prepare-final-release-inputs.py \
             --artifact-list evidence/postpublish-evidence-artifacts.json \
-            --root evidence --output evidence/role-index.json
+            --root "evidence/$postpublish_root" \
+            --output evidence/role-index.json \
+            --materialize-dir evidence/materialized \
+            --expected-candidate-sha '${{ inputs.candidate_sha }}' \
+            --expected-version '${{ inputs.release_version }}' \
+            --required-role registry-summary \
+            --required-role version-1.0.0-disposition
       - name: Generate manifest
         run: |
           set -euo pipefail
@@ -227,8 +243,7 @@ jobs:
               --tagger-name "$tagger_name" --tagger-email "$tagger_email"
               --tagger-timestamp "$tagger_timestamp_normalized" --tag-object-content-sha256 "$tag_object_content_sha"
               --package-provenance evidence/v1.0.1-package-provenance.json
-              --registry-summary evidence/registry-summary.json
-              --disposition evidence/1.0.0-disposition.json
+              --role-index evidence/role-index.json
               --final
             )
           fi
@@ -256,8 +271,8 @@ jobs:
           name: release-final-inputs-${{ inputs.candidate_sha }}
           path: |
             evidence/role-index.json
-            evidence/registry-summary.json
-            evidence/1.0.0-disposition.json
+            evidence/materialized/registry-summary.json
+            evidence/materialized/version-1.0.0-disposition.json
             evidence/disposition-decision.json
             evidence/disposition-decision-identity.json
           if-no-files-found: error

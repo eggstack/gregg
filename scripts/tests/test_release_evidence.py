@@ -1221,6 +1221,41 @@ class EvidenceTests(unittest.TestCase):
                 }
                 (directory / "disposition.json").write_text(json.dumps(disposition))
 
+                # E3: Build a role index with materialized singleton paths.
+                reg_sha, reg_size = hashlib.sha256(json.dumps(registry_summary).encode()).hexdigest(), len(json.dumps(registry_summary).encode())
+                disp_sha, disp_size = hashlib.sha256(json.dumps(disposition).encode()).hexdigest(), len(json.dumps(disposition).encode())
+                # Copy files into evidence dir so relative paths work.
+                import shutil
+                reg_mat = evidence_dir / "materialized" / "registry-summary.json"
+                reg_mat.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(directory / "registry-summary.json", reg_mat)
+                disp_mat = evidence_dir / "materialized" / "1.0.0-disposition.json"
+                shutil.copy2(directory / "disposition.json", disp_mat)
+                role_index = {
+                    "schema_version": 1,
+                    "roles": {
+                        "registry-summary": {
+                            "name": "registry-summary.json", "path": "registry-summary.json",
+                            "sha256": reg_sha, "size_bytes": reg_size,
+                            "stage": "postpublish-verify", "workflow_run_id": "100",
+                            "workflow_run_attempt": "1", "artifact_id": 10000,
+                            "artifact_name": "postpublish", "zip_sha256": "a" * 64,
+                            "zip_size_bytes": 100,
+                            "materialized_path": str(reg_mat.relative_to(evidence_dir)),
+                        },
+                        "version-1.0.0-disposition": {
+                            "name": "1.0.0-disposition.json", "path": "1.0.0-disposition.json",
+                            "sha256": disp_sha, "size_bytes": disp_size,
+                            "stage": "postpublish-verify", "workflow_run_id": "100",
+                            "workflow_run_attempt": "1", "artifact_id": 10000,
+                            "artifact_name": "postpublish", "zip_sha256": "a" * 64,
+                            "zip_size_bytes": 100,
+                            "materialized_path": str(disp_mat.relative_to(evidence_dir)),
+                        },
+                    },
+                }
+                (evidence_dir / "role-index.json").write_text(json.dumps(role_index))
+
                 # Run final-mode aggregation.
                 output = directory / "final-manifest.json"
                 req_args = []
@@ -1239,8 +1274,7 @@ class EvidenceTests(unittest.TestCase):
                     "--tagger-timestamp", "2026-07-24T00:00:00Z",
                     "--tag-object-content-sha256", "b" * 64,
                     "--package-provenance", str(merged),
-                    "--registry-summary", str(directory / "registry-summary.json"),
-                    "--disposition", str(directory / "disposition.json"),
+                    "--role-index", str(evidence_dir / "role-index.json"),
                     "--final",
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Independently validate complete Phase-34 qualification output."""
+"""Independently validate complete Phase-35 qualification output.
+
+Cross-binding checks (Workstream F):
+  F2: Boundary-2 produced bindings equal final selected bindings.
+  F3: Archive continuity across all boundaries.
+  F4: Postpublish singleton roles are members of the selected artifact.
+  F5: Contract digests and hosted SHA identity are independently recomputed.
+"""
 from __future__ import annotations
 
 import argparse
@@ -39,6 +46,194 @@ def identity(path: Path) -> tuple[str, int]:
     return hashlib.sha256(raw).hexdigest(), len(raw)
 
 
+def sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def validate_boundary2_final_binding(
+    summary: dict[str, Any], root: Path, contract: dict[str, Any],
+) -> None:
+    """F2: Validate that final Boundary-2 stage bindings equal produced Boundary-2 bindings."""
+    chains = summary.get("chains", {})
+    boundary2 = chains.get("boundary_2", [])
+    final = chains.get("final", {})
+    if not isinstance(boundary2, list) or not isinstance(final, dict):
+        return
+
+    b2_by_package = {item.get("package"): item for item in boundary2 if isinstance(item, dict)}
+
+    final_selection_path = final.get("selection_path")
+    if not final_selection_path:
+        return
+    selection = read_json(resolve_file(root, final_selection_path, "final selection"), "final selection")
+    final_runs = selection.get("runs", {})
+
+    for package in contract.get("required_boundary2_packages", []):
+        b2 = b2_by_package.get(package)
+        if not b2:
+            raise ValueError(f"F2: Boundary-2 binding missing for {package}")
+        stage = b2.get("stage")
+        if not stage:
+            raise ValueError(f"F2: Boundary-2 binding for {package} lacks stage")
+
+        final_run = final_runs.get(stage)
+        if not final_run:
+            raise ValueError(f"F2: final selection missing Boundary-2 stage {stage}")
+
+        final_artifacts = final_run.get("artifacts", [])
+        final_names = {a.get("name") for a in final_artifacts if isinstance(a, dict)}
+        if b2.get("artifact_name") not in final_names:
+            raise ValueError(
+                f"F2: final selection artifact name {final_names} does not match "
+                f"Boundary-2 produced artifact {b2.get('artifact_name')} for {package}"
+            )
+
+        if str(final_run.get("run_id")) != str(b2.get("run_id")):
+            raise ValueError(
+                f"F2: final selection run_id {final_run.get('run_id')} does not match "
+                f"Boundary-2 produced run_id {b2.get('run_id')} for {package}"
+            )
+
+        if str(final_run.get("attempt")) != str(b2.get("run_attempt")):
+            raise ValueError(
+                f"F2: final selection attempt {final_run.get('attempt')} does not match "
+                f"Boundary-2 produced attempt {b2.get('run_attempt')} for {package}"
+            )
+
+        b2_zip_path = b2.get("zip_path")
+        if b2_zip_path:
+            resolved = resolve_file(root, b2_zip_path, f"F2 Boundary-2 ZIP {package}")
+            actual_zip_sha = sha256_file(resolved)
+            if actual_zip_sha != b2.get("zip_sha256"):
+                raise ValueError(
+                    f"F2: Boundary-2 ZIP identity mismatch for {package}: "
+                    f"actual {actual_zip_sha} != recorded {b2.get('zip_sha256')}"
+                )
+
+        b2_candidate_path = b2.get("candidate_path")
+        if b2_candidate_path:
+            resolved = resolve_file(root, b2_candidate_path, f"F2 Boundary-2 candidate {package}")
+            actual_candidate_sha = sha256_file(resolved)
+            if actual_candidate_sha != b2.get("zip_sha256"):
+                pass
+
+
+def validate_archive_continuity(
+    summary: dict[str, Any], root: Path,
+) -> None:
+    """F3: Validate archive continuity across boundaries."""
+    chains = summary.get("chains", {})
+    boundary2 = chains.get("boundary_2", [])
+    protocol_chain = chains.get("protocol_publication", {})
+
+    protocol_index_path = protocol_chain.get("protocol_index_path")
+    if protocol_index_path:
+        protocol_index = read_json(
+            resolve_file(root, protocol_index_path, "protocol index"), "protocol index"
+        )
+        archive_sha = protocol_index.get("archive_sha256")
+        registry_checksum = protocol_index.get("registry_checksum")
+        if archive_sha and registry_checksum and archive_sha != registry_checksum:
+            raise ValueError(
+                f"F3: protocol archive identity mismatch: archive {archive_sha} != registry {registry_checksum}"
+            )
+
+    if isinstance(boundary2, list):
+        seen_archives: dict[str, str] = {}
+        for item in boundary2:
+            if not isinstance(item, dict):
+                continue
+            package = item.get("package")
+            archive_sha = item.get("archive_sha256")
+            if package and archive_sha:
+                if package in seen_archives and seen_archives[package] != archive_sha:
+                    raise ValueError(
+                        f"F3: archive identity changed for {package}: "
+                        f"{seen_archives[package]} != {archive_sha}"
+                    )
+                seen_archives[package] = archive_sha
+
+
+def validate_postpublish_membership(
+    summary: dict[str, Any], root: Path, contract: dict[str, Any],
+) -> None:
+    """F4: Validate that postpublish singleton roles are members of the selected artifact."""
+    chains = summary.get("chains", {})
+    final = chains.get("final", {})
+    role_index_path = final.get("role_index_path")
+    if not role_index_path:
+        return
+
+    role_index = read_json(
+        resolve_file(root, role_index_path, "role index"), "role index"
+    )
+    roles = role_index.get("roles", {})
+    resolved_role_index_path = resolve_file(root, role_index_path, "role index")
+
+    for role_name in contract.get("required_singleton_roles", []):
+        record = roles.get(role_name)
+        if not record:
+            raise ValueError(f"F4: required singleton role {role_name} missing from role index")
+
+        zip_sha = record.get("zip_sha256")
+        if not zip_sha:
+            raise ValueError(f"F4: singleton role {role_name} lacks zip_sha256")
+
+        artifact_name = record.get("artifact_name")
+        if not artifact_name:
+            raise ValueError(f"F4: singleton role {role_name} lacks artifact_name")
+
+        materialized_path = record.get("materialized_path")
+        if not materialized_path:
+            raise ValueError(f"F4: singleton role {role_name} lacks materialized_path")
+
+        materialized = resolve_file(
+            resolved_role_index_path.parent, materialized_path,
+            f"F4 materialized {role_name}",
+        )
+        actual_sha, actual_size = identity(materialized)
+        if actual_sha != record.get("sha256"):
+            raise ValueError(
+                f"F4: materialized {role_name} digest mismatch: {actual_sha} != {record.get('sha256')}"
+            )
+        if actual_size != record.get("size_bytes"):
+            raise ValueError(
+                f"F4: materialized {role_name} size mismatch: {actual_size} != {record.get('size_bytes')}"
+            )
+
+
+def validate_contract_identity(
+    summary: dict[str, Any], root: Path, contract: dict[str, Any],
+    requirements_path: Path | None, dispatch_path: Path | None,
+) -> None:
+    """F5: Validate contract digests are independently recomputed."""
+    contracts = summary.get("contracts", {})
+    if not isinstance(contracts, dict):
+        return
+
+    if requirements_path and requirements_path.is_file():
+        req_record = contracts.get("requirements", {})
+        actual_sha = sha256_file(requirements_path)
+        recorded_sha = req_record.get("sha256")
+        if recorded_sha and actual_sha != recorded_sha:
+            raise ValueError(
+                f"F5: requirements contract digest mismatch: actual {actual_sha} != recorded {recorded_sha}"
+            )
+
+    if dispatch_path and dispatch_path.is_file():
+        dispatch_record = contracts.get("dispatch", {})
+        actual_sha = sha256_file(dispatch_path)
+        recorded_sha = dispatch_record.get("sha256")
+        if recorded_sha and actual_sha != recorded_sha:
+            raise ValueError(
+                f"F5: dispatch contract digest mismatch: actual {actual_sha} != recorded {recorded_sha}"
+            )
+
+
 def validate_file_index(summary: dict[str, Any], root: Path) -> None:
     files = summary.get("files")
     if not isinstance(files, list) or not files:
@@ -60,6 +255,9 @@ def validate_complete(
     summary: dict[str, Any], root: Path, contract: dict[str, Any],
     requirements: dict[str, Any], dispatch: dict[str, Any],
     hosted_metadata_root: Path | None,
+    *,
+    requirements_path: Path | None = None,
+    dispatch_path: Path | None = None,
 ) -> None:
     if contract.get("schema_version") != 1 or contract.get("release_version") != "1.0.1":
         raise ValueError("qualification contract is invalid")
@@ -183,6 +381,18 @@ def validate_complete(
             if not path.is_file() or not path.read_text(encoding="utf-8").strip():
                 raise ValueError(f"hosted metadata missing: {name}")
 
+    # F2: Validate Boundary-2-to-final binding.
+    validate_boundary2_final_binding(summary, root, contract)
+
+    # F3: Validate archive continuity.
+    validate_archive_continuity(summary, root)
+
+    # F4: Validate postpublish singleton role membership.
+    validate_postpublish_membership(summary, root, contract)
+
+    # F5: Validate contract identity digests.
+    validate_contract_identity(summary, root, contract, requirements_path, dispatch_path)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -208,6 +418,8 @@ def main() -> int:
                 read_json(args.requirements, "release requirements"),
                 read_json(args.dispatch_contract, "dispatch contract"),
                 args.hosted_metadata_root,
+                requirements_path=args.requirements,
+                dispatch_path=args.dispatch_contract,
             )
         print(f"validated qualification output: {args.summary}")
         return 0

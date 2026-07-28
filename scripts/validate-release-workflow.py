@@ -531,7 +531,7 @@ def validate_workflow() -> list[WorkflowViolation]:
 
     text = WORKFLOW.read_text(encoding="utf-8")
     finalize_text = FINALIZE.read_text(encoding="utf-8")
-    qualification = (ROOT / ".github" / "workflows" / "phase32-qualification.yml").read_text(encoding="utf-8")
+    qualification = (ROOT / ".github" / "workflows" / "phase35-qualification.yml").read_text(encoding="utf-8")
 
     # --- Legacy substring checks (preserved from original validator) ---
 
@@ -603,8 +603,8 @@ def validate_workflow() -> list[WorkflowViolation]:
     for required in (
         "--requirements plans/evidence/release-requirements.json",
         "--dispatch-contract plans/evidence/release-dispatch-contract.json",
-        "--qualification-contract plans/evidence/phase34-qualification-contract.json",
-        "--contract plans/evidence/phase34-qualification-contract.json",
+        "--qualification-contract plans/evidence/phase35-qualification-contract.json",
+        "--contract plans/evidence/phase35-qualification-contract.json",
         "--hosted-metadata-root evidence/metadata",
     ):
         if required not in qualification:
@@ -621,6 +621,24 @@ def validate_workflow() -> list[WorkflowViolation]:
         violations.append(WorkflowViolation("disposition", "finalizer must not hard-code a historical retain decision"))
     if "decode-release-disposition.py" not in finalize_text:
         violations.append(WorkflowViolation("disposition", "finalizer must validate explicit disposition input"))
+
+    # E1/E2: Production finalizer must not reconstruct postpublish source-of-record files.
+    # It must use the shared final-input preparation helper and role-index materialization.
+    if "prepare-final-release-inputs.py" not in finalize_text:
+        violations.append(WorkflowViolation("finalizer-contract", "finalizer must invoke shared prepare-final-release-inputs.py helper"))
+    if "--role-index" not in finalize_text:
+        violations.append(WorkflowViolation("finalizer-contract", "finalizer must pass --role-index to aggregation"))
+    # In final mode, the finalizer must not pass direct --registry-summary or --disposition paths.
+    final_mode_section = finalize_text[finalize_text.find("mode == 'final'"):] if "mode == 'final'" in finalize_text else ""
+    if final_mode_section:
+        if "--registry-summary" in final_mode_section and "--registry-summary evidence/registry-summary.json" in final_mode_section:
+            violations.append(WorkflowViolation("finalizer-contract", "finalizer must not pass direct registry-summary path in final mode"))
+        if "--disposition" in final_mode_section and "--disposition evidence/1.0.0-disposition.json" in final_mode_section:
+            violations.append(WorkflowViolation("finalizer-contract", "finalizer must not pass direct disposition path in final mode"))
+        if "curl --fail" in final_mode_section and "crates.io" in final_mode_section:
+            violations.append(WorkflowViolation("finalizer-contract", "finalizer must not independently query crates.io to reconstruct postpublish evidence"))
+        if "json.dump" in final_mode_section and "cksum" in final_mode_section and "published_at" in final_mode_section:
+            violations.append(WorkflowViolation("finalizer-contract", "finalizer must not independently construct registry summary from crates.io data in final mode"))
     for forbidden in ("--source-replacement-dir", "--qualification-local-registry", "--cargo-home"):
         if forbidden in text or forbidden in finalize_text:
             violations.append(WorkflowViolation("fixture-mode", f"production release workflow must not use {forbidden}"))

@@ -607,8 +607,30 @@ def main() -> int:
             # Bind to the single containing artifact.
             bound_key = found_keys[0]
             bound_artifact = artifact_cache[bound_key]
+            extraction_root = Path(bound_artifact["extraction_path"]).relative_to(
+                args.output.parent.parent
+            ).as_posix()
+            candidate_meta = bound_artifact.get("candidate_metadata", [])
+            candidate_binding: dict[str, Any] = {}
+            if candidate_meta:
+                cm = candidate_meta[0]
+                candidate_binding = {
+                    "path": cm["path"],
+                    "sha256": cm["sha256"],
+                    "size_bytes": cm["size_bytes"],
+                }
             stages.append({
                 "stage": stage_name,
+                "workflow_run_id": validated_run["run_id"],
+                "workflow_run_attempt": validated_run["run_attempt"],
+                "artifact": {
+                    "id": bound_artifact["github_artifact_id"],
+                    "name": bound_artifact["github_artifact_name"],
+                    "zip_sha256": bound_artifact["downloaded_zip_sha256"],
+                    "zip_size_bytes": bound_artifact["downloaded_zip_size_bytes"],
+                    "extraction_root": extraction_root,
+                },
+                "candidate": candidate_binding,
                 "run": validated_run,
                 "artifacts": [bound_artifact],
             })
