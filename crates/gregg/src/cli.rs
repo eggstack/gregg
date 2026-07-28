@@ -110,8 +110,9 @@ pub enum Command {
     },
     /// Open the configuration file in an editor.
     ///
-    /// Resolves the editor from `$VISUAL`, `$EDITOR`, then fallbacks (`hx`,
-    /// `vim`, `vi`). Validates the file after the editor exits.
+    /// Resolves the editor from `$VISUAL`, `$EDITOR`, then fallbacks.
+    /// On Unix: `hx`, `vim`, `vi`. On Windows: `hx`, `code`, `notepad`.
+    /// Validates the file after the editor exits.
     ///
     /// # Examples
     ///
@@ -345,6 +346,10 @@ fn cmd_edit(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Resolve the editor to use, checking $VISUAL, $EDITOR, then fallbacks.
+///
+/// On Unix, fallbacks are `hx`, `vim`, `vi` found via `PATH`.
+/// On Windows, fallbacks are `hx`, `code`, `notepad` found via `PATH`
+/// and `PATHEXT` extension resolution.
 #[must_use]
 pub fn resolve_editor() -> Option<String> {
     if let Ok(visual) = std::env::var("VISUAL") {
@@ -360,21 +365,86 @@ pub fn resolve_editor() -> Option<String> {
         }
     }
     // Check fallbacks.
-    for fallback in &["hx", "vim", "vi"] {
-        if which_exists(fallback) {
-            return Some((*fallback).to_string());
+    #[cfg(windows)]
+    {
+        for fallback in &["hx", "code", "notepad"] {
+            if executable_exists(fallback) {
+                return Some((*fallback).to_string());
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        for fallback in &["hx", "vim", "vi"] {
+            if executable_exists(fallback) {
+                return Some((*fallback).to_string());
+            }
         }
     }
     None
 }
 
-fn which_exists(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// Check whether an executable is available in `PATH`.
+///
+/// On Unix, this uses the `which` command. On Windows, this searches
+/// `PATH` entries directly and honours `PATHEXT` for extension resolution.
+fn executable_exists(cmd: &str) -> bool {
+    #[cfg(windows)]
+    {
+        executable_exists_windows(cmd)
+    }
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new("which")
+            .arg(cmd)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+}
+
+/// Windows-specific executable lookup using `PATH` and `PATHEXT`.
+#[cfg(windows)]
+fn executable_exists_windows(cmd: &str) -> bool {
+    use std::path::PathBuf;
+
+    // If the command is an absolute path, check it directly.
+    if std::path::Path::new(cmd).is_absolute() {
+        return std::path::Path::new(cmd).exists();
+    }
+
+    let path_ext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let extensions: Vec<String> = path_ext
+        .split(';')
+        .map(|e| e.trim().to_uppercase())
+        .filter(|e| !e.is_empty())
+        .collect();
+
+    let Ok(path_var) = std::env::var("PATH") else {
+        return false;
+    };
+
+    for dir in path_var.split(';') {
+        let dir = dir.trim();
+        if dir.is_empty() {
+            continue;
+        }
+        let base = PathBuf::from(dir).join(cmd);
+
+        // Check with each PATHEXT extension.
+        for ext in &extensions {
+            let candidate = format!("{}{}", base.display(), ext);
+            if std::path::Path::new(&candidate).exists() {
+                return true;
+            }
+        }
+        // Also check the bare name (for commands already containing an extension).
+        if base.exists() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Error type wrapping config and endpoint errors.

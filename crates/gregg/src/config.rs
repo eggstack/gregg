@@ -27,6 +27,10 @@ thread_local! {
 
 /// Create a replacement file with user-only permissions before exposing any
 /// configuration bytes to it.
+///
+/// On Unix, the file is created with mode `0o600`. On Windows, the file
+/// inherits the default ACL of the parent directory (typically the user's
+/// profile directory), which already restricts access to the owning user.
 fn create_secure_temp_file(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -297,7 +301,23 @@ impl Config {
                 .join("gregg")
                 .join("gregg.toml")
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                PathBuf::from(appdata).join("gregg").join("gregg.toml")
+            } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                PathBuf::from(userprofile)
+                    .join("AppData")
+                    .join("Roaming")
+                    .join("gregg")
+                    .join("gregg.toml")
+            } else {
+                // No user-scoped directory available — return a clear
+                // error path rather than silently falling back to cwd.
+                PathBuf::from("gregg.toml")
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             PathBuf::from("gregg.toml")
         }
@@ -544,7 +564,7 @@ impl ConfigStore {
             loop {
                 let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                 if result == 0 {
-                    return Ok(FileLockGuard { file });
+                    return Ok(FileLockGuard { file, handle: None });
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err(ConfigError::LockTimeout {
@@ -556,10 +576,66 @@ impl ConfigStore {
             }
         }
 
-        #[cfg(not(unix))]
+        #[cfg(windows)]
         {
-            // On non-Unix platforms, fall back to the in-process mutex only.
-            Ok(FileLockGuard { file })
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::{
+                LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+            };
+            use windows_sys::Win32::System::IO::OVERLAPPED;
+
+            let handle = file.as_raw_handle();
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(LOCK_TIMEOUT_MS);
+
+            loop {
+                let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+                #[allow(clippy::ptr_as_ptr)]
+                let result = unsafe {
+                    LockFileEx(
+                        handle as *mut _,
+                        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                        0,
+                        1,
+                        0,
+                        &mut overlapped,
+                    )
+                };
+
+                if result != 0 {
+                    // Lock acquired.
+                    return Ok(FileLockGuard {
+                        file,
+                        handle: Some(handle as isize),
+                    });
+                }
+
+                let last_error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+                // ERROR_LOCK_VIOLATION = 0x21, ERROR_IO_INCOMPLETE = 0x3E4
+                if last_error == 0x21 || last_error == 0x3E4 {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(ConfigError::LockTimeout {
+                            path: lock_path,
+                            timeout_ms: LOCK_TIMEOUT_MS,
+                        });
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                } else {
+                    #[allow(clippy::cast_possible_wrap)]
+                    let err_code = last_error as i32;
+                    return Err(ConfigError::Io {
+                        path: lock_path,
+                        source: io::Error::from_raw_os_error(err_code),
+                    });
+                }
+            }
+        }
+
+        #[cfg(not(unix))]
+        #[cfg(not(windows))]
+        {
+            // On non-Unix, non-Windows platforms, fall back to the in-process mutex only.
+            Ok(FileLockGuard { file, handle: None })
         }
     }
 
@@ -726,18 +802,35 @@ impl ConfigStore {
 ///
 /// Holds the lock file handle for the duration of the critical section.
 /// The OS-level advisory lock is released when the guard is dropped
-/// (the file descriptor is closed). The lock file inode may persist on
-/// disk, but it does not imply a stale lock after the descriptor closes.
+/// (the file descriptor/handle is closed or explicitly unlocked). The
+/// lock file inode may persist on disk, but it does not imply a stale
+/// lock after the descriptor closes.
 pub struct FileLockGuard {
     #[allow(dead_code)]
     file: fs::File,
+    /// On Windows, the raw handle value is retained so we can call
+    /// `UnlockFileEx` before the file is dropped. On Unix, this is `None`.
+    /// Stored as `isize` for cross-platform struct layout.
+    #[allow(dead_code)]
+    handle: Option<isize>,
 }
 
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
-        // Closing the file descriptor releases the flock. We do not
-        // delete the lock file — it may be reused by the next acquirer
-        // and removing it could race with a concurrent open.
+        // Closing the file descriptor releases the flock on Unix. On
+        // Windows, we must explicitly unlock before the handle closes.
+        #[cfg(windows)]
+        if let Some(handle) = self.handle {
+            unsafe {
+                use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
+                use windows_sys::Win32::System::IO::OVERLAPPED;
+                let mut overlapped: OVERLAPPED = std::mem::zeroed();
+                #[allow(clippy::ptr_as_ptr)]
+                UnlockFileEx(handle as *mut _, 0, 1, 0, &mut overlapped);
+            }
+        }
+        // We do not delete the lock file — it may be reused by the next
+        // acquirer and removing it could race with a concurrent open.
     }
 }
 
@@ -1227,8 +1320,10 @@ mod tests {
         let config = Config::default();
         config.write_atomic(&path).unwrap();
 
-        // Attempt write to invalid path.
-        let result = config.write_atomic(Path::new("/nonexistent_dir/config.toml"));
+        // Attempt write to an invalid nested path that cannot exist on
+        // any platform (contains a null byte which is invalid on all OSes).
+        let bad_path = dir.join("\0").join("config.toml");
+        let result = config.write_atomic(&bad_path);
         assert!(result.is_err());
 
         let loaded = Config::load(&path).unwrap();
@@ -2282,6 +2377,89 @@ unknown_field = "oops"
             assert_eq!(mode, 0o600, "write {i} must produce 0600");
         }
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Windows config path tests ---
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn default_path_uses_appdata() {
+        // On Windows, default_path should use %APPDATA%\gregg\gregg.toml.
+        let path = Config::default_path();
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.contains("gregg\\gregg.toml") || path_str.contains("gregg/gregg.toml"),
+            "expected APPDATA path, got: {path_str}"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn default_path_parent_exists_or_can_be_created() {
+        let path = Config::default_path();
+        let parent = path.parent().unwrap();
+        // The parent directory should either exist or be creatable.
+        if !parent.exists() {
+            fs::create_dir_all(parent).expect("should be able to create parent directory");
+        }
+        assert!(parent.exists());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    // --- Atomic write with paths containing spaces and Unicode ---
+
+    #[test]
+    fn write_atomic_path_with_spaces() {
+        let dir = tmp_dir("atomic spaces in path");
+        let path = dir.join("config.toml");
+        let config = Config::default();
+        config.write_atomic(&path).unwrap();
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(config, loaded);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_repeated_mutation_produces_valid_config() {
+        let dir = tmp_dir("atomic_repeat_mutation");
+        let path = dir.join("config.toml");
+
+        let mut config = Config::default();
+        for i in 1..=20 {
+            config.refresh_seconds = i;
+            config.write_atomic(&path).unwrap();
+        }
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded.refresh_seconds, 20);
+        assert!(loaded.is_valid());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn edit_transaction_path_with_spaces() {
+        let dir = tmp_dir("edit spaces in path");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path.clone());
+
+        let original = Config::default();
+        store.write(&original).unwrap();
+
+        store
+            .edit_transaction(|temp_path| {
+                let mut config = Config::load(temp_path)?;
+                config.refresh_seconds = 25;
+                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                    path: temp_path.to_path_buf(),
+                    source: e,
+                })?;
+                Ok(())
+            })
+            .unwrap();
+
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded.refresh_seconds, 25);
+        assert_eq!(count_temp_files(&dir), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 }

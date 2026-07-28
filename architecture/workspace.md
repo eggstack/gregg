@@ -9,6 +9,8 @@ crates/greggd           bin + lib  Linux/macOS metrics daemon + service-manageme
 crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
+The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux and macOS only.
+
 ## Dependency direction
 
 ```text
@@ -94,8 +96,18 @@ Client configuration lives in `crates/gregg/src/config.rs`. It stores monitored
 endpoints as `[[systems]]` entries with stable UUID v4 IDs, host, port, and
 optional display name. The `ConfigStore` provides `load_or_default`,
 `load_existing`, `write`, `mutate`, and `mutate_with_result` operations with
-a `Mutex`-based concurrency guard. Atomic writes follow the same
-write-flush-rename-verify pattern as the daemon.
+a `Mutex`-based concurrency guard plus an OS-backed cross-process file lock.
+Atomic writes follow the write-flush-rename-verify pattern.
+
+Platform-specific config paths:
+- Linux: `$XDG_CONFIG_HOME/gregg/gregg.toml` or `~/.config/gregg/gregg.toml`
+- macOS: `~/Library/Application Support/gregg/gregg.toml`
+- Windows: `%APPDATA%\gregg\gregg.toml`
+
+Cross-process locking:
+- Unix: `flock(2)` advisory lock on `<config>.lock`
+- Windows: `LockFileEx` exclusive lock on `<config>.lock`
+- Other platforms: in-process `Mutex` only
 
 The endpoint parser lives in `crates/gregg/src/endpoint.rs`. It supports IPv4,
 IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional ports. The parser
@@ -185,9 +197,10 @@ contributors see style suggestions without breaking the build on unrelated
 changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
 through the workspace lint table. The macOS collector FFI module
 (`crates/greggd/src/collector/macos/ffi.rs`) and the client's narrowly scoped
-Unix `flock` wrapper are the only exceptions; both use
-`#![allow(unsafe_code)]` with documented safety invariants. No unsafe pointers
-or borrowed foreign buffers cross those boundaries.
+Unix `flock` wrapper and Windows `LockFileEx` adapter are the only
+exceptions; each uses `#![allow(unsafe_code)]` with documented safety
+invariants. No unsafe pointers or borrowed foreign buffers cross those
+boundaries.
 
 ## Release profiles
 

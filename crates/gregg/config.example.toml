@@ -1,5 +1,8 @@
 # Gregg client configuration
 # This file is loaded from the platform-specific config directory or via --config.
+# Linux:   ~/.config/gregg/gregg.toml
+# macOS:   ~/Library/Application Support/gregg/gregg.toml
+# Windows: %APPDATA%\gregg\gregg.toml
 
 config_version = 1
 

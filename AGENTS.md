@@ -67,7 +67,7 @@ Dependencies must solve a concrete version-1 requirement. Disable unused default
 
 The daemon now uses axum, tokio, tracing, serde_json, serde, toml, and clap for the HTTP server, async runtime, structured logging, JSON serialization, configuration serialization/parsing, and CLI argument parsing respectively.
 
-The client crate (`gregg`) uses clap, serde, serde_json, toml, uuid, ratatui, crossterm, and futures-util for CLI argument parsing, configuration serialization/parsing, JSON output, stable endpoint identity, terminal rendering, terminal I/O, and async event bridging respectively.
+The client crate (`gregg`) uses clap, serde, serde_json, toml, uuid, ratatui, crossterm, futures-util, and (on Windows) `windows-sys` for CLI argument parsing, configuration serialization/parsing, JSON output, stable endpoint identity, terminal rendering, terminal I/O, async event bridging, and Windows-native file locking respectively.
 
 `greggd` now exposes a `lib` target so integration tests can exercise the
 collector without depending on internal-only paths.
@@ -84,10 +84,10 @@ boundary.
 Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs. External tools may be used only as diagnostic references in tests or development documentation.
 
 Unsafe Rust is permitted only where required for macOS FFI or the client's
-narrow Unix file-lock wrapper. Contain it in small modules, document every
-safety invariant, validate returned lengths/status values, and expose owned
-safe Rust values. No unsafe pointers or borrowed foreign buffers may cross
-either boundary.
+narrow Unix file-lock wrapper and Windows file-lock adapter. Contain it
+in small modules, document every safety invariant, validate returned
+lengths/status values, and expose owned safe Rust values. No unsafe
+pointers or borrowed foreign buffers may cross either boundary.
 
 ## Protocol rules
 

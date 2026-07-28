@@ -14,6 +14,9 @@ Before starting, ensure you have:
 - Permission to create a GitHub Release.
 - A clean local checkout of the intended release commit.
 - The current `main` fetched from the remote.
+- All workspace crate versions and inter-crate dependency versions updated
+  consistently.
+- Changelog and README support tables updated for the release.
 
 Set the release version and tag before preflight:
 
@@ -52,7 +55,16 @@ grep 'gregg-protocol' crates/gregg/Cargo.toml
 ```
 
 Both must reference the intended `gregg-protocol` version. Verify the
-changelog contains the release version and date.
+changelog contains the release version and date. Confirm crate descriptions
+and supported-platform documentation are current.
+
+Verify `Cargo.lock` is committed and matches the workspace:
+
+```bash
+git diff --name-only Cargo.lock
+```
+
+An empty diff means the lock file is current.
 
 ## 3. Run full local validation
 
@@ -63,9 +75,10 @@ changelog contains the release version and date.
 This runs fmt, clippy, tests, docs, cargo-deny, shellcheck, python tests,
 package content checks, and the installed-binary loopback smoke.
 
-## 4. Publish gregg-protocol
+## 4. Dry-run and publish gregg-protocol
 
 ```bash
+cargo publish -p gregg-protocol --dry-run --locked
 cargo publish -p gregg-protocol --locked
 ```
 
@@ -75,9 +88,7 @@ Wait for crates.io availability before continuing:
 cargo search gregg-protocol --limit 1
 ```
 
-Confirm the exact `$VERSION` appears. Optionally, create a clean temporary
-consumer project that resolves `gregg-protocol = "=$VERSION"` from crates.io
-and run `cargo check` against it.
+Confirm the exact `$VERSION` appears.
 
 ## 5. Dry-run dependent crates
 
@@ -111,6 +122,15 @@ greggd --help
 gregg --version
 gregg --help
 ```
+
+Verify the protocol crate resolves from crates.io in a clean consumer:
+
+```toml
+[dependencies]
+gregg-protocol = "=X.Y.Z"
+```
+
+Run `cargo check` against it without a path override.
 
 On a native host, run a short foreground daemon smoke with a temporary config
 and loopback binding, then query `/healthz` and `/v1/status` and terminate

@@ -25,6 +25,7 @@ gregg-protocol = "1.0"
 | Linux | ARM64 | Supported |
 | macOS | Intel (x86-64) | Supported |
 | macOS | Apple Silicon (arm64) | Supported |
+| Windows | x86-64 | Client supported; daemon not yet supported |
 
 ## Goals
 
@@ -105,6 +106,12 @@ gregg edit                     # open config in $EDITOR
 - `j` / Down: move to the next system
 - `k` / Up: move to the previous system
 - Viewport scrolls by system entry, not by raw row
+
+### Windows client
+
+The `gregg` client is a native Windows application. It stores configuration in `%APPDATA%\gregg\gregg.toml` and uses Windows-native file locking for cross-process safety. Editor resolution falls back to `hx`, `code`, or `notepad` when `$VISUAL` and `$EDITOR` are not set.
+
+The `greggd` daemon is not yet supported on Windows.
 
 ## Display model
 

@@ -481,6 +481,7 @@ dependencies = [
  "unicode-width 0.2.0",
  "url",
  "uuid",
+ "windows-sys 0.59.0",
  "zeroize",
 ]
 

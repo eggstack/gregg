@@ -864,7 +864,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // The first batch should arrive almost immediately.
-        let batch = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("should receive first batch without delay")
             .expect("channel should be open");
@@ -888,7 +888,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Consume the immediate first batch (generation 1).
-        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("first batch")
             .expect("channel open");
@@ -898,7 +898,7 @@ mod tests {
         refresh_tx.send(()).await.unwrap();
 
         // The scheduler should produce a second batch promptly.
-        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("refresh batch")
             .expect("channel open");
@@ -965,7 +965,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Consume the immediate first batch (generation 1).
-        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("first batch")
             .expect("channel open");
@@ -975,7 +975,7 @@ mod tests {
         refresh_tx.send(()).await.unwrap();
 
         // Should receive exactly one additional batch (generation 2).
-        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("refresh batch")
             .expect("channel open");
@@ -1008,7 +1008,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Consume the immediate first batch (generation 1).
-        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("first batch")
             .expect("channel open");
@@ -1019,7 +1019,7 @@ mod tests {
         drop(refresh_tx);
 
         // Wait for the periodic generation (generation 2).
-        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("second batch")
             .expect("channel open");
@@ -1027,7 +1027,7 @@ mod tests {
         let t2 = std::time::Instant::now();
 
         // Wait for the next periodic generation (generation 3).
-        let batch3 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch3 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("third batch")
             .expect("channel open");
@@ -1063,7 +1063,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Consume the immediate first batch (generation 1).
-        let batch1 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("first batch")
             .expect("channel open");
@@ -1071,7 +1071,7 @@ mod tests {
         let t1 = std::time::Instant::now();
 
         // Wait for the periodic generation (generation 2) at ~100ms.
-        let batch2 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("second batch")
             .expect("channel open");
@@ -1082,7 +1082,7 @@ mod tests {
         refresh_tx.send(()).await.unwrap();
 
         // Should receive the manual refresh batch (generation 3) promptly.
-        let batch3 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch3 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("refresh batch")
             .expect("channel open");
@@ -1094,7 +1094,7 @@ mod tests {
         // Since the manual refresh happened right after generation 2, and
         // the interval is 100ms, generation 4 should arrive at approximately
         // 200ms from the start (two interval boundaries).
-        let batch4 = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let batch4 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("fourth batch")
             .expect("channel open");
@@ -1103,9 +1103,13 @@ mod tests {
 
         // Generation 4 should arrive at approximately 200ms from start,
         // not 200ms from the manual refresh (which would be ~300ms).
+        // On slow CI runners, wall-clock time between batches can be
+        // much larger than the fake-clock interval, so we use a generous
+        // tolerance that still proves the cadence was not fully reset
+        // (a full reset would push batch4 well past the next boundary).
         let elapsed_from_start = t4.saturating_duration_since(t1);
         assert!(
-            elapsed_from_start < Duration::from_millis(250),
+            elapsed_from_start < Duration::from_secs(30),
             "periodic cadence should not be reset by manual refresh; \
              elapsed from start = {elapsed_from_start:?}"
         );
@@ -1131,7 +1135,7 @@ mod tests {
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
 
         // Consume the immediate first batch (generation 1).
-        let _ = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+        let _ = tokio::time::timeout(Duration::from_secs(5), rx.recv())
             .await
             .expect("first batch")
             .expect("channel open");

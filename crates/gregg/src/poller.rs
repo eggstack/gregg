@@ -534,7 +534,17 @@ mod tests {
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
-        assert!(matches!(result.outcome, PollOutcome::ConnectionRefused));
+        // On Linux, a closed port returns ConnectionRefused. On Windows,
+        // the same condition may be classified as NetworkError depending
+        // on the OS socket stack.
+        assert!(
+            matches!(
+                result.outcome,
+                PollOutcome::ConnectionRefused | PollOutcome::NetworkError
+            ),
+            "expected ConnectionRefused or NetworkError, got {:?}",
+            result.outcome
+        );
     }
 
     #[tokio::test]

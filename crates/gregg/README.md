@@ -40,6 +40,20 @@ gregg edit
 Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
+## Supported platforms
+
+| Platform | Architecture | Status |
+| --- | --- | --- |
+| Linux | x86-64 | Supported |
+| Linux | ARM64 | Supported |
+| macOS | Intel (x86-64) | Supported |
+| macOS | Apple Silicon (arm64) | Supported |
+| Windows | x86-64 | Supported |
+
+On Windows, configuration is stored in `%APPDATA%\gregg\gregg.toml`.
+Cross-process config locking uses Windows-native `LockFileEx`.
+Editor fallbacks: `hx`, `code`, `notepad`.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>
