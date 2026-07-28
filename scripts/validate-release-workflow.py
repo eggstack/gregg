@@ -606,8 +606,8 @@ def validate_workflow() -> list[WorkflowViolation]:
         violations.append(WorkflowViolation("disposition", "finalizer must not hard-code a historical retain decision"))
     if "decode-release-disposition.py" not in finalize_text:
         violations.append(WorkflowViolation("disposition", "finalizer must validate explicit disposition input"))
-    if "--fixture-lockfile" in text:
-        violations.append(WorkflowViolation("fixture-mode", "production release workflow must not use --fixture-lockfile"))
+    if "--source-replacement-dir" in text:
+        violations.append(WorkflowViolation("fixture-mode", "production release workflow must not use --source-replacement-dir"))
 
     # --- Graph-based DAG validation ---
 

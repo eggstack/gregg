@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import tempfile
 import time
@@ -54,7 +53,7 @@ def digest(path: Path) -> tuple[str, int]:
     return h.hexdigest(), size
 
 
-def parse_lockfile_protocol(lockfile: Path, *, expected_source: str | None = None) -> dict[str, str]:
+def parse_lockfile_protocol(lockfile: Path, *, expected_source: str | None = None, valid_sources: set[str] | None = None, allow_missing_checksum: bool = False) -> dict[str, str | None]:
     """Return the one semantic protocol package record from a Cargo.lock."""
     if tomllib is None:
         fail("Python tomllib is required to parse Cargo.lock semantically")
@@ -73,10 +72,16 @@ def parse_lockfile_protocol(lockfile: Path, *, expected_source: str | None = Non
     source = record.get("source")
     if not isinstance(source, str):
         fail("Cargo.lock protocol package must have a registry source")
-    if expected_source is not None and source != expected_source:
+    if valid_sources is not None:
+        if source not in valid_sources:
+            fail(f"Cargo.lock protocol source {source!r} is not in expected sources {valid_sources!r}")
+    elif expected_source is not None and source != expected_source:
         fail(f"Cargo.lock protocol source {source!r} does not match expected {expected_source!r}")
     checksum = record.get("checksum")
-    if not isinstance(checksum, str) or not SHA256_RE.fullmatch(checksum):
+    if checksum is None:
+        if not allow_missing_checksum:
+            fail("Cargo.lock protocol checksum must be lowercase 64-character SHA-256")
+    elif not isinstance(checksum, str) or not SHA256_RE.fullmatch(checksum):
         fail("Cargo.lock protocol checksum must be lowercase 64-character SHA-256")
     return {"name": PROTOCOL, "version": PROTOCOL_VERSION, "source": source, "checksum": checksum}
 
@@ -144,8 +149,8 @@ def main() -> int:
     parser.add_argument("--registry-record", type=Path)
     parser.add_argument("--registry-source", default="sparse+https://index.crates.io/")
     parser.add_argument("--evidence-dir", type=Path)
-    parser.add_argument("--fixture-lockfile", type=Path,
-                        help="Use a pre-generated lockfile instead of running cargo generate-lockfile (qualification only)")
+    parser.add_argument("--source-replacement-dir", type=Path,
+                        help="Directory source for Cargo source replacement (qualification only)")
     args = parser.parse_args()
     if not SHA256_RE.fullmatch(args.expected_sha256) or not SHA256_RE.fullmatch(args.protocol_checksum):
         parser.error("checksums must be lowercase 64-character SHA-256 values")
@@ -180,43 +185,41 @@ def main() -> int:
         if not re.search(r'gregg-protocol\s*=\s*\{[^}]*version\s*=\s*"1\.0\.1"', manifest_text):
             parser.error("packaged manifest does not require gregg-protocol 1.0.1")
         _write_json(evidence_dir / "normalized-manifest.json", {"sha256": hashlib.sha256(manifest_text.encode()).hexdigest(), "manifest": manifest_text})
-        env = {**os.environ, "CARGO_NET_OFFLINE": "false" if not args.fixture_lockfile else "true"}
+        env = {**os.environ, "CARGO_NET_OFFLINE": "true" if args.source_replacement_dir else "false"}
         records: list[dict[str, Any]] = []
         lock = package_root / "Cargo.lock"
-        if args.fixture_lockfile:
-            if not args.fixture_lockfile.is_file():
-                parser.error(f"fixture lockfile not found: {args.fixture_lockfile}")
-            shutil.copy2(args.fixture_lockfile, lock)
-            records.append({"argv": ["cp", str(args.fixture_lockfile), str(lock)], "exit_status": 0,
-                            "started_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-                            "completed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-                            "stdout": "", "stderr": ""})
-        else:
-            records.append(capture(["cargo", "generate-lockfile", "--manifest-path", str(manifest)], cwd=package_root, evidence_dir=evidence_dir, name="generate-lockfile", env=env))
-        lock_record = parse_lockfile_protocol(lock, expected_source=args.registry_source)
-        if lock_record["checksum"] != registry["version"]["cksum"]:
+        if args.source_replacement_dir:
+            cargo_config = package_root / ".cargo" / "config.toml"
+            cargo_config.parent.mkdir(parents=True, exist_ok=True)
+            config_text = (
+                f'[source.crates-io]\n'
+                f'replace-with = "local-fixture"\n\n'
+                f'[source.local-fixture]\n'
+                f'directory = "{args.source_replacement_dir}"\n'
+            )
+            cargo_config.write_text(config_text, encoding="utf-8")
+            _write_json(evidence_dir / "source-replacement-config.json", {"config_path": str(cargo_config), "config": config_text})
+        records.append(capture(["cargo", "generate-lockfile", "--manifest-path", str(manifest)], cwd=package_root, evidence_dir=evidence_dir, name="generate-lockfile", env=env))
+        valid = {args.registry_source}
+        if args.source_replacement_dir:
+            valid.add(f"directory+{args.source_replacement_dir}")
+        lock_record = parse_lockfile_protocol(lock, valid_sources=valid, allow_missing_checksum=bool(args.source_replacement_dir))
+        if lock_record["checksum"] is not None and lock_record["checksum"] != registry["version"]["cksum"]:
+            parser.error("Cargo.lock protocol checksum does not match registry record")
             parser.error("Cargo.lock protocol checksum does not match registry record")
         lock_sha, lock_size = digest(lock)
         _write_json(evidence_dir / "lockfile-identity.json", {**lock_record, "sha256": lock_sha, "size_bytes": lock_size})
-        if args.fixture_lockfile:
-            # Fixture mode: skip cargo build/test/install (dependency not on registry)
-            # but still record tool versions and host identity
-            records.append(capture(["cargo", "--version"], cwd=package_root, evidence_dir=evidence_dir, name="cargo-version", env=env))
-            records.append(capture(["rustc", "--version", "--verbose"], cwd=package_root, evidence_dir=evidence_dir, name="rustc-version", env=env))
-            records.append(capture(["uname", "-a"], cwd=package_root, evidence_dir=evidence_dir, name="host-identity", env=env))
-            binary_sha, binary_size = ("fixture-mode", 0)
-        else:
-            for name, command in (("metadata", ["cargo", "metadata", "--locked", "--format-version", "1"]), ("build", ["cargo", "build", "--all-features", "--locked"]), ("test", ["cargo", "test", "--all-features", "--locked"])):
-                records.append(capture(command, cwd=package_root, evidence_dir=evidence_dir, name=name, env=env))
-            install_root = root / "install"
-            records.append(capture(["cargo", "install", "--path", ".", "--locked", "--root", str(install_root)], cwd=package_root, evidence_dir=evidence_dir, name="install", env=env))
-            binary = install_root / "bin" / args.package
-            records.append(capture([str(binary), "--help"], cwd=package_root, evidence_dir=evidence_dir, name="binary-help", env=env))
-            records.append(capture([str(binary), "--version"], cwd=package_root, evidence_dir=evidence_dir, name="binary-version", env=env))
-            records.append(capture(["cargo", "--version"], cwd=package_root, evidence_dir=evidence_dir, name="cargo-version", env=env))
-            records.append(capture(["rustc", "--version", "--verbose"], cwd=package_root, evidence_dir=evidence_dir, name="rustc-version", env=env))
-            records.append(capture(["uname", "-a"], cwd=package_root, evidence_dir=evidence_dir, name="host-identity", env=env))
-            binary_sha, binary_size = digest(binary)
+        for name, command in (("metadata", ["cargo", "metadata", "--locked", "--format-version", "1"]), ("build", ["cargo", "build", "--all-features", "--locked"]), ("test", ["cargo", "test", "--all-features", "--locked"])):
+            records.append(capture(command, cwd=package_root, evidence_dir=evidence_dir, name=name, env=env))
+        install_root = root / "install"
+        records.append(capture(["cargo", "install", "--path", ".", "--locked", "--root", str(install_root)], cwd=package_root, evidence_dir=evidence_dir, name="install", env=env))
+        binary = install_root / "bin" / args.package
+        records.append(capture([str(binary), "--help"], cwd=package_root, evidence_dir=evidence_dir, name="binary-help", env=env))
+        records.append(capture([str(binary), "--version"], cwd=package_root, evidence_dir=evidence_dir, name="binary-version", env=env))
+        records.append(capture(["cargo", "--version"], cwd=package_root, evidence_dir=evidence_dir, name="cargo-version", env=env))
+        records.append(capture(["rustc", "--version", "--verbose"], cwd=package_root, evidence_dir=evidence_dir, name="rustc-version", env=env))
+        records.append(capture(["uname", "-a"], cwd=package_root, evidence_dir=evidence_dir, name="host-identity", env=env))
+        binary_sha, binary_size = digest(binary)
     after_sha, after_size = digest(args.archive)
     if (after_sha, after_size) != (before_sha, before_size):
         parser.error("Boundary-1 archive changed during verification")
