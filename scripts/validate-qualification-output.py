@@ -140,6 +140,9 @@ def validate_complete(
         resolve_file(root, chains["final"].get("role_index_path"), "singleton role index"),
         "singleton role index",
     )
+    role_index_path = resolve_file(
+        root, chains["final"].get("role_index_path"), "singleton role index"
+    )
     roles = role_index.get("roles", {})
     if set(contract["required_singleton_roles"]) - set(roles):
         raise ValueError("singleton role index omits a required role")
@@ -152,6 +155,12 @@ def validate_complete(
         ):
             if record.get(field) in (None, ""):
                 raise ValueError(f"singleton role {role} lacks {field}")
+        materialized = resolve_file(
+            role_index_path.parent.resolve(), record["materialized_path"],
+            f"materialized singleton role {role}",
+        )
+        if identity(materialized) != (record["sha256"], record["size_bytes"]):
+            raise ValueError(f"materialized singleton role {role} identity mismatch")
 
     for field in (
         "selection_path", "selection_identity_path", "disposition_decision_path",

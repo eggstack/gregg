@@ -62,7 +62,9 @@ def main() -> int:
                 copied_sha, copied_size = digest(destination)
                 if (copied_sha, copied_size) != (sha, size):
                     raise ValueError(f"materialized role changed identity: {role}")
-                record["materialized_path"] = str(destination)
+                record["materialized_path"] = destination.relative_to(
+                    args.output.parent.resolve()
+                ).as_posix()
             roles[role] = record
         if not roles:
             raise ValueError("artifact list is empty")

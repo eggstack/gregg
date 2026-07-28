@@ -58,7 +58,9 @@ selection decode -> artifact retrieval -> role index
 The canonical singleton roles are `registry-summary` and
 `version-1.0.0-disposition`. Their role records retain workflow run, attempt,
 artifact ID/name, ZIP identity, extracted path, and file identity. Aggregation
-consumes the materialized copies, never an equivalent direct path.
+consumes the materialized copies, never an equivalent direct path. Materialized
+paths are role-index-relative so downloaded evidence remains replayable; the
+independent validator reopens each copy and checks its digest and size.
 
 The sustained workload retains the scheduler task handle. Cancellation is
 clean only after a bounded join returns success; channel closure alone cannot
