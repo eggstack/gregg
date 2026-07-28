@@ -161,35 +161,7 @@ jobs:
                       'size_bytes': item['size_bytes'],
                   })
           json.dump(artifacts, open('evidence/postpublish-evidence-artifacts.json', 'w'), indent=2)
-          " 2>/dev/null || python3 -c "
-          import json, sys
-          manifest = json.load(open('evidence/retrieved-manifest.json'))
-          for stage in manifest.get('stages', []):
-              if stage.get('stage') == 'postpublish-verify':
-                  art = stage.get('artifact', {})
-                  artifacts = [
-                      {'name': 'registry-summary.json', 'role': 'registry-summary',
-                       'stage': 'postpublish-verify',
-                       'workflow_run_id': str(stage.get('workflow_run_id', '')),
-                       'workflow_run_attempt': str(stage.get('workflow_run_attempt', '1')),
-                       'artifact_id': art.get('id', 0),
-                       'artifact_name': art.get('name', ''),
-                       'zip_sha256': art.get('zip_sha256', ''),
-                       'zip_size_bytes': art.get('zip_size_bytes', 0),
-                       'sha256': '', 'size_bytes': 0},
-                      {'name': '1.0.0-disposition.json', 'role': 'version-1.0.0-disposition',
-                       'stage': 'postpublish-verify',
-                       'workflow_run_id': str(stage.get('workflow_run_id', '')),
-                       'workflow_run_attempt': str(stage.get('workflow_run_attempt', '1')),
-                       'artifact_id': art.get('id', 0),
-                       'artifact_name': art.get('name', ''),
-                       'zip_sha256': art.get('zip_sha256', ''),
-                       'zip_size_bytes': art.get('zip_size_bytes', 0),
-                       'sha256': '', 'size_bytes': 0},
-                  ]
-                  json.dump(artifacts, open('evidence/postpublish-evidence-artifacts.json', 'w'), indent=2)
-                  break
-          "
+          " || { echo "FATAL: postpublish artifact missing registry-summary or version-1.0.0-disposition role" >&2; exit 1; }
           # E2: Use the shared final-input preparation helper.
           python3 scripts/prepare-final-release-inputs.py \
             --artifact-list evidence/postpublish-evidence-artifacts.json \

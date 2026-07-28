@@ -206,6 +206,31 @@ def validate_postpublish_membership(
             )
 
 
+def validate_execution_order(summary: dict[str, Any]) -> None:
+    """F6: Validate that execution order is correct and recorded."""
+    commands = summary.get("commands")
+    if not isinstance(commands, list) or not commands:
+        raise ValueError("F6: qualification commands record is missing")
+
+    phase_names = [c.get("phase") for c in commands if isinstance(c, dict) and "phase" in c]
+    required_order = [
+        "candidate_chain_start", "candidate_chain_complete",
+        "boundary2_chains_start", "boundary2_chains_complete",
+        "final_chain_start", "final_chain_complete",
+        "negative_cases_start", "negative_cases_complete",
+    ]
+    missing = set(required_order) - set(phase_names)
+    if missing:
+        raise ValueError(f"F6: missing execution phases: {sorted(missing)}")
+    indices = {name: phase_names.index(name) for name in required_order}
+    for i in range(len(required_order) - 1):
+        if indices[required_order[i]] >= indices[required_order[i + 1]]:
+            raise ValueError(
+                f"F6: execution order violated: {required_order[i]} appears after "
+                f"{required_order[i + 1]}"
+            )
+
+
 def validate_contract_identity(
     summary: dict[str, Any], root: Path, contract: dict[str, Any],
     requirements_path: Path | None, dispatch_path: Path | None,
@@ -374,6 +399,9 @@ def validate_complete(
         raise ValueError("qualification negative-case set does not match contract")
     if not all(item.get("failed") is True for item in negative_map.values()):
         raise ValueError("one or more qualification negative cases did not fail as required")
+    for case_name, item in negative_map.items():
+        if "expected_diagnostic" not in item:
+            raise ValueError(f"negative case {case_name} missing expected_diagnostic field")
 
     if hosted_metadata_root:
         for name in contract["required_hosted_metadata"]:
@@ -392,6 +420,9 @@ def validate_complete(
 
     # F5: Validate contract identity digests.
     validate_contract_identity(summary, root, contract, requirements_path, dispatch_path)
+
+    # F6: Validate execution order.
+    validate_execution_order(summary)
 
 
 def main() -> int:

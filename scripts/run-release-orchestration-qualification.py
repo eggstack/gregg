@@ -843,7 +843,12 @@ def _run_negative_cases(*, sha: str, version: str, evidence_dir: Path) -> list[d
         passed = result.returncode != 0
         if expected_in_stderr:
             passed = passed and expected_in_stderr.lower() in result.stderr.lower()
-        results.append({"case": desc, "failed": passed, "exit_code": result.returncode, "stderr_snippet": result.stderr[:500]})
+        results.append({
+            "case": desc, "failed": passed, "exit_code": result.returncode,
+            "expected_diagnostic": expected_in_stderr,
+            "observed_diagnostic": result.stderr[:500] if expected_in_stderr else "",
+            "stderr_snippet": result.stderr[:500],
+        })
 
     # Wrong candidate SHA in selection
     bad_selection = {"candidate_sha": "b" * 40, "release_version": version, "runs": {"a": {"run_id": 1, "attempt": 1, "artifacts": [{"name": "x"}]}}}
@@ -1136,11 +1141,15 @@ def _run_negative_cases(*, sha: str, version: str, evidence_dir: Path) -> list[d
         except ValueError as error:
             results.append({
                 "case": case, "failed": diagnostic in str(error), "exit_code": 1,
+                "expected_diagnostic": diagnostic,
+                "observed_diagnostic": str(error),
                 "stderr_snippet": str(error),
             })
         else:
             results.append({
                 "case": case, "failed": False, "exit_code": 0,
+                "expected_diagnostic": diagnostic,
+                "observed_diagnostic": "invalid fixture was accepted",
                 "stderr_snippet": "invalid fixture was accepted",
             })
 
@@ -1282,6 +1291,9 @@ def main() -> int:
                          "started_at": _now_iso(), "completed_at": _now_iso(),
                          "stdout": result.stdout[:4096], "stderr": result.stderr[:4096]})
 
+    def _phase(name: str) -> None:
+        commands.append({"phase": name, "started_at": _now_iso()})
+
     # Phase 0: Validate workflow
     cmd = [sys.executable, str(SCRIPTS / "validate-release-workflow.py")]
     result = _run(cmd, check=False)
@@ -1306,6 +1318,7 @@ def main() -> int:
         return 1
 
     # Phase 1: Candidate/pre-tag chain
+    _phase("candidate_chain_start")
     mock_api = MockGitHubAPI(sha)
     mock_port = mock_api.start()
     try:
@@ -1316,6 +1329,7 @@ def main() -> int:
         )
     finally:
         mock_api.shutdown()
+    _phase("candidate_chain_complete")
 
     # Phase 2: Boundary-2 chains
     # C1: Build exact package archives once — real .crate files from valid crate trees.
@@ -1343,6 +1357,7 @@ def main() -> int:
 
         # B1: Use a single mock_api for both Boundary-2 and final chains so the
         # final chain can retrieve the actual Boundary-2 artifact ZIPs.
+        _phase("boundary2_chains_start")
         mock_api = MockGitHubAPI(sha)
         mock_api.start()
         try:
@@ -1389,8 +1404,10 @@ def main() -> int:
             },
             "verdict": "pass",
         })
+        _phase("boundary2_chains_complete")
 
         # Phase 3: Final chain — uses the same mock_api and actual archives.
+        _phase("final_chain_start")
         try:
             final_result = _run_final_chain(
                 sha=sha, version=version, evidence_dir=args.evidence_dir,
@@ -1401,8 +1418,11 @@ def main() -> int:
                 requirements=args.requirements)
         finally:
             mock_api.shutdown()
+        _phase("final_chain_complete")
     # Phase 4: Negative cases
+    _phase("negative_cases_start")
     negative_results = _run_negative_cases(sha=sha, version=version, evidence_dir=args.evidence_dir)
+    _phase("negative_cases_complete")
 
     # Write command record
     commands_path = args.evidence_dir / "qualification-commands.json"
@@ -1447,6 +1467,7 @@ def main() -> int:
             "final": final_result,
         },
         "negative_cases": negative_results,
+        "commands": commands,
         "files": files, "verdict": verdict,
     }
     _write_json(args.evidence_dir / "qualification-summary.json", summary)

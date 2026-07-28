@@ -32,6 +32,10 @@ on:
         required: false
         default: "1"
         type: string
+      disposition_decision_base64:
+        description: "Base64-encoded operator decision for 1.0.0 disposition (postpublish-verify in final mode)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -1055,8 +1059,23 @@ jobs:
           "${RUNNER_TEMP}/gregg/bin/gregg" --config "${client_config}" add 127.0.0.1:9 --name registry-smoke
           test "$(stat -c '%a' "${client_config}")" = 600
           sha256sum "${RUNNER_TEMP}/greggd/bin/greggd" "${RUNNER_TEMP}/gregg/bin/gregg" | tee evidence/installed.sha256
+          if [ -n "${{ inputs.disposition_decision_base64 }}" ]; then
+            python3 scripts/decode-release-disposition.py \
+              --base64 '${{ inputs.disposition_decision_base64 }}' \
+              --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" \
+              --output evidence/1.0.0-disposition.json \
+              --identity-output evidence/disposition-decision-identity.json \
+              --workflow-run-id "${GITHUB_RUN_ID}" \
+              --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" \
+              --actor "${GITHUB_ACTOR}"
+            cp evidence/1.0.0-disposition.json evidence/disposition-decision.json
+          fi
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          jq -n '[{name:"registry-summary.json",role:"registry-summary"},{name:"installed-daemon-verifier.txt",role:"daemon-verifier"},{name:"installed.sha256",role:"binary-checksums"},{name:"greggd-install.txt",role:"greggd-install"},{name:"gregg-install.txt",role:"gregg-install"}]' > evidence/artifacts.json
+          if [ -f evidence/1.0.0-disposition.json ]; then
+            jq -n '[{name:"registry-summary.json",role:"registry-summary"},{name:"1.0.0-disposition.json",role:"version-1.0.0-disposition"},{name:"installed-daemon-verifier.txt",role:"daemon-verifier"},{name:"installed.sha256",role:"binary-checksums"},{name:"greggd-install.txt",role:"greggd-install"},{name:"gregg-install.txt",role:"gregg-install"}]' > evidence/artifacts.json
+          else
+            jq -n '[{name:"registry-summary.json",role:"registry-summary"},{name:"installed-daemon-verifier.txt",role:"daemon-verifier"},{name:"installed.sha256",role:"binary-checksums"},{name:"greggd-install.txt",role:"greggd-install"},{name:"gregg-install.txt",role:"gregg-install"}]' > evidence/artifacts.json
+          fi
           python3 scripts/materialize-release-evidence.py --artifact-list evidence/artifacts.json --root evidence --output evidence/role-index.json
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 --stage postpublish-verify --workflow-run-id "${GITHUB_RUN_ID}" --workflow-run-attempt "${GITHUB_RUN_ATTEMPT}" --job-name postpublish-verify --runner-os "${RUNNER_OS}" --runner-architecture "$(uname -m)" --started-at "${now}" --completed-at "${now}" --artifacts-json evidence/artifacts.json --executable greggd "$(awk '/greggd/{print $1}' evidence/installed.sha256)" "$(stat -c '%s' "${RUNNER_TEMP}/greggd/bin/greggd")" --executable gregg "$(awk '/gregg/{print $1}' evidence/installed.sha256)" "$(stat -c '%s' "${RUNNER_TEMP}/gregg/bin/gregg")"
           python3 scripts/validate-release-evidence.py validate-candidate evidence/candidate.json --expected-sha "${{ needs.resolve.outputs.candidate_sha }}" --expected-version 1.0.1

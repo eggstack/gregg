@@ -1288,5 +1288,41 @@ class EvidenceTests(unittest.TestCase):
                 server.shutdown()
 
 
+class TestProductionFinalizerContract(unittest.TestCase):
+    """H3: Verify release-finalize.yml and release-candidate.yml structural contracts."""
+
+    def _read_workflow(self, name: str) -> str:
+        path = ROOT / ".github" / "workflows" / name
+        return path.read_text(encoding="utf-8")
+
+    def test_finalize_uses_shared_helper(self) -> None:
+        content = self._read_workflow("release-finalize.yml")
+        self.assertIn("prepare-final-release-inputs.py", content)
+
+    def test_finalize_passes_role_index(self) -> None:
+        content = self._read_workflow("release-finalize.yml")
+        self.assertIn("--role-index evidence/role-index.json", content)
+
+    def test_finalize_no_independent_registry_summary(self) -> None:
+        content = self._read_workflow("release-finalize.yml")
+        self.assertNotIn("crates.io/api/v1/crates", content)
+
+    def test_postpublish_includes_disposition_role(self) -> None:
+        content = self._read_workflow("release-candidate.yml")
+        self.assertIn("version-1.0.0-disposition", content)
+
+    def test_postpublish_uses_fail_closed_upload(self) -> None:
+        content = self._read_workflow("release-candidate.yml")
+        idx = content.find("postpublish-${{")
+        self.assertGreater(idx, -1)
+        snippet = content[idx:idx + 500]
+        self.assertIn("if-no-files-found: error", snippet)
+
+    def test_postpublish_decodes_disposition(self) -> None:
+        content = self._read_workflow("release-candidate.yml")
+        self.assertIn("decode-release-disposition.py", content)
+        self.assertIn("disposition_decision_base64", content)
+
+
 if __name__ == "__main__":
     unittest.main()
