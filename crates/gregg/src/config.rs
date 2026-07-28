@@ -1873,12 +1873,13 @@ unknown_field = "oops"
 
     /// On Windows, verify that sharing violations fail safely.
     ///
-    /// When the destination file is held open without delete sharing,
+    /// When the destination file is held open with deny-all sharing,
     /// `fs::rename` should fail and the original file should be preserved.
     #[test]
     #[cfg(windows)]
     fn write_atomic_sharing_violation_preserves_original() {
         use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
 
         let dir = tmp_dir("atomic_sharing_violation");
         let path = dir.join("config.toml");
@@ -1888,11 +1889,13 @@ unknown_field = "oops"
         original.write_atomic(&path).unwrap();
         let original_bytes = fs::read(&path).unwrap();
 
-        // Open the destination file without delete sharing (default on Windows).
-        // This prevents rename from replacing it.
+        // Open the destination file with deny-all sharing.
+        // This prevents any other process or handle from accessing the file,
+        // including rename-over by another handle.
         let holder = OpenOptions::new()
             .read(true)
             .write(true)
+            .share_mode(0) // Deny all sharing.
             .open(&path)
             .expect("failed to open file for sharing violation");
 
