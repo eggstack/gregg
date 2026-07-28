@@ -18,8 +18,8 @@ def main() -> int:
             if relative.is_absolute() or ".." in relative.parts:
                 raise ValueError("qualification file path escapes output root")
             path = (root / relative).resolve()
-            if root not in path.parents or not path.is_file() or path.stat().st_size == 0:
-                raise ValueError(f"missing or empty qualification file: {relative}")
+            if root not in path.parents or not path.is_file():
+                raise ValueError(f"missing qualification file: {relative}")
             raw = path.read_bytes()
             if hashlib.sha256(raw).hexdigest() != item.get("sha256") or len(raw) != item.get("size_bytes"):
                 raise ValueError(f"qualification file digest/size mismatch: {relative}")

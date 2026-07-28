@@ -32,6 +32,21 @@ jobs:
           set -euo pipefail
           [[ "${{ inputs.candidate_sha }}" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
+      - name: Record hosted command metadata
+        run: |
+          set -euo pipefail
+          mkdir -p evidence/metadata
+          echo "${{ inputs.candidate_sha }}" > evidence/metadata/implementation-sha.txt
+          echo "${{ github.repository }}" > evidence/metadata/repository.txt
+          echo "${{ github.workflow }}" > evidence/metadata/workflow.txt
+          echo "${{ github.run_id }}" > evidence/metadata/run-id.txt
+          echo "${{ github.run_attempt }}" > evidence/metadata/run-attempt.txt
+          echo "${{ runner.os }}" > evidence/metadata/runner-os.txt
+          echo "${{ runner.arch }}" > evidence/metadata/runner-arch.txt
+          rustc --version --verbose > evidence/metadata/rustc-version.txt
+          cargo --version > evidence/metadata/cargo-version.txt
+          python3 --version > evidence/metadata/python-version.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > evidence/metadata/started-at.txt
       - name: Local CI gates
         run: |
           set -euo pipefail
