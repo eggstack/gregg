@@ -1909,6 +1909,9 @@ unknown_field = "oops"
         // The rename should fail. On Windows, this produces an I/O error.
         assert!(result.is_err(), "rename should fail with sharing violation");
 
+        // Drop the holder so we can read the file again.
+        drop(holder);
+
         // Original file should be intact.
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded, original, "original config must be preserved");
@@ -1917,8 +1920,6 @@ unknown_field = "oops"
             original_bytes,
             "original bytes must be unchanged"
         );
-
-        drop(holder);
         let _ = fs::remove_dir_all(&dir);
     }
 
