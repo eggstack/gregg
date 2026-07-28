@@ -127,7 +127,13 @@ Required navigation is `j`/Down and `k`/Up. The terminal must be restored on nor
 
 ## Testing expectations
 
-Every phase must satisfy its plan-specific acceptance criteria. At minimum, the repository should eventually enforce:
+Every phase must satisfy its plan-specific acceptance criteria. At minimum, the repository should enforce:
+
+```text
+./scripts/check-local.sh
+```
+
+Which runs:
 
 ```text
 cargo fmt --all -- --check
@@ -135,6 +141,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
 ```
+
+Plus `cargo deny`, platform-native collector tests, and optional shellcheck/python
+tests under `--full`. The `--release` tier adds nonpublishing `cargo publish --dry-run`.
 
 Platform-specific CI should run on Linux and macOS. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 

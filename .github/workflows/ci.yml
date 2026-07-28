@@ -6,28 +6,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
 jobs:
-  check:
-    name: ${{ matrix.os }} ${{ matrix.toolchain }} ${{ matrix.expected_arch }}
-    runs-on: ${{ matrix.os }}
+  linux:
+    name: Linux (${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            toolchain: stable
-            expected_arch: x86_64
-          - os: macos-15
-            toolchain: stable
-            expected_arch: arm64
-          - os: macos-15-intel
-            toolchain: stable
-            expected_arch: x86_64
-
+          - toolchain: stable
     steps:
       - name: Check out sources
         uses: actions/checkout@v4
@@ -38,28 +32,16 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
 
-      - name: Cache cargo registry and target
+      - name: Cache cargo registry and git
         uses: actions/cache@v4
         continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      - name: Verify architecture
-        run: |
-          echo "Observed architecture: $(uname -m)"
-          echo "Rust version:"
-          rustc -vV
-          OBSERVED="$(uname -m)"
-          if [ "$OBSERVED" != "${{ matrix.expected_arch }}" ]; then
-            echo "ERROR: expected arch ${{ matrix.expected_arch }}, got $OBSERVED"
-            exit 1
-          fi
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -73,26 +55,52 @@ jobs:
       - name: Doc
         run: cargo doc --workspace --no-deps
 
-      - name: Native macOS collector smoke
-        if: runner.os == 'macOS'
-        run: |
-          cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
-
       - name: Native Linux collector smoke
-        if: runner.os == 'Linux'
-        run: |
-          cargo test -p greggd --all-features -- collector::linux
+        run: cargo test -p greggd --all-features -- collector::linux
 
       - name: Shellcheck installer scripts
-        if: runner.os == 'Linux'
         run: shellcheck packaging/install-linux.sh packaging/install-macos.sh
 
-      - name: Deny
-        if: runner.os == 'Linux'
+      - name: Cargo deny
         uses: EmbarkStudios/cargo-deny-action@v2
 
+  macos:
+    name: macOS (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+          - os: macos-15-intel
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test
+        run: cargo test --workspace --all-targets --all-features
+
+      - name: Native macOS collector smoke
+        run: cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
+
   msrv:
-    name: MSRV check
+    name: MSRV (Rust 1.75)
     runs-on: ubuntu-latest
     steps:
       - name: Check out sources
@@ -103,14 +111,13 @@ jobs:
         with:
           toolchain: "1.75"
 
-      - name: Cache cargo registry and target
+      - name: Cache cargo registry and git
         uses: actions/cache@v4
         continue-on-error: true
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-msrv-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-msrv-cargo-

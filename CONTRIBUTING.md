@@ -6,16 +6,19 @@ Thank you for considering a contribution to gregg.
 
 1. Fork the repository and create a feature branch.
 2. Ensure the pinned toolchain is installed: `rustup show`.
-3. Run the full check suite before submitting:
+3. Run the local validation command before submitting:
 
 ```text
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo doc --workspace --no-deps
+./scripts/check-local.sh
 ```
 
-4. Open a pull request against `main`.
+4. For a pre-merge full check (adds shellcheck, python tests, package checks):
+
+```text
+./scripts/check-local.sh --full
+```
+
+5. Open a pull request against `main`.
 
 ## Project scope
 

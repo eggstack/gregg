@@ -167,24 +167,29 @@ crate inherits the same license expression from the workspace root.
 
 ## Local development
 
-```text
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo doc --workspace --no-deps
-cargo deny check
-cargo build --release
-```
-
-The sustained workload runner exercises the production polling and
-state-reduction path for a configurable duration:
+Fast local check (recommended during development):
 
 ```text
-python3 scripts/run-mixed-fleet-sustained.py \
-  --duration-seconds 2 \
-  --sample-interval-seconds 0.2 \
-  --evidence-dir target/sustained-smoke
+./scripts/check-local.sh
 ```
+
+Full local check (pre-merge):
+
+```text
+./scripts/check-local.sh --full
+```
+
+Release preflight (nonpublishing):
+
+```text
+./scripts/check-local.sh --release
+```
+
+The local script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc`,
+`cargo deny`, and platform-native collector tests by default. The `--full` tier
+adds shellcheck, python tests, package content checks, and installed-binary
+loopback smoke. The `--release` tier adds clean-tree, version consistency,
+`cargo publish --dry-run` in dependency order, and publish dry-runs.
 
 Releases are performed manually. GitHub Actions verifies source changes and
 does not publish artifacts or releases. See `plans/039-manual-cratesio-and-github-release.md`
