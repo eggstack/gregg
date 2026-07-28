@@ -109,68 +109,6 @@ method that returns structured `ValidationViolation`s rather than failing
 through serde, so additive forward-compatible fields do not silently tighten
 or loosen existing validation.
 
-## Release orchestration rules
-
-The release pipeline is driven by a machine-readable dispatch contract at
-[`plans/evidence/release-dispatch-contract.json`](plans/evidence/release-dispatch-contract.json).
-Each `workflow_dispatch.stage` maps to reachable producer jobs, required logical
-stages, and boundary classification. The workflow's aggregate job reads this
-contract instead of a hardcoded shell `case` statement.
-
-Every selected run entry in the selection file must use an exact logical stage
-name (e.g. `binary-prepublish-greggd`), not a grouped alias (e.g.
-`binary-prepublish`). Each stage resolves to exactly one containing artifact.
-Package provenance is indexed by reading provenance document keys, not inferred
-from stage names.
-
-Cross-run manifests declare `manifest_scope`: current-run dispatch summaries
-are not release manifests, while pre-tag and final manifests require the
-retrieved numeric GitHub artifact ID, exact artifact name, ZIP digest, and ZIP
-size for every selected stage. Finalization checks out immutable tooling at the
-candidate SHA and receives future run selection as bounded, validated base64
-input; it must not read selection data from the frozen candidate tree.
-
-Boundary-2 dependent verification uses the exact Boundary-1 `.crate` bytes and
-must resolve, build, test, install, and exercise `gregg-protocol 1.0.1` from
-the crates.io registry. A checksum-only record is not re-verification. Package
-provenance declares exact relative archive and lockfile paths; traversal-order
-fallbacks are invalid.
-
-Qualification substitutes only an explicit loopback sparse registry for
-crates.io and must still produce a checksum-bearing registry source record in
-`Cargo.lock`. Directory, path, git, vendored, and prewritten-lock substitutes
-are invalid. Every Boundary-2 command transcript is covered by a material
-`command-evidence-index.json`, and candidate metadata is derived from and
-checked against existing local files before upload.
-
-The nonpublishing qualification harness loads the production requirements and
-dispatch contracts. It may use synthetic stage evidence to prove orchestration,
-but it may not reduce the production pre-tag or final stage sets. Final
-singleton roles are indexed from retrieved artifact identity and materialized
-before aggregation; direct test-only input paths are invalid.
-
-Candidate qualification does not require `gregg-protocol 1.0.1` to already exist
-on crates.io. Protocol publication occurs only after candidate qualification and
-tag procedure authorization.
-
-Phase-33 qualification is nonpublishing. Its hosted workflow must qualify the
-exact checked-out SHA, run the complete local and orchestration harness, and
-upload evidence with `if-no-files-found: error`. Boundary-2 must retain the
-validated registry response, semantically parsed Cargo.lock protocol record,
-archive identity before/after verification, and replayable command transcripts.
-Finalization must preserve `workflow-dispatch-base64` selection identity and
-require an explicit operator disposition input; it must not infer or hard-code
-`retain`/`yank` decisions.
-
-Phase 35 closes evidence-lineage and production-finalizer defects: Boundary-2
-candidates are real production-shaped artifacts retrieved through the same
-mock API path; package archives are built once and reused unchanged across all
-boundaries; the postpublish ZIP is a genuine selected artifact containing every
-candidate-declared file; final aggregation consumes only role-indexed
-materialized paths through the shared `prepare-final-release-inputs.py` helper.
-The production finalizer must not independently reconstruct postpublish
-source-of-record files.
-
 ## CLI and configuration rules
 
 Commands must be deterministic, scriptable, and return meaningful exit codes. Human-readable output goes to stdout; diagnostics go to stderr.
@@ -201,13 +139,9 @@ cargo doc --workspace --no-deps
 Platform-specific CI should run on Linux and macOS. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
 The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
-verifies a supplied executable; it does not perform package installation. The
-release workflow must unpack the `.crate`, install it into an empty `--root`,
-record the installed binary checksum and size, and pass that exact path to the
-verifier. Source-built verifier runs are separate native evidence. The
-verifier checks bounded readiness, protocol fields, and the reaped child exit
-status; cleanup-only best-effort operations must not mask a release-gate
-failure.
+verifies a supplied executable by starting it, validating `/healthz` and
+`/v1/status` protocol fields, and asserting a clean shutdown. It does not
+perform package installation or depend on release metadata.
 
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 

@@ -11,7 +11,6 @@ and that contributors should read before reorganising code across boundaries.
 | [`protocol.md`](protocol.md) | Schema-version-1 wire contract, capabilities, validation, compatibility policy, and collector contract. |
 | [`error-conventions.md`](error-conventions.md) | Typed error boundaries, command-level diagnostics, and what may or may not appear in wire responses. |
 | [`macos-collector-notes.md`](macos-collector-notes.md) | Expected differences between the macOS collector and Activity Monitor / `top` / `vm_stat`. |
-| [`release-evidence.md`](release-evidence.md) | Immutable cross-run manifests, package provenance, Boundary-2 verification, and joined sustained shutdown. |
 
 Phase plans under [`plans/`](../plans/) are the source of truth for sequencing
 and acceptance criteria; this directory mirrors the architectural commitments

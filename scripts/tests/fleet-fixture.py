@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic HTTP fixture for mixed-fleet release evidence.
+"""Deterministic HTTP fixture for mixed-fleet product validation.
 
 Each path represents a stable or transitioning endpoint. Requests and the
 observed mode are written as JSON lines so a client harness can reconcile

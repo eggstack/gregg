@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Run the sustained mixed-fleet workload and validate evidence.
+"""Run the sustained mixed-fleet workload and validate product behavior.
 
 Builds the Rust sustained workload driver, launches it as a child process,
 samples its process resources while alive, enforces duration and sample
-requirements, and writes evidence files.
+requirements, and writes validation output files.
 
 Usage:
     python3 scripts/run-mixed-fleet-sustained.py \
@@ -474,7 +474,7 @@ def run_sustained(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Run sustained mixed-fleet workload for release evidence"
+        description="Run sustained mixed-fleet workload for product validation"
     )
     parser.add_argument(
         "--duration-seconds",

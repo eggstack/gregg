@@ -1,4 +1,4 @@
-//! Sustained workload driver for mixed-fleet release evidence.
+//! Sustained mixed-fleet workload driver for product validation.
 //!
 //! Exercises the production `PollScheduler`, `HttpClient`, and endpoint
 //! state reduction for a configured monotonic duration. Writes a

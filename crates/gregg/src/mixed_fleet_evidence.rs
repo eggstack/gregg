@@ -1,4 +1,4 @@
-//! Deterministic mixed-fleet evidence using the production poller and reducer.
+//! Deterministic mixed-fleet product validation using the production poller and reducer.
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};

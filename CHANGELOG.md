@@ -19,16 +19,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **Lock-file truncation** (`gregg`): The advisory lock file is no longer
   truncated during acquisition. Previous behavior could silently drop lock
   content on concurrent access; the fix preserves existing file content.
-- **Release-candidate workflow** (`.github/workflows/release-candidate.yml`):
-  Candidate refs are now resolved to immutable commit SHAs before comparison,
-  so tag and branch inputs work correctly. Package verification is staged
-  (`gregg-protocol` first, then `greggd` and `gregg`) so binary crates can
-  resolve the indexed protocol dependency.
 - **Installed daemon loopback verification** (`scripts/verify-installed-daemon.sh`):
   The verifier now accepts an explicit executable, writes the flat daemon TOML
   schema, validates bounded health/status responses, and checks the reaped
-  child exit status. Package installation remains the responsibility of the
-  release workflow, which passes a clean-root package-installed binary.
+  child exit status.
 
 - **macOS FFI** (`greggd`): `mach_host_self()` and `mach_task_self()` are now
   declared as foreign functions instead of being assumed to exist. `HostPort::current()`
@@ -83,23 +77,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   the declared MSRV. Fresh package and workspace resolution now stays below
   the edition-2024 and Rust-1.85-only dependency lines while retaining current
   active TLS fixes.
-- **Release orchestration** (Phase 18): Corrected executable release-workflow
-  defects: per-run artifact selection with pre-network validation, end-to-end
-  artifact download with safe ZIP extraction and all-candidate validation,
-  numeric GitHub artifact identity propagation into final manifests, pre-tag
-  and final aggregation mode separation, package-native dispatch repair with
-  separate daemon/client download roots and package-specific provenance,
-  mixed-fleet-sustained evidence stage, fail-closed protected cleanup with
-  explicit verdict steps, and immutable finalizer tooling identity.
-- **Release orchestration** (Phase 19): Final integration closure: retrieval
-  CLI now reads `GITHUB_TOKEN` from the environment when `--token` is omitted,
-  multi-stage artifacts (resource + soak) share the same operational artifact
-  without duplicate downloads, stage mapping validates candidate metadata
-  inside downloaded artifacts, provenance and registry materialization uses
-  deterministic paths from a provenance index instead of filesystem heuristics,
-  mixed-fleet-sustained job measures actual runtime duration and resource
-  sampling, and end-to-end mocked integration test exercises retrieval through
-  pre-tag aggregation.
 
 ## [1.0.0] - 2026-07-23
 

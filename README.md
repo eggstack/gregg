@@ -176,7 +176,7 @@ cargo deny check
 cargo build --release
 ```
 
-The sustained workload evidence runner exercises the production polling and
+The sustained workload runner exercises the production polling and
 state-reduction path for a configurable duration:
 
 ```text
@@ -186,42 +186,9 @@ python3 scripts/run-mixed-fleet-sustained.py \
   --evidence-dir target/sustained-smoke
 ```
 
-For release-candidate verification, use the manually dispatched staged workflow
-at `.github/workflows/release-candidate.yml`. Run `protocol-prepublish` before
-publication, then prove the indexed `gregg-protocol 1.0.1` with
-`protocol-index-check` before running `binary-prepublish` or binary MSRV gates.
-The native and protected operational stages are separate evidence runs, and
-`postpublish-verify` installs the published binaries from crates.io.
-
-The workflow owns package installation: it unpacks each `.crate`, installs into
-an empty root, records checksum and size, and passes the installed `greggd`
-path to `scripts/verify-installed-daemon.sh`. That verifier only tests a
-supplied binary and never falls back to `target/release/greggd`.
-
-Phase-35 release-control qualification is nonpublishing and can be dispatched
-from `.github/workflows/phase35-qualification.yml` at an exact commit SHA. The
-workflow runs the local gates, sustained smoke, and repository-owned
-full-contract qualification harness, then independently validates and uploads
-evidence fail-closed. The harness loads the production requirements and
-dispatch contracts, exercises every required pre-tag and final logical stage,
-and uses a loopback sparse Cargo registry to prove checksum-bearing Boundary-2
-locks without touching crates.io. Both dependent-package runs retain and
-validate a complete command-evidence index. The
-finalizer receives post-freeze run selection and the operator's historical
-`1.0.0` disposition as base64-encoded JSON, records canonical identity
-documents, and executes only tooling from the immutable candidate checkout.
-Final singleton evidence is resolved by canonical role and materialized before
-aggregation. Boundary-2 unconditionally compares the generated lockfile
-checksum with the validated registry response and retains replayable command
-transcripts and their digests.
-
-Phase 35 closes the evidence-lineage and production-finalizer defects found
-after Phase 34: Boundary-2 candidates are real production-shaped artifacts
-retrieved through the same mock API path, package archives are built once and
-reused unchanged across all boundaries, the postpublish ZIP is a genuine
-selected artifact containing every candidate-declared file, and final
-aggregation consumes only role-indexed materialized paths through a shared
-preparation helper.
+Releases are performed manually. GitHub Actions verifies source changes and
+does not publish artifacts or releases. See `plans/039-manual-cratesio-and-github-release.md`
+for the operator runbook.
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the
