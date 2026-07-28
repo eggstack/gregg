@@ -1890,7 +1890,7 @@ unknown_field = "oops"
 
         // Open the destination file without delete sharing (default on Windows).
         // This prevents rename from replacing it.
-        let _holder = OpenOptions::new()
+        let holder = OpenOptions::new()
             .read(true)
             .write(true)
             .open(&path)
@@ -1915,7 +1915,7 @@ unknown_field = "oops"
             "original bytes must be unchanged"
         );
 
-        drop(_holder);
+        drop(holder);
         let _ = fs::remove_dir_all(&dir);
     }
 
