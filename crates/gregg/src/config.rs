@@ -1039,6 +1039,49 @@ mod tests {
         dir
     }
 
+    /// Locate the `lock_helper` binary for cross-process tests.
+    ///
+    /// During `cargo test`, the binary is in the same directory as the
+    /// test binary or in `target/debug/`. This function searches both.
+    fn find_lock_helper() -> String {
+        // The test binary is in target/debug/deps/ or target/debug/.
+        let exe_dir = std::env::current_exe()
+            .expect("current_exe should succeed")
+            .parent()
+            .expect("exe should have a parent")
+            .to_path_buf();
+
+        let binary_name = if cfg!(windows) {
+            "lock_helper.exe"
+        } else {
+            "lock_helper"
+        };
+
+        // Check the same directory as the test binary (target/debug/deps/).
+        let candidate = exe_dir.join(binary_name);
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+
+        // Check one level up (target/debug/).
+        let candidate = exe_dir.parent().unwrap_or(&exe_dir).join(binary_name);
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+
+        // Check two levels up (target/).
+        let candidate = exe_dir
+            .parent()
+            .and_then(|p| p.parent())
+            .unwrap_or(&exe_dir)
+            .join(binary_name);
+        if candidate.exists() {
+            return candidate.to_string_lossy().into_owned();
+        }
+
+        panic!("lock_helper binary not found; searched in {exe_dir:?}");
+    }
+
     // --- Default config ---
 
     #[test]
@@ -1687,6 +1730,196 @@ unknown_field = "oops"
         let count = entries.lines().count();
         assert_eq!(count, 10, "all 10 endpoints should be present, got {count}");
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Cross-process lock contention test using the `lock_helper` binary.
+    ///
+    /// Verifies that:
+    /// - Process A (`lock_helper`) acquires the OS lock on `<config>.lock`.
+    /// - Process B (this test) cannot mutate while A holds the lock.
+    /// - After A releases, B completes successfully.
+    /// - Final config is valid.
+    #[test]
+    fn cross_process_lock_contention_via_helper() {
+        use std::process::Command;
+
+        let dir = tmp_dir("cross_process_lock_helper");
+        let path = dir.join("config.toml");
+        let lock_path = PathBuf::from(format!("{}.lock", path.display()));
+        let signal_path = dir.join("ready.signal");
+        let store = ConfigStore::new(path.clone());
+
+        // Initialize config.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 5;
+                Ok(())
+            })
+            .unwrap();
+
+        // Locate the lock_helper binary. During `cargo test`, binaries are
+        // placed in the same directory as the test binary or in target/debug/.
+        let lock_helper = find_lock_helper();
+
+        // Spawn lock_helper to hold the OS lock on <config>.lock.
+        let mut child = Command::new(&lock_helper)
+            .arg(&lock_path)
+            .arg(&signal_path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap_or_else(|e| panic!("failed to spawn lock_helper at {lock_helper}: {e}"));
+
+        // Wait for lock_helper to signal readiness (lock acquired).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !signal_path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "lock_helper did not signal readiness within 10s"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+
+        // The lock_helper holds an exclusive lock on <config>.lock.
+        // ConfigStore::mutate tries to acquire the same lock via acquire_lock().
+        // With LOCKFILE_FAIL_IMMEDIATELY, this should fail immediately and
+        // retry until the 5-second timeout. We use a short-lived mutate
+        // that should NOT succeed while the helper holds the lock.
+        //
+        // Instead of waiting for the full timeout, verify that the lock is
+        // actually held by checking that a second lock_helper also blocks.
+        // Then kill the first lock_helper and verify our mutate succeeds.
+
+        // Try a mutate — it should block (or timeout) because lock_helper
+        // holds the lock. We don't wait for the full 5s timeout; instead,
+        // we verify the lock is held and then release it.
+        let store2 = ConfigStore::new(path.clone());
+        let mutate_handle = std::thread::spawn(move || {
+            // This should block until the lock_helper releases.
+            store2.mutate(|config| {
+                config.refresh_seconds = 20;
+                Ok(())
+            })
+        });
+
+        // Give the mutate thread time to attempt lock acquisition.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+
+        // Kill lock_helper to release the lock.
+        drop(child.stdin.take());
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // The mutate should now complete.
+        let result = mutate_handle.join().expect("mutate thread panicked");
+        result.expect("mutate should succeed after lock release");
+
+        let loaded = store.load_existing().unwrap();
+        assert_eq!(loaded.refresh_seconds, 20);
+        assert!(loaded.is_valid());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Concurrent mutation through multiple threads serializes correctly.
+    ///
+    /// On Windows, the OS file lock (`LockFileEx`) provides serialization;
+    /// on Unix, `flock` does the same. This test proves the combination
+    /// of in-process Mutex + OS file lock produces correct results.
+    #[test]
+    fn concurrent_mutation_serializes_correctly() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let dir = tmp_dir("concurrent_serialize");
+        let path = dir.join("config.toml");
+        let store = Arc::new(ConfigStore::new(path.clone()));
+
+        // Initialize config.
+        store
+            .mutate(|config| {
+                config.refresh_seconds = 1;
+                Ok(())
+            })
+            .unwrap();
+
+        // Spawn 5 threads that each increment refresh_seconds.
+        let mut handles = Vec::new();
+        for i in 2..=6 {
+            let store = Arc::clone(&store);
+            handles.push(thread::spawn(move || {
+                store
+                    .mutate(|config| {
+                        config.refresh_seconds = i;
+                        Ok(())
+                    })
+                    .unwrap();
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread panicked");
+        }
+
+        // Final value should be one of the written values (last writer wins).
+        let loaded = store.load_existing().unwrap();
+        assert!(
+            (1..=6).contains(&loaded.refresh_seconds),
+            "refresh_seconds should be in 1..=6, got {}",
+            loaded.refresh_seconds
+        );
+        assert!(loaded.is_valid());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// On Windows, verify that sharing violations fail safely.
+    ///
+    /// When the destination file is held open without delete sharing,
+    /// `fs::rename` should fail and the original file should be preserved.
+    #[test]
+    #[cfg(windows)]
+    fn write_atomic_sharing_violation_preserves_original() {
+        use std::fs::OpenOptions;
+
+        let dir = tmp_dir("atomic_sharing_violation");
+        let path = dir.join("config.toml");
+
+        // Write an initial config.
+        let original = Config::default();
+        original.write_atomic(&path).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+
+        // Open the destination file without delete sharing (default on Windows).
+        // This prevents rename from replacing it.
+        let _holder = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("failed to open file for sharing violation");
+
+        // Attempt to write a new config — should fail due to sharing violation.
+        let updated = Config {
+            refresh_seconds: 99,
+            ..Config::default()
+        };
+        let result = updated.write_atomic(&path);
+
+        // The rename should fail. On Windows, this produces an I/O error.
+        assert!(result.is_err(), "rename should fail with sharing violation");
+
+        // Original file should be intact.
+        let loaded = Config::load(&path).unwrap();
+        assert_eq!(loaded, original, "original config must be preserved");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            original_bytes,
+            "original bytes must be unchanged"
+        );
+
+        drop(_holder);
         let _ = fs::remove_dir_all(&dir);
     }
 

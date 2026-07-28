@@ -11,11 +11,16 @@ readme = "README.md"
 description = "Compact keyboard-first terminal monitor that polls greggd endpoints and renders each system in four rows."
 keywords = ["tui", "monitoring", "metrics", "ratatui", "cli"]
 categories = ["command-line-utilities", "visualization"]
-include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "config.example.toml"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "config.example.toml", "tests/**"]
 
 [[bin]]
 name = "gregg"
 path = "src/main.rs"
+
+[[bin]]
+name = "lock_helper"
+path = "src/bin/lock_helper.rs"
+required-features = []
 
 [dependencies]
 gregg-protocol = { version = "1.0.1", path = "../gregg-protocol" }
