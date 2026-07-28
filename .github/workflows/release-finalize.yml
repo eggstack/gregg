@@ -16,6 +16,10 @@ on:
         description: "Base64-encoded immutable run selection JSON"
         required: true
         type: string
+      disposition_decision_base64:
+        description: "Base64-encoded operator decision for published 1.0.0 crates"
+        required: false
+        type: string
       mode:
         description: "pre-tag review or final postpublication aggregation"
         required: true
@@ -69,12 +73,20 @@ jobs:
             --base64 '${{ inputs.selection_base64 }}' \
             --candidate-sha '${{ inputs.candidate_sha }}' \
             --release-version '${{ inputs.release_version }}' \
-            --output evidence/release-run-selection.json)"
+            --output evidence/release-run-selection.json \
+            --workflow-run-id '${{ github.run_id }}' \
+            --workflow-run-attempt '${{ github.run_attempt }}' \
+            --actor '${{ github.actor }}' \
+            --identity-output evidence/selection-identity.json)"
           selection_sha="$(jq -r .sha256 <<<"${selection_info}")"
           selection_size="$(jq -r .size_bytes <<<"${selection_info}")"
           printf '%s\n' "selection_sha=${selection_sha}" "selection_size=${selection_size}" > evidence/selection-input.txt
           python3 scripts/github-artifact-retrieval.py \
             --selection evidence/release-run-selection.json \
+            --selection-source workflow-dispatch-base64 \
+            --selection-identity evidence/selection-identity.json \
+            --selection-workflow-run-id '${{ github.run_id }}' \
+            --selection-workflow-run-attempt '${{ github.run_attempt }}' \
             --repo "${{ github.repository }}" \
             --output evidence/retrieved-manifest.json
       - name: Merge package provenance
@@ -97,6 +109,15 @@ jobs:
           CARGO_REGISTRY_DEFAULT_PROTOCOL: sparse
         run: |
           set -euo pipefail
+          test -n '${{ inputs.disposition_decision_base64 }}'
+          python3 scripts/decode-release-disposition.py \
+            --base64 '${{ inputs.disposition_decision_base64 }}' \
+            --candidate-sha '${{ inputs.candidate_sha }}' \
+            --output evidence/disposition-decision.json \
+            --identity-output evidence/disposition-decision-identity.json \
+            --workflow-run-id '${{ github.run_id }}' \
+            --workflow-run-attempt '${{ github.run_attempt }}' \
+            --actor '${{ github.actor }}'
           # Query the release registry records and the historical 1.0.0 records separately.
           for crate in gregg-protocol greggd gregg; do
             curl --fail --silent --show-error \
@@ -126,11 +147,13 @@ jobs:
               json.dump(summary, f, indent=2, sort_keys=True)
               f.write('\n')
           "
-          # Build the explicit operator disposition from the actual 1.0.0 responses.
+          # Merge the explicit operator decision with observed registry state.
           python3 -c "
           import datetime as dt
           import json, sys
           crates = ['gregg-protocol', 'greggd', 'gregg']
+          with open('evidence/disposition-decision.json') as f:
+              decision_input = json.load(f)
           observed_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
           records = {}
           for crate in crates:
@@ -142,7 +165,8 @@ jobs:
                   'yanked': ver['yanked'],
                   'checksum': ver['cksum'],
                   'published_at': ver['created_at'],
-                  'decision': 'retain',
+                  'decision': decision_input['decisions'][crate]['decision'],
+                  'rationale': decision_input['decisions'][crate]['rationale'],
               }
           disposition = {'schema_version': 1, 'observed_at': observed_at, 'crates': records}
           with open('evidence/1.0.0-disposition.json', 'w') as f:
@@ -170,6 +194,7 @@ jobs:
             --release-version "${{ inputs.release_version }}"
             --output evidence/v1.0.1-release-manifest.json
             --retrieved-manifest evidence/retrieved-manifest.json
+            --selection evidence/release-run-selection.json
             --mode "${{ inputs.mode }}"
             --tooling-sha "${tooling_sha}"
             --selection-source workflow-dispatch-base64
@@ -217,9 +242,22 @@ jobs:
         with:
           name: release-manifest-${{ inputs.candidate_sha }}
           path: |
+            evidence/release-run-selection.json
+            evidence/selection-identity.json
             evidence/v1.0.1-release-manifest.json
             evidence/retrieved-manifest.json
             evidence/provenance-index.json
             evidence/v1.0.1-package-provenance.json
             evidence/manifest.sha256
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.mode == 'final' }}
+        with:
+          name: release-final-inputs-${{ inputs.candidate_sha }}
+          path: |
+            evidence/role-index.json
+            evidence/registry-summary.json
+            evidence/1.0.0-disposition.json
+            evidence/disposition-decision.json
+            evidence/disposition-decision-identity.json
           if-no-files-found: error

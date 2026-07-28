@@ -531,6 +531,7 @@ def validate_workflow() -> list[WorkflowViolation]:
 
     text = WORKFLOW.read_text(encoding="utf-8")
     finalize_text = FINALIZE.read_text(encoding="utf-8")
+    qualification = (ROOT / ".github" / "workflows" / "phase32-qualification.yml").read_text(encoding="utf-8")
 
     # --- Legacy substring checks (preserved from original validator) ---
 
@@ -586,6 +587,25 @@ def validate_workflow() -> list[WorkflowViolation]:
 
     if "--mode" not in finalize_text:
         violations.append(WorkflowViolation("ordering", "release-finalize.yml does not pass --mode to aggregation"))
+
+    # Phase-33 qualification is a separate, exact-SHA, fail-closed gate.
+    for required in ("run-release-orchestration-qualification.py", "validate-qualification-output.py", "cargo fmt", "cargo clippy", "cargo test", "cargo doc", "run-mixed-fleet-sustained.py"):
+        if required not in qualification:
+            violations.append(WorkflowViolation("qualification", f"phase qualification is missing {required}"))
+    if "if-no-files-found: warn" in qualification or "if-no-files-found: ignore" in qualification:
+        violations.append(WorkflowViolation("qualification", "phase qualification upload must fail on missing files"))
+    if "if-no-files-found: error" not in qualification:
+        violations.append(WorkflowViolation("qualification", "phase qualification upload must set if-no-files-found: error"))
+    if "inputs.candidate_sha" not in qualification or 'git rev-parse HEAD' not in qualification:
+        violations.append(WorkflowViolation("qualification", "phase qualification must verify the exact checkout SHA"))
+    if "--selection evidence/release-run-selection.json" not in finalize_text:
+        violations.append(WorkflowViolation("selection-provenance", "finalizer must pass decoded selection explicitly to aggregation"))
+    if "--selection-source workflow-dispatch-base64" not in finalize_text:
+        violations.append(WorkflowViolation("selection-provenance", "finalizer must preserve workflow-dispatch-base64 source"))
+    if "decision': 'retain'" in finalize_text or '"decision": "retain"' in finalize_text:
+        violations.append(WorkflowViolation("disposition", "finalizer must not hard-code a historical retain decision"))
+    if "decode-release-disposition.py" not in finalize_text:
+        violations.append(WorkflowViolation("disposition", "finalizer must validate explicit disposition input"))
 
     # --- Graph-based DAG validation ---
 

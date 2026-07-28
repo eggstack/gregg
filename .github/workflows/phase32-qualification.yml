@@ -28,7 +28,10 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Verify immutable checkout
-        run: test "$(git rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
+        run: |
+          set -euo pipefail
+          [[ "${{ inputs.candidate_sha }}" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "${{ inputs.candidate_sha }}"
       - name: Local CI gates
         run: |
           set -euo pipefail
@@ -44,10 +47,21 @@ jobs:
           set -euo pipefail
           python3 scripts/run-mixed-fleet-sustained.py --duration-seconds 3 \
             --sample-interval-seconds 0.25 --evidence-dir evidence/sustained-smoke
+      - name: Complete nonpublishing orchestration qualification
+        run: |
+          set -euo pipefail
+          python3 scripts/run-release-orchestration-qualification.py \
+            --candidate-sha "${{ inputs.candidate_sha }}" --release-version 1.0.1 \
+            --evidence-dir evidence/orchestration
+      - name: Validate qualification output
+        run: |
+          set -euo pipefail
+          python3 scripts/validate-qualification-output.py \
+            --summary evidence/orchestration/qualification-summary.json
       - name: Upload qualification evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: phase32-qualification-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
           path: evidence
-          if-no-files-found: warn
+          if-no-files-found: error

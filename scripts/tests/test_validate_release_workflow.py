@@ -360,6 +360,7 @@ class TestUnknownDispatchOptions(unittest.TestCase):
                 self.assertTrue(len(unknown) > 0, f"Expected unknown-dispatch-option violations, got: {[str(v) for v in violations]}")
             finally:
                 _mod.WORKFLOW = original_workflow
+                Path(f.name).unlink(missing_ok=True)
 
 
 class TestUnsupportedExpressions(unittest.TestCase):

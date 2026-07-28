@@ -18,6 +18,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 RESULTS = {"success", "failure", "skipped"}
 SOURCE_MODES = {"pre-tag-full-sha", "annotated-tag"}
+SELECTION_SOURCES = {"selection-file", "workflow-dispatch-base64"}
 
 
 class EvidenceError(ValueError):
@@ -347,6 +348,8 @@ def aggregate(args: argparse.Namespace) -> None:
     selection_record = None
     if args.selection:
         selection_bytes = Path(args.selection).read_bytes()
+        if args.selection_source not in SELECTION_SOURCES:
+            fail(f"unsupported selection source: {args.selection_source}")
         selection_record = {
             "source": args.selection_source,
             "sha256": hashlib.sha256(selection_bytes).hexdigest(),
@@ -356,6 +359,15 @@ def aggregate(args: argparse.Namespace) -> None:
         }
     elif isinstance(retrieved_manifest, dict):
         selection_record = retrieved_manifest.get("selection")
+    if retrieved_manifest is not None and selection_record is not None:
+        retrieved_selection = retrieved_manifest.get("selection")
+        if not isinstance(retrieved_selection, dict):
+            fail("retrieved manifest must contain selection identity")
+        for field in ("sha256", "size_bytes"):
+            if retrieved_selection.get(field) != selection_record.get(field):
+                fail(f"retrieved selection {field} does not match aggregation input")
+        if args.selection and retrieved_selection.get("source") != args.selection_source:
+            fail("retrieved selection source does not match aggregation input")
     by_stage: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
     for path, candidate in candidates:
         by_stage.setdefault(candidate["stage"], []).append((path, candidate))

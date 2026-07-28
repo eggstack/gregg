@@ -140,6 +140,15 @@ Candidate qualification does not require `gregg-protocol 1.0.1` to already exist
 on crates.io. Protocol publication occurs only after candidate qualification and
 tag procedure authorization.
 
+Phase-33 qualification is nonpublishing. Its hosted workflow must qualify the
+exact checked-out SHA, run the complete local and orchestration harness, and
+upload evidence with `if-no-files-found: error`. Boundary-2 must retain the
+validated registry response, semantically parsed Cargo.lock protocol record,
+archive identity before/after verification, and replayable command transcripts.
+Finalization must preserve `workflow-dispatch-base64` selection identity and
+require an explicit operator disposition input; it must not infer or hard-code
+`retain`/`yank` decisions.
+
 ## CLI and configuration rules
 
 Commands must be deterministic, scriptable, and return meaningful exit codes. Human-readable output goes to stdout; diagnostics go to stderr.

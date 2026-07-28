@@ -198,14 +198,15 @@ an empty root, records checksum and size, and passes the installed `greggd`
 path to `scripts/verify-installed-daemon.sh`. That verifier only tests a
 supplied binary and never falls back to `target/release/greggd`.
 
-Phase-32 release-control qualification is nonpublishing and can be dispatched
+Phase-33 release-control qualification is nonpublishing and can be dispatched
 from `.github/workflows/phase32-qualification.yml` at an exact commit SHA. The
-finalizer receives post-freeze run selection as base64-encoded JSON, records
-its digest and size, and executes only tooling from the immutable candidate
-checkout. Cross-run manifests require immutable GitHub artifact identity for
-every stage. Dependent Boundary-2 verification reuses the exact package
-archive bytes and builds against the published protocol registry record; a
-checksum-only check is insufficient.
+workflow runs the local gates, sustained smoke, and repository-owned
+qualification harness, then validates and uploads evidence fail-closed. The
+finalizer receives post-freeze run selection and the operator's historical
+`1.0.0` disposition as base64-encoded JSON, records canonical identity
+documents, and executes only tooling from the immutable candidate checkout.
+Boundary-2 semantically compares the generated lockfile checksum with the
+validated registry response and retains replayable command transcripts.
 
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the

@@ -481,6 +481,10 @@ def main() -> int:
     parser.add_argument("--output", required=True, type=Path, help="Output retrieved manifest path")
     parser.add_argument("--api-base-url", default=GITHUB_API_DEFAULT, help="GitHub API base URL (for testing)")
     parser.add_argument("--token", default="", help="GitHub token; defaults to GITHUB_TOKEN env var")
+    parser.add_argument("--selection-source", choices=["selection-file", "workflow-dispatch-base64"], default="selection-file")
+    parser.add_argument("--selection-identity", type=Path, help="Canonical identity produced by the selection decoder")
+    parser.add_argument("--selection-workflow-run-id", default="not-recorded")
+    parser.add_argument("--selection-workflow-run-attempt", default="not-recorded")
     args = parser.parse_args()
 
     token = args.token or os.environ.get("GITHUB_TOKEN", "")
@@ -489,6 +493,20 @@ def main() -> int:
 
     selection = read_json(args.selection)
     validate_selection(selection)
+    selection_bytes = args.selection.read_bytes()
+    selection_sha = hashlib.sha256(selection_bytes).hexdigest()
+    selection_size = len(selection_bytes)
+    selection_identity = None
+    if args.selection_identity:
+        selection_identity = read_json(args.selection_identity)
+        if not isinstance(selection_identity, dict):
+            fail("selection identity must be an object")
+        if selection_identity.get("source") != args.selection_source:
+            fail("selection identity source does not match retrieval source")
+        if selection_identity.get("sha256") != selection_sha or selection_identity.get("size_bytes") != selection_size:
+            fail("selection identity digest or size does not match decoded selection")
+        if selection_identity.get("candidate_sha") != selection["candidate_sha"] or selection_identity.get("release_version") != selection["release_version"]:
+            fail("selection identity candidate does not match selection")
 
     expected_sha = selection["candidate_sha"]
     expected_version = selection["release_version"]
@@ -607,17 +625,19 @@ def main() -> int:
         "tooling_sha": tooling_sha,
         "retrieved_at": retrieved_at,
         "selection": {
-            "source": "selection-file",
-            "sha256": hashlib.sha256(args.selection.read_bytes()).hexdigest(),
-            "size_bytes": args.selection.stat().st_size,
-            "workflow_run_id": str(os.environ.get("GITHUB_RUN_ID", "retrieval")),
-            "workflow_run_attempt": str(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+            "source": args.selection_source,
+            "sha256": selection_sha,
+            "size_bytes": selection_size,
+            "workflow_run_id": str(args.selection_workflow_run_id or os.environ.get("GITHUB_RUN_ID", "retrieval")),
+            "workflow_run_attempt": str(args.selection_workflow_run_attempt or os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
         },
         "stages": stages,
         "provenance_index": provenance_index,
         "verdict": "pass",
     }
     write_json(args.output, manifest)
+    if selection_identity:
+        write_json(args.output.with_name("selection-identity.json"), selection_identity)
 
     # Write provenance index as a separate file for downstream consumers.
     provenance_index_path = args.output.parent / "provenance-index.json"

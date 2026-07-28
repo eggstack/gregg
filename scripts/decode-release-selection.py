@@ -20,6 +20,10 @@ def main() -> int:
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--release-version", required=True)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--workflow-run-id", default="not-recorded")
+    parser.add_argument("--workflow-run-attempt", default="not-recorded")
+    parser.add_argument("--actor", default="")
+    parser.add_argument("--identity-output", type=Path)
     args = parser.parse_args()
     try:
         raw = base64.b64decode(args.base64.encode("ascii"), validate=True)
@@ -37,12 +41,30 @@ def main() -> int:
             raise ValueError("selection release version does not match workflow input")
         if not isinstance(value.get("runs"), dict) or not value["runs"]:
             raise ValueError("selection runs must be a nonempty object")
+        if not args.actor.strip():
+            raise ValueError("workflow actor must be nonempty")
         args.output.parent.mkdir(parents=True, exist_ok=True)
         temporary = args.output.with_name(f".{args.output.name}.tmp")
         temporary.write_bytes(raw)
         temporary.replace(args.output)
         digest = hashlib.sha256(raw).hexdigest()
-        print(json.dumps({"sha256": digest, "size_bytes": len(raw)}, sort_keys=True))
+        identity = {
+            "schema_version": 1,
+            "source": "workflow-dispatch-base64",
+            "sha256": digest,
+            "size_bytes": len(raw),
+            "workflow_run_id": str(args.workflow_run_id),
+            "workflow_run_attempt": str(args.workflow_run_attempt),
+            "actor": args.actor,
+            "candidate_sha": args.candidate_sha,
+            "release_version": args.release_version,
+        }
+        identity_output = args.identity_output or args.output.with_name("selection-identity.json")
+        identity_output.parent.mkdir(parents=True, exist_ok=True)
+        identity_temporary = identity_output.with_name(f".{identity_output.name}.tmp")
+        identity_temporary.write_text(json.dumps(identity, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        identity_temporary.replace(identity_output)
+        print(json.dumps(identity, sort_keys=True))
         return 0
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
         print(f"FATAL: invalid selection input: {error}", file=sys.stderr)

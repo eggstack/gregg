@@ -270,12 +270,15 @@ jobs:
       - name: Re-verify exact Boundary-1 archive against registry
         run: |
           set -euo pipefail
+          mkdir -p evidence
           archive="$(jq -r '.packages.greggd.archive_path' boundary-1/evidence/package-provenance.json)"
-          checksum="$(curl --fail --silent https://crates.io/api/v1/crates/gregg-protocol/1.0.1 | jq -r '.version.cksum')"
+          curl --fail --silent --show-error https://crates.io/api/v1/crates/gregg-protocol/1.0.1 > evidence/protocol-registry-record.json
+          checksum="$(jq -r '.version.cksum' evidence/protocol-registry-record.json)"
           python3 scripts/registry-reverify.py --archive "boundary-1/${archive}" --package greggd \
             --expected-sha256 "$(jq -r '.packages.greggd.sha256' boundary-1/evidence/package-provenance.json)" \
-            --protocol-checksum "${checksum}" --output evidence/registry-reverify-greggd.json
-          jq -n '[{name:"registry-reverify-greggd.json",role:"registry-reverify-greggd"}]' > evidence/artifacts.json
+            --protocol-checksum "${checksum}" --registry-record evidence/protocol-registry-record.json \
+            --evidence-dir evidence/command-evidence --output evidence/registry-reverify-greggd.json
+          jq -n '[{name:"registry-reverify-greggd.json",role:"registry-reverify-summary"},{name:"protocol-registry-record.json",role:"protocol-registry-record"},{name:"command-evidence/command-evidence-index.json",role:"command-evidence-index"},{name:"command-evidence/build.stdout",role:"build-transcript"},{name:"command-evidence/cargo-version.stdout",role:"command-versions"}]' > evidence/artifacts.json
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
             --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
@@ -286,6 +289,7 @@ jobs:
         with:
           name: registry-reverify-greggd-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
           path: evidence
+          if-no-files-found: error
 
   registry-reverify-gregg:
     name: Boundary-2 registry re-verification (gregg)
@@ -306,12 +310,15 @@ jobs:
       - name: Re-verify exact Boundary-1 archive against registry
         run: |
           set -euo pipefail
+          mkdir -p evidence
           archive="$(jq -r '.packages.gregg.archive_path' boundary-1/evidence/package-provenance.json)"
-          checksum="$(curl --fail --silent https://crates.io/api/v1/crates/gregg-protocol/1.0.1 | jq -r '.version.cksum')"
+          curl --fail --silent --show-error https://crates.io/api/v1/crates/gregg-protocol/1.0.1 > evidence/protocol-registry-record.json
+          checksum="$(jq -r '.version.cksum' evidence/protocol-registry-record.json)"
           python3 scripts/registry-reverify.py --archive "boundary-1/${archive}" --package gregg \
             --expected-sha256 "$(jq -r '.packages.gregg.sha256' boundary-1/evidence/package-provenance.json)" \
-            --protocol-checksum "${checksum}" --output evidence/registry-reverify-gregg.json
-          jq -n '[{name:"registry-reverify-gregg.json",role:"registry-reverify-gregg"}]' > evidence/artifacts.json
+            --protocol-checksum "${checksum}" --registry-record evidence/protocol-registry-record.json \
+            --evidence-dir evidence/command-evidence --output evidence/registry-reverify-gregg.json
+          jq -n '[{name:"registry-reverify-gregg.json",role:"registry-reverify-summary"},{name:"protocol-registry-record.json",role:"protocol-registry-record"},{name:"command-evidence/command-evidence-index.json",role:"command-evidence-index"},{name:"command-evidence/build.stdout",role:"build-transcript"},{name:"command-evidence/cargo-version.stdout",role:"command-versions"}]' > evidence/artifacts.json
           now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           python3 scripts/validate-release-evidence.py write-candidate --output evidence/candidate.json \
             --candidate-sha "${{ needs.resolve.outputs.candidate_sha }}" --release-version 1.0.1 \
@@ -322,6 +329,7 @@ jobs:
         with:
           name: registry-reverify-gregg-${{ needs.resolve.outputs.short_sha }}-${{ github.run_attempt }}
           path: evidence
+          if-no-files-found: error
 
   binary-prepublish:
     name: Binary package gate
