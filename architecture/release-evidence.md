@@ -43,6 +43,11 @@ records prove orchestration only, but the pre-tag and final manifests must
 contain the exact production stage sets and bind each stage to one immutable
 artifact identity.
 
+The qualification upload explicitly retains hidden files because the retrieval
+tool uses bounded `.retrieval-downloads-*` directories. Omitting those
+directories makes the summary's complete file index unreplayable and causes
+independent downloaded-artifact validation to fail.
+
 Final singleton evidence follows this order:
 
 ```text

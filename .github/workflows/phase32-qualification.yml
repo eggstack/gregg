@@ -88,3 +88,4 @@ jobs:
           name: phase34-full-contract-${{ inputs.candidate_sha }}-${{ github.run_attempt }}
           path: evidence
           if-no-files-found: error
+          include-hidden-files: true

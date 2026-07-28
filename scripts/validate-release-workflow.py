@@ -596,6 +596,8 @@ def validate_workflow() -> list[WorkflowViolation]:
         violations.append(WorkflowViolation("qualification", "phase qualification upload must fail on missing files"))
     if "if-no-files-found: error" not in qualification:
         violations.append(WorkflowViolation("qualification", "phase qualification upload must set if-no-files-found: error"))
+    if "include-hidden-files: true" not in qualification:
+        violations.append(WorkflowViolation("qualification", "phase qualification must retain hidden retrieval evidence"))
     if "inputs.candidate_sha" not in qualification or 'git rev-parse HEAD' not in qualification:
         violations.append(WorkflowViolation("qualification", "phase qualification must verify the exact checkout SHA"))
     for required in (
