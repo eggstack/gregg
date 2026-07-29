@@ -273,8 +273,10 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     update_status(status_handle, WsState::Running, 0, Duration::from_secs(10));
 
     // Create a tokio runtime for the async daemon supervision.
-    let rt =
-        tokio::runtime::Runtime::new().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Enter the shared daemon supervision.
     let result = rt.block_on(crate::run::run_with_shutdown(
