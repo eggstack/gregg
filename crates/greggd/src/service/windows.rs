@@ -273,11 +273,15 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     update_status(&status_handle, WsState::Running, 0, Duration::from_secs(10));
 
     // Create a tokio runtime for the async daemon supervision.
-    let rt = tokio::runtime::Runtime::new()
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+    let rt =
+        tokio::runtime::Runtime::new().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Enter the shared daemon supervision.
-    let result = rt.block_on(crate::run::run_with_shutdown(collector, config, shutdown_future));
+    let result = rt.block_on(crate::run::run_with_shutdown(
+        collector,
+        config,
+        shutdown_future,
+    ));
 
     // Report STOPPED.
     let (exit_code, win_state) = match &result {
@@ -301,7 +305,7 @@ fn update_status(
     exit_code: u32,
     wait_hint: Duration,
 ) {
-    use windows_service::service::{ServiceControlAccept, ServiceType, ServiceStatus};
+    use windows_service::service::{ServiceControlAccept, ServiceStatus, ServiceType};
 
     let status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
