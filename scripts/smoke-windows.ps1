@@ -3,7 +3,7 @@
     End-to-end lifecycle smoke test for the greggd Windows service.
 
 .DESCRIPTION
-    Exercises the full install/start/query/stop/restart/uninstall lifecycle
+    Exercises the full install/start/query/stop/restart/bind-failure/reinstall/uninstall lifecycle
     using local files and loopback only. Requires Administrator privileges.
     Do NOT run in CI — this is a manual maintainer test.
 
@@ -172,9 +172,29 @@ if ($loadedConfig -notmatch "port = 11398") {
 }
 Write-Host "   Config updated and service restarted."
 
+# ── Bind failure ──────────────────────────────────────────────────────────
+
+Write-Host "9. Simulating bind failure (port 1)..."
+greggd stop --config $ConfigPath 2>$null
+Start-Sleep -Seconds 2
+greggd port 1 --config $ConfigPath 2>$null
+Start-Sleep -Seconds 1
+Start-Service -Name $ServiceName
+Start-Sleep -Seconds 5
+$svc = Get-Service -Name $ServiceName
+if ($svc.Status -eq "Running") {
+    Write-Error "Service should not be running after bind failure."
+    Stop-AndRemoveService
+    exit 1
+}
+Write-Host "   Service is not running after bind failure (expected)."
+
+# Restore working port for remaining tests.
+greggd port 11399 --config $ConfigPath 2>$null
+
 # ── Reinstall preserves config ────────────────────────────────────────────
 
-Write-Host "9. Reinstalling (config preservation)..."
+Write-Host "10. Reinstalling (config preservation)..."
 greggd stop --config $ConfigPath 2>$null
 Start-Sleep -Seconds 2
 sc.exe delete $ServiceName | Out-Null
@@ -195,7 +215,7 @@ Write-Host "   Config preserved after reinstall."
 
 # ── Uninstall ──────────────────────────────────────────────────────────────
 
-Write-Host "10. Uninstalling..."
+Write-Host "11. Uninstalling (preserving config)..."
 greggd stop --config $ConfigPath 2>$null
 Start-Sleep -Seconds 2
 Stop-AndRemoveService
@@ -212,8 +232,40 @@ if (Test-Path $ConfigPath) {
     Write-Warning "Config was removed unexpectedly."
 }
 
-# Clean up smoke test config.
-Remove-Item -Path $ConfigDir -Recurse -Force -ErrorAction SilentlyContinue
+# ── Reinstall and uninstall with -RemoveConfig ───────────────────────────
+
+Write-Host "12. Reinstalling for RemoveConfig test..."
+Copy-Item -Path $ExePath -Destination $InstalledExe -Force
+sc.exe create $ServiceName binPath= $ImagePath start= demand DisplayName= "Gregg Smoke Test" | Out-Null
+Start-Service -Name $ServiceName
+Start-Sleep -Seconds 3
+$svc = Get-Service -Name $ServiceName
+if ($svc.Status -ne "Running") {
+    Write-Error "Reinstall did not start service."
+    Stop-AndRemoveService
+    exit 1
+}
+Write-Host "   Service running after reinstall."
+
+Write-Host "13. Uninstalling with config removal..."
+greggd stop --config $ConfigPath 2>$null
+Start-Sleep -Seconds 2
+Stop-AndRemoveService
+
+if (Test-Path $InstallDir) {
+    Remove-Item -Path $InstallDir -Recurse -Force
+}
+# Manually remove config to simulate -RemoveConfig behavior.
+if (Test-Path $ConfigDir) {
+    Remove-Item -Path $ConfigDir -Recurse -Force
+}
+Write-Host "   Service, binary, and config removed."
+
+if (Test-Path $ConfigDir) {
+    Write-Error "Config directory was not removed."
+    exit 1
+}
+Write-Host "   Config directory confirmed removed."
 
 # ── Summary ───────────────────────────────────────────────────────────────
 

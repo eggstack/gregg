@@ -41,7 +41,7 @@ pub struct Cli {
 /// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run the daemon in the foreground (used by systemd/launchd).
+    /// Run the daemon in the foreground.
     Run,
     /// Start the greggd system service.
     Start,
