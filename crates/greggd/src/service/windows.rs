@@ -313,7 +313,7 @@ fn update_status(
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted: ServiceControlAccept::STOP,
-        exit_code: ServiceExitCode(exit_code),
+        exit_code: ServiceExitCode::Win32(exit_code),
         checkpoint: 0,
         wait_hint,
         process_id: None,
