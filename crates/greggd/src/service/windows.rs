@@ -194,10 +194,11 @@ fn map_service_state(state: windows_service::service::ServiceState) -> ServiceSt
     use windows_service::service::ServiceState as WsState;
     match state {
         WsState::StartPending => ServiceState::StartPending,
-        WsState::Running => ServiceState::Running,
-        WsState::StopPending => ServiceState::StopPending,
         WsState::Stopped => ServiceState::Stopped,
-        WsState::PausePending | WsState::Paused | WsState::ContinuePending => ServiceState::Running,
+        WsState::StopPending => ServiceState::StopPending,
+        WsState::Running | WsState::PausePending | WsState::Paused | WsState::ContinuePending => {
+            ServiceState::Running
+        }
     }
 }
 
@@ -242,7 +243,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
 
     // Report START_PENDING.
     update_status(
-        &status_handle,
+        status_handle,
         WsState::StartPending,
         0,
         Duration::from_secs(5),
@@ -269,7 +270,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Report RUNNING before entering the daemon loop.
-    update_status(&status_handle, WsState::Running, 0, Duration::from_secs(10));
+    update_status(status_handle, WsState::Running, 0, Duration::from_secs(10));
 
     // Create a tokio runtime for the async daemon supervision.
     let rt =
@@ -291,7 +292,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    update_status(&status_handle, win_state, exit_code, Duration::from_secs(5));
+    update_status(status_handle, win_state, exit_code, Duration::from_secs(5));
 
     result
 }
@@ -299,7 +300,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
 /// Update the SCM service status.
 #[cfg(target_os = "windows")]
 fn update_status(
-    status_handle: &windows_service::service_control_handler::ServiceStatusHandle,
+    status_handle: windows_service::service_control_handler::ServiceStatusHandle,
     state: windows_service::service::ServiceState,
     exit_code: u32,
     wait_hint: Duration,
