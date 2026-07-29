@@ -111,7 +111,7 @@ impl ScmAdapter for NativeScmAdapter {
 
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| ServiceError::StateQueryFailed {
-            source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            source: std::io::Error::other(e),
         })?;
 
         let service = manager
@@ -120,13 +120,13 @@ impl ScmAdapter for NativeScmAdapter {
                 windows_service::service::ServiceAccess::QUERY_STATUS,
             )
             .map_err(|e| ServiceError::StateQueryFailed {
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
 
         let status = service
             .query_status()
             .map_err(|e| ServiceError::StateQueryFailed {
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
 
         Ok(map_service_state(status.current_state))
@@ -138,7 +138,7 @@ impl ScmAdapter for NativeScmAdapter {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| ServiceError::ExecFailed {
             command: "ServiceManager::connect".into(),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            source: std::io::Error::other(e),
         })?;
 
         let service = manager
@@ -148,13 +148,13 @@ impl ScmAdapter for NativeScmAdapter {
             )
             .map_err(|e| ServiceError::ExecFailed {
                 command: format!("open service `{}`", self.service_name),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
 
         let args: [&str; 0] = [];
         service.start(&args).map_err(|e| ServiceError::ExecFailed {
             command: format!("start service `{}`", self.service_name),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            source: std::io::Error::other(e),
         })?;
 
         Ok(())
@@ -166,7 +166,7 @@ impl ScmAdapter for NativeScmAdapter {
         let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
             .map_err(|e| ServiceError::ExecFailed {
             command: "ServiceManager::connect".into(),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            source: std::io::Error::other(e),
         })?;
 
         let service = manager
@@ -176,12 +176,12 @@ impl ScmAdapter for NativeScmAdapter {
             )
             .map_err(|e| ServiceError::ExecFailed {
                 command: format!("open service `{}`", self.service_name),
-                source: std::io::Error::new(std::io::ErrorKind::Other, e),
+                source: std::io::Error::other(e),
             })?;
 
         service.stop().map_err(|e| ServiceError::ExecFailed {
             command: format!("stop service `{}`", self.service_name),
-            source: std::io::Error::new(std::io::ErrorKind::Other, e),
+            source: std::io::Error::other(e),
         })?;
 
         Ok(())
@@ -223,9 +223,8 @@ fn map_service_state(state: windows_service::service::ServiceState) -> ServiceSt
 #[cfg(target_os = "windows")]
 pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::mpsc;
-    use windows_service::service::{ServiceControl, ServiceState as WsState, ServiceType};
+    use windows_service::service::{ServiceControl, ServiceState as WsState};
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
-    use windows_service::service_dispatcher;
 
     // Channel for SCM control events.
     let (tx, rx) = mpsc::channel::<ServiceControl>();
@@ -360,6 +359,7 @@ impl WindowsServiceManager {
     }
 
     /// Create a manager with a custom adapter (for testing).
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn with_adapter(adapter: Box<dyn ScmAdapter>) -> Self {
         Self { adapter }
