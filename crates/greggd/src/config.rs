@@ -121,7 +121,15 @@ impl Config {
         {
             PathBuf::from("/Library/Application Support/gregg/greggd.toml")
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        {
+            let program_data =
+                std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_owned());
+            PathBuf::from(program_data)
+                .join("gregg")
+                .join("greggd.toml")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             PathBuf::from("greggd.toml")
         }

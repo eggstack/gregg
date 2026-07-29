@@ -2,7 +2,9 @@
 //!
 //! Parses CLI arguments and dispatches to the appropriate subcommand.
 //! The `run` command loads validated config and enters the foreground
-//! daemon loop. Lifecycle commands delegate to the native service manager.
+//! daemon loop. The `service` command (Windows only) enters the SCM
+//! service entry point. Lifecycle commands delegate to the native
+//! service manager.
 
 use clap::Parser;
 
@@ -26,6 +28,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let config = greggd::cli::load_config(&config_path, cli.config.is_some())?;
             let collector = NativeCollector::new(None)?;
             greggd::run::run(collector, config).await
+        }
+        #[cfg(target_os = "windows")]
+        greggd::cli::Command::Service => greggd::service::windows::run_service(),
+        #[cfg(not(target_os = "windows"))]
+        greggd::cli::Command::Service => {
+            eprintln!("service mode is only available on Windows");
+            std::process::exit(greggd::cli::ExitCode::RuntimeError as i32);
         }
         command => {
             // Non-run commands are synchronous.

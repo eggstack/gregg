@@ -72,24 +72,41 @@ impl RunOutcome {
 
 /// Run the daemon with the given collector and configuration.
 ///
-/// This is the main entry point for `greggd run`. It:
+/// This is the main entry point for `greggd run`. It uses the
+/// platform-default shutdown signal (SIGTERM/SIGINT on Unix, Ctrl-C
+/// otherwise).
 ///
-/// 1. Initializes structured logging.
-/// 2. Validates configuration.
-/// 3. Starts the periodic sampler and HTTP server.
-/// 4. Supervises: waits for a shutdown signal, server failure, or sampler
-///    failure, then joins surviving tasks within a bounded deadline.
-/// 5. Logs the shutdown reason and exits.
+/// # Errors
+///
+/// Returns an error if configuration is invalid or the server fails
+/// to start.
+pub async fn run<C: SystemCollector + 'static>(
+    collector: C,
+    config: Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_with_shutdown(collector, config, wait_for_shutdown_signal()).await
+}
+
+/// Run the daemon with an externally provided shutdown source.
+///
+/// This is the shared core used by both foreground and Windows service
+/// modes. The `shutdown` future completes when the daemon should stop:
+/// a signal on Unix, or an SCM control handler on Windows.
 ///
 /// # Errors
 ///
 /// Returns an error if configuration is invalid or the server fails
 /// to start.
 #[allow(clippy::too_many_lines)]
-pub async fn run<C: SystemCollector + 'static>(
+pub async fn run_with_shutdown<C, S>(
     collector: C,
     config: Config,
-) -> Result<(), Box<dyn std::error::Error>> {
+    shutdown: S,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: SystemCollector + 'static,
+    S: std::future::Future<Output = &'static str>,
+{
     init_logging();
 
     info!(
@@ -171,12 +188,7 @@ pub async fn run<C: SystemCollector + 'static>(
     let mut server_handle = Some(server_handle);
     let mut sampler_handle = Some(sampler_handle);
 
-    let outcome = supervise(
-        &mut server_handle,
-        &mut sampler_handle,
-        wait_for_shutdown_signal(),
-    )
-    .await;
+    let outcome = supervise(&mut server_handle, &mut sampler_handle, shutdown).await;
 
     // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());

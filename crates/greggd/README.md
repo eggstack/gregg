@@ -1,6 +1,6 @@
 # greggd
 
-Lightweight Linux and macOS metrics daemon for the gregg monitoring ecosystem.
+Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ecosystem.
 
 ## Installation
 
@@ -10,7 +10,7 @@ cargo install greggd
 
 ## Usage
 
-Run the daemon in the foreground (intended for systemd or launchd):
+Run the daemon in the foreground (intended for systemd, launchd, or interactive diagnostics):
 
 ```sh
 greggd run
@@ -23,7 +23,10 @@ Manage the system service:
 greggd start
 greggd stop
 greggd restart
+greggd croncheck
 ```
+
+On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`.
 
 ## Configuration
 
@@ -31,6 +34,7 @@ Default config path:
 
 - **Linux:** `/etc/gregg/greggd.toml`
 - **macOS:** `/Library/Application Support/gregg/greggd.toml`
+- **Windows:** `%ProgramData%\gregg\greggd.toml`
 
 Override the default with `--config PATH`.
 
@@ -38,7 +42,8 @@ Override the default with `--config PATH`.
 
 This daemon is designed for private networks only. It exposes a read-only
 HTTP/1 JSON API on the configured port (default 11310) and is not hardened
-for public internet exposure.
+for public internet exposure. No firewall rules are created automatically.
+LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
 ## Links
 

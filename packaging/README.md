@@ -12,6 +12,8 @@ packaging/
 │   └── com.eggstack.greggd.plist  # launchd plist (macOS)
 ├── install-linux.sh            # Linux installer script
 ├── install-macos.sh            # macOS installer script
+├── install-windows.ps1         # Windows installer script
+├── uninstall-windows.ps1       # Windows uninstaller script
 └── README.md                   # This file
 ```
 
@@ -43,12 +45,29 @@ cargo build --release -p greggd
 sudo ./packaging/install-macos.sh target/release/greggd
 ```
 
+### Windows (PowerShell)
+
+```powershell
+# Build the release binary
+cargo build --release -p greggd
+
+# Install (requires Administrator)
+.\packaging\install-windows.ps1 -SourcePath .\target\release\greggd.exe
+
+# Check status
+Get-Service greggd
+greggd stop
+greggd start
+greggd restart
+```
+
 ## Configuration
 
 The default configuration file locations are:
 
 - **Linux:** `/etc/gregg/greggd.toml`
 - **macOS:** `/Library/Application Support/gregg/greggd.toml`
+- **Windows:** `%ProgramData%\gregg\greggd.toml`
 
 Example configuration:
 
@@ -90,14 +109,27 @@ sudo launchctl kickstart -k system/com.eggstack.greggd
 log show --predicate 'process == "greggd"' --last 5m
 ```
 
+### Windows
+
+```powershell
+greggd start
+greggd stop
+greggd restart
+Get-Service greggd
+```
+
+The Windows service runs under `NT AUTHORITY\LocalService` with minimal privileges. It does not automatically create firewall rules. LAN exposure is operator-controlled and the daemon has no TLS or authentication.
+
 ## Upgrade
 
-Both install scripts are idempotent. Rerunning them will:
+All install scripts are idempotent. Rerunning them will:
 
 1. Stop the existing service.
 2. Replace the binary.
 3. Preserve the existing configuration file.
 4. Reload/restart the service.
+
+On Windows, the install script preserves the existing config at `%ProgramData%\gregg\greggd.toml` unless you explicitly provide a different config path.
 
 ## Uninstall
 
@@ -121,11 +153,22 @@ sudo rm /usr/local/bin/greggd
 sudo rm -rf "/Library/Application Support/gregg"
 ```
 
+### Windows
+
+```powershell
+# Stop and remove service (preserves config by default)
+.\packaging\uninstall-windows.ps1
+
+# Stop and remove service AND config
+.\packaging\uninstall-windows.ps1 -RemoveConfig
+```
+
 ## Security Notes
 
 - The default configuration binds to `0.0.0.0`, making metrics visible to all reachable peers. Use `greggd host 127.0.0.1` for SSH-tunnel-only access.
 - The systemd unit includes security hardening options. Some options may need adjustment on older distributions or ARM boards.
 - The launchd plist runs as a system daemon. Consider creating a dedicated `_greggd` user for production deployments.
+- On Windows, the service runs under `NT AUTHORITY\LocalService` with minimal privileges. No firewall rule is created; LAN exposure is operator-controlled. The daemon has no TLS or authentication.
 
 ## Privilege Model
 

@@ -25,13 +25,13 @@ gregg-protocol = "1.0"
 | Linux | ARM64 | Supported |
 | macOS | Intel (x86-64) | Supported |
 | macOS | Apple Silicon (arm64) | Supported |
-| Windows | x86-64 | Client supported; daemon foreground support |
+| Windows | x86-64 | Client supported; daemon foreground + service |
 
 ## Goals
 
 - Keep the daemon suitable for servers, workstations, and resource-constrained single-board computers.
 - Support Linux and macOS daemons in version 1, including x86-64, ARM64 Linux, Intel Macs, and Apple Silicon Macs.
-- Provide foreground daemon support on Windows x86-64, with service management deferred to a later phase.
+- Provide foreground and native service support on Windows x86-64.
 - Keep the TUI useful in a small terminal-multiplexer pane.
 - Separate collection, protocol, polling/state management, and rendering so each can be tested independently.
 - Prefer stable, read-only, local-network operation over broad monitoring-platform functionality.
@@ -60,7 +60,9 @@ greggd restart
 greggd croncheck
 ```
 
-`greggd run` is the foreground process used by systemd or launchd. It samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files.
+`greggd run` is the foreground process used by systemd, launchd, or interactive diagnostics. It samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files.
+
+On Windows, the service entry point is `greggd service` (used internally by the SCM; not intended for interactive use).
 
 ### Configuration
 
@@ -68,6 +70,7 @@ The `--config` flag overrides the platform default configuration path:
 
 - Linux: `/etc/gregg/greggd.toml`
 - macOS: `/Library/Application Support/gregg/greggd.toml`
+- Windows: `%ProgramData%\gregg\greggd.toml`
 
 Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
 
@@ -87,6 +90,22 @@ macOS (launchd):
 cp packaging/launchd/com.eggstack.greggd.plist /Library/LaunchDaemons/
 launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
 ```
+
+Windows (PowerShell, run as Administrator):
+
+```powershell
+# Build and install
+cargo build --release -p greggd
+.\packaging\install-windows.ps1 -SourcePath .\target\release\greggd.exe
+
+# Manage
+greggd start
+greggd stop
+greggd restart
+Get-Service greggd
+```
+
+See `packaging/README.md` for detailed Windows installation instructions.
 
 ## Client
 
@@ -114,11 +133,17 @@ The `gregg` client is a native Windows application. It stores configuration in `
 
 ### Windows daemon
 
-The `greggd` daemon runs as a foreground process on Windows x86-64. Service management (start/stop/restart via native Windows services) is not yet supported; lifecycle commands return `NotAvailable`.
+The `greggd` daemon supports Windows x86-64 as both a foreground process and a native Windows service.
+
+**Foreground mode** (`greggd run`): Runs in the current console, listening for Ctrl-C. Useful for development and diagnostics.
+
+**Service mode** (`greggd service`): The SCM entry point. The service runs under `NT AUTHORITY\LocalService` with minimal privileges. Install/uninstall through the provided PowerShell scripts or manually via `sc.exe`.
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
 On Windows, `/v1/status` and `/` return `503 Service Unavailable` with a v2 health response, because a truthful v1 snapshot cannot be produced (load, swap, and CPU I/O-wait are absent). Clients should prefer `/v2/status` on Windows.
+
+The daemon does not automatically create firewall rules. LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
 ## Display model
 
@@ -159,7 +184,7 @@ The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/
 
 Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`). macOS collection uses Mach host statistics and `sysctlbyname` through a contained FFI boundary. Windows collection uses native system APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`). External utilities are diagnostic references, not runtime dependencies.
 
-Service integration is native to each platform (systemd on Linux, launchd on macOS). Windows service management is deferred to a later phase; the daemon runs in the foreground only.
+Service integration is native to each platform (systemd on Linux, launchd on macOS, Windows SCM on Windows).
 
 ## Security
 
@@ -170,7 +195,6 @@ The daemon is designed for **private-network** use only. It does not provide TLS
 - macOS has no Linux-equivalent aggregate CPU I/O-wait state. It is reported as unsupported (`iowait_pct: null`) rather than fabricated as zero.
 - Windows does not report load averages or swap. It reports memory commit charge instead, which is a distinct metric.
 - Windows x86-64 supports up to 64 logical processors in a single processor group for aggregate CPU collection. Multi-group topologies are rejected with a clear error.
-- Windows service management is not yet implemented; the daemon runs as a foreground process only.
 - Per-process inspection, historical telemetry, alerting, and web dashboards are explicitly out of scope for version 1.
 
 ## Non-goals

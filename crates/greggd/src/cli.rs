@@ -61,6 +61,9 @@ pub enum Command {
         /// The new port number (1-65535).
         port: u16,
     },
+    /// Internal: Windows SCM service entry point. Not for interactive use.
+    #[command(hide = true)]
+    Service,
 }
 
 /// Exit codes returned by greggd commands.
@@ -105,7 +108,9 @@ impl From<&ServiceError> for ExitCode {
             ServiceError::CommandFailed { .. }
             | ServiceError::ExecFailed { .. }
             | ServiceError::NotAvailable { .. }
-            | ServiceError::StateQueryFailed { .. } => Self::ServiceError,
+            | ServiceError::StateQueryFailed { .. }
+            | ServiceError::Timeout { .. } => Self::ServiceError,
+            ServiceError::AccessDenied => Self::PermissionDenied,
         }
     }
 }
@@ -260,6 +265,9 @@ pub fn dispatch(
             },
             service,
         ),
+        Command::Service => {
+            unreachable!("Command::Service is handled in main.rs")
+        }
     }
 }
 
@@ -381,6 +389,12 @@ mod tests {
     fn cli_parses_croncheck_command() {
         let cli = Cli::try_parse_from(["greggd", "croncheck"]).unwrap();
         assert!(matches!(cli.command, Command::Croncheck));
+    }
+
+    #[test]
+    fn cli_parses_service_command() {
+        let cli = Cli::try_parse_from(["greggd", "service"]).unwrap();
+        assert!(matches!(cli.command, Command::Service));
     }
 
     #[test]

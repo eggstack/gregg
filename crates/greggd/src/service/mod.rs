@@ -1,9 +1,10 @@
 //! Service management abstraction.
 //!
 //! Provides a platform-independent trait for controlling the native system
-//! service manager (systemd on Linux, launchd on macOS). External command
-//! invocation is acceptable here because `systemctl`/`launchctl` are the
-//! native administrative interfaces.
+//! service manager (systemd on Linux, launchd on macOS, Windows SCM).
+//! External command invocation is acceptable for systemd/launchd because
+//! `systemctl`/`launchctl` are the native administrative interfaces.
+//! Windows uses native APIs through the `windows-service` crate.
 //!
 //! A [`NoopServiceManager`] is provided for testing and development.
 
@@ -11,6 +12,7 @@ use std::fmt;
 
 pub mod launchd;
 pub mod systemd;
+pub mod windows;
 
 /// Errors returned by service management operations.
 #[derive(Debug)]
@@ -30,6 +32,10 @@ pub enum ServiceError {
     NotAvailable { platform: String },
     /// The service state could not be determined.
     StateQueryFailed { source: std::io::Error },
+    /// Access to the service was denied.
+    AccessDenied,
+    /// The operation timed out waiting for a state transition.
+    Timeout { waited_ms: u64 },
 }
 
 impl fmt::Display for ServiceError {
@@ -58,6 +64,10 @@ impl fmt::Display for ServiceError {
             Self::StateQueryFailed { source } => {
                 write!(f, "failed to query service state: {source}")
             }
+            Self::AccessDenied => write!(f, "access denied to service"),
+            Self::Timeout { waited_ms } => {
+                write!(f, "service state transition timed out after {waited_ms}ms")
+            }
         }
     }
 }
@@ -68,6 +78,36 @@ impl std::error::Error for ServiceError {
             Self::ExecFailed { source, .. } | Self::StateQueryFailed { source } => Some(source),
             _ => None,
         }
+    }
+}
+
+/// Unified service state representation.
+///
+/// Covers states from all supported platforms:
+/// - Linux systemd: active (running) vs inactive
+/// - macOS launchd: not loaded / loaded / running
+/// - Windows SCM: not installed / stopped / start pending / running / stop pending
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceState {
+    /// The service is not installed or not loaded.
+    NotInstalled,
+    /// The service exists but is not running.
+    Stopped,
+    /// The service is in the process of starting.
+    StartPending,
+    /// The service is running.
+    Running,
+    /// The service is in the process of stopping.
+    StopPending,
+}
+
+impl ServiceState {
+    /// Returns `true` if the service is considered active (running or
+    /// temporarily transitioning through a pending state that will
+    /// resolve to running).
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Running | Self::StartPending)
     }
 }
 
@@ -170,7 +210,8 @@ impl ServiceManager for UnsupportedServiceManager {
 /// Return the platform-appropriate service manager.
 ///
 /// On Linux, returns a [`systemd::SystemdManager`]. On macOS, returns a
-/// [`launchd::LaunchdManager`]. On other platforms, returns an
+/// [`launchd::LaunchdManager`]. On Windows, returns a
+/// `windows::WindowsServiceManager`. On other platforms, returns an
 /// [`UnsupportedServiceManager`] that returns
 /// [`ServiceError::NotAvailable`] for lifecycle commands.
 #[must_use]
@@ -183,7 +224,11 @@ pub fn platform_service_manager() -> Box<dyn ServiceManager> {
     {
         Box::new(launchd::LaunchdManager::production())
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    {
+        Box::new(windows::WindowsServiceManager::production())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         Box::new(UnsupportedServiceManager)
     }
