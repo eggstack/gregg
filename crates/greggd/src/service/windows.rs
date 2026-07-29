@@ -305,13 +305,15 @@ fn update_status(
     exit_code: u32,
     wait_hint: Duration,
 ) {
-    use windows_service::service::{ServiceControlAccept, ServiceStatus, ServiceType};
+    use windows_service::service::{
+        ServiceControlAccept, ServiceExitCode, ServiceStatus, ServiceType,
+    };
 
     let status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted: ServiceControlAccept::STOP,
-        exit_code: exit_code.into(),
+        exit_code: ServiceExitCode(exit_code),
         checkpoint: 0,
         wait_hint,
         process_id: None,
