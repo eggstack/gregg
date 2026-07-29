@@ -195,6 +195,33 @@ async fn status_warming_returns_503() {
 }
 
 #[tokio::test]
+async fn v1_status_v2_only_returns_503_with_health() {
+    // Simulate the Windows path: v2 snapshot exists but v1 is None.
+    let state = ServerState::new();
+    let snap_v2 = LinuxSnapshotV2Builder::default().build();
+    state.update_snapshot_v2_only(snap_v2).await;
+
+    let app = build_test_router(state);
+
+    // /v1/status should return 503 because no v1 snapshot was provided.
+    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    // v1 health was never updated by update_snapshot_v2_only, so it
+    // remains Warming — this is the expected Windows behavior.
+    assert_eq!(parsed.state, ReadinessState::Warming);
+
+    // /v2/status should return 200 with the v2 snapshot.
+    let response = app.oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body_str = response_body_string(response).await;
+    let parsed_v2: gregg_protocol::v2::StatusSnapshotV2 = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed_v2.schema_version, 2);
+}
+
+#[tokio::test]
 async fn root_returns_same_as_status() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();

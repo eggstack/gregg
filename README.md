@@ -118,6 +118,8 @@ The `greggd` daemon runs as a foreground process on Windows x86-64. Service mana
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
+On Windows, `/v1/status` and `/` return `503 Service Unavailable` with a v2 health response, because a truthful v1 snapshot cannot be produced (load, swap, and CPU I/O-wait are absent). Clients should prefer `/v2/status` on Windows.
+
 ## Display model
 
 A reachable system consumes exactly four rows:

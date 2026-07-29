@@ -177,7 +177,11 @@ collection.
 The Linux implementation lives behind `cfg(target_os = "linux")` and
 reads procfs/sysfs only. No external commands are executed. The macOS
 implementation lives behind `cfg(target_os = "macos")` and uses Mach
-host statistics and sysctl APIs through a contained FFI module.
+host statistics and sysctl APIs through a contained FFI module. The
+Windows implementation lives behind `cfg(target_os = "windows")` and
+uses native Windows APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`,
+`GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) through
+raw `extern "system"` FFI. No external commands are executed.
 
 For collector semantics and acceptance criteria, see the
 collector phase plans under [`plans/`](../plans/).
@@ -202,6 +206,29 @@ The client implements v2-first/v1-fallback negotiation:
 5. If v2 returns warming/failure (503), represent that state without
    falling back.
 
+On Windows, step 3 is not reachable because `/v2/status` is always
+available. The daemon serves 503 for v1 when the collector does not
+produce a v1 snapshot (the Windows path). Clients always use v2 on
+Windows.
+
 Both v1 and v2 snapshots are normalized into an internal
 `NormalizedSnapshot` type that the state reducer and TUI consume. This
 eliminates version-branching throughout the rendering code.
+
+## Platform-specific endpoint behavior
+
+The daemon always exposes all five routes (`/`, `/v1/status`,
+`/v2/status`, `/healthz`, `/v2/healthz`). On platforms where a
+truthful v1 snapshot cannot be produced, the v1 endpoint returns
+`503 Service Unavailable` with the v2 health response:
+
+- **Windows**: v1 is unsupported because load, swap, and CPU I/O-wait
+  are absent and cannot be represented as non-optional zero values.
+  `/v1/status` and `/` return 503 with a `HealthResponse` in the
+  `Warming` state (the v1 health is never updated). Clients should
+  prefer `/v2/status` on Windows.
+- **Linux/macOS**: Both v1 and v2 return 200 OK when ready.
+
+The client polling logic (`v2-first, v1-fallback on 404`) handles
+mixed-version fleets correctly: a Linux daemon serves v2 (200), and
+a Windows daemon serves v2 (200) while v1 returns 503.
