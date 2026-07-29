@@ -1,6 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use gregg_protocol::v2::{
+    HealthResponseV2, MetricCapabilitiesV2, StatusSnapshotV2, SCHEMA_VERSION_V2,
+};
 use gregg_protocol::{
     CpuMetrics, HealthResponse, LoadAverage, MemoryMetrics, MetricCapabilities, ReadinessState,
     StatusSnapshot, SwapMetrics, SystemIdentity, ValidationViolation, ViolationKind,
@@ -1150,4 +1153,174 @@ fn infinite_load_average_is_rejected() {
     };
     let err = snap.validate().unwrap_err();
     assert!(err.iter().any(|v| v.field == "load.fifteen"));
+}
+
+// ===== V2 Tests =====
+
+#[test]
+fn v2_linux_fixture_round_trips() {
+    let bytes = fixture("linux-v2.json");
+    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 linux fixture parses");
+    snap.validate().expect("v2 linux fixture validates");
+
+    let encoded = serde_json::to_vec(&snap).expect("serialize v2 snapshot");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("fixture is JSON");
+    let encoded_value: serde_json::Value =
+        serde_json::from_slice(&encoded).expect("encoded is JSON");
+    assert_eq!(value, encoded_value, "v2 round-trip must be byte-stable");
+}
+
+#[test]
+fn v2_macos_fixture_round_trips() {
+    let bytes = fixture("macos-v2.json");
+    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 macos fixture parses");
+    snap.validate().expect("v2 macos fixture validates");
+
+    let caps = snap.capabilities;
+    assert!(!caps.cpu_iowait, "macOS v2 capability must be false");
+    assert!(caps.load_average, "macOS v2 load_average must be true");
+    assert!(!caps.swap, "macOS v2 swap must be false");
+    assert!(!caps.memory_commit, "macOS v2 memory_commit must be false");
+    assert!(
+        snap.cpu.iowait_pct.is_none(),
+        "macOS v2 iowait must be null"
+    );
+    assert!(snap.load.is_some(), "macOS v2 load must be present");
+    assert!(snap.swap.is_none(), "macOS v2 swap must be null");
+    assert!(snap.commit.is_none(), "macOS v2 commit must be null");
+}
+
+#[test]
+fn v2_windows_fixture_round_trips() {
+    let bytes = fixture("windows-v2.json");
+    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 windows fixture parses");
+    snap.validate().expect("v2 windows fixture validates");
+
+    let caps = snap.capabilities;
+    assert!(!caps.cpu_iowait, "Windows v2 cpu_iowait must be false");
+    assert!(!caps.load_average, "Windows v2 load_average must be false");
+    assert!(!caps.swap, "Windows v2 swap must be false");
+    assert!(caps.memory_commit, "Windows v2 memory_commit must be true");
+    assert!(snap.load.is_none(), "Windows v2 load must be null");
+    assert!(snap.swap.is_none(), "Windows v2 swap must be null");
+    assert!(snap.commit.is_some(), "Windows v2 commit must be present");
+}
+
+#[test]
+fn v2_health_ready_fixture_round_trips() {
+    let bytes = fixture("health-ready-v2.json");
+    let health: HealthResponseV2 = serde_json::from_slice(&bytes).expect("v2 ready health parses");
+    assert_eq!(health.state, ReadinessState::Ready);
+    assert!(health.snapshot.is_some());
+    health
+        .snapshot
+        .as_ref()
+        .expect("snapshot")
+        .validate()
+        .unwrap();
+
+    let encoded = serde_json::to_vec(&health).expect("serialize v2 ready health");
+    let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let emitted: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(original, emitted);
+}
+
+#[test]
+fn v2_windows_fixture_no_load_field() {
+    let bytes = fixture("windows-v2.json");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("parses");
+    // Windows fixture must not contain a "load" field at all
+    assert!(
+        value.get("load").is_none(),
+        "windows v2 fixture must not contain load"
+    );
+}
+
+#[test]
+fn v2_windows_fixture_commit_not_swap() {
+    let bytes = fixture("windows-v2.json");
+    let value: serde_json::Value = serde_json::from_slice(&bytes).expect("parses");
+    // Windows fixture must have "commit" and NOT "swap"
+    assert!(
+        value.get("commit").is_some(),
+        "windows v2 fixture must contain commit"
+    );
+    assert!(
+        value.get("swap").is_none(),
+        "windows v2 fixture must not contain swap"
+    );
+}
+
+#[test]
+fn v2_fixture_paths_exist() {
+    for name in [
+        "linux-v2.json",
+        "macos-v2.json",
+        "windows-v2.json",
+        "health-ready-v2.json",
+    ] {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("tests");
+        path.push("fixtures");
+        path.push(name);
+        assert!(
+            Path::new(&path).exists(),
+            "missing v2 fixture {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn v1_fixture_not_accidentally_parsed_as_v2() {
+    let bytes = fixture("linux-v1.json");
+    // v1 has load as required (not optional), so parsing as v2 should fail
+    let result = serde_json::from_slice::<StatusSnapshotV2>(&bytes);
+    assert!(
+        result.is_err(),
+        "v1 fixture must not parse as v2 (load is required in v1, optional in v2)"
+    );
+}
+
+#[test]
+fn v2_capabilities_independent_from_os_name() {
+    // Validation must not infer capability semantics from os_name.
+    // A fixture with os_name "linux" could have capabilities set to
+    // any valid combination; validation only checks capability/value
+    // consistency.
+    let snap = StatusSnapshotV2 {
+        schema_version: SCHEMA_VERSION_V2,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilitiesV2 {
+            cpu_iowait: true,
+            load_average: false,
+            swap: false,
+            memory_commit: false,
+        },
+        system: SystemIdentity {
+            name: "test".into(),
+            hostname: "test.local".into(),
+            os_name: "linux".into(),
+            os_version: "1.0".into(),
+            kernel_name: "Linux".into(),
+            kernel_release: "6.0.0".into(),
+            architecture: "x86_64".into(),
+        },
+        cpu: gregg_protocol::v2::CpuMetricsV2 {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: Some(0.0),
+        },
+        load: None,
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: None,
+        commit: None,
+    };
+    snap.validate()
+        .expect("capabilities are consistent, regardless of os_name");
 }

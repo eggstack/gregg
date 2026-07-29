@@ -1,7 +1,7 @@
 use super::*;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use gregg_protocol::test_support::LinuxSnapshotBuilder;
+use gregg_protocol::test_support::{LinuxSnapshotBuilder, LinuxSnapshotV2Builder};
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
 use http_body_util::BodyExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -12,7 +12,9 @@ fn build_test_router(state: ServerState) -> Router {
     Router::new()
         .route("/", axum::routing::get(status_handler))
         .route("/v1/status", axum::routing::get(status_handler))
+        .route("/v2/status", axum::routing::get(status_handler_v2))
         .route("/healthz", axum::routing::get(health_handler))
+        .route("/v2/healthz", axum::routing::get(health_handler_v2))
         .fallback(fallback_handler)
         .with_state(state)
 }
@@ -27,6 +29,12 @@ fn post(path: &str) -> Request<Body> {
         .uri(path)
         .body(Body::from(""))
         .unwrap()
+}
+
+/// Test helper: update snapshot with both v1 and v2 from a v1 snapshot.
+async fn update_both(state: &ServerState, snap: StatusSnapshot) {
+    let snap_v2 = LinuxSnapshotV2Builder::default().build();
+    state.update_snapshot(snap, snap_v2).await;
 }
 
 async fn response_body_string(response: axum::response::Response) -> String {
@@ -49,7 +57,7 @@ async fn new_starts_in_warming_state() {
 async fn update_snapshot_makes_ready() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     assert!(state.ready.load(Ordering::Acquire));
     let stored = state.snapshot().await.unwrap();
@@ -62,7 +70,7 @@ async fn update_snapshot_makes_ready() {
 async fn set_warming_clears_snapshot() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     state.set_warming().await;
     assert!(!state.ready.load(Ordering::Acquire));
@@ -75,7 +83,7 @@ async fn set_warming_clears_snapshot() {
 async fn set_failed_preserves_snapshot() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     state.set_failed("collector crashed").await;
 
@@ -157,7 +165,7 @@ fn sample_interval_60001_is_invalid() {
 async fn status_ready_returns_200_with_json() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -190,7 +198,7 @@ async fn status_warming_returns_503() {
 async fn root_returns_same_as_status() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/")).await.unwrap();
@@ -205,7 +213,7 @@ async fn root_returns_same_as_status() {
 async fn healthz_ready_returns_200() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/healthz")).await.unwrap();
@@ -269,7 +277,7 @@ async fn nonexistent_path_returns_404() {
 async fn response_content_type_is_json() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
 
@@ -290,7 +298,7 @@ async fn response_content_type_is_json() {
 async fn json_body_is_valid_and_parseable() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -307,7 +315,7 @@ async fn json_body_is_valid_and_parseable() {
 async fn concurrent_requests_return_same_snapshot() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     let app = build_test_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -375,7 +383,7 @@ fn fresh_snapshot() -> StatusSnapshot {
 async fn stale_snapshot_served_when_within_age() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
     let snap = fresh_snapshot();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     // Simulate a failure — snapshot is preserved.
     state.set_failed("collector error").await;
@@ -394,7 +402,7 @@ async fn stale_snapshot_served_when_within_age() {
 async fn stale_snapshot_rejected_when_max_failures_exceeded() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
     let snap = fresh_snapshot();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     // Simulate 3 failures — hits the threshold.
     state.set_failed("failure 1").await;
@@ -415,7 +423,7 @@ async fn stale_snapshot_rejected_when_max_failures_exceeded() {
 async fn healthz_reflects_stale_snapshot() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
     let snap = fresh_snapshot();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     state.set_failed("failure 1").await;
     state.set_failed("failure 2").await;
@@ -434,7 +442,7 @@ async fn healthz_reflects_stale_snapshot() {
 async fn snapshot_preserved_after_single_failure_not_stale() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
     let snap = fresh_snapshot();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     state.set_failed("failure 1").await;
 
@@ -475,7 +483,7 @@ async fn stale_snapshot_by_age_returns_503() {
     let snap = LinuxSnapshotBuilder::default()
         .observed_at_unix_ms(1)
         .build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     // Sleep briefly so the snapshot exceeds max_snapshot_age.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -495,7 +503,7 @@ async fn stale_snapshot_by_age_returns_503() {
 async fn fresh_snapshot_returns_200() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
     let snap = fresh_snapshot();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -514,7 +522,7 @@ async fn recovery_after_stale_by_age_returns_200() {
     let stale_snap = LinuxSnapshotBuilder::default()
         .observed_at_unix_ms(1)
         .build();
-    state.update_snapshot(stale_snap).await;
+    update_both(&state, stale_snap).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -525,7 +533,7 @@ async fn recovery_after_stale_by_age_returns_200() {
 
     // Recovery: publish a fresh snapshot.
     let fresh_snap = fresh_snapshot();
-    state.update_snapshot(fresh_snap.clone()).await;
+    update_both(&state, fresh_snap.clone()).await;
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -539,13 +547,13 @@ async fn recovery_after_stale_by_age_returns_200() {
 async fn failure_count_resets_on_recovery() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
     let snap = fresh_snapshot();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     state.set_failed("failure 1").await;
     state.set_failed("failure 2").await;
 
     // Recovery — reset count.
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
     assert_eq!(state.consecutive_failures(), 0);
 
     state.set_failed("failure 1").await;
@@ -562,7 +570,7 @@ async fn failure_count_resets_on_recovery() {
 async fn malformed_request_line_does_not_crash() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -606,7 +614,7 @@ async fn malformed_request_line_does_not_crash() {
 async fn oversized_request_headers_are_bounded() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -652,7 +660,7 @@ async fn oversized_request_headers_are_bounded() {
 async fn put_patch_delete_options_return_405_or_404() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
 
@@ -687,7 +695,7 @@ async fn put_patch_delete_options_return_405_or_404() {
 async fn get_with_body_does_not_crash() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -737,7 +745,7 @@ async fn concurrent_requests_during_state_transition() {
 
     // Start with a snapshot.
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     // Send requests while transitioning state.
     let mut handles = vec![];
@@ -759,7 +767,7 @@ async fn concurrent_requests_during_state_transition() {
     // Transition to warming while requests are in flight.
     state.set_warming().await;
     // Transition back to ready.
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     let mut statuses = vec![];
     for h in handles {
@@ -786,12 +794,12 @@ async fn rapid_state_updates_are_consistent() {
     let snap = LinuxSnapshotBuilder::default().build();
 
     // Rapidly cycle: warming → ready → failed → ready → failed → warming → ready
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
     state.set_failed("failure 1").await;
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
     state.set_failed("failure 2").await;
     state.set_warming().await;
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     // Final state should be ready with the snapshot.
     assert!(state.ready.load(Ordering::Acquire));
@@ -819,7 +827,7 @@ async fn ipv6_loopback_if_available() {
 
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap.clone()).await;
+    update_both(&state, snap.clone()).await;
 
     let app = build_test_router(state);
 
@@ -855,7 +863,7 @@ async fn ipv6_loopback_if_available() {
 async fn malformed_http_version_is_handled_gracefully() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
-    state.update_snapshot(snap).await;
+    update_both(&state, snap).await;
 
     let app = build_test_router(state);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

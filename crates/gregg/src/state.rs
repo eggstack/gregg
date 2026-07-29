@@ -9,11 +9,10 @@
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
-use gregg_protocol::StatusSnapshot;
-
 use crate::action::Action;
 use crate::config::Config;
 use crate::endpoint::Endpoint;
+use crate::normalized::NormalizedSnapshot;
 use crate::poller::{PollBatch, PollOutcome};
 
 /// A stable system identifier (UUID v4 string).
@@ -53,8 +52,8 @@ pub struct SystemState {
     pub configured_name: Option<String>,
     /// Current reachability.
     pub reachability: Reachability,
-    /// Most recent successful snapshot.
-    pub latest: Option<StatusSnapshot>,
+    /// Most recent successful snapshot (normalized from v1 or v2).
+    pub latest: Option<NormalizedSnapshot>,
     /// When the most recent successful poll completed.
     pub last_success_at: Option<Instant>,
     /// When the most recent poll attempt completed (success or failure).
@@ -134,7 +133,15 @@ impl AppState {
                     PollOutcome::Cancelled => {}
                     PollOutcome::Online(snapshot) => {
                         system.reachability = Reachability::Online;
-                        system.latest = Some((**snapshot).clone());
+                        system.latest = Some(NormalizedSnapshot::from_v1(snapshot));
+                        system.last_success_at = Some(batch.completed_at);
+                        system.last_attempt_at = Some(batch.completed_at);
+                        system.latency = Some(result.latency);
+                        system.last_error = None;
+                    }
+                    PollOutcome::OnlineV2(snapshot) => {
+                        system.reachability = Reachability::Online;
+                        system.latest = Some(NormalizedSnapshot::from_v2(snapshot));
                         system.last_success_at = Some(batch.completed_at);
                         system.last_attempt_at = Some(batch.completed_at);
                         system.latency = Some(result.latency);
@@ -417,6 +424,7 @@ mod tests {
     use super::*;
     use crate::config::SystemEntry;
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
+    use gregg_protocol::StatusSnapshot;
 
     fn test_config_with_ids(ids: &[&str]) -> Config {
         let mut config = Config::default();

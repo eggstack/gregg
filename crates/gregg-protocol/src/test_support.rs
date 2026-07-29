@@ -8,6 +8,7 @@ use crate::{
         CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
         SystemIdentity,
     },
+    v2::{CommitMetrics, CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2, SCHEMA_VERSION_V2},
     SCHEMA_VERSION_V1,
 };
 
@@ -47,6 +48,19 @@ impl IdentityFixture {
             kernel_name: "Darwin",
             kernel_release: "24.0.0",
             architecture: "arm64",
+        }
+    }
+
+    /// Windows x86-64 identity used by default Windows fixtures.
+    pub const fn windows() -> Self {
+        Self {
+            name: "win-pc",
+            hostname: "win-pc.local",
+            os_name: "windows",
+            os_version: "10.0",
+            kernel_name: "Windows",
+            kernel_release: "10.0.19045",
+            architecture: "x86_64",
         }
     }
 
@@ -330,5 +344,211 @@ fn percent(used: u64, total: u64) -> f32 {
     } else {
         let pct = (used as f64) * 100.0 / (total as f64);
         (pct as f32).clamp(0.0, 100.0)
+    }
+}
+
+/// Builder for a v2 Linux snapshot.
+#[derive(Debug, Clone)]
+pub struct LinuxSnapshotV2Builder {
+    identity: IdentityFixture,
+    logical_cores: u32,
+    usage_pct: f32,
+    iowait_pct: f32,
+    load: LoadAverage,
+    used_bytes: u64,
+    total_bytes: u64,
+    swap_used_bytes: u64,
+    swap_total_bytes: u64,
+    sample_interval_ms: u64,
+    observed_at_unix_ms: u64,
+}
+
+impl Default for LinuxSnapshotV2Builder {
+    fn default() -> Self {
+        Self {
+            identity: IdentityFixture::linux(),
+            logical_cores: 8,
+            usage_pct: 25.2,
+            iowait_pct: 0.4,
+            load: LoadAverage {
+                one: 1.32,
+                five: 0.91,
+                fifteen: 0.62,
+            },
+            used_bytes: 5_900_000_000,
+            total_bytes: 15_600_000_000,
+            swap_used_bytes: 0,
+            swap_total_bytes: 4_000_000_000,
+            sample_interval_ms: 1000,
+            observed_at_unix_ms: 1_716_460_800_000,
+        }
+    }
+}
+
+impl LinuxSnapshotV2Builder {
+    #[must_use]
+    pub const fn logical_cores(mut self, cores: u32) -> Self {
+        self.logical_cores = cores;
+        self
+    }
+
+    #[must_use]
+    pub const fn usage_pct(mut self, pct: f32) -> Self {
+        self.usage_pct = pct;
+        self
+    }
+
+    #[must_use]
+    pub const fn iowait_pct(mut self, pct: f32) -> Self {
+        self.iowait_pct = pct;
+        self
+    }
+
+    #[must_use]
+    pub const fn load(mut self, one: f32, five: f32, fifteen: f32) -> Self {
+        self.load = LoadAverage { one, five, fifteen };
+        self
+    }
+
+    #[must_use]
+    pub const fn memory(mut self, used_bytes: u64, total_bytes: u64) -> Self {
+        self.used_bytes = used_bytes;
+        self.total_bytes = total_bytes;
+        self
+    }
+
+    #[must_use]
+    pub const fn swap(mut self, used_bytes: u64, total_bytes: u64) -> Self {
+        self.swap_used_bytes = used_bytes;
+        self.swap_total_bytes = total_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> StatusSnapshotV2 {
+        let snap = StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms: self.observed_at_unix_ms,
+            sample_interval_ms: self.sample_interval_ms,
+            capabilities: MetricCapabilitiesV2 {
+                cpu_iowait: true,
+                load_average: true,
+                swap: true,
+                memory_commit: false,
+            },
+            system: self.identity.into_identity(),
+            cpu: CpuMetricsV2 {
+                logical_cores: self.logical_cores,
+                usage_pct: self.usage_pct,
+                iowait_pct: Some(self.iowait_pct),
+            },
+            load: Some(self.load),
+            memory: MemoryMetrics {
+                used_bytes: self.used_bytes,
+                total_bytes: self.total_bytes,
+                usage_pct: percent(self.used_bytes, self.total_bytes),
+            },
+            swap: Some(crate::v2::SwapMetrics {
+                used_bytes: self.swap_used_bytes,
+                total_bytes: self.swap_total_bytes,
+                usage_pct: percent(self.swap_used_bytes, self.swap_total_bytes),
+            }),
+            commit: None,
+        };
+        crate::validate_v2::validate_v2(&snap).expect("linux v2 snapshot validates");
+        snap
+    }
+}
+
+/// Builder for a v2 Windows snapshot.
+#[derive(Debug, Clone)]
+pub struct WindowsSnapshotV2Builder {
+    identity: IdentityFixture,
+    logical_cores: u32,
+    usage_pct: f32,
+    memory_used: u64,
+    memory_total: u64,
+    commit_used: u64,
+    commit_limit: u64,
+    sample_interval_ms: u64,
+    observed_at_unix_ms: u64,
+}
+
+impl Default for WindowsSnapshotV2Builder {
+    fn default() -> Self {
+        Self {
+            identity: IdentityFixture::windows(),
+            logical_cores: 4,
+            usage_pct: 12.5,
+            memory_used: 2_000_000_000,
+            memory_total: 8_000_000_000,
+            commit_used: 3_000_000_000,
+            commit_limit: 8_000_000_000,
+            sample_interval_ms: 1000,
+            observed_at_unix_ms: 1_716_460_800_000,
+        }
+    }
+}
+
+impl WindowsSnapshotV2Builder {
+    #[must_use]
+    pub const fn logical_cores(mut self, cores: u32) -> Self {
+        self.logical_cores = cores;
+        self
+    }
+
+    #[must_use]
+    pub const fn usage_pct(mut self, pct: f32) -> Self {
+        self.usage_pct = pct;
+        self
+    }
+
+    #[must_use]
+    pub const fn memory(mut self, used_bytes: u64, total_bytes: u64) -> Self {
+        self.memory_used = used_bytes;
+        self.memory_total = total_bytes;
+        self
+    }
+
+    #[must_use]
+    pub const fn commit(mut self, used_bytes: u64, limit_bytes: u64) -> Self {
+        self.commit_used = used_bytes;
+        self.commit_limit = limit_bytes;
+        self
+    }
+
+    #[must_use]
+    pub fn build(self) -> StatusSnapshotV2 {
+        let snap = StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms: self.observed_at_unix_ms,
+            sample_interval_ms: self.sample_interval_ms,
+            capabilities: MetricCapabilitiesV2 {
+                cpu_iowait: false,
+                load_average: false,
+                swap: false,
+                memory_commit: true,
+            },
+            system: self.identity.into_identity(),
+            cpu: CpuMetricsV2 {
+                logical_cores: self.logical_cores,
+                usage_pct: self.usage_pct,
+                iowait_pct: None,
+            },
+            load: None,
+            memory: MemoryMetrics {
+                used_bytes: self.memory_used,
+                total_bytes: self.memory_total,
+                usage_pct: percent(self.memory_used, self.memory_total),
+            },
+            swap: None,
+            commit: Some(CommitMetrics {
+                used_bytes: self.commit_used,
+                limit_bytes: self.commit_limit,
+                usage_pct: percent(self.commit_used, self.commit_limit),
+            }),
+        };
+        crate::validate_v2::validate_v2(&snap).expect("windows v2 snapshot validates");
+        snap
     }
 }

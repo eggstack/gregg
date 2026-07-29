@@ -26,7 +26,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path, _, query = self.path.partition("?")
         path_mode = path.strip("/")
-        mode = self.default_mode if path_mode in {"", "v1/status"} else path_mode
+        mode = self.default_mode if path_mode in {"", "v1/status", "v2/status"} else path_mode
         if query:
             for item in query.split("&"):
                 key, _, value = item.partition("=")

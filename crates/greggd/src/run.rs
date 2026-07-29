@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use gregg_protocol::v2::StatusSnapshotV2;
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -148,13 +149,10 @@ pub async fn run<C: SystemCollector + 'static>(
 
         tokio::spawn(async move {
             sampler
-                .run(shutdown_rx, |readiness, snap| {
+                .run(shutdown_rx, |readiness, snap, snap_v2| {
                     let state = state.clone();
                     async move {
-                        // Await state updates inline — no detached spawns.
-                        // This ensures ordered state updates and that no
-                        // update races with shutdown.
-                        sync_sampler_state(&state, readiness, snap).await;
+                        sync_sampler_state(&state, readiness, snap, snap_v2).await;
                     }
                 })
                 .await;
@@ -330,11 +328,44 @@ async fn sync_sampler_state(
     server_state: &ServerState,
     readiness: ReadinessState,
     snap: Option<Arc<gregg_protocol::StatusSnapshot>>,
+    snap_v2: Option<Arc<StatusSnapshotV2>>,
 ) {
     match readiness {
         ReadinessState::Ready => {
             if let Some(snap) = snap {
-                server_state.update_snapshot((*snap).clone()).await;
+                let v2 = match snap_v2 {
+                    Some(s) => (*s).clone(),
+                    None => {
+                        // Fallback: produce a minimal v2 from v1 data.
+                        // This should not happen in normal operation.
+                        gregg_protocol::v2::StatusSnapshotV2 {
+                            schema_version: gregg_protocol::v2::SCHEMA_VERSION_V2,
+                            observed_at_unix_ms: snap.observed_at_unix_ms,
+                            sample_interval_ms: snap.sample_interval_ms,
+                            capabilities: gregg_protocol::v2::MetricCapabilitiesV2 {
+                                cpu_iowait: snap.capabilities.cpu_iowait,
+                                load_average: true,
+                                swap: true,
+                                memory_commit: false,
+                            },
+                            system: snap.system.clone(),
+                            cpu: gregg_protocol::v2::CpuMetricsV2 {
+                                logical_cores: snap.cpu.logical_cores,
+                                usage_pct: snap.cpu.usage_pct,
+                                iowait_pct: snap.cpu.iowait_pct,
+                            },
+                            load: Some(snap.load),
+                            memory: snap.memory,
+                            swap: Some(gregg_protocol::v2::SwapMetrics {
+                                used_bytes: snap.swap.used_bytes,
+                                total_bytes: snap.swap.total_bytes,
+                                usage_pct: snap.swap.usage_pct,
+                            }),
+                            commit: None,
+                        }
+                    }
+                };
+                server_state.update_snapshot((*snap).clone(), v2).await;
             }
         }
         ReadinessState::Warming => {

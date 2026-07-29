@@ -5,6 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
+use crate::normalized::NormalizedSnapshot;
 use crate::state::SystemState;
 
 use super::bar;
@@ -32,7 +33,7 @@ pub fn render_online(f: &mut Frame, area: Rect, system: &SystemState, is_selecte
     f.render_widget(header_line, Rect { height: 1, ..area });
 
     // Row 1: CPU bar
-    let cpu_detail = format!("{} cores", snap.cpu.logical_cores);
+    let cpu_detail = format!("{} cores", snap.logical_cores);
     bar::render_bar(
         f,
         Rect {
@@ -41,7 +42,7 @@ pub fn render_online(f: &mut Frame, area: Rect, system: &SystemState, is_selecte
             ..area
         },
         "CPU",
-        snap.cpu.usage_pct,
+        snap.usage_pct,
         Some(&cpu_detail),
         false,
     );
@@ -65,32 +66,71 @@ pub fn render_online(f: &mut Frame, area: Rect, system: &SystemState, is_selecte
         false,
     );
 
-    // Row 3: SWAP bar
-    let swap_detail = if snap.swap.total_bytes == 0 {
-        String::new()
-    } else {
-        format!(
-            "{}/{}",
-            text::format_bytes(snap.swap.used_bytes),
-            text::format_bytes(snap.swap.total_bytes)
-        )
-    };
-    bar::render_bar(
-        f,
-        Rect {
-            y: area.y.saturating_add(3),
-            height: 1,
-            ..area
-        },
-        "SWP",
-        snap.swap.usage_pct,
-        if swap_detail.is_empty() {
-            None
+    // Row 3: SWAP or COMMIT bar
+    render_swap_or_commit_row(f, area, snap);
+}
+
+/// Render the third row: SWAP, COMMIT, or unavailable.
+fn render_swap_or_commit_row(f: &mut Frame, area: Rect, snap: &NormalizedSnapshot) {
+    if let Some(ref swap) = snap.swap {
+        let swap_detail = if swap.total_bytes == 0 {
+            String::new()
         } else {
-            Some(&swap_detail)
-        },
-        false,
-    );
+            format!(
+                "{}/{}",
+                text::format_bytes(swap.used_bytes),
+                text::format_bytes(swap.total_bytes)
+            )
+        };
+        bar::render_bar(
+            f,
+            Rect {
+                y: area.y.saturating_add(3),
+                height: 1,
+                ..area
+            },
+            "SWP",
+            swap.usage_pct,
+            if swap_detail.is_empty() {
+                None
+            } else {
+                Some(&swap_detail)
+            },
+            false,
+        );
+    } else if let Some(ref commit) = snap.commit {
+        let commit_detail = format!(
+            "{}/{}",
+            text::format_bytes(commit.used_bytes),
+            text::format_bytes(commit.limit_bytes)
+        );
+        bar::render_bar(
+            f,
+            Rect {
+                y: area.y.saturating_add(3),
+                height: 1,
+                ..area
+            },
+            "COMMIT",
+            commit.usage_pct,
+            Some(&commit_detail),
+            false,
+        );
+    } else {
+        // Neither swap nor commit - show unavailable
+        bar::render_bar(
+            f,
+            Rect {
+                y: area.y.saturating_add(3),
+                height: 1,
+                ..area
+            },
+            "SWP",
+            0.0,
+            None,
+            false,
+        );
+    }
 }
 
 /// Render a 1-row offline system line.

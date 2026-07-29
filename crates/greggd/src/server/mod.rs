@@ -19,6 +19,7 @@ use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
+use gregg_protocol::v2::{HealthResponseV2, StatusSnapshotV2};
 use gregg_protocol::{HealthResponse, StatusSnapshot};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
@@ -101,14 +102,18 @@ impl Config {
 /// Shared server state.
 #[derive(Debug, Clone)]
 pub struct ServerState {
-    /// Latest status snapshot. Preserved across failure transitions so
+    /// Latest v1 status snapshot. Preserved across failure transitions so
     /// `/v1/status` can continue serving stale data.
     snapshot: Arc<RwLock<Option<Arc<StatusSnapshot>>>>,
+    /// Latest v2 status snapshot.
+    snapshot_v2: Arc<RwLock<Option<Arc<StatusSnapshotV2>>>>,
     /// Readiness flag: `true` once a valid snapshot is available and not
     /// stale.
     ready: Arc<AtomicBool>,
-    /// Current health response.
+    /// Current v1 health response.
     health: Arc<RwLock<HealthResponse>>,
+    /// Current v2 health response.
+    health_v2: Arc<RwLock<HealthResponseV2>>,
     /// Consecutive collector failure count. Reset to `0` on success.
     consecutive_failures: Arc<AtomicU32>,
     /// Maximum consecutive failures before snapshot is considered stale.
@@ -135,25 +140,37 @@ impl ServerState {
     pub fn with_stale_policy(max_consecutive_failures: u32, max_snapshot_age: Duration) -> Self {
         Self {
             snapshot: Arc::new(RwLock::new(None)),
+            snapshot_v2: Arc::new(RwLock::new(None)),
             ready: Arc::new(AtomicBool::new(false)),
             health: Arc::new(RwLock::new(HealthResponse::warming())),
+            health_v2: Arc::new(RwLock::new(HealthResponseV2::warming())),
             consecutive_failures: Arc::new(AtomicU32::new(0)),
             max_consecutive_failures,
             max_snapshot_age,
         }
     }
 
-    /// Publish a new snapshot and mark the server ready.
-    pub async fn update_snapshot(&self, snap: StatusSnapshot) {
+    /// Publish new v1 and v2 snapshots and mark the server ready.
+    pub async fn update_snapshot(&self, snap: StatusSnapshot, snap_v2: StatusSnapshotV2) {
         let health = HealthResponse::ready(snap.clone());
+        let health_v2 = HealthResponseV2::ready(snap_v2.clone());
         let arc_snap = Arc::new(snap);
+        let arc_snap_v2 = Arc::new(snap_v2);
         {
             let mut guard = self.snapshot.write().await;
             *guard = Some(arc_snap);
         }
         {
+            let mut guard = self.snapshot_v2.write().await;
+            *guard = Some(arc_snap_v2);
+        }
+        {
             let mut guard = self.health.write().await;
             *guard = health;
+        }
+        {
+            let mut guard = self.health_v2.write().await;
+            *guard = health_v2;
         }
         self.consecutive_failures.store(0, Ordering::Release);
         self.ready.store(true, Ordering::Release);
@@ -168,21 +185,34 @@ impl ServerState {
             *guard = None;
         }
         {
+            let mut guard = self.snapshot_v2.write().await;
+            *guard = None;
+        }
+        {
             let mut guard = self.health.write().await;
             *guard = HealthResponse::warming();
+        }
+        {
+            let mut guard = self.health_v2.write().await;
+            *guard = HealthResponseV2::warming();
         }
     }
 
     /// Set the daemon to failed state with a diagnostic message.
     ///
-    /// The existing snapshot is preserved so `/v1/status` can continue
-    /// serving it as stale data if the staleness policy permits.
+    /// The existing snapshot is preserved so `/v1/status` and `/v2/status`
+    /// can continue serving it as stale data if the staleness policy permits.
     pub async fn set_failed(&self, msg: &str) {
         let prev = self.consecutive_failures.fetch_add(1, Ordering::AcqRel) + 1;
         self.ready.store(false, Ordering::Release);
         {
             let mut guard = self.health.write().await;
             *guard = HealthResponse::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
+        }
+        {
+            let mut guard = self.health_v2.write().await;
+            *guard =
+                HealthResponseV2::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
         }
         // Snapshot is deliberately NOT cleared here. The stale-snapshot
         // policy in the status handler decides whether to serve it.
@@ -231,9 +261,19 @@ impl ServerState {
         self.snapshot.read().await.clone()
     }
 
+    /// Clone of the latest v2 snapshot, if available.
+    pub async fn snapshot_v2(&self) -> Option<Arc<StatusSnapshotV2>> {
+        self.snapshot_v2.read().await.clone()
+    }
+
     /// Clone of the current health response.
     pub async fn health(&self) -> HealthResponse {
         self.health.read().await.clone()
+    }
+
+    /// Clone of the current v2 health response.
+    pub async fn health_v2(&self) -> HealthResponseV2 {
+        self.health_v2.read().await.clone()
     }
 }
 
@@ -256,7 +296,9 @@ pub async fn serve(
     let app = Router::new()
         .route("/", get(status_handler))
         .route("/v1/status", get(status_handler))
+        .route("/v2/status", get(status_handler_v2))
         .route("/healthz", get(health_handler))
+        .route("/v2/healthz", get(health_handler_v2))
         .fallback(fallback_handler)
         .with_state(state);
 
@@ -317,6 +359,43 @@ async fn fallback_handler(method: Method, uri: axum::http::Uri) -> (StatusCode, 
 async fn health_response_from_state(state: &ServerState, status: StatusCode) -> Response {
     let health = state.health().await;
     let body = serde_json::to_vec(&health).expect("health response serializes");
+    (status, [("content-type", "application/json")], body).into_response()
+}
+
+/// GET `/v2/status` — returns the latest v2 snapshot as compact JSON.
+///
+/// When the server is still warming up, returns `503` with the v2 health
+/// response. When a collector failure has occurred but the last valid
+/// snapshot is not yet stale, the snapshot is served (200 OK). Once stale,
+/// `503` is returned.
+async fn status_handler_v2(State(state): State<ServerState>) -> Response {
+    let now = now_unix_ms();
+
+    if let Some(snap) = state.snapshot_v2().await {
+        if state.is_snapshot_stale(now).await {
+            return health_response_v2_from_state(&state, StatusCode::SERVICE_UNAVAILABLE).await;
+        }
+        let body = serde_json::to_vec(&*snap).expect("v2 snapshot serializes");
+        return (StatusCode::OK, [("content-type", "application/json")], body).into_response();
+    }
+    health_response_v2_from_state(&state, StatusCode::SERVICE_UNAVAILABLE).await
+}
+
+/// GET `/v2/healthz` — returns v2 readiness/health as compact JSON.
+async fn health_handler_v2(State(state): State<ServerState>) -> Response {
+    let now = now_unix_ms();
+
+    let status = if state.ready.load(Ordering::Acquire) && !state.is_snapshot_stale(now).await {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    health_response_v2_from_state(&state, status).await
+}
+
+async fn health_response_v2_from_state(state: &ServerState, status: StatusCode) -> Response {
+    let health = state.health_v2().await;
+    let body = serde_json::to_vec(&health).expect("v2 health response serializes");
     (status, [("content-type", "application/json")], body).into_response()
 }
 

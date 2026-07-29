@@ -139,10 +139,14 @@ The default port is `11310`. The read-only HTTP surface:
 ```text
 GET /
 GET /v1/status
+GET /v2/status
 GET /healthz
+GET /v2/healthz
 ```
 
 The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values.
+
+The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/status`. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
 
 ## Platform notes
 
@@ -157,6 +161,7 @@ The daemon is designed for **private-network** use only. It does not provide TLS
 ## Known limitations
 
 - macOS has no Linux-equivalent aggregate CPU I/O-wait state. It is reported as unsupported (`iowait_pct: null`) rather than fabricated as zero.
+- Windows does not report load averages or swap. It reports memory commit charge instead, which is a distinct metric.
 - Per-process inspection, historical telemetry, alerting, and web dashboards are explicitly out of scope for version 1.
 
 ## Non-goals

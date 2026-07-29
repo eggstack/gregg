@@ -19,6 +19,10 @@
 //! - Errors are typed so the daemon can distinguish a warming baseline from a
 //!   hard collector failure when reporting health.
 
+use gregg_protocol::v2::{
+    CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2, SwapMetrics as SwapMetricsV2,
+    SCHEMA_VERSION_V2,
+};
 use gregg_protocol::{
     CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
     SystemIdentity,
@@ -104,6 +108,73 @@ impl CollectedMetrics {
             swap: self.swap,
         }
     }
+
+    /// Convert this sample into a wire [`StatusSnapshotV2`].
+    ///
+    /// The caller (the daemon sampler) is responsible for filling in
+    /// `observed_at_unix_ms` and `sample_interval_ms`. CPU usage and
+    /// iowait are coalesced defensively. Optional metrics (load, swap,
+    /// commit) are set according to the v2 capability flags.
+    #[must_use]
+    pub fn into_snapshot_v2(
+        self,
+        observed_at_unix_ms: u64,
+        sample_interval_ms: u64,
+        capabilities: MetricCapabilitiesV2,
+        system: SystemIdentity,
+    ) -> StatusSnapshotV2 {
+        let cpu_usage_pct = self.cpu_usage_pct.unwrap_or(0.0);
+        let cpu_usage_pct = if cpu_usage_pct.is_finite() {
+            cpu_usage_pct
+        } else {
+            0.0
+        };
+        let cpu_iowait_pct = if capabilities.cpu_iowait {
+            Some(self.cpu_iowait_pct.unwrap_or(0.0))
+        } else {
+            None
+        };
+
+        let load = if capabilities.load_average {
+            Some(self.load)
+        } else {
+            None
+        };
+
+        let swap = if capabilities.swap {
+            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            let usage_pct = if self.swap.total_bytes == 0 {
+                0.0
+            } else {
+                let pct = (self.swap.used_bytes as f64) * 100.0 / (self.swap.total_bytes as f64);
+                (pct as f32).clamp(0.0, 100.0)
+            };
+            Some(SwapMetricsV2 {
+                used_bytes: self.swap.used_bytes,
+                total_bytes: self.swap.total_bytes,
+                usage_pct,
+            })
+        } else {
+            None
+        };
+
+        StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms,
+            sample_interval_ms,
+            capabilities,
+            system,
+            cpu: CpuMetricsV2 {
+                logical_cores: self.logical_cores,
+                usage_pct: cpu_usage_pct,
+                iowait_pct: cpu_iowait_pct,
+            },
+            load,
+            memory: self.memory,
+            swap,
+            commit: None,
+        }
+    }
 }
 
 /// Shared collector contract implemented by every platform-specific collector.
@@ -128,4 +199,19 @@ pub trait SystemCollector: Send {
 
     /// Per-platform metric capability flags.
     fn capabilities(&self) -> MetricCapabilities;
+
+    /// Per-platform metric capability flags for schema version 2.
+    ///
+    /// The default implementation derives v2 capabilities from v1
+    /// capabilities. Platform collectors may override this if v2
+    /// capabilities differ from v1.
+    fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
+        let v1 = self.capabilities();
+        MetricCapabilitiesV2 {
+            cpu_iowait: v1.cpu_iowait,
+            load_average: true,
+            swap: true,
+            memory_commit: false,
+        }
+    }
 }

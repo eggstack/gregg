@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gregg_protocol::v2::StatusSnapshotV2;
 use gregg_protocol::{
     HealthCategory, HealthResponse, ReadinessState, StatusSnapshot, SCHEMA_VERSION_V1,
 };
@@ -92,6 +93,7 @@ pub struct Sampler<C: SystemCollector, Clk: Clock> {
     interval_ms: u64,
     readiness: ReadinessState,
     snapshot: Option<Arc<StatusSnapshot>>,
+    snapshot_v2: Option<Arc<StatusSnapshotV2>>,
     consecutive_failures: u32,
 }
 
@@ -108,6 +110,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             interval_ms: DEFAULT_INTERVAL_MS,
             readiness: ReadinessState::Warming,
             snapshot: None,
+            snapshot_v2: None,
             consecutive_failures: 0,
         }
     }
@@ -126,6 +129,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             interval_ms,
             readiness: ReadinessState::Warming,
             snapshot: None,
+            snapshot_v2: None,
             consecutive_failures: 0,
         })
     }
@@ -143,6 +147,12 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     #[must_use]
     pub fn snapshot(&self) -> Option<Arc<StatusSnapshot>> {
         self.snapshot.clone()
+    }
+
+    /// Return the latest valid v2 immutable snapshot, if one has been published.
+    #[must_use]
+    pub fn snapshot_v2(&self) -> Option<Arc<StatusSnapshotV2>> {
+        self.snapshot_v2.clone()
     }
 
     /// Return the current readiness state.
@@ -177,17 +187,22 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     ///
     /// The `on_sample` callback is invoked after each collection cycle with
     /// the sampler's current readiness state and, when available, the
-    /// latest snapshot. The callback returns a future that is **awaited
+    /// latest snapshots. The callback returns a future that is **awaited
     /// inline** before the next sleep, ensuring ordered state updates
     /// (no detached tasks that could race with shutdown).
     pub async fn run<F, Fut>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
     where
-        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>) -> Fut,
+        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>, Option<Arc<StatusSnapshotV2>>) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         loop {
             self.sample_once();
-            on_sample(self.readiness, self.snapshot.clone()).await;
+            on_sample(
+                self.readiness,
+                self.snapshot.clone(),
+                self.snapshot_v2.clone(),
+            )
+            .await;
 
             tokio::select! {
                 () = self.clock.sleep(Duration::from_millis(self.interval_ms)) => {}
@@ -211,11 +226,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                     return;
                 }
 
-                let snap = metrics.into_snapshot(
-                    SCHEMA_VERSION_V1,
-                    self.clock.now_unix_ms(),
-                    self.interval_ms,
-                    self.collector.capabilities(),
+                let now_ms = self.clock.now_unix_ms();
+                let identity =
                     self.collector
                         .identity()
                         .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
@@ -226,9 +238,26 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                             kernel_name: String::new(),
                             kernel_release: String::new(),
                             architecture: String::new(),
-                        }),
+                        });
+
+                // Produce v1 snapshot from the single collected sample.
+                let v1 = metrics.clone().into_snapshot(
+                    SCHEMA_VERSION_V1,
+                    now_ms,
+                    self.interval_ms,
+                    self.collector.capabilities(),
+                    identity.clone(),
                 );
-                let arc_snap = Arc::new(snap);
+                let arc_v1 = Arc::new(v1);
+
+                // Produce v2 snapshot from the same collected sample.
+                let v2 = metrics.into_snapshot_v2(
+                    now_ms,
+                    self.interval_ms,
+                    self.collector.capabilities_v2(),
+                    identity,
+                );
+                let arc_v2 = Arc::new(v2);
 
                 if self.readiness != ReadinessState::Ready {
                     tracing::info!(
@@ -239,7 +268,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
                 self.readiness = ReadinessState::Ready;
                 self.consecutive_failures = 0;
-                self.snapshot = Some(arc_snap);
+                self.snapshot = Some(arc_v1);
+                self.snapshot_v2 = Some(arc_v2);
             }
             Err(err) => match err.kind {
                 CollectErrorKind::Warming => {
@@ -719,7 +749,9 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| async {}).await;
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
             sampler
         });
 
@@ -743,7 +775,9 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| async {}).await;
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
             sampler
         });
 
@@ -761,7 +795,9 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| async {}).await;
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
             sampler
         });
 
@@ -780,7 +816,9 @@ mod tests {
         let (tx, shutdown) = broadcast::channel(1);
 
         let handle = tokio::spawn(async move {
-            sampler.run(shutdown, |_state, _snap| async {}).await;
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
             sampler
         });
 
@@ -802,7 +840,7 @@ mod tests {
 
         let handle = tokio::spawn(async move {
             sampler
-                .run(shutdown, move |_state, _snap| {
+                .run(shutdown, move |_state, _snap, _snap_v2| {
                     count.fetch_add(1, Ordering::Relaxed);
                     async {}
                 })

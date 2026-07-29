@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-use gregg_protocol::LoadAverage;
-
 use crate::state::SystemState;
 
 const KIB: u64 = 1024;
@@ -42,7 +40,7 @@ pub fn format_pct(pct: f32) -> String {
 }
 
 /// Format load averages as a compact string.
-pub fn format_load(load: &LoadAverage) -> String {
+pub fn format_load(load: &gregg_protocol::LoadAverage) -> String {
     format!("{:.2}/{:.2}/{:.2}", load.one, load.five, load.fifteen)
 }
 
@@ -50,9 +48,9 @@ pub fn format_load(load: &LoadAverage) -> String {
 ///
 /// Priority (dropped as width decreases):
 /// 1. Display name or hostname
-/// 2. I/O-wait value or "—" for unsupported
-/// 3. Load averages
-/// 4. Logical core count with load
+/// 2. I/O-wait value or "--" for unsupported
+/// 3. Load averages or "--" for unsupported
+/// 4. Logical core count
 /// 5. OS name/version
 /// 6. Kernel release
 /// 7. Architecture
@@ -63,17 +61,20 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
 
     let name = display_name(system);
 
-    let io_str = if snap.capabilities.cpu_iowait {
-        match snap.cpu.iowait_pct {
+    let io_str = if snap.cpu_iowait_supported {
+        match snap.iowait_pct {
             Some(iowait) => format!("IO {iowait:.1}%"),
-            None => "IO —".to_string(),
+            None => "IO \u{2014}".to_string(),
         }
     } else {
-        "IO —".to_string()
+        "IO \u{2014}".to_string()
     };
 
-    let load_str = format_load(&snap.load);
-    let cores_str = format!("{}c", snap.cpu.logical_cores);
+    let load_str = match &snap.load {
+        Some(l) => format_load(l),
+        None => "L \u{2014}".to_string(),
+    };
+    let cores_str = format!("{}c", snap.logical_cores);
     let os_str = format!("{} {}", snap.system.os_name, snap.system.os_version);
     let kernel_str = format!("{} {}", snap.system.kernel_name, snap.system.kernel_release);
     let arch_str = &snap.system.architecture;

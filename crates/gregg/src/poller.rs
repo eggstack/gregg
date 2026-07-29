@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use gregg_protocol::v2::{StatusSnapshotV2, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
 use crate::clock::Clock;
@@ -93,8 +94,10 @@ pub struct PollResult {
 /// Classification of a poll attempt.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PollOutcome {
-    /// Successfully received and validated a snapshot.
+    /// Successfully received and validated a v1 snapshot.
     Online(Box<StatusSnapshot>),
+    /// Successfully received and validated a v2 snapshot.
+    OnlineV2(Box<StatusSnapshotV2>),
     /// The request timed out.
     Timeout,
     /// The connection was refused by the remote host.
@@ -187,119 +190,122 @@ impl HttpClient {
 
     /// Poll a single endpoint and return a [`PollResult`].
     ///
-    /// This method is async-safe for concurrent use. Each invocation
-    /// creates its own request and reads its own response body.
+    /// Implements v2-first/v1-fallback negotiation:
+    /// 1. Try `/v2/status` first.
+    /// 2. If v2 returns 404, fall back to `/v1/status`.
+    /// 3. If v2 returns malformed/invalid data, report the error without
+    ///    falling back to v1.
+    /// 4. If v2 returns warming/failure, represent that state without
+    ///    falling back to v1.
     pub async fn poll(&self, endpoint: &Endpoint, clock: &impl Clock) -> PollResult {
-        // In test builds, acquire the concurrency guard before the request
-        // so that active count reflects in-flight HTTP polls, not batch
-        // result processing.
         #[cfg(test)]
         let _guard = self.observer.as_ref().map(|o| o.guard());
 
-        let url = status_url(&endpoint.host, endpoint.port);
         let start = clock.now();
 
-        let response = match self.client.get(&url).send().await {
+        // Try v2 first.
+        let v2_url = v2_status_url(&endpoint.host, endpoint.port);
+        let v2_result = self.poll_single_url(&v2_url, endpoint, clock, start).await;
+
+        if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
+            // v2 returned 404 - fall back to v1.
+            let v1_url = status_url(&endpoint.host, endpoint.port);
+            return self.poll_single_url(&v1_url, endpoint, clock, start).await;
+        }
+
+        v2_result
+    }
+
+    /// Helper to create a [`PollResult`] with the given outcome.
+    fn make_result(
+        endpoint: &Endpoint,
+        outcome: PollOutcome,
+        start: std::time::Instant,
+    ) -> PollResult {
+        PollResult {
+            system_id: endpoint.id.clone(),
+            endpoint: endpoint.clone(),
+            outcome,
+            latency: start.elapsed(),
+        }
+    }
+
+    /// Poll a single URL and return a [`PollResult`].
+    async fn poll_single_url(
+        &self,
+        url: &str,
+        endpoint: &Endpoint,
+        _clock: &impl Clock,
+        start: std::time::Instant,
+    ) -> PollResult {
+        let response = match self.client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
-                let latency = start.elapsed();
-                let outcome = classify_reqwest_error(&e);
-                return PollResult {
-                    system_id: endpoint.id.clone(),
-                    endpoint: endpoint.clone(),
-                    outcome,
-                    latency,
-                };
+                return Self::make_result(endpoint, classify_reqwest_error(&e), start);
             }
         };
 
         let status = response.status().as_u16();
         if !response.status().is_success() {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::HttpStatus(status),
-                latency,
-            };
+            return Self::make_result(endpoint, PollOutcome::HttpStatus(status), start);
         }
 
         // Reject immediately if Content-Length is known to exceed the cap.
         if let Some(content_length) = response.content_length() {
             if content_length > MAX_RESPONSE_BYTES as u64 {
-                let latency = start.elapsed();
-                return PollResult {
-                    system_id: endpoint.id.clone(),
-                    endpoint: endpoint.clone(),
-                    outcome: PollOutcome::BodyTooLarge,
-                    latency,
-                };
+                return Self::make_result(endpoint, PollOutcome::BodyTooLarge, start);
             }
         }
 
-        // Stream the body in chunks, tracking cumulative size.
+        let body = match Self::read_body(response).await {
+            Ok(body) => body,
+            Err(outcome) => return Self::make_result(endpoint, outcome, start),
+        };
+
+        Self::parse_response(&body, endpoint, start)
+    }
+
+    /// Read the response body, enforcing size limits.
+    async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, PollOutcome> {
         let mut stream = response.bytes_stream();
         let mut body = Vec::new();
         while let Some(chunk_result) = stream.next().await {
-            let Ok(c) = chunk_result else {
-                let latency = start.elapsed();
-                return PollResult {
-                    system_id: endpoint.id.clone(),
-                    endpoint: endpoint.clone(),
-                    outcome: PollOutcome::NetworkError,
-                    latency,
-                };
-            };
-            // Check BEFORE appending to avoid allocating beyond the cap.
+            let c = chunk_result.map_err(|_| PollOutcome::NetworkError)?;
             if body.len() + c.len() > MAX_RESPONSE_BYTES {
-                let latency = start.elapsed();
-                return PollResult {
-                    system_id: endpoint.id.clone(),
-                    endpoint: endpoint.clone(),
-                    outcome: PollOutcome::BodyTooLarge,
-                    latency,
-                };
+                return Err(PollOutcome::BodyTooLarge);
             }
             body.extend_from_slice(&c);
         }
+        Ok(body)
+    }
 
-        let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(&body) else {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::DecodeError,
-                latency,
-            };
+    /// Parse a response body as v2 or v1.
+    fn parse_response(body: &[u8], endpoint: &Endpoint, start: std::time::Instant) -> PollResult {
+        // Try parsing as v2 first.
+        if let Ok(snapshot) = serde_json::from_slice::<StatusSnapshotV2>(body) {
+            if snapshot.schema_version != SCHEMA_VERSION_V2 {
+                return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
+            }
+            if snapshot.validate().is_err() {
+                return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start);
+            }
+            return Self::make_result(endpoint, PollOutcome::OnlineV2(Box::new(snapshot)), start);
+        }
+
+        // Fall back to v1 parsing.
+        let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(body) else {
+            return Self::make_result(endpoint, PollOutcome::DecodeError, start);
         };
 
         if snapshot.schema_version != SCHEMA_VERSION_V1 {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::UnsupportedSchema,
-                latency,
-            };
+            return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
         }
 
         if snapshot.validate().is_err() {
-            let latency = start.elapsed();
-            return PollResult {
-                system_id: endpoint.id.clone(),
-                endpoint: endpoint.clone(),
-                outcome: PollOutcome::InvalidSnapshot,
-                latency,
-            };
+            return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start);
         }
 
-        let latency = start.elapsed();
-        PollResult {
-            system_id: endpoint.id.clone(),
-            endpoint: endpoint.clone(),
-            outcome: PollOutcome::Online(Box::new(snapshot)),
-            latency,
-        }
+        Self::make_result(endpoint, PollOutcome::Online(Box::new(snapshot)), start)
     }
 }
 
@@ -361,16 +367,27 @@ fn is_dns_failure(e: &dyn std::error::Error) -> bool {
     false
 }
 
-/// Construct the status URL for an endpoint.
+/// Construct the status URL for an endpoint (v1).
 ///
 /// IPv6 hosts are bracketed per RFC 2732.
 #[must_use]
 pub fn status_url(host: &str, port: u16) -> String {
     if host.parse::<IpAddr>().is_ok() && host.contains(':') {
-        // IPv6 literal.
         format!("http://[{host}]:{port}/v1/status")
     } else {
         format!("http://{host}:{port}/v1/status")
+    }
+}
+
+/// Construct the status URL for an endpoint (v2).
+///
+/// IPv6 hosts are bracketed per RFC 2732.
+#[must_use]
+pub fn v2_status_url(host: &str, port: u16) -> String {
+    if host.parse::<IpAddr>().is_ok() && host.contains(':') {
+        format!("http://[{host}]:{port}/v2/status")
+    } else {
+        format!("http://{host}:{port}/v2/status")
     }
 }
 

@@ -5,7 +5,9 @@
 //! `thiserror`) so it can be consumed by collectors, the HTTP server, the
 //! polling engine, and tests without dragging in larger stacks.
 //!
-//! # Schema version 1
+//! # Schema versions
+//!
+//! ## Version 1
 //!
 //! Every snapshot carries an explicit
 //! [`SCHEMA_VERSION_V1`](constant.SCHEMA_VERSION_V1) so clients can reject
@@ -16,9 +18,21 @@
 //! milliseconds since the Unix epoch for timestamps. No human-formatted
 //! strings cross the wire.
 //!
+//! ## Version 2
+//!
+//! Schema version 2 ([`SCHEMA_VERSION_V2`](constant.SCHEMA_VERSION_V2))
+//! extends v1 with explicit capability flags for load average, swap, and
+//! memory commit. This allows the protocol to truthfully represent Linux,
+//! macOS, and Windows metric differences without fabricating unsupported
+//! values.
+//!
+//! V2 snapshots use `Option` for metrics that are unsupported on some
+//! platforms. Capability flags determine which `Option` values must be
+//! `Some` (supported) vs `None` (unsupported).
+//!
 //! # Compatibility policy
 //!
-//! Within schema version 1:
+//! Within each schema version:
 //!
 //! - Unknown additive JSON fields are ignored by default.
 //! - Required version-1 fields remain required unless explicitly changed to
@@ -29,6 +43,8 @@
 //!   sample.
 //!
 //! # Examples
+//!
+//! ## Version 1
 //!
 //! ```
 //! use gregg_protocol::{StatusSnapshot, HealthResponse, ReadinessState, SCHEMA_VERSION_V1};
@@ -59,12 +75,55 @@
 //! let health = HealthResponse::warming();
 //! assert_eq!(health.state, ReadinessState::Warming);
 //! ```
+//!
+//! ## Version 2
+//!
+//! ```
+//! use gregg_protocol::v2::{
+//!     StatusSnapshotV2, MetricCapabilitiesV2, CpuMetricsV2, CommitMetrics,
+//!     HealthResponseV2, SCHEMA_VERSION_V2,
+//! };
+//! use gregg_protocol::{ReadinessState, HealthCategory};
+//!
+//! let json = r#"{
+//!     "schema_version": 2,
+//!     "observed_at_unix_ms": 1,
+//!     "sample_interval_ms": 1000,
+//!     "capabilities": {
+//!         "cpu_iowait": false,
+//!         "load_average": false,
+//!         "swap": false,
+//!         "memory_commit": true
+//!     },
+//!     "system": {
+//!         "name": "win-pc",
+//!         "hostname": "win-pc.local",
+//!         "os_name": "windows",
+//!         "os_version": "10.0",
+//!         "kernel_name": "Windows",
+//!         "kernel_release": "10.0.19045",
+//!         "architecture": "x86_64"
+//!     },
+//!     "cpu": { "logical_cores": 4, "usage_pct": 12.5, "iowait_pct": null },
+//!     "memory": { "used_bytes": 2000000000, "total_bytes": 8000000000, "usage_pct": 25.0 },
+//!     "commit": { "used_bytes": 3000000000, "limit_bytes": 8000000000, "usage_pct": 37.5 }
+//! }"#;
+//!
+//! let snap: StatusSnapshotV2 = serde_json::from_str(json).expect("valid v2 snapshot");
+//! gregg_protocol::v2::validate_v2(&snap).expect("v2 validates");
+//!
+//! let health = HealthResponseV2::ready(snap);
+//! assert_eq!(health.state, ReadinessState::Ready);
+//! ```
 
 #![forbid(unsafe_code)]
+
+pub mod v2;
 
 mod health;
 mod snapshot;
 mod validate;
+mod validate_v2;
 
 #[cfg(feature = "test_support")]
 pub mod test_support;
@@ -75,8 +134,9 @@ pub use snapshot::{
     SystemIdentity,
 };
 pub use validate::{ValidationViolation, ViolationKind};
+pub use validate_v2::{validate_v2, ValidationViolationV2, ViolationKindV2};
 
-/// Schema major version implemented by this crate.
+/// Schema major version implemented by this crate (version 1).
 ///
 /// Wire payloads whose `schema_version` does not match this value are
 /// rejected by [`StatusSnapshot::validate`]. Additive changes within version 1

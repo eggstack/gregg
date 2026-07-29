@@ -5,6 +5,7 @@ mod config;
 mod endpoint;
 mod event;
 mod input;
+mod normalized;
 mod poller;
 mod scheduler;
 mod state;
