@@ -5,7 +5,7 @@ members under `crates/`:
 
 ```text
 crates/gregg-protocol    library    versioned wire types and compatibility rules
-crates/greggd           bin + lib  Linux/macOS metrics daemon + service-management CLI (lib exposes the collector for integration tests)
+crates/greggd           bin + lib  Linux/macOS/Windows metrics daemon + service-management CLI (lib exposes the collector for integration tests)
 crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
@@ -174,10 +174,14 @@ adapters wrap native tools:
 - `service/systemd.rs` — wraps `systemctl` with fixed argument arrays.
 - `service/launchd.rs` — wraps `launchctl` with `bootstrap`, `bootout`, and
   `kickstart` flows.
+- `service/windows.rs` — wraps the Windows SCM through the `windows-service`
+  crate with `start_service`, `stop_service`, and `service_control_handler`.
 
-A `NoopServiceManager` is provided for testing and development. External command
-invocation is acceptable for service management because `systemctl`/`launchctl`
-are the native administrative interfaces.
+A `NoopServiceManager` is provided for testing and development. An
+`UnsupportedServiceManager` provides `NotAvailable` errors for platforms without
+native service integration (e.g. FreeBSD). External command invocation is
+acceptable for service management because `systemctl`/`launchctl` are the native
+administrative interfaces.
 
 ## MSRV
 

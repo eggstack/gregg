@@ -118,7 +118,7 @@ Commands must be deterministic, scriptable, and return meaningful exit codes. Hu
 
 Configuration writes must be atomic: serialize to a temporary file in the same directory, flush as appropriate, rename, then validate/reload. Do not leave a partially written configuration after interruption.
 
-The daemon remains a foreground process under `greggd run`. `start`, `stop`, `restart`, and `croncheck` delegate to systemd on Linux and launchd on macOS. Do not add self-daemonization or PID-file ownership.
+The daemon remains a foreground process under `greggd run`. `start`, `stop`, `restart`, and `croncheck` delegate to systemd on Linux, launchd on macOS, and the Windows SCM on Windows. Do not add self-daemonization or PID-file ownership.
 
 ## TUI rules
 
@@ -133,7 +133,8 @@ Required navigation is `j`/Down and `k`/Up. The terminal must be restored on nor
 Every phase must satisfy its plan-specific acceptance criteria. At minimum, the repository should enforce:
 
 ```text
-./scripts/check-local.sh
+./scripts/check-local.sh          # Linux/macOS
+.\scripts\check-local.ps1         # Windows (PowerShell)
 ```
 
 Which runs:
@@ -148,7 +149,7 @@ cargo doc --workspace --no-deps
 Plus `cargo deny`, platform-native collector tests, and optional shellcheck/python
 tests under `--full`. The `--release` tier adds nonpublishing `cargo publish --dry-run`.
 
-Platform-specific CI should run on Linux and macOS. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
+Platform-specific CI should run on Linux, macOS, and Windows. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. Windows native collector and daemon smoke tests exercise real Windows APIs. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
 The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
 verifies a supplied executable by starting it, validating `/healthz` and

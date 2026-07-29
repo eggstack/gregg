@@ -215,19 +215,22 @@ crate inherits the same license expression from the workspace root.
 Fast local check (recommended during development):
 
 ```text
-./scripts/check-local.sh
+./scripts/check-local.sh          # Linux/macOS
+.\scripts\check-local.ps1         # Windows (PowerShell)
 ```
 
 Full local check (pre-merge):
 
 ```text
 ./scripts/check-local.sh --full
+.\scripts\check-local.ps1 -Full
 ```
 
 Release preflight (nonpublishing):
 
 ```text
 ./scripts/check-local.sh --release
+.\scripts\check-local.ps1 -Release
 ```
 
 The local script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc`,

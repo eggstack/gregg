@@ -9,13 +9,15 @@ Thank you for considering a contribution to gregg.
 3. Run the local validation command before submitting:
 
 ```text
-./scripts/check-local.sh
+./scripts/check-local.sh          # Linux/macOS
+.\scripts\check-local.ps1         # Windows (PowerShell)
 ```
 
 4. For a pre-merge full check (adds shellcheck, python tests, package checks):
 
 ```text
-./scripts/check-local.sh --full
+./scripts/check-local.sh --full           # Linux/macOS
+.\scripts\check-local.ps1 -Full           # Windows
 ```
 
 5. Open a pull request against `main`.

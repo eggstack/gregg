@@ -174,8 +174,7 @@ impl ServiceManager for NoopServiceManager {
     }
 }
 
-/// A service manager for unsupported platforms (e.g. Windows before
-/// Phase 43).
+/// A service manager for platforms without native service integration.
 ///
 /// Start, stop, and restart return [`ServiceError::NotAvailable`].
 /// `is_active` returns `Ok(false)` so that `croncheck` will attempt
