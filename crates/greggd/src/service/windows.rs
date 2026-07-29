@@ -151,7 +151,8 @@ impl ScmAdapter for NativeScmAdapter {
                 source: std::io::Error::new(std::io::ErrorKind::Other, e),
             })?;
 
-        service.start(&[]).map_err(|e| ServiceError::ExecFailed {
+        let args: [&str; 0] = [];
+        service.start(&args).map_err(|e| ServiceError::ExecFailed {
             command: format!("start service `{}`", self.service_name),
             source: std::io::Error::new(std::io::ErrorKind::Other, e),
         })?;
@@ -222,11 +223,8 @@ fn map_service_state(state: windows_service::service::ServiceState) -> ServiceSt
 #[cfg(target_os = "windows")]
 pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::mpsc;
-    use windows_service::service::ServiceState as WsState;
-    use windows_service::service::ServiceType;
-    use windows_service::service_control_handler::{
-        self, ServiceControl, ServiceControlHandlerResult, ServiceStatus,
-    };
+    use windows_service::service::{ServiceControl, ServiceState as WsState, ServiceType};
+    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::service_dispatcher;
 
     // Channel for SCM control events.
@@ -274,8 +272,12 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     // Report RUNNING before entering the daemon loop.
     update_status(&status_handle, WsState::Running, 0, Duration::from_secs(10));
 
+    // Create a tokio runtime for the async daemon supervision.
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
     // Enter the shared daemon supervision.
-    let result = crate::run::run_with_shutdown(collector, config, shutdown_future).await;
+    let result = rt.block_on(crate::run::run_with_shutdown(collector, config, shutdown_future));
 
     // Report STOPPED.
     let (exit_code, win_state) = match &result {
@@ -299,13 +301,12 @@ fn update_status(
     exit_code: u32,
     wait_hint: Duration,
 ) {
-    use windows_service::service::ServiceType;
-    use windows_service::service_control_handler::ServiceStatus;
+    use windows_service::service::{ServiceControlAccept, ServiceType, ServiceStatus};
 
     let status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
-        controls_accepted: windows_service::service::ServiceControlAcceptable::STOP,
+        controls_accepted: ServiceControlAccept::STOP,
         exit_code: exit_code.into(),
         checkpoint: 0,
         wait_hint,
