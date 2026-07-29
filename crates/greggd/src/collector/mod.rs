@@ -20,8 +20,8 @@
 //!   hard collector failure when reporting health.
 
 use gregg_protocol::v2::{
-    CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2, SwapMetrics as SwapMetricsV2,
-    SCHEMA_VERSION_V2,
+    CommitMetrics, CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2,
+    SwapMetrics as SwapMetricsV2, SCHEMA_VERSION_V2,
 };
 use gregg_protocol::{
     CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
@@ -33,6 +33,9 @@ pub mod linux;
 
 #[cfg(target_os = "macos")]
 pub mod macos;
+
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 pub mod error;
 
@@ -59,6 +62,9 @@ pub struct CollectedMetrics {
     pub memory: MemoryMetrics,
     /// Swap utilization.
     pub swap: SwapMetrics,
+    /// Windows commit charge. `None` on Linux/macOS; `Some` on Windows
+    /// when the collector reports commit metrics.
+    pub commit: Option<CommitMetrics>,
 }
 
 impl CollectedMetrics {
@@ -172,7 +178,7 @@ impl CollectedMetrics {
             load,
             memory: self.memory,
             swap,
-            commit: None,
+            commit: self.commit,
         }
     }
 }

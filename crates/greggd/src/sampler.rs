@@ -444,6 +444,7 @@ mod tests {
                         total_bytes: 0,
                         usage_pct: 0.0,
                     },
+                    commit: None,
                 }),
             ])
         }
@@ -501,6 +502,7 @@ mod tests {
                 total_bytes: 0,
                 usage_pct: 0.0,
             },
+            commit: None,
         }
     }
 

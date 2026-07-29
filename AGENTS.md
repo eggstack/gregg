@@ -7,10 +7,10 @@ This file defines the working contract for contributors and coding agents operat
 Build `gregg` as a narrow, low-overhead system-observation tool composed of three independently publishable Rust crates:
 
 - `gregg-protocol`: dependency-light versioned wire types and compatibility rules.
-- `greggd`: Linux/macOS metrics daemon and native service-management CLI.
+- `greggd`: Linux/macOS/Windows metrics daemon and native service-management CLI.
 - `gregg`: endpoint-management CLI, polling/state engine, and compact Ratatui TUI.
 
-The design target is a small terminal-multiplexer pane and lightweight daemon deployment on Linux servers, ARM64 single-board computers, Intel Macs, and Apple Silicon Macs. Do not broaden the project into a process monitor, historical telemetry service, remote administration system, or general monitoring platform.
+The design target is a small terminal-multiplexer pane and lightweight daemon deployment on Linux servers, ARM64 single-board computers, Intel Macs, Apple Silicon Macs, and Windows x86-64 machines. Do not broaden the project into a process monitor, historical telemetry service, remote administration system, or general monitoring platform.
 
 ## Source of truth
 
@@ -75,13 +75,14 @@ collector without depending on internal-only paths.
 The workspace enables `clippy::pedantic` as a warning (not an error) so
 contributors see style suggestions without breaking the build on unrelated
 changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`.
-The macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`)
+The macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`),
+the Windows source module (`crates/greggd/src/collector/windows/source.rs`),
 and the client's narrowly scoped Unix `flock` wrapper are the only exceptions;
 each uses `#![allow(unsafe_code)]` with documented safety invariants on every
-unsafe block. No unsafe pointers or borrowed foreign buffers cross either
-boundary.
+unsafe block. No unsafe pointers or borrowed foreign buffers cross any of these
+boundaries.
 
-Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs. External tools may be used only as diagnostic references in tests or development documentation.
+Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs; Windows metrics should come from native system APIs such as `GetSystemTimes`, `GlobalMemoryStatusEx`, and `GetPerformanceInfo`. External tools may be used only as diagnostic references in tests or development documentation.
 
 Unsafe Rust is permitted only where required for macOS FFI or the client's
 narrow Unix file-lock wrapper and Windows file-lock adapter. Contain it
@@ -101,6 +102,8 @@ The HTTP schema is a compatibility contract, not an incidental serialization for
 - Breaking semantic or structural changes require an explicit schema-version decision and migration tests.
 
 macOS has no Linux-equivalent aggregate CPU `iowait` state. Report it as unsupported/null; never fabricate `0.0`.
+
+Windows has no Linux-equivalent load average, swap, or CPU I/O-wait state. Report them as unsupported/null; never fabricate values. Windows reports memory commit charge as a separate metric.
 
 The schema-version-1 wire types are implemented in `gregg-protocol` and
 documented in [`architecture/protocol.md`](architecture/protocol.md) and in

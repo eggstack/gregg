@@ -17,7 +17,7 @@ use crate::service::{ServiceError, ServiceManager};
 #[command(
     name = "greggd",
     version,
-    about = "Lightweight Linux and macOS metrics daemon",
+    about = "Lightweight Linux, macOS, and Windows metrics daemon",
     long_about = "greggd runs on designated systems and exposes a read-only JSON API \
                   for the gregg terminal client. It samples CPU, memory, swap, and \
                   load metrics on a configurable interval and serves cached immutable \

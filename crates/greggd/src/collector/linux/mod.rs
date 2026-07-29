@@ -127,6 +127,7 @@ impl SystemCollector for LinuxCollector {
             load,
             memory: memory_sample.into_metrics(),
             swap: swap_sample.into_metrics(),
+            commit: None,
         })
     }
 

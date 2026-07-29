@@ -12,6 +12,9 @@ type NativeCollector = greggd::collector::linux::LinuxCollector;
 #[cfg(target_os = "macos")]
 type NativeCollector = greggd::collector::macos::MacOsCollector;
 
+#[cfg(target_os = "windows")]
+type NativeCollector = greggd::collector::windows::WindowsCollector;
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = greggd::cli::Cli::parse();

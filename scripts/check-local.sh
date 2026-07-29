@@ -133,6 +133,10 @@ case "${OS}" in
         step "native macOS collector tests"
         run_or_fail cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
         ;;
+    windows)
+        step "native Windows collector tests"
+        run_or_fail cargo test -p greggd --all-features -- collector::windows
+        ;;
     *)
         echo "  skipping platform-native collector tests on ${OS}"
         ;;

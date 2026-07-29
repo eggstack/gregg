@@ -9,7 +9,7 @@ crates/greggd           bin + lib  Linux/macOS metrics daemon + service-manageme
 crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
-The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux and macOS only.
+The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux, macOS, and Windows x86-64.
 
 ## Dependency direction
 
@@ -196,7 +196,8 @@ The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
 changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
 through the workspace lint table. The macOS collector FFI module
-(`crates/greggd/src/collector/macos/ffi.rs`) and the client's narrowly scoped
+(`crates/greggd/src/collector/macos/ffi.rs`), the Windows source module
+(`crates/greggd/src/collector/windows/source.rs`), and the client's narrowly scoped
 Unix `flock` wrapper and Windows `LockFileEx` adapter are the only
 exceptions; each uses `#![allow(unsafe_code)]` with documented safety
 invariants. No unsafe pointers or borrowed foreign buffers cross those

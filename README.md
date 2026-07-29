@@ -25,12 +25,13 @@ gregg-protocol = "1.0"
 | Linux | ARM64 | Supported |
 | macOS | Intel (x86-64) | Supported |
 | macOS | Apple Silicon (arm64) | Supported |
-| Windows | x86-64 | Client supported; daemon not yet supported |
+| Windows | x86-64 | Client supported; daemon foreground support |
 
 ## Goals
 
 - Keep the daemon suitable for servers, workstations, and resource-constrained single-board computers.
 - Support Linux and macOS daemons in version 1, including x86-64, ARM64 Linux, Intel Macs, and Apple Silicon Macs.
+- Provide foreground daemon support on Windows x86-64, with service management deferred to a later phase.
 - Keep the TUI useful in a small terminal-multiplexer pane.
 - Separate collection, protocol, polling/state management, and rendering so each can be tested independently.
 - Prefer stable, read-only, local-network operation over broad monitoring-platform functionality.
@@ -42,7 +43,7 @@ The workspace contains three independently publishable crates:
 | Crate | Binary/library | Responsibility |
 | --- | --- | --- |
 | `gregg-protocol` | library | Versioned JSON wire types, metric capabilities, endpoint identity, and compatibility rules. |
-| `greggd` | `greggd` binary | Native Linux/macOS metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, graceful shutdown, configuration management, and native service integration. |
+| `greggd` | `greggd` binary | Native Linux/macOS/Windows metrics collection, periodic sampling, cached immutable snapshots, read-only HTTP API, graceful shutdown, configuration management, and native service integration. |
 | `gregg` | `gregg` binary | Endpoint configuration, bounded concurrent polling, application state, keyboard input, and compact Ratatui rendering. |
 
 The protocol crate is intentionally dependency-light (serde, serde_json, thiserror) and must not depend on the daemon server stack or TUI stack.
@@ -111,7 +112,11 @@ gregg edit                     # open config in $EDITOR
 
 The `gregg` client is a native Windows application. It stores configuration in `%APPDATA%\gregg\gregg.toml` and uses Windows-native file locking for cross-process safety. Editor resolution falls back to `hx`, `code`, or `notepad` when `$VISUAL` and `$EDITOR` are not set.
 
-The `greggd` daemon is not yet supported on Windows.
+### Windows daemon
+
+The `greggd` daemon runs as a foreground process on Windows x86-64. Service management (start/stop/restart via native Windows services) is not yet supported; lifecycle commands return `NotAvailable`.
+
+Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
 ## Display model
 
@@ -150,9 +155,9 @@ The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/
 
 ## Platform notes
 
-Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`). macOS collection uses Mach host statistics and `sysctlbyname` through a contained FFI boundary. External utilities are diagnostic references, not runtime dependencies.
+Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`). macOS collection uses Mach host statistics and `sysctlbyname` through a contained FFI boundary. Windows collection uses native system APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`). External utilities are diagnostic references, not runtime dependencies.
 
-Service integration is native to each platform (systemd on Linux, launchd on macOS).
+Service integration is native to each platform (systemd on Linux, launchd on macOS). Windows service management is deferred to a later phase; the daemon runs in the foreground only.
 
 ## Security
 
@@ -162,6 +167,8 @@ The daemon is designed for **private-network** use only. It does not provide TLS
 
 - macOS has no Linux-equivalent aggregate CPU I/O-wait state. It is reported as unsupported (`iowait_pct: null`) rather than fabricated as zero.
 - Windows does not report load averages or swap. It reports memory commit charge instead, which is a distinct metric.
+- Windows x86-64 supports up to 64 logical processors in a single processor group for aggregate CPU collection. Multi-group topologies are rejected with a clear error.
+- Windows service management is not yet implemented; the daemon runs as a foreground process only.
 - Per-process inspection, historical telemetry, alerting, and web dashboards are explicitly out of scope for version 1.
 
 ## Non-goals
