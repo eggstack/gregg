@@ -20,14 +20,21 @@ fn binary_path() -> PathBuf {
 }
 
 fn ensure_binary() {
-    let status = Command::new("cargo")
+    let output = Command::new("cargo")
         .args(["build", "-p", "greggd"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .status()
+        .output()
         .expect("cargo build should execute");
-    assert!(status.success(), "cargo build must succeed");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!(
+            "cargo build must succeed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            stderr
+        );
+    }
     let path = binary_path();
     assert!(
         path.exists(),
