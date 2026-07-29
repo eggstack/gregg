@@ -13,7 +13,6 @@ use gregg_protocol::v2::MetricCapabilitiesV2;
 use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::windows::cpu::CpuSample;
 use crate::collector::windows::source::{RawCpuTimes, WindowsSource};
 use crate::collector::{CollectedMetrics, SystemCollector};
 
@@ -28,6 +27,7 @@ pub mod source;
 /// Constructed once per daemon process. Identity and static fields are read
 /// eagerly during construction so the first [`Self::sample`] returns a
 /// warming error rather than blocking on identity I/O.
+#[derive(Debug)]
 pub struct WindowsCollector<S: WindowsSource = source::NativeWindowsSource> {
     source: S,
     identity: SystemIdentity,
@@ -176,5 +176,273 @@ impl<S: WindowsSource> SystemCollector for WindowsCollector<S> {
 
     fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
         self.capabilities_v2
+    }
+
+    fn supports_v1_snapshot(&self) -> bool {
+        false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collector::windows::source::{MockWindowsSource, RawIdentity, RawProcessorTopology};
+    use crate::collector::SystemCollector;
+
+    fn default_identity() -> RawIdentity {
+        RawIdentity {
+            hostname: "test-host".to_string(),
+            os_version: "10.0.22631".to_string(),
+            architecture: "x86_64".to_string(),
+            logical_cores: 4,
+            physical_memory_bytes: 8_000_000_000,
+            processor_group_count: 1,
+        }
+    }
+
+    fn mock_source() -> MockWindowsSource {
+        let mut m = MockWindowsSource::success();
+        m.identity = default_identity();
+        m.topology = RawProcessorTopology {
+            active_logical_processors: 4,
+            group_count: 1,
+        };
+        m.auto_increment_cpu = true;
+        m
+    }
+
+    // --- Topology guard tests (Workstream C) ---
+
+    #[test]
+    fn single_group_within_limit_succeeds() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 64,
+            group_count: 1,
+        };
+        let result = WindowsCollector::with_source(mock, None);
+        assert!(
+            result.is_ok(),
+            "64 processors in 1 group should be accepted"
+        );
+    }
+
+    #[test]
+    fn single_group_exceeding_limit_rejected() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 65,
+            group_count: 1,
+        };
+        let err = WindowsCollector::with_source(mock, None).expect_err("65 should be rejected");
+        assert!(err.message.contains("exceeds supported limit"));
+    }
+
+    #[test]
+    fn multi_group_rejected() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 8,
+            group_count: 2,
+        };
+        let err = WindowsCollector::with_source(mock, None).expect_err("2 groups should fail");
+        assert!(err.message.contains("multiple processor groups"));
+    }
+
+    #[test]
+    fn single_processor_accepted() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 1,
+            group_count: 1,
+        };
+        assert!(WindowsCollector::with_source(mock, None).is_ok());
+    }
+
+    #[test]
+    fn boundary_sixty_four_accepted() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 64,
+            group_count: 1,
+        };
+        assert!(WindowsCollector::with_source(mock, None).is_ok());
+    }
+
+    #[test]
+    fn boundary_sixty_five_rejected() {
+        let mut mock = mock_source();
+        mock.topology = RawProcessorTopology {
+            active_logical_processors: 65,
+            group_count: 1,
+        };
+        assert!(WindowsCollector::with_source(mock, None).is_err());
+    }
+
+    #[test]
+    fn topology_error_propagated() {
+        let mut mock = mock_source();
+        mock.topology_error = true;
+        let err = WindowsCollector::with_source(mock, None).expect_err("topology error");
+        assert_eq!(
+            err.kind,
+            crate::collector::error::CollectErrorKind::SourceUnavailable
+        );
+    }
+
+    #[test]
+    fn identity_error_propagated() {
+        let mut mock = mock_source();
+        mock.identity_error = true;
+        let err = WindowsCollector::with_source(mock, None).expect_err("identity error");
+        assert_eq!(
+            err.kind,
+            crate::collector::error::CollectErrorKind::SourceUnavailable
+        );
+    }
+
+    // --- Structural invariant tests (Workstream I) ---
+
+    #[test]
+    fn identity_fields_are_nonempty() {
+        let mock = mock_source();
+        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let identity = collector.identity().expect("identity");
+        assert!(!identity.hostname.is_empty());
+        assert!(!identity.os_name.is_empty());
+        assert_eq!(identity.os_name, "windows");
+        assert!(!identity.kernel_name.is_empty());
+        assert!(!identity.architecture.is_empty());
+    }
+
+    #[test]
+    fn logical_cores_is_positive() {
+        let mock = mock_source();
+        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        assert!(collector.logical_cores > 0);
+    }
+
+    #[test]
+    fn memory_total_positive_used_not_exceeding_total() {
+        let mock = mock_source();
+        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let mut collector = collector;
+        // First sample warms
+        let _ = collector.sample();
+        // Second sample produces metrics
+        let metrics = collector.sample().expect("second sample");
+        assert!(metrics.memory.total_bytes > 0);
+        assert!(metrics.memory.used_bytes <= metrics.memory.total_bytes);
+    }
+
+    #[test]
+    fn first_sample_warms() {
+        let mock = mock_source();
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let err = collector.sample().expect_err("first sample should warm");
+        assert_eq!(err.kind, crate::collector::error::CollectErrorKind::Warming);
+    }
+
+    #[test]
+    fn second_sample_becomes_ready() {
+        let mut mock = mock_source();
+        mock.auto_increment_cpu = true;
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample(); // warm
+        let metrics = collector.sample().expect("second sample");
+        assert!(metrics.cpu_usage_pct.is_some());
+        let cpu = metrics.cpu_usage_pct.unwrap();
+        assert!(cpu.is_finite());
+        assert!((0.0..=100.0).contains(&cpu));
+    }
+
+    #[test]
+    fn commit_is_some() {
+        let mock = mock_source();
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample();
+        let metrics = collector.sample().expect("second sample");
+        assert!(metrics.commit.is_some());
+        let commit = metrics.commit.unwrap();
+        assert!(commit.used_bytes <= commit.limit_bytes);
+        assert!(commit.usage_pct.is_finite());
+        assert!((0.0..=100.0).contains(&commit.usage_pct));
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn unsupported_metrics_are_absent() {
+        let mock = mock_source();
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample();
+        let metrics = collector.sample().expect("second sample");
+        // iowait should be None
+        assert!(metrics.cpu_iowait_pct.is_none());
+        // load should be zero (v1 convention for unsupported)
+        assert_eq!(metrics.load.one, 0.0);
+        assert_eq!(metrics.load.five, 0.0);
+        assert_eq!(metrics.load.fifteen, 0.0);
+        // swap should be zero (v1 convention for unsupported)
+        assert_eq!(metrics.swap.used_bytes, 0);
+        assert_eq!(metrics.swap.total_bytes, 0);
+    }
+
+    #[test]
+    fn v2_capabilities_match_plan() {
+        let mock = mock_source();
+        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let v2 = collector.capabilities_v2();
+        assert!(!v2.cpu_iowait);
+        assert!(!v2.load_average);
+        assert!(!v2.swap);
+        assert!(v2.memory_commit);
+    }
+
+    #[test]
+    fn supports_v1_snapshot_returns_false() {
+        let mock = mock_source();
+        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        assert!(!collector.supports_v1_snapshot());
+    }
+
+    // --- CPU error handling tests ---
+
+    #[test]
+    fn cpu_error_propagated() {
+        let mut mock = mock_source();
+        mock.cpu_error = true;
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample(); // warm
+        let err = collector.sample().expect_err("cpu error");
+        assert_eq!(
+            err.kind,
+            crate::collector::error::CollectErrorKind::SourceUnavailable
+        );
+    }
+
+    #[test]
+    fn memory_error_propagated() {
+        let mut mock = mock_source();
+        mock.memory_error = true;
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample(); // warm
+        let err = collector.sample().expect_err("memory error");
+        assert_eq!(
+            err.kind,
+            crate::collector::error::CollectErrorKind::SourceUnavailable
+        );
+    }
+
+    #[test]
+    fn commit_error_propagated() {
+        let mut mock = mock_source();
+        mock.commit_error = true;
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample(); // warm
+        let err = collector.sample().expect_err("commit error");
+        assert_eq!(
+            err.kind,
+            crate::collector::error::CollectErrorKind::SourceUnavailable
+        );
     }
 }

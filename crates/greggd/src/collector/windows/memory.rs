@@ -11,7 +11,7 @@
 
 use gregg_protocol::MemoryMetrics;
 
-use crate::collector::error::{CollectError, CollectErrorKind};
+use crate::collector::error::CollectError;
 use crate::collector::windows::source::RawPhysicalMemory;
 
 /// Parsed memory information normalized into the collector's wire shape.
@@ -28,9 +28,11 @@ impl MemorySample {
         let usage_pct = if self.total_bytes == 0 {
             0.0
         } else {
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_precision_loss)]
             let pct = (self.used_bytes as f64) * 100.0 / (self.total_bytes as f64);
-            (pct as f32).clamp(0.0, 100.0)
+            #[allow(clippy::cast_possible_truncation)]
+            let as_f32 = pct as f32;
+            as_f32.clamp(0.0, 100.0)
         };
         MemoryMetrics {
             used_bytes: self.used_bytes,

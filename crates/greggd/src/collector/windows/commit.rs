@@ -29,9 +29,11 @@ impl CommitSample {
         let usage_pct = if self.limit_bytes == 0 {
             0.0
         } else {
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+            #[allow(clippy::cast_precision_loss)]
             let pct = (self.used_bytes as f64) * 100.0 / (self.limit_bytes as f64);
-            (pct as f32).clamp(0.0, 100.0)
+            #[allow(clippy::cast_possible_truncation)]
+            let as_f32 = pct as f32;
+            as_f32.clamp(0.0, 100.0)
         };
         CommitMetrics {
             used_bytes: self.used_bytes,

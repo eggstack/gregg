@@ -176,6 +176,27 @@ impl ServerState {
         self.ready.store(true, Ordering::Release);
     }
 
+    /// Publish a v2 snapshot only, without a v1 snapshot.
+    ///
+    /// Used on Windows where v1 is not supported. The v1 snapshot slot
+    /// remains unchanged (None on initial startup).
+    pub async fn update_snapshot_v2_only(&self, snap_v2: StatusSnapshotV2) {
+        let health_v2 = HealthResponseV2::ready(snap_v2.clone());
+        let arc_snap_v2 = Arc::new(snap_v2);
+        {
+            let mut guard = self.snapshot_v2.write().await;
+            *guard = Some(arc_snap_v2);
+        }
+        {
+            let mut guard = self.health_v2.write().await;
+            *guard = health_v2;
+        }
+        self.consecutive_failures.store(0, Ordering::Release);
+        // Note: v1 snapshot and health are not updated — they remain None
+        // on Windows where v1 is unsupported.
+        self.ready.store(true, Ordering::Release);
+    }
+
     /// Set the daemon to warming state.
     pub async fn set_warming(&self) {
         self.ready.store(false, Ordering::Release);

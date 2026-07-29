@@ -220,4 +220,15 @@ pub trait SystemCollector: Send {
             memory_commit: false,
         }
     }
+
+    /// Whether this collector supports producing a v1 `StatusSnapshot`.
+    ///
+    /// Returns `true` by default. Windows returns `false` because v1
+    /// requires non-optional `load` and `swap` fields that have no
+    /// meaningful representation on Windows. The sampler skips v1 snapshot
+    /// production when this returns `false`, causing `/v1/status` to
+    /// return 404.
+    fn supports_v1_snapshot(&self) -> bool {
+        true
+    }
 }

@@ -134,11 +134,45 @@ impl ServiceManager for NoopServiceManager {
     }
 }
 
+/// A service manager for unsupported platforms (e.g. Windows before
+/// Phase 43).
+///
+/// Start, stop, and restart return [`ServiceError::NotAvailable`].
+/// `is_active` returns `Ok(false)` so that `croncheck` will attempt
+/// (and fail with) a start command rather than silently succeeding.
+#[derive(Debug, Default)]
+pub struct UnsupportedServiceManager;
+
+impl ServiceManager for UnsupportedServiceManager {
+    fn start(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::NotAvailable {
+            platform: "windows".to_string(),
+        })
+    }
+
+    fn stop(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::NotAvailable {
+            platform: "windows".to_string(),
+        })
+    }
+
+    fn restart(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::NotAvailable {
+            platform: "windows".to_string(),
+        })
+    }
+
+    fn is_active(&self) -> Result<bool, ServiceError> {
+        Ok(false)
+    }
+}
+
 /// Return the platform-appropriate service manager.
 ///
 /// On Linux, returns a [`systemd::SystemdManager`]. On macOS, returns a
-/// [`launchd::LaunchdManager`]. On other platforms, returns a
-/// [`NoopServiceManager`].
+/// [`launchd::LaunchdManager`]. On other platforms, returns an
+/// [`UnsupportedServiceManager`] that returns
+/// [`ServiceError::NotAvailable`] for lifecycle commands.
 #[must_use]
 pub fn platform_service_manager() -> Box<dyn ServiceManager> {
     #[cfg(target_os = "linux")]
@@ -151,7 +185,7 @@ pub fn platform_service_manager() -> Box<dyn ServiceManager> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        Box::new(NoopServiceManager)
+        Box::new(UnsupportedServiceManager)
     }
 }
 
@@ -199,5 +233,32 @@ mod tests {
         };
         let msg = format!("{err}");
         assert!(msg.contains("windows"));
+    }
+
+    #[test]
+    fn unsupported_manager_start_returns_not_available() {
+        let manager = UnsupportedServiceManager;
+        let err = manager.start().expect_err("should fail");
+        assert!(matches!(err, ServiceError::NotAvailable { .. }));
+    }
+
+    #[test]
+    fn unsupported_manager_stop_returns_not_available() {
+        let manager = UnsupportedServiceManager;
+        let err = manager.stop().expect_err("should fail");
+        assert!(matches!(err, ServiceError::NotAvailable { .. }));
+    }
+
+    #[test]
+    fn unsupported_manager_restart_returns_not_available() {
+        let manager = UnsupportedServiceManager;
+        let err = manager.restart().expect_err("should fail");
+        assert!(matches!(err, ServiceError::NotAvailable { .. }));
+    }
+
+    #[test]
+    fn unsupported_manager_is_active_returns_false() {
+        let manager = UnsupportedServiceManager;
+        assert!(!manager.is_active().unwrap());
     }
 }

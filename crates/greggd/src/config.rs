@@ -627,8 +627,13 @@ unknown_field = "oops"
         let original = Config::default();
         original.write_atomic(&path).unwrap();
 
-        // Attempt to write to an invalid path (no parent directory).
-        let result = original.write_atomic(Path::new("/nonexistent_dir/config.toml"));
+        // Create a file where a directory would need to be, so
+        // create_dir_all fails when write_atomic tries to ensure the
+        // parent directory exists.
+        let blocker = dir.join("not_a_dir");
+        fs::write(&blocker, b"x").unwrap();
+        let bad_path = blocker.join("sub").join("config.toml");
+        let result = original.write_atomic(&bad_path);
         assert!(result.is_err());
 
         // Original should still be valid.

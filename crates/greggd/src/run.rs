@@ -332,40 +332,53 @@ async fn sync_sampler_state(
 ) {
     match readiness {
         ReadinessState::Ready => {
-            if let Some(snap) = snap {
-                let v2 = match snap_v2 {
-                    Some(s) => (*s).clone(),
-                    None => {
-                        // Fallback: produce a minimal v2 from v1 data.
-                        // This should not happen in normal operation.
-                        gregg_protocol::v2::StatusSnapshotV2 {
-                            schema_version: gregg_protocol::v2::SCHEMA_VERSION_V2,
-                            observed_at_unix_ms: snap.observed_at_unix_ms,
-                            sample_interval_ms: snap.sample_interval_ms,
-                            capabilities: gregg_protocol::v2::MetricCapabilitiesV2 {
-                                cpu_iowait: snap.capabilities.cpu_iowait,
-                                load_average: true,
-                                swap: true,
-                                memory_commit: false,
-                            },
-                            system: snap.system.clone(),
-                            cpu: gregg_protocol::v2::CpuMetricsV2 {
-                                logical_cores: snap.cpu.logical_cores,
-                                usage_pct: snap.cpu.usage_pct,
-                                iowait_pct: snap.cpu.iowait_pct,
-                            },
-                            load: Some(snap.load),
-                            memory: snap.memory,
-                            swap: Some(gregg_protocol::v2::SwapMetrics {
-                                used_bytes: snap.swap.used_bytes,
-                                total_bytes: snap.swap.total_bytes,
-                                usage_pct: snap.swap.usage_pct,
-                            }),
-                            commit: None,
-                        }
-                    }
-                };
-                server_state.update_snapshot((*snap).clone(), v2).await;
+            match (snap, snap_v2) {
+                (Some(snap), Some(snap_v2)) => {
+                    // Standard path: both v1 and v2 available.
+                    server_state
+                        .update_snapshot((*snap).clone(), (*snap_v2).clone())
+                        .await;
+                }
+                (None, Some(snap_v2)) => {
+                    // Windows path: v2 only, no v1 snapshot.
+                    server_state
+                        .update_snapshot_v2_only((*snap_v2).clone())
+                        .await;
+                }
+                (Some(snap), None) => {
+                    // Fallback: v1 only (should not happen in normal operation).
+                    let v2_fallback = gregg_protocol::v2::StatusSnapshotV2 {
+                        schema_version: gregg_protocol::v2::SCHEMA_VERSION_V2,
+                        observed_at_unix_ms: snap.observed_at_unix_ms,
+                        sample_interval_ms: snap.sample_interval_ms,
+                        capabilities: gregg_protocol::v2::MetricCapabilitiesV2 {
+                            cpu_iowait: snap.capabilities.cpu_iowait,
+                            load_average: true,
+                            swap: true,
+                            memory_commit: false,
+                        },
+                        system: snap.system.clone(),
+                        cpu: gregg_protocol::v2::CpuMetricsV2 {
+                            logical_cores: snap.cpu.logical_cores,
+                            usage_pct: snap.cpu.usage_pct,
+                            iowait_pct: snap.cpu.iowait_pct,
+                        },
+                        load: Some(snap.load),
+                        memory: snap.memory,
+                        swap: Some(gregg_protocol::v2::SwapMetrics {
+                            used_bytes: snap.swap.used_bytes,
+                            total_bytes: snap.swap.total_bytes,
+                            usage_pct: snap.swap.usage_pct,
+                        }),
+                        commit: None,
+                    };
+                    server_state
+                        .update_snapshot((*snap).clone(), v2_fallback)
+                        .await;
+                }
+                (None, None) => {
+                    // Both absent — should not happen in Ready state.
+                }
             }
         }
         ReadinessState::Warming => {

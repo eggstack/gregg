@@ -134,6 +134,9 @@ jobs:
       - name: Doc
         run: cargo doc --workspace --no-deps
 
+      - name: Native Windows collector smoke
+        run: cargo test -p greggd --all-features -- collector::windows
+
   msrv:
     name: MSRV (Rust 1.75)
     runs-on: ubuntu-latest

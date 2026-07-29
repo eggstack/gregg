@@ -240,15 +240,21 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                             architecture: String::new(),
                         });
 
-                // Produce v1 snapshot from the single collected sample.
-                let v1 = metrics.clone().into_snapshot(
-                    SCHEMA_VERSION_V1,
-                    now_ms,
-                    self.interval_ms,
-                    self.collector.capabilities(),
-                    identity.clone(),
-                );
-                let arc_v1 = Arc::new(v1);
+                // Produce v1 snapshot if the collector supports it.
+                // Windows does not support v1 (load/swap cannot be
+                // meaningfully represented as non-optional zero values).
+                let arc_v1 = if self.collector.supports_v1_snapshot() {
+                    let v1 = metrics.clone().into_snapshot(
+                        SCHEMA_VERSION_V1,
+                        now_ms,
+                        self.interval_ms,
+                        self.collector.capabilities(),
+                        identity.clone(),
+                    );
+                    Some(Arc::new(v1))
+                } else {
+                    None
+                };
 
                 // Produce v2 snapshot from the same collected sample.
                 let v2 = metrics.into_snapshot_v2(
@@ -268,7 +274,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
                 self.readiness = ReadinessState::Ready;
                 self.consecutive_failures = 0;
-                self.snapshot = Some(arc_v1);
+                self.snapshot = arc_v1;
                 self.snapshot_v2 = Some(arc_v2);
             }
             Err(err) => match err.kind {

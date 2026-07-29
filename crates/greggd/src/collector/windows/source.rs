@@ -4,6 +4,8 @@
 //! Tests inject [`MockWindowsSource`] to exercise edge cases without
 //! depending on the host state.
 
+#![allow(unsafe_code)]
+
 use crate::collector::error::CollectError;
 
 /// Cumulative CPU time counters from `GetSystemTimes`.
@@ -377,7 +379,7 @@ mod ffi {
         pub sz_c_version_string: [u16; 128],
     }
 
-    /// `SYSTEM_INFO` — processor architecture info (simplified for x86_64).
+    /// `SYSTEM_INFO` — processor architecture info (simplified for `x86_64`).
     #[repr(C)]
     #[cfg(target_arch = "x86_64")]
     pub struct SystemInfo {
@@ -394,6 +396,9 @@ mod ffi {
         pub w_processor_revision: u16,
     }
 
+    #[link(name = "kernel32")]
+    #[link(name = "ntdll")]
+    #[link(name = "psapi")]
     extern "system" {
         pub fn GetSystemTimes(
             idle_time: *mut FileTime,
@@ -531,7 +536,11 @@ fn physical_memory() -> Result<RawPhysicalMemory, CollectError> {
 
         unsafe {
             let mut mem_info = MaybeUninit::<ffi::MemoryStatusEx>::uninit();
-            (*mem_info.as_mut_ptr()).dw_length = std::mem::size_of::<ffi::MemoryStatusEx>() as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                (*mem_info.as_mut_ptr()).dw_length =
+                    std::mem::size_of::<ffi::MemoryStatusEx>() as u32;
+            }
 
             let success = ffi::GlobalMemoryStatusEx(mem_info.as_mut_ptr());
 
@@ -568,10 +577,9 @@ fn commit() -> Result<RawCommit, CollectError> {
             let mut perf_info = MaybeUninit::<ffi::PerformanceInformation>::uninit();
             (*perf_info.as_mut_ptr()).cb = std::mem::size_of::<ffi::PerformanceInformation>();
 
-            let success = ffi::GetPerformanceInfo(
-                perf_info.as_mut_ptr(),
-                std::mem::size_of::<ffi::PerformanceInformation>() as u32,
-            );
+            #[allow(clippy::cast_possible_truncation)]
+            let cb = std::mem::size_of::<ffi::PerformanceInformation>() as u32;
+            let success = ffi::GetPerformanceInfo(perf_info.as_mut_ptr(), cb);
 
             if success == 0 {
                 let err = ffi::GetLastError();
@@ -609,7 +617,7 @@ fn collect_raw_identity() -> Result<RawIdentity, CollectError> {
     let hostname = get_hostname()?;
     let (os_version, logical_cores) = get_os_info()?;
     let architecture = get_architecture();
-    let physical_memory_bytes = physical_memory().map(|m| m.total_bytes).unwrap_or(0);
+    let physical_memory_bytes = physical_memory().map_or(0, |m| m.total_bytes);
     let topology = processor_topology().ok();
 
     Ok(RawIdentity {
@@ -673,6 +681,7 @@ fn get_hostname() -> Result<String, CollectError> {
 
 /// Get OS version and logical core count via `RtlGetVersion` and
 /// `GetSystemInfo`.
+#[allow(clippy::unnecessary_wraps)]
 fn get_os_info() -> Result<(String, u32), CollectError> {
     #[cfg(target_os = "windows")]
     {
@@ -681,8 +690,11 @@ fn get_os_info() -> Result<(String, u32), CollectError> {
         unsafe {
             // RtlGetVersion doesn't require manifest version lying.
             let mut version_ex = MaybeUninit::<ffi::OsVersionInfoW>::uninit();
-            (*version_ex.as_mut_ptr()).dw_os_version_info_size =
-                std::mem::size_of::<ffi::OsVersionInfoW>() as u32;
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                (*version_ex.as_mut_ptr()).dw_os_version_info_size =
+                    std::mem::size_of::<ffi::OsVersionInfoW>() as u32;
+            }
 
             let status = ffi::RtlGetVersion(version_ex.as_mut_ptr());
 
