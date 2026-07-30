@@ -5,8 +5,6 @@
 //! External command invocation is acceptable for systemd/launchd because
 //! `systemctl`/`launchctl` are the native administrative interfaces.
 //! Windows uses native APIs through the `windows-service` crate.
-//!
-//! A [`NoopServiceManager`] is provided for testing and development.
 
 use std::fmt;
 
@@ -149,31 +147,6 @@ pub trait ServiceManager: Send + Sync {
     fn is_active(&self) -> Result<bool, ServiceError>;
 }
 
-/// A no-op service manager for testing and development.
-///
-/// All operations succeed without side effects. `is_active` always
-/// returns `false`.
-#[derive(Debug, Default)]
-pub struct NoopServiceManager;
-
-impl ServiceManager for NoopServiceManager {
-    fn start(&self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn stop(&self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn restart(&self) -> Result<(), ServiceError> {
-        Ok(())
-    }
-
-    fn is_active(&self) -> Result<bool, ServiceError> {
-        Ok(false)
-    }
-}
-
 /// A service manager for platforms without native service integration.
 ///
 /// Start, stop, and restart return [`ServiceError::NotAvailable`].
@@ -236,15 +209,6 @@ pub fn platform_service_manager() -> Box<dyn ServiceManager> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn noop_manager_operations_succeed() {
-        let manager = NoopServiceManager;
-        assert!(manager.start().is_ok());
-        assert!(manager.stop().is_ok());
-        assert!(manager.restart().is_ok());
-        assert!(!manager.is_active().unwrap());
-    }
 
     #[test]
     fn service_error_display() {

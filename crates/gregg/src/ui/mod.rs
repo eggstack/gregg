@@ -62,7 +62,9 @@ mod tests {
     use crate::config::{Config, SystemEntry};
     use crate::poller::{PollBatch, PollOutcome};
     use crate::state::{AppState, Reachability};
-    use gregg_protocol::test_support::{LinuxSnapshotBuilder, MacosSnapshotBuilder};
+    use gregg_protocol::test_support::{
+        LinuxSnapshotBuilder, MacosSnapshotBuilder, WindowsSnapshotV2Builder,
+    };
     use gregg_protocol::StatusSnapshot;
 
     fn render_state(state: &AppState, width: u16, height: u16) -> String {
@@ -1213,5 +1215,38 @@ mod tests {
         // render_online returns early when snap is None, so the 4-row
         // block is allocated but left blank. Verify no crash occurred.
         assert!(!output.is_empty(), "should render without crashing");
+    }
+
+    #[test]
+    fn render_windows_system_shows_commit_row() {
+        let config = test_config(&["win1"]);
+        let mut state = AppState::from_config(&config);
+        let snap = WindowsSnapshotV2Builder::default().build();
+        let system = &state.systems[0];
+        let batch = PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: system.id.clone(),
+                endpoint: system.endpoint.clone(),
+                outcome: PollOutcome::OnlineV2(Box::new(snap)),
+                latency: Duration::from_millis(10),
+            }],
+        };
+        state.apply_batch(&batch);
+        let output = render_state(&state, 80, 8);
+        let lines: Vec<&str> = output.lines().collect();
+        // Row 3 (index 3) should show COMMIT, not SWP.
+        assert!(
+            lines[3].contains("COMMIT"),
+            "Windows row 3 should contain 'COMMIT', got: {}",
+            lines[3]
+        );
+        assert!(
+            !lines[3].contains("SWP"),
+            "Windows row 3 should not contain 'SWP', got: {}",
+            lines[3]
+        );
     }
 }

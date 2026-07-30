@@ -1034,4 +1034,133 @@ mod tests {
             );
         }
     }
+
+    /// Mock server that returns different responses for `/v1/status` and
+    /// `/v2/status` paths. The `v2_response` tuple is `(body, status_line)`.
+    /// If `v2_response` is `None`, the server returns 404 for v2.
+    /// The `v1_response` tuple is `(body, status_line)`.
+    /// Handles multiple connections (needed for v2→v1 fallback testing).
+    async fn mock_server_v1_v2(
+        v2_response: Option<(Vec<u8>, String)>,
+        v1_response: (Vec<u8>, String),
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let v2_resp = v2_response.clone();
+                let v1_resp = v1_response.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 4096];
+                    let mut total = 0;
+                    loop {
+                        let n = stream.read(&mut buf[total..]).await.unwrap();
+                        total += n;
+                        if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buf[..total]);
+                    let is_v2 = request
+                        .lines()
+                        .next()
+                        .is_some_and(|line| line.contains("/v2/"));
+                    let (body, status) = if is_v2 {
+                        match &v2_resp {
+                            Some((body, status)) => (body.clone(), status.clone()),
+                            None => (b"not found".to_vec(), "404 Not Found".to_string()),
+                        }
+                    } else {
+                        (v1_resp.0.clone(), v1_resp.1.clone())
+                    };
+                    let header = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(header.as_bytes()).await;
+                    let _ = stream.write_all(&body).await;
+                });
+            }
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
+    #[tokio::test]
+    async fn v2_404_falls_back_to_v1() {
+        let v1_snap = LinuxSnapshotBuilder::default().build();
+        let v1_body = serde_json::to_string(&v1_snap).unwrap();
+        let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "v2 404 should fall back to v1 Online, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_malformed_does_not_fall_back() {
+        let url = mock_server_v1_v2(
+            Some((b"not json".to_vec(), "200 OK".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::DecodeError),
+            "malformed v2 should not fall back, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_503_does_not_fall_back() {
+        let url = mock_server_v1_v2(
+            Some((b"not ready".to_vec(), "503 Service Unavailable".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::HttpStatus(503)),
+            "v2 503 should not fall back, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_success_does_not_call_v1() {
+        let v2_snap = gregg_protocol::test_support::LinuxSnapshotV2Builder::default().build();
+        let v2_body = serde_json::to_string(&v2_snap).unwrap();
+        let url = mock_server_v1_v2(
+            Some((v2_body.into_bytes(), "200 OK".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::OnlineV2(_)),
+            "v2 success should return OnlineV2, got {:?}",
+            result.outcome
+        );
+    }
 }

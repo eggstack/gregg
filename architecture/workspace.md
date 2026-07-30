@@ -177,8 +177,7 @@ adapters wrap native tools:
 - `service/windows.rs` — wraps the Windows SCM through the `windows-service`
   crate with `start_service`, `stop_service`, and `service_control_handler`.
 
-A `NoopServiceManager` is provided for testing and development. An
-`UnsupportedServiceManager` provides `NotAvailable` errors for platforms without
+An `UnsupportedServiceManager` provides `NotAvailable` errors for platforms without
 native service integration (e.g. FreeBSD). External command invocation is
 acceptable for service management because `systemctl`/`launchctl` are the native
 administrative interfaces.

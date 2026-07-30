@@ -274,7 +274,6 @@ pub fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::NoopServiceManager;
     use std::path::Path;
     use std::sync::Mutex;
 
@@ -558,11 +557,12 @@ mod tests {
 
     #[test]
     fn croncheck_active_with_noop_manager() {
-        let service = NoopServiceManager;
-        // NoopServiceManager::is_active() always returns false, so it will try to start.
-        // But start() succeeds silently.
+        let service = FakeServiceManager::new();
+        // FakeServiceManager defaults to inactive, so croncheck will try to start.
+        // start() succeeds silently by default.
         let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
         assert!(result.is_ok());
+        assert_eq!(service.calls(), vec!["is_active", "start"]);
     }
 
     // --- Start/stop/restart dispatch tests ---
