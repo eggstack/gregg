@@ -178,14 +178,72 @@ if [[ "${MODE}" == "full" || "${MODE}" == "release" ]]; then
     cleanup_install() { rm -rf "${TEMP_INSTALL_DIR}"; }
     trap cleanup_install EXIT
 
-    run_or_fail cargo install greggd --root "${TEMP_INSTALL_DIR}" --debug
-    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" run --help >/dev/null 2>&1 || true
+    run_or_fail cargo install --path crates/greggd --locked --root "${TEMP_INSTALL_DIR}" --debug
+    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --version
+    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --help
+    run_or_fail bash "${SCRIPT_DIR}/verify-installed-daemon.sh" "${TEMP_INSTALL_DIR}/bin/greggd"
 
     trap - EXIT
     cleanup_install
 fi
 
 # ── Tier 3 (--release): release preflight ────────────────────────────────────
+
+check_version_consistency() {
+    local workspace_version_value
+    workspace_version_value="$(awk '
+        /^\[workspace\.package\][[:space:]]*$/ { in_package=1; next }
+        in_package && /^\[/ { exit }
+        in_package && /^[[:space:]]*version[[:space:]]*=/ {
+            if (match($0, /"[^"]+"/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+            }
+        }
+    ' Cargo.toml)"
+
+    if [[ -z "${workspace_version_value}" ]]; then
+        echo "error: Cargo.toml has no version in [workspace.package]" >&2
+        return 1
+    fi
+
+    local crate
+    local manifest
+    for crate in crates/gregg-protocol crates/greggd crates/gregg; do
+        manifest="${crate}/Cargo.toml"
+        if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${manifest}"; then
+            echo "error: ${manifest} is missing version.workspace = true" >&2
+            return 1
+        fi
+    done
+
+    local dependency_lines
+    local line
+    local dependency_version
+    for crate in crates/greggd crates/gregg; do
+        manifest="${crate}/Cargo.toml"
+        dependency_lines="$(grep -E '^[[:space:]]*gregg-protocol[[:space:]]*=' "${manifest}" || true)"
+        if [[ -z "${dependency_lines}" ]]; then
+            echo "error: ${manifest} has no gregg-protocol dependency declaration" >&2
+            return 1
+        fi
+        while IFS= read -r line; do
+            [[ -z "${line}" ]] && continue
+            if [[ "${line}" =~ version[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
+                dependency_version="${BASH_REMATCH[1]}"
+            else
+                echo "error: ${manifest} gregg-protocol dependency has no registry version" >&2
+                return 1
+            fi
+            if [[ "${dependency_version}" != "${workspace_version_value}" ]]; then
+                echo "error: ${manifest} gregg-protocol dependency version ${dependency_version} != workspace ${workspace_version_value}" >&2
+                return 1
+            fi
+        done <<< "${dependency_lines}"
+    done
+
+    echo "  workspace version ${workspace_version_value}; all members inherit it and gregg-protocol constraints match"
+}
 
 if [[ "${MODE}" == "release" ]]; then
 
@@ -197,24 +255,10 @@ if [[ "${MODE}" == "release" ]]; then
     fi
 
     step "version consistency check"
-    WORKSPACE_VERSION="$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-    for crate in crates/gregg-protocol crates/greggd crates/gregg; do
-        CRATE_VERSION="$(grep '^version' "${crate}/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')"
-        if [[ "${CRATE_VERSION}" != "${WORKSPACE_VERSION}" ]]; then
-            echo "error: ${crate} version ${CRATE_VERSION} != workspace ${WORKSPACE_VERSION}" >&2
-            exit 1
-        fi
-    done
-    echo "  all crate versions match workspace version ${WORKSPACE_VERSION}"
+    run_or_fail check_version_consistency
 
-    step "cargo publish --dry-run (gregg-protocol)"
-    run_or_fail cargo publish --dry-run -p gregg-protocol
-
-    step "cargo publish --dry-run (greggd)"
-    run_or_fail cargo publish --dry-run -p greggd
-
-    step "cargo publish --dry-run (gregg)"
-    run_or_fail cargo publish --dry-run -p gregg
+    step "cargo publish -p gregg-protocol --dry-run --locked"
+    run_or_fail cargo publish -p gregg-protocol --dry-run --locked
 fi
 
 echo ""

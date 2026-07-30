@@ -38,25 +38,34 @@ A nonempty status blocks release. Either commit the changes first or abort.
 
 ## 2. Verify version consistency
 
-Confirm workspace and crate versions match the intended release:
+The root workspace version is authoritative. Confirm it appears once in
+`[workspace.package]` and that every member manifest inherits it via
+`version.workspace = true`:
 
 ```bash
-grep '^version' Cargo.toml | head -1
-grep '^version' crates/gregg-protocol/Cargo.toml | head -1
-grep '^version' crates/greggd/Cargo.toml | head -1
-grep '^version' crates/gregg/Cargo.toml | head -1
+grep -E '^version' Cargo.toml
+grep -E '^version\.workspace' crates/gregg-protocol/Cargo.toml
+grep -E '^version\.workspace' crates/greggd/Cargo.toml
+grep -E '^version\.workspace' crates/gregg/Cargo.toml
 ```
 
-All must show `$VERSION`. Then confirm inter-crate dependency versions:
+All three member manifests must contain exactly `version.workspace = true`,
+and the root `Cargo.toml` must contain `version = "$VERSION"` inside
+`[workspace.package]`.
+
+Then confirm inter-crate dependency versions match `$VERSION`:
 
 ```bash
 grep 'gregg-protocol' crates/greggd/Cargo.toml
 grep 'gregg-protocol' crates/gregg/Cargo.toml
 ```
 
-Both must reference the intended `gregg-protocol` version. Verify the
-changelog contains the release version and date. Confirm crate descriptions
-and supported-platform documentation are current.
+Both `greggd` and `gregg` must reference `gregg-protocol = "=$VERSION"` (or
+the exact same version) in their normal dependency and dev-dependency
+declarations.
+
+Verify the changelog contains the release version and date. Confirm crate
+descriptions and supported-platform documentation are current.
 
 Verify `Cargo.lock` is committed and matches the workspace:
 
@@ -73,9 +82,17 @@ An empty diff means the lock file is current.
 ```
 
 This runs fmt, clippy, tests, docs, cargo-deny, shellcheck, python tests,
-package content checks, and the installed-binary loopback smoke.
+package content checks, and the installed-binary loopback smoke. The smoke
+installs the current checkout with `cargo install --path crates/greggd
+--locked` and uses `scripts/verify-installed-daemon.sh` to start the
+installed binary on a loopback port, poll `/v2/healthz` and `/v2/status`,
+and shut the daemon down cleanly.
 
 ## 4. Dry-run and publish gregg-protocol
+
+The local pre-publication release preflight (`./scripts/check-local.sh
+--release`) already runs the protocol dry-run with `--locked`. Re-run it
+manually here to record the result:
 
 ```bash
 cargo publish -p gregg-protocol --dry-run --locked
@@ -90,9 +107,12 @@ cargo search gregg-protocol --limit 1
 
 Confirm the exact `$VERSION` appears.
 
-## 5. Dry-run dependent crates
+## 5. Dry-run dependent crates (after protocol publication)
 
-After protocol availability is confirmed, re-run dependent dry-runs:
+Dependent-crate dry-runs must wait for the new `gregg-protocol` version to
+be visible on crates.io. The local release preflight does not run them
+because the registry has not yet indexed the new version. Run them
+manually here:
 
 ```bash
 cargo publish -p greggd --dry-run --locked
@@ -132,18 +152,65 @@ gregg-protocol = "=X.Y.Z"
 
 Run `cargo check` against it without a path override.
 
-On a native host, run a short foreground daemon smoke with a temporary config
-and loopback binding, then query `/healthz` and `/v1/status` and terminate
-cleanly:
+On a native Unix host, run a short foreground daemon smoke with a temporary
+config and loopback binding, then query `/v2/healthz` and `/v2/status` and
+terminate cleanly. `/v2/status` is the universal cross-platform status
+endpoint; Linux and macOS may additionally verify `/v1/status` for
+compatibility, but Windows intentionally returns 503 for `/v1/status` (no
+truthful v1 snapshot exists) and is not a release failure when v2 is
+ready:
 
 ```bash
 greggd run --config /tmp/test-greggd.toml &
 DAEMON_PID=$!
 sleep 1
-curl -s http://127.0.0.1:11310/healthz
-curl -s http://127.0.0.1:11310/v1/status | head -c 200
+curl -s http://127.0.0.1:11310/v2/healthz
+curl -s http://127.0.0.1:11310/v2/status | head -c 200
 kill "$DAEMON_PID"
 wait "$DAEMON_PID" 2>/dev/null || true
+```
+
+On native Windows x86-64, the equivalent foreground smoke uses PowerShell
+and a temporary config. Use `try/finally` so the process is always
+stopped:
+
+```powershell
+$tempDir = Join-Path $env:TEMP "greggd-smoke-$([guid]::NewGuid())"
+$configPath = Join-Path $tempDir "greggd.toml"
+$port = 11399
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+@"
+name = "smoke-test"
+host = "127.0.0.1"
+port = $port
+sample_interval_ms = 250
+stale_after_ms = 10000
+"@ | Set-Content -LiteralPath $configPath
+
+$process = Start-Process -FilePath greggd.exe `
+    -ArgumentList @('--config', "`"$configPath`"", 'run') `
+    -PassThru -WindowStyle Hidden
+try {
+    $ready = $false
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Get-Date) -lt $deadline) {
+        if ($process.HasExited) { throw "greggd exited during startup" }
+        try {
+            $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/healthz" -TimeoutSec 2
+            if ($health.state -eq 'ready') { $ready = $true; break }
+        } catch { }
+        Start-Sleep -Milliseconds 200
+    }
+    if (-not $ready) { throw "greggd did not become ready within 15 seconds" }
+    $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/status" -TimeoutSec 2
+    if ($status.schema_version -ne 2) { throw "unexpected v2 schema version" }
+} finally {
+    if (-not $process.HasExited) {
+        Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+        $process.WaitForExit(5000)
+    }
+    Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 ```
 
 ## 8. Create and push annotated tag

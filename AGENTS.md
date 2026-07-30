@@ -147,14 +147,21 @@ cargo doc --workspace --no-deps
 ```
 
 Plus `cargo deny`, platform-native collector tests, and optional shellcheck/python
-tests under `--full`. The `--release` tier adds nonpublishing `cargo publish --dry-run`.
+tests under `--full`. The `--release` tier adds nonpublishing
+`cargo publish -p gregg-protocol --dry-run --locked` only; dependent-crate
+dry-runs remain manual until the new `gregg-protocol` version is visible on
+crates.io. Both `--full` and `--release` install `greggd` from the current
+checkout with `cargo install --path crates/greggd --locked`.
 
 Platform-specific CI should run on Linux, macOS, and Windows. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. Windows native collector and daemon smoke tests exercise real Windows APIs. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
 The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
-verifies a supplied executable by starting it, validating `/healthz` and
-`/v1/status` protocol fields, and asserting a clean shutdown. It does not
-perform package installation or depend on release metadata.
+verifies a supplied executable by starting it, validating `/v2/healthz` and
+`/v2/status` protocol fields, and asserting a clean shutdown. It does not
+perform package installation or depend on release metadata. `/v2/status` is
+the universal cross-platform status endpoint; `/v1/status` remains a
+Linux/macOS compatibility endpoint and is intentionally unavailable on
+Windows.
 
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 

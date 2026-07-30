@@ -18,10 +18,15 @@ def config_port(path: str) -> int:
 
 
 STATUS = {
-    "schema_version": 1,
+    "schema_version": 2,
     "observed_at_unix_ms": 1,
     "sample_interval_ms": 1000,
-    "capabilities": {"cpu_iowait": True},
+    "capabilities": {
+        "cpu_iowait": True,
+        "load_average": True,
+        "swap": True,
+        "memory_commit": False,
+    },
     "system": {
         "name": "loopback-test",
         "hostname": "fake-host",
@@ -35,6 +40,7 @@ STATUS = {
     "load": {"one": 0.0, "five": 0.0, "fifteen": 0.0},
     "memory": {"used_bytes": 1, "total_bytes": 2, "usage_pct": 50.0},
     "swap": {"used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0},
+    "commit": None,
 }
 
 
@@ -45,7 +51,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             body = b'{"schema_version":1,"state":"ready"}'
             status = 200
-        elif self.path == "/v1/status":
+        elif self.path == "/v2/healthz":
+            body = b'{"schema_version":2,"state":"ready"}'
+            status = 200
+        elif self.path == "/v2/status":
             if self.mode == "malformed":
                 body = b"{"  # Deliberately malformed JSON.
             else:

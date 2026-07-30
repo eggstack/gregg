@@ -18,16 +18,16 @@ Gregg follows a small, manual release model:
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | implementation substantially landed; closure pending Phase 45 |
+| [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed (superseded by Phase 45 closure) |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
-| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation landed; script correctness closure pending Phase 45 |
-| [`039-manual-cratesio-and-github-release.md`](039-manual-cratesio-and-github-release.md) | Document manual crates.io publication, annotated tagging, and GitHub Release creation | implementation landed; runbook corrections pending Phase 45 |
-| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | implementation landed; native closure/status reconciliation pending Phase 45 |
-| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | implementation landed; final compatibility verification pending Phase 45 |
-| [`042-windows-native-metrics-collector.md`](042-windows-native-metrics-collector.md) | Implement Windows identity, CPU delta, physical memory, and commit collection | implementation landed; native foreground closure pending Phase 45 |
-| [`043-windows-service-lifecycle-and-packaging.md`](043-windows-service-lifecycle-and-packaging.md) | Integrate SCM lifecycle, ProgramData config, least-privilege service account, and local PowerShell packaging | implementation landed; elevated lifecycle rehearsal pending Phase 45 |
-| [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | substantial implementation landed; CI/package/manual closure pending Phase 45 |
-| [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | planned; final closure phase |
+| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | completed |
+| [`039-manual-cratesio-and-github-release.md`](039-manual-cratesio-and-github-release.md) | Document manual crates.io publication, annotated tagging, and GitHub Release creation | completed |
+| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | completed |
+| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | completed |
+| [`042-windows-native-metrics-collector.md`](042-windows-native-metrics-collector.md) | Implement Windows identity, CPU delta, physical memory, and commit collection | completed |
+| [`043-windows-service-lifecycle-and-packaging.md`](043-windows-service-lifecycle-and-packaging.md) | Integrate SCM lifecycle, ProgramData config, least-privilege service account, and local PowerShell packaging | completed |
+| [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | completed |
+| [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | completed |
 
 ## Existing product plans retained for reassessment
 

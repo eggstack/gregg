@@ -123,11 +123,15 @@ or documented as explicit commands in `RELEASING.md`.
 It may add:
 
 - clean-tree validation;
-- version consistency checks;
-- changelog/release-note presence checks;
-- `cargo package --list`;
-- `cargo publish --dry-run --locked` in dependency order;
-- local install smoke from packaged crates.
+- version consistency checks (workspace inheritance + member crate
+  consistency with the published `gregg-protocol` constraint);
+- `cargo package --list` for each member crate;
+- `cargo publish -p gregg-protocol --dry-run --locked` (only). Dependent
+  crates depend on a protocol version not yet on crates.io, so their
+  dry-runs remain manual until the protocol version is visible on
+  crates.io. Do not execute them in the local release preflight.
+- local install smoke from the current checkout using
+  `cargo install --path crates/greggd --locked`.
 
 It must not:
 

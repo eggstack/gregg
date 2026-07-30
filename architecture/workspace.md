@@ -48,14 +48,22 @@ defined in `collector/mod.rs`. Only one platform module is compiled per target.
 
 ## HTTP server module
 
-The daemon's HTTP server lives under `crates/greggd/src/server/`. It serves three
+The daemon's HTTP server lives under `crates/greggd/src/server/`. It serves five
 read-only endpoints:
 
-- `/` — returns the cached `StatusSnapshot` as JSON.
-- `/v1/status` — identical to `/`, included for forward-compatible versioning.
-- `/healthz` — returns a `HealthResponse` indicating `Ready`, `Warming`, or `Failed`.
+- `/` and `/v1/status` — return the cached v1 `StatusSnapshot` as JSON on
+  Linux/macOS. On Windows they return `503 Service Unavailable` with a
+  v1 health response because a truthful v1 snapshot cannot be produced
+  (load, swap, and CPU I/O wait are absent). `/v1/status` is retained
+  for compatibility with v1-only clients.
+- `/v2/status` — returns the cached v2 `StatusSnapshotV2` on every
+  platform, including Windows. This is the universal cross-platform
+  status endpoint.
+- `/healthz` and `/v2/healthz` — return readiness/health as compact JSON
+  indicating `Ready`, `Warming`, or `Failed`.
 
-The server serves cached immutable snapshots and never triggers metric collection.
+The server serves cached immutable snapshots and never triggers metric
+collection.
 
 ## Sampler module
 

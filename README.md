@@ -235,9 +235,12 @@ Release preflight (nonpublishing):
 
 The local script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc`,
 `cargo deny`, and platform-native collector tests by default. The `--full` tier
-adds shellcheck, python tests, package content checks, and installed-binary
-loopback smoke. The `--release` tier adds clean-tree, version consistency,
-`cargo publish --dry-run` in dependency order, and publish dry-runs.
+adds shellcheck, python tests, package content checks, and an installed-binary
+loopback smoke that uses the current checkout via
+`cargo install --path crates/greggd --locked`. The `--release` tier adds
+clean-tree, version consistency, and a single protocol-only
+`cargo publish -p gregg-protocol --dry-run --locked`; dependent-crate dry-runs
+remain manual until the protocol version is visible on crates.io.
 
 Releases are published manually to crates.io and GitHub. CI never publishes.
 Maintainer instructions are in [RELEASING.md](RELEASING.md).

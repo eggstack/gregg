@@ -116,37 +116,52 @@ fetch() {
 validate_health() {
     local body_path="$1"
     jq -e '
-        .schema_version == 1 and
+        (.schema_version == 1 or .schema_version == 2) and
         (.state == "ready" or .state == "warming" or .state == "failed")
     ' "${body_path}" >/dev/null 2>&1 || die "/healthz returned malformed JSON"
 }
 
-validate_status() {
+validate_status_v2() {
     local body_path="$1"
     jq -e '
-        .schema_version == 1 and
+        .schema_version == 2 and
         (.observed_at_unix_ms | type == "number" and . > 0) and
         (.sample_interval_ms | type == "number" and . > 0) and
         (.capabilities.cpu_iowait | type == "boolean") and
+        (.capabilities.load_average | type == "boolean") and
+        (.capabilities.swap | type == "boolean") and
+        (.capabilities.memory_commit | type == "boolean") and
         (.system.name | type == "string" and length > 0) and
         (.system.hostname | type == "string" and length > 0) and
         (.system.architecture | type == "string" and length > 0) and
         (.cpu.logical_cores | type == "number" and . > 0) and
         (.cpu.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100) and
-        ((.capabilities.cpu_iowait and (.cpu.iowait_pct | type == "number" and isfinite and . >= 0 and . <= 100)) or
+        ((.capabilities.cpu_iowait and
+          (.cpu.iowait_pct | type == "number" and isfinite and . >= 0 and . <= 100)) or
          ((.capabilities.cpu_iowait | not) and (.cpu.iowait_pct == null))) and
-        (.load.one | type == "number" and isfinite and . >= 0) and
-        (.load.five | type == "number" and isfinite and . >= 0) and
-        (.load.fifteen | type == "number" and isfinite and . >= 0) and
+        ((.capabilities.load_average and
+          (.load.one | type == "number" and isfinite and . >= 0) and
+          (.load.five | type == "number" and isfinite and . >= 0) and
+          (.load.fifteen | type == "number" and isfinite and . >= 0)) or
+         ((.capabilities.load_average | not) and (.load == null))) and
         (.memory.total_bytes | type == "number" and . >= 0) and
-        (.memory.used_bytes | type == "number" and . >= 0 and . <= $total_memory) and
+        (.memory.used_bytes | type == "number" and . >= 0) and
+        (.memory.used_bytes <= .memory.total_bytes) and
         (.memory.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100) and
-        (.swap.total_bytes | type == "number" and . >= 0) and
-        (.swap.used_bytes | type == "number" and . >= 0 and . <= $total_swap) and
-        (.swap.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100)
-    ' --argjson total_memory "$(jq '.memory.total_bytes' "${body_path}")" \
-      --argjson total_swap "$(jq '.swap.total_bytes' "${body_path}")" \
-      "${body_path}" >/dev/null 2>&1 || die "/v1/status failed protocol field validation"
+        ((.capabilities.swap and
+          (.swap.total_bytes | type == "number" and . >= 0) and
+          (.swap.used_bytes | type == "number" and . >= 0) and
+          (.swap.used_bytes <= .swap.total_bytes) and
+          (.swap.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100) and
+          ((.swap.total_bytes != 0) or (.swap.usage_pct == 0))) or
+         ((.capabilities.swap | not) and (.swap == null))) and
+        ((.capabilities.memory_commit and
+          (.commit.limit_bytes | type == "number" and . >= 0) and
+          (.commit.used_bytes | type == "number" and . >= 0) and
+          (.commit.used_bytes <= .commit.limit_bytes) and
+          (.commit.usage_pct | type == "number" and isfinite and . >= 0 and . <= 100)) or
+         ((.capabilities.memory_commit | not) and (.commit == null)))
+    ' "${body_path}" >/dev/null 2>&1 || die "/v2/status failed protocol field validation"
 }
 
 retry_after_bind_collision() {
@@ -186,24 +201,24 @@ start_and_verify() {
             die "greggd exited during startup"
         fi
 
-        if fetch "http://127.0.0.1:${port}/healthz" "${health_body}"; then
+        if fetch "http://127.0.0.1:${port}/v2/healthz" "${health_body}"; then
             if [[ "${FETCH_STATUS}" == "200" ]]; then
                 validate_health "${health_body}"
                 health_state="$(jq -r '.state' "${health_body}")"
                 if [[ "${health_state}" == "ready" ]]; then
-                    echo "/healthz returned 200/ready after ${elapsed}s"
+                    echo "/v2/healthz returned 200/ready after ${elapsed}s"
                     break
                 fi
-                die "/healthz returned 200 with state ${health_state}, expected ready"
+                die "/v2/healthz returned 200 with state ${health_state}, expected ready"
             elif [[ "${FETCH_STATUS}" == "503" ]]; then
                 validate_health "${health_body}"
                 health_state="$(jq -r '.state' "${health_body}")"
-                echo "/healthz is still ${health_state} after ${elapsed}s"
+                echo "/v2/healthz is still ${health_state} after ${elapsed}s"
             else
-                die "/healthz returned unexpected ${FETCH_STATUS}"
+                die "/v2/healthz returned unexpected ${FETCH_STATUS}"
             fi
         else
-            echo "/healthz ${FETCH_REASON}" >&2
+            echo "/v2/healthz ${FETCH_REASON}" >&2
         fi
 
         sleep "${POLL_INTERVAL_SECS}"
@@ -211,16 +226,16 @@ start_and_verify() {
     done
 
     if ! [[ "${health_state}" == "ready" ]]; then
-        die "/healthz did not become ready within ${STARTUP_DEADLINE_SECS}s"
+        die "/v2/healthz did not become ready within ${STARTUP_DEADLINE_SECS}s"
     fi
 
-    if ! fetch "http://127.0.0.1:${port}/v1/status" "${status_body}"; then
-        die "failed to fetch /v1/status: ${FETCH_REASON}"
+    if ! fetch "http://127.0.0.1:${port}/v2/status" "${status_body}"; then
+        die "failed to fetch /v2/status: ${FETCH_REASON}"
     fi
-    [[ "${FETCH_STATUS}" == "200" ]] || die "/v1/status returned HTTP ${FETCH_STATUS}"
-    validate_status "${status_body}"
+    [[ "${FETCH_STATUS}" == "200" ]] || die "/v2/status returned HTTP ${FETCH_STATUS}"
+    validate_status_v2 "${status_body}"
 
-    echo "/v1/status JSON validation passed"
+    echo "/v2/status JSON validation passed"
     echo "  schema_version: $(jq -r '.schema_version' "${status_body}")"
     echo "  system.name: $(jq -r '.system.name' "${status_body}")"
     echo "  system.hostname: $(jq -r '.system.hostname' "${status_body}")"
