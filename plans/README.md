@@ -12,21 +12,22 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the active umbrella roadmap. Plans 037 through 044 are the authoritative execution phases.
+[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the active umbrella roadmap. Plans 037 through 044 contain the main implementation phases. [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) is the only remaining closure phase for this line of work.
 
 ## Active roadmap and execution phases
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | active umbrella roadmap |
+| [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | implementation substantially landed; closure pending Phase 45 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
-| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | completed |
-| [`039-manual-cratesio-and-github-release.md`](039-manual-cratesio-and-github-release.md) | Document manual crates.io publication, annotated tagging, and GitHub Release creation | completed |
-| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | planned; depends on 037, uses 038 conventions |
-| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | planned; depends on 040 |
-| [`042-windows-native-metrics-collector.md`](042-windows-native-metrics-collector.md) | Implement Windows identity, CPU delta, physical memory, and commit collection | planned; depends on 041 |
-| [`043-windows-service-lifecycle-and-packaging.md`](043-windows-service-lifecycle-and-packaging.md) | Integrate SCM lifecycle, ProgramData config, least-privilege service account, and local PowerShell packaging | planned; depends on 041 and 042 |
-| [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | planned; depends on 038 and 040 through 043 |
+| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation landed; script correctness closure pending Phase 45 |
+| [`039-manual-cratesio-and-github-release.md`](039-manual-cratesio-and-github-release.md) | Document manual crates.io publication, annotated tagging, and GitHub Release creation | implementation landed; runbook corrections pending Phase 45 |
+| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | implementation landed; native closure/status reconciliation pending Phase 45 |
+| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | implementation landed; final compatibility verification pending Phase 45 |
+| [`042-windows-native-metrics-collector.md`](042-windows-native-metrics-collector.md) | Implement Windows identity, CPU delta, physical memory, and commit collection | implementation landed; native foreground closure pending Phase 45 |
+| [`043-windows-service-lifecycle-and-packaging.md`](043-windows-service-lifecycle-and-packaging.md) | Integrate SCM lifecycle, ProgramData config, least-privilege service account, and local PowerShell packaging | implementation landed; elevated lifecycle rehearsal pending Phase 45 |
+| [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | substantial implementation landed; CI/package/manual closure pending Phase 45 |
+| [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | planned; final closure phase |
 
 ## Existing product plans retained for reassessment
 
@@ -71,9 +72,10 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 37 -> 38 -> 39
 37 -> 40 -> 41 -> 42 -> 43
 38 + 40 + 41 + 42 + 43 -> 44
+39 + 40 + 41 + 42 + 43 + 44 -> 45
 ```
 
-Phase 39 may finish and be used for manual releases before Windows work completes. Publishing is an operator action outside CI and outside implementation-plan completion.
+Phase 39 may be used for manual releases before Windows closure completes once its Phase-45 runbook corrections have landed. Publishing is an operator action outside CI and outside implementation-plan completion.
 
 ## Completion rule
 
@@ -103,7 +105,7 @@ Implementation handoffs should record the commands run and their results concise
 Any discovered expansion should be recorded separately unless required for:
 
 - correctness of the current Linux/macOS product;
-- the explicit Windows client/daemon/service scope in Plans 040-044;
+- the explicit Windows client/daemon/service scope in Plans 040-045;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
