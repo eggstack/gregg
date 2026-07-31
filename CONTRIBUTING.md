@@ -6,19 +6,15 @@ Thank you for considering a contribution to gregg.
 
 1. Fork the repository and create a feature branch.
 2. Ensure the pinned toolchain is installed: `rustup show`.
-3. Run the local validation command before submitting:
+3. Run the normal local validation command before submitting:
 
 ```text
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows (PowerShell)
 ```
 
-4. For a pre-merge full check (adds shellcheck, python tests, package checks):
-
-```text
-./scripts/check-local.sh --full           # Linux/macOS
-.\scripts\check-local.ps1 -Full           # Windows
-```
+4. Maintainers preparing a release should follow [RELEASING.md](RELEASING.md)
+   and use the nonpublishing `--release` / `-Release` preflight.
 
 5. Open a pull request against `main`.
 
