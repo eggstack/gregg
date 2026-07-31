@@ -470,4 +470,28 @@ mod tests {
             crate::collector::error::CollectErrorKind::SourceUnavailable
         );
     }
+
+    #[test]
+    fn drive_enumeration_failure_preserves_core_metrics_and_omits_drives() {
+        let mut mock = mock_source();
+        mock.drives_error = true;
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample().expect_err("warming");
+        let metrics = collector.sample().expect("core metrics remain available");
+
+        assert!(metrics.cpu_usage_pct.is_some());
+        assert!(metrics.memory.total_bytes > 0);
+        assert!(metrics.drives.is_none());
+    }
+
+    #[test]
+    fn filtered_drive_enumeration_is_successful_empty() {
+        let mut mock = mock_source();
+        mock.drives.clear();
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let _ = collector.sample().expect_err("warming");
+        let metrics = collector.sample().expect("sample succeeds");
+
+        assert_eq!(metrics.drives, Some(Vec::new()));
+    }
 }

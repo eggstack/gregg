@@ -20,13 +20,14 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
-    let has_online = state
-        .systems
-        .iter()
-        .any(|system| system.reachability == crate::state::Reachability::Online);
     let minimum_height = match state.view_mode {
         crate::state::ViewMode::Normal => {
-            if has_online {
+            let first_is_online = state
+                .display_order()
+                .first()
+                .and_then(|&index| state.systems.get(index))
+                .is_some_and(|system| system.reachability == crate::state::Reachability::Online);
+            if first_is_online {
                 5
             } else {
                 1

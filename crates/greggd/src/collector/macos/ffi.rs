@@ -441,14 +441,7 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
     // element count. The array remains valid for this call; values are copied
     // into owned Rust records before returning.
     let count = unsafe { getmntinfo(&mut pointer, 0) };
-    if count < 0 || (count > 0 && pointer.is_null()) {
-        return Err(CollectError::new(
-            CollectErrorKind::SourceUnavailable,
-            "getmntinfo returned an invalid result",
-        ));
-    }
-    let count = usize::try_from(count)
-        .map_err(|_| CollectError::new(CollectErrorKind::Parse, "getmntinfo count overflow"))?;
+    let count = mounted_filesystem_count(count, pointer)?;
     let mut result = Vec::with_capacity(count);
     for index in 0..count {
         // Safety: index is bounded by the count returned by getmntinfo and the
@@ -467,6 +460,38 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
         });
     }
     Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn mounted_filesystem_count(count: i32, pointer: *mut StatFs) -> Result<usize, CollectError> {
+    if count <= 0 || pointer.is_null() {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "getmntinfo returned an invalid result",
+        ));
+    }
+    usize::try_from(count)
+        .map_err(|_| CollectError::new(CollectErrorKind::Parse, "getmntinfo count overflow"))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::{mounted_filesystem_count, StatFs};
+    use crate::collector::error::CollectErrorKind;
+
+    #[test]
+    fn zero_mount_count_is_source_failure() {
+        let error = mounted_filesystem_count(0, std::ptr::dangling_mut::<StatFs>())
+            .expect_err("zero getmntinfo count must fail");
+        assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
+    }
+
+    #[test]
+    fn positive_mount_count_requires_pointer() {
+        let error = mounted_filesystem_count(1, std::ptr::null_mut())
+            .expect_err("positive count with null pointer must fail");
+        assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
+    }
 }
 
 // ---------------------------------------------------------------------------

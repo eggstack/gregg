@@ -392,6 +392,32 @@ fn zero_logical_cores_clamped_to_one() {
 }
 
 #[test]
+fn drive_enumeration_failure_preserves_core_metrics_and_omits_drives() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.mounted_error = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("core metrics remain available");
+
+    assert!(metrics.cpu_usage_pct.is_some());
+    assert!(metrics.memory.total_bytes > 0);
+    assert!(metrics.drives.is_none());
+}
+
+#[test]
+fn successful_empty_drive_enumeration_is_preserved() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.mounted.clear();
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+
+    assert_eq!(metrics.drives, Some(Vec::new()));
+}
+
+#[test]
 fn negative_load_averages_rejected() {
     let mut mock = MockNativeQueries::success();
     mock.load = [-0.5, 1.0, 0.5];

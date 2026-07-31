@@ -493,7 +493,8 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             // Safety: buffer is writable and its declared length matches its
             // allocation. The returned size is checked before parsing.
             ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
-        } as usize;
+        };
+        let mut required = validate_drive_string_count(required)?;
         if required >= buffer.len() {
             let size = required.checked_add(1).ok_or_else(|| {
                 CollectError::new(
@@ -506,7 +507,8 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 // Safety: the resized buffer is writable and the API receives
                 // its exact capacity.
                 ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
-            } as usize;
+            };
+            required = validate_drive_string_count(required)?;
             if required >= buffer.len() {
                 return Err(CollectError::new(
                     CollectErrorKind::SourceUnavailable,
@@ -562,6 +564,35 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             CollectErrorKind::SourceUnavailable,
             "Windows drive APIs not available on this platform",
         ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn validate_drive_string_count(required: u32) -> Result<usize, CollectError> {
+    if required == 0 {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "GetLogicalDriveStringsW returned zero",
+        ));
+    }
+    Ok(required as usize)
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::validate_drive_string_count;
+    use crate::collector::error::CollectErrorKind;
+
+    #[test]
+    fn zero_initial_length_is_source_failure() {
+        let error = validate_drive_string_count(0).expect_err("zero initial result must fail");
+        assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
+    }
+
+    #[test]
+    fn zero_retry_length_is_source_failure() {
+        let error = validate_drive_string_count(0).expect_err("zero retry result must fail");
+        assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
     }
 }
 

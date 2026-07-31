@@ -394,8 +394,8 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
 ///
 /// Online entries take five base rows, with optional selected-system drive
 /// rows; offline and pending entries take one row. A first entry is retained
-/// even when it is taller than the viewport so the caller can render its
-/// complete base block when the terminal permits it.
+/// even when its full dynamic height is taller than the viewport so the caller
+/// can clip only detail rows while preserving its complete base block.
 #[must_use]
 pub fn visible_range(
     display_order: &[usize],
@@ -403,13 +403,7 @@ pub fn visible_range(
     top_index: usize,
     height: u16,
 ) -> Range<usize> {
-    let has_online = display_order.iter().any(|&index| {
-        state
-            .systems
-            .get(index)
-            .is_some_and(|system| system.reachability == Reachability::Online)
-    });
-    if height == 0 || (state.view_mode == ViewMode::Normal && height < 4 && has_online) {
+    if height == 0 {
         return 0..0;
     }
 
@@ -422,6 +416,10 @@ pub fn visible_range(
         }
         let h = entry_height(state, idx);
 
+        if count == 0 && height < minimum_render_height(state, idx) {
+            return top_index..top_index;
+        }
+
         if rows_used + h > height && count > 0 {
             break;
         }
@@ -430,6 +428,18 @@ pub fn visible_range(
     }
 
     top_index..(top_index + count)
+}
+
+fn minimum_render_height(state: &AppState, system_index: usize) -> u16 {
+    match state
+        .systems
+        .get(system_index)
+        .map(|system| (state.view_mode, system.reachability))
+    {
+        Some((ViewMode::Normal, Reachability::Online)) => 5,
+        Some(_) => 1,
+        None => 0,
+    }
 }
 
 /// Adjust `viewport_top_id` so the selected system is visible.
@@ -962,6 +972,58 @@ mod tests {
         let range = visible_range(&order, &state, 0, 3);
         // Terminal too small for even one online entry.
         assert!(range.is_empty());
+    }
+
+    #[test]
+    fn visible_range_online_boundary_is_five_rows() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.systems[0].reachability = Reachability::Online;
+        let order = state.display_order();
+
+        assert!(visible_range(&order, &state, 0, 4).is_empty());
+        assert_eq!(visible_range(&order, &state, 0, 5), 0..1);
+    }
+
+    #[test]
+    fn visible_range_first_offline_entry_does_not_reserve_online_height() {
+        let config = test_config_with_ids(&["offline", "online"]);
+        let mut state = AppState::from_config(&config);
+        state.systems[1].reachability = Reachability::Online;
+        let order = vec![0, 1];
+
+        assert_eq!(visible_range(&order, &state, 0, 1), 0..1);
+    }
+
+    #[test]
+    fn visible_range_expanded_online_entry_clips_only_drive_rows() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.systems[0].reachability = Reachability::Online;
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        state.systems[0].latest.as_mut().unwrap().drives = Some(
+            (0..3)
+                .map(|index| crate::normalized::NormalizedDrive {
+                    name: format!("drive{index}"),
+                    used_bytes: 1,
+                    total_bytes: 2,
+                })
+                .collect(),
+        );
+        state.selected_id = Some("a".into());
+        state.drives_expanded = true;
+        let order = state.display_order();
+
+        assert_eq!(visible_range(&order, &state, 0, 5), 0..1);
+        assert_eq!(visible_range(&order, &state, 0, 6), 0..1);
+        assert_eq!(entry_height(&state, 0), 8);
+
+        let viewport =
+            crate::ui::layout::compute_viewport(&state, ratatui::layout::Rect::new(0, 0, 80, 5));
+        assert_eq!(viewport[0].drive_rows_visible, 0);
+        let viewport =
+            crate::ui::layout::compute_viewport(&state, ratatui::layout::Rect::new(0, 0, 80, 6));
+        assert_eq!(viewport[0].drive_rows_visible, 1);
     }
 
     #[test]
