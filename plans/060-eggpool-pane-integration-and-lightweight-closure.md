@@ -1,6 +1,6 @@
 # Phase 60: EggPool pane integration and lightweight closure
 
-Status: in progress; implementation and local verification passed; ordinary CI is pending.
+Status: completed; implementation `1406c2b`; ordinary CI `30660744394` passed.
 
 ## Objective
 
@@ -581,8 +581,8 @@ Do not keep the roadmap open for future multi-EggPool, drill-down, dashboard-dis
 
 ## Closure record
 
-- Implementation commit: recorded after local verification and before the ordinary CI run.
+- Implementation commit: `1406c2b` (`Integrate EggPool pane runtime`).
 - Local verification: `./scripts/check-local.sh` passed on Linux, including workspace formatting, clippy with `-D warnings`, all workspace tests, workspace docs, and native Linux collector tests.
 - Focused integration coverage: active-pane command routing, clamped period behavior, request generation/stale-result handling, synthetic summary HTTP responses, authentication outcomes, bounded failures, rendering, and worker cancellation behavior are covered by the `gregg` test suite.
 - Configuration reload: the reducer preserves systems and rejects old EggPool endpoint results; the executable has no file-watcher path, so no live reload subsystem was added.
-- Ordinary cross-platform CI: pending until the pushed implementation commit completes; update this record with the run URL/number before considering the roadmap closed.
+- Ordinary cross-platform CI: run `30660744394` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
