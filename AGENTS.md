@@ -171,7 +171,7 @@ v2 loopback smoke, and the nonpublishing
 `cargo publish -p gregg-protocol --dry-run --locked`; dependent-crate dry-runs
 remain manual until the new `gregg-protocol` version is visible on crates.io.
 
-Platform-specific CI should run on Linux, macOS, and Windows. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. Windows native collector and daemon smoke tests exercise real Windows APIs. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
+Platform-specific CI should run on Linux, macOS, and Windows. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. Windows native collector and daemon smoke tests exercise real Windows APIs. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed old/new cross-platform fleets, and resize cases. Protocol/poller tests should cover v1 fallback, old v2 payloads, unavailable/empty/populated drives, invalid-drive rejection without fallback, and the bounded maximum response.
 
 The installed-daemon verification script (`scripts/verify-installed-daemon.sh`)
 verifies a supplied executable by starting it, validating `/v2/healthz` and

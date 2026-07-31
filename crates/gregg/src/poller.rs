@@ -396,6 +396,8 @@ mod tests {
     use super::*;
     use crate::endpoint::Endpoint;
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
+    use gregg_protocol::test_support::LinuxSnapshotV2Builder;
+    use gregg_protocol::v2::{DriveMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES};
     use std::io;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -1121,6 +1123,56 @@ mod tests {
             matches!(result.outcome, PollOutcome::DecodeError),
             "malformed v2 should not fall back, got {:?}",
             result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_v2_drives_do_not_fall_back_to_v1() {
+        let valid = LinuxSnapshotV2Builder::default()
+            .drives(Some(vec![DriveMetrics {
+                name: "/broken".into(),
+                used_bytes: 1,
+                total_bytes: 10,
+            }]))
+            .build_payload();
+        let mut v2_json = serde_json::to_value(valid).unwrap();
+        v2_json["drives"][0]["used_bytes"] = serde_json::json!(11);
+        let v2_body = serde_json::to_vec(&v2_json).unwrap();
+        let v1_body = serde_json::to_vec(&LinuxSnapshotBuilder::default().build()).unwrap();
+        let url = mock_server_v1_v2(
+            Some((v2_body, "200 OK".to_string())),
+            (v1_body, "200 OK".to_string()),
+        )
+        .await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+
+        let result = client.poll(&ep, &crate::clock::RealClock).await;
+        assert!(matches!(result.outcome, PollOutcome::InvalidSnapshot));
+    }
+
+    #[test]
+    fn maximum_valid_v2_drive_payload_fits_response_cap_with_margin() {
+        let drives = (0..MAX_DRIVE_ENTRIES)
+            .map(|index| DriveMetrics {
+                name: format!(
+                    "/{index}{}",
+                    "x".repeat(MAX_DRIVE_NAME_BYTES - index.to_string().len() - 1)
+                ),
+                used_bytes: u64::MAX / 2,
+                total_bytes: u64::MAX,
+            })
+            .collect();
+        let payload = LinuxSnapshotV2Builder::default()
+            .drives(Some(drives))
+            .build_payload();
+        let serialized = serde_json::to_vec(&payload).unwrap();
+
+        assert!(
+            serialized.len() <= MAX_RESPONSE_BYTES - 1024,
+            "maximum valid v2 payload is {} bytes, cap is {}",
+            serialized.len(),
+            MAX_RESPONSE_BYTES
         );
     }
 

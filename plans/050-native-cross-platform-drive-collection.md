@@ -1,5 +1,7 @@
 # Phase 50: native cross-platform drive collection
 
+Status: completed.
+
 ## Objective
 
 Implement best-effort native enumeration of eligible mounted local filesystems on Linux, macOS, and Windows, then publish those entries through the Phase 49 v2 drive representation.

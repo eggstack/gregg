@@ -21,12 +21,12 @@ Gregg follows a small, manual release model:
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) | Add bounded per-drive v2 metrics, aggregate normal-view disk usage, reliable fleet scrolling, a condensed view, and selected-system drive expansion | planned; active umbrella roadmap |
-| [`049-additive-v2-drive-protocol-and-normalization.md`](049-additive-v2-drive-protocol-and-normalization.md) | Add a bounded optional v2 drive representation, preserve v1/old-v2 compatibility, and centralize client aggregation | planned |
-| [`050-native-cross-platform-drive-collection.md`](050-native-cross-platform-drive-collection.md) | Enumerate eligible mounted local filesystems natively on Linux, macOS, and Windows with best-effort failure semantics | planned; depends on 049 |
+| [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) | Add bounded per-drive v2 metrics, aggregate normal-view disk usage, reliable fleet scrolling, a condensed view, and selected-system drive expansion | completed |
+| [`049-additive-v2-drive-protocol-and-normalization.md`](049-additive-v2-drive-protocol-and-normalization.md) | Add a bounded optional v2 drive representation, preserve v1/old-v2 compatibility, and centralize client aggregation | completed |
+| [`050-native-cross-platform-drive-collection.md`](050-native-cross-platform-drive-collection.md) | Enumerate eligible mounted local filesystems natively on Linux, macOS, and Windows with best-effort failure semantics | completed |
 | [`051-dynamic-viewport-and-normal-drive-rendering.md`](051-dynamic-viewport-and-normal-drive-rendering.md) | Correct logical-system viewport following, add dynamic row accounting, and render aggregate/selected drive details in normal view | completed; depends on 049 |
-| [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | planned; depends on 050 and 051 |
-| [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | planned; depends on 049-052 |
+| [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | completed |
+| [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | implementation complete; CI pending |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
 | [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |

@@ -1,8 +1,9 @@
 //! HTTP server for the `greggd` daemon.
 //!
-//! Exposes three read-only endpoints:
+//! Exposes read-only status and health endpoints:
 //!
-//! - `GET /` and `GET /v1/status` — latest status snapshot as compact JSON.
+//! - `GET /` and `GET /v1/status` — latest v1 status snapshot as compact JSON.
+//! - `GET /v2/status` — latest flat v2 status payload, including optional drives.
 //! - `GET /healthz` — readiness and health information.
 //!
 //! All other methods or paths return `404`. No TLS, cookies, sessions,

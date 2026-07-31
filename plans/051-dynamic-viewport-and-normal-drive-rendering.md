@@ -1,5 +1,7 @@
 # Phase 51: dynamic viewport and normal drive rendering
 
+Status: completed.
+
 ## Objective
 
 Correct the existing multi-system viewport behavior and extend the normal TUI with aggregate and selected-system drive detail while keeping the renderer compact and state-driven.
@@ -112,7 +114,7 @@ Phase 52 maps keys and completes view behavior. If actions are introduced here, 
 
 ## Workstream B: replace hardcoded entry heights
 
-The current height model assumes online = four rows and offline/pending = one row. Replace it with one function that can inspect state, system, selection, view, and expansion:
+The pre-drive height model assumed online = four rows and offline/pending = one row. Replace it with one function that can inspect state, system, selection, view, and expansion:
 
 ```rust
 pub fn entry_height(state: &AppState, system_index: usize) -> u16

@@ -1,5 +1,7 @@
 # Phase 52: condensed view and view controls
 
+Status: completed.
+
 ## Objective
 
 Add a compact one-row-per-system fleet view modeled on `condensed.txt`, complete the requested view-cycling and drive-expansion key behavior, and reuse the Phase 51 dynamic viewport rather than creating a second navigation system.

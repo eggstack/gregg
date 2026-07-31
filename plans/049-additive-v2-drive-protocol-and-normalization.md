@@ -1,5 +1,7 @@
 # Phase 49: additive v2 drive protocol and client normalization
 
+Status: completed.
+
 ## Objective
 
 Define the smallest backward-compatible wire and client model needed to carry per-drive capacity data through `/v2/status` while leaving v1 unchanged.
@@ -93,8 +95,8 @@ Use `#[serde(default, skip_serializing_if = "Option::is_none")]` on the drive co
 Define small protocol constants or validation limits:
 
 ```text
-maximum drive entries: 128
-maximum drive-name bytes: 1024
+maximum drive entries: 32
+maximum drive-name bytes: 512
 ```
 
 The exact constants may be smaller if repository conventions justify it, but they must comfortably cover ordinary local machines while preventing unbounded status growth. Names are UTF-8 strings after native conversion.

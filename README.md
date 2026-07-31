@@ -1,8 +1,8 @@
 # gregg
 
-`gregg` is a compact, keyboard-first terminal monitor for observing CPU, memory, swap, load, and related host statistics across multiple machines.
+`gregg` is a compact, keyboard-first terminal monitor for observing CPU, memory, swap, load, mounted-local-filesystem capacity, and related host statistics across multiple machines.
 
-The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux, macOS, or Windows systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in four terminal rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
+The project is intentionally narrow. A lightweight daemon, `greggd`, runs on designated Linux, macOS, or Windows systems and exposes one small read-only JSON API. The `gregg` client polls configured daemons and renders each reachable system in five normal-view rows, with unreachable systems collapsed to one row and moved to the bottom of the view.
 
 ## Installation
 
@@ -192,7 +192,7 @@ GET /healthz
 GET /v2/healthz
 ```
 
-The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with a display `name` and numeric `used_bytes` and `total_bytes` fields; the client derives aggregate capacity values. Drive entries are best-effort native observations of eligible mounted local filesystems, not physical-disk telemetry.
+The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with a display `name` and numeric `used_bytes` and `total_bytes` fields. Missing or `null` means unavailable/legacy; an empty list means enumeration succeeded but found no eligible volumes. The client derives aggregate capacity values. Drive entries are best-effort native observations of eligible mounted local filesystems, not physical-disk telemetry.
 
 The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/status`. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
 

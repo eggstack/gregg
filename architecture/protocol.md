@@ -71,9 +71,9 @@ only an owned display `name`, `used_bytes`, and `total_bytes`. The list is
 bounded to 32 entries and names to 512 UTF-8 bytes. A missing or null field
 means unavailable/legacy; an empty list means successful enumeration with no
 eligible filesystems. The daemon does not serialize aggregate totals or
-percentages; the client derives them with checked arithmetic. These bounds
-keep worst-case drive data below the client’s existing 64 KiB response-body
-cap without changing that cap.
+percentages; the client derives them with checked arithmetic. A maximum-bound
+valid payload is tested against the client’s existing 64 KiB response-body
+cap, which remains unchanged.
 
 Percentages are reported in the closed interval `0.0..=100.0`. Values
 outside that interval — and `NaN` / `±∞` — are rejected by validation.
@@ -203,8 +203,8 @@ collector phase plans under [`plans/`](../plans/).
 ## Sampler and HTTP server
 
 The sampler owns cadence and clock. It periodically calls the collector,
-computes deltas, and produces immutable v1 and v2 `StatusSnapshot` values
-that are cached by the HTTP server. The HTTP server serves these cached
+computes deltas, and produces immutable v1 and v2 status values, including
+the flat v2 `StatusPayloadV2` drive wrapper, that are cached by the HTTP server. The HTTP server serves these cached
 snapshots and never triggers metric collection. This separation ensures
 collection cadence is decoupled from request handling.
 

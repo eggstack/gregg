@@ -45,6 +45,13 @@ HTTP/1 JSON API on the configured port (default 11310) and is not hardened
 for public internet exposure. No firewall rules are created automatically.
 LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
+`/v2/status` is the universal status endpoint and may include a bounded
+`drives` list of mounted local filesystem names with numeric used and total
+bytes. Missing or `null` drive data means unavailable/legacy; an empty list
+means successful enumeration with no eligible volumes. Collection is
+best-effort and does not model physical disks or storage topology. Linux and
+macOS retain `/v1/status`; Windows is v2-only for status semantics.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>

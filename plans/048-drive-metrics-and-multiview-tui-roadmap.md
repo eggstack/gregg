@@ -1,5 +1,7 @@
 # Roadmap: drive metrics and multi-view TUI
 
+Status: completed with Phases 49–53.
+
 ## Purpose
 
 Extend Gregg with mounted-local-filesystem capacity reporting and a second compact fleet view while preserving the project's narrow private-LAN monitoring model.

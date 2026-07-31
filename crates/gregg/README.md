@@ -43,6 +43,11 @@ gregg edit
 Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
+The normal view uses five rows for an online system, including aggregate disk
+capacity. The condensed view uses one comparison row per system. `e` adds
+bounded detail rows for valid mounted-local-filesystem records belonging only
+to the selected online system; view and expansion state are not persisted.
+
 ## Supported platforms
 
 | Platform | Architecture | Status |

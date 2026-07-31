@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Bounded mounted-local-filesystem capacity metrics in v2 status responses,
+  with aggregate disk usage in the normal TUI and selected-system details in
+  both normal and condensed views.
+- Condensed fleet view with `h`/`l` (and arrow) view cycling plus `e` drive
+  expansion while preserving mixed v1/v2 compatibility.
+
 ## [1.0.1] - 2026-07-23
 
 ### Fixed

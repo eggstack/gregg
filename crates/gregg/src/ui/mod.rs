@@ -98,9 +98,11 @@ mod tests {
     use crate::normalized::NormalizedDrive;
     use crate::poller::{PollBatch, PollOutcome};
     use crate::state::{AppState, Reachability};
+    use gregg_protocol::test_support::LinuxSnapshotV2Builder;
     use gregg_protocol::test_support::{
         LinuxSnapshotBuilder, MacosSnapshotBuilder, WindowsSnapshotV2Builder,
     };
+    use gregg_protocol::v2::DriveMetrics;
     use gregg_protocol::StatusSnapshot;
 
     fn render_state(state: &AppState, width: u16, height: u16) -> String {
@@ -193,8 +195,30 @@ mod tests {
         state.apply_batch(&batch);
     }
 
+    fn apply_online_v2(
+        state: &mut AppState,
+        index: usize,
+        payload: gregg_protocol::v2::StatusPayloadV2,
+        generation: u64,
+    ) {
+        let system_id = state.systems[index].id.clone();
+        let endpoint = state.systems[index].endpoint.clone();
+        state.apply_batch(&PollBatch {
+            generation,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id,
+                endpoint,
+                outcome: PollOutcome::OnlineV2(Box::new(payload)),
+                latency: Duration::from_millis(10),
+            }],
+        });
+    }
+
     fn apply_offline(state: &mut AppState, index: usize) {
-        let batch = make_offline_batch(state, index);
+        let mut batch = make_offline_batch(state, index);
+        batch.generation = state.last_applied_generation + 1;
         state.apply_batch(&batch);
     }
 
@@ -1361,5 +1385,76 @@ mod tests {
         assert!(output.lines().nth(2).unwrap().contains("storage"));
         assert!(output.contains("/archive"));
         assert!(output.contains("50.0%"));
+    }
+
+    #[test]
+    fn mixed_fleet_renders_protocol_capabilities_and_selected_details_in_both_views() {
+        let config = test_config(&["legacy", "linux", "mac", "windows", "offline", "pending"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        apply_online_v2(
+            &mut state,
+            1,
+            LinuxSnapshotV2Builder::default()
+                .drives(Some(vec![
+                    DriveMetrics {
+                        name: "/".into(),
+                        used_bytes: 4,
+                        total_bytes: 10,
+                    },
+                    DriveMetrics {
+                        name: "/home".into(),
+                        used_bytes: 6,
+                        total_bytes: 10,
+                    },
+                ]))
+                .build_payload(),
+            2,
+        );
+        let mut mac = LinuxSnapshotV2Builder::default()
+            .drives(Some(vec![DriveMetrics {
+                name: "/Volumes/data".into(),
+                used_bytes: 1,
+                total_bytes: 4,
+            }]))
+            .build_payload();
+        mac.snapshot.system.os_name = "macos".into();
+        mac.snapshot.capabilities.cpu_iowait = false;
+        mac.snapshot.cpu.iowait_pct = None;
+        mac.validate().unwrap();
+        apply_online_v2(&mut state, 2, mac, 3);
+        apply_online_v2(
+            &mut state,
+            3,
+            WindowsSnapshotV2Builder::default()
+                .drives(Some(vec![DriveMetrics {
+                    name: "C:\\".into(),
+                    used_bytes: 2,
+                    total_bytes: 8,
+                }]))
+                .build_payload(),
+            4,
+        );
+        apply_offline(&mut state, 4);
+        state.selected_id = Some("id-1".into());
+        state.drives_expanded = true;
+        state.viewport_top_id = None;
+
+        let normal = render_state(&state, 120, 30);
+        assert!(normal.contains("DISK"));
+        assert!(normal.contains("COMMIT"));
+        assert!(normal.contains("IO —"));
+        assert!(normal.contains("/home"));
+        assert!(normal.contains("offline"));
+        assert!(normal.contains("pending"));
+        assert!(!normal.contains("/Volumes/data"));
+
+        state.apply_action(crate::action::Action::NextView);
+        let condensed = render_state(&state, 120, 12);
+        assert!(condensed.contains("HOST"));
+        assert!(condensed.contains("50%"));
+        assert!(condensed.contains("IOWAIT"));
+        assert!(condensed.contains("/home"));
+        assert!(!condensed.contains("/Volumes/data"));
     }
 }

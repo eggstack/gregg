@@ -162,3 +162,7 @@ total blocks minus total free blocks, not caller-specific available blocks.
 APFS volumes can share container free space, so the aggregate describes the
 displayed mounted volumes and is not a unique physical-device capacity.
 Container and volume-role topology is deliberately out of scope.
+
+Drive enumeration is best-effort: an individual disappearing or inaccessible
+volume is skipped, while top-level enumeration failure leaves drive data
+unavailable without failing CPU, memory, or swap collection.
