@@ -198,8 +198,8 @@ must not be used. The Rust toolchain pinned in `rust-toolchain.toml` is the
 current stable release; CI installs the same channel so formatting and lint
 behaviour stay aligned with local development.
 Compatibility-only dependency bounds keep fresh workspace and package-source
-resolution within that MSRV; the release workflow checks both the committed
-lockfile and newly generated locks from unpacked crates.
+resolution within that MSRV; the local release preflight and the small MSRV CI
+job provide the compatibility checks.
 
 ## Lints
 
@@ -264,7 +264,6 @@ The sustained workload driver (`crates/gregg/src/sustained_workload.rs`) is a
 `HttpClient`, and `AppState` reducer against deterministic fixture servers for a
 configured duration. It validates generation invariants, online/offline
 transitions, and bounded concurrency, then writes a machine-readable summary.
-The external runner (`scripts/run-mixed-fleet-sustained.py`) builds the test
-binary, launches the workload, samples process resources via `/proc`, and
-enforces duration and evidence requirements. Positive and negative tests for the
-runner live in `scripts/tests/test_sustained_runner.py`.
+The external runner (`scripts/run-mixed-fleet-sustained.py`) is an optional
+diagnostic for short mixed-fleet investigations; it is not part of ordinary CI
+or a release-closure evidence system.

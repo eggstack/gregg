@@ -137,7 +137,7 @@ The `greggd` daemon supports Windows x86-64 as both a foreground process and a n
 
 **Foreground mode** (`greggd run`): Runs in the current console, listening for Ctrl-C. Useful for development and diagnostics.
 
-**Service mode** (`greggd service`): The SCM entry point. The service runs under `NT AUTHORITY\LocalService` with minimal privileges. Install/uninstall through the provided PowerShell scripts or manually via `sc.exe`.
+**Service mode** (`greggd service`): The SCM entry point. The service runs under `NT AUTHORITY\LocalService` with minimal privileges. Install/uninstall through the provided PowerShell scripts or manually via `sc.exe`. Service-manager logic is covered by native tests; administrator installation depends on local Windows SCM policy.
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
@@ -219,13 +219,6 @@ Fast local check (recommended during development):
 .\scripts\check-local.ps1         # Windows (PowerShell)
 ```
 
-Full local check (pre-merge):
-
-```text
-./scripts/check-local.sh --full
-.\scripts\check-local.ps1 -Full
-```
-
 Release preflight (nonpublishing):
 
 ```text
@@ -233,14 +226,13 @@ Release preflight (nonpublishing):
 .\scripts\check-local.ps1 -Release
 ```
 
-The local script runs `cargo fmt`, `cargo clippy`, `cargo test`, `cargo doc`,
-`cargo deny`, and platform-native collector tests by default. The `--full` tier
-adds shellcheck, python tests, package content checks, and an installed-binary
-loopback smoke that uses the current checkout via
-`cargo install --path crates/greggd --locked`. The `--release` tier adds
-clean-tree, version consistency, and a single protocol-only
-`cargo publish -p gregg-protocol --dry-run --locked`; dependent-crate dry-runs
-remain manual until the protocol version is visible on crates.io.
+The default local check runs `cargo fmt`, `cargo clippy`, `cargo test`,
+`cargo doc`, and the current host's native collector tests. The `--release`
+preflight adds clean-tree and version checks, package-content review, source
+installation of `greggd`, an installed-binary v2 loopback smoke, and a single
+protocol-only `cargo publish -p gregg-protocol --dry-run --locked`.
+Dependent-crate dry-runs remain manual until the protocol version is visible on
+crates.io.
 
 Releases are published manually to crates.io and GitHub. CI never publishes.
 Maintainer instructions are in [RELEASING.md](RELEASING.md).

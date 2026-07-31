@@ -1,5 +1,10 @@
 # Phase 44: Windows CI integration and release-readiness closure
 
+> Superseded by Phase 46 for verification closure. The implementation and
+> native product coverage remain useful, but the manual elevated rehearsal,
+> closure summary, and evidence-oriented requirements below are not active
+> gates. Ordinary read-only CI is the cross-platform verification source.
+
 ## Objective
 
 Close the Windows-support line of work by integrating representative native Windows checks into the simplified source-only CI workflow, proving mixed-platform client behavior, reconciling documentation and packaging, and confirming that the manual release process remains small.

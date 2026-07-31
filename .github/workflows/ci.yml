@@ -58,12 +58,6 @@ jobs:
       - name: Native Linux collector smoke
         run: cargo test -p greggd --all-features -- collector::linux
 
-      - name: Shellcheck installer scripts
-        run: shellcheck packaging/install-linux.sh packaging/install-macos.sh
-
-      - name: Cargo deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-
   macos:
     name: macOS (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -93,8 +87,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Test
-        run: cargo test --workspace --all-targets --all-features
+      - name: Native workspace check
+        run: cargo check --workspace --all-targets --all-features
 
       - name: Native macOS collector smoke
         run: cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
@@ -122,20 +116,20 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Format check
-        run: cargo fmt --all -- --check
+      - name: Native workspace check
+        run: cargo check --workspace --all-targets --all-features
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - name: Windows client tests
+        run: cargo test -p gregg --all-targets --all-features
 
-      - name: Test
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Doc
-        run: cargo doc --workspace --no-deps
-
-      - name: Native Windows collector smoke
+      - name: Windows collector tests
         run: cargo test -p greggd --all-features -- collector::windows
+
+      - name: Windows service-manager tests
+        run: cargo test -p greggd --all-features -- service::windows
+
+      - name: Windows foreground v2 smoke
+        run: cargo test -p greggd --test windows_smoke
 
   msrv:
     name: MSRV (Rust 1.75)

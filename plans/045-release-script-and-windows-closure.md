@@ -1,5 +1,10 @@
 # Phase 45: release-script correctness and Windows closure
 
+> Superseded by Phase 46 for verification closure. The release-script and
+> product corrections remain landed, while the manual Windows rehearsal,
+> closure-record format, and evidence-oriented requirements below are no
+> longer active gates.
+
 ## Objective
 
 Close the remaining correctness and verification gaps after implementation of Plans 037 through 044 without rebuilding release orchestration or expanding CI.

@@ -75,14 +75,15 @@ git diff --name-only Cargo.lock
 
 An empty diff means the lock file is current.
 
-## 3. Run full local validation
+## 3. Run local release preflight
 
 ```bash
-./scripts/check-local.sh --full
+./scripts/check-local.sh --release
 ```
 
-This runs fmt, clippy, tests, docs, cargo-deny, shellcheck, python tests,
-package content checks, and the installed-binary loopback smoke. The smoke
+This runs the default fmt, clippy, test, docs, and native collector checks,
+then performs package-content checks and the installed-binary loopback smoke.
+The smoke
 installs the current checkout with `cargo install --path crates/greggd
 --locked` and uses `scripts/verify-installed-daemon.sh` to start the
 installed binary on a loopback port, poll `/v2/healthz` and `/v2/status`,

@@ -146,12 +146,11 @@ cargo test --workspace --all-targets --all-features
 cargo doc --workspace --no-deps
 ```
 
-Plus `cargo deny`, platform-native collector tests, and optional shellcheck/python
-tests under `--full`. The `--release` tier adds nonpublishing
-`cargo publish -p gregg-protocol --dry-run --locked` only; dependent-crate
-dry-runs remain manual until the new `gregg-protocol` version is visible on
-crates.io. Both `--full` and `--release` install `greggd` from the current
-checkout with `cargo install --path crates/greggd --locked`.
+Plus platform-native collector tests. The `--release` preflight adds clean-tree
+and version checks, package lists, source installation of `greggd`, one bounded
+v2 loopback smoke, and the nonpublishing
+`cargo publish -p gregg-protocol --dry-run --locked`; dependent-crate dry-runs
+remain manual until the new `gregg-protocol` version is visible on crates.io.
 
 Platform-specific CI should run on Linux, macOS, and Windows. Linux collector semantics require fixture-driven tests. macOS FFI wrappers require native tests plus pure tests for normalization/calculation logic. Windows native collector and daemon smoke tests exercise real Windows APIs. HTTP tests should use synthetic collectors so server behavior is deterministic. TUI buffer tests should cover narrow, medium, wide, mixed online/offline, and resize cases.
 
@@ -194,4 +193,4 @@ automation. The only acceptable `cargo publish` invocations are in
 
 Keep commits scoped to one plan or one coherent corrective pass. Update documentation and tests with behavioral changes. Avoid opportunistic refactors across crate boundaries unless they are necessary to satisfy current acceptance criteria.
 
-Do not claim a phase complete because code exists. A phase is complete only when its explicit tests, platform checks, documentation, and acceptance criteria are satisfied with evidence.
+Do not claim a phase complete because code exists. A phase is complete only when its explicit tests, platform checks, documentation, and acceptance criteria are satisfied with recorded command results or ordinary CI status; do not create a separate evidence system.

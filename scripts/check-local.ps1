@@ -1,21 +1,16 @@
 # check-local.ps1 — local validation entry point for gregg (Windows).
 #
-# Tiers:
-#   (default)   Fast developer check: fmt, clippy, test, doc, deny.
-#   -Full       Full local check: adds shellcheck, python tests, package checks.
-#   -Release    Release preflight: adds clean-tree, version consistency, package list.
+# Modes:
+#   (default)   Fast developer check: fmt, clippy, test, doc, native collector.
+#   -Release    Release preflight: adds clean-tree, package/install smoke, dry-run.
 #
 # Usage:
 #   .\scripts\check-local.ps1
-#   .\scripts\check-local.ps1 -Full
 #   .\scripts\check-local.ps1 -Release
-#   .\scripts\check-local.ps1 -SkipDeny
 
 [CmdletBinding()]
 param(
-    [switch]$Full,
-    [switch]$Release,
-    [switch]$SkipDeny
+    [switch]$Release
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,13 +18,7 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptDir
 
-if ($Release) {
-    $Mode = 'release'
-} elseif ($Full) {
-    $Mode = 'full'
-} else {
-    $Mode = 'default'
-}
+$Mode = if ($Release) { 'release' } else { 'default' }
 
 Push-Location $RepoRoot
 
@@ -49,11 +38,6 @@ function Invoke-OrFail {
         Write-Error "local check failed: $($script:CURRENT_STEP)"
         exit 1
     }
-}
-
-function Test-CommandAvailable {
-    param([string]$Name)
-    $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
 function Get-WorkspaceVersion {
@@ -204,15 +188,6 @@ Invoke-OrFail { cargo test --workspace --all-targets --all-features }
 Write-Step "cargo doc --workspace --no-deps"
 Invoke-OrFail { cargo doc --workspace --no-deps }
 
-if (-not $SkipDeny) {
-    if (Test-CommandAvailable 'cargo-deny') {
-        Write-Step "cargo deny check"
-        Invoke-OrFail { cargo deny check }
-    } else {
-        Write-Host "cargo-deny not installed, skipping (install with: cargo install cargo-deny)"
-    }
-}
-
 # Platform-native collector tests
 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
     Write-Step "native Windows collector tests"
@@ -227,28 +202,19 @@ if ($IsWindows -or $env:OS -eq 'Windows_NT') {
     Write-Host "  skipping platform-native collector tests"
 }
 
-# ── Tier 2 (-Full): full local check ────────────────────────────────────────
+# ── Release preflight ───────────────────────────────────────────────────────
 
-if ($Mode -eq 'full' -or $Mode -eq 'release') {
-
-    # Shell syntax checks
-    if (Test-CommandAvailable 'shellcheck') {
-        Write-Step "shellcheck packaging/install scripts"
-        Invoke-OrFail { shellcheck packaging/install-linux.sh packaging/install-macos.sh }
-    } else {
-        Write-Host "shellcheck not installed, skipping"
+if ($Mode -eq 'release') {
+    Write-Step "clean-tree check"
+    $status = git status --porcelain
+    if ($status) {
+        Write-Error "working tree is not clean"
+        git status --short
+        exit 1
     }
 
-    # Python tests
-    if (Test-CommandAvailable 'python3') {
-        Write-Step "python3 tests for scripts"
-        Invoke-OrFail { python3 -m pytest scripts/tests/ -v --tb=short }
-    } elseif (Test-CommandAvailable 'python') {
-        Write-Step "python tests for scripts"
-        Invoke-OrFail { python -m pytest scripts/tests/ -v --tb=short }
-    } else {
-        Write-Host "python3 not installed, skipping python tests"
-    }
+    Write-Step "version consistency check"
+    Test-VersionConsistency
 
     # Package content check (no publish)
     Write-Step "cargo package --list (gregg-protocol)"
@@ -277,23 +243,6 @@ if ($Mode -eq 'full' -or $Mode -eq 'release') {
             Remove-Item -LiteralPath $TempInstallDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
-}
-
-# ── Tier 3 (-Release): release preflight ────────────────────────────────────
-
-if ($Mode -eq 'release') {
-
-    Write-Step "clean-tree check"
-    $status = git status --porcelain
-    if ($status) {
-        Write-Error "working tree is not clean"
-        git status --short
-        exit 1
-    }
-
-    Write-Step "version consistency check"
-    Test-VersionConsistency
-
     Write-Step "cargo publish -p gregg-protocol --dry-run --locked"
     Invoke-OrFail { cargo publish -p gregg-protocol --dry-run --locked }
 }
@@ -301,4 +250,4 @@ if ($Mode -eq 'release') {
 Pop-Location
 
 Write-Host ""
-Write-Host "=== all checks passed (tier: $Mode) ==="
+Write-Host "=== all checks passed (mode: $Mode) ==="

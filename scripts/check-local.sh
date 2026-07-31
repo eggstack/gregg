@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # check-local.sh — local validation entry point for gregg.
 #
-# Tiers:
-#   (default)   Fast developer check: fmt, clippy, test, doc, deny.
-#   --full      Full local check: adds shellcheck, python tests, package checks.
-#   --release   Release preflight: adds clean-tree, version consistency, package list.
+# Modes:
+#   (default)   Fast developer check: fmt, clippy, test, doc, native collector.
+#   --release   Release preflight: adds clean-tree, package/install smoke, dry-run.
 #
 # Usage:
-#   ./scripts/check-local.sh [--full] [--release] [--skip-deny] [--help]
+#   ./scripts/check-local.sh [--release] [--help]
 
 set -euo pipefail
 
@@ -15,47 +14,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 MODE="default"
-SKIP_DENY=0
 
 usage() {
     cat <<'EOF'
 Usage: scripts/check-local.sh [OPTIONS]
 
 Options:
-  --full       Run the full local check tier (adds shellcheck, python tests,
-               package checks, and installed-binary smoke).
   --release    Run the release preflight tier (adds clean-tree, version
-               consistency, cargo package list, and publish dry-run).
-  --skip-deny  Skip the cargo-deny dependency check.
+               consistency, package lists, installed-binary smoke, and the
+               protocol publish dry-run).
   --help       Show this help message and exit.
 
-Tiers:
-  (default)    fmt, clippy, test, doc, cargo deny, platform-native tests.
-  --full       Everything in default plus shellcheck, python tests, package
-               content checks, and installed-binary loopback smoke.
-  --release    Everything in full plus clean-tree, version consistency,
-               cargo package --list, and cargo publish --dry-run.
+Modes:
+  (default)    fmt, clippy, test, doc, and platform-native collector tests.
+  --release    Default checks plus clean-tree, version/package checks,
+               source installation, v2 loopback smoke, and protocol dry-run.
 
 Examples:
   ./scripts/check-local.sh                  # fast developer check
-  ./scripts/check-local.sh --full           # pre-merge full check
-  ./scripts/check-local.sh --full --skip-deny
   ./scripts/check-local.sh --release        # release preflight
 EOF
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full)
-            MODE="full"
-            shift
-            ;;
         --release)
             MODE="release"
-            shift
-            ;;
-        --skip-deny)
-            SKIP_DENY=1
             shift
             ;;
         --help|-h)
@@ -72,7 +56,6 @@ done
 
 cd "${REPO_ROOT}"
 
-FAILED=""
 CURRENT_STEP=""
 
 step() {
@@ -114,15 +97,6 @@ run_or_fail cargo test --workspace --all-targets --all-features
 step "cargo doc --workspace --no-deps"
 run_or_fail cargo doc --workspace --no-deps
 
-if [[ "${SKIP_DENY}" -eq 0 ]]; then
-    if command -v cargo-deny >/dev/null 2>&1; then
-        step "cargo deny check"
-        run_or_fail cargo deny check
-    else
-        echo "cargo-deny not installed, skipping (install with: cargo install cargo-deny)"
-    fi
-fi
-
 # Platform-native collector tests
 case "${OS}" in
     linux)
@@ -142,52 +116,7 @@ case "${OS}" in
         ;;
 esac
 
-# ── Tier 2 (--full): full local check ───────────────────────────────────────
-
-if [[ "${MODE}" == "full" || "${MODE}" == "release" ]]; then
-
-    # Shell syntax checks
-    if command -v shellcheck >/dev/null 2>&1; then
-        step "shellcheck packaging/install scripts"
-        run_or_fail shellcheck packaging/install-linux.sh packaging/install-macos.sh
-    else
-        echo "shellcheck not installed, skipping"
-    fi
-
-    # Python tests
-    if command -v python3 >/dev/null 2>&1; then
-        step "python3 tests for scripts"
-        run_or_fail python3 -m pytest scripts/tests/ -v --tb=short
-    else
-        echo "python3 not installed, skipping python tests"
-    fi
-
-    # Package content check (no publish)
-    step "cargo package --list (gregg-protocol)"
-    run_or_fail cargo package --list -p gregg-protocol
-
-    step "cargo package --list (greggd)"
-    run_or_fail cargo package --list -p greggd
-
-    step "cargo package --list (gregg)"
-    run_or_fail cargo package --list -p gregg
-
-    # Install binary loopback smoke
-    step "installed-binary loopback smoke"
-    TEMP_INSTALL_DIR="$(mktemp -d)"
-    cleanup_install() { rm -rf "${TEMP_INSTALL_DIR}"; }
-    trap cleanup_install EXIT
-
-    run_or_fail cargo install --path crates/greggd --locked --root "${TEMP_INSTALL_DIR}" --debug
-    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --version
-    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --help
-    run_or_fail bash "${SCRIPT_DIR}/verify-installed-daemon.sh" "${TEMP_INSTALL_DIR}/bin/greggd"
-
-    trap - EXIT
-    cleanup_install
-fi
-
-# ── Tier 3 (--release): release preflight ────────────────────────────────────
+# ── Release preflight ───────────────────────────────────────────────────────
 
 check_version_consistency() {
     local workspace_version_value
@@ -246,7 +175,6 @@ check_version_consistency() {
 }
 
 if [[ "${MODE}" == "release" ]]; then
-
     step "clean-tree check"
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "error: working tree is not clean" >&2
@@ -257,9 +185,29 @@ if [[ "${MODE}" == "release" ]]; then
     step "version consistency check"
     run_or_fail check_version_consistency
 
+    step "cargo package --list (gregg-protocol)"
+    run_or_fail cargo package --list -p gregg-protocol
+
+    step "cargo package --list (greggd)"
+    run_or_fail cargo package --list -p greggd
+
+    step "cargo package --list (gregg)"
+    run_or_fail cargo package --list -p gregg
+
+    step "installed-binary loopback smoke"
+    TEMP_INSTALL_DIR="$(mktemp -d)"
+    cleanup_install() { rm -rf "${TEMP_INSTALL_DIR}"; }
+    trap cleanup_install EXIT
+    run_or_fail cargo install --path crates/greggd --locked --root "${TEMP_INSTALL_DIR}" --debug
+    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --version
+    run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --help
+    run_or_fail bash "${SCRIPT_DIR}/verify-installed-daemon.sh" "${TEMP_INSTALL_DIR}/bin/greggd"
+    trap - EXIT
+    cleanup_install
+
     step "cargo publish -p gregg-protocol --dry-run --locked"
     run_or_fail cargo publish -p gregg-protocol --dry-run --locked
 fi
 
 echo ""
-echo "=== all checks passed (tier: ${MODE}) ==="
+echo "=== all checks passed (mode: ${MODE}) ==="

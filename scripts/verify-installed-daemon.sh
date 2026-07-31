@@ -116,9 +116,9 @@ fetch() {
 validate_health() {
     local body_path="$1"
     jq -e '
-        (.schema_version == 1 or .schema_version == 2) and
+        .schema_version == 2 and
         (.state == "ready" or .state == "warming" or .state == "failed")
-    ' "${body_path}" >/dev/null 2>&1 || die "/healthz returned malformed JSON"
+    ' "${body_path}" >/dev/null 2>&1 || die "/v2/healthz returned malformed JSON"
 }
 
 validate_status_v2() {
