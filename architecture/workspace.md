@@ -160,6 +160,29 @@ scheduler, state reducer, terminal lifecycle, crossterm event stream, and
 Ratatui rendering. The TUI reads `AppState` projections and renders without
 performing network or filesystem I/O.
 
+### EggPool summary client
+
+The optional EggPool path lives in `crates/gregg/src/eggpool.rs` and is
+deliberately separate from greggd polling. `EggpoolClient` reuses the client's
+long-lived `reqwest` stack, disables redirects, sends only
+`/api/stats/summary?period=...`, and caps response bodies at 16 KiB. It accepts
+only the four fixed periods (`1h`, `24h`, `7d`, `30d`) and normalizes the
+required fields into `EggpoolSummary`, treating a null cache ratio and zero
+streamed requests as unavailable values.
+
+Authentication is request-local: a configured environment-variable name is
+resolved immediately before constructing a sensitive Bearer header and is never
+stored in an outcome, result, or debug value. Stable outcomes classify missing
+credentials, HTTP status, bounded-body, decoding, semantic, timeout, and
+network failures without retaining response bodies or error strings.
+
+`spawn_worker` is the only EggPool scheduler. It is created only for a
+configured entry, owns at most one in-flight request, fetches on activation or
+period/manual refresh, suppresses work while inactive, and ticks no faster than
+once per 60 seconds while active. Generation numbers and cancellation make
+superseded results safe for the Phase 59 reducer; runtime event-loop wiring is
+deferred to Phase 60.
+
 ## Client TUI
 
 The TUI lives in `crates/gregg/src/` and is composed of these modules:

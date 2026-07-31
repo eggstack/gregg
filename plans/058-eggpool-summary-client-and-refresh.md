@@ -1,6 +1,6 @@
 # Phase 58: EggPool summary client and refresh behavior
 
-Status: planned.
+Status: completed.
 
 ## Objective
 

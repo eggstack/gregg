@@ -127,7 +127,13 @@ gregg eggpool remove eggpool.local
 EggPool configuration defaults to HTTP port `11300`; `--https` selects HTTPS.
 The add/list/remove commands store and display only the configured
 environment-variable name, never its resolved secret, and do not check
-connectivity. Omitting `[eggpool]` disables the future pane.
+connectivity. When `[eggpool]` is configured, the client consumes only
+`GET /api/stats/summary` for the fixed `1h`, `24h`, `7d`, and `30d` periods.
+Public installations send no authentication header; protected installations
+send a request-local `Authorization: Bearer` header resolved from the named
+environment variable. Missing or empty variables fail locally without a
+request. Response bodies and summary values are bounded and semantically
+validated. Omitting `[eggpool]` creates no EggPool worker or request.
 
 ### TUI navigation
 

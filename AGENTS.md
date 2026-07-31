@@ -16,8 +16,9 @@ The client optionally supports exactly one EggPool statistics source through
 `gregg eggpool add`, `list`, and `remove`. It is client-only, defaults to HTTP
 port `11300`, accepts only `http`/`https`, and persists an API-key
 environment-variable name, never a resolved secret. Configuration commands do
-not perform network or environment lookups; EggPool polling and pane behavior
-belong to later phases.
+not perform network or environment lookups. The Phase 58 client resolves the
+API-key environment reference only while constructing a request; pane state
+and final event-loop integration remain in Phases 59-60.
 
 ## Source of truth
 

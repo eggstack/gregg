@@ -2,6 +2,7 @@ mod action;
 mod cli;
 mod clock;
 mod config;
+mod eggpool;
 mod eggpool_endpoint;
 mod endpoint;
 mod event;
