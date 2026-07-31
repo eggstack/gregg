@@ -13,11 +13,11 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the active product roadmap. Plans 049 through 053 add bounded mounted-local-filesystem metrics, correct the existing multi-system viewport, add normal/condensed TUI views, and close through the existing lightweight verification model. This roadmap does not reopen release or CI design.
+[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) is the sole remaining corrective pass and is limited to one normal-view height boundary, two native drive-enumeration failure sentinels, and plan-index wording. This corrective pass does not reopen product, release, or CI design.
 
 [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
 
-## Active roadmap and execution phases
+## Current roadmap and execution phases
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ Gregg follows a small, manual release model:
 | [`051-dynamic-viewport-and-normal-drive-rendering.md`](051-dynamic-viewport-and-normal-drive-rendering.md) | Correct logical-system viewport following, add dynamic row accounting, and render aggregate/selected drive details in normal view | completed; depends on 049 |
 | [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | completed |
 | [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | completed; CI run 30632762621 passed |
+| [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) | Correct the normal-view four-row boundary, preserve native enumeration failure semantics, and reconcile completed-roadmap wording | planned; sole open corrective phase |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
 | [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |
@@ -46,15 +47,15 @@ These plans contain product/platform work. They are not release-gate blockers.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by 036 and active product roadmap 048 |
+| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded corrective Phase 54 |
 | [`001-foundation-workspace-protocol.md`](001-foundation-workspace-protocol.md) | Workspace, package metadata, protocol schema, fixtures, CI foundation | implemented baseline |
 | [`002-linux-metrics-collector.md`](002-linux-metrics-collector.md) | Native Linux identity and metric sampling | implemented; retain as architecture history |
 | [`003-macos-metrics-collector.md`](003-macos-metrics-collector.md) | Native Darwin/Mach/sysctl metric sampling | implemented; retain as architecture history |
 | [`004-daemon-sampler-http-api.md`](004-daemon-sampler-http-api.md) | Cached sampler, readiness, HTTP API, shutdown | implemented; correctness tracked by product plans |
 | [`005-daemon-config-service-packaging.md`](005-daemon-config-service-packaging.md) | Atomic config, lifecycle CLI, systemd, launchd, installation | implemented; Windows extension is Phase 43 |
 | [`006-client-config-cli.md`](006-client-config-cli.md) | Endpoint model and configuration commands | implemented; Windows extension is Phase 40 |
-| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 |
-| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current TUI expansion is Plans 051-052 |
+| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 and corrected by Phase 54 |
+| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current TUI expansion is Plans 051-052 with bounded correction in 054 |
 | [`009-testing-hardening-performance.md`](009-testing-hardening-performance.md) | Product tests, resource bounds, package validation | partially implemented; useful checks retained/simplified by 037-038 and 046 |
 
 ## Historical retired release-orchestration plans
@@ -79,13 +80,14 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 
 ## Dependency summary
 
-Active product roadmap:
+Completed product roadmap with bounded corrective follow-up:
 
 ```text
 49 -> 50
 49 -> 51
 50 + 51 -> 52
 49 + 50 + 51 + 52 -> 53
+53 -> 54
 ```
 
 Completed release/platform roadmap:
@@ -99,7 +101,7 @@ Completed release/platform roadmap:
 46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-53 must use that existing model and must not add verification or publication machinery.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-54 must use that existing model and must not add verification or publication machinery.
 
 ## Completion rule
 
@@ -132,7 +134,7 @@ Implementation handoffs should state results concisely. Do not create evidence f
 Any discovered expansion should be recorded separately unless required for:
 
 - correctness of the current Linux/macOS/Windows product;
-- the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-053;
+- the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-054;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
