@@ -149,3 +149,16 @@ sw_vers -productVersion
 
 Allow sampling tolerance (typically < 2% for CPU) and semantic differences in
 memory categorization as documented above.
+
+## Mounted filesystems
+
+Drive capacity uses the existing contained FFI seam and `getmntinfo`. Only
+local, ready, non-helper mounts with positive capacity are candidates;
+network, `devfs`, `autofs`, and `MNT_DONTBROWSE` views are omitted. Repeated
+views with the same native filesystem identity are emitted once, and results
+are sorted and bounded by the v2 protocol limits. Used bytes are derived from
+total blocks minus total free blocks, not caller-specific available blocks.
+
+APFS volumes can share container free space, so the aggregate describes the
+displayed mounted volumes and is not a unique physical-device capacity.
+Container and volume-role topology is deliberately out of scope.

@@ -6,7 +6,7 @@
 
 #![allow(unsafe_code)]
 
-use crate::collector::error::CollectError;
+use crate::collector::error::{CollectError, CollectErrorKind};
 
 /// Cumulative CPU time counters from `GetSystemTimes`.
 ///
@@ -72,11 +72,22 @@ pub struct RawProcessorTopology {
     pub group_count: u16,
 }
 
+/// Owned logical-drive result from the Windows native source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawLogicalDrive {
+    pub root: String,
+    pub drive_type: u32,
+    pub total_bytes: u64,
+    pub free_bytes: u64,
+}
+
 /// Abstraction over native Windows system queries.
 ///
 /// Production code calls FFI; tests inject a mock to exercise edge cases
 /// without depending on the host state.
 pub trait WindowsSource: Send + Sync + std::fmt::Debug {
+    /// Enumerate ready logical drives and query their total/free capacity.
+    fn logical_drives(&self) -> Result<Vec<RawLogicalDrive>, CollectError>;
     /// Read cumulative CPU time counters from `GetSystemTimes`.
     fn cpu_times(&self) -> Result<RawCpuTimes, CollectError>;
 
@@ -101,6 +112,7 @@ pub trait WindowsSource: Send + Sync + std::fmt::Debug {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MockWindowsSource {
+    pub drives: Vec<RawLogicalDrive>,
     pub cpu: RawCpuTimes,
     pub topology: RawProcessorTopology,
     pub memory: RawPhysicalMemory,
@@ -111,6 +123,7 @@ pub struct MockWindowsSource {
     pub memory_error: bool,
     pub commit_error: bool,
     pub identity_error: bool,
+    pub drives_error: bool,
     /// When true, `cpu_times` increments `idle`, `kernel`, and `user` by a
     /// small delta on each call so successive samples produce a valid
     /// non-zero CPU interval.
@@ -121,6 +134,7 @@ pub struct MockWindowsSource {
 impl Clone for MockWindowsSource {
     fn clone(&self) -> Self {
         Self {
+            drives: self.drives.clone(),
             cpu: self.cpu,
             topology: self.topology,
             memory: self.memory,
@@ -131,6 +145,7 @@ impl Clone for MockWindowsSource {
             memory_error: self.memory_error,
             commit_error: self.commit_error,
             identity_error: self.identity_error,
+            drives_error: self.drives_error,
             auto_increment_cpu: self.auto_increment_cpu,
             cpu_call_count: std::sync::atomic::AtomicU32::new(
                 self.cpu_call_count
@@ -145,6 +160,12 @@ impl MockWindowsSource {
     #[must_use]
     pub fn success() -> Self {
         Self {
+            drives: vec![RawLogicalDrive {
+                root: "C:\\\\".to_string(),
+                drive_type: DRIVE_FIXED,
+                total_bytes: 100,
+                free_bytes: 25,
+            }],
             cpu: RawCpuTimes {
                 idle: 8_000,
                 kernel: 8_500,
@@ -176,6 +197,7 @@ impl MockWindowsSource {
             memory_error: false,
             commit_error: false,
             identity_error: false,
+            drives_error: false,
             auto_increment_cpu: false,
             cpu_call_count: std::sync::atomic::AtomicU32::new(0),
         }
@@ -183,6 +205,16 @@ impl MockWindowsSource {
 }
 
 impl WindowsSource for MockWindowsSource {
+    fn logical_drives(&self) -> Result<Vec<RawLogicalDrive>, CollectError> {
+        if self.drives_error {
+            return Err(CollectError::new(
+                crate::collector::error::CollectErrorKind::SourceUnavailable,
+                "mock logical drive error",
+            ));
+        }
+        Ok(self.drives.clone())
+    }
+
     fn cpu_times(&self) -> Result<RawCpuTimes, CollectError> {
         if self.cpu_error {
             return Err(CollectError::new(
@@ -272,6 +304,10 @@ impl WindowsSource for MockWindowsSource {
 pub struct NativeWindowsSource;
 
 impl WindowsSource for NativeWindowsSource {
+    fn logical_drives(&self) -> Result<Vec<RawLogicalDrive>, CollectError> {
+        logical_drives()
+    }
+
     fn cpu_times(&self) -> Result<RawCpuTimes, CollectError> {
         cpu_times()
     }
@@ -313,6 +349,8 @@ const ALL_PROCESSOR_GROUPS: u16 = 0x0000_FFFF;
 
 /// `ComputerNameDnsHostname` from `COMPUTER_NAME_FORMAT` enum.
 const COMPUTER_NAME_DNS_HOSTNAME: u32 = 3;
+pub(crate) const DRIVE_FIXED: u32 = 3;
+pub(crate) const DRIVE_REMOVABLE: u32 = 2;
 
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
@@ -424,6 +462,15 @@ mod ffi {
         pub fn GetSystemInfo(lp_system_info: *mut SystemInfo);
 
         pub fn GetLastError() -> u32;
+
+        pub fn GetLogicalDriveStringsW(buffer_length: u32, buffer: *mut u16) -> u32;
+        pub fn GetDriveTypeW(root_path_name: *const u16) -> u32;
+        pub fn GetDiskFreeSpaceExW(
+            directory_name: *const u16,
+            free_bytes_available: *mut u64,
+            total_number_of_bytes: *mut u64,
+            total_number_of_free_bytes: *mut u64,
+        ) -> i32;
     }
 }
 
@@ -436,6 +483,86 @@ mod ffi {
 #[allow(unsafe_code)]
 unsafe fn filetime_to_u64(ft: ffi::FileTime) -> u64 {
     u64::from(ft.dw_low_date_time) | (u64::from(ft.dw_high_date_time) << 32)
+}
+
+fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut buffer = vec![0_u16; 256];
+        let mut required = unsafe {
+            // Safety: buffer is writable and its declared length matches its
+            // allocation. The returned size is checked before parsing.
+            ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
+        } as usize;
+        if required >= buffer.len() {
+            let size = required.checked_add(1).ok_or_else(|| {
+                CollectError::new(
+                    CollectErrorKind::Numeric,
+                    "logical-drive buffer size overflow",
+                )
+            })?;
+            buffer.resize(size, 0);
+            required = unsafe {
+                // Safety: the resized buffer is writable and the API receives
+                // its exact capacity.
+                ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
+            } as usize;
+            if required >= buffer.len() {
+                return Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "GetLogicalDriveStringsW buffer remained insufficient",
+                ));
+            }
+        }
+
+        let mut result = Vec::new();
+        for root in buffer[..required].split(|value| *value == 0) {
+            if root.is_empty() {
+                continue;
+            }
+            let root = String::from_utf16(root).map_err(|_| {
+                CollectError::new(
+                    CollectErrorKind::Parse,
+                    "logical drive root is invalid UTF-16",
+                )
+            })?;
+            let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+            let drive_type = unsafe {
+                // Safety: wide is NUL-terminated and lives through this call.
+                ffi::GetDriveTypeW(wide.as_ptr())
+            };
+            if drive_type != DRIVE_FIXED && drive_type != DRIVE_REMOVABLE {
+                continue;
+            }
+            let mut available = 0_u64;
+            let mut total = 0_u64;
+            let mut free = 0_u64;
+            let success = unsafe {
+                // Safety: all output pointers reference initialized writable
+                // locals and the root pointer is valid for this call.
+                ffi::GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut free)
+            };
+            if success == 0 || total == 0 || free > total {
+                continue;
+            }
+            result.push(RawLogicalDrive {
+                root,
+                drive_type,
+                total_bytes: total,
+                free_bytes: free,
+            });
+        }
+        result.sort_by(|left, right| left.root.cmp(&right.root));
+        result.dedup_by(|left, right| left.root == right.root);
+        Ok(result)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "Windows drive APIs not available on this platform",
+        ))
+    }
 }
 
 /// Read cumulative CPU time counters from `GetSystemTimes`.

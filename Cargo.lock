@@ -504,6 +504,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "indexmap",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 1.0.69",

@@ -8,6 +8,8 @@
 //!
 //! No external commands are invoked for metrics collection.
 
+#![allow(unsafe_code)]
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -27,6 +29,9 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
 
     /// Return the kernel-reported logical core count, if known.
     fn available_parallelism(&self) -> Option<usize>;
+
+    /// Read native filesystem capacity for a mounted path.
+    fn statvfs(&self, path: &Path) -> Result<RawStatvfs, CollectError>;
 
     /// Downcast helper used by tests to mutate fixture content after the
     /// source has been wrapped in an `Arc`. Production implementations return
@@ -160,6 +165,16 @@ impl ProcSource {
         memory::parse_meminfo(&raw)
     }
 
+    /// Read Linux mount records from `/proc/self/mountinfo`.
+    pub fn read_mountinfo(&self) -> Result<String, CollectError> {
+        self.read_path(Path::new("/proc/self/mountinfo"))
+    }
+
+    /// Read native capacity for one mount point.
+    pub fn statvfs(&self, path: &Path) -> Result<RawStatvfs, CollectError> {
+        self.inner.statvfs(path)
+    }
+
     /// Read `/etc/os-release`. Missing file yields `Ok(None)` so identity
     /// collection can fall back to a generic Linux identity.
     pub fn read_os_release(&self) -> Result<Option<String>, CollectError> {
@@ -258,6 +273,29 @@ impl FileSource for HostSource {
             .ok()
             .map(std::num::NonZeroUsize::get)
     }
+
+    fn statvfs(&self, path: &Path) -> Result<RawStatvfs, CollectError> {
+        let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+            .map_err(|_| CollectError::new(CollectErrorKind::Parse, "mount path contains NUL"))?;
+        let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // Safety: c_path is NUL-terminated and stat points to writable,
+        // correctly sized storage. The return code is checked before reading.
+        let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+        if result != 0 {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                format!("statvfs failed for {}", path.display()),
+            ));
+        }
+        // Safety: statvfs initialized the structure when it returned success.
+        let stat = unsafe { stat.assume_init() };
+        Ok(RawStatvfs {
+            blocks: stat.f_blocks,
+            free_blocks: stat.f_bfree,
+            fragment_size: stat.f_frsize,
+            block_size: stat.f_bsize,
+        })
+    }
 }
 
 fn map_io_error(path: &Path, err: io::Error) -> CollectError {
@@ -291,6 +329,7 @@ fn map_io_error(path: &Path, err: io::Error) -> CollectError {
 #[derive(Debug, Clone, Default)]
 pub struct MemorySource {
     files: std::collections::HashMap<PathBuf, String>,
+    stats: std::collections::HashMap<PathBuf, RawStatvfs>,
     logical_cores: Option<usize>,
 }
 
@@ -312,6 +351,11 @@ impl MemorySource {
     /// tests that share a [`ProcSource`] between fixtures.
     pub fn add_file(&mut self, path: impl Into<PathBuf>, content: impl Into<String>) {
         self.files.insert(path.into(), content.into());
+    }
+
+    /// Add native filesystem statistics for a fixture mount point.
+    pub fn add_statvfs(&mut self, path: impl Into<PathBuf>, stats: RawStatvfs) {
+        self.stats.insert(path.into(), stats);
     }
 
     /// Returns `true` if the given path has been registered as a fixture.
@@ -345,12 +389,30 @@ impl FileSource for MemorySource {
         self.logical_cores
     }
 
+    fn statvfs(&self, path: &Path) -> Result<RawStatvfs, CollectError> {
+        self.stats.get(path).copied().ok_or_else(|| {
+            CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                format!("fixture statvfs missing: {}", path.display()),
+            )
+        })
+    }
+
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any>
     where
         Self: 'static,
     {
         Some(self)
     }
+}
+
+/// Owned subset of Linux `statvfs` needed for capacity arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawStatvfs {
+    pub blocks: u64,
+    pub free_blocks: u64,
+    pub fragment_size: u64,
+    pub block_size: u64,
 }
 
 /// Output of [`ProcSource::read_proc_stat`].

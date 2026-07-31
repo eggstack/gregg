@@ -11,6 +11,7 @@ use crate::collector::error::{CollectError, CollectErrorKind};
 use crate::collector::{CollectedMetrics, SystemCollector};
 
 mod cpu;
+mod drives;
 mod fixtures;
 mod identity;
 mod memory;
@@ -128,7 +129,13 @@ impl SystemCollector for LinuxCollector {
             memory: memory_sample.into_metrics(),
             swap: swap_sample.into_metrics(),
             commit: None,
-            drives: None,
+            drives: match drives::collect(&self.source) {
+                Ok(drives) => Some(drives),
+                Err(error) => {
+                    tracing::debug!(kind = ?error.kind, "Linux drive collection unavailable");
+                    None
+                }
+            },
         })
     }
 

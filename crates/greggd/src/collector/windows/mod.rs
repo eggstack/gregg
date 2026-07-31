@@ -22,6 +22,30 @@ pub mod identity;
 pub mod memory;
 pub mod source;
 
+fn collect_drives<S: WindowsSource>(source: &S) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
+    let raw = match source.logical_drives() {
+        Ok(raw) => raw,
+        Err(error) => {
+            tracing::debug!(kind = ?error.kind, "Windows drive collection unavailable");
+            return None;
+        }
+    };
+    let candidates = raw
+        .into_iter()
+        .filter(|drive| {
+            (drive.drive_type == source::DRIVE_FIXED || drive.drive_type == source::DRIVE_REMOVABLE)
+                && !drive.root.is_empty()
+        })
+        .map(|drive| crate::collector::drives::DriveCandidate {
+            identity: drive.root.clone(),
+            name: drive.root,
+            total_bytes: drive.total_bytes,
+            free_bytes: drive.free_bytes,
+        })
+        .collect();
+    Some(crate::collector::drives::normalize(candidates))
+}
+
 /// A Windows native collector.
 ///
 /// Constructed once per daemon process. Identity and static fields are read
@@ -167,7 +191,7 @@ impl<S: WindowsSource> SystemCollector for WindowsCollector<S> {
                 usage_pct: 0.0,
             },
             commit: Some(commit_sample.into_metrics()),
-            drives: None,
+            drives: collect_drives(&self.source),
         })
     }
 

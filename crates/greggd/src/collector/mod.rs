@@ -28,6 +28,8 @@ use gregg_protocol::{
     SystemIdentity,
 };
 
+mod drives;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 
@@ -65,7 +67,9 @@ pub struct CollectedMetrics {
     /// Windows commit charge. `None` on Linux/macOS; `Some` on Windows
     /// when the collector reports commit metrics.
     pub commit: Option<CommitMetrics>,
-    /// Optional drive capacity data. Native enumeration is added in phase 50.
+    /// Optional bounded native drive capacity data. `None` means enumeration
+    /// was unavailable; an empty list means it succeeded with no eligible
+    /// local filesystems.
     pub drives: Option<Vec<DriveMetrics>>,
 }
 

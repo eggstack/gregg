@@ -137,10 +137,10 @@ This avoids failing the entire metric family on a pathological mount namespace w
 
 ### Workstream A acceptance criteria
 
-- [ ] Shared arithmetic cannot underflow or wrap.
-- [ ] Output is deterministic and protocol-valid.
-- [ ] Bound handling is documented and tested.
-- [ ] No generic plugin/provider subsystem is introduced.
+- [x] Shared arithmetic cannot underflow or wrap.
+- [x] Output is deterministic and protocol-valid.
+- [x] Bound handling is documented and tested.
+- [x] No generic plugin/provider subsystem is introduced.
 
 ## Workstream B: Linux mount enumeration
 
@@ -264,11 +264,11 @@ One native smoke may call the production helper and assert only structural invar
 
 ### Workstream B acceptance criteria
 
-- [ ] Linux reads mountinfo and native filesystem stats without commands.
-- [ ] Escape decoding, filtering, and deduplication are fixture-tested.
-- [ ] Bind mounts do not inflate totals.
-- [ ] Per-mount errors are skipped.
-- [ ] Output is valid and sorted.
+- [x] Linux reads mountinfo and native filesystem stats without commands.
+- [x] Escape decoding, filtering, and deduplication are fixture-tested.
+- [x] Bind mounts do not inflate totals.
+- [x] Per-mount errors are skipped.
+- [x] Output is valid and sorted.
 
 ## Workstream C: macOS mounted-volume enumeration
 
@@ -350,11 +350,11 @@ One existing macOS native job may assert structural invariants only.
 
 ### Workstream C acceptance criteria
 
-- [ ] Native mounted volumes are collected through the existing FFI trait.
-- [ ] Unsafe pointers/structs do not escape `ffi.rs`.
-- [ ] Network/helper/duplicate mounts are excluded.
-- [ ] APFS limitation is documented without adding topology machinery.
-- [ ] Output is valid and sorted.
+- [x] Native mounted volumes are collected through the existing FFI trait.
+- [x] Unsafe pointers/structs do not escape `ffi.rs`.
+- [x] Network/helper/duplicate mounts are excluded.
+- [x] APFS limitation is documented without adding topology machinery.
+- [x] Output is valid and sorted.
 
 ## Workstream D: Windows logical-drive enumeration
 
@@ -434,11 +434,11 @@ One existing Windows native job may assert structural invariants only.
 
 ### Workstream D acceptance criteria
 
-- [ ] Windows uses native logical-drive and capacity APIs.
-- [ ] Network/optical/RAM/unready drives are not probed or published.
-- [ ] Used bytes are based on total free bytes.
-- [ ] Existing Windows source mocks remain deterministic.
-- [ ] Output is valid and sorted.
+- [x] Windows uses native logical-drive and capacity APIs.
+- [x] Network/optical/RAM/unready drives are not probed or published.
+- [x] Used bytes are based on total free bytes.
+- [x] Existing Windows source mocks remain deterministic.
+- [x] Output is valid and sorted.
 
 ## Workstream E: integrate with platform collectors
 
@@ -460,10 +460,10 @@ Do not duplicate drive collection for v1/v2 conversion. The sampler receives one
 
 ### Workstream E acceptance criteria
 
-- [ ] All supported collectors populate `CollectedMetrics.drives` best-effort.
-- [ ] Core collector failures retain existing semantics.
-- [ ] Drive-only failures do not transition readiness to failed.
-- [ ] No second sample/cadence/request path exists.
+- [x] All supported collectors populate `CollectedMetrics.drives` best-effort.
+- [x] Core collector failures retain existing semantics.
+- [x] Drive-only failures do not transition readiness to failed.
+- [x] No second sample/cadence/request path exists.
 
 ## Workstream F: native behavior and performance bounds
 
@@ -488,10 +488,10 @@ If per-second enumeration proves materially expensive on a supported platform du
 
 ### Workstream F acceptance criteria
 
-- [ ] Normal operation performs bounded local native calls only.
-- [ ] No new task/thread/process is introduced.
-- [ ] No cache exists without measured justification.
-- [ ] Repeated failure does not flood warning/error logs.
+- [x] Normal operation performs bounded local native calls only.
+- [x] No new task/thread/process is introduced.
+- [x] No cache exists without measured justification.
+- [x] Repeated failure does not flood warning/error logs.
 
 ## Expected files
 
@@ -559,20 +559,20 @@ dedup key count equals output count where observable
 
 Phase 50 is complete only when:
 
-- [ ] Linux, macOS, and Windows collectors publish eligible local filesystem entries through the Phase 49 v2 model.
-- [ ] Linux uses mountinfo plus a native stat API and executes no commands.
-- [ ] Linux bind/repeated mounts are deduplicated.
-- [ ] macOS uses the existing contained FFI source seam.
-- [ ] macOS excludes network/helper/duplicate mounts and documents APFS aggregate semantics.
-- [ ] Windows uses logical-drive/type/free-space native APIs through the existing source seam.
-- [ ] Windows excludes remote, optical, RAM, unknown, and unready drives.
-- [ ] Every published entry has nonempty name, positive total, and used <= total.
-- [ ] Output is deterministic and bounded.
-- [ ] Individual invalid/inaccessible volumes are skipped.
-- [ ] Top-level drive enumeration failure yields unavailable drive data without failing core readiness.
-- [ ] One sample cadence and cached HTTP path remain intact.
-- [ ] Existing native CI jobs pass without new workflow/evidence infrastructure.
-- [ ] No TUI, physical-storage topology, configuration, history, or alerting scope was added.
+- [x] Linux, macOS, and Windows collectors publish eligible local filesystem entries through the Phase 49 v2 model.
+- [x] Linux uses mountinfo plus a native stat API and executes no commands.
+- [x] Linux bind/repeated mounts are deduplicated.
+- [x] macOS uses the existing contained FFI source seam.
+- [x] macOS excludes network/helper/duplicate mounts and documents APFS aggregate semantics.
+- [x] Windows uses logical-drive/type/free-space native APIs through the existing source seam.
+- [x] Windows excludes remote, optical, RAM, unknown, and unready drives.
+- [x] Every published entry has nonempty name, positive total, and used <= total.
+- [x] Output is deterministic and bounded.
+- [x] Individual invalid/inaccessible volumes are skipped.
+- [x] Top-level drive enumeration failure yields unavailable drive data without failing core readiness.
+- [x] One sample cadence and cached HTTP path remain intact.
+- [x] Existing native CI jobs pass without new workflow/evidence infrastructure.
+- [x] No TUI, physical-storage topology, configuration, history, or alerting scope was added.
 
 ## Handoff guidance for a smaller implementation model
 

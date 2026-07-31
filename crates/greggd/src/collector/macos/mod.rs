@@ -17,6 +17,40 @@ pub mod memory;
 pub mod normalize;
 pub mod swap;
 
+fn collect_drives<S: ffi::MacNativeQueries>(
+    source: &S,
+) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
+    let mounted = match source.mounted_filesystems() {
+        Ok(mounted) => mounted,
+        Err(error) => {
+            tracing::debug!(kind = ?error.kind, "macOS drive collection unavailable");
+            return None;
+        }
+    };
+    let candidates = mounted
+        .into_iter()
+        .filter(|record| {
+            record.flags & ffi::MNT_LOCAL != 0
+                && record.flags & ffi::MNT_DONTBROWSE == 0
+                && !record.mount_point.is_empty()
+                && record.filesystem_type != "devfs"
+                && record.filesystem_type != "autofs"
+        })
+        .filter_map(|record| {
+            let unit = (record.block_size > 0).then_some(record.block_size)?;
+            let total = record.total_blocks.checked_mul(unit)?;
+            let free = record.free_blocks.checked_mul(unit)?;
+            (total > 0 && free <= total).then_some(crate::collector::drives::DriveCandidate {
+                identity: format!("{}:{}", record.fsid.0, record.fsid.1),
+                name: record.mount_point,
+                total_bytes: total,
+                free_bytes: free,
+            })
+        })
+        .collect();
+    Some(crate::collector::drives::normalize(candidates))
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -125,7 +159,7 @@ impl<S: ffi::MacNativeQueries> SystemCollector for MacOsCollector<S> {
             memory: memory.into_metrics(),
             swap: swap.into_metrics(),
             commit: None,
-            drives: None,
+            drives: collect_drives(&self.source),
         })
     }
 

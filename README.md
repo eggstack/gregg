@@ -176,13 +176,13 @@ GET /healthz
 GET /v2/healthz
 ```
 
-The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with numeric `name`, `used_bytes`, and `total_bytes` fields; the client derives aggregate capacity values.
+The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with a display `name` and numeric `used_bytes` and `total_bytes` fields; the client derives aggregate capacity values. Drive entries are best-effort native observations of eligible mounted local filesystems, not physical-disk telemetry.
 
 The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/status`. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
 
 ## Platform notes
 
-Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`). macOS collection uses Mach host statistics and `sysctlbyname` through a contained FFI boundary. Windows collection uses native system APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`). External utilities are diagnostic references, not runtime dependencies.
+Linux collection uses native kernel interfaces (`/proc/stat`, `/proc/loadavg`, `/proc/meminfo`, `/proc/self/mountinfo`) and `statvfs`. macOS collection uses Mach host statistics, `sysctlbyname`, and native mounted-filesystem enumeration through a contained FFI boundary. Windows collection uses native system APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`, `GetLogicalDriveStringsW`, `GetDriveTypeW`, `GetDiskFreeSpaceExW`). External utilities are diagnostic references, not runtime dependencies.
 
 Service integration is native to each platform (systemd on Linux, launchd on macOS, Windows SCM on Windows).
 
@@ -195,6 +195,7 @@ The daemon is designed for **private-network** use only. It does not provide TLS
 - macOS has no Linux-equivalent aggregate CPU I/O-wait state. It is reported as unsupported (`iowait_pct: null`) rather than fabricated as zero.
 - Windows does not report load averages or swap. It reports memory commit charge instead, which is a distinct metric.
 - Windows x86-64 supports up to 64 logical processors in a single processor group for aggregate CPU collection. Multi-group topologies are rejected with a clear error.
+- Drive capacity is summed from displayed mounted volumes. Bind mounts and repeated filesystem views are deduplicated; network, pseudo, optical, RAM-backed, and unready volumes are omitted. macOS APFS container topology is intentionally not modeled.
 - Per-process inspection, historical telemetry, alerting, and web dashboards are explicitly out of scope for version 1.
 
 ## Non-goals

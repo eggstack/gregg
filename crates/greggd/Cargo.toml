@@ -38,6 +38,9 @@ toml = "0.8"
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-service = ">=0.6.0, <0.8"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
 tower = { version = "0.4", features = ["util"] }

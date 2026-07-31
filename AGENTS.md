@@ -75,7 +75,8 @@ collector without depending on internal-only paths.
 The workspace enables `clippy::pedantic` as a warning (not an error) so
 contributors see style suggestions without breaking the build on unrelated
 changes. Workspace crates deny `unsafe_code` through `[workspace.lints.rust]`.
-The macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`),
+The Linux `statvfs` wrapper (`crates/greggd/src/collector/linux/source.rs`),
+the macOS collector FFI module (`crates/greggd/src/collector/macos/ffi.rs`),
 the Windows source module (`crates/greggd/src/collector/windows/source.rs`),
 and the client's narrowly scoped Unix `flock` wrapper are the only exceptions;
 each uses `#![allow(unsafe_code)]` with documented safety invariants on every
@@ -84,7 +85,7 @@ boundaries.
 
 Avoid external command execution for metrics collection. Linux metrics should come from kernel interfaces such as `/proc`; macOS metrics should come from Mach and sysctl APIs; Windows metrics should come from native system APIs such as `GetSystemTimes`, `GlobalMemoryStatusEx`, and `GetPerformanceInfo`. External tools may be used only as diagnostic references in tests or development documentation.
 
-Unsafe Rust is permitted only where required for macOS FFI or the client's
+Unsafe Rust is permitted only where required for Linux `statvfs`, macOS FFI, or the client's
 narrow Unix file-lock wrapper and Windows file-lock adapter. Contain it
 in small modules, document every safety invariant, validate returned
 lengths/status values, and expose owned safe Rust values. No unsafe
@@ -170,8 +171,9 @@ Windows.
 
 The v2 status response may include a bounded `drives` collection. Missing or
 null means drive data is unavailable/legacy, while an empty collection means
-successful enumeration with no eligible filesystems. Native drive
-enumeration is intentionally deferred to the Phase 50 collector plan.
+successful enumeration with no eligible filesystems. Phase 50 collectors
+enumerate eligible local filesystems natively on each supported OS; physical
+disk topology remains out of scope.
 
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 

@@ -82,6 +82,18 @@ pub struct RawIdentity {
     pub physical_memory_bytes: u64,
 }
 
+/// Owned mounted-filesystem data returned by the macOS native query seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMountedFilesystem {
+    pub mount_point: String,
+    pub filesystem_type: String,
+    pub fsid: (i32, i32),
+    pub flags: u32,
+    pub total_blocks: u64,
+    pub free_blocks: u64,
+    pub block_size: u64,
+}
+
 // ---------------------------------------------------------------------------
 // Native query trait for test injection
 // ---------------------------------------------------------------------------
@@ -91,6 +103,8 @@ pub struct RawIdentity {
 /// Production code calls FFI; tests inject a mock to exercise edge cases
 /// without depending on the host state.
 pub trait MacNativeQueries: Send + Sync + std::fmt::Debug {
+    /// Enumerate mounted filesystems and their native capacity counters.
+    fn mounted_filesystems(&self) -> Result<Vec<RawMountedFilesystem>, CollectError>;
     /// Read cumulative CPU tick counters from Mach `host_statistics`.
     fn cpu_load_info(&self) -> Result<RawCpuTicks, CollectError>;
 
@@ -116,6 +130,10 @@ pub trait MacNativeQueries: Send + Sync + std::fmt::Debug {
 pub struct FfiNativeQueries;
 
 impl MacNativeQueries for FfiNativeQueries {
+    fn mounted_filesystems(&self) -> Result<Vec<RawMountedFilesystem>, CollectError> {
+        mounted_filesystems()
+    }
+
     fn cpu_load_info(&self) -> Result<RawCpuTicks, CollectError> {
         cpu_load_info()
     }
@@ -146,6 +164,7 @@ impl MacNativeQueries for FfiNativeQueries {
 #[derive(Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MockNativeQueries {
+    pub mounted: Vec<RawMountedFilesystem>,
     pub cpu: RawCpuTicks,
     pub vm: RawVmStats,
     pub swap: RawSwapUsage,
@@ -156,6 +175,7 @@ pub struct MockNativeQueries {
     pub swap_error: bool,
     pub load_error: bool,
     pub identity_error: bool,
+    pub mounted_error: bool,
     /// When true, `cpu_load_info` increments `cpu` by a small delta on each
     /// call so successive samples produce a valid non-zero CPU interval.
     pub auto_increment_cpu: bool,
@@ -166,6 +186,7 @@ impl Clone for MockNativeQueries {
     fn clone(&self) -> Self {
         Self {
             cpu: self.cpu,
+            mounted: self.mounted.clone(),
             vm: self.vm,
             swap: self.swap,
             load: self.load,
@@ -175,6 +196,7 @@ impl Clone for MockNativeQueries {
             swap_error: self.swap_error,
             load_error: self.load_error,
             identity_error: self.identity_error,
+            mounted_error: self.mounted_error,
             auto_increment_cpu: self.auto_increment_cpu,
             cpu_call_count: std::sync::atomic::AtomicU32::new(
                 self.cpu_call_count
@@ -188,6 +210,15 @@ impl MockNativeQueries {
     /// Build a mock returning sensible default values.
     pub fn success() -> Self {
         Self {
+            mounted: vec![RawMountedFilesystem {
+                mount_point: "/".to_string(),
+                filesystem_type: "apfs".to_string(),
+                fsid: (1, 1),
+                flags: MNT_LOCAL,
+                total_blocks: 100,
+                free_blocks: 25,
+                block_size: 4096,
+            }],
             cpu: RawCpuTicks {
                 user: 1000,
                 system: 500,
@@ -221,6 +252,7 @@ impl MockNativeQueries {
             swap_error: false,
             load_error: false,
             identity_error: false,
+            mounted_error: false,
             auto_increment_cpu: false,
             cpu_call_count: std::sync::atomic::AtomicU32::new(0),
         }
@@ -228,6 +260,16 @@ impl MockNativeQueries {
 }
 
 impl MacNativeQueries for MockNativeQueries {
+    fn mounted_filesystems(&self) -> Result<Vec<RawMountedFilesystem>, CollectError> {
+        if self.mounted_error {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "mock mounted filesystem error",
+            ));
+        }
+        Ok(self.mounted.clone())
+    }
+
     fn cpu_load_info(&self) -> Result<RawCpuTicks, CollectError> {
         if self.cpu_error {
             return Err(CollectError::new(
@@ -309,12 +351,37 @@ const KERN_SUCCESS: kern_return_t = 0;
 const HOST_CPU_LOAD_INFO: i32 = 3;
 #[allow(non_camel_case_types)]
 const HOST_VM_INFO64: i32 = 4;
+pub(crate) const MNT_LOCAL: u32 = 0x0000_1000;
+pub(crate) const MNT_DONTBROWSE: u32 = 0x0010_0000;
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct StatFs {
+    f_bsize: i32,
+    f_iosize: i32,
+    f_blocks: u64,
+    f_bfree: u64,
+    f_bavail: u64,
+    f_files: u64,
+    f_ffree: u64,
+    f_fsid: [i32; 2],
+    f_owner: u32,
+    f_type: u32,
+    f_flags: u32,
+    f_fssubtype: u32,
+    f_fstypename: [i8; 16],
+    f_mntonname: [i8; 1024],
+    f_mntfromname: [i8; 1024],
+    f_reserved: [u32; 8],
+}
 
 // ---------------------------------------------------------------------------
 // Extern function declarations
 // ---------------------------------------------------------------------------
 
 extern "C" {
+    #[cfg(target_os = "macos")]
+    fn getmntinfo(stat: *mut *mut StatFs, flags: i32) -> i32;
     /// Canonical Mach host-self interface. Returns a send right to the
     /// host port. Unlike the legacy `host_self()` compatibility symbol,
     /// `mach_host_self()` is the documented Mach trap for obtaining the
@@ -352,6 +419,54 @@ extern "C" {
     ) -> i32;
 
     fn getloadavg(loadavg: *mut f64, nelem: std::ffi::c_int) -> std::ffi::c_int;
+}
+
+fn native_c_string(bytes: &[i8]) -> Result<String, CollectError> {
+    let length = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
+    let bytes: Vec<u8> = bytes[..length].iter().map(|byte| *byte as u8).collect();
+    String::from_utf8(bytes).map_err(|_| {
+        CollectError::new(
+            CollectErrorKind::Parse,
+            "mounted filesystem name is not UTF-8",
+        )
+    })
+}
+
+fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
+    let mut pointer: *mut StatFs = std::ptr::null_mut();
+    // Safety: getmntinfo writes a pointer to an OS-owned array and returns its
+    // element count. The array remains valid for this call; values are copied
+    // into owned Rust records before returning.
+    let count = unsafe { getmntinfo(&mut pointer, 0) };
+    if count < 0 || (count > 0 && pointer.is_null()) {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "getmntinfo returned an invalid result",
+        ));
+    }
+    let count = usize::try_from(count)
+        .map_err(|_| CollectError::new(CollectErrorKind::Parse, "getmntinfo count overflow"))?;
+    let mut result = Vec::with_capacity(count);
+    for index in 0..count {
+        // Safety: index is bounded by the count returned by getmntinfo and the
+        // pointer targets an array owned by the kernel for this call.
+        let stat = unsafe { &*pointer.add(index) };
+        result.push(RawMountedFilesystem {
+            mount_point: native_c_string(&stat.f_mntonname)?,
+            filesystem_type: native_c_string(&stat.f_fstypename)?,
+            fsid: (stat.f_fsid[0], stat.f_fsid[1]),
+            flags: stat.f_flags,
+            total_blocks: stat.f_blocks,
+            free_blocks: stat.f_bfree,
+            block_size: u64::try_from(stat.f_bsize).map_err(|_| {
+                CollectError::new(CollectErrorKind::Numeric, "negative macOS block size")
+            })?,
+        });
+    }
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
