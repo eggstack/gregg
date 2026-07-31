@@ -46,7 +46,7 @@ pub enum RefreshStatus {
 pub enum ViewMode {
     /// The detailed, one-block-per-system view.
     Normal,
-    /// Reserved for the condensed view implemented in a later phase.
+    /// The one-row-per-system fleet view.
     Condensed,
 }
 
@@ -327,7 +327,10 @@ impl AppState {
     /// Compute the page size (number of systems to skip) based on
     /// terminal height and the current viewport.
     fn page_size(&self) -> isize {
-        let height = self.terminal_size.map_or(24, |(_, h)| h).saturating_sub(2); // Reserve rows for headers/footers.
+        let height = self
+            .terminal_size
+            .map_or(24, |(_, h)| h)
+            .saturating_sub(view_header_height(self.view_mode));
 
         let order = self.display_order();
         let top_pos = self
@@ -358,8 +361,17 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
         return 0;
     };
     match (state.view_mode, system.reachability) {
-        (ViewMode::Condensed, _)
-        | (ViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
+        (ViewMode::Condensed, _) => {
+            if state.drives_expanded
+                && state.selected_id.as_deref() == Some(system.id.as_str())
+                && system.reachability == Reachability::Online
+            {
+                1_u16.saturating_add(valid_drive_count(system))
+            } else {
+                1
+            }
+        }
+        (ViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
         (ViewMode::Normal, Reachability::Online) => {
             let details = if state.drives_expanded
                 && state.selected_id.as_deref() == Some(system.id.as_str())
@@ -368,11 +380,11 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
                     .latest
                     .as_ref()
                     .and_then(|snapshot| snapshot.drives.as_ref())
-                    .map_or(0, Vec::len)
+                    .map_or(0, |drives| valid_drive_count_from_slice(drives))
             } else {
                 0
             };
-            5_u16.saturating_add(u16::try_from(details).unwrap_or(u16::MAX))
+            5_u16.saturating_add(details)
         }
     }
 }
@@ -391,7 +403,13 @@ pub fn visible_range(
     top_index: usize,
     height: u16,
 ) -> Range<usize> {
-    if height < 4 {
+    let has_online = display_order.iter().any(|&index| {
+        state
+            .systems
+            .get(index)
+            .is_some_and(|system| system.reachability == Reachability::Online)
+    });
+    if height == 0 || (state.view_mode == ViewMode::Normal && height < 4 && has_online) {
         return 0..0;
     }
 
@@ -439,7 +457,7 @@ pub fn ensure_selected_visible(state: &mut AppState) {
     };
 
     // The renderer uses the complete frame as its viewport.
-    let usable_height = height;
+    let usable_height = height.saturating_sub(view_header_height(state.view_mode));
 
     // Find which systems fit from top_pos downward.
     let visible = visible_range(&order, state, top_pos, usable_height);
@@ -469,6 +487,32 @@ pub fn ensure_selected_visible(state: &mut AppState) {
         }
         state.viewport_top_id = Some(state.systems[order[candidate]].id.clone());
     }
+}
+
+/// Rows reserved above the entries by a view.
+#[must_use]
+pub const fn view_header_height(view_mode: ViewMode) -> u16 {
+    match view_mode {
+        ViewMode::Normal => 0,
+        ViewMode::Condensed => 2,
+    }
+}
+
+fn valid_drive_count(system: &SystemState) -> u16 {
+    system
+        .latest
+        .as_ref()
+        .and_then(|snapshot| snapshot.drives.as_deref())
+        .map_or(0, valid_drive_count_from_slice)
+}
+
+fn valid_drive_count_from_slice(drives: &[crate::normalized::NormalizedDrive]) -> u16 {
+    drives
+        .iter()
+        .filter(|drive| drive.total_bytes > 0 && drive.used_bytes <= drive.total_bytes)
+        .count()
+        .try_into()
+        .unwrap_or(u16::MAX)
 }
 
 #[cfg(test)]
@@ -912,7 +956,8 @@ mod tests {
     #[test]
     fn visible_range_small_terminal() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let state = AppState::from_config(&config);
+        let mut state = AppState::from_config(&config);
+        state.systems[0].reachability = Reachability::Online;
         let order = state.display_order();
         let range = visible_range(&order, &state, 0, 3);
         // Terminal too small for even one online entry.
@@ -1098,5 +1143,48 @@ mod tests {
         // Offline: b, d.
         assert_eq!(state.systems[order[3]].id, "b");
         assert_eq!(state.systems[order[4]].id, "d");
+    }
+
+    #[test]
+    fn view_controls_wrap_and_preserve_selection_and_expansion() {
+        let config = test_config_with_ids(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        state.terminal_size = Some((80, 8));
+        state.systems[0].reachability = Reachability::Online;
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        state.selected_id = Some("a".into());
+
+        state.apply_action(Action::ToggleDrives);
+        state.apply_action(Action::NextView);
+        assert_eq!(state.view_mode, ViewMode::Condensed);
+        assert!(state.drives_expanded);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+        state.apply_action(Action::PreviousView);
+        assert_eq!(state.view_mode, ViewMode::Normal);
+        assert!(state.drives_expanded);
+    }
+
+    #[test]
+    fn condensed_expansion_counts_only_valid_drive_rows() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.view_mode = ViewMode::Condensed;
+        state.drives_expanded = true;
+        state.systems[0].reachability = Reachability::Online;
+        let mut snapshot = NormalizedSnapshot::from_v1(&make_snapshot());
+        snapshot.drives = Some(vec![
+            crate::normalized::NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+            },
+            crate::normalized::NormalizedDrive {
+                name: "/bad".into(),
+                used_bytes: 3,
+                total_bytes: 2,
+            },
+        ]);
+        state.systems[0].latest = Some(snapshot);
+        assert_eq!(entry_height(&state, 0), 2);
     }
 }

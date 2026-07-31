@@ -34,6 +34,9 @@ gregg edit
 | --- | --- |
 | `j` / Down | Next system |
 | `k` / Up | Previous system |
+| `h` / Left | Previous view |
+| `l` / Right | Next view |
+| `e` | Expand or collapse selected-system drives |
 
 ## Requirements
 

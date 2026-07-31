@@ -139,12 +139,13 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
   interval. Concurrency is bounded by a semaphore. Generation numbers increase
   monotonically; the state reducer rejects stale batches.
 - `state.rs` — `AppState` owns the system list, selection (by stable `SystemId`),
-  viewport position, and generation tracking. Display order is
-  online-first/offline-last while preserving configured relative order.
-  Viewport helpers compute visible ranges for mixed five-row-base online and
-  one-row offline/pending entries. The selected normal entry may add bounded
-  drive detail rows; all paging, viewport, and layout calculations use the
-  same state-aware height function.
+  viewport position, view mode, transient expansion, and generation tracking.
+  Display order is online-first/offline-last while preserving configured
+  relative order. Viewport helpers compute visible ranges for normal
+  five-row-base entries and condensed one-row entries, with bounded selected
+  drive detail rows in either view. Header rows are included in view-aware
+  geometry; all paging, viewport, and layout calculations use the same
+  state-aware height function.
 - `action.rs` — `Action` enum for typed state transitions (selection navigation,
   page scrolling, transient view/drive expansion, config reload, resize, quit).
 
@@ -161,12 +162,15 @@ The TUI lives in `crates/gregg/src/` and is composed of these modules:
   with panic-hook restoration on all exit paths.
 - `input.rs` — Crossterm event stream adapter reading events on a dedicated
   thread and forwarding typed `Event`s through a bounded channel.
-- `ui/mod.rs` — Top-level `render()` function delegating to sub-modules.
+- `ui/mod.rs` — Top-level `render()` function dispatching directly on the view
+  mode and delegating to sub-modules.
 - `ui/layout.rs` — Viewport computation: which systems are visible and their
   rect positions.
 - `ui/system_block.rs` — five-row-base online system rendering (header +
   CPU/MEM/SWP-or-COMMIT/DISK bars), selected-system drive details, and 1-row
   offline rendering.
+- `ui/condensed.rs` — fixed-tier one-row fleet rendering, condensed header and
+  separator, offline/pending rows, and selected-system drive details.
 - `ui/bar.rs` — Reusable ASCII usage bar renderer with width-safe arithmetic.
 - `ui/text.rs` — Text formatting helpers (byte sizes, percentages, load
   averages, priority-aware header composition).

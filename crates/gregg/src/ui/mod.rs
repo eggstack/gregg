@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub mod bar;
+pub mod condensed;
 pub mod diagnostics;
 pub mod layout;
 pub mod system_block;
@@ -23,9 +24,23 @@ pub fn render(f: &mut Frame, state: &AppState) {
         .systems
         .iter()
         .any(|system| system.reachability == crate::state::Reachability::Online);
-    if area.width < 24 || (has_online && area.height < 5) || area.height == 0 {
+    let minimum_height = match state.view_mode {
+        crate::state::ViewMode::Normal => {
+            if has_online {
+                5
+            } else {
+                1
+            }
+        }
+        crate::state::ViewMode::Condensed => 3,
+    };
+    if area.width < 24 || area.height < minimum_height || area.height == 0 {
         diagnostics::render_too_small(f, area);
         return;
+    }
+
+    if state.view_mode == crate::state::ViewMode::Condensed {
+        condensed::render_header(f, area);
     }
 
     let entries = layout::compute_viewport(state, area);
@@ -39,6 +54,16 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     for entry in &entries {
         let system = &state.systems[entry.index];
+        if state.view_mode == crate::state::ViewMode::Condensed {
+            condensed::render_entry(
+                f,
+                entry.rect,
+                system,
+                entry.is_selected,
+                entry.drive_rows_visible,
+            );
+            continue;
+        }
         match system.reachability {
             crate::state::Reachability::Online => {
                 system_block::render_online(
@@ -1297,5 +1322,44 @@ mod tests {
             "Windows row 3 should not contain 'SWP', got: {}",
             lines[3]
         );
+    }
+
+    #[test]
+    fn render_condensed_width_tiers_and_header_geometry() {
+        let config = test_config(&["fleet-host"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.view_mode = crate::state::ViewMode::Condensed;
+
+        let wide = render_state(&state, 80, 4);
+        assert!(wide.lines().next().unwrap().contains("HOST"));
+        assert!(wide.lines().next().unwrap().contains("IOWAIT"));
+        assert!(wide.lines().nth(1).unwrap().contains('─'));
+        assert!(wide.lines().nth(2).unwrap().contains("fleet-host"));
+
+        let narrow = render_state(&state, 30, 4);
+        let header = narrow.lines().next().unwrap();
+        assert!(header.contains("HOST"));
+        assert!(!header.contains("LOAD"));
+        assert!(!header.contains("IOWAIT"));
+    }
+
+    #[test]
+    fn render_condensed_expansion_keeps_base_row_and_details() {
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.view_mode = crate::state::ViewMode::Condensed;
+        state.drives_expanded = true;
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
+            name: "/archive".into(),
+            used_bytes: 2 * 1024 * 1024 * 1024,
+            total_bytes: 4 * 1024 * 1024 * 1024,
+        }]);
+
+        let output = render_state(&state, 80, 5);
+        assert!(output.lines().nth(2).unwrap().contains("storage"));
+        assert!(output.contains("/archive"));
+        assert!(output.contains("50.0%"));
     }
 }

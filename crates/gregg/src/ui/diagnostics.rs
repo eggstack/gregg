@@ -32,7 +32,11 @@ pub fn render_key_hint(f: &mut Frame, area: Rect) {
         height: 1,
         ..area
     };
-    let hint = "j/k:select  q:quit  g/G:first/last  Ctrl-R:refresh";
+    let hint = if area.width < 60 {
+        "j/k select  h/l view  e drives  q quit"
+    } else {
+        "j/k:select  h/l:view  e:drives  g/G:first/last  Ctrl-R:refresh  q:quit"
+    };
     let paragraph =
         Paragraph::new(Line::from(Span::raw(hint))).style(Style::default().fg(Color::DarkGray));
     f.render_widget(paragraph, hint_area);

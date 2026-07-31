@@ -138,7 +138,14 @@ borders that consume vertical space.
 
 The renderer must adapt from `Frame::area()` on every draw. Width degradation is semantic: preserve system name, I/O-wait availability, load, and core count before lower-priority OS detail. Scrolling is by logical system entry, not raw row count.
 
-Required navigation is `j`/Down and `k`/Up. The terminal must be restored on normal exit, errors, and panics. Rendering functions must not perform network or filesystem I/O. Drive expansion is transient UI state and is not persisted to configuration.
+Required navigation is `j`/Down and `k`/Up. `h`/Left and `l`/Right cycle the
+normal and condensed views; `e` toggles drive details for the selected system.
+The condensed view uses one row per system, a two-row header/separator, and
+fixed semantic width tiers that drop lower-priority columns without horizontal
+scrolling. View and expansion state are transient and preserve selection. The
+terminal must be restored on normal exit, errors, and panics. Rendering
+functions must not perform network or filesystem I/O. Drive expansion is not
+persisted to configuration.
 
 ## Testing expectations
 

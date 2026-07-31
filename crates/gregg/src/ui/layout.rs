@@ -2,7 +2,7 @@
 
 use ratatui::layout::Rect;
 
-use crate::state::{entry_height, visible_range, AppState};
+use crate::state::{entry_height, view_header_height, visible_range, AppState};
 
 /// A single entry in the viewport with its rect and selection state.
 pub struct ViewportEntry {
@@ -26,10 +26,16 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         })
         .unwrap_or(0);
 
-    let visible = visible_range(&display_order, state, top_pos, area.height);
+    let header_height = view_header_height(state.view_mode);
+    let content_area = ratatui::layout::Rect {
+        y: area.y.saturating_add(header_height),
+        height: area.height.saturating_sub(header_height),
+        ..area
+    };
+    let visible = visible_range(&display_order, state, top_pos, content_area.height);
 
     let mut entries = Vec::new();
-    let mut y = area.y;
+    let mut y = content_area.y;
 
     for idx in visible {
         if idx >= display_order.len() {
@@ -38,7 +44,10 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         let sys_idx = display_order[idx];
         let system = &state.systems[sys_idx];
         let full_height = entry_height(state, sys_idx);
-        let height_remaining = area.y.saturating_add(area.height).saturating_sub(y);
+        let height_remaining = content_area
+            .y
+            .saturating_add(content_area.height)
+            .saturating_sub(y);
         let h = full_height.min(height_remaining);
         let is_selected = state
             .selected_id
@@ -52,8 +61,12 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             height: h,
         };
 
+        let base_height = match state.view_mode {
+            crate::state::ViewMode::Normal => 5,
+            crate::state::ViewMode::Condensed => 1,
+        };
         let drive_rows_visible = if is_selected && state.drives_expanded {
-            usize::from(h.saturating_sub(5))
+            usize::from(h.saturating_sub(base_height))
         } else {
             0
         };

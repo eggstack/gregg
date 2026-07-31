@@ -125,7 +125,16 @@ gregg edit                     # open config in $EDITOR
 
 - `j` / Down: move to the next system
 - `k` / Up: move to the previous system
+- `h` / Left: previous view
+- `l` / Right: next view
+- `e`: expand or collapse drives for the selected system
 - Viewport scrolls by system entry, not by raw row
+
+The normal view shows detailed five-row system blocks. The condensed view shows
+one comparison row per system with host, CPU, memory, disk, load, and I/O-wait
+columns; narrower terminals drop lower-priority columns without horizontal
+scrolling. View changes and drive expansion are transient and preserve the
+selected system.
 
 ### Windows client
 

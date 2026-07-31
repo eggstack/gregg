@@ -133,7 +133,7 @@ pub fn drive_detail_line(drive: &NormalizedDrive, width: u16) -> String {
     }
 }
 
-fn truncate_width(s: &str, max_width: usize) -> String {
+pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
     use unicode_width::UnicodeWidthChar;
 
     let mut width = 0;

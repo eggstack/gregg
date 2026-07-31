@@ -98,6 +98,9 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
     use crate::action::Action;
 
     if event.ctrl {
+        if event.alt {
+            return None;
+        }
         return match event.key {
             Key::Char('c') => Some(Action::Quit),
             Key::Char('r') => Some(Action::RefreshNow),
@@ -105,9 +108,16 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         };
     }
 
+    if event.alt {
+        return None;
+    }
+
     match event.key {
-        Key::Char('j') | Key::Down => Some(Action::SelectNext),
-        Key::Char('k') | Key::Up => Some(Action::SelectPrevious),
+        Key::Char('j') | Key::Down if !event.shift => Some(Action::SelectNext),
+        Key::Char('k') | Key::Up if !event.shift => Some(Action::SelectPrevious),
+        Key::Char('h') | Key::Left if !event.shift => Some(Action::PreviousView),
+        Key::Char('l') | Key::Right if !event.shift => Some(Action::NextView),
+        Key::Char('e') if !event.shift => Some(Action::ToggleDrives),
         Key::Char('g') if !event.shift => Some(Action::SelectFirst),
         Key::Char('G') => Some(Action::SelectLast),
         Key::PageDown | Key::Char('f') if !event.ctrl => Some(Action::PageDown),
@@ -230,6 +240,56 @@ mod tests {
             action,
             Some(crate::action::Action::SelectPrevious)
         ));
+    }
+
+    #[test]
+    fn key_to_action_view_and_drive_controls() {
+        for (key, expected) in [
+            (Key::Char('h'), 0),
+            (Key::Left, 0),
+            (Key::Char('l'), 1),
+            (Key::Right, 1),
+            (Key::Char('e'), 2),
+        ] {
+            let action = key_to_action(KeyEvent {
+                key,
+                ctrl: false,
+                alt: false,
+                shift: false,
+            });
+            assert!(matches!(
+                (action, expected),
+                (Some(crate::action::Action::PreviousView), 0)
+                    | (Some(crate::action::Action::NextView), 1)
+                    | (Some(crate::action::Action::ToggleDrives), 2)
+            ));
+        }
+    }
+
+    #[test]
+    fn modified_view_controls_are_unmapped() {
+        for key in [
+            Key::Char('h'),
+            Key::Char('l'),
+            Key::Char('e'),
+            Key::Left,
+            Key::Right,
+        ] {
+            assert!(key_to_action(KeyEvent {
+                key,
+                ctrl: false,
+                alt: true,
+                shift: false
+            })
+            .is_none());
+            assert!(key_to_action(KeyEvent {
+                key,
+                ctrl: true,
+                alt: false,
+                shift: false
+            })
+            .is_none());
+        }
     }
 
     #[test]
