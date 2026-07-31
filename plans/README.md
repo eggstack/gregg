@@ -13,7 +13,7 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) is the sole remaining corrective pass and is limited to one normal-view height boundary, two native drive-enumeration failure sentinels, and plan-index wording. This corrective pass does not reopen product, release, or CI design.
+[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) is implemented at `561e398e`, but its closure record was marked complete before the required ordinary hosted CI result was recorded. [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) is the sole open closure-record correction. No product implementation, release-design, or CI-design work remains open in this line.
 
 [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
 
@@ -27,7 +27,8 @@ Gregg follows a small, manual release model:
 | [`051-dynamic-viewport-and-normal-drive-rendering.md`](051-dynamic-viewport-and-normal-drive-rendering.md) | Correct logical-system viewport following, add dynamic row accounting, and render aggregate/selected drive details in normal view | completed; depends on 049 |
 | [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | completed |
 | [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | completed; CI run 30632762621 passed |
-| [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) | Correct the normal-view four-row boundary, preserve native enumeration failure semantics, and reconcile completed-roadmap wording | completed |
+| [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) | Correct the normal-view four-row boundary, preserve native enumeration failure semantics, and reconcile completed-roadmap wording | implementation complete at `561e398e`; closure pending 055 |
+| [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) | Record one ordinary cross-platform CI result, reconcile Phase 54 metadata, and close the plan index truthfully | planned; sole open closure-record correction |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
 | [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |
@@ -47,7 +48,7 @@ These plans contain product/platform work. They are not release-gate blockers.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded corrective Phase 54 |
+| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded closure correction 055 |
 | [`001-foundation-workspace-protocol.md`](001-foundation-workspace-protocol.md) | Workspace, package metadata, protocol schema, fixtures, CI foundation | implemented baseline |
 | [`002-linux-metrics-collector.md`](002-linux-metrics-collector.md) | Native Linux identity and metric sampling | implemented; retain as architecture history |
 | [`003-macos-metrics-collector.md`](003-macos-metrics-collector.md) | Native Darwin/Mach/sysctl metric sampling | implemented; retain as architecture history |
@@ -80,7 +81,7 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 
 ## Dependency summary
 
-Completed product roadmap with bounded corrective follow-up:
+Completed product roadmap with bounded closure correction:
 
 ```text
 49 -> 50
@@ -88,6 +89,7 @@ Completed product roadmap with bounded corrective follow-up:
 50 + 51 -> 52
 49 + 50 + 51 + 52 -> 53
 53 -> 54
+54 -> 55
 ```
 
 Completed release/platform roadmap:
@@ -101,7 +103,7 @@ Completed release/platform roadmap:
 46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-54 must use that existing model and must not add verification or publication machinery.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-55 must use that existing model and must not add verification or publication machinery.
 
 ## Completion rule
 
@@ -113,7 +115,7 @@ A plan is complete when its explicit product and process acceptance criteria are
 - hosted native macOS/Windows jobs for target-specific behavior;
 - documentation and repository search for deletion/policy criteria.
 
-A green ordinary CI run at the final implementation SHA is sufficient hosted cross-platform proof. A separately maintained Windows host, elevated manual rehearsal record, or evidence bundle is not required.
+A green ordinary CI run at the final implementation SHA or a documented source-equivalent plan-only descendant is sufficient hosted cross-platform proof. A separately maintained Windows host, elevated manual rehearsal record, or evidence bundle is not required.
 
 A plan does **not** require:
 
@@ -134,7 +136,7 @@ Implementation handoffs should state results concisely. Do not create evidence f
 Any discovered expansion should be recorded separately unless required for:
 
 - correctness of the current Linux/macOS/Windows product;
-- the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-054;
+- the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-055;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
