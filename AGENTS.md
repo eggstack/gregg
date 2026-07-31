@@ -17,8 +17,10 @@ The client optionally supports exactly one EggPool statistics source through
 port `11300`, accepts only `http`/`https`, and persists an API-key
 environment-variable name, never a resolved secret. Configuration commands do
 not perform network or environment lookups. The client resolves the API-key
-environment reference only while constructing a request; Phase 59 owns the
-pure pane state, controls, and renderer, while Phase 60 owns event-loop wiring.
+environment reference only while constructing a request. The EggPool path
+uses only the existing summary endpoint, a fixed active-only 60-second cadence,
+and four fixed periods; it is not a general dashboard integration. Phase 60
+owns the optional worker and event-loop wiring while rendering remains I/O-free.
 
 ## Source of truth
 

@@ -1,6 +1,6 @@
 # Roadmap: optional EggPool summary pane
 
-Status: planned.
+Status: in progress; Phases 57–60 implementation is present, with Phase 60 hosted closure pending.
 
 ## Purpose
 

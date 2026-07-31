@@ -36,7 +36,9 @@ gregg edit
 | `k` / Up | Previous system |
 | `h` / Left | Previous view |
 | `l` / Right | Next view |
+| `v` | Toggle Normal/Condensed Systems view |
 | `e` | Expand or collapse selected-system drives |
+| `Ctrl-R` | Refresh the active pane |
 
 ## Requirements
 
@@ -64,6 +66,14 @@ The optional `gregg eggpool add HOST` command configures one EggPool source,
 using HTTP port `11300` by default. Use `--https`, `--name`,
 `--api-key-env ENV_NAME`, and `--replace` as needed. Only the environment
 variable name is persisted; the secret is never read by these commands.
+The TUI consumes only `/api/stats/summary` and requires EggPool's dashboard/
+statistics routes to be enabled. It displays accounted tokens, provider
+cache-read share, output tokens per second, and average TTFT for `1h`, `24h`,
+`7d`, or `30d`; it does not display a request-level cache hit rate or invent
+values when a metric is unavailable. `j`/Down and `k`/Up select the period,
+while `h`/Left and `l`/Right enter or leave the pane. `Ctrl-R` refreshes only
+the active pane, and EggPool's active refresh cadence is fixed at 60 seconds.
+Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.
 Editor fallbacks: `hx`, `code`, `notepad`.
 
 ## Links

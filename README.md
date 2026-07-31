@@ -124,6 +124,19 @@ gregg eggpool list              # use --json for a JSON array
 gregg eggpool remove eggpool.local
 ```
 
+The optional EggPool pane is a compact view of one configured EggPool's
+accounted tokens, provider cache-read share, output-token throughput, and
+average time to first token. It is client-only: Gregg supports one source and
+does not change EggPool or `greggd`. EggPool's dashboard/statistics routes must
+be enabled for `/api/stats/summary` to exist. Public installations need no key;
+protected installations use a request-local Bearer key from the environment
+variable named by `--api-key-env`:
+
+```sh
+export EGGPOOL_GREGG_API_KEY='set-this-in-your-environment'
+gregg eggpool add eggpool.local --api-key-env EGGPOOL_GREGG_API_KEY
+```
+
 EggPool configuration defaults to HTTP port `11300`; `--https` selects HTTPS.
 The add/list/remove commands store and display only the configured
 environment-variable name, never its resolved secret, and do not check
@@ -143,6 +156,11 @@ validated. Omitting `[eggpool]` creates no EggPool worker or request.
 - `v`: toggle Normal/Condensed system layout
 - `e`: expand or collapse drives for the selected system
 - Viewport scrolls by system entry, not by raw row
+
+On EggPool, `j`/Down selects the next window and `k`/Up the previous one:
+`1h`, `24h`, `7d`, and `30d`. Pane, layout, period, and drive-expansion state
+are transient. `Ctrl-R` refreshes only the visible pane; EggPool refreshes are
+active-only and use a fixed 60-second cadence.
 
 The normal view shows detailed five-row system blocks. The condensed view shows
 one comparison row per system with host, CPU, memory, disk, load, and I/O-wait

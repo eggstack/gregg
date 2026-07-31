@@ -35,6 +35,9 @@ port = 11310
 
 # Optional EggPool statistics source. Omit this table to disable the pane.
 # The CLI accepts `gregg eggpool add HOST`, defaulting to HTTP port 11300.
+# Public EggPool instances omit api_key_env. Protected instances name an
+# environment variable here; set its value in the environment before running
+# the TUI. The key value is never stored in this file.
 # [eggpool]
 # id = "01234567-89ab-4cde-8123-456789abcdef"
 # host = "eggpool.local"

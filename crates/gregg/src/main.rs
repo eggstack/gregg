@@ -85,7 +85,29 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let (refresh_tx, refresh_rx) = tokio::sync::mpsc::channel::<()>(4);
 
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
-    let mut batch_rx = scheduler.run(endpoints, cancel.clone(), refresh_rx);
+    let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), refresh_rx));
+
+    let eggpool_worker = config.eggpool.clone().map(|endpoint| {
+        eggpool::spawn_worker(
+            eggpool::EggpoolClient::new(timeout),
+            endpoint,
+            cancel.clone(),
+        )
+    });
+    if app_state.active_pane == state::Pane::Eggpool {
+        if let (Some((period, generation)), Some(worker)) =
+            (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
+        {
+            let _ = worker
+                .commands
+                .try_send(eggpool::EggpoolCommand::Activate { period, generation });
+        }
+    }
+
+    let eggpool_commands = eggpool_worker
+        .as_ref()
+        .map(|worker| worker.commands.clone());
+    let mut eggpool_results = eggpool_worker.map(|worker| worker.results);
 
     let mut terminal = terminal::Terminal::init()?;
     let (event_stream, mut event_rx) = input::EventStream::new();
@@ -105,23 +127,31 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         &mut event_rx,
         &cancel,
         &refresh_tx,
+        eggpool_commands.as_ref(),
+        &mut eggpool_results,
     )
     .await;
 
     event_stream.shutdown();
     terminal.restore();
+    if let Some(commands) = eggpool_commands {
+        let _ = commands.send(eggpool::EggpoolCommand::Shutdown).await;
+    }
     cancel.cancel();
 
     result
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_event_loop(
     terminal: &mut terminal::Terminal,
     app_state: &mut state::AppState,
-    batch_rx: &mut tokio::sync::mpsc::Receiver<poller::PollBatch>,
+    batch_rx: &mut Option<tokio::sync::mpsc::Receiver<poller::PollBatch>>,
     event_rx: &mut tokio::sync::mpsc::Receiver<event::Event>,
     cancel: &tokio_util::sync::CancellationToken,
     refresh_tx: &tokio::sync::mpsc::Sender<()>,
+    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+    eggpool_results: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Initial render.
     terminal.draw(|f| ui::render(f, app_state))?;
@@ -134,12 +164,26 @@ async fn run_event_loop(
                 break;
             }
 
-            maybe_batch = batch_rx.recv() => {
+            maybe_batch = recv_poll_batch(batch_rx) => {
                 match maybe_batch {
                     Some(batch) => {
                         app_state.apply_batch(&batch);
                     }
-                    None => break,
+                    None => {
+                        // An empty system list has no scheduler traffic. Keep
+                        // the TUI alive for an EggPool-only or empty config.
+                        *batch_rx = None;
+                    }
+                }
+            }
+
+            maybe_result = recv_eggpool_result(eggpool_results) => {
+                if let Some(result) = maybe_result {
+                    app_state.apply_eggpool_result(&result);
+                } else {
+                    // A worker channel closing is not a system-monitoring error.
+                    // Disable this branch and keep the Systems pane responsive.
+                    *eggpool_results = None;
                 }
             }
 
@@ -151,11 +195,12 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
-                            if matches!(action, action::Action::RefreshNow) {
-                                let _ = refresh_tx.try_send(());
-                            } else {
-                                app_state.apply_action(action);
-                            }
+                            dispatch_action(
+                                app_state,
+                                action,
+                                refresh_tx,
+                                eggpool_commands,
+                            );
                         }
                     }
                     None => break,
@@ -167,4 +212,189 @@ async fn run_event_loop(
     }
 
     Ok(())
+}
+
+async fn recv_poll_batch(
+    receiver: &mut Option<tokio::sync::mpsc::Receiver<poller::PollBatch>>,
+) -> Option<poller::PollBatch> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => futures_util::future::pending().await,
+    }
+}
+
+async fn recv_eggpool_result(
+    receiver: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
+) -> Option<eggpool::EggpoolResult> {
+    match receiver {
+        Some(receiver) => receiver.recv().await,
+        None => futures_util::future::pending().await,
+    }
+}
+
+fn dispatch_action(
+    app_state: &mut state::AppState,
+    action: action::Action,
+    refresh_tx: &tokio::sync::mpsc::Sender<()>,
+    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+) {
+    let is_refresh = matches!(action, action::Action::RefreshNow);
+    let before_pane = app_state.active_pane;
+    let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
+    app_state.apply_action(action);
+
+    let Some(commands) = eggpool_commands else {
+        if is_refresh {
+            let _ = refresh_tx.try_send(());
+        }
+        return;
+    };
+
+    if is_refresh {
+        if app_state.active_pane == state::Pane::Eggpool {
+            if let Some((period, generation)) = app_state.begin_eggpool_request() {
+                let _ = commands.try_send(eggpool::EggpoolCommand::Refresh { period, generation });
+            }
+        } else {
+            let _ = refresh_tx.try_send(());
+        }
+        return;
+    }
+
+    if before_pane != app_state.active_pane {
+        match app_state.active_pane {
+            state::Pane::Eggpool => {
+                if let Some((period, generation)) = app_state.begin_eggpool_request() {
+                    let _ =
+                        commands.try_send(eggpool::EggpoolCommand::Activate { period, generation });
+                }
+            }
+            state::Pane::Systems => {
+                let _ = commands.try_send(eggpool::EggpoolCommand::Deactivate);
+            }
+        }
+    } else if before_pane == state::Pane::Eggpool
+        && before_period != app_state.eggpool.as_ref().map(|eggpool| eggpool.period)
+    {
+        if let Some((period, generation)) = app_state.eggpool_request() {
+            let _ = commands.try_send(eggpool::EggpoolCommand::SetPeriod { period, generation });
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, EggpoolEntry, EggpoolScheme, SystemEntry};
+
+    fn mixed_state() -> state::AppState {
+        AppStateBuilder::mixed().build()
+    }
+
+    struct AppStateBuilder;
+
+    impl AppStateBuilder {
+        fn mixed() -> Config {
+            let mut config = Config::default();
+            config.systems.push(SystemEntry {
+                id: "system".into(),
+                host: "system.local".into(),
+                port: 11310,
+                name: None,
+            });
+            config.eggpool = Some(EggpoolEntry {
+                id: "eggpool".into(),
+                host: "pool.local".into(),
+                port: 11300,
+                scheme: EggpoolScheme::Http,
+                name: None,
+                api_key_env: None,
+            });
+            config
+        }
+    }
+
+    trait BuildState {
+        fn build(self) -> state::AppState;
+    }
+
+    impl BuildState for Config {
+        fn build(self) -> state::AppState {
+            state::AppState::from_config(&self)
+        }
+    }
+
+    #[tokio::test]
+    async fn pane_and_refresh_commands_are_scoped_to_active_pane() {
+        let mut app = mixed_state();
+        let (commands, mut received) = tokio::sync::mpsc::channel(4);
+        let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel(4);
+
+        dispatch_action(
+            &mut app,
+            action::Action::NextPane,
+            &refresh_tx,
+            Some(&commands),
+        );
+        assert_eq!(app.active_pane, state::Pane::Eggpool);
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Activate {
+                period: eggpool::EggpoolPeriod::Hour,
+                generation: 1
+            })
+        ));
+
+        dispatch_action(
+            &mut app,
+            action::Action::RefreshNow,
+            &refresh_tx,
+            Some(&commands),
+        );
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Refresh {
+                period: eggpool::EggpoolPeriod::Hour,
+                generation: 2
+            })
+        ));
+        assert!(refresh_rx.try_recv().is_err());
+
+        dispatch_action(
+            &mut app,
+            action::Action::PreviousPane,
+            &refresh_tx,
+            Some(&commands),
+        );
+        assert_eq!(app.active_pane, state::Pane::Systems);
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Deactivate)
+        ));
+        dispatch_action(
+            &mut app,
+            action::Action::RefreshNow,
+            &refresh_tx,
+            Some(&commands),
+        );
+        assert!(matches!(refresh_rx.try_recv(), Ok(())));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn clamped_eggpool_period_does_not_send_a_command() {
+        let config = AppStateBuilder::mixed();
+        let mut app = state::AppState::from_config(&config);
+        app.apply_action(action::Action::NextPane);
+        let (commands, mut received) = tokio::sync::mpsc::channel(4);
+        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
+
+        dispatch_action(
+            &mut app,
+            action::Action::MoveUp,
+            &refresh_tx,
+            Some(&commands),
+        );
+        assert!(received.try_recv().is_err());
+    }
 }

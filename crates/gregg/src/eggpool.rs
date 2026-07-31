@@ -313,13 +313,28 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EggpoolCommand {
     /// Activate the pane and fetch immediately.
-    Activate { period: EggpoolPeriod },
+    Activate {
+        /// The selected period.
+        period: EggpoolPeriod,
+        /// State generation assigned to this request.
+        generation: u64,
+    },
     /// Deactivate periodic refreshes.
     Deactivate,
     /// Change period and fetch immediately.
-    SetPeriod(EggpoolPeriod),
+    SetPeriod {
+        /// The selected period.
+        period: EggpoolPeriod,
+        /// State generation assigned to this request.
+        generation: u64,
+    },
     /// Fetch immediately for the current/requested period.
-    Refresh(EggpoolPeriod),
+    Refresh {
+        /// The selected period.
+        period: EggpoolPeriod,
+        /// State generation assigned to this request.
+        generation: u64,
+    },
     /// Stop the worker promptly.
     Shutdown,
 }
@@ -333,7 +348,11 @@ pub struct EggpoolWorker {
 }
 
 /// Start one worker for one configured `EggPool` endpoint.
-pub fn spawn_worker(client: EggpoolClient, endpoint: EggpoolEntry) -> EggpoolWorker {
+pub fn spawn_worker(
+    client: EggpoolClient,
+    endpoint: EggpoolEntry,
+    cancel: tokio_util::sync::CancellationToken,
+) -> EggpoolWorker {
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
     let (result_tx, result_rx) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
@@ -350,24 +369,29 @@ pub fn spawn_worker(client: EggpoolClient, endpoint: EggpoolEntry) -> EggpoolWor
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tokio::select! {
+                () = cancel.cancelled() => {
+                    if let Some(request) = request { request.abort(); }
+                    break;
+                }
                 command = command_rx.recv() => match command {
-                    Some(EggpoolCommand::Activate { period: requested }) => {
+                    Some(EggpoolCommand::Activate { period: requested, generation: requested_generation }) => {
                         if let Some(old_request) = request.take() {
                             old_request.abort();
                         }
                         active = true;
                         period = requested;
-                        generation = generation.wrapping_add(1);
+                        generation = requested_generation;
                         request = Some(start_request(&client, &endpoint, period, generation));
                     }
                     Some(EggpoolCommand::Deactivate) => active = false,
-                    Some(EggpoolCommand::SetPeriod(requested) | EggpoolCommand::Refresh(requested)) => {
+                    Some(EggpoolCommand::SetPeriod { period: requested, generation: requested_generation }
+                        | EggpoolCommand::Refresh { period: requested, generation: requested_generation }) => {
                         period = requested;
                         if active {
                             if let Some(old_request) = request.take() {
                                 old_request.abort();
                             }
-                            generation = generation.wrapping_add(1);
+                            generation = requested_generation;
                             request = Some(start_request(&client, &endpoint, period, generation));
                         }
                     }
@@ -598,6 +622,7 @@ mod tests {
         let mut worker = spawn_worker(
             EggpoolClient::new(Duration::from_secs(2)),
             endpoint(port, None),
+            tokio_util::sync::CancellationToken::new(),
         );
         worker
             .commands

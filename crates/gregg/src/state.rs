@@ -420,6 +420,7 @@ impl AppState {
             return;
         }
         if !matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
+            eggpool.request_generation = result.generation;
             eggpool.status = EggpoolStatus::Idle;
             eggpool.last_attempt_at = Some(result.completed_at);
             match &result.outcome {
@@ -431,6 +432,22 @@ impl AppState {
                 error => eggpool.last_error = Some(error.clone()),
             }
         }
+    }
+
+    /// Mark an `EggPool` activation or manual refresh as a new request.
+    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
+        let eggpool = self.eggpool.as_mut()?;
+        eggpool.request_generation = eggpool.request_generation.wrapping_add(1);
+        eggpool.status = EggpoolStatus::Refreshing;
+        Some((eggpool.period, eggpool.request_generation))
+    }
+
+    /// Return the current `EggPool` request identity without changing state.
+    #[must_use]
+    pub fn eggpool_request(&self) -> Option<(EggpoolPeriod, u64)> {
+        self.eggpool
+            .as_ref()
+            .map(|eggpool| (eggpool.period, eggpool.request_generation))
     }
 
     fn move_eggpool_period(&mut self, longer: bool) {
