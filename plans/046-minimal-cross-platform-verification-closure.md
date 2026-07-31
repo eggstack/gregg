@@ -1,5 +1,9 @@
 # Phase 46: minimal cross-platform verification closure
 
+> Completed on 2026-07-30. Local default and release-preflight checks passed;
+> ordinary CI run 30598220062 passed at commit `ab97e37`. Hosted native CI is
+> the Windows/macOS verification source; publishing was not performed.
+
 ## Objective
 
 Reduce Gregg's remaining CI, local-validation, and closure complexity to the minimum proportionate contract for a small system-monitoring tool while retaining truthful native coverage for Linux, macOS, and Windows.
