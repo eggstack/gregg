@@ -146,7 +146,7 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
   drive detail rows; all paging, viewport, and layout calculations use the
   same state-aware height function.
 - `action.rs` — `Action` enum for typed state transitions (selection navigation,
-  page scrolling, config reload, resize, quit).
+  page scrolling, transient view/drive expansion, config reload, resize, quit).
 
 The `run_tui` async function in `main.rs` wires the config store, HTTP client,
 scheduler, state reducer, terminal lifecycle, crossterm event stream, and
