@@ -12,6 +12,13 @@ Build `gregg` as a narrow, low-overhead system-observation tool composed of thre
 
 The design target is a small terminal-multiplexer pane and lightweight daemon deployment on Linux servers, ARM64 single-board computers, Intel Macs, Apple Silicon Macs, and Windows x86-64 machines. Do not broaden the project into a process monitor, historical telemetry service, remote administration system, or general monitoring platform.
 
+The client optionally supports exactly one EggPool statistics source through
+`gregg eggpool add`, `list`, and `remove`. It is client-only, defaults to HTTP
+port `11300`, accepts only `http`/`https`, and persists an API-key
+environment-variable name, never a resolved secret. Configuration commands do
+not perform network or environment lookups; EggPool polling and pane behavior
+belong to later phases.
+
 ## Source of truth
 
 Read these before implementation:

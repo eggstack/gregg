@@ -2,6 +2,7 @@ mod action;
 mod cli;
 mod clock;
 mod config;
+mod eggpool_endpoint;
 mod endpoint;
 mod event;
 mod input;
@@ -40,6 +41,9 @@ async fn main() {
                 let code = if let Some(ce) = e.downcast_ref::<config::ConfigError>() {
                     cli::ExitCode::from(ce)
                 } else if let Some(ee) = e.downcast_ref::<endpoint::EndpointError>() {
+                    cli::ExitCode::from(ee)
+                } else if let Some(ee) = e.downcast_ref::<eggpool_endpoint::EggpoolEndpointError>()
+                {
                     cli::ExitCode::from(ee)
                 } else {
                     cli::ExitCode::OperationError

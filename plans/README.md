@@ -24,7 +24,7 @@ Gregg follows a small, manual release model:
 | Plan | Purpose | Status |
 | --- | --- | --- |
 | [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) | Add one optional EggPool summary source and compact second top-level TUI pane without changing EggPool, greggd, protocol, CI, or release scope | planned |
-| [`057-eggpool-config-and-cli.md`](057-eggpool-config-and-cli.md) | Add one optional validated EggPool entry plus nested add/list/remove commands through the existing atomic config store | planned; depends on 056 |
+| [`057-eggpool-config-and-cli.md`](057-eggpool-config-and-cli.md) | Add one optional validated EggPool entry plus nested add/list/remove commands through the existing atomic config store | completed |
 | [`058-eggpool-summary-client-and-refresh.md`](058-eggpool-summary-client-and-refresh.md) | Add the typed summary client, environment-referenced Bearer auth, fixed periods, bounded failures, and active-pane refresh worker | planned; depends on 057 |
 | [`059-eggpool-pane-state-controls-and-rendering.md`](059-eggpool-pane-state-controls-and-rendering.md) | Separate top-level pane state from Normal/Condensed system layout, add context-sensitive controls, and render the four-value EggPool pane | planned; depends on 057; may use synthetic Phase 58 types during parallel work |
 | [`060-eggpool-pane-integration-and-lightweight-closure.md`](060-eggpool-pane-integration-and-lightweight-closure.md) | Wire optional runtime lifecycle, active-pane refresh, docs, synthetic integration tests, and ordinary local/CI closure | planned; depends on 058 and 059 |

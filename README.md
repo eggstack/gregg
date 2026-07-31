@@ -119,7 +119,15 @@ gregg list                     # list configured endpoints
 gregg remove 192.168.182.8     # remove an endpoint
 gregg refresh 30               # set polling interval (seconds)
 gregg edit                     # open config in $EDITOR
+gregg eggpool add eggpool.local --name "Main EggPool" --api-key-env EGGPOOL_GREGG_API_KEY
+gregg eggpool list              # use --json for a JSON array
+gregg eggpool remove eggpool.local
 ```
+
+EggPool configuration defaults to HTTP port `11300`; `--https` selects HTTPS.
+The add/list/remove commands store and display only the configured
+environment-variable name, never its resolved secret, and do not check
+connectivity. Omitting `[eggpool]` disables the future pane.
 
 ### TUI navigation
 

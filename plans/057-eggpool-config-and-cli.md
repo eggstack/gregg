@@ -1,6 +1,6 @@
 # Phase 57: EggPool configuration and CLI
 
-Status: planned.
+Status: completed.
 
 ## Objective
 

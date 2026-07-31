@@ -32,3 +32,13 @@ name = "Deadpool"
 id = "f6e5d4c3-b2a1-4f7e-8d9c-0b1a2f3e4d5c"
 host = "macmini.local"
 port = 11310
+
+# Optional EggPool statistics source. Omit this table to disable the pane.
+# The CLI accepts `gregg eggpool add HOST`, defaulting to HTTP port 11300.
+# [eggpool]
+# id = "01234567-89ab-4cde-8123-456789abcdef"
+# host = "eggpool.local"
+# port = 11300
+# scheme = "http"
+# name = "Main EggPool"
+# api_key_env = "EGGPOOL_GREGG_API_KEY"

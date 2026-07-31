@@ -60,6 +60,10 @@ to the selected online system; view and expansion state are not persisted.
 
 On Windows, configuration is stored in `%APPDATA%\gregg\gregg.toml`.
 Cross-process config locking uses Windows-native `LockFileEx`.
+The optional `gregg eggpool add HOST` command configures one EggPool source,
+using HTTP port `11300` by default. Use `--https`, `--name`,
+`--api-key-env ENV_NAME`, and `--replace` as needed. Only the environment
+variable name is persisted; the secret is never read by these commands.
 Editor fallbacks: `hx`, `code`, `notepad`.
 
 ## Links

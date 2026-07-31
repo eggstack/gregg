@@ -108,6 +108,12 @@ optional display name. The `ConfigStore` provides `load_or_default`,
 a `Mutex`-based concurrency guard plus an OS-backed cross-process file lock.
 Atomic writes follow the write-flush-rename-verify pattern.
 
+The client also supports one optional `Config::eggpool` entry through nested
+`eggpool add`, `eggpool list`, and `eggpool remove` commands. Its dedicated
+parser defaults to HTTP port `11300`, supports only `http` and `https`, and
+stores an optional API-key environment-variable name rather than the resolved
+secret. These commands perform no network or environment lookup.
+
 Platform-specific config paths:
 - Linux: `$XDG_CONFIG_HOME/gregg/gregg.toml` or `~/.config/gregg/gregg.toml`
 - macOS: `~/Library/Application Support/gregg/gregg.toml`

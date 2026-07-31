@@ -8,7 +8,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use crate::config::{Config, ConfigError, ConfigStore};
+use crate::config::{
+    Config, ConfigError, ConfigStore, EggpoolEntry, EggpoolScheme, MAX_EGGPOOL_NAME_LEN,
+    MAX_ENV_NAME_LEN,
+};
+use crate::eggpool_endpoint::{EggpoolEndpointError, EggpoolEndpointSpec};
 use crate::endpoint::{EndpointError, EndpointSpec};
 
 /// Compact keyboard-first terminal monitor for multiple remote systems.
@@ -121,6 +125,44 @@ pub enum Command {
     /// gregg --config /tmp/test.toml edit
     /// ```
     Edit,
+    /// Manage the optional `EggPool` statistics endpoint.
+    Eggpool {
+        #[command(subcommand)]
+        command: EggpoolCommand,
+    },
+}
+
+/// `EggPool` configuration commands.
+#[derive(Subcommand)]
+pub enum EggpoolCommand {
+    /// Add the one supported `EggPool` endpoint (default port 11300).
+    Add {
+        /// `EggPool` host, host:port, \[IPv6\]:port, or bare IPv6.
+        endpoint: String,
+        /// Optional display name (maximum 128 bytes).
+        #[arg(long)]
+        name: Option<String>,
+        /// Use HTTPS instead of HTTP.
+        #[arg(long)]
+        https: bool,
+        /// Environment-variable name containing the API key; only the name is stored.
+        #[arg(long)]
+        api_key_env: Option<String>,
+        /// Replace the current `EggPool` entry.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// List the configured `EggPool` endpoint, if present.
+    List {
+        /// Output a JSON array.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove the configured `EggPool` endpoint.
+    Remove {
+        /// `EggPool` host or host:port. Host-only matching ignores the port.
+        endpoint: String,
+    },
 }
 
 /// Exit codes returned by gregg commands.
@@ -163,6 +205,12 @@ impl From<&EndpointError> for ExitCode {
     }
 }
 
+impl From<&EggpoolEndpointError> for ExitCode {
+    fn from(_: &EggpoolEndpointError) -> Self {
+        Self::EndpointError
+    }
+}
+
 /// Resolve the config path: explicit `--config` or platform default.
 #[must_use]
 pub fn resolve_config_path(explicit: Option<&PathBuf>) -> PathBuf {
@@ -185,6 +233,156 @@ pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn st
         Command::Remove { endpoint } => cmd_remove(store, endpoint),
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
+        Command::Eggpool { command } => dispatch_eggpool(command, store),
+    }
+}
+
+fn dispatch_eggpool(
+    command: &EggpoolCommand,
+    store: &ConfigStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match command {
+        EggpoolCommand::Add {
+            endpoint,
+            name,
+            https,
+            api_key_env,
+            replace,
+        } => cmd_eggpool_add(
+            store,
+            endpoint,
+            name.as_deref(),
+            *https,
+            api_key_env.as_deref(),
+            *replace,
+        ),
+        EggpoolCommand::List { json } => cmd_eggpool_list(store, *json),
+        EggpoolCommand::Remove { endpoint } => cmd_eggpool_remove(store, endpoint),
+    }
+}
+
+fn cmd_eggpool_add(
+    store: &ConfigStore,
+    endpoint_str: &str,
+    name: Option<&str>,
+    https: bool,
+    api_key_env: Option<&str>,
+    replace: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let spec = EggpoolEndpointSpec::parse(endpoint_str)?;
+    if let Some(name) = name {
+        validate_eggpool_name(name)?;
+    }
+    if let Some(value) = api_key_env {
+        validate_eggpool_env(value)?;
+    }
+    let entry = EggpoolEntry {
+        id: uuid::Uuid::new_v4().to_string(),
+        host: spec.host,
+        port: spec.port,
+        scheme: if https {
+            EggpoolScheme::Https
+        } else {
+            EggpoolScheme::Http
+        },
+        name: name.map(str::to_owned),
+        api_key_env: api_key_env.map(str::to_owned),
+    };
+    store.mutate(|config| {
+        if config.eggpool.is_some() && !replace {
+            return Err(ConfigError::Validation(vec![
+                crate::config::ConfigViolation::InvalidEggpoolName {
+                    reason: "an EggPool endpoint is already configured; use --replace".to_string(),
+                },
+            ]));
+        }
+        config.eggpool = Some(entry);
+        Ok(())
+    })?;
+    eprintln!("added EggPool endpoint");
+    Ok(())
+}
+
+fn cmd_eggpool_list(store: &ConfigStore, json: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let config = store.load_or_default()?;
+    if json {
+        let entries = config.eggpool.into_iter().collect::<Vec<_>>();
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else if let Some(entry) = config.eggpool {
+        let label = entry.name.as_deref().unwrap_or("EggPool");
+        let auth = entry
+            .api_key_env
+            .as_deref()
+            .map_or(String::new(), |env| format!("  auth-env={env}"));
+        println!("{label}  {}{auth}", entry.display_address());
+    }
+    Ok(())
+}
+
+fn cmd_eggpool_remove(
+    store: &ConfigStore,
+    endpoint_str: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let spec = EggpoolEndpointSpec::parse(endpoint_str)?;
+    let removed = store.mutate_with_result(|config| {
+        let matches = config.eggpool.as_ref().is_some_and(|entry| {
+            entry.host == spec.host && (!spec.port_was_explicit || entry.port == spec.port)
+        });
+        if matches {
+            config.eggpool = None;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })?;
+    if removed {
+        eprintln!("removed EggPool endpoint");
+    } else {
+        eprintln!("no matching EggPool endpoint found: {endpoint_str}");
+    }
+    Ok(())
+}
+
+fn validate_eggpool_name(name: &str) -> Result<(), ConfigError> {
+    let trimmed = name.trim();
+    let reason = if trimmed.is_empty() {
+        Some("name is empty".to_string())
+    } else if trimmed != name {
+        Some("name must not have surrounding whitespace".to_string())
+    } else if name.len() > MAX_EGGPOOL_NAME_LEN {
+        Some(format!(
+            "name exceeds maximum length of {MAX_EGGPOOL_NAME_LEN}"
+        ))
+    } else {
+        None
+    };
+    reason.map_or(Ok(()), |reason| {
+        Err(ConfigError::Validation(vec![
+            crate::config::ConfigViolation::InvalidEggpoolName { reason },
+        ]))
+    })
+}
+
+fn validate_eggpool_env(value: &str) -> Result<(), ConfigError> {
+    let valid = !value.is_empty()
+        && value.len() <= MAX_ENV_NAME_LEN
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+    if valid {
+        Ok(())
+    } else {
+        Err(ConfigError::Validation(vec![
+            crate::config::ConfigViolation::InvalidEggpoolApiKeyEnv {
+                value: value.to_string(),
+                reason: "name must match [A-Za-z_][A-Za-z0-9_]* and be at most 128 bytes"
+                    .to_string(),
+            },
+        ]))
     }
 }
 
@@ -587,6 +785,44 @@ mod tests {
     fn cli_parses_edit() {
         let cli = Cli::try_parse_from(["gregg", "edit"]).unwrap();
         assert!(matches!(cli.command.unwrap(), Command::Edit));
+    }
+
+    #[test]
+    fn cli_parses_eggpool_add_and_global_config() {
+        let cli = Cli::try_parse_from([
+            "gregg",
+            "--config",
+            "/tmp/test.toml",
+            "eggpool",
+            "add",
+            "pool.local",
+            "--https",
+            "--name",
+            "Main",
+            "--api-key-env",
+            "POOL_KEY",
+            "--replace",
+        ])
+        .unwrap();
+        assert_eq!(cli.config, Some(PathBuf::from("/tmp/test.toml")));
+        match cli.command.unwrap() {
+            Command::Eggpool {
+                command:
+                    EggpoolCommand::Add {
+                        endpoint,
+                        name,
+                        https,
+                        api_key_env,
+                        replace,
+                    },
+            } => {
+                assert_eq!(endpoint, "pool.local");
+                assert_eq!(name.as_deref(), Some("Main"));
+                assert!(https && replace);
+                assert_eq!(api_key_env.as_deref(), Some("POOL_KEY"));
+            }
+            _ => panic!("expected EggPool add command"),
+        }
     }
 
     #[test]

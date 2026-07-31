@@ -97,6 +97,15 @@ pub const MAX_PORT: u16 = 65535;
 /// Supported configuration version.
 pub const SUPPORTED_CONFIG_VERSION: u32 = 1;
 
+/// Default port for the optional `EggPool` endpoint.
+pub const DEFAULT_EGGPOOL_PORT: u16 = 11300;
+
+/// Maximum display-name length for `EggPool` entries.
+pub const MAX_EGGPOOL_NAME_LEN: usize = 128;
+
+/// Maximum environment-variable name length for `EggPool` API keys.
+pub const MAX_ENV_NAME_LEN: usize = 128;
+
 /// A single monitored system entry.
 ///
 /// Only the resolved host and port are persisted. The `port_was_explicit`
@@ -115,6 +124,52 @@ pub struct SystemEntry {
     /// Optional human-readable display name.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// Scheme used to connect to `EggPool`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum EggpoolScheme {
+    /// Plain HTTP.
+    Http,
+    /// HTTPS.
+    Https,
+}
+
+impl fmt::Display for EggpoolScheme {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http => f.write_str("http"),
+            Self::Https => f.write_str("https"),
+        }
+    }
+}
+
+/// The single optional `EggPool` statistics endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EggpoolEntry {
+    /// Stable unique identifier (UUID v4).
+    pub id: String,
+    /// Normalized host name or IP address.
+    pub host: String,
+    /// TCP port.
+    pub port: u16,
+    /// Connection scheme.
+    pub scheme: EggpoolScheme,
+    /// Optional display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Optional environment-variable name containing the API key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+impl EggpoolEntry {
+    /// Return the canonical base address without a URL path.
+    #[must_use]
+    pub fn display_address(&self) -> String {
+        crate::eggpool_endpoint::display_address(&self.host, self.port, self.scheme)
+    }
 }
 
 impl SystemEntry {
@@ -153,6 +208,9 @@ pub struct Config {
     /// Configured monitored systems.
     #[serde(default)]
     pub systems: Vec<SystemEntry>,
+    /// Optional `EggPool` statistics endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eggpool: Option<EggpoolEntry>,
 }
 
 impl Default for Config {
@@ -164,6 +222,7 @@ impl Default for Config {
             max_concurrent_requests: 16,
             default_port: DEFAULT_PORT,
             systems: Vec::new(),
+            eggpool: None,
         }
     }
 }
@@ -267,6 +326,10 @@ impl Config {
                     });
                 }
             }
+        }
+
+        if let Some(eggpool) = &self.eggpool {
+            validate_eggpool(&mut violations, eggpool);
         }
 
         violations
@@ -968,6 +1031,14 @@ pub enum ConfigViolation {
         length: usize,
         max: usize,
     },
+    /// `EggPool` host is invalid.
+    InvalidEggpoolHost { host: String },
+    /// `EggPool` port is invalid.
+    InvalidEggpoolPort { port: u16 },
+    /// `EggPool` display name is invalid.
+    InvalidEggpoolName { reason: String },
+    /// `EggPool` API-key environment-variable name is invalid.
+    InvalidEggpoolApiKeyEnv { value: String, reason: String },
 }
 
 impl fmt::Display for ConfigViolation {
@@ -1024,6 +1095,82 @@ impl fmt::Display for ConfigViolation {
                     "endpoint {id}: name is {length} characters, exceeds maximum of {max}"
                 )
             }
+            Self::InvalidEggpoolHost { host } => {
+                write!(f, "invalid EggPool host: {host}")
+            }
+            Self::InvalidEggpoolPort { port } => {
+                write!(
+                    f,
+                    "EggPool port {port} is outside valid range {MIN_PORT}..={MAX_PORT}"
+                )
+            }
+            Self::InvalidEggpoolName { reason } => write!(f, "invalid EggPool name: {reason}"),
+            Self::InvalidEggpoolApiKeyEnv { value, reason } => {
+                write!(
+                    f,
+                    "invalid EggPool API-key environment variable {value:?}: {reason}"
+                )
+            }
+        }
+    }
+}
+
+fn validate_eggpool(violations: &mut Vec<ConfigViolation>, entry: &EggpoolEntry) {
+    let host = entry.host.trim();
+    if host.is_empty()
+        || host.contains("://")
+        || host.contains('/')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains('@')
+        || host.contains('[')
+        || host.contains(']')
+    {
+        violations.push(ConfigViolation::InvalidEggpoolHost {
+            host: entry.host.clone(),
+        });
+    }
+    if entry.port < MIN_PORT {
+        violations.push(ConfigViolation::InvalidEggpoolPort { port: entry.port });
+    }
+    if let Some(name) = &entry.name {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            violations.push(ConfigViolation::InvalidEggpoolName {
+                reason: "name is empty".to_string(),
+            });
+        } else if trimmed != name {
+            violations.push(ConfigViolation::InvalidEggpoolName {
+                reason: "name must not have surrounding whitespace".to_string(),
+            });
+        } else if name.len() > MAX_EGGPOOL_NAME_LEN {
+            violations.push(ConfigViolation::InvalidEggpoolName {
+                reason: format!("name exceeds maximum length of {MAX_EGGPOOL_NAME_LEN}"),
+            });
+        }
+    }
+    if let Some(value) = &entry.api_key_env {
+        let valid = !value.is_empty()
+            && value.len() <= MAX_ENV_NAME_LEN
+            && value
+                .as_bytes()
+                .first()
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+            && value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        if !valid {
+            let reason = if value.is_empty() {
+                "name is empty".to_string()
+            } else if value.len() > MAX_ENV_NAME_LEN {
+                format!("name exceeds maximum length of {MAX_ENV_NAME_LEN}")
+            } else {
+                "name must match [A-Za-z_][A-Za-z0-9_]*".to_string()
+            };
+            violations.push(ConfigViolation::InvalidEggpoolApiKeyEnv {
+                value: value.clone(),
+                reason,
+            });
         }
     }
 }
@@ -1093,6 +1240,7 @@ mod tests {
         assert_eq!(config.max_concurrent_requests, 16);
         assert_eq!(config.default_port, 11310);
         assert!(config.systems.is_empty());
+        assert!(config.eggpool.is_none());
     }
 
     // --- Config round-trip ---
@@ -1109,6 +1257,58 @@ mod tests {
         let toml = config.to_toml();
         let parsed = Config::parse(&toml, None).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    #[test]
+    fn old_config_without_eggpool_loads_and_omits_table() {
+        let content = "\
+config_version = 1\n\
+refresh_seconds = 5\n\
+request_timeout_ms = 1500\n\
+max_concurrent_requests = 16\n\
+default_port = 11310\n";
+        let config = Config::parse(content, None).unwrap();
+        assert!(config.eggpool.is_none());
+        assert!(!config.to_toml().contains("[eggpool]"));
+    }
+
+    #[test]
+    fn eggpool_entry_round_trips_without_secret_value() {
+        let config = Config {
+            eggpool: Some(EggpoolEntry {
+                id: "01234567-89ab-4cde-8123-456789abcdef".into(),
+                host: "eggpool.local".into(),
+                port: DEFAULT_EGGPOOL_PORT,
+                scheme: EggpoolScheme::Https,
+                name: Some("Main EggPool".into()),
+                api_key_env: Some("EGGPOOL_GREGG_API_KEY".into()),
+            }),
+            ..Config::default()
+        };
+        let toml = config.to_toml();
+        assert!(!toml.contains("secret-value"));
+        assert_eq!(Config::parse(&toml, None).unwrap(), config);
+    }
+
+    #[test]
+    fn eggpool_names_and_env_references_are_validated() {
+        let mut config = Config {
+            eggpool: Some(EggpoolEntry {
+                id: "id".into(),
+                host: "eggpool.local".into(),
+                port: DEFAULT_EGGPOOL_PORT,
+                scheme: EggpoolScheme::Http,
+                name: Some("Main".into()),
+                api_key_env: Some("_LOCAL_KEY".into()),
+            }),
+            ..Config::default()
+        };
+        assert!(config.is_valid());
+        config.eggpool.as_mut().unwrap().api_key_env = Some("not-a-secret".into());
+        assert!(config
+            .validate()
+            .iter()
+            .any(|violation| matches!(violation, ConfigViolation::InvalidEggpoolApiKeyEnv { .. })));
     }
 
     // --- Validation ---
@@ -1466,6 +1666,7 @@ unknown_field = "oops"
             max_concurrent_requests: 0,
             default_port: 0,
             systems: Vec::new(),
+            eggpool: None,
         };
         let violations = config.validate();
         assert!(violations.len() >= 5);
