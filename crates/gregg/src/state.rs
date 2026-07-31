@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::action::Action;
 use crate::config::Config;
+use crate::eggpool::{EggpoolFetchOutcome, EggpoolPeriod, EggpoolResult, EggpoolSummary};
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
 use crate::poller::{PollBatch, PollOutcome};
@@ -43,11 +44,50 @@ pub enum RefreshStatus {
 
 /// The TUI presentation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ViewMode {
+pub enum SystemViewMode {
     /// The detailed, one-block-per-system view.
     Normal,
     /// The one-row-per-system fleet view.
     Condensed,
+}
+
+/// The two fixed top-level panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pane {
+    /// The configured system fleet.
+    Systems,
+    /// The optional `EggPool` summary.
+    Eggpool,
+}
+
+/// Whether the `EggPool` pane is waiting for or displaying a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EggpoolStatus {
+    /// No request is currently in flight.
+    Idle,
+    /// A request has been requested and Phase 60 may dispatch it.
+    Refreshing,
+}
+
+/// Reducer-owned transient state for the optional `EggPool` pane.
+#[derive(Debug, Clone)]
+pub struct EggpoolState {
+    /// The configured source displayed by the pane.
+    pub endpoint: crate::config::EggpoolEntry,
+    /// Currently selected rolling window.
+    pub period: EggpoolPeriod,
+    /// Latest desired request identity.
+    pub request_generation: u64,
+    /// Current request status.
+    pub status: EggpoolStatus,
+    /// Last successful summary for the selected period.
+    pub summary: Option<EggpoolSummary>,
+    /// Completion time of the last successful request.
+    pub last_success_at: Option<Instant>,
+    /// Completion time of the last request attempt.
+    pub last_attempt_at: Option<Instant>,
+    /// Most recent non-cancelled failure.
+    pub last_error: Option<EggpoolFetchOutcome>,
 }
 
 /// Per-system mutable state.
@@ -88,10 +128,14 @@ pub struct AppState {
     pub refresh_status: RefreshStatus,
     /// Terminal dimensions (width, height), if known.
     pub terminal_size: Option<(u16, u16)>,
-    /// Current TUI presentation mode.
-    pub view_mode: ViewMode,
+    /// Currently active top-level pane.
+    pub active_pane: Pane,
+    /// Current Systems presentation mode.
+    pub system_view_mode: SystemViewMode,
     /// Whether the selected online system's drives are expanded.
     pub drives_expanded: bool,
+    /// Optional `EggPool` pane state.
+    pub eggpool: Option<EggpoolState>,
 }
 
 impl AppState {
@@ -120,6 +164,16 @@ impl AppState {
         let selected_id = systems.first().map(|s| s.id.clone());
         let viewport_top_id = selected_id.clone();
 
+        let eggpool = config.eggpool.clone().map(|endpoint| EggpoolState {
+            endpoint,
+            period: EggpoolPeriod::Hour,
+            request_generation: 0,
+            status: EggpoolStatus::Idle,
+            summary: None,
+            last_success_at: None,
+            last_attempt_at: None,
+            last_error: None,
+        });
         Self {
             systems,
             selected_id,
@@ -127,8 +181,14 @@ impl AppState {
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
             terminal_size: None,
-            view_mode: ViewMode::Normal,
+            active_pane: if config.systems.is_empty() && eggpool.is_some() {
+                Pane::Eggpool
+            } else {
+                Pane::Systems
+            },
+            system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            eggpool,
         }
     }
 
@@ -176,50 +236,69 @@ impl AppState {
     }
 
     /// Apply a user action.
+    #[allow(clippy::match_same_arms)]
     pub fn apply_action(&mut self, action: Action) {
         match action {
-            Action::SelectNext => {
+            Action::MoveDown => {
+                if self.active_pane == Pane::Eggpool {
+                    self.move_eggpool_period(true);
+                    return;
+                }
                 let order = self.display_order();
                 self.move_selection(&order, 1);
             }
-            Action::SelectPrevious => {
+            Action::MoveUp => {
+                if self.active_pane == Pane::Eggpool {
+                    self.move_eggpool_period(false);
+                    return;
+                }
                 let order = self.display_order();
                 self.move_selection(&order, -1_isize);
             }
-            Action::PageDown => {
+            Action::PageDown if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 let page = self.page_size();
                 self.move_selection(&order, page);
             }
-            Action::PageUp => {
+            Action::PageUp if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 let page = self.page_size();
                 self.move_selection(&order, -page);
             }
-            Action::SelectFirst => {
+            Action::SelectFirst if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 self.selected_id = order
                     .first()
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
             }
-            Action::SelectLast => {
+            Action::SelectLast if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 self.selected_id = order
                     .last()
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
             }
-            Action::PreviousView | Action::NextView => {
-                self.view_mode = match self.view_mode {
-                    ViewMode::Normal => ViewMode::Condensed,
-                    ViewMode::Condensed => ViewMode::Normal,
+            Action::PreviousPane => self.cycle_pane(false),
+            Action::NextPane => self.cycle_pane(true),
+            Action::ToggleSystemView if self.active_pane == Pane::Systems => {
+                self.system_view_mode = match self.system_view_mode {
+                    SystemViewMode::Normal => SystemViewMode::Condensed,
+                    SystemViewMode::Condensed => SystemViewMode::Normal,
                 };
             }
+            Action::PageDown
+            | Action::PageUp
+            | Action::SelectFirst
+            | Action::SelectLast
+            | Action::RefreshNow
+            | Action::Quit => {}
+            Action::ToggleSystemView | Action::ToggleDrives
+                if self.active_pane == Pane::Eggpool => {}
+            Action::ToggleSystemView => {}
             Action::ToggleDrives => {
                 self.drives_expanded = !self.drives_expanded;
             }
-            Action::RefreshNow | Action::Quit => {} // Handled by caller.
             Action::ConfigReloaded(config) => self.rebuild_from_config(&config),
             Action::Resize { width, height } => {
                 self.terminal_size = Some((width, height));
@@ -250,6 +329,41 @@ impl AppState {
     /// Rebuild systems from a new config, preserving state for systems
     /// that still exist (matched by ID).
     pub fn rebuild_from_config(&mut self, config: &Config) {
+        let old_eggpool = self.eggpool.take();
+        self.eggpool = config.eggpool.clone().map(|endpoint| {
+            if let Some(mut existing) = old_eggpool {
+                if existing.endpoint != endpoint {
+                    existing.endpoint = endpoint;
+                    existing.request_generation = existing.request_generation.wrapping_add(1);
+                    existing.status = EggpoolStatus::Refreshing;
+                    existing.summary = None;
+                    existing.last_success_at = None;
+                    existing.last_attempt_at = None;
+                    existing.last_error = None;
+                }
+                existing
+            } else {
+                EggpoolState {
+                    endpoint,
+                    period: EggpoolPeriod::Hour,
+                    request_generation: 0,
+                    status: EggpoolStatus::Idle,
+                    summary: None,
+                    last_success_at: None,
+                    last_attempt_at: None,
+                    last_error: None,
+                }
+            }
+        });
+        if self.active_pane == Pane::Eggpool && self.eggpool.is_none() && !config.systems.is_empty()
+        {
+            self.active_pane = Pane::Systems;
+        } else if self.active_pane == Pane::Systems
+            && self.systems.is_empty()
+            && self.eggpool.is_some()
+        {
+            self.active_pane = Pane::Eggpool;
+        }
         let old_systems: Vec<SystemState> = self.systems.drain(..).collect();
 
         self.systems = config
@@ -297,6 +411,62 @@ impl AppState {
         ensure_selected_visible(self);
     }
 
+    /// Apply one `EggPool` result if it belongs to the current request and period.
+    pub fn apply_eggpool_result(&mut self, result: &EggpoolResult) {
+        let Some(eggpool) = self.eggpool.as_mut() else {
+            return;
+        };
+        if result.generation != eggpool.request_generation || result.period != eggpool.period {
+            return;
+        }
+        if !matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
+            eggpool.status = EggpoolStatus::Idle;
+            eggpool.last_attempt_at = Some(result.completed_at);
+            match &result.outcome {
+                EggpoolFetchOutcome::Online(summary) => {
+                    eggpool.summary = Some(summary.clone());
+                    eggpool.last_success_at = Some(result.completed_at);
+                    eggpool.last_error = None;
+                }
+                error => eggpool.last_error = Some(error.clone()),
+            }
+        }
+    }
+
+    fn move_eggpool_period(&mut self, longer: bool) {
+        let Some(eggpool) = self.eggpool.as_mut() else {
+            return;
+        };
+        let next = if longer {
+            eggpool.period.longer()
+        } else {
+            eggpool.period.shorter()
+        };
+        if next == eggpool.period {
+            return;
+        }
+        eggpool.period = next;
+        eggpool.request_generation = eggpool.request_generation.wrapping_add(1);
+        eggpool.status = EggpoolStatus::Refreshing;
+        eggpool.summary = None;
+        eggpool.last_error = None;
+    }
+
+    fn cycle_pane(&mut self, next: bool) {
+        match (
+            self.active_pane,
+            self.systems.is_empty(),
+            self.eggpool.is_some(),
+            next,
+        ) {
+            (Pane::Systems, false, true, _) => self.active_pane = Pane::Eggpool,
+            (Pane::Eggpool, _, true, _) if !self.systems.is_empty() => {
+                self.active_pane = Pane::Systems;
+            }
+            _ => {}
+        }
+    }
+
     /// Move selection by a relative offset in display order.
     fn move_selection(&mut self, order: &[usize], offset: isize) {
         if order.is_empty() {
@@ -330,7 +500,7 @@ impl AppState {
         let height = self
             .terminal_size
             .map_or(24, |(_, h)| h)
-            .saturating_sub(view_header_height(self.view_mode));
+            .saturating_sub(view_header_height(self.system_view_mode));
 
         let order = self.display_order();
         let top_pos = self
@@ -360,8 +530,8 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
     let Some(system) = state.systems.get(system_index) else {
         return 0;
     };
-    match (state.view_mode, system.reachability) {
-        (ViewMode::Condensed, _) => {
+    match (state.system_view_mode, system.reachability) {
+        (SystemViewMode::Condensed, _) => {
             if state.drives_expanded
                 && state.selected_id.as_deref() == Some(system.id.as_str())
                 && system.reachability == Reachability::Online
@@ -371,8 +541,8 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
                 1
             }
         }
-        (ViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
-        (ViewMode::Normal, Reachability::Online) => {
+        (SystemViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
+        (SystemViewMode::Normal, Reachability::Online) => {
             let details = if state.drives_expanded
                 && state.selected_id.as_deref() == Some(system.id.as_str())
             {
@@ -434,9 +604,9 @@ fn minimum_render_height(state: &AppState, system_index: usize) -> u16 {
     match state
         .systems
         .get(system_index)
-        .map(|system| (state.view_mode, system.reachability))
+        .map(|system| (state.system_view_mode, system.reachability))
     {
-        Some((ViewMode::Normal, Reachability::Online)) => 5,
+        Some((SystemViewMode::Normal, Reachability::Online)) => 5,
         Some(_) => 1,
         None => 0,
     }
@@ -467,7 +637,7 @@ pub fn ensure_selected_visible(state: &mut AppState) {
     };
 
     // The renderer uses the complete frame as its viewport.
-    let usable_height = height.saturating_sub(view_header_height(state.view_mode));
+    let usable_height = height.saturating_sub(view_header_height(state.system_view_mode));
 
     // Find which systems fit from top_pos downward.
     let visible = visible_range(&order, state, top_pos, usable_height);
@@ -501,10 +671,10 @@ pub fn ensure_selected_visible(state: &mut AppState) {
 
 /// Rows reserved above the entries by a view.
 #[must_use]
-pub const fn view_header_height(view_mode: ViewMode) -> u16 {
-    match view_mode {
-        ViewMode::Normal => 0,
-        ViewMode::Condensed => 2,
+pub const fn view_header_height(system_view_mode: SystemViewMode) -> u16 {
+    match system_view_mode {
+        SystemViewMode::Normal => 0,
+        SystemViewMode::Condensed => 2,
     }
 }
 
@@ -528,7 +698,7 @@ fn valid_drive_count_from_slice(drives: &[crate::normalized::NormalizedDrive]) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::SystemEntry;
+    use crate::config::{EggpoolEntry, EggpoolScheme, SystemEntry};
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use gregg_protocol::StatusSnapshot;
 
@@ -542,6 +712,23 @@ mod tests {
                 name: Some(format!("System {i}")),
             });
         }
+        config
+    }
+
+    fn eggpool_config(with_system: bool) -> Config {
+        let mut config = if with_system {
+            test_config_with_ids(&["system"])
+        } else {
+            Config::default()
+        };
+        config.eggpool = Some(EggpoolEntry {
+            id: "eggpool-id".into(),
+            host: "pool.local".into(),
+            port: 11300,
+            scheme: EggpoolScheme::Http,
+            name: Some("Main EggPool".into()),
+            api_key_env: None,
+        });
         config
     }
 
@@ -575,6 +762,98 @@ mod tests {
         assert!(state.systems.is_empty());
         assert!(state.selected_id.is_none());
         assert!(state.viewport_top_id.is_none());
+    }
+
+    #[test]
+    fn pane_initialization_and_cycling_follow_configured_sources() {
+        let systems = AppState::from_config(&test_config_with_ids(&["a"]));
+        assert_eq!(systems.active_pane, Pane::Systems);
+        let eggpool = AppState::from_config(&eggpool_config(false));
+        assert_eq!(eggpool.active_pane, Pane::Eggpool);
+        assert!(eggpool.eggpool.is_some());
+
+        let mut both = AppState::from_config(&eggpool_config(true));
+        both.apply_action(Action::NextPane);
+        assert_eq!(both.active_pane, Pane::Eggpool);
+        both.apply_action(Action::PreviousPane);
+        assert_eq!(both.active_pane, Pane::Systems);
+    }
+
+    #[test]
+    fn eggpool_period_movement_is_bounded_and_invalidates_old_summary() {
+        let mut state = AppState::from_config(&eggpool_config(false));
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Hour);
+        state.apply_action(Action::MoveUp);
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Hour);
+        state.apply_action(Action::MoveDown);
+        state.apply_action(Action::MoveDown);
+        state.apply_action(Action::MoveDown);
+        state.apply_action(Action::MoveDown);
+        let eggpool = state.eggpool.as_ref().unwrap();
+        assert_eq!(eggpool.period, EggpoolPeriod::Month);
+        assert_eq!(eggpool.request_generation, 3);
+        assert!(eggpool.summary.is_none());
+    }
+
+    #[test]
+    fn eggpool_results_reject_stale_or_mismatched_requests_and_retain_same_period_failures() {
+        let mut state = AppState::from_config(&eggpool_config(false));
+        state.apply_action(Action::MoveDown);
+        let now = Instant::now();
+        let summary = EggpoolSummary {
+            accounted_tokens: 42,
+            cache_read_ratio: Some(0.5),
+            output_tokens_per_second: 2.0,
+            avg_ttft_ms: Some(12.0),
+            period: EggpoolPeriod::Day,
+        };
+        let result = |generation, period, outcome| EggpoolResult {
+            generation,
+            period,
+            started_at: now,
+            completed_at: now,
+            outcome,
+        };
+        state.apply_eggpool_result(&result(
+            0,
+            EggpoolPeriod::Day,
+            EggpoolFetchOutcome::Online(summary.clone()),
+        ));
+        assert!(state.eggpool.as_ref().unwrap().summary.is_none());
+        state.apply_eggpool_result(&result(
+            1,
+            EggpoolPeriod::Hour,
+            EggpoolFetchOutcome::Online(summary.clone()),
+        ));
+        assert!(state.eggpool.as_ref().unwrap().summary.is_none());
+        state.apply_eggpool_result(&result(
+            1,
+            EggpoolPeriod::Day,
+            EggpoolFetchOutcome::Online(summary),
+        ));
+        assert!(state.eggpool.as_ref().unwrap().summary.is_some());
+        state.apply_eggpool_result(&result(1, EggpoolPeriod::Day, EggpoolFetchOutcome::Timeout));
+        assert!(state.eggpool.as_ref().unwrap().summary.is_some());
+        assert!(matches!(
+            state.eggpool.as_ref().unwrap().last_error,
+            Some(EggpoolFetchOutcome::Timeout)
+        ));
+    }
+
+    #[test]
+    fn eggpool_config_reload_reconciles_active_pane_and_clears_changed_source() {
+        let mut state = AppState::from_config(&eggpool_config(false));
+        state.apply_action(Action::MoveDown);
+        let mut changed = eggpool_config(false);
+        changed.eggpool.as_mut().unwrap().host = "new-pool.local".into();
+        state.rebuild_from_config(&changed);
+        assert_eq!(state.active_pane, Pane::Eggpool);
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
+        assert!(state.eggpool.as_ref().unwrap().summary.is_none());
+        let systems = test_config_with_ids(&["a"]);
+        state.rebuild_from_config(&systems);
+        assert_eq!(state.active_pane, Pane::Systems);
+        assert!(state.eggpool.is_none());
     }
 
     #[test]
@@ -769,14 +1048,14 @@ mod tests {
 
         assert_eq!(state.selected_id.as_deref(), Some("a"));
 
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("b"));
 
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("c"));
 
         // Should clamp at the end.
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("c"));
     }
 
@@ -785,18 +1064,18 @@ mod tests {
         let config = test_config_with_ids(&["a", "b", "c"]);
         let mut state = AppState::from_config(&config);
 
-        state.apply_action(Action::SelectNext);
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("c"));
 
-        state.apply_action(Action::SelectPrevious);
+        state.apply_action(Action::MoveUp);
         assert_eq!(state.selected_id.as_deref(), Some("b"));
 
-        state.apply_action(Action::SelectPrevious);
+        state.apply_action(Action::MoveUp);
         assert_eq!(state.selected_id.as_deref(), Some("a"));
 
         // Should clamp at the beginning.
-        state.apply_action(Action::SelectPrevious);
+        state.apply_action(Action::MoveUp);
         assert_eq!(state.selected_id.as_deref(), Some("a"));
     }
 
@@ -835,7 +1114,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
 
         // Select b.
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("b"));
 
         // Make a online (changes display order but b is still selected).
@@ -860,7 +1139,7 @@ mod tests {
         let config = test_config_with_ids(&["a", "b"]);
         let mut state = AppState::from_config(&config);
 
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("b"));
 
         // Rebuild with only "a".
@@ -941,8 +1220,10 @@ mod tests {
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
             terminal_size: None,
-            view_mode: ViewMode::Normal,
+            active_pane: Pane::Systems,
+            system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            eggpool: None,
         };
         assert_eq!(entry_height(&state, 0), 5);
 
@@ -1076,7 +1357,7 @@ mod tests {
         assert_eq!(top, 2);
         assert!(visible_range(&order, &state, top, 10).contains(&selected));
 
-        state.apply_action(Action::SelectPrevious);
+        state.apply_action(Action::MoveUp);
         assert_eq!(state.viewport_top_id.as_deref(), Some("c"));
     }
 
@@ -1150,10 +1431,10 @@ mod tests {
         let config = Config::default();
         let mut state = AppState::from_config(&config);
 
-        state.apply_action(Action::SelectNext);
+        state.apply_action(Action::MoveDown);
         assert!(state.selected_id.is_none());
 
-        state.apply_action(Action::SelectPrevious);
+        state.apply_action(Action::MoveUp);
         assert!(state.selected_id.is_none());
 
         state.apply_action(Action::SelectFirst);
@@ -1217,12 +1498,12 @@ mod tests {
         state.selected_id = Some("a".into());
 
         state.apply_action(Action::ToggleDrives);
-        state.apply_action(Action::NextView);
-        assert_eq!(state.view_mode, ViewMode::Condensed);
+        state.apply_action(Action::ToggleSystemView);
+        assert_eq!(state.system_view_mode, SystemViewMode::Condensed);
         assert!(state.drives_expanded);
         assert_eq!(state.selected_id.as_deref(), Some("a"));
-        state.apply_action(Action::PreviousView);
-        assert_eq!(state.view_mode, ViewMode::Normal);
+        state.apply_action(Action::ToggleSystemView);
+        assert_eq!(state.system_view_mode, SystemViewMode::Normal);
         assert!(state.drives_expanded);
     }
 
@@ -1230,7 +1511,7 @@ mod tests {
     fn condensed_expansion_counts_only_valid_drive_rows() {
         let config = test_config_with_ids(&["a"]);
         let mut state = AppState::from_config(&config);
-        state.view_mode = ViewMode::Condensed;
+        state.system_view_mode = SystemViewMode::Condensed;
         state.drives_expanded = true;
         state.systems[0].reachability = Reachability::Online;
         let mut snapshot = NormalizedSnapshot::from_v1(&make_snapshot());

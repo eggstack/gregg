@@ -1,6 +1,6 @@
 # Phase 59: EggPool pane state, controls, and rendering
 
-Status: planned.
+Status: completed.
 
 ## Objective
 
@@ -133,11 +133,11 @@ When EggPool is absent, `eggpool = None`.
 
 ### Workstream A acceptance criteria
 
-- [ ] Pane and system layout are independent.
-- [ ] Existing Normal/Condensed state remains available.
-- [ ] Initial pane follows configured-source rules.
-- [ ] EggPool state is absent when unconfigured.
-- [ ] No dynamic pane collection or registry is introduced.
+- [x] Pane and system layout are independent.
+- [x] Existing Normal/Condensed state remains available.
+- [x] Initial pane follows configured-source rules.
+- [x] EggPool state is absent when unconfigured.
+- [x] No dynamic pane collection or registry is introduced.
 
 ## Workstream B: define available-pane cycling
 
@@ -177,11 +177,11 @@ Switching pane:
 
 ### Workstream B acceptance criteria
 
-- [ ] Only configured panes are selectable.
-- [ ] One-pane configurations do not expose blank panes.
-- [ ] Two-pane cycling is deterministic in both directions.
-- [ ] Pane changes preserve each pane's transient state.
-- [ ] No back-stack, tabs collection, or focus graph is added.
+- [x] Only configured panes are selectable.
+- [x] One-pane configurations do not expose blank panes.
+- [x] Two-pane cycling is deterministic in both directions.
+- [x] Pane changes preserve each pane's transient state.
+- [x] No back-stack, tabs collection, or focus graph is added.
 
 ## Workstream C: update key-to-action translation without embedding state
 
@@ -235,10 +235,10 @@ Required tests:
 
 ### Workstream C acceptance criteria
 
-- [ ] Event translation remains pure/state-independent.
-- [ ] `j`/`k` semantics are selected by reducer state.
-- [ ] Existing system navigation remains unchanged on Systems.
-- [ ] No modal keymap framework is added.
+- [x] Event translation remains pure/state-independent.
+- [x] `j`/`k` semantics are selected by reducer state.
+- [x] Existing system navigation remains unchanged on Systems.
+- [x] No modal keymap framework is added.
 
 ## Workstream D: preserve system-layout behavior under `v`
 
@@ -261,10 +261,10 @@ Do not add separate previous/next system-layout keys. Two modes require only one
 
 ### Workstream D acceptance criteria
 
-- [ ] Both system layouts remain reachable.
-- [ ] No system renderer semantics change merely because the key changed.
-- [ ] Selection/viewport/drive expansion are preserved.
-- [ ] Existing h/l system-layout assumptions are fully removed from active docs/tests.
+- [x] Both system layouts remain reachable.
+- [x] No system renderer semantics change merely because the key changed.
+- [x] Selection/viewport/drive expansion are preserved.
+- [x] Existing h/l system-layout assumptions are fully removed from active docs/tests.
 
 ## Workstream E: apply period movement and request-state transitions
 
@@ -318,11 +318,11 @@ Required reducer tests:
 
 ### Workstream E acceptance criteria
 
-- [ ] Period movement is exact and bounded.
-- [ ] Old-period values never display under a new period.
-- [ ] Same-period last success survives transient refresh failure.
-- [ ] Stale/cancelled results cannot regress state.
-- [ ] No four-period cache or history is added.
+- [x] Period movement is exact and bounded.
+- [x] Old-period values never display under a new period.
+- [x] Same-period last success survives transient refresh failure.
+- [x] Stale/cancelled results cannot regress state.
+- [x] No four-period cache or history is added.
 
 ## Workstream F: reconcile configuration reload behavior
 
@@ -350,10 +350,10 @@ System rebuilding remains unchanged.
 
 ### Workstream F acceptance criteria
 
-- [ ] Add/remove/change reloads cannot leave an unavailable active pane.
-- [ ] Old endpoint summary is cleared on endpoint change.
-- [ ] System selection/viewport preservation remains unchanged.
-- [ ] No file watcher or reload mechanism expansion is introduced.
+- [x] Add/remove/change reloads cannot leave an unavailable active pane.
+- [x] Old endpoint summary is cleared on endpoint change.
+- [x] System selection/viewport preservation remains unchanged.
+- [x] No file watcher or reload mechanism expansion is introduced.
 
 ## Workstream G: create one compact EggPool renderer
 
@@ -403,12 +403,12 @@ Wide layout may use a 2x2 grid. Narrow layout stacks one metric per row. Use dir
 
 ### Workstream G acceptance criteria
 
-- [ ] Exactly four requested metrics render.
-- [ ] Labels match EggPool semantics.
-- [ ] Wide and narrow layouts are deterministic.
-- [ ] Null/no-sample values render `—`.
-- [ ] Large values and Unicode identity do not panic or corrupt alignment.
-- [ ] No chart/table/card framework is introduced.
+- [x] Exactly four requested metrics render.
+- [x] Labels match EggPool semantics.
+- [x] Wide and narrow layouts are deterministic.
+- [x] Null/no-sample values render `—`.
+- [x] Large values and Unicode identity do not panic or corrupt alignment.
+- [x] No chart/table/card framework is introduced.
 
 ## Workstream H: render pending, failure, and stale states
 
@@ -456,11 +456,11 @@ Do not call data stale solely because 60 seconds elapsed; stale presentation her
 
 ### Workstream H acceptance criteria
 
-- [ ] First-load pending/failure is distinguishable from zero metrics.
-- [ ] Prior values remain visible during same-period refresh.
-- [ ] Failed refresh retains prior values with an explicit warning.
-- [ ] No raw body/error/secret is rendered.
-- [ ] All outcome variants have bounded text.
+- [x] First-load pending/failure is distinguishable from zero metrics.
+- [x] Prior values remain visible during same-period refresh.
+- [x] Failed refresh retains prior values with an explicit warning.
+- [x] No raw body/error/secret is rendered.
+- [x] All outcome variants have bounded text.
 
 ## Workstream I: route top-level UI and diagnostics
 
@@ -520,11 +520,11 @@ When only one pane exists, h/l may be omitted from the hint to avoid advertising
 
 ### Workstream I acceptance criteria
 
-- [ ] Empty-source detection includes both source types.
-- [ ] EggPool-only config renders EggPool.
-- [ ] Systems-only buffers remain semantically unchanged.
-- [ ] Hints are pane- and availability-aware.
-- [ ] No hint overwrites content.
+- [x] Empty-source detection includes both source types.
+- [x] EggPool-only config renders EggPool.
+- [x] Systems-only buffers remain semantically unchanged.
+- [x] Hints are pane- and availability-aware.
+- [x] No hint overwrites content.
 
 ## Workstream J: focused state and Ratatui tests
 
@@ -560,10 +560,10 @@ Use synthetic state only. Do not run a server from UI tests.
 
 ### Workstream J acceptance criteria
 
-- [ ] Reducer and renderer behavior is deterministic without I/O.
-- [ ] Existing system regressions remain covered.
-- [ ] Every operator-visible EggPool state has a buffer test.
-- [ ] No screenshot/golden-file evidence system is added unless the repository already uses compact inline expected buffers; prefer existing test style.
+- [x] Reducer and renderer behavior is deterministic without I/O.
+- [x] Existing system regressions remain covered.
+- [x] Every operator-visible EggPool state has a buffer test.
+- [x] No screenshot/golden-file evidence system is added unless the repository already uses compact inline expected buffers; prefer existing test style.
 
 ## Expected files
 
@@ -615,24 +615,24 @@ Do not add a browser/screenshot test or live EggPool dependency.
 
 Phase 59 is complete only when:
 
-- [ ] `Pane` is separate from `SystemViewMode`.
-- [ ] Available panes are derived from configured systems/EggPool.
-- [ ] Systems is initial when systems exist; EggPool is initial for EggPool-only config.
-- [ ] `h`/Left and `l`/Right cycle only available top-level panes.
-- [ ] `j`/Down and `k`/Up select systems on Systems and change periods on EggPool.
-- [ ] Period defaults to 1 hour and clamps at 1 hour/30 days.
-- [ ] Normal/Condensed remains reachable with `v` and preserves selection/viewport/drive expansion.
-- [ ] System-only actions do not acquire unrelated EggPool meanings.
-- [ ] Old-period summaries are hidden after period change.
-- [ ] Same-period last success survives a failed refresh.
-- [ ] Stale generation, mismatched period, and cancellation cannot regress state.
-- [ ] EggPool-only config renders without the old empty-systems diagnostic.
-- [ ] Exactly four accurately labeled metrics render in wide/narrow layouts.
-- [ ] Null/no-sample values render `—`.
-- [ ] Pending, first failure, refreshing, and retained-stale states are distinct and nonfatal.
-- [ ] Hints are truthful for active/available panes.
-- [ ] Existing normal/condensed system rendering and viewport tests pass.
-- [ ] No I/O in rendering, generalized screen/keymap/widget framework, persistence, extra page, new dependency, or new infrastructure was added.
+- [x] `Pane` is separate from `SystemViewMode`.
+- [x] Available panes are derived from configured systems/EggPool.
+- [x] Systems is initial when systems exist; EggPool is initial for EggPool-only config.
+- [x] `h`/Left and `l`/Right cycle only available top-level panes.
+- [x] `j`/Down and `k`/Up select systems on Systems and change periods on EggPool.
+- [x] Period defaults to 1 hour and clamps at 1 hour/30 days.
+- [x] Normal/Condensed remains reachable with `v` and preserves selection/viewport/drive expansion.
+- [x] System-only actions do not acquire unrelated EggPool meanings.
+- [x] Old-period summaries are hidden after period change.
+- [x] Same-period last success survives a failed refresh.
+- [x] Stale generation, mismatched period, and cancellation cannot regress state.
+- [x] EggPool-only config renders without the old empty-systems diagnostic.
+- [x] Exactly four accurately labeled metrics render in wide/narrow layouts.
+- [x] Null/no-sample values render `—`.
+- [x] Pending, first failure, refreshing, and retained-stale states are distinct and nonfatal.
+- [x] Hints are truthful for active/available panes.
+- [x] Existing normal/condensed system rendering and viewport tests pass.
+- [x] No I/O in rendering, generalized screen/keymap/widget framework, persistence, extra page, new dependency, or new infrastructure was added.
 
 ## Handoff guidance for a smaller implementation model
 

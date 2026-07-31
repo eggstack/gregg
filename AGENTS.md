@@ -16,9 +16,9 @@ The client optionally supports exactly one EggPool statistics source through
 `gregg eggpool add`, `list`, and `remove`. It is client-only, defaults to HTTP
 port `11300`, accepts only `http`/`https`, and persists an API-key
 environment-variable name, never a resolved secret. Configuration commands do
-not perform network or environment lookups. The Phase 58 client resolves the
-API-key environment reference only while constructing a request; pane state
-and final event-loop integration remain in Phases 59-60.
+not perform network or environment lookups. The client resolves the API-key
+environment reference only while constructing a request; Phase 59 owns the
+pure pane state, controls, and renderer, while Phase 60 owns event-loop wiring.
 
 ## Source of truth
 
@@ -146,14 +146,17 @@ borders that consume vertical space.
 
 The renderer must adapt from `Frame::area()` on every draw. Width degradation is semantic: preserve system name, I/O-wait availability, load, and core count before lower-priority OS detail. Scrolling is by logical system entry, not raw row count.
 
-Required navigation is `j`/Down and `k`/Up. `h`/Left and `l`/Right cycle the
-normal and condensed views; `e` toggles drive details for the selected system.
+Required navigation is `j`/Down and `k`/Up. On Systems they select entries; on
+EggPool they change the fixed 1-hour/1-day/7-day/30-day window. `h`/Left and
+`l`/Right cycle only configured top-level panes, and `v` toggles the Systems
+Normal/Condensed layout. `e` toggles drive details for the selected system.
 The condensed view uses one row per system, a two-row header/separator, and
 fixed semantic width tiers that drop lower-priority columns without horizontal
-scrolling. View and expansion state are transient and preserve selection. The
+scrolling. Pane, layout, expansion, and period state are transient. The
 terminal must be restored on normal exit, errors, and panics. Rendering
 functions must not perform network or filesystem I/O. Drive expansion is not
-persisted to configuration.
+persisted to configuration. EggPool renders pending, failure, refreshing, and
+retained-stale states without exposing raw errors or secrets.
 
 ## Testing expectations
 

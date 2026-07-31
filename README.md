@@ -137,18 +137,19 @@ validated. Omitting `[eggpool]` creates no EggPool worker or request.
 
 ### TUI navigation
 
-- `j` / Down: move to the next system
-- `k` / Up: move to the previous system
-- `h` / Left: previous view
-- `l` / Right: next view
+- `j` / Down: move down (select a system, or choose a longer EggPool window)
+- `k` / Up: move up (select a system, or choose a shorter EggPool window)
+- `h` / Left and `l` / Right: cycle configured top-level panes
+- `v`: toggle Normal/Condensed system layout
 - `e`: expand or collapse drives for the selected system
 - Viewport scrolls by system entry, not by raw row
 
 The normal view shows detailed five-row system blocks. The condensed view shows
 one comparison row per system with host, CPU, memory, disk, load, and I/O-wait
 columns; narrower terminals drop lower-priority columns without horizontal
-scrolling. View changes and drive expansion are transient and preserve the
-selected system.
+scrolling. Pane, layout, period, and drive expansion state are transient.
+EggPool shows exactly four summary values and keeps a same-period prior result
+visible when a later refresh fails.
 
 ### Windows client
 

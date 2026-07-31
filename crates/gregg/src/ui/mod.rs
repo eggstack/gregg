@@ -3,25 +3,31 @@
 pub mod bar;
 pub mod condensed;
 pub mod diagnostics;
+pub mod eggpool;
 pub mod layout;
 pub mod system_block;
 pub mod text;
 
 use ratatui::Frame;
 
-use crate::state::AppState;
+use crate::state::{AppState, Pane, SystemViewMode};
 
 /// Render the full TUI into the current frame.
 pub fn render(f: &mut Frame, state: &AppState) {
     let area = f.area();
 
-    if state.systems.is_empty() {
+    if state.systems.is_empty() && state.eggpool.is_none() {
         diagnostics::render_empty_config(f, area);
         return;
     }
 
-    let minimum_height = match state.view_mode {
-        crate::state::ViewMode::Normal => {
+    if state.active_pane == Pane::Eggpool {
+        eggpool::render(f, area, state);
+        return;
+    }
+
+    let minimum_height = match state.system_view_mode {
+        SystemViewMode::Normal => {
             let first_is_online = state
                 .display_order()
                 .first()
@@ -33,14 +39,14 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 1
             }
         }
-        crate::state::ViewMode::Condensed => 3,
+        SystemViewMode::Condensed => 3,
     };
     if area.width < 24 || area.height < minimum_height || area.height == 0 {
         diagnostics::render_too_small(f, area);
         return;
     }
 
-    if state.view_mode == crate::state::ViewMode::Condensed {
+    if state.system_view_mode == SystemViewMode::Condensed {
         condensed::render_header(f, area);
     }
 
@@ -55,7 +61,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     for entry in &entries {
         let system = &state.systems[entry.index];
-        if state.view_mode == crate::state::ViewMode::Condensed {
+        if state.system_view_mode == SystemViewMode::Condensed {
             condensed::render_entry(
                 f,
                 entry.rect,
@@ -83,7 +89,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
     // Show a key hint only when there is at least one extra row below entries.
     if extra_rows >= 1 {
-        diagnostics::render_key_hint(f, area);
+        diagnostics::render_key_hint(f, area, state);
     }
 }
 
@@ -242,8 +248,8 @@ mod tests {
         let state = AppState::from_config(&config);
         let output = render_state(&state, 80, 24);
         assert!(
-            output.contains("No systems configured"),
-            "expected 'No systems configured' in output:\n{output}"
+            output.contains("No sources configured"),
+            "expected 'No sources configured' in output:\n{output}"
         );
     }
 
@@ -940,7 +946,7 @@ mod tests {
         let state = AppState::from_config(&config);
         for &(w, h) in &[(80, 24), (40, 12), (20, 5), (120, 40)] {
             let output = render_state(&state, w, h);
-            assert!(output.contains("No systems"), "at {w}x{h}: {output}");
+            assert!(output.contains("No sources"), "at {w}x{h}: {output}");
         }
     }
 
@@ -1034,7 +1040,7 @@ mod tests {
         );
 
         // Move selection to b.
-        state.apply_action(crate::action::Action::SelectNext);
+        state.apply_action(crate::action::Action::MoveDown);
         let backend2 = TestBackend::new(80, 12);
         let mut terminal2 = Terminal::new(backend2).unwrap();
         terminal2.draw(|f| super::render(f, &state)).unwrap();
@@ -1152,7 +1158,7 @@ mod tests {
         for &(w, h) in &[(80, 24), (40, 10), (120, 50)] {
             let output = render_state(&state, w, h);
             assert!(
-                output.contains("No systems configured"),
+                output.contains("No sources configured"),
                 "at {w}x{h}: {output}"
             );
         }
@@ -1354,7 +1360,7 @@ mod tests {
         let config = test_config(&["fleet-host"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        state.view_mode = crate::state::ViewMode::Condensed;
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
 
         let wide = render_state(&state, 80, 4);
         assert!(wide.lines().next().unwrap().contains("HOST"));
@@ -1374,7 +1380,7 @@ mod tests {
         let config = test_config(&["storage"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        state.view_mode = crate::state::ViewMode::Condensed;
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
         state.drives_expanded = true;
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
             name: "/archive".into(),
@@ -1450,7 +1456,7 @@ mod tests {
         assert!(normal.contains("pending"));
         assert!(!normal.contains("/Volumes/data"));
 
-        state.apply_action(crate::action::Action::NextView);
+        state.apply_action(crate::action::Action::ToggleSystemView);
         let condensed = render_state(&state, 120, 12);
         assert!(condensed.contains("HOST"));
         assert!(condensed.contains("50%"));

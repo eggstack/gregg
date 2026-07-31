@@ -26,7 +26,7 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         })
         .unwrap_or(0);
 
-    let header_height = view_header_height(state.view_mode);
+    let header_height = view_header_height(state.system_view_mode);
     let content_area = ratatui::layout::Rect {
         y: area.y.saturating_add(header_height),
         height: area.height.saturating_sub(header_height),
@@ -61,9 +61,9 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             height: h,
         };
 
-        let base_height = match state.view_mode {
-            crate::state::ViewMode::Normal => 5,
-            crate::state::ViewMode::Condensed => 1,
+        let base_height = match state.system_view_mode {
+            crate::state::SystemViewMode::Normal => 5,
+            crate::state::SystemViewMode::Condensed => 1,
         };
         let drive_rows_visible = if is_selected && state.drives_expanded {
             usize::from(h.saturating_sub(base_height))

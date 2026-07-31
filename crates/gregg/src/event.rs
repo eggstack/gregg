@@ -113,10 +113,11 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
     }
 
     match event.key {
-        Key::Char('j') | Key::Down if !event.shift => Some(Action::SelectNext),
-        Key::Char('k') | Key::Up if !event.shift => Some(Action::SelectPrevious),
-        Key::Char('h') | Key::Left if !event.shift => Some(Action::PreviousView),
-        Key::Char('l') | Key::Right if !event.shift => Some(Action::NextView),
+        Key::Char('j') | Key::Down if !event.shift => Some(Action::MoveDown),
+        Key::Char('k') | Key::Up if !event.shift => Some(Action::MoveUp),
+        Key::Char('h') | Key::Left if !event.shift => Some(Action::PreviousPane),
+        Key::Char('l') | Key::Right if !event.shift => Some(Action::NextPane),
+        Key::Char('v') if !event.shift => Some(Action::ToggleSystemView),
         Key::Char('e') if !event.shift => Some(Action::ToggleDrives),
         Key::Char('g') if !event.shift => Some(Action::SelectFirst),
         Key::Char('G') => Some(Action::SelectLast),
@@ -206,7 +207,7 @@ mod tests {
             alt: false,
             shift: false,
         });
-        assert!(matches!(action, Some(crate::action::Action::SelectNext)));
+        assert!(matches!(action, Some(crate::action::Action::MoveDown)));
 
         let action = key_to_action(KeyEvent {
             key: Key::Char('k'),
@@ -214,10 +215,7 @@ mod tests {
             alt: false,
             shift: false,
         });
-        assert!(matches!(
-            action,
-            Some(crate::action::Action::SelectPrevious)
-        ));
+        assert!(matches!(action, Some(crate::action::Action::MoveUp)));
     }
 
     #[test]
@@ -228,7 +226,7 @@ mod tests {
             alt: false,
             shift: false,
         });
-        assert!(matches!(action, Some(crate::action::Action::SelectNext)));
+        assert!(matches!(action, Some(crate::action::Action::MoveDown)));
 
         let action = key_to_action(KeyEvent {
             key: Key::Up,
@@ -236,10 +234,7 @@ mod tests {
             alt: false,
             shift: false,
         });
-        assert!(matches!(
-            action,
-            Some(crate::action::Action::SelectPrevious)
-        ));
+        assert!(matches!(action, Some(crate::action::Action::MoveUp)));
     }
 
     #[test]
@@ -259,8 +254,8 @@ mod tests {
             });
             assert!(matches!(
                 (action, expected),
-                (Some(crate::action::Action::PreviousView), 0)
-                    | (Some(crate::action::Action::NextView), 1)
+                (Some(crate::action::Action::PreviousPane), 0)
+                    | (Some(crate::action::Action::NextPane), 1)
                     | (Some(crate::action::Action::ToggleDrives), 2)
             ));
         }

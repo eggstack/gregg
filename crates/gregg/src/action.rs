@@ -13,10 +13,10 @@ use crate::config::Config;
 /// scheduler. The [`AppState::apply_action`](crate::state::AppState::apply_action)
 /// method consumes actions and mutates state deterministically.
 pub enum Action {
-    /// Move selection to the next system in display order.
-    SelectNext,
-    /// Move selection to the previous system in display order.
-    SelectPrevious,
+    /// Move down in the active pane.
+    MoveDown,
+    /// Move up in the active pane.
+    MoveUp,
     /// Move selection down by approximately one viewport.
     PageDown,
     /// Move selection up by approximately one viewport.
@@ -25,10 +25,12 @@ pub enum Action {
     SelectFirst,
     /// Move selection to the last system in display order.
     SelectLast,
-    /// Select the previous view.
-    PreviousView,
-    /// Select the next view.
-    NextView,
+    /// Select the previous available top-level pane.
+    PreviousPane,
+    /// Select the next available top-level pane.
+    NextPane,
+    /// Toggle the Systems presentation mode.
+    ToggleSystemView,
     /// Toggle drive details for the selected system.
     ToggleDrives,
     /// Trigger an immediate poll cycle (handled by the scheduler).
@@ -54,14 +56,15 @@ mod tests {
     #[test]
     fn action_variants_exist() {
         let actions = [
-            Action::SelectNext,
-            Action::SelectPrevious,
+            Action::MoveDown,
+            Action::MoveUp,
             Action::PageDown,
             Action::PageUp,
             Action::SelectFirst,
             Action::SelectLast,
-            Action::PreviousView,
-            Action::NextView,
+            Action::PreviousPane,
+            Action::NextPane,
+            Action::ToggleSystemView,
             Action::ToggleDrives,
             Action::RefreshNow,
             Action::ConfigReloaded(Config::default()),
@@ -72,25 +75,26 @@ mod tests {
             Action::Quit,
         ];
         // Verify all variants are constructible and match.
-        assert!(matches!(actions[0], Action::SelectNext));
-        assert!(matches!(actions[1], Action::SelectPrevious));
+        assert!(matches!(actions[0], Action::MoveDown));
+        assert!(matches!(actions[1], Action::MoveUp));
         assert!(matches!(actions[2], Action::PageDown));
         assert!(matches!(actions[3], Action::PageUp));
         assert!(matches!(actions[4], Action::SelectFirst));
         assert!(matches!(actions[5], Action::SelectLast));
-        assert!(matches!(actions[6], Action::PreviousView));
-        assert!(matches!(actions[7], Action::NextView));
-        assert!(matches!(actions[8], Action::ToggleDrives));
-        assert!(matches!(actions[9], Action::RefreshNow));
-        assert!(matches!(actions[10], Action::ConfigReloaded(_)));
+        assert!(matches!(actions[6], Action::PreviousPane));
+        assert!(matches!(actions[7], Action::NextPane));
+        assert!(matches!(actions[8], Action::ToggleSystemView));
+        assert!(matches!(actions[9], Action::ToggleDrives));
+        assert!(matches!(actions[10], Action::RefreshNow));
+        assert!(matches!(actions[11], Action::ConfigReloaded(_)));
         assert!(matches!(
-            actions[11],
+            actions[12],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[12], Action::Quit));
+        assert!(matches!(actions[13], Action::Quit));
     }
 
     #[test]

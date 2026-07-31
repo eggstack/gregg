@@ -145,7 +145,8 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
   interval. Concurrency is bounded by a semaphore. Generation numbers increase
   monotonically; the state reducer rejects stale batches.
 - `state.rs` — `AppState` owns the system list, selection (by stable `SystemId`),
-  viewport position, view mode, transient expansion, and generation tracking.
+  viewport position, independent top-level pane and Systems view mode,
+  transient expansion/period state, and generation tracking.
   Display order is online-first/offline-last while preserving configured
   relative order. Viewport helpers compute visible ranges for normal
   five-row-base entries and condensed one-row entries, with bounded selected
@@ -191,8 +192,8 @@ The TUI lives in `crates/gregg/src/` and is composed of these modules:
   with panic-hook restoration on all exit paths.
 - `input.rs` — Crossterm event stream adapter reading events on a dedicated
   thread and forwarding typed `Event`s through a bounded channel.
-- `ui/mod.rs` — Top-level `render()` function dispatching directly on the view
-  mode and delegating to sub-modules.
+- `ui/mod.rs` — Top-level `render()` function dispatching directly on the
+  active pane and delegating Systems or EggPool to small sub-modules.
 - `ui/layout.rs` — Viewport computation: which systems are visible and their
   rect positions.
 - `ui/system_block.rs` — five-row-base online system rendering (header +
@@ -204,8 +205,14 @@ The TUI lives in `crates/gregg/src/` and is composed of these modules:
 - `ui/text.rs` — Text formatting helpers (byte sizes, percentages, load
   averages, priority-aware header composition).
 - `ui/diagnostics.rs` — Empty-config and terminal-too-small messages.
+- `ui/eggpool.rs` — Pure compact pending/success/stale/error rendering for the
+  optional four-value EggPool summary pane.
 
 Rendering reads `AppState` exclusively; it performs no network or filesystem I/O.
+`Pane` is independent from `SystemViewMode`; top-level cycling and
+context-sensitive vertical movement are reducer actions, not a generic focus
+or keymap framework. EggPool state retains only the selected period and the
+latest same-period summary.
 Width degradation drops lower-priority identity segments before truncating
 higher-priority values. The terminal is restored on normal quit, error, signal,
 and panic paths.
