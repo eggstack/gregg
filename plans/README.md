@@ -13,7 +13,7 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed umbrella roadmap. Plans 037 through 046 contain the implemented release-simplification, Windows, and minimal-verification work. [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) is the sole remaining polish phase and is limited to stale contributor guidance and trivial workflow boilerplate.
+[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
 
 ## Active roadmap and execution phases
 
@@ -30,7 +30,7 @@ Gregg follows a small, manual release model:
 | [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | implementation completed; excessive closure requirements superseded by Phase 46 |
 | [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | corrective implementation completed; excessive evidence/manual-rehearsal requirements superseded by Phase 46 |
 | [`046-minimal-cross-platform-verification-closure.md`](046-minimal-cross-platform-verification-closure.md) | Reduce local/CI verification to a proportionate two-tier, one-workflow contract with hosted native Windows/macOS truth | completed; ordinary CI and local release preflight passed |
-| [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) | Remove stale full-tier contributor guidance and trivial CI boilerplate without changing verification coverage | planned; sole remaining polish phase |
+| [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) | Remove stale full-tier contributor guidance and trivial CI boilerplate without changing verification coverage | completed; implementation `452f998`, ordinary CI run `30599181232` passed |
 
 ## Existing product plans retained for reassessment
 

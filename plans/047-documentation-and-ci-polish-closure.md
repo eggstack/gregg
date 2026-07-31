@@ -1,5 +1,10 @@
 # Phase 47: documentation and CI polish closure
 
+> Completed on 2026-07-30. Local default validation passed; implementation
+> commit `452f998` passed ordinary CI run `30599181232` across Linux, both
+> macOS architectures, Windows, and MSRV. No release or publication operation
+> was performed.
+
 ## Objective
 
 Finish the Phase 46 simplification with one small polish pass that removes stale contributor instructions and trivial GitHub Actions boilerplate without reopening Gregg's CI, release, test, or platform-support architecture.
