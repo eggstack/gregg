@@ -13,7 +13,7 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed umbrella roadmap. Plans 037 through 045 contain the implemented release-simplification and Windows work. [`046-minimal-cross-platform-verification-closure.md`](046-minimal-cross-platform-verification-closure.md) is the only remaining corrective phase and supersedes the disproportionate verification/closure requirements left by Plans 044 and 045.
+[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed umbrella roadmap. Plans 037 through 046 contain the implemented release-simplification, Windows, and minimal-verification work. [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) is the sole remaining polish phase and is limited to stale contributor guidance and trivial workflow boilerplate.
 
 ## Active roadmap and execution phases
 
@@ -30,6 +30,7 @@ Gregg follows a small, manual release model:
 | [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | implementation completed; excessive closure requirements superseded by Phase 46 |
 | [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | corrective implementation completed; excessive evidence/manual-rehearsal requirements superseded by Phase 46 |
 | [`046-minimal-cross-platform-verification-closure.md`](046-minimal-cross-platform-verification-closure.md) | Reduce local/CI verification to a proportionate two-tier, one-workflow contract with hosted native Windows/macOS truth | completed; ordinary CI and local release preflight passed |
+| [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) | Remove stale full-tier contributor guidance and trivial CI boilerplate without changing verification coverage | planned; sole remaining polish phase |
 
 ## Existing product plans retained for reassessment
 
@@ -76,9 +77,10 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 38 + 40 + 41 + 42 + 43 -> 44
 39 + 40 + 41 + 42 + 43 + 44 -> 45
 44 + 45 -> 46
+46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 only simplifies verification and closure; it does not automate publishing.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrects active documentation and removes trivial workflow indirection; it does not reopen verification design or automate publishing.
 
 ## Completion rule
 
@@ -111,7 +113,7 @@ Implementation handoffs should state results concisely. Do not create evidence f
 Any discovered expansion should be recorded separately unless required for:
 
 - correctness of the current Linux/macOS product;
-- the explicit Windows client/daemon/service scope in Plans 040-046;
+- the explicit Windows client/daemon/service scope in Plans 040-047;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
