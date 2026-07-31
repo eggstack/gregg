@@ -13,6 +13,8 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
+[`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) is the active planned product roadmap. Plans 057 through 060 add one optional EggPool summary endpoint to the `gregg` client configuration, a nested add/list/remove CLI, an authenticated bounded summary client, and one compact top-level EggPool pane. This work is client-only: it must not modify EggPool, `greggd`, `gregg-protocol`, CI, or release infrastructure. The implementation supports one EggPool endpoint and only the existing `/api/stats/summary` fields required for accounted tokens, cache-read share, output-token throughput, and average TTFT.
+
 [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) completed at implementation `561e398e` with ordinary CI run `30635971005`. [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) completed the closure-record correction. No corrective phase remains open for this line, and no product implementation, release-design, or CI-design work remains open.
 
 [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
@@ -21,6 +23,11 @@ Gregg follows a small, manual release model:
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
+| [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) | Add one optional EggPool summary source and compact second top-level TUI pane without changing EggPool, greggd, protocol, CI, or release scope | planned |
+| [`057-eggpool-config-and-cli.md`](057-eggpool-config-and-cli.md) | Add one optional validated EggPool entry plus nested add/list/remove commands through the existing atomic config store | planned; depends on 056 |
+| [`058-eggpool-summary-client-and-refresh.md`](058-eggpool-summary-client-and-refresh.md) | Add the typed summary client, environment-referenced Bearer auth, fixed periods, bounded failures, and active-pane refresh worker | planned; depends on 057 |
+| [`059-eggpool-pane-state-controls-and-rendering.md`](059-eggpool-pane-state-controls-and-rendering.md) | Separate top-level pane state from Normal/Condensed system layout, add context-sensitive controls, and render the four-value EggPool pane | planned; depends on 057; may use synthetic Phase 58 types during parallel work |
+| [`060-eggpool-pane-integration-and-lightweight-closure.md`](060-eggpool-pane-integration-and-lightweight-closure.md) | Wire optional runtime lifecycle, active-pane refresh, docs, synthetic integration tests, and ordinary local/CI closure | planned; depends on 058 and 059 |
 | [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) | Add bounded per-drive v2 metrics, aggregate normal-view disk usage, reliable fleet scrolling, a condensed view, and selected-system drive expansion | completed |
 | [`049-additive-v2-drive-protocol-and-normalization.md`](049-additive-v2-drive-protocol-and-normalization.md) | Add a bounded optional v2 drive representation, preserve v1/old-v2 compatibility, and centralize client aggregation | completed |
 | [`050-native-cross-platform-drive-collection.md`](050-native-cross-platform-drive-collection.md) | Enumerate eligible mounted local filesystems natively on Linux, macOS, and Windows with best-effort failure semantics | completed |
@@ -48,15 +55,15 @@ These plans contain product/platform work. They are not release-gate blockers.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded closure correction 055 |
+| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded closure correction 055; Roadmap 056 is a later optional client-only extension |
 | [`001-foundation-workspace-protocol.md`](001-foundation-workspace-protocol.md) | Workspace, package metadata, protocol schema, fixtures, CI foundation | implemented baseline |
 | [`002-linux-metrics-collector.md`](002-linux-metrics-collector.md) | Native Linux identity and metric sampling | implemented; retain as architecture history |
 | [`003-macos-metrics-collector.md`](003-macos-metrics-collector.md) | Native Darwin/Mach/sysctl metric sampling | implemented; retain as architecture history |
 | [`004-daemon-sampler-http-api.md`](004-daemon-sampler-http-api.md) | Cached sampler, readiness, HTTP API, shutdown | implemented; correctness tracked by product plans |
 | [`005-daemon-config-service-packaging.md`](005-daemon-config-service-packaging.md) | Atomic config, lifecycle CLI, systemd, launchd, installation | implemented; Windows extension is Phase 43 |
-| [`006-client-config-cli.md`](006-client-config-cli.md) | Endpoint model and configuration commands | implemented; Windows extension is Phase 40 |
-| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 and corrected by Phase 54 |
-| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current TUI expansion is Plans 051-052 with bounded correction in 054 |
+| [`006-client-config-cli.md`](006-client-config-cli.md) | Endpoint model and configuration commands | implemented; Windows extension is Phase 40; optional EggPool extension is Phase 57 |
+| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 and corrected by Phase 54; optional EggPool worker remains separate under Phases 58-60 |
+| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current system TUI expansion is Plans 051-052 with bounded correction in 054; optional top-level EggPool pane is Plans 059-060 |
 | [`009-testing-hardening-performance.md`](009-testing-hardening-performance.md) | Product tests, resource bounds, package validation | partially implemented; useful checks retained/simplified by 037-038 and 046 |
 
 ## Historical retired release-orchestration plans
@@ -81,6 +88,15 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 
 ## Dependency summary
 
+Active optional EggPool summary-pane roadmap:
+
+```text
+56 -> 57
+57 -> 58
+57 -> 59
+58 + 59 -> 60
+```
+
 Completed product roadmap with bounded closure correction:
 
 ```text
@@ -103,7 +119,7 @@ Completed release/platform roadmap:
 46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-55 must use that existing model and must not add verification or publication machinery.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-60 must use that existing model and must not add verification or publication machinery.
 
 ## Completion rule
 
@@ -137,8 +153,11 @@ Any discovered expansion should be recorded separately unless required for:
 
 - correctness of the current Linux/macOS/Windows product;
 - the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-055;
+- the explicit one-endpoint, four-metric optional EggPool summary-pane scope in Plans 056-060;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
 
-Package-manager distribution, automatic updates, public-internet hardening, dashboards, historical telemetry, alerting, per-process monitoring, physical-disk/SMART/storage-topology inventory, configurable table layouts, generalized release infrastructure, and dedicated verification/evidence systems remain out of scope.
+For Plans 056-060, the allowed EggPool boundary is one optional endpoint, one `/api/stats/summary` request, four fixed periods, four accurately labeled values, environment-referenced Bearer authentication, and one compact pane. Multiple EggPool instances, aggregation, additional EggPool endpoints, direct database access, dashboard-disabled route changes, provider/model/account drill-down, costs, request logs, runtime diagnostics, charts, history, alerts, exports, and generalized dashboard/plugin/datasource systems remain out of scope.
+
+Package-manager distribution, automatic updates, public-internet hardening, general dashboards, historical telemetry, alerting, per-process monitoring, physical-disk/SMART/storage-topology inventory, configurable table layouts, generalized release infrastructure, and dedicated verification/evidence systems remain out of scope.
