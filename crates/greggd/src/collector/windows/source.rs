@@ -489,12 +489,11 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
     #[cfg(target_os = "windows")]
     {
         let mut buffer = vec![0_u16; 256];
-        let mut required = unsafe {
+        let mut required = validate_drive_string_count(unsafe {
             // Safety: buffer is writable and its declared length matches its
             // allocation. The returned size is checked before parsing.
             ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
-        };
-        let mut required = validate_drive_string_count(required)?;
+        })?;
         if required >= buffer.len() {
             let size = required.checked_add(1).ok_or_else(|| {
                 CollectError::new(
@@ -503,12 +502,12 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 )
             })?;
             buffer.resize(size, 0);
-            required = unsafe {
+            let retry_required = unsafe {
                 // Safety: the resized buffer is writable and the API receives
                 // its exact capacity.
                 ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
             };
-            required = validate_drive_string_count(required)?;
+            required = validate_drive_string_count(retry_required)?;
             if required >= buffer.len() {
                 return Err(CollectError::new(
                     CollectErrorKind::SourceUnavailable,
