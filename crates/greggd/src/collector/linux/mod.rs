@@ -128,6 +128,7 @@ impl SystemCollector for LinuxCollector {
             memory: memory_sample.into_metrics(),
             swap: swap_sample.into_metrics(),
             commit: None,
+            drives: None,
         })
     }
 

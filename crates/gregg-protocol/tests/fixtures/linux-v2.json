@@ -32,5 +32,9 @@
     "used_bytes": 0,
     "total_bytes": 4000000000,
     "usage_pct": 0.0
-  }
+  },
+  "drives": [
+    { "name": "/", "used_bytes": 4000000000, "total_bytes": 10000000000 },
+    { "name": "/home", "used_bytes": 12000000000, "total_bytes": 50000000000 }
+  ]
 }

@@ -125,6 +125,7 @@ impl<S: ffi::MacNativeQueries> SystemCollector for MacOsCollector<S> {
             memory: memory.into_metrics(),
             swap: swap.into_metrics(),
             commit: None,
+            drives: None,
         })
     }
 

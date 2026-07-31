@@ -14,7 +14,7 @@ categories = ["api-bindings", "data-structures", "encoding"]
 include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "tests/fixtures/*.json"]
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"], default-features = false }
+serde = { version = "1.0", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1.0", default-features = false, features = ["std"] }
 thiserror = { version = "1.0", default-features = false }
 

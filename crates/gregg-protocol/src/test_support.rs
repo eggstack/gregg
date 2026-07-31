@@ -8,7 +8,10 @@ use crate::{
         CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
         SystemIdentity,
     },
-    v2::{CommitMetrics, CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2, SCHEMA_VERSION_V2},
+    v2::{
+        CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
+        StatusSnapshotV2, SCHEMA_VERSION_V2,
+    },
     SCHEMA_VERSION_V1,
 };
 
@@ -361,6 +364,7 @@ pub struct LinuxSnapshotV2Builder {
     swap_total_bytes: u64,
     sample_interval_ms: u64,
     observed_at_unix_ms: u64,
+    drives: Option<Vec<DriveMetrics>>,
 }
 
 impl Default for LinuxSnapshotV2Builder {
@@ -381,6 +385,7 @@ impl Default for LinuxSnapshotV2Builder {
             swap_total_bytes: 4_000_000_000,
             sample_interval_ms: 1000,
             observed_at_unix_ms: 1_716_460_800_000,
+            drives: None,
         }
     }
 }
@@ -422,6 +427,21 @@ impl LinuxSnapshotV2Builder {
         self.swap_used_bytes = used_bytes;
         self.swap_total_bytes = total_bytes;
         self
+    }
+
+    #[must_use]
+    pub fn drives(mut self, drives: Option<Vec<DriveMetrics>>) -> Self {
+        self.drives = drives;
+        self
+    }
+
+    #[must_use]
+    pub fn build_payload(self) -> StatusPayloadV2 {
+        let drives = self.drives.clone();
+        let snapshot = self.build();
+        let payload = StatusPayloadV2 { snapshot, drives };
+        payload.validate().expect("linux v2 payload validates");
+        payload
     }
 
     #[must_use]
@@ -472,6 +492,7 @@ pub struct WindowsSnapshotV2Builder {
     commit_limit: u64,
     sample_interval_ms: u64,
     observed_at_unix_ms: u64,
+    drives: Option<Vec<DriveMetrics>>,
 }
 
 impl Default for WindowsSnapshotV2Builder {
@@ -486,6 +507,7 @@ impl Default for WindowsSnapshotV2Builder {
             commit_limit: 8_000_000_000,
             sample_interval_ms: 1000,
             observed_at_unix_ms: 1_716_460_800_000,
+            drives: None,
         }
     }
 }
@@ -515,6 +537,21 @@ impl WindowsSnapshotV2Builder {
         self.commit_used = used_bytes;
         self.commit_limit = limit_bytes;
         self
+    }
+
+    #[must_use]
+    pub fn drives(mut self, drives: Option<Vec<DriveMetrics>>) -> Self {
+        self.drives = drives;
+        self
+    }
+
+    #[must_use]
+    pub fn build_payload(self) -> StatusPayloadV2 {
+        let drives = self.drives.clone();
+        let snapshot = self.build();
+        let payload = StatusPayloadV2 { snapshot, drives };
+        payload.validate().expect("windows v2 payload validates");
+        payload
     }
 
     #[must_use]

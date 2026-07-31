@@ -56,9 +56,10 @@ read-only endpoints:
   v1 health response because a truthful v1 snapshot cannot be produced
   (load, swap, and CPU I/O wait are absent). `/v1/status` is retained
   for compatibility with v1-only clients.
-- `/v2/status` — returns the cached v2 `StatusSnapshotV2` on every
-  platform, including Windows. This is the universal cross-platform
-  status endpoint.
+- `/v2/status` — returns the cached flat v2 `StatusPayloadV2` on every
+  platform, including Windows. It contains the existing `StatusSnapshotV2`
+  fields plus optional bounded drive records. This is the universal
+  cross-platform status endpoint.
 - `/healthz` and `/v2/healthz` — return readiness/health as compact JSON
   indicating `Ready`, `Warming`, or `Failed`.
 

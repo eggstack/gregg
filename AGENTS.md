@@ -101,6 +101,12 @@ The HTTP schema is a compatibility contract, not an incidental serialization for
 - Additive compatible changes are preferred within schema version 1.
 - Breaking semantic or structural changes require an explicit schema-version decision and migration tests.
 
+Schema-version-2 drive capacity is carried only by the flat `/v2/status`
+`StatusPayloadV2` wrapper. `StatusSnapshotV2` remains source-compatible for
+downstream struct literals; `drives` is optional, bounded, and contains only
+display name plus numeric used/total bytes. The client owns aggregate
+used/total/available/percentage arithmetic and must use overflow-safe sums.
+
 macOS has no Linux-equivalent aggregate CPU `iowait` state. Report it as unsupported/null; never fabricate `0.0`.
 
 Windows has no Linux-equivalent load average, swap, or CPU I/O-wait state. Report them as unsupported/null; never fabricate values. Windows reports memory commit charge as a separate metric.
@@ -161,6 +167,11 @@ perform package installation or depend on release metadata. `/v2/status` is
 the universal cross-platform status endpoint; `/v1/status` remains a
 Linux/macOS compatibility endpoint and is intentionally unavailable on
 Windows.
+
+The v2 status response may include a bounded `drives` collection. Missing or
+null means drive data is unavailable/legacy, while an empty collection means
+successful enumeration with no eligible filesystems. Native drive
+enumeration is intentionally deferred to the Phase 50 collector plan.
 
 Do not make tests sleep for production refresh intervals. Inject clocks, sample sources, schedulers, or short test intervals where timing behavior must be verified.
 

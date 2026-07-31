@@ -30,6 +30,10 @@ assert!(snapshot.validate().is_ok());
 Intentionally dependency-light: only `serde`, `serde_json`, and `thiserror`.
 No runtime, HTTP, or terminal libraries are included.
 
+Version 2 status responses use a flat `StatusPayloadV2` wrapper. Its optional
+`drives` field carries bounded numeric capacity records; missing means
+unavailable/legacy and an empty list means successful empty enumeration.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>

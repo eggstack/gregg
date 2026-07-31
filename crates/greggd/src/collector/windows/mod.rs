@@ -167,6 +167,7 @@ impl<S: WindowsSource> SystemCollector for WindowsCollector<S> {
                 usage_pct: 0.0,
             },
             commit: Some(commit_sample.into_metrics()),
+            drives: None,
         })
     }
 

@@ -20,8 +20,8 @@
 //!   hard collector failure when reporting health.
 
 use gregg_protocol::v2::{
-    CommitMetrics, CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2,
-    SwapMetrics as SwapMetricsV2, SCHEMA_VERSION_V2,
+    CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
+    StatusSnapshotV2, SwapMetrics as SwapMetricsV2, SCHEMA_VERSION_V2,
 };
 use gregg_protocol::{
     CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
@@ -65,6 +65,8 @@ pub struct CollectedMetrics {
     /// Windows commit charge. `None` on Linux/macOS; `Some` on Windows
     /// when the collector reports commit metrics.
     pub commit: Option<CommitMetrics>,
+    /// Optional drive capacity data. Native enumeration is added in phase 50.
+    pub drives: Option<Vec<DriveMetrics>>,
 }
 
 impl CollectedMetrics {
@@ -180,6 +182,26 @@ impl CollectedMetrics {
             swap,
             commit: self.commit,
         }
+    }
+
+    /// Convert this sample into the flat v2 status payload, preserving drive
+    /// availability semantics for the client.
+    #[must_use]
+    pub fn into_status_payload_v2(
+        self,
+        observed_at_unix_ms: u64,
+        sample_interval_ms: u64,
+        capabilities: MetricCapabilitiesV2,
+        system: SystemIdentity,
+    ) -> StatusPayloadV2 {
+        let drives = self.drives.clone();
+        let snapshot = self.into_snapshot_v2(
+            observed_at_unix_ms,
+            sample_interval_ms,
+            capabilities,
+            system,
+        );
+        StatusPayloadV2 { snapshot, drives }
     }
 }
 

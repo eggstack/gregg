@@ -2,6 +2,7 @@ use super::*;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use gregg_protocol::test_support::{LinuxSnapshotBuilder, LinuxSnapshotV2Builder};
+use gregg_protocol::v2::DriveMetrics;
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
 use http_body_util::BodyExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,7 +34,7 @@ fn post(path: &str) -> Request<Body> {
 
 /// Test helper: update snapshot with both v1 and v2 from a v1 snapshot.
 async fn update_both(state: &ServerState, snap: StatusSnapshot) {
-    let snap_v2 = LinuxSnapshotV2Builder::default().build();
+    let snap_v2 = LinuxSnapshotV2Builder::default().build_payload();
     state.update_snapshot(snap, snap_v2).await;
 }
 
@@ -182,6 +183,31 @@ async fn status_ready_returns_200_with_json() {
 }
 
 #[tokio::test]
+async fn v2_status_serializes_synthetic_drives_without_changing_v1() {
+    let state = ServerState::new();
+    let v1 = LinuxSnapshotBuilder::default().build();
+    let payload = LinuxSnapshotV2Builder::default()
+        .drives(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 4,
+            total_bytes: 10,
+        }]))
+        .build_payload();
+    state.update_snapshot(v1.clone(), payload).await;
+
+    let app = build_test_router(state);
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let body = response_body_string(response).await;
+    let parsed: gregg_protocol::v2::StatusPayloadV2 = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed.drives.as_ref().unwrap()[0].name, "/");
+
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let body = response_body_string(response).await;
+    let parsed_v1: StatusSnapshot = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed_v1, v1);
+}
+
+#[tokio::test]
 async fn status_warming_returns_503() {
     let state = ServerState::new();
     let app = build_test_router(state);
@@ -198,7 +224,7 @@ async fn status_warming_returns_503() {
 async fn v1_status_v2_only_returns_503_with_health() {
     // Simulate the Windows path: v2 snapshot exists but v1 is None.
     let state = ServerState::new();
-    let snap_v2 = LinuxSnapshotV2Builder::default().build();
+    let snap_v2 = LinuxSnapshotV2Builder::default().build_payload();
     state.update_snapshot_v2_only(snap_v2).await;
 
     let app = build_test_router(state);
@@ -217,8 +243,8 @@ async fn v1_status_v2_only_returns_503_with_health() {
     let response = app.oneshot(get("/v2/status")).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body_str = response_body_string(response).await;
-    let parsed_v2: gregg_protocol::v2::StatusSnapshotV2 = serde_json::from_str(&body_str).unwrap();
-    assert_eq!(parsed_v2.schema_version, 2);
+    let parsed_v2: gregg_protocol::v2::StatusPayloadV2 = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed_v2.snapshot.schema_version, 2);
 }
 
 #[tokio::test]

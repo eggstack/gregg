@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use gregg_protocol::v2::{
-    HealthResponseV2, MetricCapabilitiesV2, StatusSnapshotV2, SCHEMA_VERSION_V2,
+    HealthResponseV2, MetricCapabilitiesV2, StatusPayloadV2, StatusSnapshotV2, SCHEMA_VERSION_V2,
 };
 use gregg_protocol::{
     CpuMetrics, HealthResponse, LoadAverage, MemoryMetrics, MetricCapabilities, ReadinessState,
@@ -1160,7 +1160,7 @@ fn infinite_load_average_is_rejected() {
 #[test]
 fn v2_linux_fixture_round_trips() {
     let bytes = fixture("linux-v2.json");
-    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 linux fixture parses");
+    let snap: StatusPayloadV2 = serde_json::from_slice(&bytes).expect("v2 linux fixture parses");
     snap.validate().expect("v2 linux fixture validates");
 
     let encoded = serde_json::to_vec(&snap).expect("serialize v2 snapshot");
@@ -1173,37 +1173,61 @@ fn v2_linux_fixture_round_trips() {
 #[test]
 fn v2_macos_fixture_round_trips() {
     let bytes = fixture("macos-v2.json");
-    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 macos fixture parses");
+    let snap: StatusPayloadV2 = serde_json::from_slice(&bytes).expect("v2 macos fixture parses");
     snap.validate().expect("v2 macos fixture validates");
 
-    let caps = snap.capabilities;
+    let caps = snap.snapshot.capabilities;
     assert!(!caps.cpu_iowait, "macOS v2 capability must be false");
     assert!(caps.load_average, "macOS v2 load_average must be true");
     assert!(!caps.swap, "macOS v2 swap must be false");
     assert!(!caps.memory_commit, "macOS v2 memory_commit must be false");
     assert!(
-        snap.cpu.iowait_pct.is_none(),
+        snap.snapshot.cpu.iowait_pct.is_none(),
         "macOS v2 iowait must be null"
     );
-    assert!(snap.load.is_some(), "macOS v2 load must be present");
-    assert!(snap.swap.is_none(), "macOS v2 swap must be null");
-    assert!(snap.commit.is_none(), "macOS v2 commit must be null");
+    assert!(
+        snap.snapshot.load.is_some(),
+        "macOS v2 load must be present"
+    );
+    assert!(snap.snapshot.swap.is_none(), "macOS v2 swap must be null");
+    assert!(
+        snap.snapshot.commit.is_none(),
+        "macOS v2 commit must be null"
+    );
+    assert_eq!(snap.drives.as_ref().unwrap().len(), 1);
 }
 
 #[test]
 fn v2_windows_fixture_round_trips() {
     let bytes = fixture("windows-v2.json");
-    let snap: StatusSnapshotV2 = serde_json::from_slice(&bytes).expect("v2 windows fixture parses");
+    let snap: StatusPayloadV2 = serde_json::from_slice(&bytes).expect("v2 windows fixture parses");
     snap.validate().expect("v2 windows fixture validates");
 
-    let caps = snap.capabilities;
+    let caps = snap.snapshot.capabilities;
     assert!(!caps.cpu_iowait, "Windows v2 cpu_iowait must be false");
     assert!(!caps.load_average, "Windows v2 load_average must be false");
     assert!(!caps.swap, "Windows v2 swap must be false");
     assert!(caps.memory_commit, "Windows v2 memory_commit must be true");
-    assert!(snap.load.is_none(), "Windows v2 load must be null");
-    assert!(snap.swap.is_none(), "Windows v2 swap must be null");
-    assert!(snap.commit.is_some(), "Windows v2 commit must be present");
+    assert!(snap.snapshot.load.is_none(), "Windows v2 load must be null");
+    assert!(snap.snapshot.swap.is_none(), "Windows v2 swap must be null");
+    assert!(
+        snap.snapshot.commit.is_some(),
+        "Windows v2 commit must be present"
+    );
+    assert_eq!(snap.drives.as_ref().unwrap()[0].name, "C:\\");
+}
+
+#[test]
+fn old_v2_payload_without_drives_is_available_as_none() {
+    let bytes = fixture("health-ready-v2.json");
+    let health: HealthResponseV2 = serde_json::from_slice(&bytes).unwrap();
+    let snapshot = health.snapshot.unwrap();
+    let payload = StatusPayloadV2 {
+        snapshot,
+        drives: None,
+    };
+    payload.validate().unwrap();
+    assert!(payload.drives.is_none());
 }
 
 #[test]

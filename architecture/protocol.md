@@ -30,6 +30,9 @@ Key differences from v1:
 - `MetricCapabilitiesV2` has four flags: `cpu_iowait`, `load_average`,
   `swap`, and `memory_commit`.
 - Windows can report `commit` without fabricating load or swap.
+- `/v2/status` uses a flat `StatusPayloadV2` wrapper with optional `drives`.
+  The wrapper preserves source compatibility for public Rust code that uses
+  `StatusSnapshotV2` struct literals while keeping the JSON shape flat.
 - Clients prefer v2 but fall back to v1 on 404 Not Found.
 
 ## Carried values
@@ -62,6 +65,15 @@ V2 additional optional fields:
 - `swap: Option<SwapMetrics>` — `None` when `capabilities.swap` is `false`.
 - `commit: Option<CommitMetrics>` — Windows commit charge; `None` when
   `capabilities.memory_commit` is `false`.
+
+V2 status may also carry `drives: Option<Vec<DriveMetrics>>`. Each record has
+only an owned display `name`, `used_bytes`, and `total_bytes`. The list is
+bounded to 32 entries and names to 512 UTF-8 bytes. A missing or null field
+means unavailable/legacy; an empty list means successful enumeration with no
+eligible filesystems. The daemon does not serialize aggregate totals or
+percentages; the client derives them with checked arithmetic. These bounds
+keep worst-case drive data below the client’s existing 64 KiB response-body
+cap without changing that cap.
 
 Percentages are reported in the closed interval `0.0..=100.0`. Values
 outside that interval — and `NaN` / `±∞` — are rejected by validation.
@@ -115,6 +127,8 @@ are:
 - `LoadCapabilityMismatch` — load presence disagrees with capability
 - `SwapCapabilityMismatch` — swap presence disagrees with capability
 - `CommitCapabilityMismatch` — commit presence disagrees with capability
+- `EmptyDriveName`, `DriveNameTooLong`, and `TooManyDrives` — drive bounds
+  and structural invariants
 
 V2 validation rejects capability/value contradictions:
 - `cpu_iowait == false` requires `iowait_pct == None`
@@ -214,6 +228,9 @@ Windows.
 Both v1 and v2 snapshots are normalized into an internal
 `NormalizedSnapshot` type that the state reducer and TUI consume. This
 eliminates version-branching throughout the rendering code.
+Normalized drive records preserve source order. `aggregate_drives` owns the
+used/total/available/percentage calculation and returns no aggregate for an
+empty, invalid, or overflowing list.
 
 ## Platform-specific endpoint behavior
 

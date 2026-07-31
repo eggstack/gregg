@@ -27,5 +27,8 @@
     "used_bytes": 9000000000,
     "total_bytes": 16000000000,
     "usage_pct": 56.25
-  }
+  },
+  "drives": [
+    { "name": "/", "used_bytes": 7000000000, "total_bytes": 20000000000 }
+  ]
 }

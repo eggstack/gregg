@@ -141,7 +141,7 @@ impl AppState {
                     }
                     PollOutcome::OnlineV2(snapshot) => {
                         system.reachability = Reachability::Online;
-                        system.latest = Some(NormalizedSnapshot::from_v2(snapshot));
+                        system.latest = Some(NormalizedSnapshot::from_v2_payload(snapshot));
                         system.last_success_at = Some(batch.completed_at);
                         system.last_attempt_at = Some(batch.completed_at);
                         system.latency = Some(result.latency);

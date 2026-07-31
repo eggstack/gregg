@@ -16,6 +16,47 @@ pub use crate::{LoadAverage, MemoryMetrics, SystemIdentity};
 /// Schema major version 2.
 pub const SCHEMA_VERSION_V2: u16 = 2;
 
+/// Maximum number of drive records in a v2 status payload.
+pub const MAX_DRIVE_ENTRIES: usize = 32;
+
+/// Maximum UTF-8 byte length of a drive display name.
+pub const MAX_DRIVE_NAME_BYTES: usize = 512;
+
+/// Capacity metrics for one operator-visible mounted filesystem.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DriveMetrics {
+    /// Owned display name supplied by the platform collector.
+    pub name: String,
+    /// Bytes currently used.
+    pub used_bytes: u64,
+    /// Total capacity in bytes.
+    pub total_bytes: u64,
+}
+
+/// Flat v2 status response with optional drive capacity data.
+///
+/// The base snapshot is flattened so the JSON shape remains compatible with
+/// existing v2 clients. Keeping drives in this wrapper also preserves source
+/// compatibility for downstream Rust code that constructs `StatusSnapshotV2`
+/// literals. Missing or null `drives` means unavailable/legacy; an empty list
+/// means enumeration succeeded and found no eligible filesystems.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StatusPayloadV2 {
+    #[serde(flatten)]
+    pub snapshot: StatusSnapshotV2,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drives: Option<Vec<DriveMetrics>>,
+}
+
+impl StatusPayloadV2 {
+    /// Validate the base snapshot and every optional drive record.
+    pub fn validate(&self) -> Result<(), Vec<crate::ValidationViolationV2>> {
+        crate::validate_v2::validate_payload_v2(self)
+    }
+}
+
 /// Top-level daemon snapshot for schema version 2.
 ///
 /// V2 extends v1 by making `load`, `swap`, and `commit` optional with

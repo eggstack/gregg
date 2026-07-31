@@ -176,7 +176,7 @@ GET /healthz
 GET /v2/healthz
 ```
 
-The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values.
+The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with numeric `name`, `used_bytes`, and `total_bytes` fields; the client derives aggregate capacity values.
 
 The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/status`. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
 

@@ -31,5 +31,8 @@
     "used_bytes": 3000000000,
     "limit_bytes": 8000000000,
     "usage_pct": 37.5
-  }
+  },
+  "drives": [
+    { "name": "C:\\", "used_bytes": 25000000000, "total_bytes": 100000000000 }
+  ]
 }

@@ -393,19 +393,19 @@ If Cargo test-name filtering does not match repository organization, run the cor
 
 Phase 49 is complete only when:
 
-- [ ] V1 types, fixtures, conversion, and endpoints are unchanged.
-- [ ] V2 status can represent unavailable, empty, and populated drive data.
-- [ ] Every drive entry carries only name, used bytes, and total bytes.
-- [ ] Drive list and name size are bounded.
-- [ ] Old v2 JSON without drives parses and validates.
-- [ ] The public Rust source-compatibility decision is documented and tested.
-- [ ] Invalid drive entries return structured indexed violations.
-- [ ] `CollectedMetrics` carries drives without affecting readiness or v1.
-- [ ] `/v2/status` serializes synthetic drive data from cached state.
-- [ ] The client normalizes drive data across v1/v2.
-- [ ] Aggregate used/total/available/percentage arithmetic is centralized and overflow-safe.
-- [ ] The existing response-size cap remains effective.
-- [ ] No native collection, TUI behavior, new route, or new workflow was added.
+- [x] V1 types, fixtures, conversion, and endpoints are unchanged.
+- [x] V2 status can represent unavailable, empty, and populated drive data.
+- [x] Every drive entry carries only name, used bytes, and total bytes.
+- [x] Drive list and name size are bounded.
+- [x] Old v2 JSON without drives parses and validates.
+- [x] The public Rust source-compatibility decision is documented and tested.
+- [x] Invalid drive entries return structured indexed violations.
+- [x] `CollectedMetrics` carries drives without affecting readiness or v1.
+- [x] `/v2/status` serializes synthetic drive data from cached state.
+- [x] The client normalizes drive data across v1/v2.
+- [x] Aggregate used/total/available/percentage arithmetic is centralized and overflow-safe.
+- [x] The existing response-size cap remains effective.
+- [x] No native collection, TUI behavior, new route, or new workflow was added.
 
 ## Handoff guidance for a smaller implementation model
 

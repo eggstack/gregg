@@ -8,7 +8,10 @@ use std::fmt;
 
 use thiserror::Error;
 
-use crate::v2::{CommitMetrics, StatusSnapshotV2, SwapMetrics, SCHEMA_VERSION_V2};
+use crate::v2::{
+    CommitMetrics, StatusPayloadV2, StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES,
+    MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
+};
 use crate::{LoadAverage, MemoryMetrics};
 
 /// A single protocol-invariant violation for v2 snapshots.
@@ -51,6 +54,12 @@ pub enum ViolationKindV2 {
     SwapCapabilityMismatch,
     /// `memory_commit` capability and `commit` presence disagreed.
     CommitCapabilityMismatch,
+    /// A drive display name was empty.
+    EmptyDriveName,
+    /// A drive display name exceeded the protocol bound.
+    DriveNameTooLong { max_bytes: usize },
+    /// The drive collection exceeded the protocol bound.
+    TooManyDrives { max_entries: usize },
 }
 
 impl fmt::Display for ViolationKindV2 {
@@ -75,6 +84,16 @@ impl fmt::Display for ViolationKindV2 {
             }
             Self::CommitCapabilityMismatch => {
                 f.write_str("commit must be Some(_) iff memory_commit capability is true")
+            }
+            Self::EmptyDriveName => f.write_str("drive name must not be empty"),
+            Self::DriveNameTooLong { max_bytes } => {
+                write!(f, "drive name exceeds maximum length of {max_bytes} bytes")
+            }
+            Self::TooManyDrives { max_entries } => {
+                write!(
+                    f,
+                    "drive list exceeds maximum length of {max_entries} entries"
+                )
             }
         }
     }
@@ -121,6 +140,60 @@ pub fn validate_v2(snap: &StatusSnapshotV2) -> Result<(), Vec<ValidationViolatio
         snap.capabilities.memory_commit,
         &mut violations,
     );
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations)
+    }
+}
+
+/// Validate a flat v2 status payload, including its optional drive data.
+pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<ValidationViolationV2>> {
+    let mut violations = match validate_v2(&payload.snapshot) {
+        Ok(()) => Vec::new(),
+        Err(violations) => violations,
+    };
+
+    if let Some(drives) = &payload.drives {
+        if drives.len() > MAX_DRIVE_ENTRIES {
+            violations.push(ValidationViolationV2::new(
+                ViolationKindV2::TooManyDrives {
+                    max_entries: MAX_DRIVE_ENTRIES,
+                },
+                "drives",
+            ));
+        }
+        for (index, drive) in drives.iter().enumerate() {
+            let prefix = format!("drives[{index}]");
+            if drive.name.is_empty() {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::EmptyDriveName,
+                    format!("{prefix}.name"),
+                ));
+            }
+            if drive.name.len() > MAX_DRIVE_NAME_BYTES {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::DriveNameTooLong {
+                        max_bytes: MAX_DRIVE_NAME_BYTES,
+                    },
+                    format!("{prefix}.name"),
+                ));
+            }
+            if drive.total_bytes == 0 {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::ZeroNotAllowed,
+                    format!("{prefix}.total_bytes"),
+                ));
+            }
+            if drive.used_bytes > drive.total_bytes {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::UsedExceedsTotal,
+                    format!("{prefix}.used_bytes"),
+                ));
+            }
+        }
+    }
 
     if violations.is_empty() {
         Ok(())
@@ -303,7 +376,8 @@ fn check_percentage_v2(value: f32, field: &str, out: &mut Vec<ValidationViolatio
 mod tests {
     use super::*;
     use crate::v2::{
-        CpuMetricsV2, MetricCapabilitiesV2, StatusSnapshotV2, SwapMetrics, SCHEMA_VERSION_V2,
+        CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2, StatusSnapshotV2,
+        SwapMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
     };
     use crate::{LoadAverage, MemoryMetrics, SystemIdentity};
 
@@ -353,6 +427,81 @@ mod tests {
             }),
             commit: None,
         }
+    }
+
+    fn valid_payload(drives: Option<Vec<DriveMetrics>>) -> StatusPayloadV2 {
+        StatusPayloadV2 {
+            snapshot: valid_linux_v2(),
+            drives,
+        }
+    }
+
+    #[test]
+    fn valid_drive_payloads_include_unavailable_empty_and_populated_states() {
+        assert!(valid_payload(None).validate().is_ok());
+        assert!(valid_payload(Some(Vec::new())).validate().is_ok());
+        assert!(valid_payload(Some(vec![DriveMetrics {
+            name: "C:\\".into(),
+            used_bytes: 1,
+            total_bytes: 2,
+        }]))
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn drive_validation_reports_indexed_fields_and_bounds() {
+        let payload = valid_payload(Some(vec![DriveMetrics {
+            name: String::new(),
+            used_bytes: 3,
+            total_bytes: 2,
+        }]));
+        let err = payload.validate().unwrap_err();
+        assert!(err.iter().any(|v| v.field == "drives[0].name"));
+        assert!(err.iter().any(|v| v.field == "drives[0].used_bytes"));
+
+        let too_long = valid_payload(Some(vec![DriveMetrics {
+            name: "x".repeat(MAX_DRIVE_NAME_BYTES + 1),
+            used_bytes: 0,
+            total_bytes: 1,
+        }]));
+        assert!(too_long
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|v| v.field == "drives[0].name"));
+
+        let too_many = valid_payload(Some(
+            (0..=MAX_DRIVE_ENTRIES)
+                .map(|index| DriveMetrics {
+                    name: format!("/{index}"),
+                    used_bytes: 0,
+                    total_bytes: 1,
+                })
+                .collect(),
+        ));
+        assert!(too_many
+            .validate()
+            .unwrap_err()
+            .iter()
+            .any(|v| v.field == "drives"));
+    }
+
+    #[test]
+    fn drive_names_accept_unicode_and_windows_roots() {
+        let payload = valid_payload(Some(vec![
+            DriveMetrics {
+                name: "データ /home".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+            },
+            DriveMetrics {
+                name: "C:\\".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+            },
+        ]));
+        payload.validate().unwrap();
     }
 
     #[test]

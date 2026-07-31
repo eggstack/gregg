@@ -19,7 +19,7 @@ use axum::http::{Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
-use gregg_protocol::v2::{HealthResponseV2, StatusSnapshotV2};
+use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2};
 use gregg_protocol::{HealthResponse, StatusSnapshot};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
@@ -106,7 +106,7 @@ pub struct ServerState {
     /// `/v1/status` can continue serving stale data.
     snapshot: Arc<RwLock<Option<Arc<StatusSnapshot>>>>,
     /// Latest v2 status snapshot.
-    snapshot_v2: Arc<RwLock<Option<Arc<StatusSnapshotV2>>>>,
+    snapshot_v2: Arc<RwLock<Option<Arc<StatusPayloadV2>>>>,
     /// Readiness flag: `true` once a valid snapshot is available and not
     /// stale.
     ready: Arc<AtomicBool>,
@@ -151,11 +151,11 @@ impl ServerState {
     }
 
     /// Publish new v1 and v2 snapshots and mark the server ready.
-    pub async fn update_snapshot(&self, snap: StatusSnapshot, snap_v2: StatusSnapshotV2) {
+    pub async fn update_snapshot(&self, snap: StatusSnapshot, payload_v2: StatusPayloadV2) {
         let health = HealthResponse::ready(snap.clone());
-        let health_v2 = HealthResponseV2::ready(snap_v2.clone());
+        let health_v2 = HealthResponseV2::ready(payload_v2.snapshot.clone());
         let arc_snap = Arc::new(snap);
-        let arc_snap_v2 = Arc::new(snap_v2);
+        let arc_snap_v2 = Arc::new(payload_v2);
         {
             let mut guard = self.snapshot.write().await;
             *guard = Some(arc_snap);
@@ -180,9 +180,9 @@ impl ServerState {
     ///
     /// Used on Windows where v1 is not supported. The v1 snapshot slot
     /// remains unchanged (None on initial startup).
-    pub async fn update_snapshot_v2_only(&self, snap_v2: StatusSnapshotV2) {
-        let health_v2 = HealthResponseV2::ready(snap_v2.clone());
-        let arc_snap_v2 = Arc::new(snap_v2);
+    pub async fn update_snapshot_v2_only(&self, payload_v2: StatusPayloadV2) {
+        let health_v2 = HealthResponseV2::ready(payload_v2.snapshot.clone());
+        let arc_snap_v2 = Arc::new(payload_v2);
         {
             let mut guard = self.snapshot_v2.write().await;
             *guard = Some(arc_snap_v2);
@@ -283,7 +283,7 @@ impl ServerState {
     }
 
     /// Clone of the latest v2 snapshot, if available.
-    pub async fn snapshot_v2(&self) -> Option<Arc<StatusSnapshotV2>> {
+    pub async fn snapshot_v2(&self) -> Option<Arc<StatusPayloadV2>> {
         self.snapshot_v2.read().await.clone()
     }
 

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use gregg_protocol::v2::{StatusSnapshotV2, SCHEMA_VERSION_V2};
+use gregg_protocol::v2::{StatusPayloadV2, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
 use crate::clock::Clock;
@@ -97,7 +97,7 @@ pub enum PollOutcome {
     /// Successfully received and validated a v1 snapshot.
     Online(Box<StatusSnapshot>),
     /// Successfully received and validated a v2 snapshot.
-    OnlineV2(Box<StatusSnapshotV2>),
+    OnlineV2(Box<StatusPayloadV2>),
     /// The request timed out.
     Timeout,
     /// The connection was refused by the remote host.
@@ -282,14 +282,14 @@ impl HttpClient {
     /// Parse a response body as v2 or v1.
     fn parse_response(body: &[u8], endpoint: &Endpoint, start: std::time::Instant) -> PollResult {
         // Try parsing as v2 first.
-        if let Ok(snapshot) = serde_json::from_slice::<StatusSnapshotV2>(body) {
-            if snapshot.schema_version != SCHEMA_VERSION_V2 {
+        if let Ok(payload) = serde_json::from_slice::<StatusPayloadV2>(body) {
+            if payload.snapshot.schema_version != SCHEMA_VERSION_V2 {
                 return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
             }
-            if snapshot.validate().is_err() {
+            if payload.validate().is_err() {
                 return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start);
             }
-            return Self::make_result(endpoint, PollOutcome::OnlineV2(Box::new(snapshot)), start);
+            return Self::make_result(endpoint, PollOutcome::OnlineV2(Box::new(payload)), start);
         }
 
         // Fall back to v1 parsing.

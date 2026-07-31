@@ -1221,7 +1221,7 @@ mod tests {
     fn render_windows_system_shows_commit_row() {
         let config = test_config(&["win1"]);
         let mut state = AppState::from_config(&config);
-        let snap = WindowsSnapshotV2Builder::default().build();
+        let snap = WindowsSnapshotV2Builder::default().build_payload();
         let system = &state.systems[0];
         let batch = PollBatch {
             generation: 1,

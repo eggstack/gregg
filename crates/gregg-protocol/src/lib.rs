@@ -30,6 +30,10 @@
 //! platforms. Capability flags determine which `Option` values must be
 //! `Some` (supported) vs `None` (unsupported).
 //!
+//! The `/v2/status` response is a flat [`v2::StatusPayloadV2`] wrapper. Its
+//! optional `drives` field is additive and does not change the public Rust
+//! struct-literal compatibility of [`v2::StatusSnapshotV2`].
+//!
 //! # Compatibility policy
 //!
 //! Within each schema version:
@@ -134,7 +138,7 @@ pub use snapshot::{
     SystemIdentity,
 };
 pub use validate::{ValidationViolation, ViolationKind};
-pub use validate_v2::{validate_v2, ValidationViolationV2, ViolationKindV2};
+pub use validate_v2::{validate_payload_v2, validate_v2, ValidationViolationV2, ViolationKindV2};
 
 /// Schema major version implemented by this crate (version 1).
 ///

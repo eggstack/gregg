@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gregg_protocol::v2::StatusSnapshotV2;
+use gregg_protocol::v2::StatusPayloadV2;
 use gregg_protocol::{
     HealthCategory, HealthResponse, ReadinessState, StatusSnapshot, SCHEMA_VERSION_V1,
 };
@@ -93,7 +93,7 @@ pub struct Sampler<C: SystemCollector, Clk: Clock> {
     interval_ms: u64,
     readiness: ReadinessState,
     snapshot: Option<Arc<StatusSnapshot>>,
-    snapshot_v2: Option<Arc<StatusSnapshotV2>>,
+    snapshot_v2: Option<Arc<StatusPayloadV2>>,
     consecutive_failures: u32,
 }
 
@@ -151,7 +151,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
 
     /// Return the latest valid v2 immutable snapshot, if one has been published.
     #[must_use]
-    pub fn snapshot_v2(&self) -> Option<Arc<StatusSnapshotV2>> {
+    pub fn snapshot_v2(&self) -> Option<Arc<StatusPayloadV2>> {
         self.snapshot_v2.clone()
     }
 
@@ -192,7 +192,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// (no detached tasks that could race with shutdown).
     pub async fn run<F, Fut>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
     where
-        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>, Option<Arc<StatusSnapshotV2>>) -> Fut,
+        F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>, Option<Arc<StatusPayloadV2>>) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
         loop {
@@ -257,7 +257,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 };
 
                 // Produce v2 snapshot from the same collected sample.
-                let v2 = metrics.into_snapshot_v2(
+                let v2 = metrics.into_status_payload_v2(
                     now_ms,
                     self.interval_ms,
                     self.collector.capabilities_v2(),
@@ -451,6 +451,7 @@ mod tests {
                         usage_pct: 0.0,
                     },
                     commit: None,
+                    drives: None,
                 }),
             ])
         }
@@ -509,6 +510,7 @@ mod tests {
                 usage_pct: 0.0,
             },
             commit: None,
+            drives: None,
         }
     }
 
