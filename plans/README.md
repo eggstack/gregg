@@ -13,12 +13,20 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
+[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the active product roadmap. Plans 049 through 053 add bounded mounted-local-filesystem metrics, correct the existing multi-system viewport, add normal/condensed TUI views, and close through the existing lightweight verification model. This roadmap does not reopen release or CI design.
+
+[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
 
 ## Active roadmap and execution phases
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
+| [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) | Add bounded per-drive v2 metrics, aggregate normal-view disk usage, reliable fleet scrolling, a condensed view, and selected-system drive expansion | planned; active umbrella roadmap |
+| [`049-additive-v2-drive-protocol-and-normalization.md`](049-additive-v2-drive-protocol-and-normalization.md) | Add a bounded optional v2 drive representation, preserve v1/old-v2 compatibility, and centralize client aggregation | planned |
+| [`050-native-cross-platform-drive-collection.md`](050-native-cross-platform-drive-collection.md) | Enumerate eligible mounted local filesystems natively on Linux, macOS, and Windows with best-effort failure semantics | planned; depends on 049 |
+| [`051-dynamic-viewport-and-normal-drive-rendering.md`](051-dynamic-viewport-and-normal-drive-rendering.md) | Correct logical-system viewport following, add dynamic row accounting, and render aggregate/selected drive details in normal view | planned; depends on 049 |
+| [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | planned; depends on 050 and 051 |
+| [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | planned; depends on 049-052 |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
 | [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |
@@ -38,15 +46,15 @@ These plans contain product/platform work. They are not release-gate blockers.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by 036 |
+| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by 036 and active product roadmap 048 |
 | [`001-foundation-workspace-protocol.md`](001-foundation-workspace-protocol.md) | Workspace, package metadata, protocol schema, fixtures, CI foundation | implemented baseline |
 | [`002-linux-metrics-collector.md`](002-linux-metrics-collector.md) | Native Linux identity and metric sampling | implemented; retain as architecture history |
 | [`003-macos-metrics-collector.md`](003-macos-metrics-collector.md) | Native Darwin/Mach/sysctl metric sampling | implemented; retain as architecture history |
 | [`004-daemon-sampler-http-api.md`](004-daemon-sampler-http-api.md) | Cached sampler, readiness, HTTP API, shutdown | implemented; correctness tracked by product plans |
 | [`005-daemon-config-service-packaging.md`](005-daemon-config-service-packaging.md) | Atomic config, lifecycle CLI, systemd, launchd, installation | implemented; Windows extension is Phase 43 |
 | [`006-client-config-cli.md`](006-client-config-cli.md) | Endpoint model and configuration commands | implemented; Windows extension is Phase 40 |
-| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; preserve product semantics through Windows work |
-| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented; capability rendering extends in Phase 41 |
+| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 |
+| [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current TUI expansion is Plans 051-052 |
 | [`009-testing-hardening-performance.md`](009-testing-hardening-performance.md) | Product tests, resource bounds, package validation | partially implemented; useful checks retained/simplified by 037-038 and 046 |
 
 ## Historical retired release-orchestration plans
@@ -71,6 +79,17 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 
 ## Dependency summary
 
+Active product roadmap:
+
+```text
+49 -> 50
+49 -> 51
+50 + 51 -> 52
+49 + 50 + 51 + 52 -> 53
+```
+
+Completed release/platform roadmap:
+
 ```text
 37 -> 38 -> 39
 37 -> 40 -> 41 -> 42 -> 43
@@ -80,7 +99,7 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrects active documentation and removes trivial workflow indirection; it does not reopen verification design or automate publishing.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-53 must use that existing model and must not add verification or publication machinery.
 
 ## Completion rule
 
@@ -112,10 +131,10 @@ Implementation handoffs should state results concisely. Do not create evidence f
 
 Any discovered expansion should be recorded separately unless required for:
 
-- correctness of the current Linux/macOS product;
-- the explicit Windows client/daemon/service scope in Plans 040-047;
+- correctness of the current Linux/macOS/Windows product;
+- the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-053;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
 
-Package-manager distribution, automatic updates, public-internet hardening, dashboards, historical telemetry, alerting, per-process monitoring, generalized release infrastructure, and dedicated verification/evidence systems remain out of scope.
+Package-manager distribution, automatic updates, public-internet hardening, dashboards, historical telemetry, alerting, per-process monitoring, physical-disk/SMART/storage-topology inventory, configurable table layouts, generalized release infrastructure, and dedicated verification/evidence systems remain out of scope.
