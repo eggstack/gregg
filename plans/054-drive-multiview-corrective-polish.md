@@ -1,6 +1,14 @@
 # Phase 54: drive and multi-view corrective polish
 
-Status: completed; corrective closure for the completed Phase 48 roadmap.
+Status: completed; implementation `561e398e42812933755168bc6488f72bd40ed767`; ordinary CI run `30635971005` passed at the implementation SHA.
+
+## Closure
+
+- Implementation SHA: `561e398e42812933755168bc6488f72bd40ed767`.
+- Tested SHA: `561e398e42812933755168bc6488f72bd40ed767` (identical to the implementation SHA).
+- Ordinary CI run `30635971005` passed for Linux, macOS (`macos-15` Apple Silicon), macOS (`macos-15-intel`), Windows, and MSRV (Rust 1.75).
+- Local check: `./scripts/check-local.sh` passed on Linux.
+- No release action occurred.
 
 ## Objective
 
@@ -170,7 +178,7 @@ Update `plans/README.md` so that:
 
 - Phase 48 is described as a completed product roadmap;
 - Phases 49 through 53 remain completed;
-- Phase 54 is registered as the sole remaining corrective polish pass;
+- Phase 54 was registered as the bounded corrective polish pass;
 - the historical Phase 000 row no longer calls Phase 48 active;
 - completion of Phase 54 can later be recorded with one status-line/table update.
 
@@ -218,37 +226,37 @@ Phase 54 is complete only when all of the following are true:
 
 ### Viewport correctness
 
-- [ ] A normal-view online system is not included when fewer than five content rows are available.
-- [ ] A normal-view online system is included at exactly five content rows.
-- [ ] Offline and pending one-row entries remain visible in one content row regardless of later online entries.
-- [ ] Expanded drive details may be clipped, but the five-row online base block is never clipped or represented as a blank selected entry.
-- [ ] Condensed view geometry and controls are unchanged.
-- [ ] Selection-following and online-first/offline-last viewport behavior remain correct.
+- [x] A normal-view online system is not included when fewer than five content rows are available.
+- [x] A normal-view online system is included at exactly five content rows.
+- [x] Offline and pending one-row entries remain visible in one content row regardless of later online entries.
+- [x] Expanded drive details may be clipped, but the five-row online base block is never clipped or represented as a blank selected entry.
+- [x] Condensed view geometry and controls are unchanged.
+- [x] Selection-following and online-first/offline-last viewport behavior remain correct.
 
 ### Drive availability semantics
 
-- [ ] macOS `getmntinfo == 0` is treated as top-level enumeration failure.
-- [ ] Windows `GetLogicalDriveStringsW == 0` is treated as top-level enumeration failure on both initial and retry calls.
-- [ ] Top-level enumeration failure produces `drives: None` without failing core host metrics.
-- [ ] Successful enumeration with no eligible volumes still produces `drives: Some(vec![])`.
-- [ ] Individual inaccessible or unready volumes remain skippable without converting the whole sample to failure.
-- [ ] No wire-format or protocol-validation change is made.
+- [x] macOS `getmntinfo == 0` is treated as top-level enumeration failure.
+- [x] Windows `GetLogicalDriveStringsW == 0` is treated as top-level enumeration failure on both initial and retry calls.
+- [x] Top-level enumeration failure produces `drives: None` without failing core host metrics.
+- [x] Successful enumeration with no eligible volumes still produces `drives: Some(vec![])`.
+- [x] Individual inaccessible or unready volumes remain skippable without converting the whole sample to failure.
+- [x] No wire-format or protocol-validation change is made.
 
 ### Scope and footprint
 
-- [ ] No new dependency is added.
-- [ ] No new route, task, watcher, cache, cadence, configuration option, or command is added.
-- [ ] No workflow, release automation, evidence mechanism, or additional CI gate is added.
-- [ ] Changes remain in the expected narrow files, with any exception explained in the implementation commit.
-- [ ] Plan index wording accurately distinguishes completed Roadmap 048 from open corrective Phase 54.
+- [x] No new dependency is added.
+- [x] No new route, task, watcher, cache, cadence, configuration option, or command is added.
+- [x] No workflow, release automation, evidence mechanism, or additional CI gate is added.
+- [x] Changes remain in the expected narrow files, with any exception explained in the implementation commit.
+- [x] Plan index wording accurately distinguishes completed Roadmap 048 from completed corrective Phase 54.
 
 ### Verification and closure
 
-- [ ] Focused regression tests cover the four-row/five-row boundary and both native zero-return sentinels.
-- [ ] Existing drive protocol, collector, mixed-fleet, and TUI tests remain green.
-- [ ] The existing local check passes.
-- [ ] One ordinary existing CI run passes across Linux, macOS, Windows, and MSRV.
-- [ ] No release, tag, GitHub Release, or crates.io publication is performed.
+- [x] Focused regression tests cover the four-row/five-row boundary and both native zero-return sentinels.
+- [x] Existing drive protocol, collector, mixed-fleet, and TUI tests remain green.
+- [x] The existing local check passes.
+- [x] One ordinary existing CI run passes across Linux, macOS, Windows, and MSRV.
+- [x] No release, tag, GitHub Release, or crates.io publication is performed.
 
 ## Handoff sequence
 

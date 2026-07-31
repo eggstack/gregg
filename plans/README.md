@@ -13,7 +13,7 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
-[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) is implemented at `561e398e`, but its closure record was marked complete before the required ordinary hosted CI result was recorded. [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) is the sole open closure-record correction. No product implementation, release-design, or CI-design work remains open in this line.
+[`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) completed at implementation `561e398e` with ordinary CI run `30635971005`. [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) completed the closure-record correction. No corrective phase remains open for this line, and no product implementation, release-design, or CI-design work remains open.
 
 [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
 
@@ -27,8 +27,8 @@ Gregg follows a small, manual release model:
 | [`051-dynamic-viewport-and-normal-drive-rendering.md`](051-dynamic-viewport-and-normal-drive-rendering.md) | Correct logical-system viewport following, add dynamic row accounting, and render aggregate/selected drive details in normal view | completed; depends on 049 |
 | [`052-condensed-view-and-view-controls.md`](052-condensed-view-and-view-controls.md) | Add the `condensed.txt`-style fleet view plus `h`/`l`/arrows and `e` controls | completed |
 | [`053-drive-multiview-integration-and-lightweight-closure.md`](053-drive-multiview-integration-and-lightweight-closure.md) | Reconcile compatibility, mixed-fleet behavior, docs, response bounds, and ordinary local/CI closure | completed; CI run 30632762621 passed |
-| [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) | Correct the normal-view four-row boundary, preserve native enumeration failure semantics, and reconcile completed-roadmap wording | implementation complete at `561e398e`; closure pending 055 |
-| [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) | Record one ordinary cross-platform CI result, reconcile Phase 54 metadata, and close the plan index truthfully | planned; sole open closure-record correction |
+| [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) | Correct the normal-view four-row boundary, preserve native enumeration failure semantics, and reconcile completed-roadmap wording | completed; implementation `561e398e`; CI run `30635971005` passed |
+| [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) | Record one ordinary cross-platform CI result, reconcile Phase 54 metadata, and close the plan index truthfully | completed; closure-record correction |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
 | [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |
@@ -89,7 +89,7 @@ Completed product roadmap with bounded closure correction:
 50 + 51 -> 52
 49 + 50 + 51 + 52 -> 53
 53 -> 54
-54 -> 55
+54 -> 55 (both completed)
 ```
 
 Completed release/platform roadmap:

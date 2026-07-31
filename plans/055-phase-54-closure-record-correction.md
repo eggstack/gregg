@@ -1,6 +1,14 @@
 # Phase 55: Phase 54 closure record correction
 
-Status: planned; sole remaining closure-record correction for the completed drive-metrics and multi-view line of work.
+Status: completed; closure record corrected for Phase 54.
+
+## Closure
+
+- Phase 54 implementation SHA: `561e398e42812933755168bc6488f72bd40ed767`.
+- Tested SHA: `561e398e42812933755168bc6488f72bd40ed767` (identical; no plan-only descendant was needed).
+- Ordinary CI run `30635971005` passed for Linux, macOS (`macos-15` Apple Silicon), macOS (`macos-15-intel`), Windows, and MSRV (Rust 1.75).
+- Local check: `./scripts/check-local.sh` passed on Linux.
+- No release action occurred.
 
 ## Objective
 
@@ -37,11 +45,11 @@ Post-implementation review found:
 - collector tests preserve `drives: None` for top-level failure and `Some([])` for successful empty enumeration;
 - no protocol, dependency, workflow, release, or architecture expansion occurred.
 
-However, closure is not yet truthful because:
+At the time this correction was opened, closure was not yet truthful because:
 
 - `plans/054-drive-multiview-corrective-polish.md` says `Status: completed` while its acceptance checklist remains unchecked and no CI run is recorded;
 - the plan explicitly required one ordinary CI run before completion;
-- `plans/README.md` simultaneously describes Phase 54 as the remaining corrective pass and marks it completed in the table;
+- `plans/README.md` simultaneously uses stale corrective-pass wording and marks Phase 54 completed in the table;
 - no hosted status was attached to `561e398e42812933755168bc6488f72bd40ed767` at the time of review.
 
 ## Governing constraints
@@ -80,13 +88,11 @@ Use a normal commit comparison to establish this. Record the later tested SHA an
 
 ## Workstream A: establish one ordinary hosted CI result
 
-### Preferred order
+### Recorded verification
 
-1. Check whether an ordinary CI run already exists for `561e398e42812933755168bc6488f72bd40ed767`.
-2. If such a run exists and all required jobs succeeded, use it.
-3. Otherwise, use the ordinary CI run produced by the current plan-only descendant, provided the source-equivalence rule above is satisfied.
-4. If the ordinary workflow supports an existing manual dispatch or rerun mechanism, using that existing mechanism is acceptable.
-5. Do not edit workflow triggers or workflow contents to force a run.
+The ordinary CI run selected for closure was run `30635971005` at
+`561e398e42812933755168bc6488f72bd40ed767`. It passed without requiring a
+plan-only descendant or a workflow rerun.
 
 ### Required job result
 
@@ -100,16 +106,16 @@ The single selected run must report success for the existing jobs representing:
 
 Use the actual current job names from the workflow. Do not add matrix entries or require architecture combinations that the existing workflow does not define.
 
-### Failure handling
+### Failure-handling policy
 
-If the ordinary run fails:
+If the ordinary run had failed:
 
 - inspect the failing step;
 - if the failure is transient infrastructure, rerun that same ordinary run once;
 - if the failure indicates a real source defect, stop Phase 55 and create a separate implementation-correction request rather than modifying code under this closure plan;
 - do not mark Phase 54 or Phase 55 complete while a substantive failure remains.
 
-A second full green run is not required after one successful ordinary run.
+A second full green run was not required after the successful ordinary run.
 
 ## Workstream B: reconcile the local-check record
 
@@ -123,19 +129,8 @@ Do not create a transcript, log file, evidence directory, or command-output appe
 
 ## Workstream C: correct Phase 54 status and closure metadata
 
-Before hosted CI succeeds, Phase 54 must not claim full completion. Change its leading status to wording equivalent to:
-
-```text
-Status: implementation complete at `561e398e`; closure verification pending Phase 55.
-```
-
-After the selected ordinary CI run succeeds, update Phase 54 once more to:
-
-```text
-Status: completed; implementation `561e398e`; ordinary CI run `<run-number>` passed at `<tested-sha>`.
-```
-
-Immediately below the status or in a short `Closure` section, record:
+The final Phase 54 status records the completed implementation and selected
+ordinary CI run. Immediately below the status, its `Closure` section records:
 
 - implementation SHA: `561e398e42812933755168bc6488f72bd40ed767`;
 - tested SHA;
@@ -149,23 +144,21 @@ Update the existing acceptance checklist to checked items only after the corresp
 
 ## Workstream D: correct the plan index
 
-Update `plans/README.md` in two stages or in one final closure edit, depending on CI timing.
-
-While Phase 55 is open, the index must state:
+The final `plans/README.md` index states:
 
 - Roadmap 048 and Phases 49 through 53 are complete;
-- Phase 54 implementation is complete at `561e398e`, but its closure record is being corrected by Phase 55;
-- Phase 55 is the sole open closure-record correction;
-- no product implementation, release, or CI-design work remains open.
+- Phase 54 is complete at `561e398e` with ordinary CI run `30635971005`;
+- Phase 55 is complete as the closure-record correction;
+- no corrective, product implementation, release, or CI-design work remains open.
 
 The table should use statuses equivalent to:
 
 ```text
-054 | implementation complete at `561e398e`; closure pending 055
-055 | planned; sole open closure-record correction
+054 | completed; implementation `561e398e`; CI run `30635971005` passed
+055 | completed; closure-record correction
 ```
 
-After the selected CI run succeeds and Phase 55 is closed, the index must state:
+The index states:
 
 - Phase 54 completed with its implementation SHA and CI run number;
 - Phase 55 completed as the closure-record correction;
@@ -215,11 +208,9 @@ Use one ordinary existing CI run. Verify the existing Linux, macOS, Windows, and
 
 ### Documentation verification
 
-Search the active plan files for contradictory phrases, including:
+Search the active plan files for stale wording from the open correction, including:
 
 ```text
-sole remaining corrective pass
-Status: completed
 closure verification pending
 planned; sole open
 ```
@@ -234,32 +225,32 @@ Phase 55 is complete only when all of the following are true.
 
 ### Implementation baseline
 
-- [ ] `561e398e42812933755168bc6488f72bd40ed767` is recorded as the final Phase 54 implementation baseline.
-- [ ] No production code, tests, manifest, dependency, script, workflow, or release file changes under Phase 55.
-- [ ] Any tested descendant is proven to differ from `561e398e` only under `plans/`.
+- [x] `561e398e42812933755168bc6488f72bd40ed767` is recorded as the final Phase 54 implementation baseline.
+- [x] No production code, tests, manifest, dependency, script, workflow, or release file changes under Phase 55.
+- [x] The tested SHA is the implementation SHA; no descendant comparison was needed.
 
 ### Verification
 
-- [ ] One ordinary CI run succeeded for `561e398e` or a source-equivalent descendant.
-- [ ] The run includes successful existing Linux, macOS Apple Silicon, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
-- [ ] The CI run number and tested SHA are recorded in Phase 54.
-- [ ] One successful existing local check is recorded, either from the Phase 54 implementation handoff or from one new bounded run.
-- [ ] No repeated qualification, release preflight, evidence bundle, or new workflow was introduced.
+- [x] One ordinary CI run succeeded for `561e398e`.
+- [x] The run includes successful existing Linux, macOS Apple Silicon, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
+- [x] The CI run number and tested SHA are recorded in Phase 54.
+- [x] One successful existing local check is recorded.
+- [x] No repeated qualification, release preflight, evidence bundle, or new workflow was introduced.
 
 ### Documentation consistency
 
-- [ ] Phase 54 no longer claims completion without its required CI and local-check metadata.
-- [ ] Phase 54's acceptance checklist reflects the verified final state.
-- [ ] `plans/README.md` no longer describes Phase 54 as both remaining and completed.
-- [ ] Phase 55 is registered as the sole open closure correction while work is pending.
-- [ ] After closure, both Phase 54 and Phase 55 are marked completed and the index states that no drive/multi-view corrective phase remains open.
-- [ ] The dependency summary includes `54 -> 55` without creating another roadmap.
+- [x] Phase 54 no longer claims completion without its required CI and local-check metadata.
+- [x] Phase 54's acceptance checklist reflects the verified final state.
+- [x] `plans/README.md` no longer describes Phase 54 as both remaining and completed.
+- [x] Phase 55 was registered as the sole open closure correction while work was pending.
+- [x] Both Phase 54 and Phase 55 are marked completed and the index states that no drive/multi-view corrective phase remains open.
+- [x] The dependency summary includes `54 -> 55` without creating another roadmap.
 
 ### Scope
 
-- [ ] No code fix, refactor, new test, new dependency, new CI job, or workflow modification was made.
-- [ ] No tag, GitHub Release, crates.io publication, or packaging action was performed.
-- [ ] Final edits are limited to the three expected plan files.
+- [x] No code fix, refactor, new test, new dependency, new CI job, or workflow modification was made.
+- [x] No tag, GitHub Release, crates.io publication, or packaging action was performed.
+- [x] Final edits are limited to the three expected plan files.
 
 ## Handoff sequence
 
@@ -268,8 +259,8 @@ A smaller execution model should follow this exact order:
 1. Read this plan, Phase 54, `plans/README.md`, and the current CI workflow.
 2. Confirm current main descends from `561e398e`.
 3. Compare current main with `561e398e` and ensure intervening changes are plan-only before using a later CI run.
-4. Change Phase 54 status to `implementation complete; closure pending Phase 55` if CI has not yet succeeded.
-5. Register Phase 55 as the sole open closure-record correction in `plans/README.md`.
+4. Confirm that Phase 54's final status includes the completed implementation and verification metadata.
+5. Confirm that Phase 55 was registered as the sole open closure-record correction in `plans/README.md`.
 6. Locate an existing ordinary CI run for `561e398e` or use the ordinary run for a source-equivalent plan-only descendant.
 7. Verify every existing Linux, macOS, Windows, and MSRV job succeeded.
 8. Locate a trustworthy Phase 54 local-check result; otherwise run the existing local check once.
