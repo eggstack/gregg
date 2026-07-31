@@ -23,10 +23,23 @@ pub fn render_bar(
     }
 
     let clamped_pct = pct.clamp(0.0, 100.0);
-
+    let pct_str = text::format_pct(clamped_pct);
     let label_len = (label.len() as u16).min(area.width);
-    let min_reserve = label_len + 1 + 1 + 1 + 1 + 1 + 6;
-    let bar_width = area.width.saturating_sub(min_reserve);
+    let fixed_width = label_len
+        .saturating_add(2)
+        .saturating_add(2)
+        .saturating_add(1)
+        .saturating_add(u16::try_from(pct_str.len()).unwrap_or(u16::MAX));
+    let detail = detail.map(|value| {
+        let budget = usize::from(area.width.saturating_sub(fixed_width.saturating_add(1))) / 2;
+        truncate_str(value, u16::try_from(budget).unwrap_or(u16::MAX))
+    });
+    let detail_width = detail.as_deref().map_or(0, |value| {
+        u16::try_from(value.len() + 1).unwrap_or(u16::MAX)
+    });
+    let bar_width = area
+        .width
+        .saturating_sub(fixed_width.saturating_add(detail_width));
 
     let filled = if bar_width > 0 {
         ((clamped_pct / 100.0) * f32::from(bar_width)) as u16
@@ -38,22 +51,25 @@ pub fn render_bar(
     let bar_chars: String = "|".repeat(filled as usize);
     let space_chars: String = " ".repeat(empty as usize);
 
-    let pct_str = text::format_pct(clamped_pct);
-
     let mut spans = vec![Span::raw(format!(
         "{label}  [{bar_chars}{space_chars}] {pct_str}"
     ))];
 
     if let Some(d) = detail {
-        let detail_budget = area.width.saturating_sub(min_reserve);
-        if detail_budget >= 2 {
-            let truncated = truncate_str(d, detail_budget);
-            spans.push(Span::raw(format!(" {truncated}")));
-        }
+        spans.push(Span::raw(format!(" {d}")));
     }
 
     let line = Line::from(spans);
     f.render_widget(line, area);
+}
+
+/// Render a metric whose value is unavailable.
+pub fn render_unavailable(f: &mut Frame, area: Rect, label: &str) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    let line = format!("{label}  [                    ] —");
+    f.render_widget(Line::from(line), area);
 }
 
 /// Truncate a string to at most `max_width` display columns.

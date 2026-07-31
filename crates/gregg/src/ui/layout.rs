@@ -9,6 +9,7 @@ pub struct ViewportEntry {
     pub index: usize,
     pub rect: Rect,
     pub is_selected: bool,
+    pub drive_rows_visible: usize,
 }
 
 /// Compute which systems are visible and their rect positions.
@@ -25,7 +26,7 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         })
         .unwrap_or(0);
 
-    let visible = visible_range(&display_order, &state.systems, top_pos, area.height);
+    let visible = visible_range(&display_order, state, top_pos, area.height);
 
     let mut entries = Vec::new();
     let mut y = area.y;
@@ -36,7 +37,9 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         }
         let sys_idx = display_order[idx];
         let system = &state.systems[sys_idx];
-        let h = entry_height(system);
+        let full_height = entry_height(state, sys_idx);
+        let height_remaining = area.y.saturating_add(area.height).saturating_sub(y);
+        let h = full_height.min(height_remaining);
         let is_selected = state
             .selected_id
             .as_deref()
@@ -49,10 +52,17 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             height: h,
         };
 
+        let drive_rows_visible = if is_selected && state.drives_expanded {
+            usize::from(h.saturating_sub(5))
+        } else {
+            0
+        };
+
         entries.push(ViewportEntry {
             index: sys_idx,
             rect,
             is_selected,
+            drive_rows_visible,
         });
 
         y = y.saturating_add(h);

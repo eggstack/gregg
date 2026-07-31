@@ -19,7 +19,7 @@ use crate::poller::{PollBatch, PollOutcome};
 pub type SystemId = String;
 
 /// Reachability state for a single system.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reachability {
     /// No poll result received yet.
     Pending,
@@ -39,6 +39,15 @@ pub enum RefreshStatus {
         /// The generation number of the in-flight poll.
         generation: u64,
     },
+}
+
+/// The TUI presentation mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// The detailed, one-block-per-system view.
+    Normal,
+    /// Reserved for the condensed view implemented in a later phase.
+    Condensed,
 }
 
 /// Per-system mutable state.
@@ -79,6 +88,10 @@ pub struct AppState {
     pub refresh_status: RefreshStatus,
     /// Terminal dimensions (width, height), if known.
     pub terminal_size: Option<(u16, u16)>,
+    /// Current TUI presentation mode.
+    pub view_mode: ViewMode,
+    /// Whether the selected online system's drives are expanded.
+    pub drives_expanded: bool,
 }
 
 impl AppState {
@@ -114,6 +127,8 @@ impl AppState {
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
             terminal_size: None,
+            view_mode: ViewMode::Normal,
+            drives_expanded: false,
         }
     }
 
@@ -157,6 +172,7 @@ impl AppState {
         }
 
         self.last_applied_generation = batch.generation;
+        ensure_selected_visible(self);
     }
 
     /// Apply a user action.
@@ -194,6 +210,15 @@ impl AppState {
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
             }
+            Action::PreviousView | Action::NextView => {
+                self.view_mode = match self.view_mode {
+                    ViewMode::Normal => ViewMode::Condensed,
+                    ViewMode::Condensed => ViewMode::Normal,
+                };
+            }
+            Action::ToggleDrives => {
+                self.drives_expanded = !self.drives_expanded;
+            }
             Action::RefreshNow | Action::Quit => {} // Handled by caller.
             Action::ConfigReloaded(config) => self.rebuild_from_config(&config),
             Action::Resize { width, height } => {
@@ -201,6 +226,7 @@ impl AppState {
                 ensure_selected_visible(self);
             }
         }
+        ensure_selected_visible(self);
     }
 
     /// Return the display order: online systems first (in configured
@@ -268,6 +294,7 @@ impl AppState {
         } else {
             self.viewport_top_id = self.selected_id.clone();
         }
+        ensure_selected_visible(self);
     }
 
     /// Move selection by a relative offset in display order.
@@ -312,7 +339,7 @@ impl AppState {
         let mut rows = 0_u16;
         let mut count = 0_isize;
         for &idx in order.iter().skip(top_pos) {
-            let h = entry_height(&self.systems[idx]);
+            let h = entry_height(self, idx);
             if rows + h > height && count > 0 {
                 break;
             }
@@ -324,27 +351,43 @@ impl AppState {
     }
 }
 
-/// Return the row height for a system entry.
-///
-/// Online entries occupy 4 rows; pending and offline entries occupy 1 row.
+/// Return the full row height for a system entry in the current view.
 #[must_use]
-pub fn entry_height(system: &SystemState) -> u16 {
-    match system.reachability {
-        Reachability::Online => 4,
-        Reachability::Pending | Reachability::Offline => 1,
+pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
+    let Some(system) = state.systems.get(system_index) else {
+        return 0;
+    };
+    match (state.view_mode, system.reachability) {
+        (ViewMode::Condensed, _)
+        | (ViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
+        (ViewMode::Normal, Reachability::Online) => {
+            let details = if state.drives_expanded
+                && state.selected_id.as_deref() == Some(system.id.as_str())
+            {
+                system
+                    .latest
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.drives.as_ref())
+                    .map_or(0, Vec::len)
+            } else {
+                0
+            };
+            5_u16.saturating_add(u16::try_from(details).unwrap_or(u16::MAX))
+        }
     }
 }
 
 /// Compute which systems in display order are visible given a top
 /// index, the system states, and available height.
 ///
-/// Online entries take 4 rows; offline entries take 1. Partial entries
-/// at the bottom are excluded when possible. If the terminal has fewer
-/// than 4 usable rows, returns an empty range.
+/// Online entries take five base rows, with optional selected-system drive
+/// rows; offline and pending entries take one row. A first entry is retained
+/// even when it is taller than the viewport so the caller can render its
+/// complete base block when the terminal permits it.
 #[must_use]
 pub fn visible_range(
     display_order: &[usize],
-    systems: &[SystemState],
+    state: &AppState,
     top_index: usize,
     height: u16,
 ) -> Range<usize> {
@@ -356,10 +399,10 @@ pub fn visible_range(
     let mut count = 0_usize;
 
     for &idx in display_order.iter().skip(top_index) {
-        if idx >= systems.len() {
+        if idx >= state.systems.len() {
             break;
         }
-        let h = entry_height(&systems[idx]);
+        let h = entry_height(state, idx);
 
         if rows_used + h > height && count > 0 {
             break;
@@ -395,11 +438,11 @@ pub fn ensure_selected_visible(state: &mut AppState) {
         return;
     };
 
-    // Compute how many rows the currently visible region takes.
-    let usable_height = height.saturating_sub(2); // Reserve for headers/footers.
+    // The renderer uses the complete frame as its viewport.
+    let usable_height = height;
 
     // Find which systems fit from top_pos downward.
-    let visible = visible_range(&order, &state.systems, top_pos, usable_height);
+    let visible = visible_range(&order, state, top_pos, usable_height);
 
     if visible.contains(&selected_pos) {
         // Already visible, nothing to do.
@@ -412,10 +455,19 @@ pub fn ensure_selected_visible(state: &mut AppState) {
         return;
     }
 
-    // If selected is below viewport, scroll down so selected is visible
-    // at the top of the viewport.
+    // If selected is below viewport, move the top only as far as necessary.
     if selected_pos >= top_pos {
-        state.viewport_top_id = Some(state.systems[order[selected_pos]].id.clone());
+        let mut candidate = selected_pos;
+        while candidate > top_pos {
+            let previous = candidate - 1;
+            let range = visible_range(&order, state, previous, usable_height);
+            if range.contains(&selected_pos) {
+                candidate = previous;
+            } else {
+                break;
+            }
+        }
+        state.viewport_top_id = Some(state.systems[order[candidate]].id.clone());
     }
 }
 
@@ -817,25 +869,34 @@ mod tests {
     }
 
     #[test]
-    fn entry_height_online_is_four() {
-        let mut system = SystemState {
-            id: "test".into(),
-            endpoint: Endpoint::new("host".into(), 11310, None),
-            configured_name: None,
-            reachability: Reachability::Online,
-            latest: None,
-            last_success_at: None,
-            last_attempt_at: None,
-            latency: None,
-            last_error: None,
+    fn entry_height_online_is_five() {
+        let mut state = AppState {
+            systems: vec![SystemState {
+                id: "test".into(),
+                endpoint: Endpoint::new("host".into(), 11310, None),
+                configured_name: None,
+                reachability: Reachability::Online,
+                latest: None,
+                last_success_at: None,
+                last_attempt_at: None,
+                latency: None,
+                last_error: None,
+            }],
+            selected_id: Some("test".into()),
+            viewport_top_id: Some("test".into()),
+            last_applied_generation: 0,
+            refresh_status: RefreshStatus::Idle,
+            terminal_size: None,
+            view_mode: ViewMode::Normal,
+            drives_expanded: false,
         };
-        assert_eq!(entry_height(&system), 4);
+        assert_eq!(entry_height(&state, 0), 5);
 
-        system.reachability = Reachability::Pending;
-        assert_eq!(entry_height(&system), 1);
+        state.systems[0].reachability = Reachability::Pending;
+        assert_eq!(entry_height(&state, 0), 1);
 
-        system.reachability = Reachability::Offline;
-        assert_eq!(entry_height(&system), 1);
+        state.systems[0].reachability = Reachability::Offline;
+        assert_eq!(entry_height(&state, 0), 1);
     }
 
     #[test]
@@ -843,7 +904,7 @@ mod tests {
         let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
         let state = AppState::from_config(&config);
         let order = state.display_order();
-        let range = visible_range(&order, &state.systems, 0, 20);
+        let range = visible_range(&order, &state, 0, 20);
         // Should include some entries.
         assert!(!range.is_empty());
     }
@@ -853,7 +914,7 @@ mod tests {
         let config = test_config_with_ids(&["a", "b", "c"]);
         let state = AppState::from_config(&config);
         let order = state.display_order();
-        let range = visible_range(&order, &state.systems, 0, 3);
+        let range = visible_range(&order, &state, 0, 3);
         // Terminal too small for even one online entry.
         assert!(range.is_empty());
     }
@@ -883,6 +944,54 @@ mod tests {
         assert!(top_pos.is_some());
         assert!(selected_pos.is_some());
         assert!(selected_pos.unwrap() >= top_pos.unwrap());
+    }
+
+    #[test]
+    fn selection_stays_visible_across_dynamic_online_entries() {
+        let config = test_config_with_ids(&["a", "b", "c", "d"]);
+        let mut state = AppState::from_config(&config);
+        state.terminal_size = Some((80, 10));
+        for system in &mut state.systems {
+            system.reachability = Reachability::Online;
+            system.latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        }
+
+        state.apply_action(Action::SelectLast);
+        let order = state.display_order();
+        let top = order
+            .iter()
+            .position(|&index| state.systems[index].id == state.viewport_top_id.clone().unwrap())
+            .unwrap();
+        let selected = order
+            .iter()
+            .position(|&index| state.systems[index].id == state.selected_id.clone().unwrap())
+            .unwrap();
+        assert_eq!(top, 2);
+        assert!(visible_range(&order, &state, top, 10).contains(&selected));
+
+        state.apply_action(Action::SelectPrevious);
+        assert_eq!(state.viewport_top_id.as_deref(), Some("c"));
+    }
+
+    #[test]
+    fn expansion_changes_only_selected_entry_height() {
+        let config = test_config_with_ids(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        for system in &mut state.systems {
+            system.reachability = Reachability::Online;
+            system.latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        }
+        state.systems[0].latest.as_mut().unwrap().drives =
+            Some(vec![crate::normalized::NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+            }]);
+        assert_eq!(entry_height(&state, 0), 5);
+        assert_eq!(entry_height(&state, 1), 5);
+        state.apply_action(Action::ToggleDrives);
+        assert_eq!(entry_height(&state, 0), 6);
+        assert_eq!(entry_height(&state, 1), 5);
     }
 
     #[test]

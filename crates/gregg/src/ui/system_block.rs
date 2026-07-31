@@ -5,15 +5,21 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
 
-use crate::normalized::NormalizedSnapshot;
+use crate::normalized::{aggregate_drives, NormalizedSnapshot};
 use crate::state::SystemState;
 
 use super::bar;
 use super::text;
 
-/// Render a 4-row online system block.
-pub fn render_online(f: &mut Frame, area: Rect, system: &SystemState, is_selected: bool) {
-    if area.height < 4 || area.width == 0 {
+/// Render a normal-view online system block.
+pub fn render_online(
+    f: &mut Frame,
+    area: Rect,
+    system: &SystemState,
+    is_selected: bool,
+    drive_rows_visible: usize,
+) {
+    if area.height < 5 || area.width == 0 {
         return;
     }
 
@@ -68,6 +74,65 @@ pub fn render_online(f: &mut Frame, area: Rect, system: &SystemState, is_selecte
 
     // Row 3: SWAP or COMMIT bar
     render_swap_or_commit_row(f, area, snap);
+
+    // Row 4: aggregate disk bar. Invalid, unavailable, and empty drive data
+    // all remain visibly unavailable rather than looking like measured zero.
+    if let Some(drives) = snap.drives.as_deref().and_then(aggregate_drives) {
+        let disk_detail = format!(
+            "{} used / {} avail",
+            text::format_bytes(drives.used_bytes),
+            text::format_bytes(drives.available_bytes)
+        );
+        bar::render_bar(
+            f,
+            Rect {
+                y: area.y.saturating_add(4),
+                height: 1,
+                ..area
+            },
+            "DISK",
+            drives.usage_pct,
+            Some(&disk_detail),
+            false,
+        );
+    } else {
+        bar::render_unavailable(
+            f,
+            Rect {
+                y: area.y.saturating_add(4),
+                height: 1,
+                ..area
+            },
+            "DISK",
+        );
+    }
+
+    if drive_rows_visible > 0 {
+        if let Some(drives) = snap.drives.as_deref() {
+            for (offset, drive) in drives
+                .iter()
+                .filter(|drive| drive.total_bytes > 0 && drive.used_bytes <= drive.total_bytes)
+                .take(drive_rows_visible)
+                .enumerate()
+            {
+                let row = area
+                    .y
+                    .saturating_add(5 + u16::try_from(offset).unwrap_or(u16::MAX));
+                if row >= area.y.saturating_add(area.height) {
+                    break;
+                }
+                let line = text::drive_detail_line(drive, area.width);
+                f.render_widget(
+                    Line::from(Span::raw(line)),
+                    Rect {
+                        y: row,
+                        height: 1,
+                        ..area
+                    },
+                );
+            }
+        }
+    }
 }
 
 /// Render the third row: SWAP, COMMIT, or unavailable.

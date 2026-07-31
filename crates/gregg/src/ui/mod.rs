@@ -19,7 +19,11 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
-    if area.width < 24 || area.height < 4 {
+    let has_online = state
+        .systems
+        .iter()
+        .any(|system| system.reachability == crate::state::Reachability::Online);
+    if area.width < 24 || (has_online && area.height < 5) || area.height == 0 {
         diagnostics::render_too_small(f, area);
         return;
     }
@@ -37,7 +41,13 @@ pub fn render(f: &mut Frame, state: &AppState) {
         let system = &state.systems[entry.index];
         match system.reachability {
             crate::state::Reachability::Online => {
-                system_block::render_online(f, entry.rect, system, entry.is_selected);
+                system_block::render_online(
+                    f,
+                    entry.rect,
+                    system,
+                    entry.is_selected,
+                    entry.drive_rows_visible,
+                );
             }
             crate::state::Reachability::Offline | crate::state::Reachability::Pending => {
                 system_block::render_offline(f, entry.rect, system, entry.is_selected);
@@ -60,6 +70,7 @@ mod tests {
     use ratatui::Terminal;
 
     use crate::config::{Config, SystemEntry};
+    use crate::normalized::NormalizedDrive;
     use crate::poller::{PollBatch, PollOutcome};
     use crate::state::{AppState, Reachability};
     use gregg_protocol::test_support::{
@@ -222,7 +233,7 @@ mod tests {
         let output = render_state(&state, 80, 8);
 
         let lines: Vec<&str> = output.lines().collect();
-        // Online system occupies 4 rows.
+        // Online system occupies five rows.
         assert!(
             !lines[0].trim().is_empty(),
             "header row should not be empty"
@@ -601,16 +612,16 @@ mod tests {
         let names: Vec<&str> = (0..6).map(|_| "sys").collect();
         let config = test_config(&names);
         let mut state = AppState::from_config(&config);
-        // Make all systems online (4 rows each).
+        // Make all systems online (five base rows each).
         for i in 0..6 {
             apply_online(&mut state, i, linux_snap());
             // Bump generation for each batch.
         }
 
-        // 6 online systems × 4 rows = 24 rows needed, but terminal is 12 tall.
+        // 6 online systems × 5 rows = 30 rows needed, but terminal is 12 tall.
         let output = render_state(&state, 80, 12);
 
-        // Only 3 online systems should fit in 12 rows (3 × 4 = 12).
+        // Two complete online systems should fit in 12 rows.
         let nonblank = count_nonblank_lines(&output);
         assert!(
             nonblank <= 12,
@@ -651,14 +662,56 @@ mod tests {
     // ── Additional integration tests ─────────────────────────────────
 
     #[test]
-    fn online_system_uses_four_rows() {
+    fn online_system_uses_five_rows() {
         let config = test_config(&["s1"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        // Height 4 = exactly one online system, no room for key hint.
-        let output = render_state(&state, 80, 4);
+        // Height 5 = exactly one online system, no room for key hint.
+        let output = render_state(&state, 80, 5);
         let nonblank = count_nonblank_lines(&output);
-        assert_eq!(nonblank, 4, "one online system should use exactly 4 rows");
+        assert_eq!(nonblank, 5, "one online system should use exactly 5 rows");
+    }
+
+    #[test]
+    fn render_populated_disk_and_selected_drive_details() {
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
+            NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 238 * 1024 * 1024 * 1024,
+                total_bytes: 952 * 1024 * 1024 * 1024,
+            },
+            NormalizedDrive {
+                name: "/mnt/archive".into(),
+                used_bytes: 142 * 1024 * 1024 * 1024,
+                total_bytes: 477 * 1024 * 1024 * 1024,
+            },
+        ]);
+        state.drives_expanded = true;
+
+        let output = render_state(&state, 200, 8);
+        assert!(output.lines().nth(4).unwrap().contains("DISK"));
+        assert!(
+            output.contains("380.0 GiB used"),
+            "expected aggregate detail in output:\n{output}"
+        );
+        assert!(output.contains("/mnt/archive"));
+        assert!(output.contains("142.0 GiB"));
+        assert!(output.contains("25.0%"));
+    }
+
+    #[test]
+    fn render_unavailable_disk_does_not_show_zero_percent() {
+        let config = test_config(&["legacy"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        let output = render_state(&state, 80, 5);
+        let disk = output.lines().nth(4).unwrap();
+        assert!(disk.contains("DISK"));
+        assert!(disk.contains('—'));
+        assert!(!disk.contains("0.0%"));
     }
 
     #[test]
@@ -689,13 +742,13 @@ mod tests {
         apply_online(&mut state, 0, linux_snap());
         apply_offline(&mut state, 1);
         // c is pending (default).
-        // Height 6 = exactly 4 + 1 + 1, no room for key hint.
-        let output = render_state(&state, 80, 6);
+        // Height 7 = exactly 5 + 1 + 1, no room for key hint.
+        let output = render_state(&state, 80, 7);
         let nonblank = count_nonblank_lines(&output);
-        // 4 (online a) + 1 (offline b) + 1 (pending c) = 6
+        // 5 (online a) + 1 (offline b) + 1 (pending c) = 7
         assert_eq!(
-            nonblank, 6,
-            "online(4) + offline(1) + pending(1) = 6, got {nonblank}"
+            nonblank, 7,
+            "online(5) + offline(1) + pending(1) = 7, got {nonblank}"
         );
     }
 
@@ -824,11 +877,11 @@ mod tests {
 
         // System a is first (online, selected), then system b.
         assert!(lines[0].contains('a'), "first header: {}", lines[0]);
-        assert!(lines[4].contains('b'), "second header: {}", lines[4]);
+        assert!(lines[5].contains('b'), "second header: {}", lines[5]);
 
         // CPU bars should differ.
         assert!(lines[1].contains("10.0%"), "a CPU: {}", lines[1]);
-        assert!(lines[5].contains("90.0%"), "b CPU: {}", lines[5]);
+        assert!(lines[6].contains("90.0%"), "b CPU: {}", lines[6]);
     }
 
     #[test]
@@ -872,7 +925,7 @@ mod tests {
         let config = test_config(&["s"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        let output = render_state(&state, 24, 4);
+        let output = render_state(&state, 24, 5);
         assert!(
             !output.contains("terminal too small"),
             "width 24 should be valid:\n{output}"
@@ -882,16 +935,12 @@ mod tests {
     }
 
     #[test]
-    fn height_exactly_4_is_not_too_small() {
+    fn height_exactly_4_is_too_small_for_online_base() {
         let config = test_config(&["s"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 4);
-        assert!(
-            !output.contains("terminal too small"),
-            "height 4 should be valid:\n{output}"
-        );
-        assert!(output.contains('s'), "should render system: {output}");
+        assert!(output.contains("terminal too small"));
     }
 
     #[test]
@@ -951,7 +1000,7 @@ mod tests {
             "a should NOT be reversed after moving selection"
         );
         assert!(
-            buf2.cell((0, 4))
+            buf2.cell((0, 5))
                 .unwrap()
                 .style()
                 .add_modifier
@@ -1015,8 +1064,8 @@ mod tests {
         let config = test_config(&["x"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        // Width 24 = minimum valid width, height 4 = minimum valid height.
-        let output = render_state(&state, 24, 4);
+        // Width 24 = minimum valid width, height 5 = minimum valid height.
+        let output = render_state(&state, 24, 5);
         assert!(!output.trim().is_empty());
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at 24x4: {header}");
@@ -1137,7 +1186,7 @@ mod tests {
             }],
         });
 
-        // Height 4 = minimum, 2 offline systems + key hint in remaining space.
+        // Height 4 = two offline systems + key hint in remaining space.
         let output = render_state(&state, 80, 4);
         assert!(output.contains('x'), "should contain x: {output}");
         assert!(output.contains('y'), "should contain y: {output}");
@@ -1195,8 +1244,8 @@ mod tests {
         let config = test_config(&["s1"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        // 4 rows: exactly one system, no extra space.
-        let output = render_state(&state, 80, 4);
+        // 5 rows: exactly one system, no extra space.
+        let output = render_state(&state, 80, 5);
         assert!(
             !output.contains("j/k:select"),
             "key hint should not appear when no extra space:\n{output}"
@@ -1212,7 +1261,7 @@ mod tests {
         state.systems[0].reachability = Reachability::Online;
         // latest is None.
         let output = render_state(&state, 80, 8);
-        // render_online returns early when snap is None, so the 4-row
+        // render_online returns early when snap is None, so the five-row
         // block is allocated but left blank. Verify no crash occurred.
         assert!(!output.is_empty(), "should render without crashing");
     }

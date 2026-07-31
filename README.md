@@ -147,14 +147,21 @@ The daemon does not automatically create firewall rules. LAN exposure is operato
 
 ## Display model
 
-A reachable system consumes exactly four rows:
+A reachable system consumes five base rows in the normal view:
 
 ```text
 Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
 CPU  [||||||||||||                                  ] 25.2%
 MEM  [||||||||||||||||||                            ] 37.8%  5.9/15.6 GiB
 SWAP [                                                ]  0.0%  0/4.0 GiB
+DISK [||||||||||||                                  ] 25.0% 238.0 GiB used / 714.0 GiB avail
 ```
+
+Drive data that is unavailable or successfully empty is shown as `DISK —`,
+not as measured zero. The selected system can expose one plain text detail row
+per valid mounted volume when drive expansion is active; those rows show
+`used / total` and a per-volume percentage. Offline and pending systems remain
+one row.
 
 A macOS system uses the same layout. macOS does not expose a CPU accounting state equivalent to Linux `iowait`; that capability is reported as unavailable and rendered as `IO --`.
 

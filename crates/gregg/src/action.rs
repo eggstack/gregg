@@ -25,6 +25,12 @@ pub enum Action {
     SelectFirst,
     /// Move selection to the last system in display order.
     SelectLast,
+    /// Select the previous view.
+    PreviousView,
+    /// Select the next view.
+    NextView,
+    /// Toggle drive details for the selected system.
+    ToggleDrives,
     /// Trigger an immediate poll cycle (handled by the scheduler).
     RefreshNow,
     /// The configuration was reloaded; rebuild state from the new config.
@@ -54,6 +60,9 @@ mod tests {
             Action::PageUp,
             Action::SelectFirst,
             Action::SelectLast,
+            Action::PreviousView,
+            Action::NextView,
+            Action::ToggleDrives,
             Action::RefreshNow,
             Action::ConfigReloaded(Config::default()),
             Action::Resize {
@@ -69,16 +78,19 @@ mod tests {
         assert!(matches!(actions[3], Action::PageUp));
         assert!(matches!(actions[4], Action::SelectFirst));
         assert!(matches!(actions[5], Action::SelectLast));
-        assert!(matches!(actions[6], Action::RefreshNow));
-        assert!(matches!(actions[7], Action::ConfigReloaded(_)));
+        assert!(matches!(actions[6], Action::PreviousView));
+        assert!(matches!(actions[7], Action::NextView));
+        assert!(matches!(actions[8], Action::ToggleDrives));
+        assert!(matches!(actions[9], Action::RefreshNow));
+        assert!(matches!(actions[10], Action::ConfigReloaded(_)));
         assert!(matches!(
-            actions[8],
+            actions[11],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[9], Action::Quit));
+        assert!(matches!(actions[12], Action::Quit));
     }
 
     #[test]

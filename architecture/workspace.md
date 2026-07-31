@@ -141,8 +141,10 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
 - `state.rs` — `AppState` owns the system list, selection (by stable `SystemId`),
   viewport position, and generation tracking. Display order is
   online-first/offline-last while preserving configured relative order.
-  Viewport helpers compute visible ranges for mixed 4-row (online) and 1-row
-  (offline) entries.
+  Viewport helpers compute visible ranges for mixed five-row-base online and
+  one-row offline/pending entries. The selected normal entry may add bounded
+  drive detail rows; all paging, viewport, and layout calculations use the
+  same state-aware height function.
 - `action.rs` — `Action` enum for typed state transitions (selection navigation,
   page scrolling, config reload, resize, quit).
 
@@ -162,8 +164,9 @@ The TUI lives in `crates/gregg/src/` and is composed of these modules:
 - `ui/mod.rs` — Top-level `render()` function delegating to sub-modules.
 - `ui/layout.rs` — Viewport computation: which systems are visible and their
   rect positions.
-- `ui/system_block.rs` — 4-row online system rendering (header + CPU/MEM/SWP
-  bars) and 1-row offline rendering.
+- `ui/system_block.rs` — five-row-base online system rendering (header +
+  CPU/MEM/SWP-or-COMMIT/DISK bars), selected-system drive details, and 1-row
+  offline rendering.
 - `ui/bar.rs` — Reusable ASCII usage bar renderer with width-safe arithmetic.
 - `ui/text.rs` — Text formatting helpers (byte sizes, percentages, load
   averages, priority-aware header composition).

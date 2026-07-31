@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::normalized::NormalizedDrive;
 use crate::state::SystemState;
 
 const KIB: u64 = 1024;
@@ -100,4 +101,56 @@ fn display_name(system: &SystemState) -> &str {
         .configured_name
         .as_deref()
         .unwrap_or(&system.endpoint.host)
+}
+
+/// Format one selected-system drive detail row without allowing the mount
+/// name to overwrite its numeric value columns.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub fn drive_detail_line(drive: &NormalizedDrive, width: u16) -> String {
+    let percentage = if drive.total_bytes > 0 && drive.used_bytes <= drive.total_bytes {
+        format_pct((drive.used_bytes as f64 * 100.0 / drive.total_bytes as f64) as f32)
+    } else {
+        "—".to_string()
+    };
+    let values = format!(
+        "{} / {}  {percentage}",
+        format_bytes(drive.used_bytes),
+        format_bytes(drive.total_bytes)
+    );
+    let width = usize::from(width);
+    let value_width = unicode_width::UnicodeWidthStr::width(values.as_str());
+    if width > value_width + 3 {
+        let name_width = width - value_width - 3;
+        format!("  {}  {values}", truncate_width(&drive.name, name_width))
+    } else if width > percentage.len() + 3 {
+        let name_width = width - percentage.len() - 3;
+        format!(
+            "  {}  {percentage}",
+            truncate_width(&drive.name, name_width)
+        )
+    } else {
+        format!("  {}", truncate_width(&drive.name, width.saturating_sub(2)))
+    }
+}
+
+fn truncate_width(s: &str, max_width: usize) -> String {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut width = 0;
+    let mut end = 0;
+    for (index, ch) in s.char_indices() {
+        let char_width = ch.width().unwrap_or(0);
+        if width + char_width > max_width {
+            break;
+        }
+        width += char_width;
+        end = index + ch.len_utf8();
+    }
+    if end == s.len() {
+        s.to_string()
+    } else if max_width > 0 && width < max_width {
+        format!("{}…", &s[..end])
+    } else {
+        s[..end].to_string()
+    }
 }

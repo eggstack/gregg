@@ -129,11 +129,16 @@ The daemon remains a foreground process under `greggd run`. `start`, `stop`, `re
 
 ## TUI rules
 
-The online rendering contract is four rows per system; offline rendering is one row per system. Avoid borders that consume vertical space.
+The normal online rendering contract is five base rows per system (header, CPU,
+memory, swap/commit, and disk); offline/pending rendering is one row per
+system. The selected system may add bounded per-drive detail rows when the
+transient expansion state is active. Scrolling is by logical system entry, not
+raw row count, and a base online block must never be partially rendered. Avoid
+borders that consume vertical space.
 
 The renderer must adapt from `Frame::area()` on every draw. Width degradation is semantic: preserve system name, I/O-wait availability, load, and core count before lower-priority OS detail. Scrolling is by logical system entry, not raw row count.
 
-Required navigation is `j`/Down and `k`/Up. The terminal must be restored on normal exit, errors, and panics. Rendering functions must not perform network or filesystem I/O.
+Required navigation is `j`/Down and `k`/Up. The terminal must be restored on normal exit, errors, and panics. Rendering functions must not perform network or filesystem I/O. Drive expansion is transient UI state and is not persisted to configuration.
 
 ## Testing expectations
 
