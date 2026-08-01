@@ -74,7 +74,7 @@ values when a metric is unavailable. `j`/Down and `k`/Up select the period,
 while `h`/Left and `l`/Right enter or leave the pane. `Ctrl-R` refreshes only
 the active pane, and EggPool's active refresh cadence is fixed at 60 seconds.
 Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.
-Editor fallbacks: `hx`, `code`, `notepad`.
+Editor fallbacks: `hx`, `vim`, `vi` (Unix) or `hx`, `code`, `notepad` (Windows).
 
 ## Links
 

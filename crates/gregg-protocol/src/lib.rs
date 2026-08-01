@@ -114,7 +114,7 @@
 //! }"#;
 //!
 //! let snap: StatusSnapshotV2 = serde_json::from_str(json).expect("valid v2 snapshot");
-//! gregg_protocol::v2::validate_v2(&snap).expect("v2 validates");
+//! gregg_protocol::validate_v2(&snap).expect("v2 validates");
 //!
 //! let health = HealthResponseV2::ready(snap);
 //! assert_eq!(health.state, ReadinessState::Ready);

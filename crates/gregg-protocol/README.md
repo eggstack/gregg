@@ -10,17 +10,19 @@ use gregg_protocol::StatusSnapshot;
 
 let json = r#"{
   "schema_version": 1,
-  "observed_at_unix_ms": 1700000000000,
-  "sample_interval_ms": 5000,
+  "observed_at_unix_ms": 1716460800000,
+  "sample_interval_ms": 1000,
   "capabilities": {"cpu_iowait": true},
-  "system": {"name": "deadpool", "hostname": "deadpool.local",
-    "os_name": "linux", "os_version": "24.04",
-    "kernel_name": "Linux", "kernel_release": "6.8.0",
-    "architecture": "x86_64"},
-  "cpu": {"usage_pct": 25.2, "iowait_pct": 0.4},
-  "load": {"load_1m": 1.32, "load_5m": 0.91, "load_15m": 0.62},
-  "memory": {"total_bytes": 16777216000, "used_bytes": 6343841792, "usage_pct": 37.8},
-  "swap": {"total_bytes": 4294967296, "used_bytes": 0, "usage_pct": 0.0}
+  "system": {
+    "name": "deadpool", "hostname": "deadpool.local",
+    "os_name": "linux", "os_version": "Ubuntu 24.04",
+    "kernel_name": "Linux", "kernel_release": "6.8.0-31-generic",
+    "architecture": "x86_64"
+  },
+  "cpu": {"logical_cores": 8, "usage_pct": 25.2, "iowait_pct": 0.4},
+  "load": {"one": 1.32, "five": 0.91, "fifteen": 0.62},
+  "memory": {"used_bytes": 5900000000, "total_bytes": 15600000000, "usage_pct": 37.8},
+  "swap": {"used_bytes": 0, "total_bytes": 4000000000, "usage_pct": 0.0}
 }"#;
 
 let snapshot: StatusSnapshot = serde_json::from_str(json).unwrap();
