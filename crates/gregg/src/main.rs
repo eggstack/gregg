@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 mod action;
 mod cli;
 mod clock;
@@ -13,6 +15,16 @@ mod scheduler;
 mod state;
 mod terminal;
 mod ui;
+
+fn spawn_eggpool_worker(
+    config: &config::Config,
+    timeout: Duration,
+    cancel: tokio_util::sync::CancellationToken,
+) -> Option<eggpool::EggpoolWorker> {
+    config.eggpool.clone().map(|endpoint| {
+        eggpool::spawn_worker(eggpool::EggpoolClient::new(timeout), endpoint, cancel)
+    })
+}
 
 #[cfg(test)]
 mod mixed_fleet_evidence;
@@ -87,13 +99,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
     let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), refresh_rx));
 
-    let eggpool_worker = config.eggpool.clone().map(|endpoint| {
-        eggpool::spawn_worker(
-            eggpool::EggpoolClient::new(timeout),
-            endpoint,
-            cancel.clone(),
-        )
-    });
+    let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone());
     if app_state.active_pane == state::Pane::Eggpool {
         if let (Some((period, generation)), Some(worker)) =
             (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
@@ -412,6 +418,61 @@ mod tests {
         .await;
         assert!(matches!(refresh_rx.try_recv(), Ok(())));
         assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn default_config_creates_no_eggpool_worker() {
+        let config = Config::default();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        assert!(spawn_eggpool_worker(&config, Duration::from_secs(1), cancel).is_none());
+    }
+
+    #[tokio::test]
+    async fn bounded_command_pressure_delivers_final_state_change_in_order() {
+        let mut app = mixed_state();
+        let (commands, mut received) = tokio::sync::mpsc::channel(1);
+        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
+        commands
+            .send(eggpool::EggpoolCommand::Deactivate)
+            .await
+            .unwrap();
+
+        let mut dispatch = Box::pin(dispatch_action(
+            &mut app,
+            action::Action::NextPane,
+            &refresh_tx,
+            Some(&commands),
+        ));
+        tokio::select! {
+            () = tokio::task::yield_now() => {}
+            () = &mut dispatch => panic!("dispatch should wait for bounded capacity"),
+        }
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Deactivate)
+        ));
+        dispatch.await;
+        assert_eq!(app.active_pane, state::Pane::Eggpool);
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Activate {
+                period: eggpool::EggpoolPeriod::Hour,
+                generation: 1
+            })
+        ));
+
+        dispatch_action(
+            &mut app,
+            action::Action::PreviousPane,
+            &refresh_tx,
+            Some(&commands),
+        )
+        .await;
+        assert_eq!(app.active_pane, state::Pane::Systems);
+        assert!(matches!(
+            received.recv().await,
+            Some(eggpool::EggpoolCommand::Deactivate)
+        ));
     }
 
     #[tokio::test]

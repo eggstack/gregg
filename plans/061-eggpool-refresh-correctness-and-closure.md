@@ -87,6 +87,7 @@ Dependency chain:
 
 ```text
 57 + 58 + 59 + 60 -> 61
+61 -> 62
 61 -> truthful Roadmap 56 closure
 ```
 
@@ -509,4 +510,4 @@ Do not rewrite history to claim the original run covered the new regression test
 - Implementation commit: `1b77da1` (`fix: close EggPool refresh correctness gaps`).
 - Local verification: ./scripts/check-local.sh passed on Linux.
 - Ordinary CI: run `30681153449` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
-- Phase 61 corrected periodic generation ownership, request-relative cadence, reliable command delivery, worker-channel closure handling, active five-row metadata, and Roadmap 56 closure truth.
+- Phase 61 corrected periodic generation ownership, request-relative cadence, reliable command delivery, worker-channel closure handling, active five-row metadata, and Roadmap 56 closure truth. Its implementation remains valid; Phase 62 supplies the missing deterministic worker regression coverage and owns final closure.

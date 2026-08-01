@@ -19,7 +19,7 @@ environment-variable name, never a resolved secret. Configuration commands do
 not perform network or environment lookups. The client resolves the API-key
 environment reference only while constructing a request. The EggPool path
 uses only the existing summary endpoint, a fixed active-only 60-second cadence,
-and four fixed periods; it is not a general dashboard integration. Passive refresh reuses the current state generation and resets its fixed 60-second deadline on activation, period changes, and manual refresh. Phase 61
+and four fixed periods; it is not a general dashboard integration. Passive refresh reuses the current state generation and resets its fixed 60-second deadline on activation, period changes, and manual refresh. The worker regression coverage for this contract is maintained with bounded synthetic loopback tests. Phase 61
 owns the optional worker and event-loop wiring while rendering remains I/O-free.
 
 ## Source of truth

@@ -445,6 +445,69 @@ mod tests {
     use crate::config::EggpoolScheme;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::sync::{mpsc, oneshot};
+
+    async fn server_many(
+        hold: bool,
+    ) -> (
+        u16,
+        mpsc::Receiver<String>,
+        oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = mpsc::channel(8);
+        let (release_tx, release_rx) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut ordinal = 0u64;
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = vec![0; 8192];
+                let mut used = 0;
+                loop {
+                    let count = stream.read(&mut request[used..]).await.unwrap();
+                    if count == 0 {
+                        return;
+                    }
+                    used += count;
+                    if request[..used]
+                        .windows(4)
+                        .any(|window| window == b"\r\n\r\n")
+                    {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&request[..used]);
+                let path = request
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .to_string();
+                request_tx.send(path.clone()).await.unwrap();
+                if hold {
+                    let _ = release_rx.await;
+                    return;
+                }
+                let period = path.split("period=").nth(1).unwrap_or("1h");
+                let body = format!("{{\"period\":\"{period}\",\"accounted_tokens\":{},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}", ordinal + 1);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                ordinal += 1;
+                if hold {
+                    return;
+                }
+            }
+        });
+        (port, request_rx, release_tx, task)
+    }
 
     fn endpoint(port: u16, api_key_env: Option<&str>) -> EggpoolEntry {
         EggpoolEntry {
@@ -614,6 +677,214 @@ mod tests {
                 .await,
             EggpoolFetchOutcome::BodyTooLarge
         );
+    }
+
+    fn app_config(port: u16) -> crate::config::Config {
+        crate::config::Config {
+            eggpool: Some(endpoint(port, None)),
+            ..crate::config::Config::default()
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_passive_refresh_keeps_generation_and_updates_state() {
+        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(
+            EggpoolClient::new(Duration::from_secs(10)),
+            endpoint(port, None),
+            cancel.clone(),
+        );
+        let mut app = crate::state::AppState::from_config(&app_config(port));
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let first = worker.results.recv().await.unwrap();
+        assert_eq!((first.generation, first.period), (1, EggpoolPeriod::Hour));
+        app.apply_eggpool_result(&first);
+        assert_eq!(
+            app.eggpool
+                .as_ref()
+                .unwrap()
+                .summary
+                .as_ref()
+                .unwrap()
+                .accounted_tokens,
+            1
+        );
+
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let passive = worker.results.recv().await.unwrap();
+        assert_eq!(
+            (passive.generation, passive.period),
+            (1, EggpoolPeriod::Hour)
+        );
+        app.apply_eggpool_result(&passive);
+        assert_eq!(
+            app.eggpool
+                .as_ref()
+                .unwrap()
+                .summary
+                .as_ref()
+                .unwrap()
+                .accounted_tokens,
+            2
+        );
+
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_deadlines_are_relative_to_activation_triggers_and_deactivation() {
+        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(
+            EggpoolClient::new(Duration::from_secs(10)),
+            endpoint(port, None),
+            cancel.clone(),
+        );
+        tokio::time::advance(Duration::from_secs(59)).await;
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let _ = worker.results.recv().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let _ = worker.results.recv().await;
+
+        tokio::time::advance(Duration::from_secs(59)).await;
+        worker
+            .commands
+            .send(EggpoolCommand::Refresh {
+                period: EggpoolPeriod::Hour,
+                generation: 2,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let _ = worker.results.recv().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let _ = worker.results.recv().await;
+
+        tokio::time::advance(Duration::from_secs(59)).await;
+        worker
+            .commands
+            .send(EggpoolCommand::SetPeriod {
+                period: EggpoolPeriod::Day,
+                generation: 3,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=24h"
+        );
+        let _ = worker.results.recv().await;
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=24h"
+        );
+        let _ = worker.results.recv().await;
+
+        worker
+            .commands
+            .send(EggpoolCommand::Deactivate)
+            .await
+            .unwrap();
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_cancellation_aborts_an_in_flight_request() {
+        let (port, mut requests, release, server_task) = server_many(true).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(
+            EggpoolClient::new(Duration::from_secs(600)),
+            endpoint(port, None),
+            cancel.clone(),
+        );
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        cancel.cancel();
+        assert!(worker.results.recv().await.is_none());
+        let _ = release.send(());
+        server_task.abort();
+        let _ = server_task.await;
     }
 
     #[test]

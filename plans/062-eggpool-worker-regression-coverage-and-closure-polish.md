@@ -1,6 +1,6 @@
 # Phase 62: EggPool worker regression coverage and closure polish
 
-Status: planned.
+Status: implementation complete locally; ordinary CI pending.
 
 ## Objective
 

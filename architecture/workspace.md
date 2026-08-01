@@ -181,7 +181,7 @@ network failures without retaining response bodies or error strings.
 configured entry, owns at most one in-flight request, fetches on activation or
 period/manual refresh, suppresses work while inactive, and ticks no faster than
 once per 60 seconds while active. Generation numbers and cancellation make
-superseded results safe for the reducer. `main.rs` constructs this worker only
+superseded results safe for the reducer. Focused paused-time worker tests cover generation retention, request-relative cadence, bounded command delivery, inactive gating, and prompt cancellation. `main.rs` constructs this worker only
 for configured EggPool state, activates it when the pane is visible, routes
 pane/period/manual-refresh actions to it, applies optional results without
 affecting greggd polling, and cancels it during TUI shutdown. Configuration file

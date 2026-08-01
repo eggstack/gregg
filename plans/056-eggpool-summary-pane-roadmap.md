@@ -1,6 +1,6 @@
 # Roadmap: optional EggPool summary pane
 
-Status: completed through Phase 61; implementation `1b77da1`; ordinary CI `30681153449` passed. Original implementation `1406c2b` and CI `30660744394` remain historical records.
+Status: verification Phase 62 open; runtime correction `1b77da1` and ordinary CI `30681153449` remain historical records. Phase 62 owns the missing worker regression coverage and final closure.
 
 ## Purpose
 
@@ -308,7 +308,8 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 | 58 | `058-eggpool-summary-client-and-refresh.md` | Add the typed summary response, conditional authentication, bounded request/error handling, fixed periods, and proportionate refresh worker. |
 | 59 | `059-eggpool-pane-state-controls-and-rendering.md` | Separate pane state from system layout, remap controls, add period-aware state and the compact EggPool renderer. |
 | 60 | `060-eggpool-pane-integration-and-lightweight-closure.md` | Reconcile runtime wiring, compatibility, docs, focused tests, and ordinary local/CI closure without new infrastructure. |
-| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth. | completed; implementation `1b77da1`; ordinary CI `30681153449` passed |
+| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth. | runtime correction implemented at `1b77da1`; final verification owned by Phase 62 |
+| 62 | `062-eggpool-worker-regression-coverage-and-closure-polish.md` | Add the missing deterministic worker generation, cadence, pressure, deactivation, cancellation, and no-config coverage, then close Roadmap 56 truthfully. | active verification; depends on 061 |
 
 ## Dependency graph
 
@@ -316,6 +317,8 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 57 -> 58
 57 -> 59
 58 + 59 -> 60
+60 -> 61
+61 -> 62
 ```
 
 Phase 59 may use synthetic summary values before the HTTP worker is complete. Phase 60 is the only phase that should perform final cross-module runtime reconciliation.
