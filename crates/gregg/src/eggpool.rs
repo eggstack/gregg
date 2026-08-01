@@ -362,11 +362,7 @@ pub fn spawn_worker(
         let mut request: Option<
             tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)>,
         > = None;
-        let mut ticker = tokio::time::interval_at(
-            tokio::time::Instant::now() + REFRESH_INTERVAL,
-            REFRESH_INTERVAL,
-        );
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut next_refresh_at: Option<tokio::time::Instant> = None;
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
@@ -382,17 +378,22 @@ pub fn spawn_worker(
                         period = requested;
                         generation = requested_generation;
                         request = Some(start_request(&client, &endpoint, period, generation));
+                        next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                     }
-                    Some(EggpoolCommand::Deactivate) => active = false,
+                    Some(EggpoolCommand::Deactivate) => {
+                        active = false;
+                        next_refresh_at = None;
+                    }
                     Some(EggpoolCommand::SetPeriod { period: requested, generation: requested_generation }
                         | EggpoolCommand::Refresh { period: requested, generation: requested_generation }) => {
                         period = requested;
+                        generation = requested_generation;
                         if active {
                             if let Some(old_request) = request.take() {
                                 old_request.abort();
                             }
-                            generation = requested_generation;
                             request = Some(start_request(&client, &endpoint, period, generation));
+                            next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                         }
                     }
                     Some(EggpoolCommand::Shutdown) | None => {
@@ -400,9 +401,13 @@ pub fn spawn_worker(
                         break;
                     }
                 },
-                _ = ticker.tick(), if active && request.is_none() => {
-                    generation = generation.wrapping_add(1);
+                _ = async {
+                    let deadline = next_refresh_at?;
+                    tokio::time::sleep_until(deadline).await;
+                    Some(())
+                }, if active && request.is_none() && next_refresh_at.is_some() => {
                     request = Some(start_request(&client, &endpoint, period, generation));
+                    next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                 }
                 completed = async { request.as_mut()?.await.ok() }, if request.is_some() => {
                     request = None;
@@ -608,31 +613,6 @@ mod tests {
                 .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                 .await,
             EggpoolFetchOutcome::BodyTooLarge
-        );
-    }
-
-    #[tokio::test]
-    async fn worker_fetches_activation_and_suppresses_inactive_ticks() {
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-            body("1h").len(),
-            body("1h")
-        );
-        let (port, _) = server(response).await;
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(2)),
-            endpoint(port, None),
-            tokio_util::sync::CancellationToken::new(),
-        );
-        worker
-            .commands
-            .send(EggpoolCommand::Deactivate)
-            .await
-            .unwrap();
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), worker.results.recv())
-                .await
-                .is_err()
         );
     }
 

@@ -22,7 +22,7 @@ use crate::endpoint::{EndpointError, EndpointSpec};
     version,
     about = "Compact terminal monitor for remote system metrics",
     long_about = "gregg polls configured greggd endpoints and renders each system \
-                  in four terminal rows. Without a subcommand, it starts the TUI. \
+                  in a compact five-row base block. Without a subcommand, it starts the TUI. \
                   Subcommands manage the persistent endpoint configuration."
 )]
 pub struct Cli {

@@ -65,8 +65,10 @@ pub enum Pane {
 pub enum EggpoolStatus {
     /// No request is currently in flight.
     Idle,
-    /// A request has been requested and Phase 60 may dispatch it.
+    /// A request has been requested and is being dispatched.
     Refreshing,
+    /// The local worker is unavailable; no request can be dispatched.
+    WorkerUnavailable,
 }
 
 /// Reducer-owned transient state for the optional `EggPool` pane.
@@ -440,6 +442,13 @@ impl AppState {
         eggpool.request_generation = eggpool.request_generation.wrapping_add(1);
         eggpool.status = EggpoolStatus::Refreshing;
         Some((eggpool.period, eggpool.request_generation))
+    }
+
+    /// Mark the local worker as unavailable without exposing a channel error.
+    pub fn mark_eggpool_worker_unavailable(&mut self) {
+        if let Some(eggpool) = self.eggpool.as_mut() {
+            eggpool.status = EggpoolStatus::WorkerUnavailable;
+        }
     }
 
     /// Return the current `EggPool` request identity without changing state.
@@ -855,6 +864,28 @@ mod tests {
             state.eggpool.as_ref().unwrap().last_error,
             Some(EggpoolFetchOutcome::Timeout)
         ));
+        state.apply_eggpool_result(&result(
+            1,
+            EggpoolPeriod::Day,
+            EggpoolFetchOutcome::Online(EggpoolSummary {
+                accounted_tokens: 43,
+                cache_read_ratio: None,
+                output_tokens_per_second: 3.0,
+                avg_ttft_ms: None,
+                period: EggpoolPeriod::Day,
+            }),
+        ));
+        assert_eq!(
+            state
+                .eggpool
+                .as_ref()
+                .unwrap()
+                .summary
+                .as_ref()
+                .unwrap()
+                .accounted_tokens,
+            43
+        );
     }
 
     #[test]

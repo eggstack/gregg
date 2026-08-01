@@ -1,6 +1,6 @@
 # Phase 61: EggPool refresh correctness and closure correction
 
-Status: planned.
+Status: implementation complete locally; ordinary CI pending.
 
 ## Objective
 

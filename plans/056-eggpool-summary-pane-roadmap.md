@@ -1,6 +1,6 @@
 # Roadmap: optional EggPool summary pane
 
-Status: completed; implementation `1406c2b`; ordinary CI `30660744394` passed.
+Status: reopened for corrective Phase 61; original implementation `1406c2b` and CI `30660744394` remain historical records.
 
 ## Purpose
 
@@ -308,6 +308,7 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 | 58 | `058-eggpool-summary-client-and-refresh.md` | Add the typed summary response, conditional authentication, bounded request/error handling, fixed periods, and proportionate refresh worker. |
 | 59 | `059-eggpool-pane-state-controls-and-rendering.md` | Separate pane state from system layout, remap controls, add period-aware state and the compact EggPool renderer. |
 | 60 | `060-eggpool-pane-integration-and-lightweight-closure.md` | Reconcile runtime wiring, compatibility, docs, focused tests, and ordinary local/CI closure without new infrastructure. |
+| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth. | implementation complete locally; ordinary CI pending |
 
 ## Dependency graph
 

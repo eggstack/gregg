@@ -98,9 +98,12 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         if let (Some((period, generation)), Some(worker)) =
             (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
         {
-            let _ = worker
-                .commands
-                .try_send(eggpool::EggpoolCommand::Activate { period, generation });
+            send_eggpool_command(
+                &mut app_state,
+                &worker.commands,
+                eggpool::EggpoolCommand::Activate { period, generation },
+            )
+            .await;
         }
     }
 
@@ -182,7 +185,8 @@ async fn run_event_loop(
                     app_state.apply_eggpool_result(&result);
                 } else {
                     // A worker channel closing is not a system-monitoring error.
-                    // Disable this branch and keep the Systems pane responsive.
+                    // Mark only the optional pane unavailable and keep Systems responsive.
+                    app_state.mark_eggpool_worker_unavailable();
                     *eggpool_results = None;
                 }
             }
@@ -200,7 +204,7 @@ async fn run_event_loop(
                                 action,
                                 refresh_tx,
                                 eggpool_commands,
-                            );
+                            ).await;
                         }
                     }
                     None => break,
@@ -232,7 +236,7 @@ async fn recv_eggpool_result(
     }
 }
 
-fn dispatch_action(
+async fn dispatch_action(
     app_state: &mut state::AppState,
     action: action::Action,
     refresh_tx: &tokio::sync::mpsc::Sender<()>,
@@ -253,7 +257,12 @@ fn dispatch_action(
     if is_refresh {
         if app_state.active_pane == state::Pane::Eggpool {
             if let Some((period, generation)) = app_state.begin_eggpool_request() {
-                let _ = commands.try_send(eggpool::EggpoolCommand::Refresh { period, generation });
+                send_eggpool_command(
+                    app_state,
+                    commands,
+                    eggpool::EggpoolCommand::Refresh { period, generation },
+                )
+                .await;
             }
         } else {
             let _ = refresh_tx.try_send(());
@@ -265,20 +274,40 @@ fn dispatch_action(
         match app_state.active_pane {
             state::Pane::Eggpool => {
                 if let Some((period, generation)) = app_state.begin_eggpool_request() {
-                    let _ =
-                        commands.try_send(eggpool::EggpoolCommand::Activate { period, generation });
+                    send_eggpool_command(
+                        app_state,
+                        commands,
+                        eggpool::EggpoolCommand::Activate { period, generation },
+                    )
+                    .await;
                 }
             }
             state::Pane::Systems => {
-                let _ = commands.try_send(eggpool::EggpoolCommand::Deactivate);
+                send_eggpool_command(app_state, commands, eggpool::EggpoolCommand::Deactivate)
+                    .await;
             }
         }
     } else if before_pane == state::Pane::Eggpool
         && before_period != app_state.eggpool.as_ref().map(|eggpool| eggpool.period)
     {
         if let Some((period, generation)) = app_state.eggpool_request() {
-            let _ = commands.try_send(eggpool::EggpoolCommand::SetPeriod { period, generation });
+            send_eggpool_command(
+                app_state,
+                commands,
+                eggpool::EggpoolCommand::SetPeriod { period, generation },
+            )
+            .await;
         }
+    }
+}
+
+async fn send_eggpool_command(
+    app_state: &mut state::AppState,
+    commands: &tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>,
+    command: eggpool::EggpoolCommand,
+) {
+    if commands.send(command).await.is_err() {
+        app_state.mark_eggpool_worker_unavailable();
     }
 }
 
@@ -335,7 +364,8 @@ mod tests {
             action::Action::NextPane,
             &refresh_tx,
             Some(&commands),
-        );
+        )
+        .await;
         assert_eq!(app.active_pane, state::Pane::Eggpool);
         assert!(matches!(
             received.recv().await,
@@ -350,7 +380,8 @@ mod tests {
             action::Action::RefreshNow,
             &refresh_tx,
             Some(&commands),
-        );
+        )
+        .await;
         assert!(matches!(
             received.recv().await,
             Some(eggpool::EggpoolCommand::Refresh {
@@ -365,7 +396,8 @@ mod tests {
             action::Action::PreviousPane,
             &refresh_tx,
             Some(&commands),
-        );
+        )
+        .await;
         assert_eq!(app.active_pane, state::Pane::Systems);
         assert!(matches!(
             received.recv().await,
@@ -376,9 +408,29 @@ mod tests {
             action::Action::RefreshNow,
             &refresh_tx,
             Some(&commands),
-        );
+        )
+        .await;
         assert!(matches!(refresh_rx.try_recv(), Ok(())));
         assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn closed_eggpool_command_channel_marks_worker_unavailable() {
+        let mut app = mixed_state();
+        let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
+        dispatch_action(
+            &mut app,
+            action::Action::NextPane,
+            &refresh_tx,
+            Some(&commands),
+        )
+        .await;
+        assert_eq!(
+            app.eggpool.as_ref().unwrap().status,
+            state::EggpoolStatus::WorkerUnavailable
+        );
     }
 
     #[tokio::test]
@@ -394,7 +446,8 @@ mod tests {
             action::Action::MoveUp,
             &refresh_tx,
             Some(&commands),
-        );
+        )
+        .await;
         assert!(received.try_recv().is_err());
     }
 }
