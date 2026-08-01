@@ -1,6 +1,6 @@
 # Phase 62: EggPool worker regression coverage and closure polish
 
-Status: implementation complete locally; ordinary CI pending.
+Status: completed; implementation `38d89bf`; ordinary CI `30683027208` passed.
 
 ## Objective
 
@@ -90,10 +90,10 @@ If Tokio controlled-time support is not currently enabled, add only the existing
 
 ### Workstream A acceptance criteria
 
-- [ ] The helper handles the exact bounded request count needed by worker tests.
-- [ ] Captured requests expose period/query and ordering without storing secrets or full bodies.
-- [ ] The helper shuts down within the test and does not rely on long real-time sleeps.
-- [ ] No new third-party test dependency or production abstraction is added.
+- [x] The helper handles the exact bounded request count needed by worker tests.
+- [x] Captured requests expose period/query and ordering without storing secrets or full bodies.
+- [x] The helper shuts down within the test and does not rely on long real-time sleeps.
+- [x] No new third-party test dependency or production abstraction is added.
 
 ## Workstream B: prove passive generation acceptance
 
@@ -126,11 +126,11 @@ Reuse the existing stale-result reducer test if it already proves this exact rul
 
 ### Workstream B acceptance criteria
 
-- [ ] The test fails against the pre-Phase-61 worker that increments generation on a timer tick.
-- [ ] The first and passive results both carry the current state generation.
-- [ ] Applying the passive result changes the displayed summary to the second response value.
-- [ ] User-superseded stale results remain rejected.
-- [ ] Only one request is in flight at a time.
+- [x] The test fails against the pre-Phase-61 worker that increments generation on a timer tick.
+- [x] The first and passive results both carry the current state generation.
+- [x] Applying the passive result changes the displayed summary to the second response value.
+- [x] User-superseded stale results remain rejected.
+- [x] Only one request is in flight at a time.
 
 ## Workstream C: prove request-relative cadence and inactive gating
 
@@ -185,11 +185,11 @@ Do not assert vague timing tolerances. Under paused time, assert exact request-c
 
 ### Workstream C acceptance criteria
 
-- [ ] Inactive elapsed time cannot cause an immediate post-activation duplicate request.
-- [ ] Activation, manual refresh, and period change each establish a fresh 60-second passive deadline.
-- [ ] Period change requests and later passive requests use the selected API value.
-- [ ] Deactivation clears the deadline and prevents later passive traffic.
-- [ ] No production-duration sleep is introduced.
+- [x] Inactive elapsed time cannot cause an immediate post-activation duplicate request.
+- [x] Activation, manual refresh, and period change each establish a fresh 60-second passive deadline.
+- [x] Period change requests and later passive requests use the selected API value.
+- [x] Deactivation clears the deadline and prevents later passive traffic.
+- [x] No production-duration sleep is introduced.
 
 ## Workstream D: prove bounded command delivery and final convergence
 
@@ -211,11 +211,11 @@ The test may use a small receiver task rather than the full network worker if th
 
 ### Workstream D acceptance criteria
 
-- [ ] The test would expose the old ignored-`try_send` state/worker desynchronization.
-- [ ] Bounded pressure delays rather than silently discards the final command.
-- [ ] The dispatcher remains finite once the receiver resumes.
-- [ ] Final pane/period/activation state matches the final requested action.
-- [ ] Channel capacity remains bounded and unchanged in production.
+- [x] The test would expose the old ignored-`try_send` state/worker desynchronization.
+- [x] Bounded pressure delays rather than silently discards the final command.
+- [x] The dispatcher remains finite once the receiver resumes.
+- [x] Final pane/period/activation state matches the final requested action.
+- [x] Channel capacity remains bounded and unchanged in production.
 
 ## Workstream E: prove prompt cancellation of in-flight work
 
@@ -235,10 +235,10 @@ If cancellation through the shared token and explicit `Shutdown` are mechanicall
 
 ### Workstream E acceptance criteria
 
-- [ ] An in-flight request does not keep the worker alive until the HTTP timeout.
-- [ ] Cancellation closes the worker path promptly and deterministically.
-- [ ] The synthetic server task is joined or cancelled.
-- [ ] No task/channel leak is left by the test.
+- [x] An in-flight request does not keep the worker alive until the HTTP timeout.
+- [x] Cancellation closes the worker path promptly and deterministically.
+- [x] The synthetic server task is joined or cancelled.
+- [x] No task/channel leak is left by the test.
 
 ## Workstream F: preserve the no-config and system-monitoring boundary
 
@@ -265,10 +265,10 @@ Do not duplicate broad system, drive, collector, protocol, or renderer suites.
 
 ### Workstream F acceptance criteria
 
-- [ ] No-config startup cannot construct or contact EggPool.
-- [ ] Active-pane refresh routing remains isolated.
-- [ ] Existing greggd polling and TUI state tests remain green.
-- [ ] No process-level terminal harness is added.
+- [x] No-config startup cannot construct or contact EggPool.
+- [x] Active-pane refresh routing remains isolated.
+- [x] Existing greggd polling and TUI state tests remain green.
+- [x] No process-level terminal harness is added.
 
 ## Workstream G: correct closure metadata
 
@@ -297,11 +297,11 @@ Do not create a separate evidence file.
 
 ### Workstream G acceptance criteria
 
-- [ ] Roadmap, Phase 61, Phase 62, and the plan index agree on status and ownership.
-- [ ] Historical commits and CI runs remain accurate.
-- [ ] No checkbox claims coverage absent from the repository.
-- [ ] The duplicated index sentence is removed.
-- [ ] Phase 62 is closed only after its own tests and ordinary verification pass.
+- [x] Roadmap, Phase 61, Phase 62, and the plan index agree on status and ownership.
+- [x] Historical commits and CI runs remain accurate.
+- [x] No checkbox claims coverage absent from the repository.
+- [x] The duplicated index sentence is removed.
+- [x] Phase 62 is closed only after its own tests and ordinary verification pass.
 
 ## Expected files
 
@@ -366,22 +366,22 @@ Final hosted proof is one ordinary existing CI run. Do not add or modify workflo
 
 Phase 62 is complete only when:
 
-- [ ] A deterministic worker test proves activation and passive refresh return the current state generation.
-- [ ] Applying the passive result changes the visible summary to a distinct second response.
-- [ ] Existing stale user-generation protection remains green.
-- [ ] Activation after 59 seconds of inactive worker lifetime does not cause a duplicate request one second later.
-- [ ] Manual refresh resets the passive deadline.
-- [ ] Period change resets the passive deadline and uses the correct API period.
-- [ ] Deactivation prevents passive traffic under at least 120 seconds of controlled time.
-- [ ] A bounded-pressure test proves the final state-changing command is delivered rather than silently lost.
-- [ ] Final application and worker state converge after rapid commands.
-- [ ] Cancellation aborts an in-flight request promptly without waiting for the HTTP timeout.
-- [ ] No-config behavior still constructs no EggPool runtime path.
-- [ ] Existing authentication, body-limit, semantic, rendering, navigation, drive, greggd polling, and active-pane refresh tests remain green.
-- [ ] Tests are deterministic, bounded, and use no live service, credentials, long sleeps, or screenshot artifacts.
-- [ ] No new third-party dependency, generalized abstraction, retry system, configurable cadence, metric, period, pane, endpoint, workflow, evidence system, or release mechanism is added.
-- [ ] Roadmap 56, Phase 61, Phase 62, and `plans/README.md` state closure truthfully.
-- [ ] Focused tests, `cargo test -p gregg`, `./scripts/check-local.sh`, and one ordinary CI run pass.
+- [x] A deterministic worker test proves activation and passive refresh return the current state generation.
+- [x] Applying the passive result changes the visible summary to a distinct second response.
+- [x] Existing stale user-generation protection remains green.
+- [x] Activation after 59 seconds of inactive worker lifetime does not cause a duplicate request one second later.
+- [x] Manual refresh resets the passive deadline.
+- [x] Period change resets the passive deadline and uses the correct API period.
+- [x] Deactivation prevents passive traffic under at least 120 seconds of controlled time.
+- [x] A bounded-pressure test proves the final state-changing command is delivered rather than silently lost.
+- [x] Final application and worker state converge after rapid commands.
+- [x] Cancellation aborts an in-flight request promptly without waiting for the HTTP timeout.
+- [x] No-config behavior still constructs no EggPool runtime path.
+- [x] Existing authentication, body-limit, semantic, rendering, navigation, drive, greggd polling, and active-pane refresh tests remain green.
+- [x] Tests are deterministic, bounded, and use no live service, credentials, long sleeps, or screenshot artifacts.
+- [x] No new third-party dependency, generalized abstraction, retry system, configurable cadence, metric, period, pane, endpoint, workflow, evidence system, or release mechanism is added.
+- [x] Roadmap 56, Phase 61, Phase 62, and `plans/README.md` state closure truthfully.
+- [x] Focused tests, `cargo test -p gregg`, `./scripts/check-local.sh`, and one ordinary CI run pass.
 
 ## Stop conditions
 
@@ -396,3 +396,11 @@ Stop and separate newly discovered work if implementation would require:
 - turning this polish phase into broad test-suite expansion.
 
 A test exposing a concrete additional defect in the existing worker may justify the smallest local correction inside `eggpool.rs`, `main.rs`, or `state.rs`. Record the defect in the Phase 62 closure note. Do not expand scope speculatively.
+
+## Closure record
+
+- Implementation commits: `7878cf6` (`test: close EggPool worker regression coverage`) and `38d89bf` (`test: align worker regression with state generation`); final source SHA `38d89bf`.
+- Local verification: `./scripts/check-local.sh` passed on Linux after the follow-up correction.
+- Ordinary CI: run `30683027208` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
+- Phase 62 added bounded synthetic loopback coverage for passive generation retention, activation-relative cadence, manual refresh and period-change deadline resets, deactivation gating, bounded command pressure, prompt cancellation, and no-config worker construction.
+- Roadmap 56 is now closed through Phase 62; Phase 61 remains the valid runtime correction and Phase 62 owns the missing verification coverage.

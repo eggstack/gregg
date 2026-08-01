@@ -1,6 +1,6 @@
 # Roadmap: optional EggPool summary pane
 
-Status: verification Phase 62 open; runtime correction `1b77da1` and ordinary CI `30681153449` remain historical records. Phase 62 owns the missing worker regression coverage and final closure.
+Status: completed through Phase 62; implementation `38d89bf`; ordinary CI `30683027208` passed. Original implementation `1406c2b`, corrective runtime implementation `1b77da1`, and their CI runs remain historical records.
 
 ## Purpose
 
