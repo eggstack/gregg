@@ -696,12 +696,10 @@ mod tests {
             cancel.clone(),
         );
         let mut app = crate::state::AppState::from_config(&app_config(port));
+        let (period, generation) = app.begin_eggpool_request().unwrap();
         worker
             .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
+            .send(EggpoolCommand::Activate { period, generation })
             .await
             .unwrap();
         assert_eq!(
