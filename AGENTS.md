@@ -103,3 +103,33 @@ No `.github/workflows/*.yml` files currently exist. Local verification via `chec
 2. `plans/000-roadmap-v1.md` — sequencing and release gates
 3. Active phase plan in `plans/` for current requirements
 4. `architecture/protocol.md` — wire format details
+
+## Architecture index
+
+Deep-dive documents in `architecture/` capture decisions larger than a single crate:
+
+| Document | Scope |
+|----------|-------|
+| `architecture/overview.md` | Bird's-eye view: data flow, module map, index of all documents |
+| `architecture/gregg-protocol.md` | Protocol crate: wire types, schema versions, validation, test support |
+| `architecture/greggd-daemon.md` | Daemon crate: collectors, sampler, HTTP server, service management |
+| `architecture/gregg-client.md` | Client crate: CLI, polling, state engine, TUI, EggPool |
+| `architecture/collectors.md` | Platform collectors: Linux, macOS, Windows native metric collection |
+| `architecture/workspace.md` | Crate boundaries, module structure, dependency direction |
+| `architecture/protocol.md` | Wire format specification, capabilities, validation, compatibility |
+| `architecture/error-conventions.md` | Error boundary design, wire response constraints |
+| `architecture/scripts-and-packaging.md` | Scripts, installers, service definitions |
+| `architecture/macos-collector-notes.md` | macOS collector differences from Activity Monitor / top |
+
+## Skills
+
+Reusable agent instructions live in `.opencode/skills/`:
+
+| Skill | Purpose |
+|-------|---------|
+| `rust-workspace` | Build, test, verify the workspace |
+| `architecture-docs` | Read and update architecture documentation |
+| `protocol-wire` | Wire types, schema versions, validation |
+| `platform-collectors` | Platform-specific metric collectors |
+| `release-process` | Manual release procedure |
+| `eggpool` | EggPool summary pane implementation |

@@ -141,18 +141,9 @@ flag removes config directory.
 
 ## CI
 
-**Source:** `.github/workflows/ci.yml`
-
-Three jobs + MSRV:
-
-| Job | Platform | Steps |
-|-----|----------|-------|
-| Linux | ubuntu-latest | fmt, clippy, test, doc, native collector smoke |
-| macOS | macos-15 (ARM) + macos-15-intel | workspace check + native FFI tests |
-| Windows | windows-latest | workspace check, client tests, collector tests, service tests |
-| MSRV | ubuntu-latest | `cargo check` on Rust 1.75 |
-
-Triggers: push to `main`, PRs, manual dispatch. No publish/tag/release jobs.
+No `.github/workflows/*.yml` files currently exist. Local verification via
+`check-local.sh` is the source of truth. When CI is added, it should run
+fmt, clippy, test, doc, and native collector tests on Linux/macOS/Windows.
 
 ## Build configuration
 

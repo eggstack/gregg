@@ -68,7 +68,7 @@ collection.
 
 ## Sampler module
 
-The sampler lives under `crates/greggd/src/sampler/`. It owns the sampling cadence
+The sampler lives at `crates/greggd/src/sampler.rs`. It owns the sampling cadence
 and a `Clock` trait for time abstraction. The periodic sampling loop calls the
 collector, computes deltas, and stamps `observed_at_unix_ms` and
 `sample_interval_ms` on the resulting `StatusSnapshot`. The sampler manages the

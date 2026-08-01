@@ -33,8 +33,12 @@ product contract.
 
 - Follow existing code style and patterns.
 - Platform-specific code lives under `cfg(target_os = ...)` modules.
-- Unsafe Rust is permitted only in the macOS collector FFI module
-  (`crates/greggd/src/collector/macos/ffi.rs`).
+- Unsafe Rust is permitted only in narrowly scoped modules:
+  `crates/greggd/src/collector/linux/source.rs` (statvfs),
+  `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI),
+  `crates/gregg/src/` (Unix flock + Windows file lock),
+  `crates/greggd/src/collector/windows/source.rs`.
+  Every unsafe block must have a safety comment.
 - Dependencies must solve a concrete version-1 requirement. Avoid adding
   dependencies without discussion.
 - Configuration writes must be atomic (write-flush-rename-verify).
