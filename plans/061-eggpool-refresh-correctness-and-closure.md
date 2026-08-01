@@ -1,6 +1,6 @@
 # Phase 61: EggPool refresh correctness and closure correction
 
-Status: implementation complete locally; ordinary CI pending.
+Status: completed; implementation `1b77da1`; ordinary CI `30681153449` passed.
 
 ## Objective
 
@@ -196,10 +196,10 @@ Also verify:
 
 ### Workstream A acceptance criteria
 
-- [ ] Passive results are accepted by current state.
-- [ ] User supersession still rejects stale results.
-- [ ] Only one in-flight request remains possible.
-- [ ] No arbitrary-generation acceptance rule is added.
+- [x] Passive results are accepted by current state.
+- [x] User supersession still rejects stale results.
+- [x] Only one in-flight request remains possible.
+- [x] No arbitrary-generation acceptance rule is added.
 
 ## Workstream B: make passive cadence relative to request triggers
 
@@ -273,11 +273,11 @@ Required scenarios:
 
 ### Workstream B acceptance criteria
 
-- [ ] No two passive/automatic request starts occur less than 60 seconds apart.
-- [ ] Explicit activation, period change, and manual refresh remain immediate.
-- [ ] Every explicit trigger resets the passive deadline.
-- [ ] Inactive time does not accumulate toward an immediate request burst.
-- [ ] Tests use controlled time rather than production-duration sleeps.
+- [x] No two passive/automatic request starts occur less than 60 seconds apart.
+- [x] Explicit activation, period change, and manual refresh remain immediate.
+- [x] Every explicit trigger resets the passive deadline.
+- [x] Inactive time does not accumulate toward an immediate request burst.
+- [x] Tests use controlled time rather than production-duration sleeps.
 
 ## Workstream C: remove silent command loss
 
@@ -320,11 +320,11 @@ Do not build a full process-level input harness. Test the focused async dispatch
 
 ### Workstream C acceptance criteria
 
-- [ ] No EggPool state-changing command uses ignored `try_send` failure.
-- [ ] State and worker converge on the final requested pane/period.
-- [ ] Channel closure cannot leave permanent refreshing state.
-- [ ] Command capacity remains small and bounded.
-- [ ] No generic command/effect framework is introduced.
+- [x] No EggPool state-changing command uses ignored `try_send` failure.
+- [x] State and worker converge on the final requested pane/period.
+- [x] Channel closure cannot leave permanent refreshing state.
+- [x] Command capacity remains small and bounded.
+- [x] No generic command/effect framework is introduced.
 
 ## Workstream D: strengthen the minimum worker integration coverage
 
@@ -347,10 +347,10 @@ Keep existing authentication, body-limit, status, decode, semantic, rendering, a
 
 ### Workstream D acceptance criteria
 
-- [ ] Test names describe behavior actually exercised.
-- [ ] Generation and cadence defects each have a regression test that fails on `1406c2b`.
-- [ ] Tests are deterministic and fast.
-- [ ] No real EggPool service or credentials are required.
+- [x] Test names describe behavior actually exercised.
+- [x] Generation and cadence defects each have a regression test that fails on `1406c2b`.
+- [x] Tests are deterministic and fast.
+- [x] No real EggPool service or credentials are required.
 
 ## Workstream E: correct active metadata and closure truth
 
@@ -380,10 +380,10 @@ After implementation and verification:
 
 ### Workstream E acceptance criteria
 
-- [ ] Active metadata no longer claims a four-row normal system block.
-- [ ] Plan index shows Phase 61 as the active correction until verified.
-- [ ] Roadmap closure is not restored before tests/local check/CI pass.
-- [ ] Historical implementation records remain concise and truthful.
+- [x] Active metadata no longer claims a four-row normal system block.
+- [x] Plan index shows Phase 61 as the active correction until verified.
+- [x] Roadmap closure is not restored before tests/local check/CI pass.
+- [x] Historical implementation records remain concise and truthful.
 
 ## Workstream F: lightweight verification and final closure
 
@@ -409,11 +409,11 @@ A live EggPool smoke is optional and must not become a closure requirement.
 
 ### Workstream F acceptance criteria
 
-- [ ] Focused corrective tests pass.
-- [ ] Existing full `gregg` tests pass.
-- [ ] Existing local check passes.
-- [ ] One ordinary CI run passes without workflow changes.
-- [ ] No retained artifacts, screenshots, service containers, or manual platform evidence are added.
+- [x] Focused corrective tests pass.
+- [x] Existing full `gregg` tests pass.
+- [x] Existing local check passes.
+- [x] One ordinary CI run passes without workflow changes.
+- [x] No retained artifacts, screenshots, service containers, or manual platform evidence are added.
 
 ## Expected files
 
@@ -457,23 +457,23 @@ Do not touch EggPool, `greggd`, `gregg-protocol`, workflows, release scripts, co
 
 Phase 61 is complete only when:
 
-- [ ] A periodic request reuses the current state generation and its result updates the displayed summary.
-- [ ] User activation, manual refresh, and period changes still supersede older generations.
-- [ ] No old-period or old-generation result can overwrite current state.
-- [ ] Passive request starts are never closer than 60 seconds apart.
-- [ ] Activation, period change, and manual refresh reset the passive deadline.
-- [ ] Inactive time cannot cause an immediate post-activation duplicate request.
-- [ ] Deactivation prevents later passive requests.
-- [ ] Only one EggPool request can be in flight.
-- [ ] EggPool state-changing commands are not silently dropped under channel pressure.
-- [ ] Worker channel closure cannot strand the UI in refreshing state or stop greggd monitoring.
-- [ ] Systems and EggPool `Ctrl-R` paths remain isolated.
-- [ ] Deterministic tests cover generation, cadence reset, deactivation, rapid commands, stale results, and shutdown.
-- [ ] Existing authentication, response-bound, metric-semantic, rendering, system navigation, drive, and greggd polling tests remain green.
-- [ ] Active client metadata no longer says the normal system block uses four rows.
-- [ ] The change remains inside the listed narrow client/planning surface.
-- [ ] Focused tests, the existing local check, and ordinary CI pass.
-- [ ] No EggPool server change, new metric/period/pane/instance, retry system, configurable cadence, generalized abstraction, new dependency, workflow, evidence system, or release machinery is added.
+- [x] A periodic request reuses the current state generation and its result updates the displayed summary.
+- [x] User activation, manual refresh, and period changes still supersede older generations.
+- [x] No old-period or old-generation result can overwrite current state.
+- [x] Passive request starts are never closer than 60 seconds apart.
+- [x] Activation, period change, and manual refresh reset the passive deadline.
+- [x] Inactive time cannot cause an immediate post-activation duplicate request.
+- [x] Deactivation prevents later passive requests.
+- [x] Only one EggPool request can be in flight.
+- [x] EggPool state-changing commands are not silently dropped under channel pressure.
+- [x] Worker channel closure cannot strand the UI in refreshing state or stop greggd monitoring.
+- [x] Systems and EggPool `Ctrl-R` paths remain isolated.
+- [x] Deterministic tests cover generation, cadence reset, deactivation, rapid commands, stale results, and shutdown.
+- [x] Existing authentication, response-bound, metric-semantic, rendering, system navigation, drive, and greggd polling tests remain green.
+- [x] Active client metadata no longer says the normal system block uses four rows.
+- [x] The change remains inside the listed narrow client/planning surface.
+- [x] Focused tests, the existing local check, and ordinary CI pass.
+- [x] No EggPool server change, new metric/period/pane/instance, retry system, configurable cadence, generalized abstraction, new dependency, workflow, evidence system, or release machinery is added.
 
 ## Roadmap closure correction
 
@@ -502,3 +502,11 @@ Do not rewrite history to claim the original run covered the new regression test
 - Use paused Tokio time; never wait 60 real seconds.
 - Do not modify the EggPool API, add retries, or generalize the integration.
 - Stop if the implementation begins touching protocol, daemon, workflows, multiple endpoints, or a generic scheduler architecture.
+
+
+## Closure record
+
+- Implementation commit: `1b77da1` (`fix: close EggPool refresh correctness gaps`).
+- Local verification: ./scripts/check-local.sh passed on Linux.
+- Ordinary CI: run `30681153449` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
+- Phase 61 corrected periodic generation ownership, request-relative cadence, reliable command delivery, worker-channel closure handling, active five-row metadata, and Roadmap 56 closure truth.
