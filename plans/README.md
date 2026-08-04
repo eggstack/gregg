@@ -13,16 +13,21 @@ Gregg follows a small, manual release model:
 - crates.io publication is manual.
 - Annotated Git tags and GitHub Releases are manual.
 
+[`063-narrow-correctness-and-simplification-roadmap.md`](063-narrow-correctness-and-simplification-roadmap.md) is the active bounded corrective roadmap. Phase 64 owns Windows v2 staleness, strict endpoint/schema parsing, test-helper package truth, confirmed dead reload-code removal, and directly affected documentation. Phase 65 then removes duplicate local/CI work and applies only measured low-risk Tokio feature/runtime cleanup. This line adds no monitoring feature, protocol version, supported platform, release automation, generalized framework, or MSRV-policy change.
+
 [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) is completed through Phase 62 after one narrow verification-polish phase. Plans 057 through 060 added one optional EggPool summary endpoint to the `gregg` client configuration, a nested add/list/remove CLI, an authenticated bounded summary client, and one compact top-level EggPool pane. Original implementation commit `1406c2b` passed local checks and ordinary CI run `30660744394`. Phase 61 implementation commit `1b77da1` corrected timer-driven generation ownership, request-relative cadence, reliable command delivery, worker-channel closure handling, and stale client metadata; ordinary CI run `30681153449` passed all jobs. Later review found that Phase 61's required deterministic worker cadence, generation, command-pressure, deactivation, and cancellation tests were not added even though its closure criteria were checked. [`062-eggpool-worker-regression-coverage-and-closure-polish.md`](062-eggpool-worker-regression-coverage-and-closure-polish.md) completed the final verification correction at `38d89bf` with ordinary CI run `30683027208`.
 
 [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) is the completed drive-metrics and multi-view product roadmap. Plans 049 through 053 implemented and closed that work through the existing lightweight verification model. [`054-drive-multiview-corrective-polish.md`](054-drive-multiview-corrective-polish.md) completed at implementation `561e398e` with ordinary CI run `30635971005`. [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) completed the closure-record correction. No corrective phase remains open for this line, and no product implementation, release-design, or CI-design work remains open.
 
-[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. No verification or release corrective phase remains open.
+[`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) is the completed release/platform umbrella roadmap. Plans 037 through 047 contain the implemented release-simplification, Windows, minimal-verification, and documentation-polish work. Roadmap 063 reopens only the specific correctness and duplication findings listed in Plans 064-065; it does not reopen the retired release-orchestration model.
 
 ## Current roadmap and execution phases
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
+| [`063-narrow-correctness-and-simplification-roadmap.md`](063-narrow-correctness-and-simplification-roadmap.md) | Correct the remaining bounded status/protocol/package defects, then simplify duplicated verification and measured client footprint without feature expansion | planned; active umbrella roadmap |
+| [`064-status-protocol-package-correctness.md`](064-status-protocol-package-correctness.md) | Correct Windows v2 age staleness, enforce endpoint-specific schema parsing, exclude `lock_helper` from normal installation, remove confirmed dead reload machinery, and reconcile active docs | planned; depends on 063 |
+| [`065-proportionate-verification-and-footprint-cleanup.md`](065-proportionate-verification-and-footprint-cleanup.md) | Reduce duplicate local/CI commands and apply only measured low-risk Tokio feature/runtime cleanup while preserving native coverage and Rust 1.75 | planned; depends on 064 |
 | [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) | Add one optional EggPool summary source and compact second top-level TUI pane without changing EggPool, greggd, protocol, CI, or release scope | completed through Phase 62; implementation `38d89bf`, ordinary CI `30683027208`; original implementation `1406c2b`, corrective runtime implementation `1b77da1`, and earlier CI runs |
 | [`057-eggpool-config-and-cli.md`](057-eggpool-config-and-cli.md) | Add one optional validated EggPool entry plus nested add/list/remove commands through the existing atomic config store | completed |
 | [`058-eggpool-summary-client-and-refresh.md`](058-eggpool-summary-client-and-refresh.md) | Add the typed summary client, environment-referenced Bearer auth, fixed periods, bounded failures, and active-pane refresh worker | implemented; refresh correctness corrected by 061; worker regression coverage owned by 062 |
@@ -40,15 +45,15 @@ Gregg follows a small, manual release model:
 | [`055-phase-54-closure-record-correction.md`](055-phase-54-closure-record-correction.md) | Record one ordinary cross-platform CI result, reconcile Phase 54 metadata, and close the plan index truthfully | completed; closure-record correction |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) | Replace release orchestration with local-first checks/manual publication, then add truthful Windows support | completed; verification model refined by Phase 46 |
 | [`037-remove-release-orchestration-and-archive-history.md`](037-remove-release-orchestration-and-archive-history.md) | Delete release workflows/evidence machinery, retain product tests, and separate historical plans | completed |
-| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46 |
+| [`038-local-first-validation-and-minimal-ci.md`](038-local-first-validation-and-minimal-ci.md) | Add one fast local check, an optional full tier, and a small source-only CI workflow | implementation completed; tier complexity reduced by Phase 46; remaining command duplication is narrowly owned by 065 |
 | [`039-manual-cratesio-and-github-release.md`](039-manual-cratesio-and-github-release.md) | Document manual crates.io publication, annotated tagging, and GitHub Release creation | completed |
-| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | completed |
-| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | completed |
+| [`040-windows-client-portability.md`](040-windows-client-portability.md) | Make the client native and correct on Windows | completed; v2 stale-age correction is narrowly owned by 064 |
+| [`041-capability-aware-protocol-v2.md`](041-capability-aware-protocol-v2.md) | Preserve v1 while adding optional load/swap/I/O-wait and distinct Windows commit semantics | completed; endpoint/schema strictness correction is narrowly owned by 064 |
 | [`042-windows-native-metrics-collector.md`](042-windows-native-metrics-collector.md) | Implement Windows identity, CPU delta, physical memory, and commit collection | completed |
 | [`043-windows-service-lifecycle-and-packaging.md`](043-windows-service-lifecycle-and-packaging.md) | Integrate SCM lifecycle, ProgramData config, least-privilege service account, and local PowerShell packaging | implementation completed; hosted verification boundary finalized by Phase 46 |
 | [`044-windows-ci-integration-and-release-readiness.md`](044-windows-ci-integration-and-release-readiness.md) | Add representative Windows source CI, mixed-fleet tests, packaging/docs reconciliation, and final closure | implementation completed; excessive closure requirements superseded by Phase 46 |
 | [`045-release-script-and-windows-closure.md`](045-release-script-and-windows-closure.md) | Correct local release scripts/runbook and complete native Windows, package, CI, and registry closure | corrective implementation completed; excessive evidence/manual-rehearsal requirements superseded by Phase 46 |
-| [`046-minimal-cross-platform-verification-closure.md`](046-minimal-cross-platform-verification-closure.md) | Reduce local/CI verification to a proportionate two-tier, one-workflow contract with hosted native Windows/macOS truth | completed; ordinary CI and local release preflight passed |
+| [`046-minimal-cross-platform-verification-closure.md`](046-minimal-cross-platform-verification-closure.md) | Reduce local/CI verification to a proportionate two-tier, one-workflow contract with hosted native Windows/macOS truth | completed; ordinary CI and local release preflight passed; command duplication cleanup is narrowly owned by 065 |
 | [`047-documentation-and-ci-polish-closure.md`](047-documentation-and-ci-polish-closure.md) | Remove stale full-tier contributor guidance and trivial CI boilerplate without changing verification coverage | completed; implementation `452f998`, ordinary CI run `30599181232` passed |
 
 ## Existing product plans retained for reassessment
@@ -57,16 +62,16 @@ These plans contain product/platform work. They are not release-gate blockers.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036 and 048 plus bounded closure correction 055; Roadmap 056 is a later optional client-only extension with active verification Phase 62 |
+| [`000-roadmap-v1.md`](000-roadmap-v1.md) | Original version-1 architecture and execution roadmap | historical initial umbrella; superseded for current direction by completed roadmaps 036, 048, and 056; active bounded maintenance is Roadmap 063 |
 | [`001-foundation-workspace-protocol.md`](001-foundation-workspace-protocol.md) | Workspace, package metadata, protocol schema, fixtures, CI foundation | implemented baseline |
 | [`002-linux-metrics-collector.md`](002-linux-metrics-collector.md) | Native Linux identity and metric sampling | implemented; retain as architecture history |
 | [`003-macos-metrics-collector.md`](003-macos-metrics-collector.md) | Native Darwin/Mach/sysctl metric sampling | implemented; retain as architecture history |
-| [`004-daemon-sampler-http-api.md`](004-daemon-sampler-http-api.md) | Cached sampler, readiness, HTTP API, shutdown | implemented; correctness tracked by product plans |
+| [`004-daemon-sampler-http-api.md`](004-daemon-sampler-http-api.md) | Cached sampler, readiness, HTTP API, shutdown | implemented; v2 stale-age correction is narrowly owned by 064 |
 | [`005-daemon-config-service-packaging.md`](005-daemon-config-service-packaging.md) | Atomic config, lifecycle CLI, systemd, launchd, installation | implemented; Windows extension is Phase 43 |
 | [`006-client-config-cli.md`](006-client-config-cli.md) | Endpoint model and configuration commands | implemented; Windows extension is Phase 40; optional EggPool extension is Phase 57 |
-| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 and corrected by Phase 54; optional EggPool worker remains separate under Phases 58-62 |
+| [`007-polling-state-engine.md`](007-polling-state-engine.md) | Bounded polling, batch generations, state reduction, ordering | implemented; viewport behavior extended by Phase 51 and corrected by Phase 54; optional EggPool worker remains separate under Phases 58-62; no scheduler redesign is part of Roadmap 063 |
 | [`008-compact-ratatui-tui.md`](008-compact-ratatui-tui.md) | Four-line rendering, navigation, scrolling | implemented historical baseline; current system TUI expansion is Plans 051-052 with bounded correction in 054; optional top-level EggPool pane is Plans 059-062 |
-| [`009-testing-hardening-performance.md`](009-testing-hardening-performance.md) | Product tests, resource bounds, package validation | partially implemented; useful checks retained/simplified by 037-038 and 046 |
+| [`009-testing-hardening-performance.md`](009-testing-hardening-performance.md) | Product tests, resource bounds, package validation | partially implemented; useful checks retained/simplified by 037-038, 046, and bounded follow-up 065 |
 
 ## Historical retired release-orchestration plans
 
@@ -90,7 +95,13 @@ Plans 023 through 029 contained product/platform corrections originally framed a
 
 ## Dependency summary
 
-Active optional EggPool summary-pane roadmap:
+Active narrow correctness and simplification roadmap:
+
+```text
+63 -> 64 -> 65
+```
+
+Completed optional EggPool summary-pane roadmap:
 
 ```text
 56 -> 57
@@ -123,7 +134,7 @@ Completed release/platform roadmap:
 46 -> 47
 ```
 
-Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-62 must use that existing model and must not add verification or publication machinery.
+Phase 39 remains the manual release procedure. Phase 46 defines the completed minimal verification model. Phase 47 only corrected active documentation and trivial workflow indirection. Plans 48-65 must use that existing manual, read-only model and must not add verification or publication machinery.
 
 ## Completion rule
 
@@ -158,10 +169,14 @@ Any discovered expansion should be recorded separately unless required for:
 - correctness of the current Linux/macOS/Windows product;
 - the explicit mounted-local-filesystem and normal/condensed TUI scope in Plans 048-055;
 - the explicit one-endpoint, four-metric optional EggPool summary-pane scope in Plans 056-062;
+- the explicit status/protocol/package correctness scope in Phase 64;
+- the explicit duplicate-check and measured Tokio feature/runtime cleanup scope in Phase 65;
 - security of the private-network operating model;
 - publishability through the manual Phase 39 procedure;
 - maintaining the compact monitoring product contract.
 
 For Plans 056-062, the allowed EggPool boundary is one optional endpoint, one `/api/stats/summary` request, four fixed periods, four accurately labeled values, environment-referenced Bearer authentication, one compact pane, one active-only passive deadline, and one bounded worker channel. Multiple EggPool instances, aggregation, additional EggPool endpoints, direct database access, dashboard-disabled route changes, provider/model/account drill-down, costs, request logs, runtime diagnostics, charts, history, alerts, exports, retries/backoff, configurable cadence, and generalized dashboard/plugin/datasource/scheduler systems remain out of scope.
+
+For Plans 063-065, the allowed boundary is Windows v2 stale-age correctness, endpoint-specific v1/v2 parsing, normal-package exclusion of the lock test helper, deletion of confirmed unreachable reload machinery, direct documentation reconciliation, removal of duplicated local/CI commands, dev-only Tokio test support, and a measured current-thread client-runtime evaluation. Scheduler rewrites, daemon-supervision rewrites, server-state architecture projects, protocol-v3 work, dependency replacement, `panic`-strategy changes, MSRV-policy changes, and binary-size gates remain out of scope.
 
 Package-manager distribution, automatic updates, public-internet hardening, general dashboards, historical telemetry, alerting, per-process monitoring, physical-disk/SMART/storage-topology inventory, configurable table layouts, generalized release infrastructure, and dedicated verification/evidence systems remain out of scope.
