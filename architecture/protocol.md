@@ -172,7 +172,7 @@ Canonical fixtures live at:
 These fixtures deserialise into the corresponding types, validate cleanly,
 and re-serialise byte-stable. The v2 Windows fixture demonstrates the
 `memory_commit: true` / `commit: Some(...)` pattern with no load or swap.
-The v2 macOS fixture demonstrates `load_average: true` with no swap or
+The v2 macOS fixture demonstrates `load_average: true` and `swap: true`, with both values populated by the native collector.
 commit.
 
 ## Collector contract
@@ -214,8 +214,8 @@ The client implements v2-first/v1-fallback negotiation:
 
 1. Request `/v2/status`.
 2. If v2 succeeds (200 OK), validate and use the v2 snapshot.
-3. If v2 returns 404 Not Found, fall back to `/v1/status`.
-4. If v2 returns malformed/invalid data, report the error without
+3. If v2 returns 404 Not Found, fall back to `/v1/status`; this is the only fallback condition.
+4. If v2 returns malformed, invalid, or wrong-schema data, report the error without
    falling back.
 5. If v2 returns warming/failure (503), represent that state without
    falling back.

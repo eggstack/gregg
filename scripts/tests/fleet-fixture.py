@@ -54,8 +54,7 @@ class FixtureHandler(BaseHTTPRequestHandler):
             observed_at = int(time.time() * 1000)
             if mode == "stale":
                 observed_at = 1
-            body = json.dumps(
-                {
+            payload = {
                     "schema_version": 1,
                     "observed_at_unix_ms": observed_at,
                     "sample_interval_ms": 1000,
@@ -74,7 +73,20 @@ class FixtureHandler(BaseHTTPRequestHandler):
                     "memory": {"used_bytes": 1, "total_bytes": 2, "usage_pct": 50.0},
                     "swap": {"used_bytes": 0, "total_bytes": 0, "usage_pct": 0.0},
                 }
-            ).encode()
+            if path_mode == "v2/status":
+                payload = {
+                    **payload,
+                    "schema_version": 2,
+                    "capabilities": {
+                        "cpu_iowait": False,
+                        "load_average": True,
+                        "swap": True,
+                        "memory_commit": False,
+                    },
+                    "load": payload["load"],
+                    "swap": payload["swap"],
+                }
+            body = json.dumps(payload).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))

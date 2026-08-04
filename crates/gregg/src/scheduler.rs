@@ -266,28 +266,41 @@ mod tests {
         let body = serde_json::to_string(&snap).unwrap();
         mock_server(body.into_bytes(), "200 OK").await
     }
-
     async fn mock_server(body: Vec<u8>, status: &str) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let status = status.to_string();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let mut total = 0;
             loop {
-                let n = stream.read(&mut buf[total..]).await.unwrap();
-                total += n;
-                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok((mut stream, _)) = listener.accept().await else {
                     break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
                 }
+                let request = String::from_utf8_lossy(&buf[..total]);
+                let response_status = if request
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("/v2/"))
+                {
+                    "404 Not Found"
+                } else {
+                    &status
+                };
+                let header = format!(
+                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
             }
-            let header = format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).await.unwrap();
-            stream.write_all(&body).await.unwrap();
         });
         format!("http://127.0.0.1:{}", addr.port())
     }
@@ -302,8 +315,6 @@ mod tests {
             name: None,
         }
     }
-
-    #[tokio::test]
     async fn scheduler_produces_batches_with_increasing_generations() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
@@ -715,7 +726,6 @@ mod tests {
                 let Ok((mut stream, _)) = listener.accept().await else {
                     break;
                 };
-                let count = call_count.fetch_add(1, Ordering::SeqCst);
                 let mut buf = vec![0u8; 4096];
                 let mut total = 0;
                 loop {
@@ -725,6 +735,17 @@ mod tests {
                         break;
                     }
                 }
+                let request = String::from_utf8_lossy(&buf[..total]);
+                if request
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("/v2/"))
+                {
+                    let header = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+                    stream.write_all(header.as_bytes()).await.unwrap();
+                    continue;
+                }
+                let count = call_count.fetch_add(1, Ordering::SeqCst);
                 if count % 2 == 0 {
                     let header =
                         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());

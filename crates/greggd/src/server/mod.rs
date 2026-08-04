@@ -108,6 +108,8 @@ pub struct ServerState {
     snapshot: Arc<RwLock<Option<Arc<StatusSnapshot>>>>,
     /// Latest v2 status snapshot.
     snapshot_v2: Arc<RwLock<Option<Arc<StatusPayloadV2>>>>,
+    /// Observation time of the latest published snapshot, regardless of wire version.
+    last_observed_at_unix_ms: Arc<RwLock<Option<u64>>>,
     /// Readiness flag: `true` once a valid snapshot is available and not
     /// stale.
     ready: Arc<AtomicBool>,
@@ -142,6 +144,7 @@ impl ServerState {
         Self {
             snapshot: Arc::new(RwLock::new(None)),
             snapshot_v2: Arc::new(RwLock::new(None)),
+            last_observed_at_unix_ms: Arc::new(RwLock::new(None)),
             ready: Arc::new(AtomicBool::new(false)),
             health: Arc::new(RwLock::new(HealthResponse::warming())),
             health_v2: Arc::new(RwLock::new(HealthResponseV2::warming())),
@@ -153,6 +156,9 @@ impl ServerState {
 
     /// Publish new v1 and v2 snapshots and mark the server ready.
     pub async fn update_snapshot(&self, snap: StatusSnapshot, payload_v2: StatusPayloadV2) {
+        let observed_at_unix_ms = snap
+            .observed_at_unix_ms
+            .max(payload_v2.snapshot.observed_at_unix_ms);
         let health = HealthResponse::ready(snap.clone());
         let health_v2 = HealthResponseV2::ready(payload_v2.snapshot.clone());
         let arc_snap = Arc::new(snap);
@@ -173,6 +179,10 @@ impl ServerState {
             let mut guard = self.health_v2.write().await;
             *guard = health_v2;
         }
+        {
+            let mut guard = self.last_observed_at_unix_ms.write().await;
+            *guard = Some(observed_at_unix_ms);
+        }
         self.consecutive_failures.store(0, Ordering::Release);
         self.ready.store(true, Ordering::Release);
     }
@@ -182,6 +192,7 @@ impl ServerState {
     /// Used on Windows where v1 is not supported. The v1 snapshot slot
     /// remains unchanged (None on initial startup).
     pub async fn update_snapshot_v2_only(&self, payload_v2: StatusPayloadV2) {
+        let observed_at_unix_ms = payload_v2.snapshot.observed_at_unix_ms;
         let health_v2 = HealthResponseV2::ready(payload_v2.snapshot.clone());
         let arc_snap_v2 = Arc::new(payload_v2);
         {
@@ -191,6 +202,10 @@ impl ServerState {
         {
             let mut guard = self.health_v2.write().await;
             *guard = health_v2;
+        }
+        {
+            let mut guard = self.last_observed_at_unix_ms.write().await;
+            *guard = Some(observed_at_unix_ms);
         }
         self.consecutive_failures.store(0, Ordering::Release);
         // Note: v1 snapshot and health are not updated — they remain None
@@ -208,6 +223,10 @@ impl ServerState {
         }
         {
             let mut guard = self.snapshot_v2.write().await;
+            *guard = None;
+        }
+        {
+            let mut guard = self.last_observed_at_unix_ms.write().await;
             *guard = None;
         }
         {
@@ -266,9 +285,9 @@ impl ServerState {
             }
         }
         if !self.max_snapshot_age.is_zero() {
-            let guard = self.snapshot.read().await;
-            if let Some(ref snap) = *guard {
-                let age_ms = now_unix_ms.saturating_sub(snap.observed_at_unix_ms);
+            let guard = self.last_observed_at_unix_ms.read().await;
+            if let Some(observed_at_unix_ms) = *guard {
+                let age_ms = now_unix_ms.saturating_sub(observed_at_unix_ms);
                 #[allow(clippy::cast_possible_truncation)]
                 if age_ms >= self.max_snapshot_age.as_millis() as u64 {
                     return true;

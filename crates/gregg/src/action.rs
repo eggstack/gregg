@@ -5,13 +5,12 @@
 //! Actions represent every event that can mutate [`AppState`](crate::state::AppState).
 //! Separating actions from state mutations makes the reducer pure and testable.
 
-use crate::config::Config;
-
 /// A typed event that triggers a state transition.
 ///
 /// Actions are produced by input handlers (keyboard, signal) and the
 /// scheduler. The [`AppState::apply_action`](crate::state::AppState::apply_action)
 /// method consumes actions and mutates state deterministically.
+#[derive(Clone, Copy)]
 pub enum Action {
     /// Move down in the active pane.
     MoveDown,
@@ -35,8 +34,6 @@ pub enum Action {
     ToggleDrives,
     /// Trigger an immediate poll cycle (handled by the scheduler).
     RefreshNow,
-    /// The configuration was reloaded; rebuild state from the new config.
-    ConfigReloaded(Config),
     /// The terminal was resized.
     Resize {
         /// New width in columns.
@@ -51,7 +48,6 @@ pub enum Action {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, SystemEntry};
 
     #[test]
     fn action_variants_exist() {
@@ -67,7 +63,6 @@ mod tests {
             Action::ToggleSystemView,
             Action::ToggleDrives,
             Action::RefreshNow,
-            Action::ConfigReloaded(Config::default()),
             Action::Resize {
                 width: 80,
                 height: 24,
@@ -86,15 +81,14 @@ mod tests {
         assert!(matches!(actions[8], Action::ToggleSystemView));
         assert!(matches!(actions[9], Action::ToggleDrives));
         assert!(matches!(actions[10], Action::RefreshNow));
-        assert!(matches!(actions[11], Action::ConfigReloaded(_)));
         assert!(matches!(
-            actions[12],
+            actions[11],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[13], Action::Quit));
+        assert!(matches!(actions[12], Action::Quit));
     }
 
     #[test]
@@ -109,25 +103,6 @@ mod tests {
                 assert_eq!(height, 40);
             }
             _ => panic!("expected Resize"),
-        }
-    }
-
-    #[test]
-    fn config_reloaded_carry_config() {
-        let mut config = Config::default();
-        config.systems.push(SystemEntry {
-            id: "test-id".into(),
-            host: "192.168.1.1".into(),
-            port: 11310,
-            name: None,
-        });
-        let action = Action::ConfigReloaded(config);
-        match action {
-            Action::ConfigReloaded(c) => {
-                assert_eq!(c.systems.len(), 1);
-                assert_eq!(c.systems[0].host, "192.168.1.1");
-            }
-            _ => panic!("expected ConfigReloaded"),
         }
     }
 }

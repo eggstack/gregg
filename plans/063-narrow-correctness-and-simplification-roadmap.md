@@ -1,6 +1,6 @@
 # Roadmap: narrow correctness and simplification pass
 
-Status: planned.
+Status: Phase 64 completed; Phase 65 remains pending.
 
 ## Purpose
 

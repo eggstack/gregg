@@ -78,8 +78,8 @@ aborted.
 | Other | `fallback_handler` | 404 |
 
 **Staleness policy:** If `max_consecutive_failures > 0` and failures exceed the
-threshold, or if `max_snapshot_age > 0` and the snapshot is too old, the server
-returns 503. The snapshot is preserved (not cleared) for stale serving.
+threshold, or if `max_snapshot_age > 0` and the latest published observation is too old, the server
+returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving.
 
 ### Sampler
 

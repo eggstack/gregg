@@ -16,7 +16,7 @@ Use this when modifying wire types, adding new schema versions, changing validat
 - **V1** (`SCHEMA_VERSION_V1 = 1`): Original Linux/macOS format with required load/swap
 - **V2** (`SCHEMA_VERSION_V2 = 2`): Extended with capability flags for load, swap, commit; drives array
 
-The client prefers v2, falls back to v1 on 404. `/v2/status` is the universal cross-platform endpoint.
+The client requests v2 first, accepts only the schema matching each endpoint, and falls back to v1 only on an HTTP 404 from /v2/status. `/v2/status` is the universal cross-platform endpoint.
 
 ## Key types
 

@@ -301,7 +301,6 @@ impl AppState {
             Action::ToggleDrives => {
                 self.drives_expanded = !self.drives_expanded;
             }
-            Action::ConfigReloaded(config) => self.rebuild_from_config(&config),
             Action::Resize { width, height } => {
                 self.terminal_size = Some((width, height));
                 ensure_selected_visible(self);
@@ -326,91 +325,6 @@ impl AppState {
 
         online.extend(offline);
         online
-    }
-
-    /// Rebuild systems from a new config, preserving state for systems
-    /// that still exist (matched by ID).
-    pub fn rebuild_from_config(&mut self, config: &Config) {
-        let old_eggpool = self.eggpool.take();
-        self.eggpool = config.eggpool.clone().map(|endpoint| {
-            if let Some(mut existing) = old_eggpool {
-                if existing.endpoint != endpoint {
-                    existing.endpoint = endpoint;
-                    existing.request_generation = existing.request_generation.wrapping_add(1);
-                    existing.status = EggpoolStatus::Refreshing;
-                    existing.summary = None;
-                    existing.last_success_at = None;
-                    existing.last_attempt_at = None;
-                    existing.last_error = None;
-                }
-                existing
-            } else {
-                EggpoolState {
-                    endpoint,
-                    period: EggpoolPeriod::Hour,
-                    request_generation: 0,
-                    status: EggpoolStatus::Idle,
-                    summary: None,
-                    last_success_at: None,
-                    last_attempt_at: None,
-                    last_error: None,
-                }
-            }
-        });
-        if self.active_pane == Pane::Eggpool && self.eggpool.is_none() && !config.systems.is_empty()
-        {
-            self.active_pane = Pane::Systems;
-        } else if self.active_pane == Pane::Systems
-            && self.systems.is_empty()
-            && self.eggpool.is_some()
-        {
-            self.active_pane = Pane::Eggpool;
-        }
-        let old_systems: Vec<SystemState> = self.systems.drain(..).collect();
-
-        self.systems = config
-            .systems
-            .iter()
-            .map(|entry| {
-                if let Some(existing) = old_systems.iter().find(|s| s.id == entry.id) {
-                    let mut updated = existing.clone();
-                    updated.endpoint = entry.to_endpoint();
-                    updated.configured_name.clone_from(&entry.name);
-                    updated
-                } else {
-                    SystemState {
-                        id: entry.id.clone(),
-                        endpoint: entry.to_endpoint(),
-                        configured_name: entry.name.clone(),
-                        reachability: Reachability::Pending,
-                        latest: None,
-                        last_success_at: None,
-                        last_attempt_at: None,
-                        latency: None,
-                        last_error: None,
-                    }
-                }
-            })
-            .collect();
-
-        // Ensure selection is valid.
-        if let Some(ref sel) = self.selected_id {
-            if !self.systems.iter().any(|s| &s.id == sel) {
-                self.selected_id = self.systems.first().map(|s| s.id.clone());
-            }
-        } else {
-            self.selected_id = self.systems.first().map(|s| s.id.clone());
-        }
-
-        // Ensure viewport is valid.
-        if let Some(ref top) = self.viewport_top_id {
-            if !self.systems.iter().any(|s| &s.id == top) {
-                self.viewport_top_id = self.selected_id.clone();
-            }
-        } else {
-            self.viewport_top_id = self.selected_id.clone();
-        }
-        ensure_selected_visible(self);
     }
 
     /// Apply one `EggPool` result if it belongs to the current request and period.
@@ -889,22 +803,6 @@ mod tests {
     }
 
     #[test]
-    fn eggpool_config_reload_reconciles_active_pane_and_clears_changed_source() {
-        let mut state = AppState::from_config(&eggpool_config(false));
-        state.apply_action(Action::MoveDown);
-        let mut changed = eggpool_config(false);
-        changed.eggpool.as_mut().unwrap().host = "new-pool.local".into();
-        state.rebuild_from_config(&changed);
-        assert_eq!(state.active_pane, Pane::Eggpool);
-        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
-        assert!(state.eggpool.as_ref().unwrap().summary.is_none());
-        let systems = test_config_with_ids(&["a"]);
-        state.rebuild_from_config(&systems);
-        assert_eq!(state.active_pane, Pane::Systems);
-        assert!(state.eggpool.is_none());
-    }
-
-    #[test]
     fn apply_batch_online_result() {
         let config = test_config_with_ids(&["a", "b"]);
         let mut state = AppState::from_config(&config);
@@ -1183,73 +1081,6 @@ mod tests {
     }
 
     #[test]
-    fn selection_falls_back_when_system_removed() {
-        let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
-
-        state.apply_action(Action::MoveDown);
-        assert_eq!(state.selected_id.as_deref(), Some("b"));
-
-        // Rebuild with only "a".
-        let mut new_config = Config::default();
-        new_config.systems.push(SystemEntry {
-            id: "a".into(),
-            host: "host0.local".into(),
-            port: 11310,
-            name: None,
-        });
-
-        state.rebuild_from_config(&new_config);
-        // b is gone, selection should fall back to a.
-        assert_eq!(state.selected_id.as_deref(), Some("a"));
-    }
-
-    #[test]
-    fn rebuild_from_config_preserves_existing_state() {
-        let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
-
-        // Give a a snapshot.
-        let batch = PollBatch {
-            generation: 1,
-            started_at: Instant::now(),
-            completed_at: Instant::now(),
-            results: vec![crate::poller::PollResult {
-                system_id: "a".into(),
-                endpoint: state.systems[0].endpoint.clone(),
-                outcome: PollOutcome::Online(Box::new(make_snapshot())),
-                latency: Duration::from_millis(50),
-            }],
-        };
-        state.apply_batch(&batch);
-        assert_eq!(state.systems[0].reachability, Reachability::Online);
-
-        // Rebuild with same config.
-        state.rebuild_from_config(&config);
-
-        // State should be preserved.
-        assert_eq!(state.systems.len(), 2);
-        assert_eq!(state.systems[0].reachability, Reachability::Online);
-        assert!(state.systems[0].latest.is_some());
-        assert_eq!(state.systems[0].id, "a");
-    }
-
-    #[test]
-    fn rebuild_from_config_adds_new_system() {
-        let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
-
-        let mut new_config = test_config_with_ids(&["a", "b"]);
-        // Use same ID for a so it's recognized.
-        new_config.systems[0].id = "a".into();
-
-        state.rebuild_from_config(&new_config);
-        assert_eq!(state.systems.len(), 2);
-        // New system b should be pending.
-        assert_eq!(state.systems[1].reachability, Reachability::Pending);
-    }
-
-    #[test]
     fn entry_height_online_is_five() {
         let mut state = AppState {
             systems: vec![SystemState {
@@ -1428,37 +1259,6 @@ mod tests {
         state.apply_action(Action::ToggleDrives);
         assert_eq!(entry_height(&state, 0), 6);
         assert_eq!(entry_height(&state, 1), 5);
-    }
-
-    #[test]
-    fn config_reloaded_action() {
-        let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
-
-        let batch = PollBatch {
-            generation: 1,
-            started_at: Instant::now(),
-            completed_at: Instant::now(),
-            results: vec![crate::poller::PollResult {
-                system_id: "a".into(),
-                endpoint: state.systems[0].endpoint.clone(),
-                outcome: PollOutcome::Online(Box::new(make_snapshot())),
-                latency: Duration::from_millis(50),
-            }],
-        };
-        state.apply_batch(&batch);
-
-        // Reload with new config.
-        let mut new_config = test_config_with_ids(&["a", "b", "c"]);
-        new_config.systems[0].id = "a".into();
-        new_config.systems[1].id = "b".into();
-        new_config.systems[2].id = "c".into();
-
-        state.apply_action(Action::ConfigReloaded(new_config));
-
-        assert_eq!(state.systems.len(), 3);
-        // a's state should be preserved.
-        assert_eq!(state.systems[0].reachability, Reachability::Online);
     }
 
     #[test]

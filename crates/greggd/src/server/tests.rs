@@ -527,6 +527,18 @@ async fn warming_state_serves_503_regardless_of_stale_policy() {
 }
 
 // ===== Age-Based Staleness Tests =====
+#[tokio::test]
+async fn v2_only_snapshot_ages_out_on_status_and_health() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
+    let mut payload = LinuxSnapshotV2Builder::default().build_payload();
+    payload.snapshot.observed_at_unix_ms = 1;
+    state.update_snapshot_v2_only(payload).await;
+    let app = build_test_router(state);
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
 
 #[tokio::test]
 async fn stale_snapshot_by_age_returns_503() {

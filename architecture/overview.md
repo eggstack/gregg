@@ -188,7 +188,6 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 |--------|------|---------|
 | `mixed_fleet_evidence` | `src/mixed_fleet_evidence.rs` | Integration test with Python fixture servers |
 | `sustained_workload` | `src/sustained_workload.rs` | Long-running regression test (`#[ignore]`) |
-| `bin/lock_helper` | `src/bin/lock_helper.rs` | Cross-process lock contention helper |
 
 ### Key concepts
 

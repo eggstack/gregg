@@ -190,8 +190,14 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         .iter()
         .map(|result| (result.system_id.as_str(), &result.outcome))
         .collect();
-    assert!(matches!(first_outcomes["healthy"], PollOutcome::Online(_)));
-    assert!(matches!(first_outcomes["slow"], PollOutcome::Online(_)));
+    assert!(matches!(
+        first_outcomes["healthy"],
+        PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+    ));
+    assert!(matches!(
+        first_outcomes["slow"],
+        PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+    ));
     assert!(matches!(first_outcomes["timeout"], PollOutcome::Timeout));
     assert!(matches!(
         first_outcomes["malformed"],
@@ -201,7 +207,10 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         first_outcomes["error"],
         PollOutcome::HttpStatus(500)
     ));
-    assert!(matches!(first_outcomes["stale"], PollOutcome::Online(_)));
+    assert!(matches!(
+        first_outcomes["stale"],
+        PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+    ));
     assert!(matches!(
         first_outcomes["recover"],
         PollOutcome::HttpStatus(503)
@@ -214,7 +223,10 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
     // the outcome may vary: ConnectionRefused, NetworkError, or Timeout
     // depending on the OS socket stack. Accept any non-Online outcome.
     assert!(
-        !matches!(first_outcomes["refused"], PollOutcome::Online(_)),
+        !matches!(
+            first_outcomes["refused"],
+            PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+        ),
         "refused endpoint should not be online, got {:?}",
         first_outcomes["refused"]
     );

@@ -13,6 +13,10 @@ keywords = ["tui", "monitoring", "metrics", "ratatui", "cli"]
 categories = ["command-line-utilities", "visualization"]
 include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE", "config.example.toml", "tests/**"]
 
+[features]
+default = []
+test-helper = []
+
 [[bin]]
 name = "gregg"
 path = "src/main.rs"
@@ -20,7 +24,7 @@ path = "src/main.rs"
 [[bin]]
 name = "lock_helper"
 path = "src/bin/lock_helper.rs"
-required-features = []
+required-features = ["test-helper"]
 
 [dependencies]
 gregg-protocol = { version = "1.0.2", path = "../gregg-protocol" }

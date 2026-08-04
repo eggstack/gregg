@@ -285,8 +285,7 @@ Empty hostname is rejected (returns error).
 
 ### Drives
 
-From `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW`. Only fixed drives
-(`DRIVE_FIXED`) with positive capacity are candidates.
+From `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW`. Fixed and removable drives (`DRIVE_FIXED` and `DRIVE_REMOVABLE`) with positive capacity are candidates.
 
 ### Capabilities
 

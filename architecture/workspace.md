@@ -185,9 +185,7 @@ superseded results safe for the reducer. Focused paused-time worker tests cover 
 for configured EggPool state, activates it when the pane is visible, routes
 pane/period/manual-refresh actions to it, applies optional results without
 affecting greggd polling, and cancels it during TUI shutdown. Configuration file
-watching is not implemented; the existing `ConfigReloaded` reducer remains a
-deterministic seam for future reload plumbing rather than an implied live
-watcher.
+Configuration file watching and live configuration reload are not implemented. CLI configuration commands use the normal read-edit-write path.
 
 ## Client TUI
 

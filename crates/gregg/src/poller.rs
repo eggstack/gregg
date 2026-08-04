@@ -22,6 +22,12 @@ use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 use crate::clock::Clock;
 use crate::endpoint::Endpoint;
 
+#[derive(Clone, Copy)]
+enum ExpectedSchema {
+    V1,
+    V2,
+}
+
 /// Test-only concurrency observer for measuring active poll count.
 ///
 /// Tracks the number of currently in-flight polls and the peak observed
@@ -205,12 +211,16 @@ impl HttpClient {
 
         // Try v2 first.
         let v2_url = v2_status_url(&endpoint.host, endpoint.port);
-        let v2_result = self.poll_single_url(&v2_url, endpoint, clock, start).await;
+        let v2_result = self
+            .poll_single_url(&v2_url, endpoint, ExpectedSchema::V2, start)
+            .await;
 
         if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
             // v2 returned 404 - fall back to v1.
             let v1_url = status_url(&endpoint.host, endpoint.port);
-            return self.poll_single_url(&v1_url, endpoint, clock, start).await;
+            return self
+                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, start)
+                .await;
         }
 
         v2_result
@@ -235,7 +245,7 @@ impl HttpClient {
         &self,
         url: &str,
         endpoint: &Endpoint,
-        _clock: &impl Clock,
+        expected_schema: ExpectedSchema,
         start: std::time::Instant,
     ) -> PollResult {
         let response = match self.client.get(url).send().await {
@@ -262,7 +272,7 @@ impl HttpClient {
             Err(outcome) => return Self::make_result(endpoint, outcome, start),
         };
 
-        Self::parse_response(&body, endpoint, start)
+        Self::parse_response(&body, endpoint, expected_schema, start)
     }
 
     /// Read the response body, enforcing size limits.
@@ -279,10 +289,17 @@ impl HttpClient {
         Ok(body)
     }
 
-    /// Parse a response body as v2 or v1.
-    fn parse_response(body: &[u8], endpoint: &Endpoint, start: std::time::Instant) -> PollResult {
-        // Try parsing as v2 first.
-        if let Ok(payload) = serde_json::from_slice::<StatusPayloadV2>(body) {
+    /// Parse a response body against the schema required by its endpoint.
+    fn parse_response(
+        body: &[u8],
+        endpoint: &Endpoint,
+        expected_schema: ExpectedSchema,
+        start: std::time::Instant,
+    ) -> PollResult {
+        if matches!(expected_schema, ExpectedSchema::V2) {
+            let Ok(payload) = serde_json::from_slice::<StatusPayloadV2>(body) else {
+                return Self::make_result(endpoint, PollOutcome::DecodeError, start);
+            };
             if payload.snapshot.schema_version != SCHEMA_VERSION_V2 {
                 return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
             }
@@ -292,7 +309,6 @@ impl HttpClient {
             return Self::make_result(endpoint, PollOutcome::OnlineV2(Box::new(payload)), start);
         }
 
-        // Fall back to v1 parsing.
         let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(body) else {
             return Self::make_result(endpoint, PollOutcome::DecodeError, start);
         };
@@ -409,22 +425,37 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let status = status.to_string();
         tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let mut total = 0;
             loop {
-                let n = stream.read(&mut buf[total..]).await.unwrap();
-                total += n;
-                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                let Ok((mut stream, _)) = listener.accept().await else {
                     break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
                 }
+                let request = String::from_utf8_lossy(&buf[..total]);
+                let response_status = if request
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("/v2/"))
+                    && !body.windows(9).any(|window| window == b"snapshot\":")
+                {
+                    "404 Not Found"
+                } else {
+                    &status
+                };
+                let header = format!(
+                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(&body).await.unwrap();
             }
-            let header = format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
-                body.len()
-            );
-            stream.write_all(header.as_bytes()).await.unwrap();
-            stream.write_all(&body).await.unwrap();
         });
         format!("http://127.0.0.1:{}", addr.port())
     }
@@ -837,7 +868,7 @@ mod tests {
 
         let result = client.poll(&ep, &clock).await;
         assert!(
-            matches!(result.outcome, PollOutcome::Online(_)),
+            matches!(result.outcome, PollOutcome::DecodeError),
             "expected Online, got {:?}",
             result.outcome
         );

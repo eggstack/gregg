@@ -70,7 +70,6 @@ renders a Ratatui-based terminal UI.
 |--------|------|---------|
 | `mixed_fleet_evidence` | `src/mixed_fleet_evidence.rs` | Integration test with Python fixtures |
 | `sustained_workload` | `src/sustained_workload.rs` | Long-running regression test |
-| `bin/lock_helper` | `src/bin/lock_helper.rs` | Cross-process lock contention helper |
 
 ## Architecture
 
@@ -94,7 +93,7 @@ enum Action {
     SelectFirst, SelectLast,
     PreviousPane, NextPane,
     ToggleSystemView, ToggleDrives,
-    RefreshNow, ConfigReloaded(Config),
+    RefreshNow,
     Resize, Quit,
 }
 ```
@@ -114,8 +113,8 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 - Generation numbers increase monotonically; stale batches rejected
 
 **Poller** (`poller.rs`):
-- v2-first, v1-fallback on 404
-- Rejects malformed v2 without fallback
+- v2-first, endpoint-bound schema parsing, v1 fallback only on 404
+- Accepts only the schema matching the requested endpoint; malformed, invalid, and wrong-version responses never trigger fallback
 - 64 KiB body cap, no redirects, bounded connection pool
 - `PollOutcome` classifies 12 failure modes
 
@@ -272,4 +271,4 @@ Every module has inline `#[cfg(test)]` tests:
 
 - `FakeClock` — manually advancing clock
 - `SyntheticClock` / `SyntheticCollector` — deterministic sampler testing
-- `lock_helper` binary — cross-process lock contention testing
+- cross-process lock contention is covered by the test-only `lock_helper` target, gated behind the private `test-helper` feature

@@ -63,7 +63,7 @@ cargo test -p greggd --all-features -- <test_name>
 
 ## Schema protocol
 
-Wire types in `gregg-protocol`. Schema version is explicit (`SCHEMA_VERSION_V1 = 1`, `SCHEMA_VERSION_V2 = 2`). The client prefers v2, falls back to v1 on 404. `/v2/status` is the universal cross-platform endpoint. `/v1/status` is Linux/macOS only (Windows returns 503).
+Wire types in `gregg-protocol`. Schema version is explicit (`SCHEMA_VERSION_V1 = 1`, `SCHEMA_VERSION_V2 = 2`). The client requests v2 first, accepts only the schema matching each endpoint, and falls back to v1 only on an HTTP 404 from /v2/status. `/v2/status` is the universal cross-platform endpoint. `/v1/status` is Linux/macOS only (Windows returns 503).
 
 Platform-specific rules:
 - macOS: `iowait_pct` is `null` (unsupported). Never fabricate `0.0`.

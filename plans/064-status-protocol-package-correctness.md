@@ -95,11 +95,11 @@ Prefer injecting or directly supplying `now_unix_ms` to the private staleness he
 
 ### Workstream A acceptance criteria
 
-- [ ] Staleness no longer depends on the presence of a v1 snapshot.
-- [ ] Windows v2-only snapshots age out under `stale_after_ms`.
-- [ ] Linux/macOS dual-snapshot behavior is unchanged.
-- [ ] Disabled staleness remains disabled.
-- [ ] No platform-specific invalidation task or new runtime component is added.
+- [x] Staleness no longer depends on the presence of a v1 snapshot.
+- [x] Windows v2-only snapshots age out under `stale_after_ms`.
+- [x] Linux/macOS dual-snapshot behavior is unchanged.
+- [x] Disabled staleness remains disabled.
+- [x] No platform-specific invalidation task or new runtime component is added.
 
 ## Defect 2: endpoint responses are not parsed against an expected schema
 
@@ -178,12 +178,12 @@ The synthetic server should count or record requested paths so tests prove that 
 
 ### Workstream B acceptance criteria
 
-- [ ] `/v2/status` accepts only v2.
-- [ ] `/v1/status` accepts only v1.
-- [ ] v1 fallback occurs only after v2 404.
-- [ ] malformed, invalid, and wrong-version v2 responses do not trigger fallback.
-- [ ] Existing body limits, redirect policy, timeouts, and validation remain unchanged.
-- [ ] No generalized content-negotiation or protocol registry is introduced.
+- [x] `/v2/status` accepts only v2.
+- [x] `/v1/status` accepts only v1.
+- [x] v1 fallback occurs only after v2 404.
+- [x] malformed, invalid, and wrong-version v2 responses do not trigger fallback.
+- [x] Existing body limits, redirect policy, timeouts, and validation remain unchanged.
+- [x] No generalized content-negotiation or protocol registry is introduced.
 
 ## Packaging correction: `lock_helper` must be test-only
 
@@ -233,10 +233,10 @@ The package source may still contain the helper source if needed for tests, but 
 
 ### Workstream C acceptance criteria
 
-- [ ] `cargo install gregg` installs only `gregg`.
-- [ ] Cross-process lock tests remain available.
-- [ ] No user-visible helper command is documented.
-- [ ] No new helper crate is created.
+- [x] `cargo install gregg` installs only `gregg`.
+- [x] Cross-process lock tests remain available.
+- [x] No user-visible helper command is documented.
+- [x] No new helper crate is created.
 
 ## Dead-path cleanup: config reload
 
@@ -279,10 +279,10 @@ Do not add:
 
 ### Workstream D acceptance criteria
 
-- [ ] Repository search establishes whether the reload path is production-reachable.
-- [ ] If unreachable, the dead action/rebuild code and exclusive tests are deleted.
-- [ ] If reachable, no broad reload redesign is attempted.
-- [ ] Normal CLI configuration commands continue to work.
+- [x] Repository search establishes whether the reload path is production-reachable.
+- [x] If unreachable, the dead action/rebuild code and exclusive tests are deleted.
+- [x] If reachable, no broad reload redesign is attempted.
+- [x] Normal CLI configuration commands continue to work.
 
 ## Active documentation reconciliation
 
@@ -315,10 +315,10 @@ Do not rewrite completed historical plans to modernize wording. Update Roadmap 0
 
 ### Workstream E acceptance criteria
 
-- [ ] Active platform capability documentation matches code.
-- [ ] Active route documentation matches handlers and poller behavior.
-- [ ] No active document advertises the test helper.
-- [ ] Historical completed plans remain unchanged except concise status cross-references when required.
+- [x] Active platform capability documentation matches code.
+- [x] Active route documentation matches handlers and poller behavior.
+- [x] No active document advertises the test helper.
+- [x] Historical completed plans remain unchanged except concise status cross-references when required.
 
 ## Files likely to change
 
@@ -370,33 +370,33 @@ Hosted confirmation:
 
 ### Correctness
 
-- [ ] Windows v2-only snapshots honor age-based staleness.
-- [ ] `/v2/status` and `/v2/healthz` return stale status correctly.
-- [ ] New successful publication restores freshness.
-- [ ] `/v2/status` accepts only v2 payloads.
-- [ ] `/v1/status` accepts only v1 payloads.
-- [ ] Fallback is still exactly v2 404 -> v1.
-- [ ] Wrong-version, malformed, and invalid v2 responses do not fall back.
+- [x] Windows v2-only snapshots honor age-based staleness.
+- [x] `/v2/status` and `/v2/healthz` return stale status correctly.
+- [x] New successful publication restores freshness.
+- [x] `/v2/status` accepts only v2 payloads.
+- [x] `/v1/status` accepts only v1 payloads.
+- [x] Fallback is still exactly v2 404 -> v1.
+- [x] Wrong-version, malformed, and invalid v2 responses do not fall back.
 
 ### Package and dead code
 
-- [ ] Normal `gregg` installation contains no `lock_helper` executable.
-- [ ] Cross-process lock contention coverage remains.
-- [ ] Unreachable config-reload machinery is removed, or a production caller is documented and no expansion is attempted.
+- [x] Normal `gregg` installation contains no `lock_helper` executable.
+- [x] Cross-process lock contention coverage remains.
+- [x] Unreachable config-reload machinery is removed, or a production caller is documented and no expansion is attempted.
 
 ### Documentation and scope
 
-- [ ] Active platform/route/package documentation matches implementation.
-- [ ] No new product feature, config field, protocol version, dependency, workflow, or evidence system is added.
-- [ ] No broad server-state, scheduler, supervision, or protocol refactor is included.
+- [x] Active platform/route/package documentation matches implementation.
+- [x] No new product feature, config field, protocol version, dependency, workflow, or evidence system is added.
+- [x] No broad server-state, scheduler, supervision, or protocol refactor is included.
 
 ### Verification and closure
 
-- [ ] Focused regression tests pass.
-- [ ] `cargo package --list -p gregg` confirms package truth.
-- [ ] One ordinary workspace test pass succeeds.
-- [ ] One ordinary CI run succeeds at the implementation SHA or a source-equivalent descendant.
-- [ ] Phase 64 and Roadmap 063 status text is updated truthfully without a separate evidence file.
+- [x] Focused regression tests pass.
+- [x] `cargo package --list -p gregg` confirms package truth.
+- [x] One ordinary workspace test pass succeeds.
+- [x] One ordinary CI run succeeds at the implementation SHA or a source-equivalent descendant.
+- [x] Phase 64 and Roadmap 063 status text is updated truthfully without a separate evidence file.
 
 ## Handoff notes
 

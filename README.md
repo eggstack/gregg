@@ -183,7 +183,7 @@ The `greggd` daemon supports Windows x86-64 as both a foreground process and a n
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
-On Windows, `/v1/status` and `/` return `503 Service Unavailable` with a v2 health response, because a truthful v1 snapshot cannot be produced (load, swap, and CPU I/O-wait are absent). Clients should prefer `/v2/status` on Windows.
+On Windows, `/v1/status` and `/` return `503 Service Unavailable` with a v2 health response, because a truthful v1 snapshot cannot be produced (load, swap, and CPU I/O-wait are absent). `/v2/healthz` also reports 503 when the cached v2 snapshot exceeds the configured stale-age policy. Clients should prefer `/v2/status` on Windows.
 
 The daemon does not automatically create firewall rules. LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
@@ -227,7 +227,7 @@ GET /v2/healthz
 
 The daemon serves cached immutable snapshots. Requests do not trigger metric collection. The schema carries an explicit version and metric-capability flags so unsupported platform metrics remain distinguishable from measured zero values. V2 status may additionally contain a bounded `drives` list with a display `name` and numeric `used_bytes` and `total_bytes` fields. Missing or `null` means unavailable/legacy; an empty list means enumeration succeeded but found no eligible volumes. The client derives aggregate capacity values. Drive entries are best-effort native observations of eligible mounted local filesystems, not physical-disk telemetry.
 
-The client prefers v2 and falls back to v1 when the daemon returns 404 for `/v2/status`. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
+The client requests v2 first and accepts only a v2 payload from `/v2/status`. It falls back to v1 only when that request returns 404, then accepts only a v1 payload from `/v1/status`; malformed, invalid, or wrong-version 2xx responses are rejected without fallback. Both v1 and v2 snapshots are normalized internally so the TUI renders a consistent view across mixed-version fleets.
 
 ## Platform notes
 
