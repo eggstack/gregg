@@ -86,7 +86,14 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 
 ## CI
 
-No `.github/workflows/*.yml` files currently exist. Local verification via `check-local.sh` is the source of truth. When CI is added, it should run fmt, clippy, test, doc, and native collector tests on Linux/macOS/Windows.
+GitHub Actions CI runs on push to `main` and pull requests (`.github/workflows/ci.yml`):
+
+- **Linux**: fmt, clippy, test, doc, native collector smoke
+- **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
+- **Windows**: native workspace check, client tests, collector tests, service-manager tests, foreground v2 smoke
+- **MSRV**: compilation check with Rust 1.75
+
+Local verification via `check-local.sh` is the source of truth for pre-commit checks.
 
 ## What not to do
 

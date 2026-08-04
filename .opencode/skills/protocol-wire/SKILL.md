@@ -75,6 +75,8 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
+V2 total: 12 violation kinds (6 from V1 + 6 additional).
+
 ## Test support
 
 The `test_support` feature flag exposes builder fixtures:

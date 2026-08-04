@@ -141,15 +141,21 @@ flag removes config directory.
 
 ## CI
 
-No `.github/workflows/*.yml` files currently exist. Local verification via
-`check-local.sh` is the source of truth. When CI is added, it should run
-fmt, clippy, test, doc, and native collector tests on Linux/macOS/Windows.
+GitHub Actions CI (`.github/workflows/ci.yml`) runs on push to `main` and
+pull requests:
+
+- **Linux**: fmt, clippy, test, doc, native collector smoke
+- **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
+- **Windows**: native workspace check, client tests, collector tests, service-manager tests, foreground v2 smoke
+- **MSRV**: compilation check with Rust 1.75
+
+Local verification via `check-local.sh` is the source of truth for pre-commit checks.
 
 ## Build configuration
 
 **`Cargo.toml`** (workspace root):
 - Three members: `gregg-protocol`, `greggd`, `gregg`
-- Version: `1.0.1`, edition 2021, MSRV 1.75
+- Version: `1.0.2`, edition 2021, MSRV 1.75
 - Release profile: thin LTO, 1 codegen unit, strip symbols
 
 **`deny.toml`** (cargo-deny):
