@@ -82,7 +82,7 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 - **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` in `src/main.rs`
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
-- **Worker regression tests:** Bounded synthetic loopback tests in `gregg` crate for EggPool contract
+- **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by external runner scripts
 
 ## CI
 
