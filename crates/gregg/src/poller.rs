@@ -931,7 +931,11 @@ mod tests {
 
     #[tokio::test]
     async fn array_instead_of_object() {
-        let url = mock_server(b"[1, 2, 3]".to_vec(), "200 OK").await;
+        let url = mock_server_v1_v2(
+            Some((b"[1, 2, 3]".to_vec(), "200 OK".to_string())),
+            (b"should not reach".to_vec(), "200 OK".to_string()),
+        )
+        .await;
         let ep = endpoint_for(&url);
         let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
