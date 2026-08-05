@@ -1,6 +1,6 @@
 # Phase 65: proportionate verification and footprint cleanup
 
-Status: implementation complete; pending hosted CI closure.
+Status: completed. Ordinary CI run `30964819950` passed at implementation SHA `aaf0cab`.
 
 ## Objective
 
@@ -137,12 +137,12 @@ Do not call the release mode mandatory for every commit or pull request.
 
 ### Workstream A acceptance criteria
 
-- [ ] Default Unix check runs exactly format plus workspace tests.
-- [ ] Default PowerShell check has equivalent behavior.
-- [ ] Native collector tests are not repeated after workspace tests.
-- [ ] Documentation and Clippy move to release mode or direct manual commands.
-- [ ] Release mode retains existing bounded package/install/publish-dry-run checks.
-- [ ] No third validation tier or evidence output is introduced.
+- [x] Default Unix check runs exactly format plus workspace tests.
+- [x] Default PowerShell check has equivalent behavior.
+- [x] Native collector tests are not repeated after workspace tests.
+- [x] Documentation and Clippy move to release mode or direct manual commands.
+- [x] Release mode retains existing bounded package/install/publish-dry-run checks.
+- [x] No third validation tier or evidence output is introduced.
 
 ## Workstream B: simplify the ordinary CI workflow
 
@@ -235,12 +235,12 @@ It must not gain:
 
 ### Workstream B acceptance criteria
 
-- [ ] Linux no longer builds docs or repeats collector tests.
-- [ ] macOS Intel and Apple Silicon native checks remain.
-- [ ] Windows uses one consolidated all-target workspace test, plus at most one narrowly required helper command.
-- [ ] MSRV remains one compile-only job.
-- [ ] CI remains one read-only workflow with no publishing or artifacts.
-- [ ] The workflow is shorter in commands than the current workflow.
+- [x] Linux no longer builds docs or repeats collector tests.
+- [x] macOS Intel and Apple Silicon native checks remain.
+- [x] Windows uses one consolidated all-target workspace test, plus at most one narrowly required helper command.
+- [x] MSRV remains one compile-only job.
+- [x] CI remains one read-only workflow with no publishing or artifacts.
+- [x] The workflow is shorter in commands than the current workflow.
 
 ## Workstream C: remove test-only Tokio support from production dependencies
 
@@ -273,10 +273,10 @@ cargo build --release -p gregg
 
 ### Workstream C acceptance criteria
 
-- [ ] Normal `gregg` Tokio features do not include `test-util`.
-- [ ] Paused-time tests still compile and pass.
-- [ ] No new test utility crate is added.
-- [ ] Release client behavior is unchanged.
+- [x] Normal `gregg` Tokio features do not include `test-util`.
+- [x] Paused-time tests still compile and pass.
+- [x] No new test utility crate is added.
+- [x] Release client behavior is unchanged.
 
 ## Workstream D: evaluate and adopt a current-thread client runtime
 
@@ -331,10 +331,10 @@ If size increases or a platform/runtime regression appears, revert this subchang
 
 ### Workstream D acceptance criteria
 
-- [ ] Client runtime is current-thread, or the attempted change is explicitly reverted with the measured reason recorded.
-- [ ] Endpoint concurrency behavior remains bounded and functional.
-- [ ] EggPool and terminal cancellation behavior remains functional.
-- [ ] No runtime abstraction layer is added.
+- [x] Client runtime is current-thread, or the attempted change is explicitly reverted with the measured reason recorded.
+- [x] Endpoint concurrency behavior remains bounded and functional.
+- [x] EggPool and terminal cancellation behavior remains functional.
+- [x] No runtime abstraction layer is added.
 
 ## Workstream E: measure binary size without creating a size program
 
@@ -384,10 +384,10 @@ Do not:
 
 ### Workstream E acceptance criteria
 
-- [ ] Baseline and final release byte sizes are recorded concisely.
-- [ ] No permanent benchmark/evidence artifact is added.
-- [ ] Retained client footprint changes do not increase `gregg` size.
-- [ ] No core dependency replacement or feature loss occurs.
+- [x] Baseline and final release byte sizes are recorded concisely.
+- [x] No permanent benchmark/evidence artifact is added.
+- [x] Retained client footprint changes do not increase `gregg` size.
+- [x] No core dependency replacement or feature loss occurs.
 
 ## Workstream F: remove verification documentation drift
 
@@ -416,10 +416,10 @@ Do not rewrite architecture documents unrelated to validation or runtime feature
 
 ### Workstream F acceptance criteria
 
-- [ ] Active documentation lists commands that exist.
-- [ ] No active document claims docs or duplicate native tests run in ordinary CI.
-- [ ] Release remains manual.
-- [ ] Completed historical plan text is not broadly rewritten.
+- [x] Active documentation lists commands that exist.
+- [x] No active document claims docs or duplicate native tests run in ordinary CI.
+- [x] Release remains manual.
+- [x] Completed historical plan text is not broadly rewritten.
 
 ## Expected files
 
@@ -476,35 +476,42 @@ One ordinary CI run at the final implementation SHA or a source-equivalent desce
 
 ### Local verification
 
-- [ ] Default Unix script runs only format and workspace tests.
-- [ ] Default PowerShell script is equivalent.
-- [ ] Release preflight retains bounded manual release checks.
-- [ ] No collector test is repeated in the default path.
+- [x] Default Unix script runs only format and workspace tests.
+- [x] Default PowerShell script is equivalent.
+- [x] Release preflight retains bounded manual release checks.
+- [x] No collector test is repeated in the default path.
 
 ### CI
 
-- [ ] Linux runs format, Clippy, and full workspace tests without docs or duplicate collector tests.
-- [ ] macOS Intel and Apple Silicon native coverage remains.
-- [ ] Windows test commands are consolidated.
-- [ ] Rust 1.75 remains compile-checked once.
-- [ ] CI remains read-only, nonpublishing, artifact-free, and one workflow.
+- [x] Linux runs format, Clippy, and full workspace tests without docs or duplicate collector tests.
+- [x] macOS Intel and Apple Silicon native coverage remains.
+- [x] Windows test commands are consolidated.
+- [x] Rust 1.75 remains compile-checked once.
+- [x] CI remains read-only, nonpublishing, artifact-free, and one workflow.
 
 ### Footprint
 
-- [ ] Tokio `test-util` is dev-only.
-- [ ] The current-thread runtime is retained only if behavior and size criteria pass.
-- [ ] Baseline/final binary sizes are recorded without a new artifact.
-- [ ] No core dependency is replaced.
-- [ ] No product feature or supported platform is removed.
+- [x] Tokio `test-util` is dev-only.
+- [x] The current-thread runtime is retained only if behavior and size criteria pass.
+- [x] Baseline/final binary sizes are recorded without a new artifact.
+- [x] No core dependency is replaced.
+- [x] No product feature or supported platform is removed.
 
 ### Closure
 
-- [ ] Phase 64 regressions remain in the normal test suite.
-- [ ] Default local check passes.
-- [ ] Manual release preflight passes once.
-- [ ] One ordinary CI run passes.
-- [ ] Roadmap 063, Phase 65, and `plans/README.md` are updated truthfully.
-- [ ] No follow-up evidence or CI-polish phase is created unless a concrete defect remains.
+- [x] Phase 64 regressions remain in the normal test suite.
+- [x] Default local check passes.
+- [x] Manual release preflight passes once.
+- [x] One ordinary CI run passes.
+- [x] Roadmap 063, Phase 65, and `plans/README.md` are updated truthfully.
+- [x] No follow-up evidence or CI-polish phase is created unless a concrete defect remains.
+
+### Closure record
+
+Local default and release preflight checks passed. The `gregg` release binary
+measured 4,397,048 bytes before and after the retained Tokio/runtime changes;
+`greggd` measured 2,628,080 bytes both times. Ordinary CI run `30964819950`
+passed Linux, Windows, macOS arm64, macOS Intel, and Rust 1.75 jobs.
 
 ## Handoff notes
 

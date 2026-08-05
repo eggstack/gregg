@@ -1,6 +1,6 @@
 # Roadmap: narrow correctness and simplification pass
 
-Status: Phase 64 completed; Phase 65 implementation complete pending hosted CI closure.
+Status: Phase 65 completed; ordinary CI run 30964819950 passed at implementation SHA `aaf0cab`.
 
 ## Purpose
 
@@ -214,19 +214,19 @@ Record file sizes for the two release binaries before and after retained footpri
 
 This roadmap is complete when:
 
-- [ ] Windows v2 stale snapshots use the configured age policy correctly.
-- [ ] Endpoint responses are parsed only as the schema expected for that endpoint.
-- [ ] v1 fallback remains 404-only and is regression-tested.
-- [ ] `lock_helper` is absent from normal package/install output.
-- [ ] unreachable config-reload machinery is removed or a production caller is documented and the deletion is explicitly skipped.
-- [ ] active documentation matches implemented platform capabilities and route behavior.
-- [ ] the default local check no longer repeats collector tests after workspace tests.
-- [ ] ordinary CI contains no duplicated native reruns or release/publish behavior.
-- [ ] native Windows and macOS source truth remains represented.
-- [ ] production Tokio features exclude test-only support.
-- [ ] any current-thread runtime change is supported by focused tests and non-regressing size measurements.
-- [ ] the Rust 1.75 compatibility policy is unchanged.
-- [ ] no new product scope, workflow, evidence system, or generalized framework was added.
+- [x] Windows v2 stale snapshots use the configured age policy correctly.
+- [x] Endpoint responses are parsed only as the schema expected for that endpoint.
+- [x] v1 fallback remains 404-only and is regression-tested.
+- [x] `lock_helper` is absent from normal package/install output.
+- [x] unreachable config-reload machinery is removed or a production caller is documented and the deletion is explicitly skipped.
+- [x] active documentation matches implemented platform capabilities and route behavior.
+- [x] the default local check no longer repeats collector tests after workspace tests.
+- [x] ordinary CI contains no duplicated native reruns or release/publish behavior.
+- [x] native Windows and macOS source truth remains represented.
+- [x] production Tokio features exclude test-only support.
+- [x] any current-thread runtime change is supported by focused tests and non-regressing size measurements.
+- [x] the Rust 1.75 compatibility policy is unchanged.
+- [x] no new product scope, workflow, evidence system, or generalized framework was added.
 
 ## Handoff guidance
 
