@@ -227,10 +227,10 @@ Push the final implementation and require one ordinary existing CI run. Linux ge
 - [x] `./scripts/check-local.sh` passes.
 - [x] One `./scripts/check-local.sh --release` run passes.
 - [x] One ordinary cross-platform CI run passes at the final implementation SHA or a source-equivalent plan-only descendant.
-- [ ] Active documentation and Plans 066-071 describe implemented reality.
-- [ ] CI remains one read-only, nonpublishing, artifact-free workflow.
-- [ ] Release remains manual.
-- [ ] No evidence bundle or closure-only follow-up phase is created.
+- [x] Active documentation and Plans 066-071 describe implemented reality.
+- [x] CI remains one read-only, nonpublishing, artifact-free workflow.
+- [x] Release remains manual.
+- [x] No evidence bundle or closure-only follow-up phase is created.
 
 ## Closure record template
 
@@ -257,15 +257,15 @@ Do not create a separate evidence file.
 
 ## Completion
 
-Implementation SHA: `a53542b1f04732888cd8a4f0812fa1d2c0dac3bb`
+Implementation SHA: `a53542b7bd5e74b68726191074500aa1ceb6a6d9`
 Host target and rustc: `aarch64-unknown-linux-gnu`, `rustc 1.97.1 (8bab26f4f 2026-07-14)`
 Baseline gregg bytes: `4,331,512`
 Final gregg bytes: `3,478,400`
 Baseline greggd bytes: `2,497,000`
 Final greggd bytes: `1,972,672`
-Reqwest feature change: no manifest change required; production source uses
-bounded streaming and direct `serde_json`, and the manifest already declares
-only `rustls-tls` and `stream`.
+Reqwest feature change: the unused `json` feature was removed from the
+planning baseline; production source uses bounded streaming and direct
+`serde_json`, and the final manifest declares only `rustls-tls` and `stream`.
 panic=abort: retained; no unwind-dependent production behavior was found,
 ordinary tests remain on the normal test profile, release help and loopback
 smokes passed, and both binaries decreased.

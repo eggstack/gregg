@@ -17,17 +17,17 @@ Local tests are the primary development path. The one existing GitHub Actions wo
 
 ## Active roadmap
 
-[`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) implemented its original corrective phases through Plan 071. [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) is the sole active follow-up. It corrects the Windows SCM runtime boundary and reconciles the existing closure records without reopening drive metrics, server state, client scheduling, EggPool behavior, or footprint work.
+[`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) and Plans 067-072 are complete. Plan 072 corrected the Windows SCM runtime boundary and reconciled the existing closure records without reopening drive metrics, server state, client scheduling, EggPool behavior, or footprint work.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | implementation complete through 071; final closure pending 072 |
+| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | complete through 072 |
 | [`067-truthful-drive-capacity-semantics.md`](067-truthful-drive-capacity-semantics.md) | Add additive optional v2 availability, distinguish total-free from caller-available space on all platforms, and preserve old-daemon compatibility | complete |
 | [`068-coherent-daemon-state-and-health.md`](068-coherent-daemon-state-and-health.md) | Publish one coherent server-state generation and make v1/v2 status and health semantics consistent, including Windows v2-only operation | complete |
-| [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Fix implicit/default config mutation, keep exit/logging at the binary boundary, make exit codes truthful, and restore an omitted scheduler test | implementation complete; Windows service runtime boundary correction owned by 072 |
+| [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Fix implicit/default config mutation, keep exit/logging at the binary boundary, make exit codes truthful, and restore an omitted scheduler test | complete; service-runtime follow-up corrected by 072 |
 | [`070-bounded-client-async-simplification.md`](070-bounded-client-async-simplification.md) | Independently evaluate scheduler and EggPool worker simplification under strict retain-only-if-smaller behavior-preserving gates | complete; no change |
-| [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe feature/profile changes and close once through the existing local preflight and ordinary CI | implementation and hosted verification complete; record corrections owned by 072 |
-| [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Ensure foreground and Windows SCM modes each own one nonblocking runtime, then correct Plans 066/069/071 and the index in place | planned; active |
+| [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe feature/profile changes and close once through the existing local preflight and ordinary CI | complete; records corrected by 072 |
+| [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Ensure foreground and Windows SCM modes each own one nonblocking runtime, then correct Plans 066/069/071 and the index in place | complete |
 
 Dependency order:
 

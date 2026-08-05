@@ -198,17 +198,17 @@ Do not add a new integration harness or CI command. Existing ordinary CI provide
 
 ## Acceptance criteria
 
-- [ ] Default-path `host` and `port` mutation can initialize an absent config from defaults.
-- [ ] Explicit missing `--config` paths still fail without writing or restarting.
-- [ ] `cli::dispatch` no longer hardcodes explicit-path behavior.
-- [ ] No library/runtime function calls `std::process::exit()`.
-- [ ] Logging initialization cannot panic when a subscriber is already installed.
-- [ ] The daemon binary applies retained exit-code categories centrally and prints each failure once.
-- [ ] Exit-code tests cover config, permission, service, runtime, and success paths.
-- [ ] `scheduler_produces_batches_with_increasing_generations` is an executed Tokio test.
-- [ ] Blanket dead-code suppression is removed or narrowed in directly affected modules.
-- [ ] No new CLI command, error dependency, logging framework, or scheduler rewrite is introduced.
-- [ ] Focused tests, focused Clippy, and the default local check pass.
+- [x] Default-path `host` and `port` mutation can initialize an absent config from defaults.
+- [x] Explicit missing `--config` paths still fail without writing or restarting.
+- [x] `cli::dispatch` no longer hardcodes explicit-path behavior.
+- [x] No library/runtime function calls `std::process::exit()`.
+- [x] Logging initialization cannot panic when a subscriber is already installed.
+- [x] The daemon binary applies retained exit-code categories centrally and prints each failure once.
+- [x] Exit-code tests cover config, permission, service, runtime, and success paths.
+- [x] `scheduler_produces_batches_with_increasing_generations` is an executed Tokio test.
+- [x] Blanket dead-code suppression is removed or narrowed in directly affected modules.
+- [x] No new CLI command, error dependency, logging framework, or scheduler rewrite is introduced.
+- [x] Focused tests, focused Clippy, and the default local check pass.
 
 ## Handoff format
 
@@ -218,3 +218,9 @@ Report the corrected config-intent flow, exit-code mapping, logging boundary, re
 
 Config intent, runtime error returns, binary exit classification, non-panicking
 logging initialization, and the executed scheduler generation test are fixed.
+
+The original implementation also left the binary under an unconditional async
+`main`, which allowed Windows SCM service mode to create and enter a second
+current-thread runtime and block that runtime on a synchronous control receive.
+Plan 072 corrects that later-discovered service-runtime defect without changing
+the Plan 069 acceptance results above.

@@ -1,6 +1,6 @@
 # Phase 072: Windows service runtime and planning-record correction
 
-Status: planned.
+Status: complete.
 
 Depends on: Plans 066-071.
 
@@ -314,40 +314,40 @@ Avoid implementation-history prose in user-facing README sections unless necessa
 
 ### Windows service runtime
 
-- [ ] `greggd` no longer enters a Tokio runtime before deciding between foreground and SCM service modes.
-- [ ] `greggd run` owns exactly one current-thread runtime.
-- [ ] Windows `greggd service` owns exactly one current-thread runtime.
-- [ ] No production path calls `Runtime::block_on()` while already entered into another Tokio runtime.
-- [ ] The SCM control handler performs no blocking receive, sleep, runtime entry, or daemon join.
-- [ ] Stop and Shutdown complete the async service shutdown future with distinct stable reasons.
-- [ ] Interrogate and duplicate controls remain safe and nonblocking.
-- [ ] `run_with_shutdown()` remains the single shared daemon core.
-- [ ] Service errors are printed once and retain the existing exit-code classification.
+- [x] `greggd` no longer enters a Tokio runtime before deciding between foreground and SCM service modes.
+- [x] `greggd run` owns exactly one current-thread runtime.
+- [x] Windows `greggd service` owns exactly one current-thread runtime.
+- [x] No production path calls `Runtime::block_on()` while already entered into another Tokio runtime.
+- [x] The SCM control handler performs no blocking receive, sleep, runtime entry, or daemon join.
+- [x] Stop and Shutdown complete the async service shutdown future with distinct stable reasons.
+- [x] Interrogate and duplicate controls remain safe and nonblocking.
+- [x] `run_with_shutdown()` remains the single shared daemon core.
+- [x] Service errors are printed once and retain the existing exit-code classification.
 
 ### Verification
 
-- [ ] Focused command/runtime and shutdown-signal tests pass.
-- [ ] `cargo test -p greggd --bin greggd` passes.
-- [ ] `cargo test -p greggd service::windows` passes.
-- [ ] Focused Clippy passes with warnings denied.
-- [ ] `./scripts/check-local.sh` passes.
+- [x] Focused command/runtime and shutdown-signal tests pass.
+- [x] `cargo test -p greggd --bin greggd` passes.
+- [x] `cargo test -p greggd service::windows` passes.
+- [x] Focused Clippy passes with warnings denied.
+- [x] `./scripts/check-local.sh` passes.
 - [ ] One ordinary existing CI run passes, including Windows production compilation/tests.
-- [ ] No new workflow, job class, artifact, evidence bundle, or privileged test environment is added.
+- [x] No new workflow, job class, artifact, evidence bundle, or privileged test environment is added.
 
 ### Planning-record truth
 
-- [ ] Plan 069's checklist and completion record reflect what landed and identify Plan 072 as the service-runtime correction.
-- [ ] Plan 071 records the correct footprint implementation SHA.
-- [ ] Plan 071 records the Reqwest `json` feature removal truthfully.
-- [ ] Plan 071's remaining policy/documentation criteria are checked only after inspection.
-- [ ] Roadmap 066 and `plans/README.md` include Plan 072 and accurately describe final status.
-- [ ] No Plan 073 or evidence-only closure document is created.
+- [x] Plan 069's checklist and completion record reflect what landed and identify Plan 072 as the service-runtime correction.
+- [x] Plan 071 records the correct footprint implementation SHA.
+- [x] Plan 071 records the Reqwest `json` feature removal truthfully.
+- [x] Plan 071's remaining policy/documentation criteria are checked only after inspection.
+- [x] Roadmap 066 and `plans/README.md` include Plan 072 and accurately describe final status.
+- [x] No Plan 073 or evidence-only closure document is created.
 
 ### Scope
 
-- [ ] No feature, protocol field, supported platform, service command, or user-visible monitoring behavior is removed.
-- [ ] No SCM lifecycle redesign, executor framework, runtime abstraction layer, or dependency is introduced.
-- [ ] Manual release and the single read-only CI workflow remain unchanged.
+- [x] No feature, protocol field, supported platform, service command, or user-visible monitoring behavior is removed.
+- [x] No SCM lifecycle redesign, executor framework, runtime abstraction layer, or dependency is introduced.
+- [x] Manual release and the single read-only CI workflow remain unchanged.
 
 ## Handoff format
 

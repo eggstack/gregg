@@ -71,6 +71,9 @@ cargo test -p greggd --all-features -- <test_name>
 - Daemon runtime and CLI library paths return errors; only the `greggd` binary
   boundary prints diagnostics, initializes tracing with `try_init()`, and maps
   errors to exit codes.
+- The binary selects command mode before creating Tokio. Foreground `run` and
+  Windows SCM `service` each own one current-thread runtime; SCM callbacks must
+  signal shutdown without blocking or entering a runtime.
 
 ## Workspace structure
 

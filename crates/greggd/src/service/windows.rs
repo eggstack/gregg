@@ -20,7 +20,13 @@
 //! from the real SCM.
 
 #[cfg(any(test, target_os = "windows"))]
+use std::sync::{Arc, Mutex};
+
+#[cfg(any(test, target_os = "windows"))]
 use std::time::Duration;
+
+#[cfg(any(test, target_os = "windows"))]
+use tokio::sync::oneshot;
 
 #[cfg(any(test, target_os = "windows"))]
 use super::{ServiceError, ServiceManager, ServiceState};
@@ -204,6 +210,24 @@ fn map_service_state(state: windows_service::service::ServiceState) -> ServiceSt
 
 // ── SCM service entry point (Windows only) ────────────────────────────────
 
+#[cfg(any(test, target_os = "windows"))]
+type ShutdownSender = Arc<Mutex<Option<oneshot::Sender<&'static str>>>>;
+
+#[cfg(any(test, target_os = "windows"))]
+fn shutdown_channel() -> (ShutdownSender, oneshot::Receiver<&'static str>) {
+    let (sender, receiver) = oneshot::channel();
+    (Arc::new(Mutex::new(Some(sender))), receiver)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn send_shutdown(sender: &ShutdownSender, reason: &'static str) {
+    if let Ok(mut sender) = sender.lock() {
+        if let Some(sender) = sender.take() {
+            let _ = sender.send(reason);
+        }
+    }
+}
+
 /// Windows SCM service entry point.
 ///
 /// Called when `greggd.exe` is invoked by the SCM with the `service`
@@ -223,17 +247,22 @@ fn map_service_state(state: windows_service::service::ServiceState) -> ServiceSt
 /// Returns an error if the service fails to start.
 #[cfg(target_os = "windows")]
 pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
-    use std::sync::mpsc;
     use windows_service::service::{ServiceControl, ServiceState as WsState};
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 
-    // Channel for SCM control events.
-    let (tx, rx) = mpsc::channel::<ServiceControl>();
+    // The handler only sends into this one-shot signal. It never waits for the
+    // daemon, so SCM callbacks remain nonblocking.
+    let (shutdown_sender, shutdown_receiver) = shutdown_channel();
 
     let status_handle =
         service_control_handler::register(SERVICE_NAME, move |control| match control {
             ServiceControl::Stop | ServiceControl::Shutdown => {
-                let _ = tx.send(control);
+                let reason = match control {
+                    ServiceControl::Stop => "SCM_STOP",
+                    ServiceControl::Shutdown => "SCM_SHUTDOWN",
+                    _ => unreachable!(),
+                };
+                send_shutdown(&shutdown_sender, reason);
                 ServiceControlHandlerResult::NoError
             }
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
@@ -259,13 +288,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Build the core daemon shutdown future from the SCM control receiver.
-    let shutdown_future = async move {
-        match rx.recv() {
-            Ok(ServiceControl::Stop) => "SCM_STOP",
-            Ok(ServiceControl::Shutdown) => "SCM_SHUTDOWN",
-            _ => "SCM_UNKNOWN",
-        }
-    };
+    let shutdown_future = async move { shutdown_receiver.await.unwrap_or("SCM_CHANNEL_CLOSED") };
 
     // Report RUNNING before entering the daemon loop.
     update_status(status_handle, WsState::Running, 0, Duration::from_secs(10));
@@ -286,10 +309,7 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     // Report STOPPED.
     let (exit_code, win_state) = match &result {
         Ok(()) => (0, WsState::Stopped),
-        Err(e) => {
-            eprintln!("service exited with error: {e}");
-            (1, WsState::Stopped)
-        }
+        Err(_) => (1, WsState::Stopped),
     };
 
     update_status(status_handle, win_state, exit_code, Duration::from_secs(5));
@@ -704,6 +724,33 @@ mod tests {
         let (mgr, _mock_ref) = manager_with_mock(mock);
         let debug = format!("{mgr:?}");
         assert!(debug.contains("WindowsServiceManager"));
+    }
+
+    // --- Nonblocking SCM shutdown signal tests ---
+
+    #[tokio::test]
+    async fn stop_completes_the_async_shutdown_signal_once() {
+        let (sender, receiver) = shutdown_channel();
+        send_shutdown(&sender, "SCM_STOP");
+        send_shutdown(&sender, "SCM_SHUTDOWN");
+        assert_eq!(receiver.await, Ok("SCM_STOP"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_completes_the_async_shutdown_signal() {
+        let (sender, receiver) = shutdown_channel();
+        send_shutdown(&sender, "SCM_SHUTDOWN");
+        assert_eq!(receiver.await, Ok("SCM_SHUTDOWN"));
+    }
+
+    #[tokio::test]
+    async fn dropped_shutdown_sender_has_a_stable_reason() {
+        let (sender, receiver) = shutdown_channel();
+        drop(sender);
+        assert_eq!(
+            receiver.await.unwrap_or("SCM_CHANNEL_CLOSED"),
+            "SCM_CHANNEL_CLOSED"
+        );
     }
 
     // --- ServiceError display tests ---

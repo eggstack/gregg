@@ -13,8 +13,9 @@ The work is ordered so correctness lands before optional cleanup:
   -> 067 truthful drive used/available capacity
   -> 068 coherent daemon published state and health
   -> 069 daemon CLI/runtime and test correctness
-  -> 070 bounded client asynchronous simplification
-  -> 071 measured footprint and lightweight closure
+-> 070 bounded client asynchronous simplification
+-> 071 measured footprint and lightweight closure
+-> 072 Windows service runtime and record correction
 ```
 
 Phases 067 and 068 may be implemented independently, but Phase 071 closes only after all retained phases are complete. Phase 070 is conditional: retain a rewrite only when it demonstrably reduces production code and preserves behavior. A documented no-change result is acceptable.
@@ -155,6 +156,8 @@ One ordinary hosted CI run at the final implementation SHA is sufficient cross-p
 - [x] Binary-size changes are measured and retained only when non-regressing and behavior-preserving.
 - [x] Default local checks, one manual release preflight, and one ordinary cross-platform CI run pass.
 - [x] No new product scope, release automation, evidence system, or permanent size gate is added.
+- [x] Plan 072 corrected Windows SCM runtime ownership, nonblocking shutdown
+      signaling, duplicate diagnostics, and the closure records.
 
 ## Expected plan files
 
@@ -170,7 +173,7 @@ plans/README.md
 
 ## Closure
 
-Roadmap 066 is complete because Plans 067-071 implemented and verified the
+Roadmap 066 is complete because Plans 067-072 implemented and verified the
 correctness criteria, not merely because the work was planned. Plan 070
 retained no scheduler or EggPool rewrite, and Plan 071 records the measured
 release-profile decision and final verification. Manual release and the

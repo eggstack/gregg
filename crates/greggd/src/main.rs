@@ -18,10 +18,9 @@ type NativeCollector = greggd::collector::macos::MacOsCollector;
 #[cfg(target_os = "windows")]
 type NativeCollector = greggd::collector::windows::WindowsCollector;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     init_logging();
-    let code = match run_main().await {
+    let code = match run_main() {
         Ok(()) => greggd::cli::ExitCode::Success,
         Err(error) => {
             eprintln!("error: {error}");
@@ -31,7 +30,7 @@ async fn main() {
     std::process::exit(code as i32);
 }
 
-async fn run_main() -> Result<(), Box<dyn Error>> {
+fn run_main() -> Result<(), Box<dyn Error>> {
     let cli = greggd::cli::Cli::parse();
 
     let config_was_explicit = cli.config.is_some();
@@ -41,7 +40,7 @@ async fn run_main() -> Result<(), Box<dyn Error>> {
         greggd::cli::Command::Run => {
             let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
             let collector = NativeCollector::new(None)?;
-            greggd::run::run(collector, config).await
+            build_runtime()?.block_on(greggd::run::run(collector, config))
         }
         #[cfg(target_os = "windows")]
         greggd::cli::Command::Service => greggd::service::windows::run_service(),
@@ -58,6 +57,17 @@ async fn run_main() -> Result<(), Box<dyn Error>> {
             )
         }
     }
+}
+
+fn build_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
+#[cfg(test)]
+fn command_requires_foreground_runtime(command: &greggd::cli::Command) -> bool {
+    matches!(command, greggd::cli::Command::Run)
 }
 
 fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
@@ -131,5 +141,31 @@ mod tests {
             greggd::cli::ExitCode::ConfigError
         );
         assert_eq!(greggd::cli::ExitCode::Success as i32, 0);
+    }
+
+    #[test]
+    fn runtime_helper_owns_an_immediately_ready_future() {
+        let runtime = build_runtime().expect("current-thread runtime should build");
+        assert_eq!(runtime.block_on(async { 42 }), 42);
+    }
+
+    #[test]
+    fn only_foreground_run_requires_a_runtime_at_dispatch_boundary() {
+        assert!(command_requires_foreground_runtime(
+            &greggd::cli::Command::Run
+        ));
+        assert!(!command_requires_foreground_runtime(
+            &greggd::cli::Command::Start
+        ));
+        assert!(!command_requires_foreground_runtime(
+            &greggd::cli::Command::Host {
+                address: "127.0.0.1".parse().expect("valid test address")
+            }
+        ));
+        // Windows service mode owns its runtime inside run_service(), after
+        // this synchronous dispatch boundary has selected the command.
+        assert!(!command_requires_foreground_runtime(
+            &greggd::cli::Command::Service
+        ));
     }
 }

@@ -66,6 +66,18 @@ The `run()` function in `run.rs` wires everything together:
 Graceful shutdown with a 10-second deadline. Tasks that don't finish are
 aborted.
 
+### Runtime ownership and Windows SCM shutdown
+
+The `greggd` binary dispatches synchronously before creating Tokio. Foreground
+`run` creates exactly one current-thread runtime at the binary boundary;
+Windows `service` is selected there and creates exactly one current-thread
+runtime inside its SCM entry path. No service path enters or blocks a second
+runtime. SCM Stop and Shutdown callbacks only consume a shared one-shot sender;
+the async receiver supplies a stable reason to the shared
+`run_with_shutdown()` supervision core. Interrogate succeeds without stopping
+the daemon, duplicate stop controls are harmless, and service errors return to
+the executable for one diagnostic and the existing exit-code classification.
+
 ### HTTP endpoints
 
 | Route | Handler | Response |

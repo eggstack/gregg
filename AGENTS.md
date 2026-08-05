@@ -71,6 +71,10 @@ cargo test -p greggd --all-features -- <test_name>
 - Reusable `greggd` library/runtime code must return errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.
+- `greggd` dispatches synchronously before entering Tokio: foreground `run` and
+  Windows SCM `service` each own exactly one current-thread runtime. SCM Stop
+  and Shutdown callbacks only send a nonblocking one-shot signal into the
+  shared `run_with_shutdown()` core.
 - **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
 
 ## Schema protocol

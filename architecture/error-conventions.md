@@ -28,6 +28,11 @@ failure once and classifies it as configuration (`1`), service (`2`), runtime
 boundary with a fallible subscriber setup, so embedding and tests remain safe
 when a global subscriber already exists.
 
+Windows SCM service callbacks follow the same boundary: they report service
+status and return runtime errors, but do not print diagnostics. Stop and
+Shutdown are forwarded to the shared daemon runtime through a nonblocking
+one-shot signal.
+
 The protocol crate's own validation surface is structured: a `validate()`
 method returns a list of violations rather than panicking or wrapping serde
 deserialization with opaque checks. This keeps forward compatibility
