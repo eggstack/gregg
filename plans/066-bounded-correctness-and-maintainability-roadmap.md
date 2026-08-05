@@ -143,18 +143,18 @@ One ordinary hosted CI run at the final implementation SHA is sufficient cross-p
 
 ## Roadmap acceptance criteria
 
-- [ ] Explicit drive availability is truthful on Linux, macOS, and Windows while old v2 payloads remain readable.
-- [ ] Drive aggregation does not assume `used + available == total` when platform reservations or quotas make that false.
-- [ ] Daemon responses are published from one coherent generation of state.
-- [ ] Windows v2-only operation cannot produce a successful v1 health response with a non-ready body.
-- [ ] Implicit default-config mutation and explicit missing-config behavior are both correct and tested.
-- [ ] Runtime/library functions return errors instead of terminating the process.
-- [ ] Existing exit-code behavior is either centrally implemented or deliberately simplified; no parallel error framework is introduced.
-- [ ] The omitted scheduler test is executed and blanket dead-code suppression is narrowed where practical.
-- [ ] Any retained scheduler or EggPool rewrite demonstrably reduces code and preserves behavior; otherwise no rewrite is made.
-- [ ] Binary-size changes are measured and retained only when non-regressing and behavior-preserving.
-- [ ] Default local checks, one manual release preflight, and one ordinary cross-platform CI run pass.
-- [ ] No new product scope, release automation, evidence system, or permanent size gate is added.
+- [x] Explicit drive availability is truthful on Linux, macOS, and Windows while old v2 payloads remain readable.
+- [x] Drive aggregation does not assume `used + available == total` when platform reservations or quotas make that false.
+- [x] Daemon responses are published from one coherent generation of state.
+- [x] Windows v2-only operation cannot produce a successful v1 health response with a non-ready body.
+- [x] Implicit default-config mutation and explicit missing-config behavior are both correct and tested.
+- [x] Runtime/library functions return errors instead of terminating the process.
+- [x] Existing exit-code behavior is either centrally implemented or deliberately simplified; no parallel error framework is introduced.
+- [x] The omitted scheduler test is executed and blanket dead-code suppression is narrowed where practical.
+- [x] Any retained scheduler or EggPool rewrite demonstrably reduces code and preserves behavior; otherwise no rewrite is made.
+- [x] Binary-size changes are measured and retained only when non-regressing and behavior-preserving.
+- [x] Default local checks, one manual release preflight, and one ordinary cross-platform CI run pass.
+- [x] No new product scope, release automation, evidence system, or permanent size gate is added.
 
 ## Expected plan files
 
@@ -167,3 +167,11 @@ plans/070-bounded-client-async-simplification.md
 plans/071-measured-footprint-and-lightweight-closure.md
 plans/README.md
 ```
+
+## Closure
+
+Roadmap 066 is complete because Plans 067-071 implemented and verified the
+correctness criteria, not merely because the work was planned. Plan 070
+retained no scheduler or EggPool rewrite, and Plan 071 records the measured
+release-profile decision and final verification. Manual release and the
+single read-only CI workflow remain unchanged.

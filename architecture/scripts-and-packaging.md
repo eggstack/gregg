@@ -156,7 +156,7 @@ nonpublishing, and artifact-free.
 **`Cargo.toml`** (workspace root):
 - Three members: `gregg-protocol`, `greggd`, `gregg`
 - Version: `1.0.2`, edition 2021, MSRV 1.75
-- Release profile: thin LTO, 1 codegen unit, strip symbols
+- Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 
 **`deny.toml`** (cargo-deny):
 - Advisory checking, license auditing, dependency bans

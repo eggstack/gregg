@@ -257,8 +257,24 @@ Do not create a separate evidence file.
 
 ## Completion
 
-Implementation SHA: final commit on `main` (see `git log -1`)
-Host: `aarch64-unknown-linux-gnu`, Rust 1.97.1. Baseline/final sizes were
-`gregg` 4,331,512 bytes and `greggd` 2,497,000 bytes. Reqwest JSON was
-removed; panic-abort produced no size change and was reverted; thin LTO was
-retained. Local release preflight passed; CI is verified after push.
+Implementation SHA: to be filled after the implementation commit
+Host target and rustc: `aarch64-unknown-linux-gnu`, `rustc 1.97.1 (8bab26f4f 2026-07-14)`
+Baseline gregg bytes: `4,331,512`
+Final gregg bytes: `3,478,400`
+Baseline greggd bytes: `2,497,000`
+Final greggd bytes: `1,972,672`
+Reqwest feature change: no manifest change required; production source uses
+bounded streaming and direct `serde_json`, and the manifest already declares
+only `rustls-tls` and `stream`.
+panic=abort: retained; no unwind-dependent production behavior was found,
+ordinary tests remain on the normal test profile, release help and loopback
+smokes passed, and both binaries decreased.
+fat LTO: retained; both binaries decreased by more than 1% from the retained
+abort-only candidate, and release builds and smokes passed on the host.
+Plan 070 scheduler: no change retained; endpoint isolation, ordering, bounded
+concurrency, cadence, and panic-to-`Cancelled` behavior remain intact.
+Plan 070 EggPool: no change retained; bounded command/result channels and
+generation checks remain the smaller behavior-preserving design.
+Default local check: pending final implementation verification
+Release preflight: pending final implementation verification
+Ordinary CI run: pending push of the final implementation

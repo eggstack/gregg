@@ -267,14 +267,18 @@ The workspace defines a release profile in `Cargo.toml`:
 
 ```toml
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "abort"
 ```
 
-This optimises for binary size and runtime performance. Thin LTO keeps
-incremental build times reasonable; `codegen-units = 1` enables better
-cross-crate optimisation; symbol stripping reduces binary size.
+This optimises release binaries for size and runtime performance. Full LTO
+enables cross-crate optimisation; `codegen-units = 1` improves the optimizer's
+view of the whole program; symbol stripping reduces binary size; and aborting
+on an unrecovered panic avoids carrying unwind support into release binaries.
+The profile is intentionally shared by both binaries and has no alternate size
+profile.
 
 ## Supply-chain policy
 

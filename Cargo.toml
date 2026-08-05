@@ -31,6 +31,7 @@ result_large_err = "allow"
 "docs.rs" = { all-features = true }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 strip = "symbols"
+panic = "abort"

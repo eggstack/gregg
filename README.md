@@ -313,3 +313,7 @@ Maintainer instructions are in [RELEASING.md](RELEASING.md).
 The pinned toolchain lives in `rust-toolchain.toml` and tracks the current
 stable Rust release. `rust-version` in every member manifest is set from the
 workspace `rust-version = "1.75"`.
+
+Release builds use one shared size-oriented profile: full LTO, one codegen
+unit, stripped symbols, and aborting panics. This is a build setting only; it
+does not remove features or change the supported platforms.
