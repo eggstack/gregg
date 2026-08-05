@@ -206,26 +206,26 @@ Push the final implementation and require one ordinary existing CI run. Linux ge
 
 ### Correctness inheritance
 
-- [ ] Plan 067 drive availability behavior and compatibility tests pass.
-- [ ] Plan 068 coherent state and Windows health behavior tests pass.
-- [ ] Plan 069 config intent, runtime boundary, exit-code, and scheduler-test corrections pass.
-- [ ] Plan 070 truthfully records retained or rejected client simplifications.
+- [x] Plan 067 drive availability behavior and compatibility tests pass.
+- [x] Plan 068 coherent state and Windows health behavior tests pass.
+- [x] Plan 069 config intent, runtime boundary, exit-code, and scheduler-test corrections pass.
+- [x] Plan 070 truthfully records retained or rejected client simplifications.
 
 ### Footprint
 
-- [ ] Fresh baseline and final byte counts are recorded for `gregg` and `greggd` on one target.
-- [ ] Reqwest production features match actual source usage.
-- [ ] `panic = "abort"` is retained only after unwind inspection, smoke checks, and non-regressing size measurement.
-- [ ] Full LTO is retained only if it meets the explicit reduction and practicality threshold; otherwise thin LTO remains.
-- [ ] No feature or supported platform is removed.
-- [ ] Rust 1.75 policy remains unchanged.
-- [ ] No permanent benchmark, size gate, alternate profile, or compression step is added.
+- [x] Fresh baseline and final byte counts are recorded for `gregg` and `greggd` on one target.
+- [x] Reqwest production features match actual source usage.
+- [x] `panic = "abort"` is retained only after unwind inspection, smoke checks, and non-regressing size measurement.
+- [x] Full LTO is retained only if it meets the explicit reduction and practicality threshold; otherwise thin LTO remains.
+- [x] No feature or supported platform is removed.
+- [x] Rust 1.75 policy remains unchanged.
+- [x] No permanent benchmark, size gate, alternate profile, or compression step is added.
 
 ### Verification and closure
 
-- [ ] Focused tests and Clippy pass.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] One `./scripts/check-local.sh --release` run passes.
+- [x] Focused tests and Clippy pass.
+- [x] `./scripts/check-local.sh` passes.
+- [x] One `./scripts/check-local.sh --release` run passes.
 - [ ] One ordinary cross-platform CI run passes at the final implementation SHA or a source-equivalent plan-only descendant.
 - [ ] Active documentation and Plans 066-071 describe implemented reality.
 - [ ] CI remains one read-only, nonpublishing, artifact-free workflow.
@@ -257,7 +257,7 @@ Do not create a separate evidence file.
 
 ## Completion
 
-Implementation SHA: to be filled after the implementation commit
+Implementation SHA: `a53542b1f04732888cd8a4f0812fa1d2c0dac3bb`
 Host target and rustc: `aarch64-unknown-linux-gnu`, `rustc 1.97.1 (8bab26f4f 2026-07-14)`
 Baseline gregg bytes: `4,331,512`
 Final gregg bytes: `3,478,400`
@@ -275,6 +275,6 @@ Plan 070 scheduler: no change retained; endpoint isolation, ordering, bounded
 concurrency, cadence, and panic-to-`Cancelled` behavior remain intact.
 Plan 070 EggPool: no change retained; bounded command/result channels and
 generation checks remain the smaller behavior-preserving design.
-Default local check: pending final implementation verification
-Release preflight: pending final implementation verification
+Default local check: passed (`./scripts/check-local.sh`)
+Release preflight: passed once (`./scripts/check-local.sh --release`)
 Ordinary CI run: pending push of the final implementation
