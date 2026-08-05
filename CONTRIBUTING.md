@@ -6,7 +6,8 @@ Thank you for considering a contribution to gregg.
 
 1. Fork the repository and create a feature branch.
 2. Ensure the pinned toolchain is installed: `rustup show`.
-3. Run the normal local validation command before submitting:
+3. Run the short routine local validation command during development and
+   before submitting:
 
 ```text
 ./scripts/check-local.sh          # Linux/macOS
@@ -14,7 +15,8 @@ Thank you for considering a contribution to gregg.
 ```
 
 4. Maintainers preparing a release should follow [RELEASING.md](RELEASING.md)
-   and use the nonpublishing `--release` / `-Release` preflight.
+   and manually run the intentionally slower nonpublishing `--release` /
+   `-Release` preflight.
 
 5. Open a pull request against `main`.
 

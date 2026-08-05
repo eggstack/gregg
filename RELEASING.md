@@ -81,8 +81,8 @@ An empty diff means the lock file is current.
 ./scripts/check-local.sh --release
 ```
 
-This runs the default fmt, clippy, test, docs, and native collector checks,
-then performs package-content checks and the installed-binary loopback smoke.
+This runs the short default fmt-and-workspace-test loop, then adds Clippy,
+documentation, package-content checks, and the installed-binary loopback smoke.
 The smoke
 installs the current checkout with `cargo install --path crates/greggd
 --locked` and uses `scripts/verify-installed-daemon.sh` to start the
@@ -262,7 +262,7 @@ Release notes must include at minimum:
 - known limitations or compatibility notes;
 - crates.io installation commands.
 
-Do not include internal evidence IDs or CI-run metadata.
+Do not include internal evidence IDs, CI-run metadata, or evidence artifacts.
 
 ## Partial failure handling
 

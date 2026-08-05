@@ -34,7 +34,7 @@ mod sustained_workload;
 
 use clap::Parser;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = cli::Cli::parse();
 

@@ -330,12 +330,18 @@ refresh intervals, and optional EggPool settings.
 - **40+ JSON/text fixture files** in `src/collector/test_fixtures/`
 - **Mock seams:** `MemorySource` (Linux), `MockNativeQueries` (macOS), `MockWindowsSource` (Windows)
 
-Run all checks with:
+Run the short routine check with:
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
+
+The manual `--release` / `-Release` preflight adds Clippy, documentation,
+package/version checks, installation smoke, and the protocol dry-run. Ordinary
+CI keeps Linux generic checks, native macOS/Windows coverage, and one
+compile-only Rust 1.75 check; it does not build docs, publish, or upload
+evidence.
 
 ---
 

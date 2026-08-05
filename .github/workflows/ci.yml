@@ -46,12 +46,6 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features
 
-      - name: Doc
-        run: cargo doc --workspace --no-deps
-
-      - name: Native Linux collector smoke
-        run: cargo test -p greggd --all-features -- collector::linux
-
   macos:
     name: macOS (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -106,20 +100,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Native workspace check
-        run: cargo check --workspace --all-targets --all-features
-
-      - name: Windows client tests
-        run: cargo test -p gregg --all-targets --all-features
-
-      - name: Windows collector tests
-        run: cargo test -p greggd --all-features -- collector::windows
-
-      - name: Windows service-manager tests
-        run: cargo test -p greggd --all-features -- service::windows
-
-      - name: Windows foreground v2 smoke
-        run: cargo test -p greggd --test windows_smoke
+      - name: Test
+        run: cargo test --workspace --all-targets --all-features
 
   msrv:
     name: MSRV (Rust 1.75)

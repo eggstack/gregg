@@ -276,13 +276,19 @@ Release preflight (nonpublishing):
 .\scripts\check-local.ps1 -Release
 ```
 
-The default local check runs `cargo fmt`, `cargo clippy`, `cargo test`,
-`cargo doc`, and the current host's native collector tests. The `--release`
-preflight adds clean-tree and version checks, package-content review, source
-installation of `greggd`, an installed-binary v2 loopback smoke, and a single
-protocol-only `cargo publish -p gregg-protocol --dry-run --locked`.
+The default local check runs only `cargo fmt --all -- --check` and
+`cargo test --workspace` for a fast routine loop. The `--release` preflight
+adds Clippy, documentation, clean-tree and version checks, package-content
+review, source installation of `greggd`, an installed-binary v2 loopback
+smoke, and a single protocol-only `cargo publish -p gregg-protocol
+--dry-run --locked`. Release preflight is manual and nonpublishing.
 Dependent-crate dry-runs remain manual until the protocol version is visible on
 crates.io.
+
+Ordinary CI runs generic Linux formatting/lint/test checks, native macOS and
+Windows checks, and one compile-only Rust 1.75 check. It does not build
+documentation, publish, or upload evidence; documentation is covered by the
+manual release preflight.
 
 Releases are published manually to crates.io and GitHub. CI never publishes.
 Maintainer instructions are in [RELEASING.md](RELEASING.md).

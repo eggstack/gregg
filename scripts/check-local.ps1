@@ -1,8 +1,8 @@
 # check-local.ps1 — local validation entry point for gregg (Windows).
 #
 # Modes:
-#   (default)   Fast developer check: fmt, clippy, test, doc, native collector.
-#   -Release    Release preflight: adds clean-tree, package/install smoke, dry-run.
+#   (default)   Fast developer check: fmt and workspace tests.
+#   -Release    Release preflight: adds lint/docs, clean-tree, package/install smoke, dry-run.
 #
 # Usage:
 #   .\scripts\check-local.ps1
@@ -179,32 +179,18 @@ stale_after_ms = 10000
 Write-Step "cargo fmt --all -- --check"
 Invoke-OrFail { cargo fmt --all -- --check }
 
-Write-Step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
-Invoke-OrFail { cargo clippy --workspace --all-targets --all-features -- -D warnings }
-
-Write-Step "cargo test --workspace --all-targets --all-features"
-Invoke-OrFail { cargo test --workspace --all-targets --all-features }
-
-Write-Step "cargo doc --workspace --no-deps"
-Invoke-OrFail { cargo doc --workspace --no-deps }
-
-# Platform-native collector tests
-if ($IsWindows -or $env:OS -eq 'Windows_NT') {
-    Write-Step "native Windows collector tests"
-    Invoke-OrFail { cargo test -p greggd --all-features -- collector::windows }
-} elseif ($IsLinux) {
-    Write-Step "native Linux collector tests"
-    Invoke-OrFail { cargo test -p greggd --all-features -- collector::linux }
-} elseif ($IsMacOS) {
-    Write-Step "native macOS collector tests"
-    Invoke-OrFail { cargo test -p greggd --all-features -- collector::macos::ffi::native_tests }
-} else {
-    Write-Host "  skipping platform-native collector tests"
-}
+Write-Step "cargo test --workspace"
+Invoke-OrFail { cargo test --workspace }
 
 # ── Release preflight ───────────────────────────────────────────────────────
 
 if ($Mode -eq 'release') {
+    Write-Step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+    Invoke-OrFail { cargo clippy --workspace --all-targets --all-features -- -D warnings }
+
+    Write-Step "cargo doc --workspace --no-deps"
+    Invoke-OrFail { cargo doc --workspace --no-deps }
+
     Write-Step "clean-tree check"
     $status = git status --porcelain
     if ($status) {

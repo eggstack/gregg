@@ -1,6 +1,6 @@
 # Roadmap: narrow correctness and simplification pass
 
-Status: Phase 64 completed; Phase 65 remains pending.
+Status: Phase 64 completed; Phase 65 implementation complete pending hosted CI closure.
 
 ## Purpose
 

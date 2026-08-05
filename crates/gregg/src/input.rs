@@ -28,7 +28,10 @@ impl EventStream {
         let shutdown_clone = shutdown.clone();
 
         let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Runtime::new().expect("failed to create tokio runtime");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("failed to create tokio runtime");
             rt.block_on(async {
                 let mut stream = crossterm::event::EventStream::new();
                 loop {

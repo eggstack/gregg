@@ -1,6 +1,6 @@
 # Phase 65: proportionate verification and footprint cleanup
 
-Status: planned.
+Status: implementation complete; pending hosted CI closure.
 
 ## Objective
 

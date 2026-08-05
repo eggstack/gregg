@@ -13,16 +13,23 @@ Use this when making code changes, adding features, or fixing bugs in any of the
 
 ## Build and verify
 
-Run before every commit:
+Routine local check:
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
-This runs in order: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`, `cargo doc --workspace --no-deps`, then platform-native collector tests.
+This runs exactly `cargo fmt --all -- --check` and `cargo test --workspace`.
+It is intentionally fast and does not repeat native collector tests.
 
-**Platform-native collector tests (run separately):**
+Run the comprehensive manual preflight before a release:
+
+The release preflight adds full Clippy, documentation, package/version checks,
+installation smoke, and the protocol-only publish dry-run. It is manual and
+nonpublishing.
+
+**Platform-native collector tests (run separately when focused coverage is needed):**
 
 ```bash
 cargo test -p greggd --all-features -- collector::linux     # Linux

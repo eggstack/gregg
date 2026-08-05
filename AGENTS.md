@@ -19,14 +19,16 @@ gregg-protocol  ◄── gregg       (client, TUI, polling)
 
 ## Build and verify
 
-**Fast local check (run before every commit):**
+**Fast local check (routine development loop):**
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
-This runs in order: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`, `cargo doc --workspace --no-deps`, then platform-native collector tests.
+This runs exactly `cargo fmt --all -- --check` followed by `cargo test --workspace`.
+It is the short routine loop and does not repeat native tests, build docs, or run
+release checks.
 
 **Platform-native collector tests (run separately):**
 
@@ -42,7 +44,8 @@ cargo test -p greggd --all-targets -- collector::windows    # Windows
 ./scripts/check-local.sh --release
 ```
 
-Adds: clean-tree check, version consistency, package lists, installed-binary v2 loopback smoke, protocol dry-run.
+Adds: Clippy, documentation, clean-tree and version consistency, package lists,
+installed-binary v2 loopback smoke, and the protocol dry-run.
 
 **Running a single test:**
 
@@ -88,12 +91,16 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 
 GitHub Actions CI runs on push to `main` and pull requests (`.github/workflows/ci.yml`):
 
-- **Linux**: fmt, clippy, test, doc, native collector smoke
+- **Linux**: fmt, clippy, and full workspace tests
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows**: native workspace check, client tests, collector tests, service-manager tests, foreground v2 smoke
+- **Windows**: one all-target, all-feature workspace test
 - **MSRV**: compilation check with Rust 1.75
 
-Local verification via `check-local.sh` is the source of truth for pre-commit checks.
+Local verification via the default `check-local.sh` is the source of truth for
+the routine loop; release preflight is manual and nonpublishing. Ordinary CI
+keeps one read-only workflow with generic Linux checks, native macOS/Windows
+coverage, and one Rust 1.75 compile check. CI does not build documentation,
+publish, or upload evidence.
 
 ## What not to do
 

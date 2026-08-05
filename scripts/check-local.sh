@@ -2,8 +2,8 @@
 # check-local.sh — local validation entry point for gregg.
 #
 # Modes:
-#   (default)   Fast developer check: fmt, clippy, test, doc, native collector.
-#   --release   Release preflight: adds clean-tree, package/install smoke, dry-run.
+#   (default)   Fast developer check: fmt and workspace tests.
+#   --release   Release preflight: adds lint/docs, clean-tree, package/install smoke, dry-run.
 #
 # Usage:
 #   ./scripts/check-local.sh [--release] [--help]
@@ -26,8 +26,8 @@ Options:
   --help       Show this help message and exit.
 
 Modes:
-  (default)    fmt, clippy, test, doc, and platform-native collector tests.
-  --release    Default checks plus clean-tree, version/package checks,
+  (default)    fmt and workspace tests.
+  --release    Default checks plus clippy, docs, clean-tree, version/package checks,
                source installation, v2 loopback smoke, and protocol dry-run.
 
 Examples:
@@ -72,49 +72,13 @@ run_or_fail() {
     "$@" || fail
 }
 
-detect_os() {
-    case "$(uname -s)" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "macos" ;;
-        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
-        *)       echo "unknown" ;;
-    esac
-}
-
-OS="$(detect_os)"
-
 # ── Tier 1 (default): fast developer check ──────────────────────────────────
 
 step "cargo fmt --all -- --check"
 run_or_fail cargo fmt --all -- --check
 
-step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
-run_or_fail cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-step "cargo test --workspace --all-targets --all-features"
-run_or_fail cargo test --workspace --all-targets --all-features
-
-step "cargo doc --workspace --no-deps"
-run_or_fail cargo doc --workspace --no-deps
-
-# Platform-native collector tests
-case "${OS}" in
-    linux)
-        step "native Linux collector tests"
-        run_or_fail cargo test -p greggd --all-features -- collector::linux
-        ;;
-    macos)
-        step "native macOS collector tests"
-        run_or_fail cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
-        ;;
-    windows)
-        step "native Windows collector tests"
-        run_or_fail cargo test -p greggd --all-features -- collector::windows
-        ;;
-    *)
-        echo "  skipping platform-native collector tests on ${OS}"
-        ;;
-esac
+step "cargo test --workspace"
+run_or_fail cargo test --workspace
 
 # ── Release preflight ───────────────────────────────────────────────────────
 
@@ -175,6 +139,12 @@ check_version_consistency() {
 }
 
 if [[ "${MODE}" == "release" ]]; then
+    step "cargo clippy --workspace --all-targets --all-features -- -D warnings"
+    run_or_fail cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+    step "cargo doc --workspace --no-deps"
+    run_or_fail cargo doc --workspace --no-deps
+
     step "clean-tree check"
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "error: working tree is not clean" >&2

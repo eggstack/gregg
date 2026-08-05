@@ -291,14 +291,18 @@ and dependency bans:
 
 ## Testing strategy
 
-The workspace enforces these checks locally and in CI:
+The short local loop enforces these checks:
 
 ```text
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-targets --all-features
-cargo doc --workspace --no-deps
+cargo test --workspace
 ```
+
+The manual `check-local.sh --release` preflight adds full Clippy,
+documentation, package/version checks, installation smoke, and the protocol
+publish dry-run. Ordinary CI runs Linux fmt/Clippy/tests, native macOS and
+Windows checks, and one compile-only Rust 1.75 job; it does not build docs,
+publish, or upload evidence.
 
 Platform-specific collector tests use deterministic fixtures and mock
 collectors (`MockNativeQueries`) so they run on any platform. Native FFI

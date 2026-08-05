@@ -11,19 +11,17 @@ definitions, and packaging infrastructure.
 
 Primary local validation scripts. Two modes:
 
-**Default mode:**
+**Default mode (short routine loop):**
 1. `cargo fmt --all -- --check`
-2. `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-3. `cargo test --workspace --all-targets --all-features`
-4. `cargo doc --workspace --no-deps`
-5. Platform-native collector tests
+2. `cargo test --workspace`
 
 **`--release` mode** (adds):
-1. Clean-tree check (no uncommitted changes)
-2. Version consistency (workspace version matches all crates)
-3. `cargo package --list` for each crate
-4. Installed-binary loopback smoke (installs greggd, runs health/status check)
-5. `cargo publish --dry-run` for gregg-protocol
+1. Full workspace Clippy and documentation
+2. Clean-tree check (no uncommitted changes)
+3. Version consistency (workspace version matches all crates)
+4. `cargo package --list` for each crate
+5. Installed-binary loopback smoke (installs greggd, runs health/status check)
+6. `cargo publish --dry-run` for gregg-protocol
 
 ### verify-installed-daemon.sh
 
@@ -144,12 +142,14 @@ flag removes config directory.
 GitHub Actions CI (`.github/workflows/ci.yml`) runs on push to `main` and
 pull requests:
 
-- **Linux**: fmt, clippy, test, doc, native collector smoke
+- **Linux**: fmt, clippy, and full workspace tests
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows**: native workspace check, client tests, collector tests, service-manager tests, foreground v2 smoke
+- **Windows**: one all-target, all-feature workspace test
 - **MSRV**: compilation check with Rust 1.75
 
-Local verification via `check-local.sh` is the source of truth for pre-commit checks.
+Local default verification is the short routine loop. Documentation and full
+Clippy are release-preflight work, not ordinary CI work. CI remains read-only,
+nonpublishing, and artifact-free.
 
 ## Build configuration
 
