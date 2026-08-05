@@ -242,13 +242,13 @@ empty, invalid, or overflowing list.
 The daemon always exposes all five routes (`/`, `/v1/status`,
 `/v2/status`, `/healthz`, `/v2/healthz`). On platforms where a
 truthful v1 snapshot cannot be produced, the v1 endpoint returns
-`503 Service Unavailable` with the v2 health response:
+`503 Service Unavailable` with a v1 health response:
 
 - **Windows**: v1 is unsupported because load, swap, and CPU I/O-wait
   are absent and cannot be represented as non-optional zero values.
-  `/v1/status` and `/` return 503 with a `HealthResponse` in the
-  `Warming` state (the v1 health is never updated). Clients should
-  prefer `/v2/status` on Windows.
+  `/v1/status`, `/`, and `/healthz` return 503 with a failed
+  `HealthResponse` in the `NotServing` category and a stable unavailable
+  message. Clients should prefer `/v2/status` on Windows.
 - **Linux/macOS**: Both v1 and v2 return 200 OK when ready.
 
 The client polling logic (`v2-first, v1-fallback on 404`) handles

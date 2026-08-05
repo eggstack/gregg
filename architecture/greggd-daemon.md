@@ -74,7 +74,7 @@ aborted.
 | `GET /v1/status` | `status_handler` | Same as `/` |
 | `GET /v2/status` | `status_handler_v2` | v2 payload (200) or v2 health (503) |
 | `GET /healthz` | `health_handler` | v1 health (200 if ready, 503 otherwise) |
-| `GET /v2/healthz` | `health_handler_v2` | v2 health |
+| `GET /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
 | Other | `fallback_handler` | 404 |
 
 **Published state:** Snapshots, health bodies, observation time, and failure
@@ -83,7 +83,7 @@ generation, so its HTTP status and JSON body cannot describe different
 publications. Windows publishes v2 metrics and returns a v1 `not_serving`
 health response with `503` because v1 is structurally unavailable.
 
-**Staleness policy:** If `max_consecutive_failures > 0` and failures exceed the
+**Staleness policy:** If `max_consecutive_failures > 0` and failures reach the
 threshold, or if `max_snapshot_age > 0` and the latest published observation is too old, the server
 returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving.
 

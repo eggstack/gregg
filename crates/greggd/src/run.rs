@@ -354,37 +354,7 @@ async fn sync_sampler_state(
                 }
                 (Some(snap), None) => {
                     // Fallback: v1 only (should not happen in normal operation).
-                    let v2_fallback = gregg_protocol::v2::StatusPayloadV2 {
-                        snapshot: gregg_protocol::v2::StatusSnapshotV2 {
-                            schema_version: gregg_protocol::v2::SCHEMA_VERSION_V2,
-                            observed_at_unix_ms: snap.observed_at_unix_ms,
-                            sample_interval_ms: snap.sample_interval_ms,
-                            capabilities: gregg_protocol::v2::MetricCapabilitiesV2 {
-                                cpu_iowait: snap.capabilities.cpu_iowait,
-                                load_average: true,
-                                swap: true,
-                                memory_commit: false,
-                            },
-                            system: snap.system.clone(),
-                            cpu: gregg_protocol::v2::CpuMetricsV2 {
-                                logical_cores: snap.cpu.logical_cores,
-                                usage_pct: snap.cpu.usage_pct,
-                                iowait_pct: snap.cpu.iowait_pct,
-                            },
-                            load: Some(snap.load),
-                            memory: snap.memory,
-                            swap: Some(gregg_protocol::v2::SwapMetrics {
-                                used_bytes: snap.swap.used_bytes,
-                                total_bytes: snap.swap.total_bytes,
-                                usage_pct: snap.swap.usage_pct,
-                            }),
-                            commit: None,
-                        },
-                        drives: None,
-                    };
-                    server_state
-                        .update_snapshot((*snap).clone(), v2_fallback)
-                        .await;
+                    server_state.update_snapshot_v1_only((*snap).clone()).await;
                 }
                 (None, None) => {
                     // Both absent — should not happen in Ready state.

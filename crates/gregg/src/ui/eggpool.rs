@@ -43,13 +43,13 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
     let Some(summary) = eggpool.summary.as_ref() else {
         let message = if eggpool.status == EggpoolStatus::WorkerUnavailable {
-            "EggPool worker unavailable"
+            "EggPool worker unavailable".to_owned()
         } else if eggpool.status == EggpoolStatus::Refreshing {
-            "Loading summary…"
+            "Loading summary…".to_owned()
         } else if let Some(error) = eggpool.last_error.as_ref() {
-            &outcome_text(error)
+            outcome_text(error)
         } else {
-            "Loading summary…"
+            "Loading summary…".to_owned()
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(

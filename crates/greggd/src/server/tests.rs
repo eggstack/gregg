@@ -252,6 +252,56 @@ async fn v1_status_v2_only_returns_503_with_health() {
 }
 
 #[tokio::test]
+async fn v2_only_state_keeps_all_v1_routes_not_serving_and_v2_ready() {
+    let state = ServerState::new();
+    state
+        .update_snapshot_v2_only(LinuxSnapshotV2Builder::default().build_payload())
+        .await;
+    let app = build_test_router(state);
+
+    for path in ["/", "/v1/status", "/healthz"] {
+        let response = app.clone().oneshot(get(path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        let body: HealthResponse =
+            serde_json::from_str(&response_body_string(response).await).unwrap();
+        assert_eq!(body.schema_version, 1);
+        assert_eq!(body.state, ReadinessState::Failed);
+        assert_eq!(body.category, Some(HealthCategory::NotServing));
+        assert!(body.snapshot.is_none());
+        assert_eq!(body.message.as_deref(), Some(V1_UNAVAILABLE_MESSAGE));
+    }
+
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: gregg_protocol::v2::HealthResponseV2 =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(body.state, ReadinessState::Ready);
+    assert!(body.snapshot.is_some());
+}
+
+#[tokio::test]
+async fn v2_only_failure_keeps_cached_status_but_fails_health() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    state
+        .update_snapshot_v2_only(LinuxSnapshotV2Builder::default().build_payload())
+        .await;
+    state.set_failed("collector crashed").await;
+    let app = build_test_router(state);
+
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: gregg_protocol::v2::HealthResponseV2 =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(body.state, ReadinessState::Failed);
+    assert_eq!(body.category, Some(HealthCategory::CollectorFailure));
+    assert!(body.snapshot.is_none());
+}
+
+#[tokio::test]
 async fn root_returns_same_as_status() {
     let state = ServerState::new();
     let snap = LinuxSnapshotBuilder::default().build();
@@ -555,8 +605,6 @@ async fn stale_snapshot_by_age_returns_503() {
     update_both(&state, snap).await;
 
     // Sleep briefly so the snapshot exceeds max_snapshot_age.
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
 
@@ -592,8 +640,6 @@ async fn recovery_after_stale_by_age_returns_200() {
         .observed_at_unix_ms(1)
         .build();
     update_both(&state, stale_snap).await;
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Should be stale now.
     let app = build_test_router(state.clone());

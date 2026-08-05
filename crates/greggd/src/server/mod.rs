@@ -29,6 +29,8 @@ use crate::server::error::{ServerConfigError, ServerError};
 
 pub mod error;
 
+const V1_UNAVAILABLE_MESSAGE: &str = "schema v1 status is unavailable on this platform";
+
 /// Current time as milliseconds since the Unix epoch.
 #[allow(clippy::cast_possible_truncation)]
 fn now_unix_ms() -> u64 {
@@ -169,8 +171,7 @@ impl ServerState {
 
     /// Publish a v2 snapshot only, without a v1 snapshot.
     ///
-    /// Used on Windows where v1 is not supported. The v1 snapshot slot
-    /// remains unchanged (None on initial startup).
+    /// Used on Windows where v1 is not supported.
     pub async fn update_snapshot_v2_only(&self, payload_v2: StatusPayloadV2) {
         let observed_at_unix_ms = payload_v2.snapshot.observed_at_unix_ms;
         let health_v2 = HealthResponseV2::ready(payload_v2.snapshot.clone());
@@ -179,9 +180,28 @@ impl ServerState {
         state.snapshot_v2 = Some(Arc::new(payload_v2));
         state.health = HealthResponse::failed(
             gregg_protocol::HealthCategory::NotServing,
-            "schema v1 status is unavailable on this platform",
+            V1_UNAVAILABLE_MESSAGE,
         );
         state.health_v2 = health_v2;
+        state.last_observed_at_unix_ms = Some(observed_at_unix_ms);
+        state.consecutive_failures = 0;
+    }
+
+    /// Publish a v1 snapshot only, marking v2 as unavailable.
+    ///
+    /// This is retained for the sampler's v1-only compatibility path. Normal
+    /// platforms publish both versions, while Windows publishes v2 only.
+    pub async fn update_snapshot_v1_only(&self, snap: StatusSnapshot) {
+        let observed_at_unix_ms = snap.observed_at_unix_ms;
+        let health = HealthResponse::ready(snap.clone());
+        let mut state = self.published.write().await;
+        state.snapshot = Some(Arc::new(snap));
+        state.snapshot_v2 = None;
+        state.health = health;
+        state.health_v2 = HealthResponseV2::failed(
+            gregg_protocol::HealthCategory::NotServing,
+            "schema v2 status is unavailable from this sampler",
+        );
         state.last_observed_at_unix_ms = Some(observed_at_unix_ms);
         state.consecutive_failures = 0;
     }

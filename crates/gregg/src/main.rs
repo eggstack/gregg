@@ -68,7 +68,6 @@ async fn main() {
 }
 
 async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
     use tokio_util::sync::CancellationToken;
 
     let config = store.load_or_default()?;
