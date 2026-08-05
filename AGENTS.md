@@ -111,14 +111,18 @@ GitHub Actions CI runs on push to `main` and pull requests (`.github/workflows/c
 
 - **Linux**: fmt, clippy, and full workspace tests
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows**: one all-target, all-feature workspace test
+- **Windows** (`windows-2022`): workspace tests, a release `greggd` build, and
+  the bounded Administrator SCM lifecycle smoke in
+  `scripts/smoke-windows.ps1`
 - **MSRV**: compilation check with Rust 1.75
 
 Local verification via the default `check-local.sh` is the source of truth for
 the routine loop; release preflight is manual and nonpublishing. Ordinary CI
 keeps one read-only workflow with generic Linux checks, native macOS/Windows
-coverage, and one Rust 1.75 compile check. CI does not build documentation,
-publish, or upload evidence.
+coverage, and one Rust 1.75 compile check. The Windows SCM smoke is the
+authoritative operational proof for dispatcher startup, post-bind readiness,
+service lifecycle, custom configuration paths, bind-failure recovery, and
+cleanup. CI does not build documentation, publish, or upload evidence.
 
 ## What not to do
 

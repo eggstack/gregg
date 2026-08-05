@@ -4,8 +4,8 @@
 
 .DESCRIPTION
     Exercises the full install/start/query/stop/restart/bind-failure/reinstall/uninstall lifecycle
-    using local files and loopback only. Requires Administrator privileges.
-    Do NOT run in CI — this is a manual maintainer test.
+    using local files and loopback only. Requires Administrator privileges. This is the
+    authoritative Windows SCM lifecycle check used by the existing CI job.
 
     Prerequisites:
     - Build greggd in release mode: cargo build --release -p greggd
@@ -36,6 +36,8 @@ $ProgramDataDir = Join-Path $env:ProgramData "gregg"
 $ConfigDir = Join-Path $ProgramDataDir "greggd-smoke"
 $ConfigPath = Join-Path $ConfigDir "greggd.toml"
 $InstalledExe = Join-Path $InstallDir "greggd.exe"
+$OccupiedListener = $null
+$OccupiedPort = $null
 
 # ── Admin check ────────────────────────────────────────────────────────────
 
@@ -71,9 +73,9 @@ function Wait-ForUrl {
 function Stop-AndRemoveService {
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($svc) {
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
         Wait-ForServiceStatus -Status "Stopped" -TimeoutSeconds 30
-        sc.exe delete $ServiceName | Out-Null
+        Invoke-Sc -Arguments @("delete", $ServiceName)
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
             if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
@@ -111,20 +113,28 @@ function Invoke-Greggd {
     }
 }
 
+function Invoke-Sc {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    & sc.exe @Arguments | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "sc.exe $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+}
+
 # ── Cleanup from previous runs ────────────────────────────────────────────
 
+try {
 Write-Host "1. Cleaning up from previous runs..."
 Stop-AndRemoveService
 
 # ── Install ────────────────────────────────────────────────────────────────
 
-try {
 Write-Host "2. Installing from $ExePath..."
 
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null
 
-Copy-Item -Path $ExePath -Destination (Join-Path $InstallDir "greggd.exe") -Force
+Copy-Item -Path $ExePath -Destination $InstalledExe -Force
 
 $Config = @"
 name = "smoke-test"
@@ -136,8 +146,8 @@ stale_after_ms = 10000
 [System.IO.File]::WriteAllText($ConfigPath, $Config)
 
 $ImagePath = "`"$InstalledExe`" service --config `"$ConfigPath`""
-sc.exe create $ServiceName binPath= $ImagePath start= demand DisplayName= "Gregg Smoke Test" | Out-Null
-sc.exe config $ServiceName obj= "NT AUTHORITY\LocalService" | Out-Null
+Invoke-Sc -Arguments @("create", $ServiceName, "binPath=", $ImagePath, "start=", "demand", "DisplayName=", "Gregg Smoke Test")
+Invoke-Sc -Arguments @("config", $ServiceName, "obj=", "NT AUTHORITY\LocalService")
 Write-Host "   Service registered."
 
 # ── Start and verify ──────────────────────────────────────────────────────
@@ -198,19 +208,37 @@ Write-Host "   Config updated and service restarted."
 
 # ── Bind failure ──────────────────────────────────────────────────────────
 
-Write-Host "9. Simulating bind failure (port 1)..."
+Write-Host "9. Simulating bind failure with an occupied ephemeral loopback port..."
 Invoke-Greggd stop --config $ConfigPath
 Wait-ForServiceStatus -Status "Stopped"
+
+$OccupiedListener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+$OccupiedListener.Start()
+$OccupiedPort = ([System.Net.IPEndPoint]$OccupiedListener.LocalEndpoint).Port
+$portMutationFailed = $false
 try {
-    Invoke-Greggd port 1 --config $ConfigPath
+    Invoke-Greggd port $OccupiedPort --config $ConfigPath
 } catch {
-    Write-Host "   Expected startup failure observed while applying port 1."
+    $portMutationFailed = $true
+    Write-Host "   Expected startup failure observed on occupied port $OccupiedPort."
 }
+$occupiedConfig = Get-Content $ConfigPath -Raw
+if ($occupiedConfig -notmatch "port = $OccupiedPort") {
+    throw "Bind-failure setup did not persist occupied port $OccupiedPort."
+}
+if (-not $portMutationFailed) {
+    Write-Host "   SCM accepted the mutation command; explicit start failure remains required."
+}
+$scmStartFailed = $false
 try {
     Start-Service -Name $ServiceName
     Wait-ForServiceStatus -Status "Running" -TimeoutSeconds 5
 } catch {
+    $scmStartFailed = $true
     Write-Host "   Expected SCM start failure observed: $($_.Exception.Message)"
+}
+if (-not $scmStartFailed) {
+    throw "SCM start unexpectedly reached Running while port $OccupiedPort was occupied."
 }
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($svc -and $svc.Status -eq "Running") {
@@ -219,6 +247,8 @@ if ($svc -and $svc.Status -eq "Running") {
 Write-Host "   Service is not running after bind failure (expected)."
 
 # Restore working port for remaining tests.
+$OccupiedListener.Stop()
+$OccupiedListener = $null
 Invoke-Greggd port $WorkingPort --config $ConfigPath
 Wait-ForServiceStatus -Status "Running"
 if (-not (Wait-ForUrl -Url $WorkingHealthUrl)) {
@@ -232,8 +262,10 @@ Invoke-Greggd stop --config $ConfigPath
 Wait-ForServiceStatus -Status "Stopped"
 Stop-AndRemoveService
 
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Copy-Item -Path $ExePath -Destination $InstalledExe -Force
-sc.exe create $ServiceName binPath= $ImagePath start= demand DisplayName= "Gregg Smoke Test" | Out-Null
+Invoke-Sc -Arguments @("create", $ServiceName, "binPath=", $ImagePath, "start=", "demand", "DisplayName=", "Gregg Smoke Test")
+Invoke-Sc -Arguments @("config", $ServiceName, "obj=", "NT AUTHORITY\LocalService")
 Start-Service -Name $ServiceName
 Wait-ForServiceStatus -Status "Running"
 
@@ -251,7 +283,7 @@ Wait-ForServiceStatus -Status "Stopped"
 Stop-AndRemoveService
 
 if (Test-Path $InstallDir) {
-    Remove-Item -Path $InstallDir -Recurse -Force
+    Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
 }
 Write-Host "   Service and binary removed."
 
@@ -259,14 +291,16 @@ Write-Host "   Service and binary removed."
 if (Test-Path $ConfigPath) {
     Write-Host "   Config preserved (as expected)."
 } else {
-    Write-Warning "Config was removed unexpectedly."
+    throw "Config was removed unexpectedly."
 }
 
 # ── Reinstall and uninstall with -RemoveConfig ───────────────────────────
 
 Write-Host "12. Reinstalling for RemoveConfig test..."
+New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Copy-Item -Path $ExePath -Destination $InstalledExe -Force
-sc.exe create $ServiceName binPath= $ImagePath start= demand DisplayName= "Gregg Smoke Test" | Out-Null
+Invoke-Sc -Arguments @("create", $ServiceName, "binPath=", $ImagePath, "start=", "demand", "DisplayName=", "Gregg Smoke Test")
+Invoke-Sc -Arguments @("config", $ServiceName, "obj=", "NT AUTHORITY\LocalService")
 Start-Service -Name $ServiceName
 Wait-ForServiceStatus -Status "Running"
 Write-Host "   Service running after reinstall."
@@ -277,11 +311,11 @@ Wait-ForServiceStatus -Status "Stopped"
 Stop-AndRemoveService
 
 if (Test-Path $InstallDir) {
-    Remove-Item -Path $InstallDir -Recurse -Force
+    Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
 }
 # Manually remove config to simulate -RemoveConfig behavior.
 if (Test-Path $ConfigDir) {
-    Remove-Item -Path $ConfigDir -Recurse -Force
+    Remove-Item -Path $ConfigDir -Recurse -Force -ErrorAction Stop
 }
 Write-Host "   Service, binary, and config removed."
 
@@ -295,15 +329,40 @@ Write-Host "   Config directory confirmed removed."
 Write-Host ""
 Write-Host "=== All smoke tests passed ===" -ForegroundColor Green
 } finally {
+    $cleanupErrors = [System.Collections.Generic.List[string]]::new()
+    if ($OccupiedListener) {
+        try {
+            $OccupiedListener.Stop()
+        } catch {
+            [void]$cleanupErrors.Add("Could not release occupied port: $($_.Exception.Message)")
+        }
+    }
     try {
         Stop-AndRemoveService
     } catch {
-        Write-Warning "Cleanup could not remove ${ServiceName}: $($_.Exception.Message)"
+        [void]$cleanupErrors.Add("Could not remove ${ServiceName}: $($_.Exception.Message)")
     }
     if (Test-Path $InstallDir) {
-        Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            [void]$cleanupErrors.Add("Could not remove $InstallDir`: $($_.Exception.Message)")
+        }
     }
     if (Test-Path $ConfigDir) {
-        Remove-Item -Path $ConfigDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-Item -Path $ConfigDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            [void]$cleanupErrors.Add("Could not remove $ConfigDir`: $($_.Exception.Message)")
+        }
+    }
+    if (Test-Path $InstallDir) {
+        [void]$cleanupErrors.Add("Install directory still exists: $InstallDir")
+    }
+    if (Test-Path $ConfigDir) {
+        [void]$cleanupErrors.Add("Config directory still exists: $ConfigDir")
+    }
+    if ($cleanupErrors.Count -gt 0) {
+        throw ("Cleanup failed: " + ($cleanupErrors -join "; "))
     }
 }

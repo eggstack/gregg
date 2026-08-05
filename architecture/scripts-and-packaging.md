@@ -49,14 +49,18 @@ Unit tests for the verifier script. Exercises against a fake daemon
 
 ### smoke-windows.ps1
 
-Full Windows service lifecycle smoke test (manual, not CI):
-- Install → start → health check → stop → restart → bind failure →
-  reinstall → uninstall
+Full Windows service lifecycle smoke test, run by the existing Windows CI job
+on `windows-2022` with Administrator privileges:
+- install → native SCM start → health/status → stop → start → restart;
+- config mutation and custom config-path persistence;
+- bind failure on an occupied ephemeral loopback port and recovery;
+- reinstall with `LocalService` and config preservation;
+- service, binary, and temporary-config cleanup.
 
 It invokes the installed `greggd.exe` explicitly for lifecycle/configuration
-commands, verifies the selected config and mutated port remain consistent, and
-cleans up the service, binary, and temporary config in a bounded `finally`
-path. Requires Administrator.
+commands, checks every required `sc.exe` result, and fails cleanup assertions
+instead of converting them to warnings. Local manual runs require
+Administrator privileges.
 
 ### run-mixed-fleet-sustained.py
 
@@ -148,12 +152,14 @@ pull requests:
 
 - **Linux**: fmt, clippy, and full workspace tests
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows**: one all-target, all-feature workspace test
+- **Windows** (`windows-2022`): all-target, all-feature workspace tests, a
+  release `greggd` build, and the bounded SCM lifecycle smoke
 - **MSRV**: compilation check with Rust 1.75
 
 Local default verification is the short routine loop. Documentation and full
-Clippy are release-preflight work, not ordinary CI work. CI remains read-only,
-nonpublishing, and artifact-free.
+Clippy are release-preflight work, not ordinary CI work. The Windows SCM smoke
+is the authoritative operational proof for the native dispatcher and service
+lifecycle. CI remains read-only, nonpublishing, and artifact-free.
 
 ## Build configuration
 

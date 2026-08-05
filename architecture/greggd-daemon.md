@@ -172,6 +172,12 @@ Platform adapters:
   generated `ServiceMain` for the daemon entry, a one-shot control signal for
   Stop/Shutdown, and an `ScmAdapter` trait for lifecycle-manager testability
 
+The existing `windows-2022` CI job builds the release daemon and runs
+`scripts/smoke-windows.ps1` as the operational SCM proof. The bounded smoke
+uses an occupied ephemeral loopback port for bind-failure verification and
+checks service creation, `LocalService` configuration, custom config-path
+handoff, post-bind readiness, restart/recovery, reinstall, and cleanup.
+
 ## Collector architecture
 
 ### SystemCollector trait

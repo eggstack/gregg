@@ -37,6 +37,12 @@ cargo test -p greggd --all-features -- collector::macos     # macOS
 cargo test -p greggd --all-targets -- collector::windows    # Windows
 ```
 
+The existing Windows CI job is pinned to `windows-2022` and runs, in order,
+workspace tests, `cargo build --release -p greggd`, and the Administrator
+`scripts/smoke-windows.ps1` SCM lifecycle smoke. The smoke is the authoritative
+operational check for the Windows dispatcher and service lifecycle; it is not
+part of the short local development loop.
+
 **Release preflight (non-publishing):**
 
 ```bash

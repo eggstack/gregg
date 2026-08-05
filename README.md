@@ -205,7 +205,11 @@ status. Stop and Shutdown controls send a nonblocking graceful-shutdown signal
 to the shared daemon core. The service runs under `NT AUTHORITY\LocalService`
 with minimal privileges. Install/uninstall through the provided PowerShell
 scripts or manually via `sc.exe`. Service-manager logic is covered by native
-tests; administrator installation depends on local Windows SCM policy.
+tests. The existing read-only Windows CI job is pinned to `windows-2022` and
+runs the release-built daemon through the bounded Administrator lifecycle
+smoke, covering dispatcher startup, post-bind `RUNNING`, custom configuration
+paths, restart, bind-failure recovery, reinstall, and cleanup. Local
+administrator installation still depends on Windows SCM policy.
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
