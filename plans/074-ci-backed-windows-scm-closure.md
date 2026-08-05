@@ -1,6 +1,6 @@
 # Phase 074: CI-backed Windows SCM closure
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 073.
 
@@ -113,33 +113,33 @@ After that run passes:
 
 ### Smoke correctness
 
-- [ ] Bind failure uses an actually occupied ephemeral port.
-- [ ] Every service recreation reapplies `LocalService`.
-- [ ] Every required destination directory exists before copying the binary.
-- [ ] Native `sc.exe` failures are checked immediately.
-- [ ] The script always attempts bounded cleanup.
-- [ ] The script exits nonzero on any failed lifecycle assertion.
+- [x] Bind failure uses an actually occupied ephemeral port.
+- [x] Every service recreation reapplies `LocalService`.
+- [x] Every required destination directory exists before copying the binary.
+- [x] Native `sc.exe` failures are checked immediately.
+- [x] The script always attempts bounded cleanup.
+- [x] The script exits nonzero on any failed lifecycle assertion.
 
 ### CI integration
 
-- [ ] The existing Windows job is pinned to `windows-2022`.
-- [ ] No new workflow or job is added.
-- [ ] The Windows job runs workspace tests, a release build, and the SCM smoke.
-- [ ] The SCM smoke is not allowed to fail silently.
-- [ ] No artifact, evidence bundle, or self-hosted runner is introduced.
+- [x] The existing Windows job is pinned to `windows-2022`.
+- [x] No new workflow or job is added.
+- [x] The Windows job runs workspace tests, a release build, and the SCM smoke.
+- [x] The SCM smoke is not allowed to fail silently.
+- [x] No artifact, evidence bundle, or self-hosted runner is introduced.
 
 ### Operational proof
 
-- [ ] CI proves dispatcher connection and generated `ServiceMain` execution.
-- [ ] CI proves custom config-path handling and post-bind `RUNNING` publication.
-- [ ] CI proves start, health/status, stop, restart, deterministic bind failure, recovery, reinstall, and cleanup.
-- [ ] One ordinary cross-platform workflow run is green at the final implementation state.
+- [x] CI proves dispatcher connection and generated `ServiceMain` execution.
+- [x] CI proves custom config-path handling and post-bind `RUNNING` publication.
+- [x] CI proves start, health/status, stop, restart, deterministic bind failure, recovery, reinstall, and cleanup.
+- [x] One ordinary cross-platform workflow run is green at the final implementation state.
 
 ### Closure
 
-- [ ] Plans 066, 073, 074, and the index describe the demonstrated state.
-- [ ] Manual release and the single read-only workflow remain unchanged in scope.
-- [ ] No Plan 075 or closure-only evidence document is created.
+- [x] Plans 066, 073, 074, and the index describe the demonstrated state.
+- [x] Manual release and the single read-only workflow remain unchanged in scope.
+- [x] No Plan 075 or closure-only evidence document is created.
 
 ## Handoff
 
@@ -153,3 +153,10 @@ Workflow run:
 SCM lifecycle result:
 Planning-record closure:
 ```
+
+Implementation SHA: `e754f3f6b17c14bfc71234459a15237fe042736f`
+Smoke corrections: occupied ephemeral loopback bind-failure port, per-copy install-directory creation, `LocalService` reapplication, checked `sc.exe` commands, and failure-visible bounded cleanup.
+Windows job change: existing job pinned to `windows-2022`; workspace tests, release build, then `smoke-windows.ps1` with a 10-minute timeout.
+Workflow run: [31040689848](https://github.com/eggstack/gregg/actions/runs/31040689848)
+SCM lifecycle result: green; workspace tests, release build, and authoritative lifecycle smoke all passed.
+Planning-record closure: Plans 066, 073, 074, and `plans/README.md` reconciled; no Plan 075 or evidence document.

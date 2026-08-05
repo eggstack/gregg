@@ -1,6 +1,6 @@
 # Phase 073: native Windows SCM entry and readiness correction
 
-Status: implementation complete; manual Windows SCM smoke pending.
+Status: implementation complete; operational closure verified by Plan 074.
 
 Depends on: Plan 072.
 
@@ -8,7 +8,7 @@ Depends on: Plan 072.
 
 Complete the Windows service implementation by adding the required Service Control Manager dispatcher and generated `ServiceMain` boundary, preserving the single-runtime/nonblocking shutdown work from Plan 072, and reporting `RUNNING` only after the daemon has successfully bound its listener.
 
-This phase also makes the existing service configuration handoff and manual Windows lifecycle smoke truthful enough to validate the correction. It is a narrow Windows service closure pass, not a service-management redesign, packaging campaign, or CI expansion.
+This phase also makes the existing service configuration handoff and Windows lifecycle smoke truthful enough for the later CI-backed operational closure. It is a narrow Windows service closure pass, not a service-management redesign, packaging campaign, or CI expansion.
 
 ## Why this phase exists
 
@@ -42,7 +42,7 @@ Two directly related correctness issues must be addressed at the same time:
 1. `main` resolves `--config`, but the Windows worker reloads `Config::default_path()` and ignores the resolved path.
 2. The service reports `RUNNING` before Tokio runtime construction and before `run_with_shutdown()` binds the HTTP listener. A runtime or bind failure can therefore occur after an incorrect ready state has already been published to the SCM.
 
-The existing manual `scripts/smoke-windows.ps1` is the correct bounded mechanism for operational proof, but its executable invocation and port/config expectations must be inspected and minimally corrected before it can serve as closure evidence.
+The existing `scripts/smoke-windows.ps1` is the correct bounded mechanism for operational proof, but its executable invocation and port/config expectations must be inspected and minimally corrected before it can serve as the CI-backed closure smoke.
 
 ## Authoritative implementation contract
 
@@ -73,7 +73,8 @@ Do not hand-write raw Win32 dispatcher FFI while the existing dependency provide
 - Extract a small pure control-mapping helper so Stop, Shutdown, Interrogate, unsupported controls, and duplicates are directly tested.
 - Minimally correct `packaging/install-windows.ps1` so its selected config path is the path placed in the service image command.
 - Minimally correct `scripts/smoke-windows.ps1` so it invokes the installed executable deterministically and asserts consistent config/port state.
-- Run the existing local checks, one ordinary CI run, and one real manual Windows SCM lifecycle smoke.
+- Run the existing local checks and one ordinary CI run with the existing
+  Windows SCM lifecycle smoke.
 - Reopen and then directly reconcile Plans 066, 072, 073, and `plans/README.md` with the demonstrated final state.
 
 ### Out of scope
@@ -349,7 +350,7 @@ Keep existing quoting around the executable and config path. Preserve LocalServi
 
 Do not redesign installation or add MSI/WiX packaging.
 
-### Step 10: make the existing manual SCM smoke deterministic
+### Step 10: make the existing SCM smoke deterministic
 
 Use `scripts/smoke-windows.ps1` as the operational closure mechanism. Correct only defects that prevent it from truthfully validating the service.
 
@@ -366,7 +367,8 @@ Required inspection and corrections:
 9. Confirm reinstall preserves the selected config.
 10. Remove the service and temporary binary/config state according to the script's stated preservation/removal cases.
 
-Do not turn the script into a general Windows test framework. Keep it manual and maintainer-oriented.
+Do not turn the script into a general Windows test framework. Keep it bounded
+and local to the existing CI runner.
 
 ### Step 11: run bounded verification
 
@@ -385,13 +387,17 @@ Run the existing release preflight only if implementation changes packaging chec
 
 #### Ordinary hosted CI
 
-Push the implementation and require one ordinary existing CI run. The existing Windows job must compile the real dispatcher/`ServiceMain` production branch and run the focused tests.
+Push the implementation and require one ordinary existing CI run. The existing
+Windows job must run workspace tests, a release `greggd` build, and the bounded
+SCM smoke on `windows-2022`, compiling the real dispatcher/`ServiceMain`
+production branch and exercising the lifecycle.
 
 Do not add a workflow, job, artifact, or evidence upload.
 
-#### Real Windows SCM smoke
+#### Windows CI SCM smoke
 
-Closure requires one successful manual run on an Administrator Windows host:
+Closure requires one successful run in the existing Administrator Windows CI
+environment:
 
 ```powershell
 cargo build --release -p greggd
@@ -406,24 +412,17 @@ This is the lightest direct proof that:
 - the worker binds and reports `RUNNING`;
 - Stop/Restart controls reach the nonblocking shutdown path.
 
-If no suitable Windows host is available, leave the operational acceptance item pending. Do not substitute compilation or unit tests and mark the service operational.
-
 ### Step 12: reconcile planning records directly
 
-At implementation start:
-
-- mark Plan 073 active;
-- change Roadmap 066/index wording from fully closed to implementation complete through 072 with native service closure pending 073;
-- retain Plan 072 as completed nested-runtime/shutdown work, while recording that dispatcher omission was discovered afterward.
-
-After focused checks, ordinary CI, and the real SCM smoke pass:
+After focused checks, ordinary CI, and the Windows CI SCM smoke pass:
 
 - mark Plan 073 complete;
-- mark Roadmap 066 complete through 073;
+- mark Roadmap 066 complete through 074;
 - update `plans/README.md` to show no active corrective phase;
 - preserve Plan 071 footprint records unchanged;
-- record the Plan 073 implementation SHA, CI run ID, and manual smoke command/result in this plan only;
-- do not create Plan 074, an evidence file, or a closure manifest.
+- record the implementation SHA, CI run ID, and smoke result in the relevant
+  plans;
+- do not create Plan 075, an evidence file, or a closure manifest.
 
 ## Acceptance criteria
 
@@ -474,17 +473,20 @@ After focused checks, ordinary CI, and the real SCM smoke pass:
 - [x] Focused Clippy and formatting pass with warnings denied.
 - [x] `./scripts/check-local.sh` passes.
 - [x] One ordinary existing CI run passes, including Windows production compilation/tests.
-- [ ] The corrected manual `scripts/smoke-windows.ps1` passes on a real Administrator Windows host.
-- [ ] The smoke proves start, health/status, stop, restart, bind-failure handling, reinstall, and cleanup.
+- [x] The corrected `scripts/smoke-windows.ps1` passes in the existing
+  Administrator Windows CI environment.
+- [x] The smoke proves start, health/status, stop, restart, bind-failure
+  handling, reinstall, and cleanup.
 
 ### Scope and closure
 
 - [x] No new monitoring feature, protocol field, service command, platform, or dependency is added.
 - [x] No service framework, generic runtime abstraction, workflow, job, artifact, or evidence system is added.
 - [x] Manual release and the one read-only CI workflow remain unchanged.
-- [x] Plans 066, 072, 073, and the index describe the demonstrated implementation state.
+- [x] Plans 066, 072, 073, 074, and the index describe the demonstrated state.
 - [x] Plan 071 footprint records remain untouched unless a direct factual error is found.
-- [x] No Plan 074 or evidence-only closure document is created.
+- [x] Plan 074 provides the operational closure; no Plan 075 or evidence-only
+  closure document is created.
 
 ## Handoff format
 
@@ -505,13 +507,14 @@ Planning-record reconciliation:
 
 Do not add generated evidence, logs, screenshots, or binary artifacts to the repository.
 
-Implementation SHA: `92f13864845e79a2732fae2a3733dccd02c38498`
+Implementation SHA: `92f13864845e79a2732fae2a3733dccd02c38498` (native SCM implementation)
+Operational closure SHA: `e754f3f6b17c14bfc71234459a15237fe042736f`
 Dispatcher entry: `greggd::service::windows::start_service_dispatcher`, called by synchronous `Command::Service` dispatch.
 Generated ServiceMain: `define_windows_service!(ffi_service_main, service_main)`.
 Config-path handoff: resolved `PathBuf` stored in a process-local `OnceLock` before dispatcher start and read by the callback worker.
 RUNNING readiness point: `run_with_shutdown_on_ready` invokes the service callback immediately after successful listener bind and before daemon task spawning.
 Control-mapping tests: Stop, Shutdown, Interrogate, unsupported control, duplicate ordering, and channel-closed behavior covered; Windows production branch compiled in CI.
 Focused local checks: formatting, focused greggd tests, focused Clippy, `./scripts/check-local.sh`, Rust 1.75 check, docs, Windows target check, and `./scripts/check-local.sh --release` passed.
-Ordinary CI run: GitHub Actions run `31035228195` passed after rerunning the transient failed Linux job; Windows, macOS, MSRV, and Linux jobs are green.
-Manual Windows SCM smoke: PENDING — no Administrator Windows host or PowerShell executable is available in this workspace.
-Planning-record reconciliation: Plans 066, 072, 073, and `plans/README.md` updated; Plan 073 remains active only for the pending operational smoke, with no Plan 074 created.
+Ordinary CI run: GitHub Actions run `31040689848` passed with Windows, macOS, MSRV, and Linux jobs green.
+Windows SCM smoke: GitHub Actions run `31040689848` passed the workspace tests, release build, and authoritative `scripts/smoke-windows.ps1` lifecycle smoke on `windows-2022`.
+Planning-record reconciliation: Plans 066, 073, 074, and `plans/README.md` updated; Plan 074 is complete and no Plan 075 was created.

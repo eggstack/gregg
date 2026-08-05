@@ -15,23 +15,24 @@ Gregg remains a small local/LAN system monitor:
 
 Local tests remain the primary development path. The one existing GitHub Actions workflow provides Linux checks and native macOS/Windows truth. CI does not publish crates, create releases, upload artifacts, or enforce binary-size gates.
 
-## Active roadmap
+## Roadmap status
 
-Plans 067-073 implemented the bounded correctness, runtime, native Windows SCM entry, readiness, and footprint work under Roadmap 066. [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) is the sole active phase because no separately maintained Administrator Windows host is available.
-
-Plan 074 corrects the existing Windows lifecycle smoke and runs it inside the existing Windows CI job. A green SCM lifecycle step becomes the authoritative operational proof for Plan 073.
+Plans 066-074 are complete. The existing Windows CI job is the authoritative
+Administrator environment for the SCM lifecycle smoke; run `31040689848` at
+implementation SHA `e754f3f6b17c14bfc71234459a15237fe042736f` passed all jobs,
+including workspace tests, the release build, and the lifecycle smoke.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform defects, retain only justified simplification, and close through bounded verification | implementation complete through 073; CI-backed Windows SCM closure pending 074 |
+| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform defects, retain only justified simplification, and close through bounded verification | complete through 074; CI-backed Windows SCM verification passed |
 | [`067-truthful-drive-capacity-semantics.md`](067-truthful-drive-capacity-semantics.md) | Preserve truthful used, free, and caller-available drive capacity | complete |
 | [`068-coherent-daemon-state-and-health.md`](068-coherent-daemon-state-and-health.md) | Publish one coherent daemon state and truthful health responses | complete |
 | [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Correct config intent, runtime/error boundaries, exit codes, and omitted tests | complete |
 | [`070-bounded-client-async-simplification.md`](070-bounded-client-async-simplification.md) | Retain scheduler or EggPool simplification only when smaller and behavior-preserving | complete; no change |
 | [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe manifest/profile reductions and retain only verified improvements | complete |
 | [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Correct Windows service runtime ownership and nonblocking shutdown | complete |
-| [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | implementation complete; operational closure owned by 074 |
-| [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | planned; active |
+| [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | complete; operationally verified by 074 |
+| [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | complete; run `31040689848` passed |
 
 Dependency order:
 
@@ -52,7 +53,7 @@ The executor should:
 5. Extend only the existing Windows job: workspace tests, release build, then SCM smoke.
 6. Pin that existing job to `windows-2022`; do not add a workflow, matrix tier, or runner.
 7. Keep the smoke bounded, local to the runner, and unconditionally cleaned up.
-8. Require one ordinary green workflow run before marking Plans 066, 073, and 074 closed.
+8. Require one ordinary green workflow run before marking Plans 066, 073, and 074 closed. Completed by run `31040689848`.
 9. Correct existing records in place; do not add artifacts, evidence files, or Plan 075.
 
 ## Verification model

@@ -1,6 +1,6 @@
 # Roadmap: bounded correctness and maintainability pass
 
-Status: implementation complete through Plan 073; manual Windows SCM smoke pending.
+Status: fully closed through Plan 074; CI-backed Windows SCM verification passed.
 
 ## Purpose
 
@@ -176,10 +176,10 @@ plans/README.md
 
 ## Closure
 
-Roadmap 066 is implementation-complete through Plan 073 because Plans 067-073
-implemented the correctness criteria, not merely because the work was planned.
-Plan 070 retained no scheduler or EggPool rewrite, and Plan 071 records the
-measured release-profile decision and final verification. Plan 073 still needs
-one real Administrator Windows SCM smoke before the roadmap can be marked
-fully closed. Manual release and the single read-only CI workflow remain
-unchanged.
+Roadmap 066 is fully closed through Plan 074 because Plans 067-074
+implemented and verified the correctness criteria, not merely because the work
+was planned. Plan 070 retained no scheduler or EggPool rewrite, and Plan 071
+records the measured release-profile decision and final verification. The
+authoritative closure run is GitHub Actions `31040689848` at implementation
+SHA `e754f3f6b17c14bfc71234459a15237fe042736f`. Manual release and the single
+read-only CI workflow remain unchanged.
