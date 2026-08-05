@@ -202,8 +202,16 @@ pub fn dispatch(
     config_path: &std::path::Path,
     service: &dyn ServiceManager,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let explicit = true; // resolve_config_path already determined this
+    dispatch_with_config_intent(command, config_path, true, service)
+}
 
+/// Dispatch a command while preserving whether the config path was explicit.
+pub fn dispatch_with_config_intent(
+    command: &Command,
+    config_path: &std::path::Path,
+    explicit: bool,
+    service: &dyn ServiceManager,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Run => {
             // Delegate to the async run entry point.
@@ -618,6 +626,45 @@ mod tests {
     }
 
     // --- Host/port mutation tests ---
+
+    #[test]
+    fn implicit_missing_config_starts_from_defaults() {
+        let dir = std::env::temp_dir().join("greggd_test_cli_implicit_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let service = FakeServiceManager::new();
+
+        dispatch_with_config_intent(&Command::Port { port: 11320 }, &path, false, &service)
+            .unwrap();
+
+        assert_eq!(Config::load(&path).unwrap().port, 11320);
+        assert_eq!(service.calls(), vec!["restart"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_missing_config_does_not_write_or_restart() {
+        let dir = std::env::temp_dir().join("greggd_test_cli_explicit_missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let service = FakeServiceManager::new();
+
+        let result = dispatch_with_config_intent(
+            &Command::Host {
+                address: "127.0.0.1".parse().unwrap(),
+            },
+            &path,
+            true,
+            &service,
+        );
+
+        assert!(result.is_err());
+        assert!(!path.exists());
+        assert!(service.calls().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn host_mutation_persists_and_restarts() {

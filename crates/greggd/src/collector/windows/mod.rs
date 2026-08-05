@@ -40,7 +40,8 @@ fn collect_drives<S: WindowsSource>(source: &S) -> Option<Vec<gregg_protocol::v2
             identity: drive.root.clone(),
             name: drive.root,
             total_bytes: drive.total_bytes,
-            free_bytes: drive.free_bytes,
+            total_free_bytes: drive.total_free_bytes,
+            available_bytes: drive.available_bytes,
         })
         .collect();
     Some(crate::collector::drives::normalize(candidates))

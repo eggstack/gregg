@@ -48,7 +48,7 @@ async fn response_body_string(response: axum::response::Response) -> String {
 #[tokio::test]
 async fn new_starts_in_warming_state() {
     let state = ServerState::new();
-    assert!(!state.ready.load(Ordering::Acquire));
+    assert_eq!(state.health().await.state, ReadinessState::Warming);
     assert!(state.snapshot().await.is_none());
     let health = state.health().await;
     assert_eq!(health.state, ReadinessState::Warming);
@@ -60,7 +60,7 @@ async fn update_snapshot_makes_ready() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap.clone()).await;
 
-    assert!(state.ready.load(Ordering::Acquire));
+    assert_eq!(state.health().await.state, ReadinessState::Ready);
     let stored = state.snapshot().await.unwrap();
     assert_eq!(*stored, snap);
     let health = state.health().await;
@@ -74,7 +74,7 @@ async fn set_warming_clears_snapshot() {
     update_both(&state, snap).await;
 
     state.set_warming().await;
-    assert!(!state.ready.load(Ordering::Acquire));
+    assert_eq!(state.health().await.state, ReadinessState::Warming);
     assert!(state.snapshot().await.is_none());
     let health = state.health().await;
     assert_eq!(health.state, ReadinessState::Warming);
@@ -88,7 +88,7 @@ async fn set_failed_preserves_snapshot() {
 
     state.set_failed("collector crashed").await;
 
-    assert!(!state.ready.load(Ordering::Acquire));
+    assert_eq!(state.health().await.state, ReadinessState::Failed);
     // Snapshot is preserved for stale-serving.
     let stored = state.snapshot().await.unwrap();
     assert_eq!(*stored, snap);
@@ -96,7 +96,7 @@ async fn set_failed_preserves_snapshot() {
     assert_eq!(health.state, ReadinessState::Failed);
     assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(health.message.as_deref(), Some("collector crashed"));
-    assert_eq!(state.consecutive_failures(), 1);
+    assert_eq!(state.consecutive_failures().await, 1);
 }
 
 // ===== Config Validation Tests =====
@@ -191,6 +191,7 @@ async fn v2_status_serializes_synthetic_drives_without_changing_v1() {
             name: "/".into(),
             used_bytes: 4,
             total_bytes: 10,
+            available_bytes: None,
         }]))
         .build_payload();
     state.update_snapshot(v1.clone(), payload).await;
@@ -235,9 +236,12 @@ async fn v1_status_v2_only_returns_503_with_health() {
 
     let body_str = response_body_string(response).await;
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
-    // v1 health was never updated by update_snapshot_v2_only, so it
-    // remains Warming — this is the expected Windows behavior.
-    assert_eq!(parsed.state, ReadinessState::Warming);
+    assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.category, Some(HealthCategory::NotServing));
+    assert_eq!(
+        parsed.message.as_deref(),
+        Some("schema v1 status is unavailable on this platform")
+    );
 
     // /v2/status should return 200 with the v2 snapshot.
     let response = app.oneshot(get("/v2/status")).await.unwrap();
@@ -619,10 +623,10 @@ async fn failure_count_resets_on_recovery() {
 
     // Recovery — reset count.
     update_both(&state, snap.clone()).await;
-    assert_eq!(state.consecutive_failures(), 0);
+    assert_eq!(state.consecutive_failures().await, 0);
 
     state.set_failed("failure 1").await;
-    assert_eq!(state.consecutive_failures(), 1);
+    assert_eq!(state.consecutive_failures().await, 1);
 
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
@@ -867,7 +871,7 @@ async fn rapid_state_updates_are_consistent() {
     update_both(&state, snap.clone()).await;
 
     // Final state should be ready with the snapshot.
-    assert!(state.ready.load(Ordering::Acquire));
+    assert_eq!(state.health().await.state, ReadinessState::Ready);
     let stored = state.snapshot().await.unwrap();
     assert_eq!(*stored, snap);
     let health = state.health().await;

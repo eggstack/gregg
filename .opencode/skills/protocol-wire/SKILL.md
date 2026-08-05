@@ -27,7 +27,7 @@ The client requests v2 first, accepts only the schema matching each endpoint, an
 | `StatusPayloadV2` | `src/v2.rs` | Flat wrapper with optional `drives` |
 | `MetricCapabilities` | `src/snapshot.rs` | V1 capability flag (cpu_iowait) |
 | `MetricCapabilitiesV2` | `src/v2.rs` | V2 capability flags (4 flags) |
-| `DriveMetrics` | `src/v2.rs` | Per-drive used/total bytes |
+| `DriveMetrics` | `src/v2.rs` | Per-drive used/total and optional caller-available bytes |
 | `CommitMetrics` | `src/v2.rs` | Windows commit charge |
 | `HealthResponse` | `src/health.rs` | V1 health type |
 | `HealthResponseV2` | `src/v2.rs` | V2 health type |
@@ -48,6 +48,8 @@ A `false` capability means the corresponding field must be `None`/`null`. Valida
 - macOS: `iowait_pct` is `null` (unsupported). Never fabricate `0.0`.
 - Windows: load average, swap, iowait are all `null`/unsupported. Windows reports `commit` instead.
 - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems.
+  `available_bytes` is optional for old-v2 compatibility; when present it is
+  caller-available space and is independent of total filesystem free space.
 
 ## Validation
 

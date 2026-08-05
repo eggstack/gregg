@@ -71,7 +71,9 @@ Wire types in `gregg-protocol`. Schema version is explicit (`SCHEMA_VERSION_V1 =
 Platform-specific rules:
 - macOS: `iowait_pct` is `null` (unsupported). Never fabricate `0.0`.
 - Windows: load average, swap, iowait are all `null`/unsupported. Windows reports `commit` instead.
-- Drives: `null` = unavailable/legacy, empty list = no eligible filesystems.
+- Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
+  v2 `available_bytes` is optional caller-available capacity and may not
+  complement used bytes because of reservations or quotas.
 
 Validation uses `validate()` methods returning structured violations, not serde failures.
 

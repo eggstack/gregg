@@ -37,7 +37,9 @@ impl ValidationViolationV2 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViolationKindV2 {
     /// `schema_version` did not match the supported version.
-    UnsupportedSchemaVersion { found: u16 },
+    UnsupportedSchemaVersion {
+        found: u16,
+    },
     /// An integer count that must be positive was zero.
     ZeroNotAllowed,
     /// A percentage value was not finite (NaN or infinite).
@@ -46,6 +48,7 @@ pub enum ViolationKindV2 {
     PercentageOutOfRange,
     /// `used_bytes` exceeded `total_bytes` or `limit_bytes`.
     UsedExceedsTotal,
+    AvailableExceedsTotal,
     /// `cpu_iowait` capability and `iowait_pct` presence disagreed.
     IowaitCapabilityMismatch,
     /// `load_average` capability and `load` presence disagreed.
@@ -57,9 +60,13 @@ pub enum ViolationKindV2 {
     /// A drive display name was empty.
     EmptyDriveName,
     /// A drive display name exceeded the protocol bound.
-    DriveNameTooLong { max_bytes: usize },
+    DriveNameTooLong {
+        max_bytes: usize,
+    },
     /// The drive collection exceeded the protocol bound.
-    TooManyDrives { max_entries: usize },
+    TooManyDrives {
+        max_entries: usize,
+    },
 }
 
 impl fmt::Display for ViolationKindV2 {
@@ -73,6 +80,7 @@ impl fmt::Display for ViolationKindV2 {
             Self::PercentageNotFinite => f.write_str("percentage must be finite"),
             Self::PercentageOutOfRange => f.write_str("percentage must be in 0.0..=100.0"),
             Self::UsedExceedsTotal => f.write_str("used exceeds total/limit"),
+            Self::AvailableExceedsTotal => f.write_str("available exceeds total"),
             Self::IowaitCapabilityMismatch => {
                 f.write_str("iowait_pct must be Some(_) iff cpu_iowait capability is true")
             }
@@ -190,6 +198,15 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::UsedExceedsTotal,
                     format!("{prefix}.used_bytes"),
+                ));
+            }
+            if drive
+                .available_bytes
+                .is_some_and(|available| available > drive.total_bytes)
+            {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::AvailableExceedsTotal,
+                    format!("{prefix}.available_bytes"),
                 ));
             }
         }
@@ -444,6 +461,7 @@ mod tests {
             name: "C:\\".into(),
             used_bytes: 1,
             total_bytes: 2,
+            available_bytes: None,
         }]))
         .validate()
         .is_ok());
@@ -455,6 +473,7 @@ mod tests {
             name: String::new(),
             used_bytes: 3,
             total_bytes: 2,
+            available_bytes: None,
         }]));
         let err = payload.validate().unwrap_err();
         assert!(err.iter().any(|v| v.field == "drives[0].name"));
@@ -464,6 +483,7 @@ mod tests {
             name: "x".repeat(MAX_DRIVE_NAME_BYTES + 1),
             used_bytes: 0,
             total_bytes: 1,
+            available_bytes: None,
         }]));
         assert!(too_long
             .validate()
@@ -477,6 +497,7 @@ mod tests {
                     name: format!("/{index}"),
                     used_bytes: 0,
                     total_bytes: 1,
+                    available_bytes: None,
                 })
                 .collect(),
         ));
@@ -494,14 +515,33 @@ mod tests {
                 name: "データ /home".into(),
                 used_bytes: 1,
                 total_bytes: 2,
+                available_bytes: None,
             },
             DriveMetrics {
                 name: "C:\\".into(),
                 used_bytes: 1,
                 total_bytes: 2,
+                available_bytes: None,
             },
         ]));
         payload.validate().unwrap();
+    }
+
+    #[test]
+    fn explicit_availability_is_optional_and_bounded_independently() {
+        let mut payload = valid_payload(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 8,
+            total_bytes: 10,
+            available_bytes: Some(1),
+        }]));
+        payload.validate().unwrap();
+        payload.drives.as_mut().unwrap()[0].available_bytes = Some(11);
+        let error = payload.validate().unwrap_err();
+        assert!(error.iter().any(|violation| {
+            violation.kind == ViolationKindV2::AvailableExceedsTotal
+                && violation.field == "drives[0].available_bytes"
+        }));
     }
 
     #[test]

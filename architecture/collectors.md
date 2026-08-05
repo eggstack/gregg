@@ -47,6 +47,11 @@ v2 `StatusPayloadV2` with one call to `sample()`. No duplicate collection.
 `collector/drives.rs` provides shared normalization:
 - Validate candidates (positive total, non-empty name)
 - Deduplicate by identity
+
+Capacity candidates retain total filesystem free space and caller-available
+space separately. Linux and macOS use `f_bfree`/`f_bavail`; Windows retains
+both free values from `GetDiskFreeSpaceExW`. Used space is based on total free
+space, so reservations or quotas may make used plus available less than total.
 - Sort and truncate to `MAX_DRIVE_ENTRIES` (32)
 
 ---

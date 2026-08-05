@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Poll scheduler with generation-based concurrency control.
 //!
 //! The scheduler runs a periodic loop that spawns concurrent poll tasks
@@ -26,6 +24,7 @@ pub(crate) enum SchedulerRunError {
 /// Receiver and completion handle for an observed scheduler run.
 pub(crate) struct SchedulerRunHandle {
     pub(crate) batches: mpsc::Receiver<PollBatch>,
+    #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<Result<(), SchedulerRunError>>,
 }
 
@@ -315,6 +314,7 @@ mod tests {
             name: None,
         }
     }
+    #[tokio::test]
     async fn scheduler_produces_batches_with_increasing_generations() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);

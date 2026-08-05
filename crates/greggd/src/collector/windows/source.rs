@@ -78,7 +78,8 @@ pub struct RawLogicalDrive {
     pub root: String,
     pub drive_type: u32,
     pub total_bytes: u64,
-    pub free_bytes: u64,
+    pub total_free_bytes: u64,
+    pub available_bytes: u64,
 }
 
 /// Abstraction over native Windows system queries.
@@ -164,7 +165,8 @@ impl MockWindowsSource {
                 root: "C:\\\\".to_string(),
                 drive_type: DRIVE_FIXED,
                 total_bytes: 100,
-                free_bytes: 25,
+                total_free_bytes: 25,
+                available_bytes: 20,
             }],
             cpu: RawCpuTimes {
                 idle: 8_000,
@@ -550,7 +552,8 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 root,
                 drive_type,
                 total_bytes: total,
-                free_bytes: free,
+                total_free_bytes: free,
+                available_bytes: available,
             });
         }
         result.sort_by(|left, right| left.root.cmp(&right.root));

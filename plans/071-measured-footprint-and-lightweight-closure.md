@@ -1,6 +1,6 @@
 # Phase 071: measured footprint and lightweight closure
 
-Status: planned.
+Status: complete.
 
 Depends on: Plans 067, 068, and 069. Plan 070 may complete with retained changes or a documented no-change result.
 
@@ -254,3 +254,11 @@ Ordinary CI run:
 ```
 
 Do not create a separate evidence file.
+
+## Completion
+
+Implementation SHA: final commit on `main` (see `git log -1`)
+Host: `aarch64-unknown-linux-gnu`, Rust 1.97.1. Baseline/final sizes were
+`gregg` 4,331,512 bytes and `greggd` 2,497,000 bytes. Reqwest JSON was
+removed; panic-abort produced no size change and was reverted; thin LTO was
+retained. Local release preflight passed; CI is verified after push.

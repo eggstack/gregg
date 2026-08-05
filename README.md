@@ -74,6 +74,10 @@ The `--config` flag overrides the platform default configuration path:
 
 Configuration-changing commands validate and atomically persist the new configuration before restarting the native service.
 
+When `--config` is omitted, `greggd host` and `greggd port` may create the
+platform-default file from built-in defaults. An explicitly supplied missing
+`--config PATH` is an error and is never created by a mutation command.
+
 ### Service installation
 
 Linux (systemd):
@@ -183,7 +187,7 @@ The `greggd` daemon supports Windows x86-64 as both a foreground process and a n
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 
-On Windows, `/v1/status` and `/` return `503 Service Unavailable` with a v2 health response, because a truthful v1 snapshot cannot be produced (load, swap, and CPU I/O-wait are absent). `/v2/healthz` also reports 503 when the cached v2 snapshot exceeds the configured stale-age policy. Clients should prefer `/v2/status` on Windows.
+On Windows, `/v1/status`, `/`, and `/healthz` return `503 Service Unavailable` with a v1 `not_serving` health response because a truthful v1 snapshot cannot be produced. `/v2/status` and `/v2/healthz` are ready after a valid sample, subject to stale-age policy. Clients should prefer `/v2/status` on Windows.
 
 The daemon does not automatically create firewall rules. LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 

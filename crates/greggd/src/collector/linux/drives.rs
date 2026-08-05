@@ -115,13 +115,14 @@ fn identity(record: &MountRecord) -> String {
     )
 }
 
-fn capacity(stats: RawStatvfs) -> Option<(u64, u64)> {
+fn capacity(stats: RawStatvfs) -> Option<(u64, u64, u64)> {
     let unit = (stats.fragment_size != 0)
         .then_some(stats.fragment_size)
         .or_else(|| (stats.block_size != 0).then_some(stats.block_size))?;
     let total = stats.blocks.checked_mul(unit)?;
     let free = stats.free_blocks.checked_mul(unit)?;
-    (total > 0 && free <= total).then_some((total, free))
+    let available = stats.available_blocks.checked_mul(unit)?;
+    (total > 0 && free <= total && available <= total).then_some((total, free, available))
 }
 
 pub(crate) fn collect(
@@ -151,14 +152,15 @@ pub(crate) fn collect(
         let Ok(stats) = source.statvfs(path) else {
             continue;
         };
-        let Some((total, free)) = capacity(stats) else {
+        let Some((total, free, available)) = capacity(stats) else {
             continue;
         };
         candidates.push(DriveCandidate {
             identity: key,
             name: record.mount_point,
             total_bytes: total,
-            free_bytes: free,
+            total_free_bytes: free,
+            available_bytes: available,
         });
     }
     Ok(normalize(candidates))
@@ -183,6 +185,7 @@ mod tests {
             RawStatvfs {
                 blocks: 10,
                 free_blocks: 3,
+                available_blocks: 3,
                 fragment_size: 100,
                 block_size: 100,
             },
@@ -192,6 +195,7 @@ mod tests {
             RawStatvfs {
                 blocks: 20,
                 free_blocks: 4,
+                available_blocks: 4,
                 fragment_size: 100,
                 block_size: 100,
             },
@@ -221,10 +225,34 @@ mod tests {
             RawStatvfs {
                 blocks: u64::MAX,
                 free_blocks: 0,
+                available_blocks: 0,
                 fragment_size: 2,
                 block_size: 1,
             },
         );
         assert!(collect(&source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn preserves_total_free_and_caller_available_separately() {
+        let source = MemorySource::new()
+            .with_file("/proc/self/mountinfo", MOUNTS)
+            .with_logical_cores(1);
+        let mut source = ProcSource::for_source(Arc::new(source));
+        source.memory_source_mut().unwrap().add_statvfs(
+            "/",
+            RawStatvfs {
+                blocks: 100,
+                free_blocks: 40,
+                available_blocks: 25,
+                fragment_size: 1,
+                block_size: 1,
+            },
+        );
+
+        let drive = collect(&source).unwrap().into_iter().next().unwrap();
+        assert_eq!(drive.used_bytes, 60);
+        assert_eq!(drive.total_bytes, 100);
+        assert_eq!(drive.available_bytes, Some(25));
     }
 }

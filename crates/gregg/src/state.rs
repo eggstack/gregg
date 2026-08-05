@@ -1167,6 +1167,7 @@ mod tests {
                     name: format!("drive{index}"),
                     used_bytes: 1,
                     total_bytes: 2,
+                    available_bytes: None,
                 })
                 .collect(),
         );
@@ -1253,6 +1254,7 @@ mod tests {
                 name: "/".into(),
                 used_bytes: 1,
                 total_bytes: 2,
+                available_bytes: None,
             }]);
         assert_eq!(entry_height(&state, 0), 5);
         assert_eq!(entry_height(&state, 1), 5);
@@ -1368,11 +1370,13 @@ mod tests {
                 name: "/".into(),
                 used_bytes: 1,
                 total_bytes: 2,
+                available_bytes: None,
             },
             crate::normalized::NormalizedDrive {
                 name: "/bad".into(),
                 used_bytes: 3,
                 total_bytes: 2,
+                available_bytes: None,
             },
         ]);
         state.systems[0].latest = Some(snapshot);

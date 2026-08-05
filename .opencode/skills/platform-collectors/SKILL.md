@@ -54,7 +54,8 @@ One call to `sample()` produces `CollectedMetrics` which converts to both v1 and
 - Swap: `/proc/meminfo` — `SwapTotal` and `SwapFree`
 - Load: `/proc/loadavg`
 - Identity: `gethostname()`, `/proc/sys/kernel/osrelease`, `/etc/os-release`
-- Drives: `/proc/self/mountinfo` + `statvfs` (the only unsafe in this module)
+- Drives: `/proc/self/mountinfo` + `statvfs` (the only unsafe in this module);
+  retain both total-free (`f_bfree`) and caller-available (`f_bavail`) bytes
 
 Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_commit: false`
 
@@ -67,7 +68,8 @@ Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_co
 - Swap: `sysctl vm.swapusage`
 - Load: `getloadavg()`
 - Identity: `kern.hostname` sysctl, `SystemVersion.plist`, `kern.osrelease` sysctl
-- Drives: `getmntinfo()` — excludes devfs, autofs, `MNT_DONTBROWSE`
+- Drives: `getmntinfo()` — excludes devfs, autofs, `MNT_DONTBROWSE`; retain
+  both `f_bfree` and `f_bavail`
 
 Capabilities: `cpu_iowait: false`, `load_average: true`, `swap: false`, `memory_commit: false`
 
@@ -81,7 +83,8 @@ FFI seam: `MacNativeQueries` trait. Production: `FfiNativeQueries`. Test: `MockN
 - Memory: `GlobalMemoryStatusEx`
 - Commit: `GetPerformanceInfo` — commit charge (distinct from swap)
 - Identity: `GetComputerNameExW`, `RtlGetVersion`
-- Drives: `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW` — fixed drives only
+- Drives: `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW` — fixed drives
+  only; retain caller-available and total-free outputs separately
 
 Capabilities: `cpu_iowait: false`, `load_average: false`, `swap: false`, `memory_commit: true`
 

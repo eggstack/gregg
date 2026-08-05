@@ -106,8 +106,6 @@ where
     C: SystemCollector + 'static,
     S: std::future::Future<Output = &'static str>,
 {
-    init_logging();
-
     info!(
         version = env!("CARGO_PKG_VERSION"),
         schema_version = SCHEMA_VERSION_V1,
@@ -123,16 +121,14 @@ where
         ..ServerConfig::default()
     };
     if let Err(e) = server_config.validate() {
-        eprintln!("configuration error: {e}");
-        std::process::exit(crate::cli::ExitCode::RuntimeError as i32);
+        return Err(Box::new(e));
     }
 
     let interval_ms = match Sampler::<C, RealClock>::validate_interval(config.sample_interval_ms())
     {
         Ok(ms) => ms,
         Err(e) => {
-            eprintln!("configuration error: {e}");
-            std::process::exit(crate::cli::ExitCode::RuntimeError as i32);
+            return Err(Box::new(e));
         }
     };
 
@@ -431,18 +427,6 @@ fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str>
             "Ctrl-C"
         }
     }
-}
-
-/// Initialize structured logging from the `RUST_LOG` environment variable.
-fn init_logging() {
-    use tracing_subscriber::EnvFilter;
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .init();
 }
 
 #[cfg(test)]

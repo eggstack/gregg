@@ -23,7 +23,7 @@ depends on nothing from either.
 | `snapshot` | `src/snapshot.rs:1-164` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs:1-401` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
 | `validate` | `src/validate.rs:1-196` | V1 validation: 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs:1-778` | V2 validation: 11 violation kinds, capability/value consistency |
+| `validate_v2` | `src/validate_v2.rs:1-778` | V2 validation: 12 violation kinds, capability/value consistency |
 | `health` | `src/health.rs:1-100` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs:1-591` | Feature-gated builder fixtures for tests |
 
@@ -59,7 +59,7 @@ returns `StatusSnapshot` directly. The v2 status endpoint returns
   "swap": null,
   "commit": { "used_bytes": 1073741824, "limit_bytes": 4294967296, "usage_pct": 25.0 },
   "drives": [
-    { "name": "/", "used_bytes": 10737418240, "total_bytes": 53687091200 }
+    { "name": "/", "used_bytes": 10737418240, "total_bytes": 53687091200, "available_bytes": 42949672960 }
   ]
 }
 ```
@@ -110,6 +110,9 @@ Three states:
 - **Ready** — daemon has a valid cached snapshot; includes the snapshot
 - **Warming** — daemon alive but first counter delta not yet available
 - **Failed** — collector error; carries category + message (no paths/chains)
+
+Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
+v2 status and health remain independently ready after a valid sample.
 
 Both v1 (`HealthResponse`) and v2 (`HealthResponseV2`) have constructors for
 each state.

@@ -67,7 +67,12 @@ V2 additional optional fields:
   `capabilities.memory_commit` is `false`.
 
 V2 status may also carry `drives: Option<Vec<DriveMetrics>>`. Each record has
-only an owned display `name`, `used_bytes`, and `total_bytes`. The list is
+an owned display `name`, `used_bytes`, `total_bytes`, and optional
+`available_bytes`. `used_bytes` is derived from total filesystem free space;
+`available_bytes`, when present, is the amount allocatable to the daemon or
+service identity. Reservations or quotas can make used plus available less
+than total. Older v2 daemons omit the field and clients use
+`total_bytes - used_bytes` as a compatibility fallback. The list is
 bounded to 32 entries and names to 512 UTF-8 bytes. A missing or null field
 means unavailable/legacy; an empty list means successful enumeration with no
 eligible filesystems. The daemon does not serialize aggregate totals or

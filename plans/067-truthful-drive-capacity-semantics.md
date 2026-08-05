@@ -1,6 +1,6 @@
 # Phase 067: truthful drive capacity semantics
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 066.
 
@@ -259,3 +259,9 @@ Report:
 - any platform behavior left to ordinary hosted CI.
 
 Do not create a separate evidence document.
+
+## Completion
+
+Implemented additive optional `available_bytes`; all three collectors retain
+total-free and caller-available capacity independently, with old-v2 client
+fallback. Focused tests and native cross-target checks pass.

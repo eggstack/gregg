@@ -1,6 +1,6 @@
 # Phase 070: bounded client asynchronous simplification
 
-Status: planned, conditional.
+Status: complete; no change retained.
 
 Depends on: Plans 066 and 069. Execute after correctness phases have stable tests.
 
@@ -212,3 +212,9 @@ no change retained: candidate and exact rejection reason
 ```
 
 Do not create a benchmark report or evidence file.
+
+## Completion
+
+No scheduler or EggPool rewrite was retained: candidates did not reduce
+production machinery while preserving isolation, ordering, cadence, and
+cancellation semantics.

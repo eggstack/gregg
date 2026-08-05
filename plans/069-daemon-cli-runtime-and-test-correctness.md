@@ -1,6 +1,6 @@
 # Phase 069: daemon CLI, runtime, and test correctness
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 066. May run after or alongside Plans 067-068, but should rebase on their final state before closure.
 
@@ -213,3 +213,8 @@ Do not add a new integration harness or CI command. Existing ordinary CI provide
 ## Handoff format
 
 Report the corrected config-intent flow, exit-code mapping, logging boundary, restored test name, narrowed allowances, and verification results. Do not create an evidence file.
+
+## Completion
+
+Config intent, runtime error returns, binary exit classification, non-panicking
+logging initialization, and the executed scheduler generation test are fixed.

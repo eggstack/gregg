@@ -14,6 +14,7 @@ pub struct NormalizedDrive {
     pub name: String,
     pub used_bytes: u64,
     pub total_bytes: u64,
+    pub available_bytes: Option<u64>,
 }
 
 /// Derived aggregate capacity for a normalized drive list.
@@ -123,6 +124,7 @@ impl NormalizedSnapshot {
                     name: drive.name.clone(),
                     used_bytes: drive.used_bytes,
                     total_bytes: drive.total_bytes,
+                    available_bytes: drive.available_bytes,
                 })
                 .collect()
         });
@@ -169,14 +171,21 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     }
     let mut used_bytes: u64 = 0;
     let mut total_bytes: u64 = 0;
+    let mut available_bytes: u64 = 0;
     for drive in drives {
         if drive.total_bytes == 0 || drive.used_bytes > drive.total_bytes {
             return None;
         }
+        let available = drive
+            .available_bytes
+            .unwrap_or(drive.total_bytes - drive.used_bytes);
+        if available > drive.total_bytes {
+            return None;
+        }
         used_bytes = used_bytes.checked_add(drive.used_bytes)?;
         total_bytes = total_bytes.checked_add(drive.total_bytes)?;
+        available_bytes = available_bytes.checked_add(available)?;
     }
-    let available_bytes = total_bytes.checked_sub(used_bytes)?;
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     let usage_pct = ((used_bytes as f64) * 100.0 / (total_bytes as f64)) as f32;
     Some(DriveAggregate {
@@ -198,6 +207,7 @@ mod tests {
             name: name.into(),
             used_bytes,
             total_bytes,
+            available_bytes: None,
         }
     }
 
@@ -261,11 +271,13 @@ mod tests {
                     name: "/".into(),
                     used_bytes: 1,
                     total_bytes: 2,
+                    available_bytes: None,
                 },
                 gregg_protocol::v2::DriveMetrics {
                     name: "/home".into(),
                     used_bytes: 3,
                     total_bytes: 4,
+                    available_bytes: None,
                 },
             ]))
             .build_payload();
@@ -296,6 +308,28 @@ mod tests {
         assert_eq!(aggregate.total_bytes, 30);
         assert_eq!(aggregate.available_bytes, 25);
         assert!((aggregate.usage_pct - 16.666_666).abs() < 0.0001);
+    }
+
+    #[test]
+    fn aggregate_drives_sums_explicit_availability_independently() {
+        let aggregate = aggregate_drives(&[
+            NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 6,
+                total_bytes: 10,
+                available_bytes: Some(2),
+            },
+            NormalizedDrive {
+                name: "/home".into(),
+                used_bytes: 3,
+                total_bytes: 10,
+                available_bytes: Some(4),
+            },
+        ])
+        .unwrap();
+        assert_eq!(aggregate.used_bytes, 9);
+        assert_eq!(aggregate.total_bytes, 20);
+        assert_eq!(aggregate.available_bytes, 6);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Roadmap: bounded correctness and maintainability pass
 
-Status: planned.
+Status: complete.
 
 ## Purpose
 

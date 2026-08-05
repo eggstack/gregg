@@ -1,6 +1,6 @@
 # Phase 068: coherent daemon state and health
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 066.
 
@@ -223,3 +223,8 @@ Use existing concurrency tests to ensure the single lock remains responsive. Do 
 ## Handoff format
 
 Report the final state shape, route behavior matrix, focused test commands, and any platform behavior awaiting ordinary hosted CI. Do not create an evidence file.
+
+## Completion
+
+Server publication is one locked generation. Windows v2-only publication is
+v1 503/not-serving and v2 200/ready after sampling; stale serving remains.

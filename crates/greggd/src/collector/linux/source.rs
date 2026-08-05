@@ -292,6 +292,7 @@ impl FileSource for HostSource {
         Ok(RawStatvfs {
             blocks: stat.f_blocks,
             free_blocks: stat.f_bfree,
+            available_blocks: stat.f_bavail,
             fragment_size: stat.f_frsize,
             block_size: stat.f_bsize,
         })
@@ -411,6 +412,7 @@ impl FileSource for MemorySource {
 pub struct RawStatvfs {
     pub blocks: u64,
     pub free_blocks: u64,
+    pub available_blocks: u64,
     pub fragment_size: u64,
     pub block_size: u64,
 }

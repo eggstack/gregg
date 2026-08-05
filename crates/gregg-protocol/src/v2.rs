@@ -32,6 +32,8 @@ pub struct DriveMetrics {
     pub used_bytes: u64,
     /// Total capacity in bytes.
     pub total_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_bytes: Option<u64>,
 }
 
 /// Flat v2 status response with optional drive capacity data.

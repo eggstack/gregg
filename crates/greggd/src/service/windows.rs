@@ -251,10 +251,8 @@ pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load configuration.
     let config_path = crate::config::Config::default_path();
-    let config = crate::config::Config::load(&config_path).unwrap_or_else(|e| {
-        eprintln!("failed to load config from {}: {e}", config_path.display());
-        std::process::exit(crate::cli::ExitCode::ConfigError as i32);
-    });
+    let config = crate::config::Config::load(&config_path)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     // Construct collector.
     let collector = crate::collector::windows::WindowsCollector::new(None)

@@ -1168,6 +1168,7 @@ mod tests {
                 name: "/broken".into(),
                 used_bytes: 1,
                 total_bytes: 10,
+                available_bytes: None,
             }]))
             .build_payload();
         let mut v2_json = serde_json::to_value(valid).unwrap();
@@ -1196,6 +1197,7 @@ mod tests {
                 ),
                 used_bytes: u64::MAX / 2,
                 total_bytes: u64::MAX,
+                available_bytes: None,
             })
             .collect();
         let payload = LinuxSnapshotV2Builder::default()

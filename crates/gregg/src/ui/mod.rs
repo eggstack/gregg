@@ -738,11 +738,13 @@ mod tests {
                 name: "/".into(),
                 used_bytes: 238 * 1024 * 1024 * 1024,
                 total_bytes: 952 * 1024 * 1024 * 1024,
+                available_bytes: None,
             },
             NormalizedDrive {
                 name: "/mnt/archive".into(),
                 used_bytes: 142 * 1024 * 1024 * 1024,
                 total_bytes: 477 * 1024 * 1024 * 1024,
+                available_bytes: None,
             },
         ]);
         state.drives_expanded = true;
@@ -1386,6 +1388,7 @@ mod tests {
             name: "/archive".into(),
             used_bytes: 2 * 1024 * 1024 * 1024,
             total_bytes: 4 * 1024 * 1024 * 1024,
+            available_bytes: None,
         }]);
 
         let output = render_state(&state, 80, 5);
@@ -1408,11 +1411,13 @@ mod tests {
                         name: "/".into(),
                         used_bytes: 4,
                         total_bytes: 10,
+                        available_bytes: None,
                     },
                     DriveMetrics {
                         name: "/home".into(),
                         used_bytes: 6,
                         total_bytes: 10,
+                        available_bytes: None,
                     },
                 ]))
                 .build_payload(),
@@ -1423,6 +1428,7 @@ mod tests {
                 name: "/Volumes/data".into(),
                 used_bytes: 1,
                 total_bytes: 4,
+                available_bytes: None,
             }]))
             .build_payload();
         mac.snapshot.system.os_name = "macos".into();
@@ -1438,6 +1444,7 @@ mod tests {
                     name: "C:\\".into(),
                     used_bytes: 2,
                     total_bytes: 8,
+                    available_bytes: None,
                 }]))
                 .build_payload(),
             4,

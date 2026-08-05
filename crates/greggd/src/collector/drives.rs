@@ -8,7 +8,8 @@ pub(crate) struct DriveCandidate {
     pub(crate) identity: String,
     pub(crate) name: String,
     pub(crate) total_bytes: u64,
-    pub(crate) free_bytes: u64,
+    pub(crate) total_free_bytes: u64,
+    pub(crate) available_bytes: u64,
 }
 
 /// Convert valid native candidates into deterministic, bounded wire records.
@@ -18,7 +19,8 @@ pub(crate) fn normalize(mut candidates: Vec<DriveCandidate>) -> Vec<DriveMetrics
             && !candidate.name.is_empty()
             && candidate.name.len() <= MAX_DRIVE_NAME_BYTES
             && candidate.total_bytes > 0
-            && candidate.free_bytes <= candidate.total_bytes
+            && candidate.total_free_bytes <= candidate.total_bytes
+            && candidate.available_bytes <= candidate.total_bytes
     });
 
     candidates.sort_by(|left, right| {
@@ -34,8 +36,9 @@ pub(crate) fn normalize(mut candidates: Vec<DriveCandidate>) -> Vec<DriveMetrics
         .into_iter()
         .map(|candidate| DriveMetrics {
             name: candidate.name,
-            used_bytes: candidate.total_bytes - candidate.free_bytes,
+            used_bytes: candidate.total_bytes - candidate.total_free_bytes,
             total_bytes: candidate.total_bytes,
+            available_bytes: Some(candidate.available_bytes),
         })
         .collect()
 }
@@ -51,26 +54,30 @@ mod tests {
                 identity: "same".to_string(),
                 name: "/z".to_string(),
                 total_bytes: 10,
-                free_bytes: 2,
+                total_free_bytes: 2,
+                available_bytes: 2,
             },
             DriveCandidate {
                 identity: "same".to_string(),
                 name: "/a".to_string(),
                 total_bytes: 10,
-                free_bytes: 3,
+                total_free_bytes: 3,
+                available_bytes: 3,
             },
             DriveCandidate {
                 identity: "bad".to_string(),
                 name: "/bad".to_string(),
                 total_bytes: 1,
-                free_bytes: 2,
+                total_free_bytes: 2,
+                available_bytes: 2,
             },
         ];
         candidates.extend((0..(MAX_DRIVE_ENTRIES + 2)).map(|index| DriveCandidate {
             identity: format!("id-{index}"),
             name: format!("/{index}"),
             total_bytes: 10,
-            free_bytes: 1,
+            total_free_bytes: 1,
+            available_bytes: 1,
         }));
 
         let normalized = normalize(candidates);

@@ -40,12 +40,16 @@ fn collect_drives<S: ffi::MacNativeQueries>(
             let unit = (record.block_size > 0).then_some(record.block_size)?;
             let total = record.total_blocks.checked_mul(unit)?;
             let free = record.free_blocks.checked_mul(unit)?;
-            (total > 0 && free <= total).then_some(crate::collector::drives::DriveCandidate {
-                identity: format!("{}:{}", record.fsid.0, record.fsid.1),
-                name: record.mount_point,
-                total_bytes: total,
-                free_bytes: free,
-            })
+            let available = record.available_blocks.checked_mul(unit)?;
+            (total > 0 && free <= total && available <= total).then_some(
+                crate::collector::drives::DriveCandidate {
+                    identity: format!("{}:{}", record.fsid.0, record.fsid.1),
+                    name: record.mount_point,
+                    total_bytes: total,
+                    total_free_bytes: free,
+                    available_bytes: available,
+                },
+            )
         })
         .collect();
     Some(crate::collector::drives::normalize(candidates))

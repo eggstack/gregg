@@ -91,6 +91,7 @@ pub struct RawMountedFilesystem {
     pub flags: u32,
     pub total_blocks: u64,
     pub free_blocks: u64,
+    pub available_blocks: u64,
     pub block_size: u64,
 }
 
@@ -217,6 +218,7 @@ impl MockNativeQueries {
                 flags: MNT_LOCAL,
                 total_blocks: 100,
                 free_blocks: 25,
+                available_blocks: 20,
                 block_size: 4096,
             }],
             cpu: RawCpuTicks {
@@ -454,6 +456,7 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
             flags: stat.f_flags,
             total_blocks: stat.f_blocks,
             free_blocks: stat.f_bfree,
+            available_blocks: stat.f_bavail,
             block_size: u64::try_from(stat.f_bsize).map_err(|_| {
                 CollectError::new(CollectErrorKind::Numeric, "negative macOS block size")
             })?,

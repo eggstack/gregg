@@ -21,12 +21,12 @@ Local tests are the primary development path. The one existing GitHub Actions wo
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | planned |
-| [`067-truthful-drive-capacity-semantics.md`](067-truthful-drive-capacity-semantics.md) | Add additive optional v2 availability, distinguish total-free from caller-available space on all platforms, and preserve old-daemon compatibility | planned; depends on 066 |
-| [`068-coherent-daemon-state-and-health.md`](068-coherent-daemon-state-and-health.md) | Publish one coherent server-state generation and make v1/v2 status and health semantics consistent, including Windows v2-only operation | planned; depends on 066 |
-| [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Fix implicit/default config mutation, keep exit/logging at the binary boundary, make exit codes truthful, and restore an omitted scheduler test | planned; depends on 066 |
-| [`070-bounded-client-async-simplification.md`](070-bounded-client-async-simplification.md) | Independently evaluate scheduler and EggPool worker simplification under strict retain-only-if-smaller behavior-preserving gates | planned, conditional; depends on 069 |
-| [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe feature/profile changes and close once through the existing local preflight and ordinary CI | planned; depends on 067-069 and the truthful 070 outcome |
+| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | complete |
+| [`067-truthful-drive-capacity-semantics.md`](067-truthful-drive-capacity-semantics.md) | Add additive optional v2 availability, distinguish total-free from caller-available space on all platforms, and preserve old-daemon compatibility | complete |
+| [`068-coherent-daemon-state-and-health.md`](068-coherent-daemon-state-and-health.md) | Publish one coherent server-state generation and make v1/v2 status and health semantics consistent, including Windows v2-only operation | complete |
+| [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Fix implicit/default config mutation, keep exit/logging at the binary boundary, make exit codes truthful, and restore an omitted scheduler test | complete |
+| [`070-bounded-client-async-simplification.md`](070-bounded-client-async-simplification.md) | Independently evaluate scheduler and EggPool worker simplification under strict retain-only-if-smaller behavior-preserving gates | complete; no change |
+| [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe feature/profile changes and close once through the existing local preflight and ordinary CI | complete |
 
 Dependency order:
 
