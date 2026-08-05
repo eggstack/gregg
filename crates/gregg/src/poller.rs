@@ -989,8 +989,8 @@ mod tests {
     async fn config_change_between_polls() {
         // Simulate config change by polling different endpoints on each call.
         let body = valid_snapshot_json();
-        let url1 = mock_server(body.clone().into_bytes(), "200 OK").await;
-        let url2 = mock_server(body.into_bytes(), "200 OK").await;
+        let url1 = mock_server_v1_v2(None, (body.clone().into_bytes(), "200 OK".to_string())).await;
+        let url2 = mock_server_v1_v2(None, (body.into_bytes(), "200 OK".to_string())).await;
 
         let ep1 = endpoint_for(&url1);
         let ep2 = endpoint_for(&url2);

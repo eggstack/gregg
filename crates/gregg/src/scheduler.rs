@@ -1023,7 +1023,7 @@ mod tests {
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
-        let scheduler = PollScheduler::new(clock, client, Duration::from_millis(50), 4);
+        let scheduler = PollScheduler::new(clock, client, Duration::from_millis(200), 4);
         let cancel = CancellationToken::new();
         let (refresh_tx, refresh_rx) = refresh_channel();
         let mut rx = scheduler.run(vec![ep], cancel.clone(), refresh_rx);
@@ -1056,10 +1056,10 @@ mod tests {
         let t3 = std::time::Instant::now();
 
         // Verify the interval between generations 2 and 3 is approximately
-        // 50ms (the configured interval), not a tight loop.
+        // 200ms (the configured interval), not a tight loop.
         let elapsed = t3.saturating_duration_since(t2);
         assert!(
-            elapsed >= Duration::from_millis(30),
+            elapsed >= Duration::from_millis(100),
             "generations should be spaced by the interval, not busy-looping; elapsed = {elapsed:?}"
         );
 
