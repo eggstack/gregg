@@ -61,6 +61,9 @@ cargo test -p greggd --all-features -- <test_name>
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
 - **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
+- Daemon runtime and CLI library paths return errors; only the `greggd` binary
+  boundary prints diagnostics, initializes tracing with `try_init()`, and maps
+  errors to exit codes.
 
 ## Workspace structure
 

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! HTTP client and poll types for fetching status snapshots from greggd
 //! endpoints.
 //!
@@ -90,6 +88,7 @@ pub struct PollResult {
     /// The system ID of the endpoint that was polled.
     pub system_id: String,
     /// The endpoint that was polled.
+    #[allow(dead_code)] // Retained for diagnostics and future per-endpoint UI detail.
     pub endpoint: Endpoint,
     /// The outcome of the poll.
     pub outcome: PollOutcome,
@@ -132,6 +131,7 @@ pub struct PollBatch {
     /// Monotonically increasing generation counter.
     pub generation: u64,
     /// When the batch was started.
+    #[allow(dead_code)] // Retained for latency diagnostics and generation tracing.
     pub started_at: Instant,
     /// When the last result in the batch completed.
     pub completed_at: Instant,

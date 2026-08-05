@@ -90,3 +90,46 @@ fn init_logging() {
         .with_target(false)
         .try_init();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn classify_error_preserves_daemon_exit_taxonomy() {
+        let config = greggd::config::ConfigError::Io {
+            path: PathBuf::from("config.toml"),
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+        };
+        assert_eq!(classify_error(&config), greggd::cli::ExitCode::ConfigError);
+
+        let permission = greggd::server::error::ServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        assert_eq!(
+            classify_error(&permission),
+            greggd::cli::ExitCode::PermissionDenied
+        );
+
+        let service = greggd::service::ServiceError::AccessDenied;
+        assert_eq!(
+            classify_error(&service),
+            greggd::cli::ExitCode::PermissionDenied
+        );
+
+        let runtime = greggd::server::error::ServerError::Runtime(std::io::Error::other("runtime"));
+        assert_eq!(
+            classify_error(&runtime),
+            greggd::cli::ExitCode::RuntimeError
+        );
+
+        let validation = greggd::cli::ConfigValidationError(Vec::new());
+        assert_eq!(
+            classify_error(&validation),
+            greggd::cli::ExitCode::ConfigError
+        );
+        assert_eq!(greggd::cli::ExitCode::Success as i32, 0);
+    }
+}

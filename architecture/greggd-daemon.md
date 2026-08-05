@@ -18,9 +18,9 @@ HTTP, and manages its own OS service lifecycle.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs:1-45` | Entry point, platform collector dispatch |
+| `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs:1-12` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs:1-863` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port` |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port`; config-intent-aware dispatch |
 | `run` | `src/run.rs:1-738` | Foreground daemon: wiring + supervision loop |
 | `config` | `src/config.rs:1-841` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs:1-867` | Periodic sampling loop, readiness lifecycle |
@@ -116,6 +116,10 @@ Platform defaults:
 - macOS: `/Library/Application Support/gregg/greggd.toml`
 - Windows: `%ProgramData%\gregg\greggd.toml`
 
+When `host` or `port` is run without `--config`, a missing default file is
+initialized from `Config::default()`. A missing explicitly supplied path is a
+configuration error and is neither written nor followed by a service restart.
+
 ### CLI subcommands
 
 | Command | Purpose |
@@ -127,6 +131,13 @@ Platform defaults:
 | `croncheck` | Check service status (scripting) |
 | `host` | Mutate bind host and restart |
 | `port` | Mutate port and restart |
+
+The binary boundary owns logging initialization and error presentation. The
+runtime and CLI library functions return errors and never call
+`std::process::exit()`. `main` installs tracing with non-panicking `try_init()`,
+prints one diagnostic for failures, and applies the exit-code taxonomy: `0`
+success, `1` configuration, `2` service management, `3` runtime, and `4`
+permission denied.
 
 ### Service management
 

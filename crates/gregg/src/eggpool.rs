@@ -1,7 +1,5 @@
 //! Bounded `EggPool` summary client and pane refresh worker.
 
-#![allow(dead_code)]
-
 use std::env;
 use std::ffi::OsString;
 use std::sync::Arc;
@@ -128,6 +126,7 @@ pub enum EggpoolFetchOutcome {
     /// The JSON decoded but failed semantic validation.
     InvalidSummary,
     /// The request was superseded or the worker was shut down.
+    #[allow(dead_code)] // Distinguishes cancellation from transport failures.
     Cancelled,
 }
 
@@ -139,6 +138,7 @@ pub struct EggpoolResult {
     /// Period requested by this attempt.
     pub period: EggpoolPeriod,
     /// Request start time.
+    #[allow(dead_code)] // Retained for refresh-latency diagnostics.
     pub started_at: Instant,
     /// Request completion time.
     pub completed_at: Instant,

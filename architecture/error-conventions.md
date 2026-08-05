@@ -21,6 +21,13 @@ Command entry points follow these rules:
   runtime error, etc. Exact codes are defined per command in their phase plan.
 - Configuration writes are atomic and validated/reloaded after persistence.
 
+`greggd` keeps process termination at `src/main.rs`. Its reusable CLI and
+runtime paths return errors without printing or exiting; the binary formats a
+failure once and classifies it as configuration (`1`), service (`2`), runtime
+(`3`), or permission denied (`4`). Logging is also initialized at that binary
+boundary with a fallible subscriber setup, so embedding and tests remain safe
+when a global subscriber already exists.
+
 The protocol crate's own validation surface is structured: a `validate()`
 method returns a list of violations rather than panicking or wrapping serde
 deserialization with opaque checks. This keeps forward compatibility

@@ -41,6 +41,8 @@ const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 #[derive(Debug)]
 pub(crate) enum RunOutcome {
     /// A shutdown signal was received — normal exit.
+    // The signal reason is retained for tracing/debugging even though normal
+    // shutdown classification does not inspect it.
     #[allow(dead_code)]
     Signal(&'static str),
     /// The HTTP server task completed (or panicked).
@@ -148,10 +150,9 @@ where
     // Bind the TCP listener before spawning tasks so bind failures
     // are surfaced immediately rather than silently lost.
     let addr = server_config.socket_addr();
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        eprintln!("failed to bind {addr}: {e}");
-        Box::new(ServerError::Bind(e)) as Box<dyn std::error::Error>
-    })?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| Box::new(ServerError::Bind(e)) as Box<dyn std::error::Error>)?;
 
     // Spawn the sampler task.
     let sampler_handle = {
@@ -229,15 +230,12 @@ where
                 match result {
                     Ok(Ok(())) => {
                         // Server exited cleanly without a shutdown signal — unexpected.
-                        eprintln!("HTTP server exited unexpectedly");
                         RunOutcome::Server(Ok(Ok(())))
                     }
                     Ok(Err(e)) => {
-                        eprintln!("HTTP server error: {e}");
                         RunOutcome::Server(Ok(Err(e)))
                     }
                     Err(e) => {
-                        eprintln!("HTTP server task panicked: {e}");
                         RunOutcome::Server(Err(e))
                     }
                 }
@@ -246,11 +244,9 @@ where
                 match result {
                     Ok(()) => {
                         // Sampler exited cleanly without a shutdown signal — unexpected.
-                        eprintln!("sampler exited unexpectedly");
                         RunOutcome::Sampler(Ok(()))
                     }
                     Err(e) => {
-                        eprintln!("sampler task panicked: {e}");
                         RunOutcome::Sampler(Err(e))
                     }
                 }

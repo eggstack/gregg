@@ -175,24 +175,21 @@ pub fn mutate_and_restart(
 
     let violations = config.validate();
     if !violations.is_empty() {
-        eprintln!("configuration validation failed:");
-        for v in &violations {
-            eprintln!("  - {v}");
-        }
         return Err(Box::new(ConfigValidationError(violations)));
     }
 
     config.write_atomic(path)?;
 
-    service.restart().map_err(|e| {
-        eprintln!("failed to restart service: {e}");
-        Box::new(e) as Box<dyn std::error::Error>
-    })?;
+    service
+        .restart()
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
     Ok(())
 }
 
-/// Dispatch a subcommand.
+/// Dispatch a subcommand using the path's current existence as a compatibility
+/// fallback. The binary entry point uses [`dispatch_with_config_intent`] so a
+/// missing explicit path remains distinguishable from a missing default path.
 ///
 /// # Errors
 ///
@@ -202,7 +199,7 @@ pub fn dispatch(
     config_path: &std::path::Path,
     service: &dyn ServiceManager,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    dispatch_with_config_intent(command, config_path, true, service)
+    dispatch_with_config_intent(command, config_path, config_path.exists(), service)
 }
 
 /// Dispatch a command while preserving whether the config path was explicit.
@@ -219,24 +216,21 @@ pub fn dispatch_with_config_intent(
             unreachable!("Command::Run is handled in main.rs")
         }
         Command::Start => {
-            service.start().map_err(|e| {
-                eprintln!("failed to start service: {e}");
-                Box::new(e) as Box<dyn std::error::Error>
-            })?;
+            service
+                .start()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             Ok(())
         }
         Command::Stop => {
-            service.stop().map_err(|e| {
-                eprintln!("failed to stop service: {e}");
-                Box::new(e) as Box<dyn std::error::Error>
-            })?;
+            service
+                .stop()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             Ok(())
         }
         Command::Restart => {
-            service.restart().map_err(|e| {
-                eprintln!("failed to restart service: {e}");
-                Box::new(e) as Box<dyn std::error::Error>
-            })?;
+            service
+                .restart()
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
             Ok(())
         }
         Command::Croncheck => match service.is_active() {
@@ -246,16 +240,12 @@ pub fn dispatch_with_config_intent(
             }
             Ok(false) => {
                 // Not active — start it.
-                service.start().map_err(|e| {
-                    eprintln!("failed to start service: {e}");
-                    Box::new(e) as Box<dyn std::error::Error>
-                })?;
+                service
+                    .start()
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
                 Ok(())
             }
-            Err(e) => {
-                eprintln!("could not determine service state: {e}");
-                Err(Box::new(e))
-            }
+            Err(e) => Err(Box::new(e)),
         },
         Command::Host { address } => mutate_and_restart(
             config_path,

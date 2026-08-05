@@ -58,6 +58,8 @@ greggd start
 greggd stop
 greggd restart
 greggd croncheck
+greggd host ADDRESS [--config PATH]
+greggd port PORT [--config PATH]
 ```
 
 `greggd run` is the foreground process used by systemd, launchd, or interactive diagnostics. It samples metrics on a configurable interval and serves a cached immutable snapshot over HTTP/1. The daemon does not self-daemonize or maintain PID files.
@@ -77,6 +79,11 @@ Configuration-changing commands validate and atomically persist the new configur
 When `--config` is omitted, `greggd host` and `greggd port` may create the
 platform-default file from built-in defaults. An explicitly supplied missing
 `--config PATH` is an error and is never created by a mutation command.
+
+The daemon uses stable exit codes: `0` for success, `1` for configuration
+errors, `2` for service-manager errors, `3` for runtime errors, and `4` for
+permission-denied failures. Diagnostics are emitted once by the executable;
+the reusable daemon runtime returns errors instead of terminating the process.
 
 ### Service installation
 

@@ -24,6 +24,8 @@ pub(crate) enum SchedulerRunError {
 /// Receiver and completion handle for an observed scheduler run.
 pub(crate) struct SchedulerRunHandle {
     pub(crate) batches: mpsc::Receiver<PollBatch>,
+    // The public run API returns only `batches`; tests use this handle to
+    // assert that cancellation completes the scheduler task cleanly.
     #[allow(dead_code)]
     pub(crate) task: tokio::task::JoinHandle<Result<(), SchedulerRunError>>,
 }
