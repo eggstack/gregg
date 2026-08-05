@@ -1,6 +1,6 @@
 # Roadmap: bounded correctness and maintainability pass
 
-Status: complete.
+Status: implementation complete through Plan 073; manual Windows SCM smoke pending.
 
 ## Purpose
 
@@ -16,6 +16,7 @@ The work is ordered so correctness lands before optional cleanup:
 -> 070 bounded client asynchronous simplification
 -> 071 measured footprint and lightweight closure
 -> 072 Windows service runtime and record correction
+-> 073 native Windows SCM entry and readiness correction
 ```
 
 Phases 067 and 068 may be implemented independently, but Phase 071 closes only after all retained phases are complete. Phase 070 is conditional: retain a rewrite only when it demonstrably reduces production code and preserves behavior. A documented no-change result is acceptable.
@@ -168,13 +169,17 @@ plans/068-coherent-daemon-state-and-health.md
 plans/069-daemon-cli-runtime-and-test-correctness.md
 plans/070-bounded-client-async-simplification.md
 plans/071-measured-footprint-and-lightweight-closure.md
+plans/072-windows-service-runtime-and-record-correction.md
+plans/073-native-windows-scm-entry-and-readiness-correction.md
 plans/README.md
 ```
 
 ## Closure
 
-Roadmap 066 is complete because Plans 067-072 implemented and verified the
-correctness criteria, not merely because the work was planned. Plan 070
-retained no scheduler or EggPool rewrite, and Plan 071 records the measured
-release-profile decision and final verification. Manual release and the
-single read-only CI workflow remain unchanged.
+Roadmap 066 is implementation-complete through Plan 073 because Plans 067-073
+implemented the correctness criteria, not merely because the work was planned.
+Plan 070 retained no scheduler or EggPool rewrite, and Plan 071 records the
+measured release-profile decision and final verification. Plan 073 still needs
+one real Administrator Windows SCM smoke before the roadmap can be marked
+fully closed. Manual release and the single read-only CI workflow remain
+unchanged.

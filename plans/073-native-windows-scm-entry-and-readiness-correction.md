@@ -1,6 +1,6 @@
 # Phase 073: native Windows SCM entry and readiness correction
 
-Status: planned.
+Status: active.
 
 Depends on: Plan 072.
 

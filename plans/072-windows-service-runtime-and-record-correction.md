@@ -294,7 +294,10 @@ a53542b7bd5e74b68726191074500aa1ceb6a6d9
 066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072
 ```
 
-Do not create an evidence file, closure manifest, Plan 073, or archived duplicate.
+Do not create an evidence file, closure manifest, or archived duplicate. Plan
+073 is a separate implementation correction for the native SCM dispatcher and
+service readiness ordering discovered after this phase; it is not an
+evidence-only closure plan.
 
 ### Step 9: reconcile affected architecture text
 
@@ -386,5 +389,11 @@ async-main service defect is recorded as corrected by Plan 072.
 Plan 071 SHA/Reqwest correction: footprint SHA corrected to
 `a53542b7bd5e74b68726191074500aa1ceb6a6d9`; the unused `json` feature removal
 is recorded truthfully.
-Roadmap/index correction: Plans 066-072 are complete in the roadmap and index;
-no Plan 073 or evidence-only closure record was created.
+Roadmap/index correction: Plans 066-072 were complete in the roadmap and index
+at this phase's closure; the later native dispatcher/readiness correction is
+tracked separately by Plan 073.
+
+Post-phase correction: review after this phase found that the executable still
+bypassed the native SCM dispatcher and published service readiness too early.
+Plan 073 owns that separate dispatcher, config-path, readiness, and
+manual-smoke correction.

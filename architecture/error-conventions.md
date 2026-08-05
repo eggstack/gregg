@@ -28,10 +28,12 @@ failure once and classifies it as configuration (`1`), service (`2`), runtime
 boundary with a fallible subscriber setup, so embedding and tests remain safe
 when a global subscriber already exists.
 
-Windows SCM service callbacks follow the same boundary: they report service
-status and return runtime errors, but do not print diagnostics. Stop and
-Shutdown are forwarded to the shared daemon runtime through a nonblocking
-one-shot signal.
+Windows SCM dispatcher failures return to `main` for the ordinary diagnostic
+and exit-code boundary. Once the generated `ServiceMain` callback has been
+invoked, worker failures are logged once by that callback, represented by a
+best-effort `STOPPED` status with a nonzero exit code, and are not returned
+through ordinary `main` propagation. Stop and Shutdown are forwarded to the
+shared daemon runtime through a nonblocking one-shot signal.
 
 The protocol crate's own validation surface is structured: a `validate()`
 method returns a list of violations rather than panicking or wrapping serde

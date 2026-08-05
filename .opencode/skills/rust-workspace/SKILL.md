@@ -72,8 +72,11 @@ cargo test -p greggd --all-features -- <test_name>
   boundary prints diagnostics, initializes tracing with `try_init()`, and maps
   errors to exit codes.
 - The binary selects command mode before creating Tokio. Foreground `run` and
-  Windows SCM `service` each own one current-thread runtime; SCM callbacks must
-  signal shutdown without blocking or entering a runtime.
+  Windows SCM `service` first enters `service_dispatcher::start`; its generated
+  `ServiceMain` worker owns one current-thread runtime and receives the
+  resolved config path through one process-local launch context. SCM callbacks
+  must signal shutdown without blocking or entering a runtime, and service
+  `RUNNING` is published only after the shared daemon listener binds.
 
 ## Workspace structure
 

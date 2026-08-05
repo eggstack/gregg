@@ -53,7 +53,10 @@ Full Windows service lifecycle smoke test (manual, not CI):
 - Install → start → health check → stop → restart → bind failure →
   reinstall → uninstall
 
-Requires Administrator.
+It invokes the installed `greggd.exe` explicitly for lifecycle/configuration
+commands, verifies the selected config and mutated port remain consistent, and
+cleans up the service, binary, and temporary config in a bounded `finally`
+path. Requires Administrator.
 
 ### run-mixed-fleet-sustained.py
 
@@ -96,6 +99,7 @@ All install scripts:
 **Windows** (`install-windows.ps1`):
 - Copies binary to `%ProgramFiles%\Gregg\greggd.exe`
 - Creates `%ProgramData%\gregg\greggd.toml`
+- Uses the resolved `-ConfigPath` (explicit or default) in the SCM image path
 - Registers service via `sc.exe create`
 - `LocalService` account, `auto` start
 - Failure recovery: 3 restarts with 60s delays

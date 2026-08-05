@@ -70,13 +70,22 @@ aborted.
 
 The `greggd` binary dispatches synchronously before creating Tokio. Foreground
 `run` creates exactly one current-thread runtime at the binary boundary;
-Windows `service` is selected there and creates exactly one current-thread
-runtime inside its SCM entry path. No service path enters or blocks a second
-runtime. SCM Stop and Shutdown callbacks only consume a shared one-shot sender;
-the async receiver supplies a stable reason to the shared
-`run_with_shutdown()` supervision core. Interrogate succeeds without stopping
-the daemon, duplicate stop controls are harmless, and service errors return to
-the executable for one diagnostic and the existing exit-code classification.
+Windows `service` first calls `service_dispatcher::start`, which connects the
+process to the SCM and invokes the generated `ServiceMain` callback. The
+callback reads the resolved config path from one process-local launch context;
+the service worker then creates exactly one current-thread runtime. No service
+path enters or blocks a second runtime.
+
+The worker reports `START_PENDING`, loads the selected config, constructs the
+collector and runtime, and runs the shared daemon core. That core binds the
+listener before invoking its readiness callback, so Windows reports `RUNNING`
+only after binding succeeds. Any post-registration startup or runtime failure
+makes a best-effort `STOPPED` report with a nonzero exit code. SCM Stop and
+Shutdown callbacks only consume a shared one-shot sender; the async receiver
+supplies a stable reason to `run_with_shutdown()`. Interrogate succeeds without
+stopping the daemon, duplicate stop controls are harmless, and dispatcher
+errors return to the executable while callback/worker errors are logged once
+by `ServiceMain`.
 
 ### HTTP endpoints
 
@@ -159,8 +168,9 @@ Platform adapters:
 - **systemd** (`systemd.rs`) — wraps `systemctl` with fixed argument arrays
 - **launchd** (`launchd.rs`) — state machine: NotLoaded → bootstrap, Loaded →
   kickstart, Running → no-op
-- **Windows SCM** (`windows.rs`) — wraps `windows-service` crate with
-  `ScmAdapter` trait for testability
+- **Windows SCM** (`windows.rs`) — uses the `windows-service` dispatcher and
+  generated `ServiceMain` for the daemon entry, a one-shot control signal for
+  Stop/Shutdown, and an `ScmAdapter` trait for lifecycle-manager testability
 
 ## Collector architecture
 

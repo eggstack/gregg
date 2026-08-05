@@ -5,13 +5,18 @@
 //! `run_service`, which is invoked when the binary is launched by the
 //! SCM with the `service` subcommand.
 //!
+//! The executable's hidden `service` command first enters the SCM dispatcher,
+//! which invokes the generated `ServiceMain` callback. The callback runs the
+//! service worker and keeps its selected config path in a process-local launch
+//! context.
+//!
 //! The CLI `start`/`stop`/`restart`/`croncheck` commands use
 //! `WindowsServiceManager` to control the service through native APIs.
 //!
 //! ## Architecture
 //!
 //! ```text
-//! SCM ─── run_service() ──→ run_with_shutdown() ──→ core daemon
+//! SCM ─── service_dispatcher ──→ ServiceMain ──→ run_with_shutdown() ──→ core daemon
 //! CLI ─── WindowsServiceManager ──→ native service APIs
 //! ```
 //!
@@ -31,11 +36,26 @@ use tokio::sync::oneshot;
 #[cfg(any(test, target_os = "windows"))]
 use super::{ServiceError, ServiceManager, ServiceState};
 
+#[cfg(target_os = "windows")]
+use std::path::{Path, PathBuf};
+
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
+
+#[cfg(target_os = "windows")]
+use windows_service::{define_windows_service, service_dispatcher};
+
 /// Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "greggd";
 
 /// Display name shown in the Windows Services console.
 pub const SERVICE_DISPLAY_NAME: &str = "Gregg Metrics Daemon";
+
+#[cfg(target_os = "windows")]
+static SERVICE_LAUNCH_CONFIG: OnceLock<PathBuf> = OnceLock::new();
+
+#[cfg(target_os = "windows")]
+define_windows_service!(ffi_service_main, service_main);
 
 /// Maximum time (ms) to wait for a state transition before reporting timeout.
 #[cfg(any(test, target_os = "windows"))]
@@ -228,93 +248,110 @@ fn send_shutdown(sender: &ShutdownSender, reason: &'static str) {
     }
 }
 
-/// Windows SCM service entry point.
-///
-/// Called when `greggd.exe` is invoked by the SCM with the `service`
-/// internal command. This function:
-///
-/// 1. Registers a service control handler with the SCM.
-/// 2. Reports `START_PENDING`.
-/// 3. Loads configuration from the default Windows path.
-/// 4. Constructs a Windows collector.
-/// 5. Binds the HTTP listener.
-/// 6. Reports `RUNNING`.
-/// 7. Enters the shared daemon supervision via `run_with_shutdown`.
-/// 8. Reports `STOPPED` on exit.
-///
-/// # Errors
-///
-/// Returns an error if the service fails to start.
+/// Connect the process to the SCM dispatcher and wait for its callback.
 #[cfg(target_os = "windows")]
-pub fn run_service() -> Result<(), Box<dyn std::error::Error>> {
-    use windows_service::service::{ServiceControl, ServiceState as WsState};
-    use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+pub fn start_service_dispatcher(config_path: PathBuf) -> Result<(), Box<dyn std::error::Error>> {
+    SERVICE_LAUNCH_CONFIG.set(config_path).map_err(|_| {
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "Windows service launch context was already initialized",
+        )) as Box<dyn std::error::Error>
+    })?;
+
+    service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+}
+
+#[cfg(target_os = "windows")]
+fn service_main(_service_arguments: Vec<std::ffi::OsString>) {
+    let result = SERVICE_LAUNCH_CONFIG
+        .get()
+        .ok_or_else(|| {
+            Box::new(std::io::Error::other(
+                "Windows service launch context is missing",
+            )) as Box<dyn std::error::Error>
+        })
+        .and_then(|config_path| run_service_worker(config_path));
+
+    if let Err(error) = result {
+        tracing::error!(error = %error, "Windows service exited with an error");
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn run_service_worker(config_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use windows_service::service::ServiceState as WsState;
+    use windows_service::service_control_handler;
 
     // The handler only sends into this one-shot signal. It never waits for the
     // daemon, so SCM callbacks remain nonblocking.
     let (shutdown_sender, shutdown_receiver) = shutdown_channel();
+    let status_handle = service_control_handler::register(SERVICE_NAME, move |control| {
+        handle_service_control(control, &shutdown_sender)
+    })
+    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    let status_handle =
-        service_control_handler::register(SERVICE_NAME, move |control| match control {
-            ServiceControl::Stop | ServiceControl::Shutdown => {
-                let reason = match control {
-                    ServiceControl::Stop => "SCM_STOP",
-                    ServiceControl::Shutdown => "SCM_SHUTDOWN",
-                    _ => unreachable!(),
-                };
-                send_shutdown(&shutdown_sender, reason);
-                ServiceControlHandlerResult::NoError
-            }
-            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            _ => ServiceControlHandlerResult::NotImplemented,
-        })
+    let result = (|| {
+        update_status(
+            status_handle,
+            WsState::StartPending,
+            0,
+            Duration::from_secs(5),
+        )
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
-    // Report START_PENDING.
-    update_status(
+        let config = crate::config::Config::load(config_path)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        let collector = crate::collector::windows::WindowsCollector::new(None)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        let shutdown_future =
+            async move { shutdown_receiver.await.unwrap_or("SCM_CHANNEL_CLOSED") };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+        rt.block_on(crate::run::run_with_shutdown_on_ready(
+            collector,
+            config,
+            shutdown_future,
+            || {
+                update_status(status_handle, WsState::Running, 0, Duration::from_secs(10))
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+            },
+        ))
+    })();
+
+    let exit_code = u32::from(result.is_err());
+    let _ = update_status(
         status_handle,
-        WsState::StartPending,
-        0,
+        WsState::Stopped,
+        exit_code,
         Duration::from_secs(5),
     );
-
-    // Load configuration.
-    let config_path = crate::config::Config::default_path();
-    let config = crate::config::Config::load(&config_path)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    // Construct collector.
-    let collector = crate::collector::windows::WindowsCollector::new(None)
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    // Build the core daemon shutdown future from the SCM control receiver.
-    let shutdown_future = async move { shutdown_receiver.await.unwrap_or("SCM_CHANNEL_CLOSED") };
-
-    // Report RUNNING before entering the daemon loop.
-    update_status(status_handle, WsState::Running, 0, Duration::from_secs(10));
-
-    // Create a tokio runtime for the async daemon supervision.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-
-    // Enter the shared daemon supervision.
-    let result = rt.block_on(crate::run::run_with_shutdown(
-        collector,
-        config,
-        shutdown_future,
-    ));
-
-    // Report STOPPED.
-    let (exit_code, win_state) = match &result {
-        Ok(()) => (0, WsState::Stopped),
-        Err(_) => (1, WsState::Stopped),
-    };
-
-    update_status(status_handle, win_state, exit_code, Duration::from_secs(5));
-
     result
+}
+
+#[cfg(target_os = "windows")]
+fn handle_service_control(
+    control: windows_service::service::ServiceControl,
+    shutdown: &ShutdownSender,
+) -> windows_service::service_control_handler::ServiceControlHandlerResult {
+    use windows_service::service::ServiceControl;
+    use windows_service::service_control_handler::ServiceControlHandlerResult;
+
+    match control {
+        ServiceControl::Stop => {
+            send_shutdown(shutdown, "SCM_STOP");
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::Shutdown => {
+            send_shutdown(shutdown, "SCM_SHUTDOWN");
+            ServiceControlHandlerResult::NoError
+        }
+        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        _ => ServiceControlHandlerResult::NotImplemented,
+    }
 }
 
 /// Update the SCM service status.
@@ -324,7 +361,7 @@ fn update_status(
     state: windows_service::service::ServiceState,
     exit_code: u32,
     wait_hint: Duration,
-) {
+) -> windows_service::Result<()> {
     use windows_service::service::{
         ServiceControlAccept, ServiceExitCode, ServiceStatus, ServiceType,
     };
@@ -332,13 +369,13 @@ fn update_status(
     let status = ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
-        controls_accepted: ServiceControlAccept::STOP,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
         exit_code: ServiceExitCode::Win32(exit_code),
         checkpoint: 0,
         wait_hint,
         process_id: None,
     };
-    let _ = status_handle.set_service_status(status);
+    status_handle.set_service_status(status)
 }
 
 // ── WindowsServiceManager ─────────────────────────────────────────────────
@@ -751,6 +788,84 @@ mod tests {
             receiver.await.unwrap_or("SCM_CHANNEL_CLOSED"),
             "SCM_CHANNEL_CLOSED"
         );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn stop_control_maps_to_no_error_and_scm_stop() {
+        use windows_service::service::ServiceControl;
+        use windows_service::service_control_handler::ServiceControlHandlerResult;
+
+        let (sender, mut receiver) = shutdown_channel();
+        assert!(matches!(
+            handle_service_control(ServiceControl::Stop, &sender),
+            ServiceControlHandlerResult::NoError
+        ));
+        assert_eq!(receiver.try_recv(), Ok("SCM_STOP"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shutdown_control_maps_to_no_error_and_scm_shutdown() {
+        use windows_service::service::ServiceControl;
+        use windows_service::service_control_handler::ServiceControlHandlerResult;
+
+        let (sender, mut receiver) = shutdown_channel();
+        assert!(matches!(
+            handle_service_control(ServiceControl::Shutdown, &sender),
+            ServiceControlHandlerResult::NoError
+        ));
+        assert_eq!(receiver.try_recv(), Ok("SCM_SHUTDOWN"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn interrogate_does_not_complete_shutdown() {
+        use windows_service::service::ServiceControl;
+        use windows_service::service_control_handler::ServiceControlHandlerResult;
+
+        let (sender, mut receiver) = shutdown_channel();
+        assert!(matches!(
+            handle_service_control(ServiceControl::Interrogate, &sender),
+            ServiceControlHandlerResult::NoError
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn unsupported_control_is_not_implemented_and_does_not_shutdown() {
+        use windows_service::service::ServiceControl;
+        use windows_service::service_control_handler::ServiceControlHandlerResult;
+
+        let (sender, mut receiver) = shutdown_channel();
+        assert!(matches!(
+            handle_service_control(ServiceControl::Pause, &sender),
+            ServiceControlHandlerResult::NotImplemented
+        ));
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn duplicate_stop_and_shutdown_controls_preserve_first_reason() {
+        use windows_service::service::ServiceControl;
+
+        let (sender, mut receiver) = shutdown_channel();
+        handle_service_control(ServiceControl::Stop, &sender);
+        handle_service_control(ServiceControl::Shutdown, &sender);
+        assert_eq!(receiver.try_recv(), Ok("SCM_STOP"));
+
+        let (sender, mut receiver) = shutdown_channel();
+        handle_service_control(ServiceControl::Shutdown, &sender);
+        handle_service_control(ServiceControl::Stop, &sender);
+        assert_eq!(receiver.try_recv(), Ok("SCM_SHUTDOWN"));
     }
 
     // --- ServiceError display tests ---

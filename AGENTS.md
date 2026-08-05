@@ -72,9 +72,12 @@ cargo test -p greggd --all-features -- <test_name>
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.
 - `greggd` dispatches synchronously before entering Tokio: foreground `run` and
-  Windows SCM `service` each own exactly one current-thread runtime. SCM Stop
-  and Shutdown callbacks only send a nonblocking one-shot signal into the
-  shared `run_with_shutdown()` core.
+  Windows SCM `service` first enters `service_dispatcher::start`; the generated
+  `ServiceMain` worker then owns exactly one current-thread runtime. Its
+  selected config path comes from one process-local launch context, and it
+  publishes `RUNNING` only after the shared daemon has bound its listener.
+  SCM Stop and Shutdown callbacks only send a nonblocking one-shot signal into
+  the shared `run_with_shutdown()` core.
 - **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
 
 ## Schema protocol

@@ -97,6 +97,7 @@ sample_interval_ms = 1000
 stale_after_ms = 10000
 "@
     [System.IO.File]::WriteAllText($DefaultConfigPath, $DefaultConfig)
+    $ConfigPath = $DefaultConfigPath
 } else {
     Write-Host "Existing config preserved: $DefaultConfigPath"
     $ConfigPath = $DefaultConfigPath
@@ -106,7 +107,7 @@ stale_after_ms = 10000
 
 # Quote the executable path and pass the service subcommand.
 # The config path is passed via --config.
-$ImagePath = "`"$InstalledExe`" service --config `"$DefaultConfigPath`""
+$ImagePath = "`"$InstalledExe`" service --config `"$ConfigPath`""
 
 # ── Register the service ──────────────────────────────────────────────────
 
@@ -146,7 +147,7 @@ Write-Host ""
 Write-Host "=== greggd installed successfully ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Binary:       $InstalledExe"
-Write-Host "  Config:       $DefaultConfigPath"
+Write-Host "  Config:       $ConfigPath"
 Write-Host "  Service:      $ServiceName ($DisplayName)"
 Write-Host "  Account:      NT AUTHORITY\LocalService"
 Write-Host "  Start type:   Automatic"
@@ -158,6 +159,6 @@ Write-Host "  greggd restart           # restart the service"
 Write-Host "  greggd run               # run in foreground (diagnostics)"
 Write-Host "  Get-Service greggd       # check service status"
 Write-Host ""
-Write-Host "The daemon binds to $($DefaultConfigPath -replace '.*', '0.0.0.0:11310') by default."
+Write-Host "The daemon uses the selected configuration file for its bind address and port."
 Write-Host "Use 'greggd host 127.0.0.1' to restrict to localhost (recommended)."
 Write-Host "No firewall rule is created. LAN exposure is operator-controlled."

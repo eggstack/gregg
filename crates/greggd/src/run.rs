@@ -108,6 +108,26 @@ where
     C: SystemCollector + 'static,
     S: std::future::Future<Output = &'static str>,
 {
+    run_with_shutdown_on_ready(collector, config, shutdown, || Ok(())).await
+}
+
+/// Run the shared daemon core and invoke `on_ready` after the listener binds.
+///
+/// The foreground entry point uses a no-op callback. The Windows SCM worker
+/// uses the seam to publish `RUNNING` only after all configuration validation,
+/// runtime setup, and listener binding have succeeded.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn run_with_shutdown_on_ready<C, S, F>(
+    collector: C,
+    config: Config,
+    shutdown: S,
+    on_ready: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: SystemCollector + 'static,
+    S: std::future::Future<Output = &'static str>,
+    F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
+{
     info!(
         version = env!("CARGO_PKG_VERSION"),
         schema_version = SCHEMA_VERSION_V1,
@@ -153,6 +173,11 @@ where
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| Box::new(ServerError::Bind(e)) as Box<dyn std::error::Error>)?;
+
+    // The caller may publish an external readiness state now that binding
+    // has succeeded. No daemon tasks have been spawned before this point, so
+    // a readiness publication failure cannot leave a serving daemon behind.
+    on_ready()?;
 
     // Spawn the sampler task.
     let sampler_handle = {
@@ -398,7 +423,55 @@ fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::collector::error::CollectError;
+    use crate::collector::{CollectedMetrics, SystemCollector};
+    use gregg_protocol::{MetricCapabilities, SystemIdentity};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
+
+    struct ReadinessCollector;
+
+    impl SystemCollector for ReadinessCollector {
+        fn identity(&self) -> Result<SystemIdentity, CollectError> {
+            Ok(SystemIdentity {
+                name: "test".into(),
+                hostname: "test".into(),
+                os_name: "test".into(),
+                os_version: "test".into(),
+                kernel_name: "test".into(),
+                kernel_release: "test".into(),
+                architecture: "test".into(),
+            })
+        }
+
+        fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
+            Err(CollectError::warming("readiness test"))
+        }
+
+        fn capabilities(&self) -> MetricCapabilities {
+            MetricCapabilities { cpu_iowait: false }
+        }
+    }
+
+    fn readiness_test_config(port: u16) -> Config {
+        Config {
+            name: "readiness-test".into(),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            port,
+            sample_interval_ms: 250,
+            stale_after_ms: 1000,
+        }
+    }
+
+    fn unused_local_port() -> u16 {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("test listener should bind");
+        listener
+            .local_addr()
+            .expect("test listener should have an address")
+            .port()
+    }
 
     /// Spawn a server-like task that returns the given result.
     fn spawn_server(
@@ -637,6 +710,67 @@ mod tests {
         let done = Some(spawn_server(Ok(())));
         let done2: Option<tokio::task::JoinHandle<()>> = None;
         join_remaining_tasks(done, done2).await;
+    }
+
+    #[tokio::test]
+    async fn readiness_runs_once_after_successful_bind() {
+        let calls = AtomicUsize::new(0);
+        let result = run_with_shutdown_on_ready(
+            ReadinessCollector,
+            readiness_test_config(unused_local_port()),
+            async { "test-signal" },
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn bind_failure_does_not_publish_readiness() {
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .expect("test listener should bind");
+        let port = listener
+            .local_addr()
+            .expect("test listener should have an address")
+            .port();
+        let calls = AtomicUsize::new(0);
+
+        let result = run_with_shutdown_on_ready(
+            ReadinessCollector,
+            readiness_test_config(port),
+            async { "test-signal" },
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn readiness_failure_stops_startup_before_spawning_tasks() {
+        let calls = AtomicUsize::new(0);
+        let result = run_with_shutdown_on_ready(
+            ReadinessCollector,
+            readiness_test_config(unused_local_port()),
+            async { "test-signal" },
+            || {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Err("readiness failed".into())
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

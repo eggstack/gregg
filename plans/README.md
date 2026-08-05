@@ -17,18 +17,18 @@ Local tests are the primary development path. The one existing GitHub Actions wo
 
 ## Active roadmap
 
-[`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) and Plans 067-072 implemented the original correctness, state, runtime, and footprint work. [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) is the sole active follow-up. It adds the required native SCM dispatcher/`ServiceMain` boundary, makes service readiness and config-path handling truthful, and closes through the existing manual Windows lifecycle smoke.
+[`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) and Plans 067-072 implemented the original correctness, state, runtime, and footprint work. [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) is the sole active follow-up. Its implementation adds the required native SCM dispatcher/`ServiceMain` boundary, makes service readiness and config-path handling truthful, and still requires the existing manual Windows lifecycle smoke for operational closure.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
-| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | implementation complete through 072; final Windows service closure pending 073 |
+| [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform metric/API defects, then retain only justified simplification and footprint changes | implementation complete through 073; manual Windows SCM smoke pending |
 | [`067-truthful-drive-capacity-semantics.md`](067-truthful-drive-capacity-semantics.md) | Add additive optional v2 availability, distinguish total-free from caller-available space on all platforms, and preserve old-daemon compatibility | complete |
 | [`068-coherent-daemon-state-and-health.md`](068-coherent-daemon-state-and-health.md) | Publish one coherent server-state generation and make v1/v2 status and health semantics consistent, including Windows v2-only operation | complete |
 | [`069-daemon-cli-runtime-and-test-correctness.md`](069-daemon-cli-runtime-and-test-correctness.md) | Fix implicit/default config mutation, keep exit/logging at the binary boundary, make exit codes truthful, and restore an omitted scheduler test | complete; service-runtime follow-up corrected by 072 |
 | [`070-bounded-client-async-simplification.md`](070-bounded-client-async-simplification.md) | Independently evaluate scheduler and EggPool worker simplification under strict retain-only-if-smaller behavior-preserving gates | complete; no change |
 | [`071-measured-footprint-and-lightweight-closure.md`](071-measured-footprint-and-lightweight-closure.md) | Measure safe feature/profile changes and close once through the existing local preflight and ordinary CI | complete; records corrected by 072 |
-| [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Ensure foreground and Windows SCM modes each own one nonblocking runtime, then correct Plans 066/069/071 and the index in place | implementation complete; missing native dispatcher/readiness closure owned by 073 |
-| [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add the SCM dispatcher and generated `ServiceMain`, honor service config paths, report `RUNNING` after bind, and prove the lifecycle with the existing Windows smoke | planned; active |
+| [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Ensure foreground and Windows SCM modes each own one nonblocking runtime, then correct Plans 066/069/071 and the index in place | complete; native dispatcher/readiness follow-up owned by 073 |
+| [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add the SCM dispatcher and generated `ServiceMain`, honor service config paths, report `RUNNING` after bind, and prove the lifecycle with the existing Windows smoke | active; manual SCM smoke pending |
 
 Dependency order:
 

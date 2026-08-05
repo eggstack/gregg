@@ -196,14 +196,16 @@ The `greggd` daemon supports Windows x86-64 as both a foreground process and a n
 
 **Foreground mode** (`greggd run`): Runs in the current console, listening for Ctrl-C. Useful for development and diagnostics.
 
-**Service mode** (`greggd service`): The SCM entry point. The synchronous
-command boundary selects service mode before the service creates its single
-current-thread Tokio runtime. Stop and Shutdown controls send a nonblocking
-graceful-shutdown signal to the shared daemon core. The service runs under
-`NT AUTHORITY\LocalService` with minimal privileges. Install/uninstall through
-the provided PowerShell scripts or manually via `sc.exe`. Service-manager logic
-is covered by native tests; administrator installation depends on local Windows
-SCM policy.
+**Service mode** (`greggd service`): The hidden SCM entry point. The
+synchronous command boundary passes the resolved `--config` path to the native
+SCM dispatcher, which invokes the generated `ServiceMain` callback. The worker
+publishes `RUNNING` only after configuration, runtime construction, and HTTP
+listener binding succeed; startup failures publish `STOPPED` with a nonzero
+status. Stop and Shutdown controls send a nonblocking graceful-shutdown signal
+to the shared daemon core. The service runs under `NT AUTHORITY\LocalService`
+with minimal privileges. Install/uninstall through the provided PowerShell
+scripts or manually via `sc.exe`. Service-manager logic is covered by native
+tests; administrator installation depends on local Windows SCM policy.
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
 

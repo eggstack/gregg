@@ -43,7 +43,9 @@ fn run_main() -> Result<(), Box<dyn Error>> {
             build_runtime()?.block_on(greggd::run::run(collector, config))
         }
         #[cfg(target_os = "windows")]
-        greggd::cli::Command::Service => greggd::service::windows::run_service(),
+        greggd::cli::Command::Service => {
+            greggd::service::windows::start_service_dispatcher(config_path)
+        }
         #[cfg(not(target_os = "windows"))]
         greggd::cli::Command::Service => Err("service mode is only available on Windows".into()),
         command => {
@@ -162,7 +164,7 @@ mod tests {
                 address: "127.0.0.1".parse().expect("valid test address")
             }
         ));
-        // Windows service mode owns its runtime inside run_service(), after
+        // Windows service mode owns its runtime inside the SCM service worker, after
         // this synchronous dispatch boundary has selected the command.
         assert!(!command_requires_foreground_runtime(
             &greggd::cli::Command::Service
