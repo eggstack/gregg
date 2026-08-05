@@ -331,7 +331,7 @@ Avoid implementation-history prose in user-facing README sections unless necessa
 - [x] `cargo test -p greggd service::windows` passes.
 - [x] Focused Clippy passes with warnings denied.
 - [x] `./scripts/check-local.sh` passes.
-- [ ] One ordinary existing CI run passes, including Windows production compilation/tests.
+- [x] One ordinary existing CI run passes, including Windows production compilation/tests.
 - [x] No new workflow, job class, artifact, evidence bundle, or privileged test environment is added.
 
 ### Planning-record truth
@@ -367,3 +367,24 @@ Roadmap/index correction:
 ```
 
 Keep the handoff concise. Do not create a separate evidence file.
+
+## Completion
+
+Implementation SHA: `bfc49f166f2962bfcb2723ceaf0807531000017d`
+Runtime ownership change: synchronous command dispatch; one current-thread
+runtime for foreground mode and one inside Windows SCM service mode.
+SCM shutdown signal change: blocking `mpsc::recv()` replaced by a nonblocking
+one-shot sender with stable Stop, Shutdown, and channel-closed reasons.
+Duplicate diagnostic removal: service errors return to the executable, which
+prints the single diagnostic and preserves exit-code classification.
+Focused tests: `greggd` binary, `service::windows`, `run`, workspace tests,
+focused/workspace Clippy, and formatting passed locally.
+Default local check: passed (`./scripts/check-local.sh`).
+Ordinary CI run: passed, workflow `31032208878` at `bfc49f1`, including Windows.
+Plan 069 correction: acceptance checklist checked; the original unconditional
+async-main service defect is recorded as corrected by Plan 072.
+Plan 071 SHA/Reqwest correction: footprint SHA corrected to
+`a53542b7bd5e74b68726191074500aa1ceb6a6d9`; the unused `json` feature removal
+is recorded truthfully.
+Roadmap/index correction: Plans 066-072 are complete in the roadmap and index;
+no Plan 073 or evidence-only closure record was created.
