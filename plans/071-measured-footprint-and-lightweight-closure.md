@@ -226,7 +226,7 @@ Push the final implementation and require one ordinary existing CI run. Linux ge
 - [x] Focused tests and Clippy pass.
 - [x] `./scripts/check-local.sh` passes.
 - [x] One `./scripts/check-local.sh --release` run passes.
-- [ ] One ordinary cross-platform CI run passes at the final implementation SHA or a source-equivalent plan-only descendant.
+- [x] One ordinary cross-platform CI run passes at the final implementation SHA or a source-equivalent plan-only descendant.
 - [ ] Active documentation and Plans 066-071 describe implemented reality.
 - [ ] CI remains one read-only, nonpublishing, artifact-free workflow.
 - [ ] Release remains manual.
@@ -277,4 +277,4 @@ Plan 070 EggPool: no change retained; bounded command/result channels and
 generation checks remain the smaller behavior-preserving design.
 Default local check: passed (`./scripts/check-local.sh`)
 Release preflight: passed once (`./scripts/check-local.sh --release`)
-Ordinary CI run: pending push of the final implementation
+Ordinary CI run: passed, workflow `31020619216` rerun at `d94851c`
