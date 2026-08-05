@@ -218,3 +218,55 @@ Do not create a benchmark report or evidence file.
 No scheduler or EggPool rewrite was retained: candidates did not reduce
 production machinery while preserving isolation, ordering, cadence, and
 cancellation semantics.
+
+## Implementation handoff
+
+The scheduler and EggPool candidates were evaluated independently after the
+Plan 069 scheduler annotations and the existing EggPool regression tests were
+confirmed.
+
+### Poll scheduler
+
+```text
+                         current                         candidate
+production lines         unchanged                       smaller future stream
+tasks spawned            one per endpoint                no endpoint task
+channels                 one bounded batch channel       one bounded batch channel
+ordering                 endpoint input order             explicit reorder required
+cancellation             token plus per-task join        token only; panic isolation lost
+new helper types          none                            stream/buffering machinery
+focused tests             scheduler suite unchanged       isolation/error coverage needed
+```
+
+No change retained: a direct buffered future stream would remove the semaphore
+and endpoint task isolation, losing the guarantee that an endpoint panic
+becomes that endpoint's `Cancelled` result. Reproducing that guarantee would
+require new machinery, while ordering and cancellation would still need
+explicit coverage. The existing implementation is the smaller
+behavior-preserving design.
+
+### EggPool worker
+
+```text
+                         current                         candidate
+production lines         unchanged                       state-machine rewrite
+tasks spawned            one worker plus one request      one worker plus one request
+channels                 bounded command + result mpsc   watch state + result channel
+ordering                 awaited command order            latest-state transitions
+cancellation             token and request abort          token and request abort
+new helper types          none                            nonce/latest-state model
+focused tests             Phase 062 regression suite      more transition coverage needed
+```
+
+No change retained: a `watch` channel would remove queue-pressure concepts,
+but manual refresh, generation ownership, period changes, deactivation, and
+request-relative deadlines would still require a state machine. It would not
+reduce the worker's production concepts or test surface, so the bounded command
+channel remains the clearer contract.
+
+Focused verification passed:
+
+```text
+cargo test -p gregg scheduler   # 21 passed
+cargo test -p gregg eggpool     # 25 passed
+```

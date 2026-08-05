@@ -62,6 +62,12 @@ cargo test -p greggd --all-features -- <test_name>
 - **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
+- Client polling is intentionally bounded and isolated: preserve one ordered
+  result per endpoint, the semaphore limit, panic-to-`Cancelled` conversion,
+  fixed periodic cadence, and cancellation behavior. EggPool commands remain
+  on a separate bounded channel with generation checks; do not replace either
+  state machine merely to reduce line count without a smaller behaviorally
+  equivalent design.
 - Reusable `greggd` library/runtime code must return errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.

@@ -67,6 +67,9 @@ gregg eggpool remove <host>
 - Created only for configured EggPool state
 - Activated when pane is visible, deactivated when hidden
 - Cancelled during TUI shutdown
+- Keep command ordering, refresh nonces/generations, stale-result rejection,
+  and request-relative deadlines intact. A latest-state channel is not an
+  automatic simplification if it adds state transitions or tests.
 
 ## TUI navigation
 

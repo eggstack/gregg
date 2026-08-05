@@ -48,6 +48,12 @@ The workspace contains three independently publishable crates:
 
 The protocol crate is intentionally dependency-light (serde, serde_json, thiserror) and must not depend on the daemon server stack or TUI stack.
 
+Client polling is deliberately bounded: each configured endpoint contributes
+one result to an ordered batch, active requests are capped by
+`max_concurrent_requests`, and a failed endpoint cannot terminate the scheduler.
+The optional EggPool pane uses a separate bounded worker, so its requests do
+not block systems polling.
+
 ## Daemon
 
 ### Running

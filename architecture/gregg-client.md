@@ -109,8 +109,17 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 
 **Scheduler** (`scheduler.rs`):
 - Produces `PollBatch`es on a configurable interval
-- Concurrency bounded by semaphore
+- Spawns one isolated poll task per endpoint; a semaphore bounds active polls
+- A task panic is converted into that endpoint's `Cancelled` result
 - Generation numbers increase monotonically; stale batches rejected
+- Fixed-cadence ticks skip missed deadlines, and manual refresh does not reset
+  the periodic cadence
+
+Plan 070 evaluated replacing the per-endpoint tasks and semaphore with a
+buffered future stream. That candidate was rejected because it would remove
+task isolation and the panic-to-`Cancelled` guarantee while still needing
+explicit endpoint ordering and cancellation handling. The current bounded
+design is retained intentionally.
 
 **Poller** (`poller.rs`):
 - v2-first, endpoint-bound schema parsing, v1 fallback only on 404
@@ -236,9 +245,16 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - Bearer token from environment variable (never stored in outcomes)
 
 **Worker** (`spawn_worker`):
-- Background task with command channel
+- Background task with bounded command and result channels
 - 60-second passive refresh when active
 - Generation-based staleness like greggd polling
+- In-flight requests are aborted on superseding commands and shutdown
+
+Plan 070 also evaluated replacing the command channel with a latest-state
+`watch` channel. It was rejected because refresh nonces, generation ownership,
+period changes, deactivation, and request-relative deadlines would remain a
+state machine without reducing the production or test surface. The bounded
+command channel preserves ordered commands and responsive systems polling.
 
 **Periods:** `Hour`, `Day`, `Week`, `Month` — cycled with `longer()`/`shorter()`
 

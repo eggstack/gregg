@@ -60,6 +60,13 @@ cargo test -p greggd --all-features -- <test_name>
 - **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
+- The client scheduler intentionally uses isolated per-endpoint tasks plus a
+  semaphore: retain ordered one-result-per-endpoint batches, panic isolation,
+  fixed cadence, and bounded cancellation unless a replacement is materially
+  smaller without weakening those guarantees.
+- The optional EggPool worker intentionally uses bounded command/result
+  channels and generation checks. Evaluate latest-state channels only when
+  they reduce both production concepts and focused test coverage.
 - **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
 - Daemon runtime and CLI library paths return errors; only the `greggd` binary
   boundary prints diagnostics, initializes tracing with `try_init()`, and maps
