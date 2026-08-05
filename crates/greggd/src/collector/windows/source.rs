@@ -545,7 +545,7 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 // locals and the root pointer is valid for this call.
                 ffi::GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut free)
             };
-            if success == 0 || total == 0 || free > total {
+            if success == 0 || total == 0 || free > total || available > total {
                 continue;
             }
             result.push(RawLogicalDrive {

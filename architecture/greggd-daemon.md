@@ -28,7 +28,7 @@ HTTP, and manages its own OS service lifecycle.
 | `server/error` | `src/server/error.rs:1-54` | Server error types |
 | `collector/mod` | `src/collector/mod.rs:1-260` | `SystemCollector` trait, `CollectedMetrics` |
 | `collector/error` | `src/collector/error.rs:1-95` | `CollectErrorKind` taxonomy |
-| `collector/drives` | `src/collector/drives.rs:1-84` | Shared drive normalization |
+| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization with independent total-free and caller-available capacity |
 | `service/mod` | `src/service/mod.rs:1-272` | `ServiceManager` trait |
 | `service/systemd` | `src/service/systemd.rs:1-142` | Linux: systemctl wrapper |
 | `service/launchd` | `src/service/launchd.rs:1-929` | macOS: launchctl wrapper |

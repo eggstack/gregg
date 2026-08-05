@@ -1162,12 +1162,37 @@ fn v2_linux_fixture_round_trips() {
     let bytes = fixture("linux-v2.json");
     let snap: StatusPayloadV2 = serde_json::from_slice(&bytes).expect("v2 linux fixture parses");
     snap.validate().expect("v2 linux fixture validates");
+    assert_eq!(snap.drives.as_ref().unwrap()[0].available_bytes, None);
 
     let encoded = serde_json::to_vec(&snap).expect("serialize v2 snapshot");
     let value: serde_json::Value = serde_json::from_slice(&bytes).expect("fixture is JSON");
     let encoded_value: serde_json::Value =
         serde_json::from_slice(&encoded).expect("encoded is JSON");
     assert_eq!(value, encoded_value, "v2 round-trip must be byte-stable");
+}
+
+#[test]
+fn v2_drive_availability_is_additive_and_independent() {
+    let mut value: serde_json::Value = serde_json::from_slice(&fixture("linux-v2.json")).unwrap();
+    value["drives"][0]["available_bytes"] = serde_json::json!(1_500_000_000);
+
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let payload: StatusPayloadV2 = serde_json::from_slice(&bytes).unwrap();
+    payload.validate().unwrap();
+    assert_eq!(
+        payload.drives.as_ref().unwrap()[0].available_bytes,
+        Some(1_500_000_000)
+    );
+
+    let emitted = serde_json::to_value(&payload).unwrap();
+    assert_eq!(emitted["drives"], value["drives"]);
+}
+
+#[test]
+fn legacy_v2_drive_availability_is_omitted_when_reserialized() {
+    let payload: StatusPayloadV2 = serde_json::from_slice(&fixture("linux-v2.json")).unwrap();
+    let emitted = serde_json::to_value(&payload).unwrap();
+    assert!(emitted["drives"][0].get("available_bytes").is_none());
 }
 
 #[test]

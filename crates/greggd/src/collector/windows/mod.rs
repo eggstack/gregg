@@ -362,6 +362,18 @@ mod tests {
     }
 
     #[test]
+    fn drive_capacity_preserves_total_free_and_caller_available() {
+        let mut collector = WindowsCollector::with_source(mock_source(), None).expect("collector");
+        let _ = collector.sample();
+        let metrics = collector.sample().expect("second sample");
+        let drive = &metrics.drives.expect("drives")[0];
+
+        assert_eq!(drive.used_bytes, 75);
+        assert_eq!(drive.total_bytes, 100);
+        assert_eq!(drive.available_bytes, Some(20));
+    }
+
+    #[test]
     fn first_sample_warms() {
         let mock = mock_source();
         let mut collector = WindowsCollector::with_source(mock, None).expect("collector");

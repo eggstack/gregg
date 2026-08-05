@@ -418,6 +418,20 @@ fn successful_empty_drive_enumeration_is_preserved() {
 }
 
 #[test]
+fn drive_capacity_preserves_total_free_and_caller_available() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = collector.sample().expect("sample succeeds");
+    let drive = &metrics.drives.expect("drives")[0];
+
+    assert_eq!(drive.used_bytes, 75 * 4096);
+    assert_eq!(drive.total_bytes, 100 * 4096);
+    assert_eq!(drive.available_bytes, Some(20 * 4096));
+}
+
+#[test]
 fn negative_load_averages_rejected() {
     let mut mock = MockNativeQueries::success();
     mock.load = [-0.5, 1.0, 0.5];
