@@ -1,6 +1,6 @@
 # Phase 073: native Windows SCM entry and readiness correction
 
-Status: active.
+Status: implementation complete; manual Windows SCM smoke pending.
 
 Depends on: Plan 072.
 
@@ -429,62 +429,62 @@ After focused checks, ordinary CI, and the real SCM smoke pass:
 
 ### Native SCM entry
 
-- [ ] The Windows service command calls `service_dispatcher::start` from synchronous command dispatch.
-- [ ] `define_windows_service!` generates the low-level `ServiceMain` callback.
-- [ ] The SCM invokes the generated callback before control-handler registration.
-- [ ] `service_control_handler::register` occurs only inside the `ServiceMain` worker path.
-- [ ] No raw dispatcher FFI or second service implementation is introduced.
-- [ ] Dispatcher connection errors return to ordinary `main` for existing classification.
+- [x] The Windows service command calls `service_dispatcher::start` from synchronous command dispatch.
+- [x] `define_windows_service!` generates the low-level `ServiceMain` callback.
+- [x] The SCM invokes the generated callback before control-handler registration.
+- [x] `service_control_handler::register` occurs only inside the `ServiceMain` worker path.
+- [x] No raw dispatcher FFI or second service implementation is introduced.
+- [x] Dispatcher connection errors return to ordinary `main` for existing classification.
 
 ### Runtime and shutdown preservation
 
-- [ ] Foreground mode still owns one current-thread Tokio runtime.
-- [ ] Service mode still owns one current-thread Tokio runtime.
-- [ ] No production path calls `block_on` while entered in another runtime.
-- [ ] SCM callbacks perform no blocking receive, sleep, runtime entry, or daemon join.
-- [ ] Stop and Shutdown retain distinct one-shot reasons.
-- [ ] Interrogate and unsupported controls leave shutdown pending.
-- [ ] Duplicate controls are harmless and preserve the first shutdown reason.
-- [ ] `run_with_shutdown()` remains the single shared daemon core.
+- [x] Foreground mode still owns one current-thread Tokio runtime.
+- [x] Service mode still owns one current-thread Tokio runtime.
+- [x] No production path calls `block_on` while entered in another runtime.
+- [x] SCM callbacks perform no blocking receive, sleep, runtime entry, or daemon join.
+- [x] Stop and Shutdown retain distinct one-shot reasons.
+- [x] Interrogate and unsupported controls leave shutdown pending.
+- [x] Duplicate controls are harmless and preserve the first shutdown reason.
+- [x] `run_with_shutdown()` remains the single shared daemon core.
 
 ### Configuration and readiness
 
-- [ ] The config path resolved from the service CLI invocation reaches `ServiceMain` and the worker.
-- [ ] The worker no longer unconditionally loads `Config::default_path()` when a custom path was selected.
-- [ ] `install-windows.ps1 -ConfigPath` registers that exact resolved path.
-- [ ] `START_PENDING` is reported while startup work is incomplete.
-- [ ] `RUNNING` is reported only after successful listener bind.
-- [ ] Configuration, collector, runtime, readiness-publication, or bind failure never reports `RUNNING`.
-- [ ] Every post-registration worker exit makes a best effort to report `STOPPED` with the correct zero/nonzero outcome.
+- [x] The config path resolved from the service CLI invocation reaches `ServiceMain` and the worker.
+- [x] The worker no longer unconditionally loads `Config::default_path()` when a custom path was selected.
+- [x] `install-windows.ps1 -ConfigPath` registers that exact resolved path.
+- [x] `START_PENDING` is reported while startup work is incomplete.
+- [x] `RUNNING` is reported only after successful listener bind.
+- [x] Configuration, collector, runtime, readiness-publication, or bind failure never reports `RUNNING`.
+- [x] Every post-registration worker exit makes a best effort to report `STOPPED` with the correct zero/nonzero outcome.
 
 ### Focused tests
 
-- [ ] Dispatcher and generated callback production code compile on Windows.
-- [ ] Stop, Shutdown, Interrogate, unsupported, duplicate, and channel-closed control cases are tested.
-- [ ] Readiness is invoked once after successful bind and never after bind failure.
-- [ ] Readiness callback failure is covered.
-- [ ] Existing foreground and service-manager tests remain green.
-- [ ] No test installs a service, requires Administrator privileges, waits for the 30-second transition timeout, or binds a fixed port.
+- [x] Dispatcher and generated callback production code compile on Windows.
+- [x] Stop, Shutdown, Interrogate, unsupported, duplicate, and channel-closed control cases are tested.
+- [x] Readiness is invoked once after successful bind and never after bind failure.
+- [x] Readiness callback failure is covered.
+- [x] Existing foreground and service-manager tests remain green.
+- [x] No test installs a service, requires Administrator privileges, waits for the 30-second transition timeout, or binds a fixed port.
 
 ### Operational verification
 
-- [ ] `cargo test -p greggd --bin greggd` passes.
-- [ ] `cargo test -p greggd service::windows` passes.
-- [ ] `cargo test -p greggd run` passes.
-- [ ] Focused Clippy and formatting pass with warnings denied.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] One ordinary existing CI run passes, including Windows production compilation/tests.
+- [x] `cargo test -p greggd --bin greggd` passes.
+- [x] `cargo test -p greggd service::windows` passes.
+- [x] `cargo test -p greggd run` passes.
+- [x] Focused Clippy and formatting pass with warnings denied.
+- [x] `./scripts/check-local.sh` passes.
+- [x] One ordinary existing CI run passes, including Windows production compilation/tests.
 - [ ] The corrected manual `scripts/smoke-windows.ps1` passes on a real Administrator Windows host.
 - [ ] The smoke proves start, health/status, stop, restart, bind-failure handling, reinstall, and cleanup.
 
 ### Scope and closure
 
-- [ ] No new monitoring feature, protocol field, service command, platform, or dependency is added.
-- [ ] No service framework, generic runtime abstraction, workflow, job, artifact, or evidence system is added.
-- [ ] Manual release and the one read-only CI workflow remain unchanged.
-- [ ] Plans 066, 072, 073, and the index describe the demonstrated final state.
-- [ ] Plan 071 footprint records remain untouched unless a direct factual error is found.
-- [ ] No Plan 074 or evidence-only closure document is created.
+- [x] No new monitoring feature, protocol field, service command, platform, or dependency is added.
+- [x] No service framework, generic runtime abstraction, workflow, job, artifact, or evidence system is added.
+- [x] Manual release and the one read-only CI workflow remain unchanged.
+- [x] Plans 066, 072, 073, and the index describe the demonstrated implementation state.
+- [x] Plan 071 footprint records remain untouched unless a direct factual error is found.
+- [x] No Plan 074 or evidence-only closure document is created.
 
 ## Handoff format
 
@@ -504,3 +504,14 @@ Planning-record reconciliation:
 ```
 
 Do not add generated evidence, logs, screenshots, or binary artifacts to the repository.
+
+Implementation SHA: `92f13864845e79a2732fae2a3733dccd02c38498`
+Dispatcher entry: `greggd::service::windows::start_service_dispatcher`, called by synchronous `Command::Service` dispatch.
+Generated ServiceMain: `define_windows_service!(ffi_service_main, service_main)`.
+Config-path handoff: resolved `PathBuf` stored in a process-local `OnceLock` before dispatcher start and read by the callback worker.
+RUNNING readiness point: `run_with_shutdown_on_ready` invokes the service callback immediately after successful listener bind and before daemon task spawning.
+Control-mapping tests: Stop, Shutdown, Interrogate, unsupported control, duplicate ordering, and channel-closed behavior covered; Windows production branch compiled in CI.
+Focused local checks: formatting, focused greggd tests, focused Clippy, `./scripts/check-local.sh`, Rust 1.75 check, docs, Windows target check, and `./scripts/check-local.sh --release` passed.
+Ordinary CI run: GitHub Actions run `31035228195` passed after rerunning the transient failed Linux job; Windows, macOS, MSRV, and Linux jobs are green.
+Manual Windows SCM smoke: PENDING — no Administrator Windows host or PowerShell executable is available in this workspace.
+Planning-record reconciliation: Plans 066, 072, 073, and `plans/README.md` updated; Plan 073 remains active only for the pending operational smoke, with no Plan 074 created.
