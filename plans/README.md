@@ -17,10 +17,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 ## Roadmap status
 
-Plans 066-074 are complete. The existing Windows CI job is the authoritative
-Administrator environment for the SCM lifecycle smoke; run `31040689848` at
-implementation SHA `e754f3f6b17c14bfc71234459a15237fe042736f` passed all jobs,
-including workspace tests, the release build, and the lifecycle smoke.
+Plans 066-074 remain complete, including CI-backed Windows SCM verification in run `31040689848`. [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) is the sole active corrective phase after that native Windows run exposed two small identity defects: a trailing NUL in the native hostname and ignored `Config::name` wiring.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -33,28 +30,28 @@ including workspace tests, the release build, and the lifecycle smoke.
 | [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Correct Windows service runtime ownership and nonblocking shutdown | complete |
 | [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | complete; operationally verified by 074 |
 | [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | complete; run `31040689848` passed |
+| [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | planned; active |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075
 ```
 
-Plan 074 is a concrete CI-backed compatibility implementation, not an evidence-only closure phase. Do not create Plan 075 merely to record its result.
+Plan 075 is a concrete product-correctness correction discovered through the successful Plan 074 native smoke. It is not a closure-only evidence phase. Do not create Plan 076 merely to record its result.
 
 ## Execution guidance for GPT-5.6 Luna
 
 The executor should:
 
-1. Inspect current HEAD, `scripts/smoke-windows.ps1`, and `.github/workflows/ci.yml` before editing.
-2. Execute only Plan 074; do not reopen product implementation from earlier phases.
-3. Make bind failure deterministic by holding an ephemeral loopback port open.
-4. Recreate required directories, reapply `LocalService`, and check every native command result.
-5. Extend only the existing Windows job: workspace tests, release build, then SCM smoke.
-6. Pin that existing job to `windows-2022`; do not add a workflow, matrix tier, or runner.
-7. Keep the smoke bounded, local to the runner, and unconditionally cleaned up.
-8. Require one ordinary green workflow run before marking Plans 066, 073, and 074 closed. Completed by run `31040689848`.
-9. Correct existing records in place; do not add artifacts, evidence files, or Plan 075.
+1. Inspect current HEAD, `crates/greggd/src/collector/windows/source.rs`, `crates/greggd/src/main.rs`, `crates/greggd/src/service/windows.rs`, `crates/greggd/tests/windows_smoke.rs`, and `scripts/smoke-windows.ps1` before editing.
+2. Execute only Plan 075; do not reopen the completed SCM dispatcher, runtime ownership, readiness, or CI architecture.
+3. Truncate `GetComputerNameExW` output using the successful call's returned UTF-16 length rather than popping an assumed final buffer slot.
+4. Pass `Some(config.name.as_str())` into native collector construction in foreground mode and into `WindowsCollector` in SCM mode.
+5. Strengthen the existing Windows foreground and SCM smoke assertions for configured name and NUL-free identity values; do not add a new test harness.
+6. Run focused tests and `./scripts/check-local.sh`, then require one ordinary existing CI run.
+7. Keep the existing Windows job and SCM lifecycle smoke unchanged in architecture and scope.
+8. After the green run, mark Plan 075 complete and return this index to no active corrective phase without creating Plan 076 or evidence files.
 
 ## Verification model
 
@@ -70,15 +67,21 @@ Manual release preflight remains:
 ./scripts/check-local.sh --release
 ```
 
-For Plan 074, the existing Windows CI job is the authoritative Windows service environment. It must run:
+For Plan 075, focused verification is sufficient before ordinary CI:
+
+```text
+cargo fmt --all -- --check
+cargo test -p greggd
+./scripts/check-local.sh
+```
+
+The existing Windows CI job remains the authoritative native Windows environment and continues to run:
 
 ```text
 cargo test --workspace --all-targets --all-features
 cargo build --release -p greggd
 scripts/smoke-windows.ps1 -ExePath target/release/greggd.exe
 ```
-
-The SCM smoke must prove dispatcher startup, generated `ServiceMain` execution, custom config-path handling, post-bind `RUNNING`, health/status, stop, restart, deterministic bind failure, recovery, reinstall, and cleanup.
 
 One green ordinary workflow run at the final implementation SHA, or a source-equivalent documentation-only descendant, is sufficient. No repeated qualification run or separately maintained Windows host is required.
 
@@ -104,27 +107,24 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-## Scope control for Plans 066-074
+## Scope control for Plan 075
 
-Allowed for Plan 074:
+Allowed:
 
-- deterministic corrections to `scripts/smoke-windows.ps1`;
-- an occupied ephemeral loopback port for bind-failure proof;
-- immediate checking of `sc.exe` and Gregg command failures;
-- recreation of required temporary directories and reapplication of `LocalService`;
-- a release build and SCM smoke appended to the existing Windows CI job;
-- pinning that existing job to `windows-2022`;
-- direct correction of Plans 066, 073, 074, and this index after a green run.
+- local Windows `GetComputerNameExW` buffer-length correction;
+- direct propagation of validated `Config::name` into already-existing collector display-name parameters;
+- focused regression assertions in the existing Windows foreground and SCM smokes;
+- direct closure updates to Plan 075 and this index after one green CI run.
 
 Not allowed:
 
-- product, protocol, collector, TUI, scheduler, or EggPool changes;
-- raw Windows dispatcher FFI or a second service implementation;
-- pause/continue support or broader SCM lifecycle redesign;
-- MSI/WiX packaging or installer redesign;
-- a new workflow, new job, expanded matrix, self-hosted runner, or privileged infrastructure;
-- CI publishing, artifacts, evidence bundles, performance suites, or binary-size gates;
-- a Plan 075 created only to mark Plan 074 complete.
+- protocol or config-schema changes;
+- FQDN discovery, hostname rewriting, DNS/NetBIOS expansion, or new identity sources;
+- collector factories, generic identity frameworks, or service abstractions solely for this correction;
+- changes to SCM dispatcher, runtime ownership, post-bind readiness, installer architecture, or service commands;
+- product changes to the TUI, scheduler, drives, EggPool, or release model;
+- new dependencies, workflows, jobs, matrices, self-hosted runners, artifacts, evidence bundles, performance suites, or binary-size gates;
+- a Plan 076 created only to mark Plan 075 complete.
 
 ## Completed roadmap groups
 
