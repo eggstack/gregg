@@ -20,21 +20,21 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs:1-514` | Entry point, event loop, TUI wiring |
+| `main` | `src/main.rs:1-513` | Entry point, event loop, TUI wiring |
 | `cli` | `src/cli.rs:1-1267` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
-| `config` | `src/config.rs:1-1600+` | Config model, validation, atomic I/O, cross-process locking |
-| `state` | `src/state.rs:1-1415+` | AppState reducer, viewport logic |
+| `config` | `src/config.rs:1-2899` | Config model, validation, atomic I/O, cross-process locking |
+| `state` | `src/state.rs:1-1385` | AppState reducer, viewport logic |
 | `action` | `src/action.rs:1-133` | Action enum (14 state transition triggers) |
 
 ### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs:1-1218` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
-| `scheduler` | `src/scheduler.rs:1-1163` | Periodic poll scheduler, generation-based concurrency |
+| `poller` | `src/poller.rs:1-1255` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
+| `scheduler` | `src/scheduler.rs:1-1186` | Periodic poll scheduler, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs:1-778` | Endpoint parsing: IPv4, IPv6, DNS |
 | `clock` | `src/clock.rs:1-100` | Clock trait for deterministic testing |
-| `normalized` | `src/normalized.rs:1-310` | Normalized v1/v2 snapshot for UI consumption |
+| `normalized` | `src/normalized.rs:1-344` | Normalized v1/v2 snapshot for UI consumption |
 
 ### Input
 
@@ -48,7 +48,7 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `ui/mod` | `src/ui/mod.rs:1-1391+` | Render dispatcher |
+| `ui/mod` | `src/ui/mod.rs:1-1474` | Render dispatcher |
 | `ui/layout` | `src/ui/layout.rs:1-85` | Viewport computation |
 | `ui/system_block` | `src/ui/system_block.rs:1-248` | Normal-view system rendering |
 | `ui/condensed` | `src/ui/condensed.rs:1-222` | Condensed one-row fleet view |

@@ -91,7 +91,7 @@ beyond serialization.
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
 | `validate` | `src/validate.rs` | V1 validation: 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs` | V2 validation: 11 violation kinds, capability/value consistency |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: 13 violation kinds, capability/value consistency |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 

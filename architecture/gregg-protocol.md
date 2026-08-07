@@ -21,9 +21,9 @@ depends on nothing from either.
 |--------|------|---------|
 | `lib` | `src/lib.rs:1-149` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs:1-164` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs:1-401` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
+| `v2` | `src/v2.rs:1-403` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
 | `validate` | `src/validate.rs:1-196` | V1 validation: 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs:1-778` | V2 validation: 12 violation kinds, capability/value consistency |
+| `validate_v2` | `src/validate_v2.rs:1-818` | V2 validation: 13 violation kinds, capability/value consistency |
 | `health` | `src/health.rs:1-100` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs:1-591` | Feature-gated builder fixtures for tests |
 
@@ -97,6 +97,7 @@ additive JSON changes from silently loosening invariants.
 
 | Kind | What it catches |
 |------|----------------|
+| `AvailableExceedsTotal` | `available_bytes > total_bytes` |
 | `LoadCapabilityMismatch` | load presence disagrees with `load_average` capability |
 | `SwapCapabilityMismatch` | swap presence disagrees with `swap` capability |
 | `CommitCapabilityMismatch` | commit presence disagrees with `memory_commit` capability |

@@ -129,11 +129,13 @@ are:
 `StatusSnapshotV2::validate()` returns `Ok(())` or
 `Err(Vec<ValidationViolationV2>)`. In addition to v1 kinds, v2 adds:
 
+- `AvailableExceedsTotal` — `available_bytes` exceeded `total_bytes`
 - `LoadCapabilityMismatch` — load presence disagrees with capability
 - `SwapCapabilityMismatch` — swap presence disagrees with capability
 - `CommitCapabilityMismatch` — commit presence disagrees with capability
-- `EmptyDriveName`, `DriveNameTooLong`, and `TooManyDrives` — drive bounds
-  and structural invariants
+- `EmptyDriveName` — drive name is empty string
+- `DriveNameTooLong` — drive name exceeds 512 UTF-8 bytes
+- `TooManyDrives` — more than 32 drive entries
 
 V2 validation rejects capability/value contradictions:
 - `cpu_iowait == false` requires `iowait_pct == None`
@@ -177,15 +179,15 @@ Canonical fixtures live at:
 These fixtures deserialise into the corresponding types, validate cleanly,
 and re-serialise byte-stable. The v2 Windows fixture demonstrates the
 `memory_commit: true` / `commit: Some(...)` pattern with no load or swap.
-The v2 macOS fixture demonstrates `load_average: true` and `swap: true`, with both values populated by the native collector.
-commit.
+The v2 macOS fixture demonstrates `load_average: true` and `swap: false`,
+with load populated and swap absent per the native collector capabilities.
 
 ## Collector contract
 
 The shared `SystemCollector` trait lives in
-`crates/greggd/src/collector/mod.rs`. It exposes three methods:
-`identity()`, `sample()`, `capabilities()`, and `capabilities_v2()`.
-`sample()` returns a `CollectedMetrics` value.
+`crates/greggd/src/collector/mod.rs`. It exposes five methods:
+`identity()`, `sample()`, `capabilities()`, `capabilities_v2()`, and
+`supports_v1_snapshot()`. `sample()` returns a `CollectedMetrics` value.
 
 `CollectedMetrics` is a daemon-internal normalised sample. It maps
 losslessly to both `StatusSnapshot` (v1) and `StatusSnapshotV2` (v2) once

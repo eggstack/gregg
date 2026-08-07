@@ -70,6 +70,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 
 | Kind | What it catches |
 |------|----------------|
+| `AvailableExceedsTotal` | `available_bytes > total_bytes` |
 | `LoadCapabilityMismatch` | load presence disagrees with capability |
 | `SwapCapabilityMismatch` | swap presence disagrees with capability |
 | `CommitCapabilityMismatch` | commit presence disagrees with capability |
@@ -77,7 +78,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 12 violation kinds (6 from V1 + 6 additional).
+V2 total: 13 violation kinds (6 from V1 + 7 additional).
 
 ## Test support
 

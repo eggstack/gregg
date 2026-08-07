@@ -20,11 +20,11 @@ HTTP, and manages its own OS service lifecycle.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs:1-12` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port`; config-intent-aware dispatch |
-| `run` | `src/run.rs:1-738` | Foreground daemon: wiring + supervision loop |
+| `cli` | `src/cli.rs:1-900` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port`; config-intent-aware dispatch |
+| `run` | `src/run.rs:1-822` | Foreground daemon: wiring + supervision loop |
 | `config` | `src/config.rs:1-841` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs:1-867` | Periodic sampling loop, readiness lifecycle |
-| `server/mod` | `src/server/mod.rs:1-425` | Axum HTTP server, endpoints, staleness |
+| `server/mod` | `src/server/mod.rs:1-437` | Axum HTTP server, endpoints, staleness |
 | `server/error` | `src/server/error.rs:1-54` | Server error types |
 | `collector/mod` | `src/collector/mod.rs:1-260` | `SystemCollector` trait, `CollectedMetrics` |
 | `collector/error` | `src/collector/error.rs:1-95` | `CollectErrorKind` taxonomy |
@@ -32,7 +32,7 @@ HTTP, and manages its own OS service lifecycle.
 | `service/mod` | `src/service/mod.rs:1-272` | `ServiceManager` trait |
 | `service/systemd` | `src/service/systemd.rs:1-142` | Linux: systemctl wrapper |
 | `service/launchd` | `src/service/launchd.rs:1-929` | macOS: launchctl wrapper |
-| `service/windows` | `src/service/windows.rs:1-741` | Windows: SCM integration |
+| `service/windows` | `src/service/windows.rs:1-902` | Windows: SCM integration |
 
 ## Architecture
 
