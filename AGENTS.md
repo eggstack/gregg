@@ -54,6 +54,10 @@ cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
 ```
 
+**CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings
+errors. Local clippy pedantic is a warning only. If CI fails on a warning that
+passes locally, the distinction is the cause.
+
 ## Key constraints
 
 - **MSRV: Rust 1.75.** Toolchain pinned in `rust-toolchain.toml` (stable channel). All member crates inherit `rust-version = "1.75"` from workspace.
