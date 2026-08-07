@@ -4,6 +4,28 @@ This document is the bird's-eye view of the entire `gregg` codebase: what each
 piece does, who owns it, how they connect, and where to go for details. It also
 serves as an index to the deep-dive documents in this directory.
 
+## Reading this document
+
+If you are new to the codebase, read this overview first, then follow the deep
+dive links in the order that matches your task:
+
+1. **[workspace.md](workspace.md)** — crate boundaries, dependency rules, MSRV,
+   lint policy, and release profiles. Read this before changing any crate
+   structure.
+2. **[gregg-protocol.md](gregg-protocol.md)** — the wire contract. Read this
+   before touching any shared types or adding fields.
+3. **[greggd-daemon.md](greggd-daemon.md)** — the daemon internals. Read this
+   before modifying collectors, the sampler, HTTP server, or service management.
+4. **[gregg-client.md](gregg-client.md)** — the client internals. Read this
+   before modifying the TUI, polling, state engine, or EggPool.
+5. **[collectors.md](collectors.md)** — platform-specific metric collection.
+   Read this before modifying Linux, macOS, or Windows collector code.
+6. **[protocol.md](protocol.md)** — wire format specification, schema versions,
+   capabilities, and compatibility policy. Read this before changing validation
+   rules or adding schema versions.
+
+---
+
 ## System at a glance
 
 `gregg` is a cross-platform system metrics collection and monitoring tool
@@ -40,17 +62,18 @@ gregg-protocol  ◄── gregg
 ```
 
 `greggd` and `gregg` never depend on each other. `gregg-protocol` never
-depends on either application crate.
+depends on either application crate. This constraint is enforced by the
+workspace Cargo manifests and must not be violated.
 
 ---
 
 ## Crate ownership
 
-| Crate | Path | Type | Role |
-|-------|------|------|------|
-| `gregg-protocol` | `crates/gregg-protocol/` | Library | Wire contract between daemon and client |
-| `greggd` | `crates/greggd/` | Bin + lib | Metrics daemon, collector, HTTP server, service manager |
-| `gregg` | `crates/gregg/` | Binary | Client TUI, endpoint CLI, polling, EggPool |
+| Crate | Path | Type | Role | Deep dive |
+|-------|------|------|------|-----------|
+| `gregg-protocol` | `crates/gregg-protocol/` | Library | Wire contract between daemon and client | [gregg-protocol.md](gregg-protocol.md) |
+| `greggd` | `crates/greggd/` | Bin + lib | Metrics daemon, collector, HTTP server, service manager | [greggd-daemon.md](greggd-daemon.md) |
+| `gregg` | `crates/gregg/` | Binary | Client TUI, endpoint CLI, polling, EggPool | [gregg-client.md](gregg-client.md) |
 
 ---
 
