@@ -43,6 +43,9 @@ workspace tests, `cargo build --release -p greggd`, and the Administrator
 operational check for the Windows dispatcher and service lifecycle; it is not
 part of the short local development loop.
 
+The Windows foreground and SCM smoke assertions also cover configured
+`system.name` and NUL-free native `system.hostname` output.
+
 **Release preflight (non-publishing):**
 
 ```bash

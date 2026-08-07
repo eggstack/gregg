@@ -302,8 +302,9 @@ fn run_service_worker(config_path: &Path) -> Result<(), Box<dyn std::error::Erro
 
         let config = crate::config::Config::load(config_path)
             .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
-        let collector = crate::collector::windows::WindowsCollector::new(None)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        let collector =
+            crate::collector::windows::WindowsCollector::new(Some(config.name.as_str()))
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
         let shutdown_future =
             async move { shutdown_receiver.await.unwrap_or("SCM_CHANNEL_CLOSED") };
         let rt = tokio::runtime::Builder::new_current_thread()

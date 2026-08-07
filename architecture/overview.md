@@ -107,7 +107,7 @@ manages its own OS service lifecycle.
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization (dedup, sort, truncate) |
 | `collector/linux/` | `src/collector/linux/` | Linux collector: `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` |
 | `collector/macos/` | `src/collector/macos/` | macOS collector: Mach FFI, sysctl, `getloadavg`, `getmntinfo` |
-| `collector/windows/` | `src/collector/windows/` | Windows collector: `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` |
+| `collector/windows/` | `src/collector/windows/` | Windows collector: native metrics, hostname, and configured display-name override |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait: `start`, `stop`, `restart`, `is_active` |
 | `service/systemd` | `src/service/systemd.rs` | Linux: `systemctl` wrapper |
 | `service/launchd` | `src/service/launchd.rs` | macOS: `launchctl` wrapper with state machine |
@@ -311,6 +311,9 @@ definitions.
 Both use atomic writes (write-flush-rename-verify) and structured validation.
 The daemon config has 5 fields; the client config stores system endpoints,
 refresh intervals, and optional EggPool settings.
+
+The daemon's configured `name` is published as `system.name`; each native
+collector supplies the separate `system.hostname` field.
 
 ### Cross-process config locking
 

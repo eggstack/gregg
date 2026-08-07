@@ -97,6 +97,12 @@ Capabilities: `cpu_iowait: false`, `load_average: false`, `swap: false`, `memory
 
 FFI seam: `WindowsSource` trait. Production: `NativeWindowsSource`. Test: `MockWindowsSource`.
 
+The collector accepts an optional display-name override: daemon foreground and
+Windows SCM startup pass the validated `Config::name` as `system.name`, while
+`system.hostname` remains the native hostname. `GetComputerNameExW` callers
+must decode only the UTF-16 units reported by the successful call so API
+buffer padding cannot produce a NUL in the wire identity.
+
 ## Key constraints
 
 - No external command execution for metrics collection

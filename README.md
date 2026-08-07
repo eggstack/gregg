@@ -86,6 +86,10 @@ When `--config` is omitted, `greggd host` and `greggd port` may create the
 platform-default file from built-in defaults. An explicitly supplied missing
 `--config PATH` is an error and is never created by a mutation command.
 
+The daemon configuration's `name` is the human-readable `system.name` returned
+by the status endpoints. `system.hostname` remains the native hostname
+reported by the platform; the two values are intentionally separate.
+
 The daemon uses stable exit codes: `0` for success, `1` for configuration
 errors, `2` for service-manager errors, `3` for runtime errors, and `4` for
 permission-denied failures. Diagnostics are emitted once by the executable;
@@ -212,6 +216,8 @@ paths, restart, bind-failure recovery, reinstall, and cleanup. Local
 administrator installation still depends on Windows SCM policy.
 
 Windows collection uses native APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) and does not invoke external commands.
+The configured daemon name is passed to the collector in both foreground and
+SCM service startup, while the hostname remains the native Windows hostname.
 
 On Windows, `/v1/status`, `/`, and `/healthz` return `503 Service Unavailable` with a v1 `not_serving` health response because a truthful v1 snapshot cannot be produced. `/v2/status` and `/v2/healthz` are ready after a valid sample, subject to stale-age policy. Clients should prefer `/v2/status` on Windows.
 

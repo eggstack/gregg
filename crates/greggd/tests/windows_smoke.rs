@@ -200,14 +200,19 @@ stale_after_ms = 0
         json["system"]["os_name"], "windows",
         "os_name should be windows"
     );
-    assert!(
-        json["system"]["hostname"].is_string(),
-        "hostname should be a string"
+    assert_eq!(
+        json["system"]["name"], "smoke-test",
+        "configured name should be preserved"
     );
-    assert!(
-        !json["system"]["hostname"].as_str().unwrap().is_empty(),
-        "hostname should not be empty"
-    );
+    let hostname = json["system"]["hostname"]
+        .as_str()
+        .expect("hostname should be a string");
+    assert!(!hostname.is_empty(), "hostname should not be empty");
+    assert!(!hostname.contains('\0'), "hostname should not contain NUL");
+    let name = json["system"]["name"]
+        .as_str()
+        .expect("name should be a string");
+    assert!(!name.contains('\0'), "name should not contain NUL");
 
     // Validate metrics are present.
     assert!(

@@ -129,6 +129,12 @@ sample_interval_ms = 1000 # 250-60000
 stale_after_ms = 10000    # 0 = disabled, else > sample_interval_ms
 ```
 
+`name` is the human-readable `system.name` in published snapshots. Foreground
+startup and the Windows SCM worker load and validate the config before creating
+their native collector, then pass that name as the collector display-name
+override. `system.hostname` is collected independently from the native host
+interface and is never replaced by the configured name.
+
 Validation produces structured `ConfigViolation` values. Atomic writes use
 write-flush-rename-verify.
 

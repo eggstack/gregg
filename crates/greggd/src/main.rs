@@ -39,7 +39,7 @@ fn run_main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         greggd::cli::Command::Run => {
             let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
-            let collector = NativeCollector::new(None)?;
+            let collector = NativeCollector::new(Some(config.name.as_str()))?;
             build_runtime()?.block_on(greggd::run::run(collector, config))
         }
         #[cfg(target_os = "windows")]

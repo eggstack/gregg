@@ -166,6 +166,18 @@ Write-Host "   healthz: $($health | ConvertTo-Json -Compress)"
 
 $status = Invoke-RestMethod -Uri $StatusUrl -UseBasicParsing
 Write-Host "   status:  schema_version=$($status.schema_version)"
+if ([string]$status.system.name -cne "smoke-test") {
+    throw "service returned an unexpected configured system name: '$($status.system.name)'"
+}
+if ([string]::IsNullOrWhiteSpace([string]$status.system.hostname)) {
+    throw "service returned an empty system hostname"
+}
+foreach ($identityValue in @([string]$status.system.name, [string]$status.system.hostname)) {
+    if ($identityValue.IndexOf([char]0) -ge 0) {
+        throw "service returned a NUL-containing identity value"
+    }
+}
+Write-Host "   identity: name=$($status.system.name), hostname=$($status.system.hostname)"
 
 # ── Stop and verify ───────────────────────────────────────────────────────
 

@@ -281,12 +281,17 @@ usage_pct = used / limit * 100
 ### Identity
 
 - hostname: `GetComputerNameExW(ComputerNameDnsHostname)`
+- name: configured display name when supplied by daemon startup; otherwise the
+  native hostname
 - os_name: hardcoded `"windows"`
 - os_version: `RtlGetVersion`
 - kernel_name: hardcoded `"Windows NT"`
 - architecture: from processor topology
 
-Empty hostname is rejected (returns error).
+The successful `GetComputerNameExW` call reports the number of UTF-16 code
+units written. The native source truncates its allocated buffer to that length
+before decoding, so API padding cannot become a NUL in the published hostname.
+Empty hostnames are rejected (returns error).
 
 ### Drives
 
@@ -309,6 +314,8 @@ load/swap which Windows cannot produce.
 - Structural invariants: identity, cores, memory, warming, ready, commit
 - Error propagation: cpu/memory/commit/drives
 - v2 capabilities verification
+- Windows foreground and SCM smokes: configured name, nonempty hostname, and
+  NUL-free identity strings
 
 ---
 

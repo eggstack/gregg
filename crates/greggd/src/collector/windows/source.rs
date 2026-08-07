@@ -817,10 +817,9 @@ fn get_hostname() -> Result<String, CollectError> {
                 ));
             }
 
-            // Trim trailing NUL if present.
-            if let Some(&0) = buffer.last() {
-                buffer.pop();
-            }
+            // `size` is the number of UTF-16 code units written, not the
+            // allocated buffer length.
+            buffer.truncate(size as usize);
 
             String::from_utf16(&buffer).map_err(|_| {
                 CollectError::new(

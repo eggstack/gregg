@@ -87,6 +87,9 @@ Wire types in `gregg-protocol`. Schema version is explicit (`SCHEMA_VERSION_V1 =
 Platform-specific rules:
 - macOS: `iowait_pct` is `null` (unsupported). Never fabricate `0.0`.
 - Windows: load average, swap, iowait are all `null`/unsupported. Windows reports `commit` instead.
+- Identity: `system.name` is the validated configured daemon name, while
+  `system.hostname` remains the native platform hostname. Windows hostname
+  collection must not retain NUL padding from `GetComputerNameExW`.
 - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
   v2 `available_bytes` is optional caller-available capacity and may not
   complement used bytes because of reservations or quotas.

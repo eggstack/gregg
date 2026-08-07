@@ -55,6 +55,7 @@ on `windows-2022` with Administrator privileges:
 - config mutation and custom config-path persistence;
 - bind failure on an occupied ephemeral loopback port and recovery;
 - reinstall with `LocalService` and config preservation;
+- configured `system.name` plus nonempty, NUL-free `system.hostname`;
 - service, binary, and temporary-config cleanup.
 
 It invokes the installed `greggd.exe` explicitly for lifecycle/configuration
