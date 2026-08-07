@@ -1,6 +1,6 @@
 # Phase 075: configured name and Windows hostname correction
 
-Status: planned.
+Status: complete.
 
 Depends on: Plans 073-074.
 
@@ -172,48 +172,53 @@ After one green ordinary CI run:
 - leave Plans 066-074 complete and historically accurate;
 - do not create Plan 076 or an evidence file.
 
+Closure record:
+
+- Implementation SHA: `069bf37`
+- Workflow run: `31189587467` (all Linux, Windows, macOS, and MSRV jobs green)
+
 ## Acceptance criteria
 
 ### Windows hostname correctness
 
-- [ ] `GetComputerNameExW` output is truncated using the successful call's returned length.
-- [ ] Native Windows hostname serialization contains no trailing `\u0000`.
-- [ ] Existing invalid/empty hostname error behavior is preserved.
-- [ ] No new Windows identity dependency or abstraction is introduced.
+- [x] `GetComputerNameExW` output is truncated using the successful call's returned length.
+- [x] Native Windows hostname serialization contains no trailing `\u0000`.
+- [x] Existing invalid/empty hostname error behavior is preserved.
+- [x] No new Windows identity dependency or abstraction is introduced.
 
 ### Configured display name
 
-- [ ] Foreground daemon startup passes `Config::name` into the native collector.
-- [ ] Windows SCM startup passes the selected config's `name` into `WindowsCollector`.
-- [ ] `system.name` equals the configured name while `system.hostname` remains the native hostname.
-- [ ] No config schema, validation, or CLI behavior changes.
+- [x] Foreground daemon startup passes `Config::name` into the native collector.
+- [x] Windows SCM startup passes the selected config's `name` into `WindowsCollector`.
+- [x] `system.name` equals the configured name while `system.hostname` remains the native hostname.
+- [x] No config schema, validation, or CLI behavior changes.
 
 ### Regression coverage
 
-- [ ] Existing Windows foreground smoke asserts `system.name == "smoke-test"`.
-- [ ] Existing Windows foreground smoke rejects NUL-containing name/hostname values.
-- [ ] Existing Windows SCM smoke asserts the configured name and NUL-free hostname from the live service response.
-- [ ] No new test framework, workflow, or Windows job is added.
+- [x] Existing Windows foreground smoke asserts `system.name == "smoke-test"`.
+- [x] Existing Windows foreground smoke rejects NUL-containing name/hostname values.
+- [x] Existing Windows SCM smoke asserts the configured name and NUL-free hostname from the live service response.
+- [x] No new test framework, workflow, or Windows job is added.
 
 ### Verification and scope
 
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] Focused greggd tests pass.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] One ordinary CI run is green, including the native Windows SCM lifecycle smoke.
-- [ ] Plans 073-074 remain closed and their SCM architecture is unchanged.
-- [ ] Plan 075 and `plans/README.md` describe the demonstrated final state.
-- [ ] No Plan 076, evidence document, protocol work, or unrelated cleanup is added.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] Focused greggd tests pass.
+- [x] `./scripts/check-local.sh` passes.
+- [x] One ordinary CI run is green, including the native Windows SCM lifecycle smoke.
+- [x] Plans 073-074 remain closed and their SCM architecture is unchanged.
+- [x] Plan 075 and `plans/README.md` describe the demonstrated final state.
+- [x] No Plan 076, evidence document, protocol work, or unrelated cleanup is added.
 
 ## Handoff
 
 Report only:
 
 ```text
-Implementation SHA:
-Hostname correction:
-Configured-name wiring:
-Regression coverage:
-Workflow run:
-Planning-record closure:
+Implementation SHA: `069bf37`
+Hostname correction: `GetComputerNameExW` output is truncated to its successful UTF-16 length; Windows foreground and SCM smoke coverage rejects NUL identity values.
+Configured-name wiring: `Config::name` is passed to native collectors in foreground and Windows SCM startup.
+Regression coverage: focused `greggd` tests, full local/release preflight, and the existing Windows foreground/SCM smokes.
+Workflow run: `31189587467` — green across Linux, Windows, macOS, and MSRV.
+Planning-record closure: Plan 075 complete; `plans/README.md` has no active corrective phase; no Plan 076 or evidence file created.
 ```

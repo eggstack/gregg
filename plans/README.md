@@ -17,7 +17,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 ## Roadmap status
 
-Plans 066-074 remain complete, including CI-backed Windows SCM verification in run `31040689848`. [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) is the sole active corrective phase after that native Windows run exposed two small identity defects: a trailing NUL in the native hostname and ignored `Config::name` wiring.
+Plans 066-075 are complete. Plan 075 corrected the trailing NUL in the native Windows hostname and restored `Config::name` wiring after the Plan 074 native Windows run exposed both defects. Its implementation commit `069bf37` passed ordinary CI in run `31189587467`.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Plans 066-074 remain complete, including CI-backed Windows SCM verification in r
 | [`072-windows-service-runtime-and-record-correction.md`](072-windows-service-runtime-and-record-correction.md) | Correct Windows service runtime ownership and nonblocking shutdown | complete |
 | [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | complete; operationally verified by 074 |
 | [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | complete; run `31040689848` passed |
-| [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | planned; active |
+| [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 
 Dependency order:
 
@@ -40,18 +40,17 @@ Dependency order:
 
 Plan 075 is a concrete product-correctness correction discovered through the successful Plan 074 native smoke. It is not a closure-only evidence phase. Do not create Plan 076 merely to record its result.
 
-## Execution guidance for GPT-5.6 Luna
+## Execution record for Plan 075
 
-The executor should:
+Execution completed:
 
-1. Inspect current HEAD, `crates/greggd/src/collector/windows/source.rs`, `crates/greggd/src/main.rs`, `crates/greggd/src/service/windows.rs`, `crates/greggd/tests/windows_smoke.rs`, and `scripts/smoke-windows.ps1` before editing.
-2. Execute only Plan 075; do not reopen the completed SCM dispatcher, runtime ownership, readiness, or CI architecture.
-3. Truncate `GetComputerNameExW` output using the successful call's returned UTF-16 length rather than popping an assumed final buffer slot.
-4. Pass `Some(config.name.as_str())` into native collector construction in foreground mode and into `WindowsCollector` in SCM mode.
-5. Strengthen the existing Windows foreground and SCM smoke assertions for configured name and NUL-free identity values; do not add a new test harness.
-6. Run focused tests and `./scripts/check-local.sh`, then require one ordinary existing CI run.
-7. Keep the existing Windows job and SCM lifecycle smoke unchanged in architecture and scope.
-8. After the green run, mark Plan 075 complete and return this index to no active corrective phase without creating Plan 076 or evidence files.
+1. Inspected the existing Windows source, startup paths, foreground smoke, SCM smoke, and relevant documentation.
+2. Kept the completed SCM dispatcher, runtime ownership, readiness, and CI architecture unchanged.
+3. Truncated `GetComputerNameExW` output using the successful call's returned UTF-16 length.
+4. Passed `Some(config.name.as_str())` into native collector construction in foreground and SCM modes.
+5. Strengthened the existing Windows foreground and SCM smoke assertions without adding a test harness.
+6. Ran focused tests, the default and release local checks, exact Linux CI gates, Rust 1.75 compilation, and one ordinary existing CI run.
+7. Recorded the green implementation SHA and workflow run in Plan 075; no corrective phase remains active.
 
 ## Verification model
 
