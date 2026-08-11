@@ -83,11 +83,14 @@ workspace Cargo manifests and must not be violated.
 serialization and structured validation. No I/O, no runtime dependencies
 beyond serialization.
 
+**Dependencies:** `serde`, `serde_json`, `thiserror` only. No HTTP, terminal,
+or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
+
 ### Modules
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, schema version constants |
+| `lib` | `src/lib.rs` | Root, re-exports, schema version constants (`SCHEMA_VERSION_V1`, `SCHEMA_VERSION_V2`) |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
 | `validate` | `src/validate.rs` | V1 validation: 6 violation kinds |
@@ -102,6 +105,8 @@ beyond serialization.
 - **Capability flags** — each platform declares what metrics it supports; the
   client uses these to decide what to render
 - **Validation** — separate from serde; `validate()` returns structured violation lists
+- **Health responses** — three states (`Ready`, `Warming`, `Failed`) with coarse
+  categories for the wire; internal error chains never leak
 
 **Deep dive:** [gregg-protocol.md](gregg-protocol.md)
 
@@ -111,37 +116,50 @@ beyond serialization.
 
 **Purpose:** Runs on the monitored host. Collects system metrics using native OS
 interfaces, samples them at a configurable interval, serves them over HTTP, and
-manages its own OS service lifecycle.
+manages its own OS service lifecycle. Both a binary (`src/main.rs`) and a
+library (`src/lib.rs`) target; the lib surface exposes the collector for
+integration tests.
 
 ### Modules
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, platform collector dispatch |
+| `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals |
+| `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals; graceful shutdown with 10s deadline |
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows SCM lifecycle commands |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes |
-| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle, clock abstraction |
+| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`), clock abstraction |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, five endpoints, staleness detection |
 | `server/error` | `src/server/error.rs` | Server error types |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics` normalization |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics` normalization to v1 and v2 wire formats |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
-| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization (dedup, sort, truncate) |
+| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: dedup, sort, truncate; total-free vs caller-available capacity |
 | `collector/linux/` | `src/collector/linux/` | Linux collector: `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` |
 | `collector/macos/` | `src/collector/macos/` | macOS collector: Mach FFI, sysctl, `getloadavg`, `getmntinfo` |
-| `collector/windows/` | `src/collector/windows/` | Windows collector: native metrics, hostname, and configured display-name override |
-| `service/mod` | `src/service/mod.rs` | Windows-only `ServiceManager` trait |
-| `service/windows` | `src/service/windows.rs` | Windows: SCM integration via `windows-service` crate |
+| `collector/windows/` | `src/collector/windows/` | Windows collector: `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` |
+| `service/mod` | `src/service/mod.rs` | `ServiceManager` trait (Windows-only) |
+| `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service` crate |
 
 ### Key concepts
 
-- **Collector** — platform-specific metric collection. No external commands for metrics.
+- **Collector** — platform-specific metric collection. No external commands.
+  Implements `SystemCollector` trait: `identity()`, `sample()`, `capabilities()`,
+  `capabilities_v2()`, `supports_v1_snapshot()`.
 - **Sampler** — owns the clock and cadence; calls the collector periodically,
-  stamps timestamps, produces immutable cached snapshots
+  stamps timestamps, produces immutable cached snapshots. First sample returns
+  `Warming` (CPU percentages require two readings).
 - **HTTP server** — serves cached snapshots (never triggers collection); staleness
-  detection; v1 + v2 endpoints
-- **Service manager** — Windows SCM only; Unix supervisors remain external packaging
+  detection; v1 + v2 endpoints. Five routes: `/`, `/v1/status`, `/v2/status`,
+  `/healthz`, `/v2/healthz`.
+- **Supervision** — `tokio::select!` on shutdown signal, server task, and sampler
+  task. Graceful shutdown with 10-second deadline.
+- **Service manager** — Windows SCM only; Unix supervisors remain external packaging.
+- **Exit codes** — `0` success, `1` configuration, `2` service management,
+  `3` runtime, `4` permission denied.
+- **Binary/library split** — reusable runtime code returns errors without
+  printing or calling `std::process::exit()`; the binary boundary owns
+  logging, diagnostics, and exit-code classification.
 
 **Deep dive:** [greggd-daemon.md](greggd-daemon.md)
 
@@ -212,11 +230,21 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 
 ### Key concepts
 
-- **Poll scheduler** — generation-based concurrency; v2-first/v1-fallback protocol
-- **State reducer** — action/Reducer pattern; all state changes through `Action` enum
-- **Normalized snapshots** — v1 and v2 wire formats normalized to a single internal type
-- **EggPool** — optional summary pane for EggPool API metrics (separate from greggd polling)
-- **Cross-process config locking** — `flock(2)` / `LockFileEx` prevents concurrent corruption
+- **Poll scheduler** — generation-based concurrency; v2-first/v1-fallback protocol.
+  One isolated poll task per endpoint; semaphore bounds active polls; task panic
+  is converted to `Cancelled`.
+- **State reducer** — action/Reducer pattern; all state changes through `Action`
+  enum. `AppState::apply_action()` and `apply_batch()` are pure, deterministic
+  functions.
+- **Normalized snapshots** — v1 and v2 wire formats normalized to a single
+  internal type; eliminates version-branching in the UI.
+- **EggPool** — optional summary pane for EggPool API metrics (separate from
+  greggd polling). Own client, worker, authentication (Bearer token from env var),
+  and rendering. 60-second passive refresh cadence.
+- **Cross-process config locking** — `flock(2)` / `LockFileEx` prevents
+  concurrent corruption of the TOML config file.
+- **Width degradation** — header line drops lower-priority segments as width
+  decreases (< 32: no load, < 50: no OS, < 80: no arch).
 
 **Deep dive:** [gregg-client.md](gregg-client.md)
 
@@ -302,6 +330,13 @@ The protocol supports two schema versions. V2 is preferred; the client falls
 back to v1 on 404. Capability flags control which optional fields must be
 present. Validation is structured and separate from deserialization.
 
+| Concept | Details |
+|---------|---------|
+| Schema v1 | Original Linux/macOS format; required load/swap |
+| Schema v2 | Extended with capability flags; optional load/swap/commit; drives array |
+| Validation | Structured violation lists, not serde errors |
+| Compatibility | Additive within schema; breaking changes require new major |
+
 **Deep dive:** [protocol.md](protocol.md)
 
 ### Error boundaries
@@ -309,6 +344,13 @@ present. Validation is structured and separate from deserialization.
 Each binary crate has crate-local typed errors via `thiserror`. Wire responses
 carry only safe, structured info (category + message). Collector errors never
 appear on the wire.
+
+| Boundary | Pattern |
+|----------|---------|
+| Daemon runtime | Returns typed errors; binary boundary formats diagnostics |
+| Wire responses | `HealthCategory` + short message; no paths or error chains |
+| Collector | 6 `CollectErrorKind` variants; crate-local, never on wire |
+| Client | `PollOutcome` with 12 failure classifications |
 
 **Deep dive:** [error-conventions.md](error-conventions.md)
 
@@ -318,7 +360,28 @@ Installer scripts for all three platforms, a local validation script
 (`check-local.sh`), loopback smoke tests, and systemd/launchd/SCM service
 definitions.
 
+| Artifact | Purpose |
+|----------|---------|
+| `check-local.sh` / `check-local.ps1` | Primary local validation (fmt + test; `--release` adds clippy/docs/smoke) |
+| `verify-installed-daemon.sh` | Bounded loopback smoke: isolated port, temp config, health poll, SIGTERM |
+| `smoke-windows.ps1` | Full Windows SCM lifecycle: install → start → health → stop → restart → cleanup |
+| `install-linux.sh` | Systemd service, `greggd` user, `/usr/local/bin`, `/etc/gregg/` |
+| `install-macos.sh` | Launchd plist, `/usr/local/bin`, `/Library/Application Support/gregg/` |
+| `install-windows.ps1` | SCM service, `%ProgramFiles%\Gregg\`, `LocalService` account |
+| `systemd/greggd.service` | Hardened systemd unit (NoNewPrivileges, ProtectSystem, etc.) |
+| `launchd/com.eggstack.greggd.plist` | KeepAlive on crash, RunAtLoad, 1024 fd limit |
+
 **Deep dive:** [scripts-and-packaging.md](scripts-and-packaging.md)
+
+### macOS collector differences
+
+The macOS collector uses availability-oriented memory accounting (matching
+Linux `free` semantics) which reports **less** used memory than Activity
+Monitor. I/O-wait is `null` (no aggregate equivalent). Compressed pages
+are counted as swap. Detailed comparison with Activity Monitor, `top`, and
+`vm_stat` is documented separately.
+
+**Deep dive:** [macos-collector-notes.md](macos-collector-notes.md)
 
 ---
 
@@ -353,6 +416,7 @@ collector supplies the separate `system.hostname` field.
 - **Platform-native collector tests** run only on the target OS
 - **40+ JSON/text fixture files** in `src/collector/test_fixtures/`
 - **Mock seams:** `MemorySource` (Linux), `MockNativeQueries` (macOS), `MockWindowsSource` (Windows)
+- **Cross-process lock contention** covered by `lock_helper` binary behind `test-helper` feature
 
 Run the short routine check with:
 
