@@ -19,6 +19,8 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
+Plan 078 is the one active product-correctness phase. It fixes stale client endpoint state at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. This is new product work discovered during live testing, not a closure-only continuation of Plan 077.
+
 | Plan | Purpose | Status |
 | --- | --- | --- |
 | [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform defects, retain only justified simplification, and close through bounded verification | complete through 074; CI-backed Windows SCM verification passed |
@@ -33,14 +35,15 @@ Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manage
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 | [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
+| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | planned; active |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 is the single narrow corrective pass discovered during review of that implementation. Do not add another closure-only phase after 077 if its acceptance criteria pass.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 is the single narrow corrective pass discovered during review of that implementation. Plan 078 is a separate live-testing correction and CLI ergonomics phase; do not create another phase solely to mark 078 complete if its acceptance criteria pass.
 
 ## Execution record for Plan 075
 
@@ -68,19 +71,23 @@ Manual release preflight remains:
 ./scripts/check-local.sh --release
 ```
 
-For Plan 077, focused local verification is sufficient:
+For Plan 078, focused local verification is sufficient in addition to the default local check:
 
 ```text
 cargo fmt --all -- --check
+cargo test -p gregg endpoint
+cargo test -p gregg state
+cargo test -p gregg scheduler
+cargo test -p gregg cli
+cargo test -p gregg --bin gregg
 cargo test -p greggd cli
 cargo test -p greggd --bin greggd
-cargo test -p greggd
 ./scripts/check-local.sh
 ```
 
-Plan 077 additionally required one narrow local Ubuntu live/dead `croncheck` smoke with the release daemon. It was not moved into CI.
+Plan 078 additionally requires one narrow local Ubuntu operational smoke against the verified live `greggd` endpoint at `192.168.183.143:11310`: URL-form `gregg add`, running-TUI `.182` -> `.183` `Ctrl-R` reconciliation, and exact `greggd configprint` output. This remains local-only and is not moved into CI.
 
-The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior and continues to run its existing checks. Plan 077 does not change or add CI coverage.
+The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 078 does not change SCM behavior or add CI coverage; common CLI compilation/tests are sufficient for the new `configprint` command, with existing native CI continuing to guard platform compilation.
 
 A plan does not require:
 
@@ -104,28 +111,34 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-## Scope control for Plan 077
+## Active scope control for Plan 078
 
 Allowed:
 
-- a fixed-size `croncheck` HTTP status-line read;
-- strict CRLF, EOF, HTTP/1.0-or-1.1, and status-code handling;
-- focused malformed/overlong/refused-port tests;
-- deletion of the always-false legacy daemon CLI test module;
-- minimal retention/adaptation of non-duplicated current-contract config/error tests;
-- one local Ubuntu live/dead `croncheck` smoke;
-- direct closure updates to Plans 076-077 and this index.
+- reload the current Gregg system config at the existing `Ctrl-R` boundary;
+- reconcile added/removed/changed system endpoints by stable ID;
+- replace or narrowly restart only the system polling endpoint set;
+- reset metrics when a stable ID changes host/port so old-machine data is not shown under a new endpoint;
+- accept syntactically valid plain-HTTP URL input for `gregg add` and persist only host/port;
+- preserve explicit URL ports and Gregg's configured default-port behavior when a URL omits a port;
+- add one read-only `greggd configprint` command with exact canonical socket-address output;
+- focused tests and one real Ubuntu smoke using `192.168.183.143:11310`;
+- direct documentation and plan-index updates.
 
 Not allowed:
 
-- a new HTTP client dependency or general-purpose parser;
-- retries, TLS, HTTP/2, auth, or protocol changes;
-- systemd/launchd runtime restoration, self-daemonization, PID files, or process discovery;
-- changes to Windows SCM lifecycle behavior;
-- broad test-suite restructuring;
+- filesystem watcher libraries or continuous hot reload;
+- a new background config-monitor subsystem;
+- TLS/HTTPS polling or silent HTTPS-to-HTTP downgrade;
+- persisting schemes, paths, or URL credentials in client config;
+- endpoint discovery or network probing during `gregg add`;
+- dynamic daemon reload, PID/process discovery, or service-manager changes;
+- a full config dump under `configprint`;
+- changes to `croncheck` semantics;
+- broad TUI redesign, test-suite restructuring, or unrelated cleanup;
 - new workflows, jobs, matrices, artifacts, evidence bundles, or CI gates;
-- unrelated collector, TUI, EggPool, drive, release, or packaging work;
-- a Plan 078 created only to mark 077 complete.
+- release automation or publication work;
+- a Plan 079 created only to record Plan 078 closure.
 
 ## Completed roadmap groups
 
