@@ -718,7 +718,7 @@ After implementation and verification:
 
 ## Implementation and verification record
 
-Implementation commit `cd67109` contains the code and documentation changes.
+Implementation commit `1867d22` contains the code and documentation changes.
 Deterministic
 verification passed with `cargo fmt --all -- --check`, the full workspace
 default check, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
