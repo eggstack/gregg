@@ -17,7 +17,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 ## Roadmap status
 
-Plans 066-075 are complete. Plan 075 corrected the trailing NUL in the native Windows hostname and restored `Config::name` wiring after the Plan 074 native Windows run exposed both defects. Its implementation commit `069bf37` passed ordinary CI in run `31189587467`.
+Plans 066-075 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 is the active narrow corrective pass for strict bounded status-line parsing, missing negative-path tests, stale disabled-test cleanup, and truthful Plan 076 closure.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -31,15 +31,16 @@ Plans 066-075 are complete. Plan 075 corrected the trailing NUL in the native Wi
 | [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | complete; operationally verified by 074 |
 | [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | complete; run `31040689848` passed |
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
-| [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; local workspace and Ubuntu E2E checks passed |
+| [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | implemented; local workspace and Ubuntu E2E checks passed; strict parser/test closure continues in 077 |
+| [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | planned / active |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077
 ```
 
-Plan 075 is a concrete product-correctness correction discovered through the successful Plan 074 native smoke. It is not a closure-only evidence phase. Do not create Plan 076 merely to record its result.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 is the single narrow corrective pass discovered during review of that implementation. Do not add another closure-only phase after 077 if its acceptance criteria pass.
 
 ## Execution record for Plan 075
 
@@ -51,7 +52,7 @@ Execution completed:
 4. Passed `Some(config.name.as_str())` into native collector construction in foreground and SCM modes.
 5. Strengthened the existing Windows foreground and SCM smoke assertions without adding a test harness.
 6. Ran focused tests, the default and release local checks, exact Linux CI gates, Rust 1.75 compilation, and one ordinary existing CI run.
-7. Recorded the green implementation SHA and workflow run in Plan 075; no corrective phase remains active.
+7. Recorded the green implementation SHA and workflow run in Plan 075; no corrective phase remained for the Plan 075 scope.
 
 ## Verification model
 
@@ -67,23 +68,19 @@ Manual release preflight remains:
 ./scripts/check-local.sh --release
 ```
 
-For Plan 075, focused verification is sufficient before ordinary CI:
+For Plan 077, focused local verification is sufficient:
 
 ```text
 cargo fmt --all -- --check
+cargo test -p greggd cli
+cargo test -p greggd --bin greggd
 cargo test -p greggd
 ./scripts/check-local.sh
 ```
 
-The existing Windows CI job remains the authoritative native Windows environment and continues to run:
+Plan 077 additionally requires one narrow local Ubuntu live/dead `croncheck` smoke with the release daemon. It must not be moved into CI.
 
-```text
-cargo test --workspace --all-targets --all-features
-cargo build --release -p greggd
-scripts/smoke-windows.ps1 -ExePath target/release/greggd.exe
-```
-
-One green ordinary workflow run at the final implementation SHA, or a source-equivalent documentation-only descendant, is sufficient. No repeated qualification run or separately maintained Windows host is required.
+The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior and continues to run its existing checks. Plan 077 does not change or add CI coverage.
 
 A plan does not require:
 
@@ -101,30 +98,34 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 - deterministic unit/integration tests;
 - the default local check;
 - the release preflight only for release-facing changes;
-- the existing native platform CI jobs;
-- the SCM lifecycle smoke inside the existing Windows job for operational Windows service behavior;
+- native platform CI only where native-platform truth is actually required;
+- direct local operational smoke where explicitly required;
 - direct documentation inspection for scope and behavior claims.
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-## Scope control for Plan 075
+## Scope control for Plan 077
 
 Allowed:
 
-- local Windows `GetComputerNameExW` buffer-length correction;
-- direct propagation of validated `Config::name` into already-existing collector display-name parameters;
-- focused regression assertions in the existing Windows foreground and SCM smokes;
-- direct closure updates to Plan 075 and this index after one green CI run.
+- a fixed-size `croncheck` HTTP status-line read;
+- strict CRLF, EOF, HTTP/1.0-or-1.1, and status-code handling;
+- focused malformed/overlong/refused-port tests;
+- deletion of the always-false legacy daemon CLI test module;
+- minimal retention/adaptation of non-duplicated current-contract config/error tests;
+- one local Ubuntu live/dead `croncheck` smoke;
+- direct closure updates to Plans 076-077 and this index.
 
 Not allowed:
 
-- protocol or config-schema changes;
-- FQDN discovery, hostname rewriting, DNS/NetBIOS expansion, or new identity sources;
-- collector factories, generic identity frameworks, or service abstractions solely for this correction;
-- changes to SCM dispatcher, runtime ownership, post-bind readiness, installer architecture, or service commands;
-- product changes to the TUI, scheduler, drives, EggPool, or release model;
-- new dependencies, workflows, jobs, matrices, self-hosted runners, artifacts, evidence bundles, performance suites, or binary-size gates;
-- a Plan 076 created only to mark Plan 075 complete.
+- a new HTTP client dependency or general-purpose parser;
+- retries, TLS, HTTP/2, auth, or protocol changes;
+- systemd/launchd runtime restoration, self-daemonization, PID files, or process discovery;
+- changes to Windows SCM lifecycle behavior;
+- broad test-suite restructuring;
+- new workflows, jobs, matrices, artifacts, evidence bundles, or CI gates;
+- unrelated collector, TUI, EggPool, drive, release, or packaging work;
+- a Plan 078 created only to mark 077 complete.
 
 ## Completed roadmap groups
 
