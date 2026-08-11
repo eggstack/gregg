@@ -17,7 +17,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 ## Roadmap status
 
-Plans 066-075 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 is the active narrow corrective pass for strict bounded status-line parsing, missing negative-path tests, stale disabled-test cleanup, and truthful Plan 076 closure.
+Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -31,8 +31,8 @@ Plans 066-075 are complete. Plan 076 implemented the Unix runtime/service-manage
 | [`073-native-windows-scm-entry-and-readiness-correction.md`](073-native-windows-scm-entry-and-readiness-correction.md) | Add native SCM dispatcher/`ServiceMain`, config handoff, and post-bind readiness | complete; operationally verified by 074 |
 | [`074-ci-backed-windows-scm-closure.md`](074-ci-backed-windows-scm-closure.md) | Correct the Windows lifecycle smoke and run it in the existing Windows CI job | complete; run `31040689848` passed |
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
-| [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | implemented; local workspace and Ubuntu E2E checks passed; strict parser/test closure continues in 077 |
-| [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | planned / active |
+| [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
+| [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
 
 Dependency order:
 
@@ -78,7 +78,7 @@ cargo test -p greggd
 ./scripts/check-local.sh
 ```
 
-Plan 077 additionally requires one narrow local Ubuntu live/dead `croncheck` smoke with the release daemon. It must not be moved into CI.
+Plan 077 additionally required one narrow local Ubuntu live/dead `croncheck` smoke with the release daemon. It was not moved into CI.
 
 The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior and continues to run its existing checks. Plan 077 does not change or add CI coverage.
 

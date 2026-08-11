@@ -75,6 +75,9 @@ passes locally, the distinction is the cause.
 - Reusable `greggd` library/runtime code must return errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.
+- Unix `greggd croncheck` is a read-only `/v2/healthz` probe with a short
+  timeout and a fixed 512-byte CRLF-terminated HTTP/1.0 or HTTP/1.1 status-line
+  read; only status 200 is healthy. `host` and `port` only persist config.
 - `greggd` dispatches synchronously before entering Tokio: foreground `run` and
   Windows SCM `service` first enters `service_dispatcher::start`; the generated
   `ServiceMain` worker then owns exactly one current-thread runtime. Its

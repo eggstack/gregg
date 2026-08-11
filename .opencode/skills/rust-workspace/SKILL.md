@@ -111,5 +111,7 @@ gregg-protocol  ◄── gregg       (client, TUI, polling)
 - Don't add self-daemonization or PID-file management to the daemon
 - Don't fabricate metric values for unsupported platform capabilities
 - On Unix, `greggd run` owns the foreground daemon; `croncheck` is a bounded
-  `/v2/healthz` probe and `host`/`port` only persist configuration. Do not add
-  systemd/launchd calls, self-daemonization, or process discovery.
+  `/v2/healthz` probe. It reads at most 512 bytes of the CRLF-terminated
+  HTTP/1.x status line, accepts only HTTP/1.0 or HTTP/1.1 status 200, and
+  `host`/`port` only persist configuration. Do not add systemd/launchd calls,
+  self-daemonization, or process discovery.

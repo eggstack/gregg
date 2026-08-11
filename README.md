@@ -83,7 +83,7 @@ Change the daemon name or bind address:
 greggd host my-lab-server          # set the display name
 greggd port 11311                  # change the listen port
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
-greggd croncheck                   # probe /v2/healthz; never starts the daemon
+greggd croncheck                   # bounded /v2/healthz probe; never starts the daemon
 greggd version                     # print the daemon version
 ```
 

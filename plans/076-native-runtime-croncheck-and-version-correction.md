@@ -1,6 +1,6 @@
 # Phase 076: native runtime, croncheck, and version correction
 
-Status: implemented.
+Status: complete.
 
 Depends on: Plan 075.
 
@@ -515,71 +515,71 @@ Ordinary existing CI may run naturally after implementation, but it is not an ac
 
 ### Unix runtime boundary
 
-- [ ] `greggd run` on Linux starts the daemon directly and has no service-manager dependency.
-- [ ] Linux/macOS production source no longer invokes `systemctl` or `launchctl`.
-- [ ] Linux/macOS `start`, `stop`, and `restart` are removed from the executable-owned lifecycle contract rather than replaced by self-daemonization or process discovery.
-- [ ] Optional systemd and launchd packaging assets remain available for manual/operator-controlled installation.
-- [ ] No `sudo`, privilege escalation, PID file, fork/background daemon mode, or generic supervisor abstraction is added.
-- [ ] Completed Windows SCM dispatcher/runtime/readiness/shutdown architecture remains intact.
+- [x] `greggd run` on Linux starts the daemon directly and has no service-manager dependency.
+- [x] Linux/macOS production source no longer invokes `systemctl` or `launchctl`.
+- [x] Linux/macOS `start`, `stop`, and `restart` are removed from the executable-owned lifecycle contract rather than replaced by self-daemonization or process discovery.
+- [x] Optional systemd and launchd packaging assets remain available for manual/operator-controlled installation.
+- [x] No `sudo`, privilege escalation, PID file, fork/background daemon mode, or generic supervisor abstraction is added.
+- [x] Completed Windows SCM dispatcher/runtime/readiness/shutdown architecture remains intact.
 
 ### `croncheck`
 
-- [ ] `greggd croncheck` performs a bounded HTTP probe of `/v2/healthz`.
-- [ ] HTTP 200 returns exit `0`.
-- [ ] HTTP 503 and other non-200 statuses return nonzero.
-- [ ] Connection refusal, timeout, malformed HTTP, and premature EOF return nonzero with one useful diagnostic.
-- [ ] `0.0.0.0` is probed through `127.0.0.1`; `::` is probed through `::1`.
-- [ ] Specific configured bind addresses remain unchanged for the probe target.
-- [ ] `croncheck` never starts, stops, restarts, repairs, installs, or enables greggd.
-- [ ] `croncheck` works without systemd/launchd and requires no administrator privileges for an ordinary unprivileged-port deployment.
-- [ ] No new HTTP client/runtime dependency is introduced solely for the probe.
+- [x] `greggd croncheck` performs a bounded HTTP probe of `/v2/healthz`.
+- [x] HTTP 200 returns exit `0`.
+- [x] HTTP 503 and other non-200 statuses return nonzero.
+- [x] Connection refusal, timeout, malformed HTTP, and premature EOF return nonzero with one useful diagnostic.
+- [x] `0.0.0.0` is probed through `127.0.0.1`; `::` is probed through `::1`.
+- [x] Specific configured bind addresses remain unchanged for the probe target.
+- [x] `croncheck` never starts, stops, restarts, repairs, installs, or enables greggd.
+- [x] `croncheck` works without systemd/launchd and requires no administrator privileges for an ordinary unprivileged-port deployment.
+- [x] No new HTTP client/runtime dependency is introduced solely for the probe.
 
 ### Configuration mutation
 
-- [ ] Linux/macOS `greggd host` atomically updates config without invoking a service manager.
-- [ ] Linux/macOS `greggd port` atomically updates config without invoking a service manager.
-- [ ] Existing validation, explicit-path handling, and atomic-write guarantees remain intact.
-- [ ] No hot reload, signal control, or process discovery is added.
+- [x] Linux/macOS `greggd host` atomically updates config without invoking a service manager.
+- [x] Linux/macOS `greggd port` atomically updates config without invoking a service manager.
+- [x] Existing validation, explicit-path handling, and atomic-write guarantees remain intact.
+- [x] No hot reload, signal control, or process discovery is added.
 
 ### Version commands
 
-- [ ] `greggd version` exists, prints `greggd <Cargo version>`, and exits `0`.
-- [ ] `gregg version` exists, prints `gregg <Cargo version>`, and exits `0`.
-- [ ] Both commands work without an existing config file.
-- [ ] `gregg version` does not enter the TUI.
-- [ ] Neither version command performs networking or service management.
-- [ ] Existing `--version` behavior remains functional unless a concrete Clap conflict requires adjustment.
-- [ ] No build script, Git metadata embedding, or generated version file is introduced.
+- [x] `greggd version` exists, prints `greggd <Cargo version>`, and exits `0`.
+- [x] `gregg version` exists, prints `gregg <Cargo version>`, and exits `0`.
+- [x] Both commands work without an existing config file.
+- [x] `gregg version` does not enter the TUI.
+- [x] Neither version command performs networking or service management.
+- [x] Existing `--version` behavior remains functional unless a concrete Clap conflict requires adjustment.
+- [x] No build script, Git metadata embedding, or generated version file is introduced.
 
 ### Focused verification
 
-- [ ] Formatting passes.
-- [ ] Focused `greggd` CLI/runtime tests pass.
-- [ ] Focused `gregg` CLI tests pass.
-- [ ] Full package tests for directly affected crates pass.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Source search confirms no production Linux/macOS `systemctl`/`launchctl` invocation under `crates/greggd/src`.
+- [x] Formatting passes.
+- [x] Focused `greggd` CLI/runtime tests pass.
+- [x] Focused `gregg` CLI tests pass.
+- [x] Full package tests for directly affected crates pass.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Source search confirms no production Linux/macOS `systemctl`/`launchctl` invocation under `crates/greggd/src`.
 
 ### Required Ubuntu E2E
 
-- [ ] Release `greggd` and `gregg` binaries build on the current Ubuntu host.
-- [ ] Both explicit `version` commands execute successfully from the built binaries.
-- [ ] A temporary user-owned config with a free loopback port is created without touching `/etc`.
-- [ ] `target/release/greggd run --config <temp-config>` starts directly without `sudo` or systemd.
-- [ ] The live daemon reaches HTTP 200 on `/v2/healthz`.
-- [ ] The live daemon serves valid HTTP 200 JSON from `/v2/status` with `system.name == "greggd-e2e"`.
-- [ ] `greggd croncheck` returns `0` while that daemon is healthy.
-- [ ] After the daemon is terminated, `greggd croncheck` returns nonzero promptly.
-- [ ] The failed `croncheck` does not start a replacement process and the endpoint remains unreachable.
-- [ ] The complete E2E uses no `sudo`, `systemctl`, `service`, `loginctl`, or `pkexec`.
-- [ ] The temporary process/config are cleaned up.
-- [ ] This E2E is executed locally only; no CI workflow is added or modified for it.
+- [x] Release `greggd` and `gregg` binaries build on the current Ubuntu host.
+- [x] Both explicit `version` commands execute successfully from the built binaries.
+- [x] A temporary user-owned config with a free loopback port is created without touching `/etc`.
+- [x] `target/release/greggd run --config <temp-config>` starts directly without `sudo` or systemd.
+- [x] The live daemon reaches HTTP 200 on `/v2/healthz`.
+- [x] The live daemon serves valid HTTP 200 JSON from `/v2/status` with `system.name == "greggd-e2e"`.
+- [x] `greggd croncheck` returns `0` while that daemon is healthy.
+- [x] After the daemon is terminated, `greggd croncheck` returns nonzero promptly.
+- [x] The failed `croncheck` does not start a replacement process and the endpoint remains unreachable.
+- [x] The complete E2E uses no `sudo`, `systemctl`, `service`, `loginctl`, or `pkexec`.
+- [x] The temporary process/config are cleaned up.
+- [x] This E2E is executed locally only; no CI workflow is added or modified for it.
 
 ### Scope closure
 
-- [ ] Documentation describes `run`, `croncheck`, Unix supervisor ownership, config mutation, and both version commands truthfully.
-- [ ] No unrelated collector, protocol, TUI, EggPool, scheduler, drive, release, or CI work is included.
-- [ ] No evidence file or follow-up closure-only plan is created.
+- [x] Documentation describes `run`, `croncheck`, Unix supervisor ownership, config mutation, and both version commands truthfully.
+- [x] No unrelated collector, protocol, TUI, EggPool, scheduler, drive, release, or CI work is included.
+- [x] No evidence file or follow-up closure-only plan is created.
 
 ## Handoff
 
@@ -619,5 +619,11 @@ Verification completed locally:
   `crates/greggd/src`.
 
 CI changes: none.
+
+Plan 077 follow-up: the health probe now enforces a fixed 512-byte
+CRLF-terminated status-line read, exact HTTP/1.0 or HTTP/1.1 validation, and
+explicit EOF/overlength handling; the obsolete disabled CLI test module was
+removed. The corrected behavior and local release smoke are recorded in Plan
+077.
 
 Do not create a separate evidence document. After implementation and the required local Ubuntu E2E pass, mark this plan complete and update `plans/README.md` directly.

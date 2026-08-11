@@ -150,7 +150,7 @@ configuration error and is neither written nor followed by process management.
 | Command | Purpose |
 |---------|---------|
 | `run` | Start foreground daemon |
-| `croncheck` | Bounded HTTP probe of `/v2/healthz` |
+| `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200 |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
 | `version` | Print compile-time daemon version |

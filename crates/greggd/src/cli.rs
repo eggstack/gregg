@@ -4,7 +4,7 @@
 //! subcommand has a stable help message and returns a meaningful exit code.
 
 use std::fmt;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -229,6 +229,7 @@ pub fn croncheck_target(config: &Config) -> SocketAddr {
 /// Probe `/v2/healthz`, accepting only a syntactically valid HTTP 200 status.
 pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
     const TIMEOUT: Duration = Duration::from_millis(750);
+    const MAX_STATUS_LINE_BYTES: usize = 512;
     let mut stream = TcpStream::connect_timeout(&target, TIMEOUT)
         .map_err(|e| CroncheckError(format!("health probe connection failed: {e}")))?;
     stream
@@ -239,20 +240,45 @@ pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
         .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .map_err(|e| CroncheckError(format!("health probe request failed: {e}")))?;
 
-    let mut line = String::new();
-    let mut reader = BufReader::new(stream);
-    reader
-        .read_line(&mut line)
-        .map_err(|e| CroncheckError(format!("health probe response failed: {e}")))?;
-    let mut fields = line.split_whitespace();
+    let mut response = [0_u8; MAX_STATUS_LINE_BYTES];
+    let mut length = 0;
+    let line_length = loop {
+        if length == response.len() {
+            return Err(CroncheckError(
+                "health probe response status line too long".into(),
+            ));
+        }
+        let read = stream
+            .read(&mut response[length..])
+            .map_err(|e| CroncheckError(format!("health probe response failed: {e}")))?;
+        if read == 0 {
+            return Err(CroncheckError(
+                "health probe response ended before status line CRLF".into(),
+            ));
+        }
+        length += read;
+        if let Some(end) = response[..length]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+        {
+            break end;
+        }
+    };
+
+    let line = std::str::from_utf8(&response[..line_length])
+        .map_err(|_| CroncheckError("health probe response status line is not text".into()))?;
+    let mut fields = line.split_ascii_whitespace();
     let http = fields.next();
-    let status = fields.next().and_then(|value| value.parse::<u16>().ok());
-    if http.is_some_and(|value| value.starts_with("HTTP/1.")) && status == Some(200) {
+    let status = fields.next();
+    let valid_version = matches!(http, Some("HTTP/1.0" | "HTTP/1.1"));
+    let valid_status = status.is_some_and(|value| {
+        value.len() == 3 && value.as_bytes().iter().all(u8::is_ascii_digit) && value == "200"
+    });
+    if valid_version && valid_status {
         Ok(())
     } else {
         Err(CroncheckError(format!(
-            "health probe returned malformed or unhealthy status: {}",
-            line.trim()
+            "health probe returned malformed or unhealthy status: {line}"
         )))
     }
 }
@@ -371,14 +397,15 @@ mod native_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn probe_against(response: &'static [u8]) -> Result<(), CroncheckError> {
+    fn probe_against(response: impl Into<Vec<u8>>) -> Result<(), CroncheckError> {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let target = listener.local_addr().unwrap();
+        let response = response.into();
         let worker = thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0_u8; 256];
             let _ = std::io::Read::read(&mut stream, &mut request);
-            stream.write_all(response).unwrap();
+            stream.write_all(&response).unwrap();
         });
         let result = probe_health(target);
         worker.join().unwrap();
@@ -388,637 +415,34 @@ mod native_tests {
     #[test]
     fn health_probe_accepts_only_http_200() {
         assert!(probe_against(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").is_ok());
+        assert!(probe_against(b"HTTP/1.0 200 OK\r\n\r\n").is_ok());
         assert!(probe_against(b"HTTP/1.1 503 Service Unavailable\r\n\r\n").is_err());
         assert!(probe_against(b"not HTTP\r\n").is_err());
     }
-}
-
-#[cfg(all(test, any()))]
-mod tests {
-    use super::*;
-    use std::path::Path;
-    use std::sync::Mutex;
-
-    /// A fake service manager that records all calls and allows
-    /// controlling `is_active` and error behavior.
-    #[derive(Debug)]
-    struct FakeServiceManager {
-        active: Mutex<bool>,
-        /// Record of all method calls made.
-        calls: Mutex<Vec<&'static str>>,
-        /// If set, `start` returns this error.
-        start_error: Mutex<Option<ServiceError>>,
-        /// If set, `restart` returns this error.
-        restart_error: Mutex<Option<ServiceError>>,
-        /// If set, `is_active` returns this error.
-        is_active_error: Mutex<Option<ServiceError>>,
-    }
-
-    impl FakeServiceManager {
-        fn new() -> Self {
-            Self {
-                active: Mutex::new(false),
-                calls: Mutex::new(Vec::new()),
-                start_error: Mutex::new(None),
-                restart_error: Mutex::new(None),
-                is_active_error: Mutex::new(None),
-            }
-        }
-
-        fn set_active(&self, active: bool) {
-            *self.active.lock().unwrap() = active;
-        }
-
-        fn set_start_error(&self, err: ServiceError) {
-            *self.start_error.lock().unwrap() = Some(err);
-        }
-
-        fn set_restart_error(&self, err: ServiceError) {
-            *self.restart_error.lock().unwrap() = Some(err);
-        }
-
-        fn set_is_active_error(&self, err: ServiceError) {
-            *self.is_active_error.lock().unwrap() = Some(err);
-        }
-
-        fn calls(&self) -> Vec<&'static str> {
-            self.calls.lock().unwrap().clone()
-        }
-    }
-
-    impl ServiceManager for FakeServiceManager {
-        fn start(&self) -> Result<(), ServiceError> {
-            self.calls.lock().unwrap().push("start");
-            if let Some(err) = self.start_error.lock().unwrap().take() {
-                return Err(err);
-            }
-            *self.active.lock().unwrap() = true;
-            Ok(())
-        }
-
-        fn stop(&self) -> Result<(), ServiceError> {
-            self.calls.lock().unwrap().push("stop");
-            *self.active.lock().unwrap() = false;
-            Ok(())
-        }
-
-        fn restart(&self) -> Result<(), ServiceError> {
-            self.calls.lock().unwrap().push("restart");
-            if let Some(err) = self.restart_error.lock().unwrap().take() {
-                return Err(err);
-            }
-            Ok(())
-        }
-
-        fn is_active(&self) -> Result<bool, ServiceError> {
-            self.calls.lock().unwrap().push("is_active");
-            if let Some(err) = self.is_active_error.lock().unwrap().take() {
-                return Err(err);
-            }
-            Ok(*self.active.lock().unwrap())
-        }
-    }
-
-    // --- CLI parsing tests ---
 
     #[test]
-    fn cli_parses_run_command() {
-        let cli = Cli::try_parse_from(["greggd", "run"]).unwrap();
-        assert!(matches!(cli.command, Command::Run));
-        assert!(cli.config.is_none());
+    fn health_probe_rejects_premature_eof() {
+        assert!(probe_against(b"HTTP/1.1 200 OK").is_err());
     }
 
     #[test]
-    fn cli_parses_start_command() {
-        let cli = Cli::try_parse_from(["greggd", "start"]).unwrap();
-        assert!(matches!(cli.command, Command::Start));
+    fn health_probe_rejects_overlong_status_line() {
+        let mut response = vec![b'X'; 512];
+        response.extend_from_slice(b"\r\n");
+        assert!(probe_against(response).is_err());
     }
 
     #[test]
-    fn cli_parses_stop_command() {
-        let cli = Cli::try_parse_from(["greggd", "stop"]).unwrap();
-        assert!(matches!(cli.command, Command::Stop));
+    fn health_probe_rejects_invalid_http_version() {
+        assert!(probe_against(b"HTTP/1.xyz 200 OK\r\n").is_err());
     }
 
     #[test]
-    fn cli_parses_restart_command() {
-        let cli = Cli::try_parse_from(["greggd", "restart"]).unwrap();
-        assert!(matches!(cli.command, Command::Restart));
-    }
-
-    #[test]
-    fn cli_parses_croncheck_command() {
-        let cli = Cli::try_parse_from(["greggd", "croncheck"]).unwrap();
-        assert!(matches!(cli.command, Command::Croncheck));
-    }
-
-    #[test]
-    fn cli_parses_service_command() {
-        let cli = Cli::try_parse_from(["greggd", "service"]).unwrap();
-        assert!(matches!(cli.command, Command::Service));
-    }
-
-    #[test]
-    fn cli_parses_host_command() {
-        let cli = Cli::try_parse_from(["greggd", "host", "127.0.0.1"]).unwrap();
-        match cli.command {
-            Command::Host { address } => {
-                assert_eq!(address, "127.0.0.1".parse::<IpAddr>().unwrap());
-            }
-            _ => panic!("expected Host command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_port_command() {
-        let cli = Cli::try_parse_from(["greggd", "port", "11320"]).unwrap();
-        match cli.command {
-            Command::Port { port } => assert_eq!(port, 11320),
-            _ => panic!("expected Port command"),
-        }
-    }
-
-    #[test]
-    fn cli_parses_config_flag() {
-        let cli = Cli::try_parse_from(["greggd", "--config", "/tmp/test.toml", "run"]).unwrap();
-        assert_eq!(cli.config, Some(PathBuf::from("/tmp/test.toml")));
-    }
-
-    // --- Config resolution tests ---
-
-    #[test]
-    fn resolve_config_path_explicit() {
-        let explicit = PathBuf::from("/custom/path.toml");
-        let resolved = resolve_config_path(Some(&explicit));
-        assert_eq!(resolved, explicit);
-    }
-
-    #[test]
-    fn resolve_config_path_default() {
-        let resolved = resolve_config_path(None);
-        assert_eq!(resolved, Config::default_path());
-    }
-
-    #[test]
-    fn load_config_from_existing_file() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_load");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let loaded = load_config(&path, true).unwrap();
-        assert_eq!(config, loaded);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_explicit_missing_file_errors() {
-        let path = PathBuf::from("/nonexistent/greggd.toml");
-        let result = load_config(&path, true);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn load_config_implicit_missing_file_uses_defaults() {
-        let path = PathBuf::from("/nonexistent/greggd.toml");
-        let config = load_config(&path, false).unwrap();
-        assert_eq!(config, Config::default());
-    }
-
-    // --- Exit code tests ---
-
-    #[test]
-    fn exit_code_from_config_error() {
-        let err = ConfigError::Io {
-            path: PathBuf::from("test"),
-            source: std::io::Error::new(std::io::ErrorKind::NotFound, "not found"),
-        };
-        let code = ExitCode::from(&err);
-        assert_eq!(code, ExitCode::ConfigError);
-    }
-
-    #[test]
-    fn exit_code_from_permission_denied_io() {
-        let err = ConfigError::Io {
-            path: PathBuf::from("/etc/gregg/greggd.toml"),
-            source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
-        };
-        let code = ExitCode::from(&err);
-        assert_eq!(code, ExitCode::PermissionDenied);
-    }
-
-    #[test]
-    fn exit_code_from_permission_denied_atomic_write() {
-        let err = ConfigError::AtomicWrite {
-            path: PathBuf::from("/etc/gregg/greggd.toml"),
-            source: crate::config::AtomicWriteError::Io(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "permission denied",
-            )),
-        };
-        let code = ExitCode::from(&err);
-        assert_eq!(code, ExitCode::PermissionDenied);
-    }
-
-    #[test]
-    fn exit_code_from_service_error() {
-        let err = ServiceError::CommandFailed {
-            command: "test".into(),
-            exit_status: Some(1),
-            stderr: String::new(),
-        };
-        let code = ExitCode::from(&err);
-        assert_eq!(code, ExitCode::ServiceError);
-    }
-
-    // --- Croncheck behavioral tests ---
-
-    #[test]
-    fn croncheck_active_does_nothing() {
-        let service = FakeServiceManager::new();
-        service.set_active(true);
-
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-
-        let calls = service.calls();
-        assert_eq!(calls, vec!["is_active"]);
-        // Should NOT call start since service is already active.
-    }
-
-    #[test]
-    fn croncheck_inactive_starts_service() {
-        let service = FakeServiceManager::new();
-        service.set_active(false);
-
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-
-        let calls = service.calls();
-        assert_eq!(calls, vec!["is_active", "start"]);
-    }
-
-    #[test]
-    fn croncheck_error_returns_error() {
-        let service = FakeServiceManager::new();
-        service.set_is_active_error(ServiceError::StateQueryFailed {
-            source: std::io::Error::other("query failed"),
-        });
-
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_err());
-
-        let calls = service.calls();
-        assert_eq!(calls, vec!["is_active"]);
-        // Should NOT call start on error.
-    }
-
-    #[test]
-    fn croncheck_active_with_noop_manager() {
-        let service = FakeServiceManager::new();
-        // FakeServiceManager defaults to inactive, so croncheck will try to start.
-        // start() succeeds silently by default.
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-        assert_eq!(service.calls(), vec!["is_active", "start"]);
-    }
-
-    // --- Start/stop/restart dispatch tests ---
-
-    #[test]
-    fn start_dispatch_calls_service_start() {
-        let service = FakeServiceManager::new();
-        let result = dispatch(&Command::Start, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-        assert_eq!(service.calls(), vec!["start"]);
-    }
-
-    #[test]
-    fn stop_dispatch_calls_service_stop() {
-        let service = FakeServiceManager::new();
-        let result = dispatch(&Command::Stop, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-        assert_eq!(service.calls(), vec!["stop"]);
-    }
-
-    #[test]
-    fn restart_dispatch_calls_service_restart() {
-        let service = FakeServiceManager::new();
-        let result = dispatch(&Command::Restart, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-        assert_eq!(service.calls(), vec!["restart"]);
-    }
-
-    #[test]
-    fn start_dispatch_error_returns_error() {
-        let service = FakeServiceManager::new();
-        service.set_start_error(ServiceError::CommandFailed {
-            command: "systemctl start greggd".into(),
-            exit_status: Some(1),
-            stderr: "unit not found".into(),
-        });
-
-        let result = dispatch(&Command::Start, Path::new("/dev/null"), &service);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn restart_dispatch_error_returns_error() {
-        let service = FakeServiceManager::new();
-        service.set_restart_error(ServiceError::CommandFailed {
-            command: "systemctl restart greggd".into(),
-            exit_status: Some(1),
-            stderr: "unit not found".into(),
-        });
-
-        let result = dispatch(&Command::Restart, Path::new("/dev/null"), &service);
-        assert!(result.is_err());
-    }
-
-    // --- Host/port mutation tests ---
-
-    #[test]
-    fn implicit_missing_config_starts_from_defaults() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_implicit_missing");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        let service = FakeServiceManager::new();
-
-        dispatch_with_config_intent(&Command::Port { port: 11320 }, &path, false, &service)
-            .unwrap();
-
-        assert_eq!(Config::load(&path).unwrap().port, 11320);
-        assert_eq!(service.calls(), vec!["restart"]);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn explicit_missing_config_does_not_write_or_restart() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_explicit_missing");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        let service = FakeServiceManager::new();
-
-        let result = dispatch_with_config_intent(
-            &Command::Host {
-                address: "127.0.0.1".parse().unwrap(),
-            },
-            &path,
-            true,
-            &service,
-        );
-
-        assert!(result.is_err());
-        assert!(!path.exists());
-        assert!(service.calls().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn host_mutation_persists_and_restarts() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_host_mutate");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        // Write initial config.
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let service = FakeServiceManager::new();
-        let new_addr: IpAddr = "127.0.0.1".parse().unwrap();
-
-        let result = dispatch(&Command::Host { address: new_addr }, &path, &service);
-        assert!(result.is_ok());
-
-        // Verify the file was updated.
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.host, new_addr);
-
-        // Verify restart was called.
-        let calls = service.calls();
-        assert!(calls.contains(&"restart"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn port_mutation_persists_and_restarts() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_port_mutate");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        // Write initial config.
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let service = FakeServiceManager::new();
-
-        let result = dispatch(&Command::Port { port: 11320 }, &path, &service);
-        assert!(result.is_ok());
-
-        // Verify the file was updated.
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.port, 11320);
-
-        // Verify restart was called.
-        let calls = service.calls();
-        assert!(calls.contains(&"restart"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn host_mutation_validates_before_persisting() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_host_validate");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let service = FakeServiceManager::new();
-
-        // Mutate to invalid state (empty name) — validation should fail.
-        let result = mutate_and_restart(
-            &path,
-            true,
-            |config| {
-                config.name = String::new();
-            },
-            &service,
-        );
-
-        // Should fail due to validation.
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.downcast_ref::<ConfigValidationError>().is_some());
-
-        // The original config should be unchanged.
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.name, "greggd");
-
-        // restart should NOT have been called.
-        assert!(!service.calls().contains(&"restart"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn mutation_does_not_restart_on_write_failure() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_no_restart");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let service = FakeServiceManager::new();
-
-        // Try to write to a path that will fail (nonexistent parent).
-        let result = mutate_and_restart(
-            Path::new("/nonexistent_dir/config.toml"),
-            true,
-            |config| {
-                config.port = 11320;
-            },
-            &service,
-        );
-
-        assert!(result.is_err());
-
-        // restart should NOT have been called.
-        let calls = service.calls();
-        assert!(!calls.contains(&"restart"));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn mutation_restart_failure_returns_error() {
-        let dir = std::env::temp_dir().join("greggd_test_cli_restart_fail");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let service = FakeServiceManager::new();
-        service.set_restart_error(ServiceError::CommandFailed {
-            command: "systemctl restart greggd".into(),
-            exit_status: Some(1),
-            stderr: "failed".into(),
-        });
-
-        let result = dispatch(&Command::Port { port: 11320 }, &path, &service);
-
-        assert!(result.is_err());
-
-        // The file SHOULD have been written (persistence succeeded).
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.port, 11320);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // --- Path-with-spaces test ---
-
-    #[test]
-    fn write_atomic_works_with_spaces_in_path() {
-        let dir = std::env::temp_dir().join("greggd test with spaces");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config file.toml");
-
-        let config = Config::default();
-        config.write_atomic(&path).unwrap();
-
-        let loaded = Config::load(&path).unwrap();
-        assert_eq!(config, loaded);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_config_explicit_missing_file_errors_display() {
-        let path = PathBuf::from("/nonexistent/greggd.toml");
-        let result = load_config(&path, true);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        let msg = format!("{err}");
-        assert!(msg.contains("configuration file not found"));
-    }
-
-    // --- Service restart loop protection tests ---
-
-    #[test]
-    fn croncheck_with_failing_start_returns_error_without_looping() {
-        // When the service is inactive and start fails, croncheck must
-        // return an error after a single start attempt, not loop.
-        let service = FakeServiceManager::new();
-        service.set_active(false);
-        service.set_start_error(ServiceError::CommandFailed {
-            command: "systemctl start greggd".into(),
-            exit_status: Some(1),
-            stderr: "invalid config".into(),
-        });
-
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_err());
-
-        // Exactly one is_active + one start call, no loop.
-        let calls = service.calls();
-        assert_eq!(calls, vec!["is_active", "start"]);
-    }
-
-    #[test]
-    fn repeated_croncheck_calls_each_make_single_start_attempt() {
-        // Simulate a cron daemon calling croncheck every minute while the
-        // service is inactive and start keeps failing. Each invocation
-        // should be independent: one is_active + one start per call.
-        for i in 0..5 {
-            let service = FakeServiceManager::new();
-            service.set_active(false);
-            service.set_start_error(ServiceError::CommandFailed {
-                command: "systemctl start greggd".into(),
-                exit_status: Some(1),
-                stderr: format!("attempt {i}"),
-            });
-
-            let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-            assert!(result.is_err(), "iteration {i} should fail");
-
-            let calls = service.calls();
-            assert_eq!(
-                calls,
-                vec!["is_active", "start"],
-                "iteration {i} should have exactly 2 calls"
-            );
-        }
-    }
-
-    #[test]
-    fn croncheck_start_success_sets_active_and_does_not_restart() {
-        // When croncheck starts the service successfully, it should not
-        // call restart. Only start should be called.
-        let service = FakeServiceManager::new();
-        service.set_active(false);
-
-        let result = dispatch(&Command::Croncheck, Path::new("/dev/null"), &service);
-        assert!(result.is_ok());
-
-        let calls = service.calls();
-        assert_eq!(calls, vec!["is_active", "start"]);
-        assert!(!calls.contains(&"restart"));
+    fn health_probe_rejects_closed_port() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap();
+        drop(listener);
+
+        assert!(probe_health(target).is_err());
     }
 }

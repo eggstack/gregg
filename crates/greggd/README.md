@@ -26,7 +26,9 @@ greggd stop
 greggd restart
 ```
 
-Probe daemon health on any platform without changing process state:
+Probe daemon health on any platform without changing process state. The probe
+uses a short timeout and a fixed 512-byte HTTP/1.x status-line limit; it
+requires CRLF termination and accepts only HTTP/1.0 or HTTP/1.1 status 200:
 
 ```sh
 greggd croncheck

@@ -1,6 +1,6 @@
 # Phase 077: croncheck strictness, test cleanup, and Plan 076 closure
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 076 implementation (`b17037d`) and follow-up cleanup through `437b77a`.
 
@@ -77,7 +77,9 @@ Do not blindly delete useful regression coverage that is not duplicated elsewher
 
 ### 6. Planning records are inconsistent
 
-`plans/README.md` describes Plan 076 as complete, while Plan 076 itself is marked `Status: implemented` and its acceptance checklist remains unchecked despite the implementation and Ubuntu E2E record.
+At drafting time, `plans/README.md` described Plan 076 as complete while its
+acceptance checklist remained unchecked despite the implementation and Ubuntu
+E2E record.
 
 After this corrective phase passes, Plan 076 should be reconciled to a truthful completed state and Plan 077 should be closed directly. Do not create a Plan 078 merely to record closure.
 
@@ -303,58 +305,73 @@ After all implementation and local verification succeeds:
 
 ### Bounded and strict `croncheck`
 
-- [ ] `probe_health()` no longer uses an unbounded `String`/`read_line()` for peer-controlled status-line bytes.
-- [ ] A fixed maximum status-line byte length is enforced.
-- [ ] A complete `\r\n` terminator is required before the status line is accepted.
-- [ ] EOF before CRLF returns nonzero.
-- [ ] A status line exceeding the fixed maximum returns nonzero without input-proportional allocation.
-- [ ] Only exact supported HTTP/1.0 or HTTP/1.1 version tokens are accepted.
-- [ ] Status `200` succeeds; 503 and every other status fail.
-- [ ] Read/write/connect failures and timeouts remain bounded and diagnostic.
-- [ ] No response body parsing, retry loop, new HTTP dependency, or generalized parser is introduced.
+- [x] `probe_health()` no longer uses an unbounded `String`/`read_line()` for peer-controlled status-line bytes.
+- [x] A fixed maximum status-line byte length is enforced.
+- [x] A complete `\r\n` terminator is required before the status line is accepted.
+- [x] EOF before CRLF returns nonzero.
+- [x] A status line exceeding the fixed maximum returns nonzero without input-proportional allocation.
+- [x] Only exact supported HTTP/1.0 or HTTP/1.1 version tokens are accepted.
+- [x] Status `200` succeeds; 503 and every other status fail.
+- [x] Read/write/connect failures and timeouts remain bounded and diagnostic.
+- [x] No response body parsing, retry loop, new HTTP dependency, or generalized parser is introduced.
 
 ### Regression coverage
 
-- [ ] Active tests cover HTTP 200 success.
-- [ ] Active tests cover HTTP 503 failure.
-- [ ] Active tests cover plainly malformed status text.
-- [ ] Active tests cover premature EOF before CRLF.
-- [ ] Active tests cover an overlong first status line.
-- [ ] Active tests cover invalid HTTP version text.
-- [ ] Active tests cover refused/closed-port failure within the fixed timeout.
-- [ ] Wildcard IPv4/IPv6 probe normalization tests remain present.
-- [ ] Config-only Unix mutation/version tests remain present or have equivalent current coverage.
+- [x] Active tests cover HTTP 200 success.
+- [x] Active tests cover HTTP 503 failure.
+- [x] Active tests cover plainly malformed status text.
+- [x] Active tests cover premature EOF before CRLF.
+- [x] Active tests cover an overlong first status line.
+- [x] Active tests cover invalid HTTP version text.
+- [x] Active tests cover refused/closed-port failure within the fixed timeout.
+- [x] Wildcard IPv4/IPv6 probe normalization tests remain present.
+- [x] Config-only Unix mutation/version tests remain present or have equivalent current coverage.
 
 ### Test-source cleanup
 
-- [ ] The always-false `#[cfg(all(test, any()))]` legacy module is deleted.
-- [ ] No stale fake Unix service-manager tests remain.
-- [ ] No stale `croncheck`-starts-service assertions remain.
-- [ ] No stale `mutate_and_restart` test path remains.
-- [ ] Still-useful non-duplicated config/error regression coverage is retained in the smallest appropriate existing module.
-- [ ] The cleanup does not expand into a broad test refactor.
+- [x] The always-false `#[cfg(all(test, any()))]` legacy module is deleted.
+- [x] No stale fake Unix service-manager tests remain.
+- [x] No stale `croncheck`-starts-service assertions remain.
+- [x] No stale `mutate_and_restart` test path remains.
+- [x] Still-useful non-duplicated config/error regression coverage is retained in the smallest appropriate existing module.
+- [x] The cleanup does not expand into a broad test refactor.
 
 ### Local verification
 
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] Focused `greggd` CLI tests pass.
-- [ ] `greggd` binary/package tests pass.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Source searches show no Unix `systemctl`/`launchctl` production invocation and no dead always-false test module.
-- [ ] Release `greggd` builds on the current Ubuntu host.
-- [ ] Live local daemon health returns 200 and live `croncheck` exits 0.
-- [ ] After normal daemon termination, `croncheck` exits nonzero promptly and does not restart the daemon.
-- [ ] Local smoke uses no privilege escalation or service manager.
-- [ ] No CI workflow/job/step is added or changed for this phase.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] Focused `greggd` CLI tests pass.
+- [x] `greggd` binary/package tests pass.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Source searches show no Unix `systemctl`/`launchctl` production invocation and no dead always-false test module.
+- [x] Release `greggd` builds on the current Ubuntu host.
+- [x] Live local daemon health returns 200 and live `croncheck` exits 0.
+- [x] After normal daemon termination, `croncheck` exits nonzero promptly and does not restart the daemon.
+- [x] Local smoke uses no privilege escalation or service manager.
+- [x] No CI workflow/job/step is added or changed for this phase.
 
 ### Scope and planning closure
 
-- [ ] Plan 076 is reconciled to `complete` with truthful checked acceptance criteria after the correction.
-- [ ] Plan 077 is marked complete with implementation SHA and concise local verification record.
-- [ ] `plans/README.md` lists 076 and 077 accurately and shows no active corrective work.
-- [ ] Dependency ordering includes 076 -> 077.
-- [ ] No Plan 078 or separate evidence file is created solely for closure.
-- [ ] No unrelated protocol, collector, TUI, EggPool, drive, release, packaging, SCM, or CI work is included.
+- [x] Plan 076 is reconciled to `complete` with truthful checked acceptance criteria after the correction.
+- [x] Plan 077 is marked complete with implementation SHA and concise local verification record.
+- [x] `plans/README.md` lists 076 and 077 accurately and shows no active corrective work.
+- [x] Dependency ordering includes 076 -> 077.
+- [x] No Plan 078 or separate evidence file is created solely for closure.
+- [x] No unrelated protocol, collector, TUI, EggPool, drive, release, packaging, SCM, or CI work is included.
+
+## Implementation record
+
+Implementation SHA: `<recorded after commit>`
+
+Croncheck now uses a fixed 512-byte stack buffer, requires CRLF before parsing,
+accepts only HTTP/1.0 or HTTP/1.1 with status 200, and rejects premature EOF,
+overlong lines, malformed versions, non-200 statuses, and connection failure.
+The obsolete always-false Unix service-manager test module was deleted; active
+tests retain current CLI, wildcard, mutation, and version coverage and add the
+four requested negative paths.
+
+Verification passed locally with formatting, focused and full workspace tests,
+clippy `-D warnings`, workspace docs, release builds, and a user-owned live/dead
+Ubuntu `croncheck` smoke. No CI workflow changed.
 
 ## Handoff
 
