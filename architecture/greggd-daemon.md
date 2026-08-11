@@ -19,18 +19,18 @@ available through the Windows-only service path.
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
-| `lib` | `src/lib.rs:1-12` | Library root, re-exports all modules |
+| `lib` | `src/lib.rs` | Library root, re-exports all modules |
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
-| `run` | `src/run.rs:1-822` | Foreground daemon: wiring + supervision loop |
-| `config` | `src/config.rs:1-841` | TOML config, validation, atomic writes |
-| `sampler` | `src/sampler.rs:1-867` | Periodic sampling loop, readiness lifecycle |
-| `server/mod` | `src/server/mod.rs:1-437` | Axum HTTP server, endpoints, staleness |
-| `server/error` | `src/server/error.rs:1-54` | Server error types |
-| `collector/mod` | `src/collector/mod.rs:1-260` | `SystemCollector` trait, `CollectedMetrics` |
-| `collector/error` | `src/collector/error.rs:1-95` | `CollectErrorKind` taxonomy |
+| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop |
+| `config` | `src/config.rs` | TOML config, validation, atomic writes |
+| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle |
+| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness |
+| `server/error` | `src/server/error.rs` | Server error types |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics` |
+| `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization with independent total-free and caller-available capacity |
-| `service/mod` | `src/service/mod.rs:1-272` | `ServiceManager` trait |
-| `service/windows` | `src/service/windows.rs:1-902` | Windows: SCM integration |
+| `service/mod` | `src/service/mod.rs` | `ServiceManager` trait |
+| `service/windows` | `src/service/windows.rs` | Windows: SCM integration |
 
 ## Architecture
 

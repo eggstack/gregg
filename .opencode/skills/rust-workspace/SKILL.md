@@ -13,21 +13,22 @@ Use this when making code changes, adding features, or fixing bugs in any of the
 
 ## Build and verify
 
-Routine local check:
+**Routine local check (fast developer loop):**
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
-This runs exactly `cargo fmt --all -- --check` and `cargo test --workspace`.
-It is intentionally fast and does not repeat native collector tests.
+Runs `cargo fmt --all -- --check` followed by `cargo test --workspace`. Does not repeat native collector tests, build docs, or run release checks.
 
-Run the comprehensive manual preflight before a release:
+**Release preflight (non-publishing, manual only):**
 
-The release preflight adds full Clippy, documentation, package/version checks,
-installation smoke, and the protocol-only publish dry-run. It is manual and
-nonpublishing.
+```bash
+./scripts/check-local.sh --release
+```
+
+Adds: Clippy, documentation, clean-tree check, version consistency, package lists, installed-binary v2 loopback smoke, and protocol dry-run.
 
 **Platform-native collector tests (run separately when focused coverage is needed):**
 
@@ -37,23 +38,6 @@ cargo test -p greggd --all-features -- collector::macos     # macOS
 cargo test -p greggd --all-targets -- collector::windows    # Windows
 ```
 
-The existing Windows CI job is pinned to `windows-2022` and runs, in order,
-workspace tests, `cargo build --release -p greggd`, and the Administrator
-`scripts/smoke-windows.ps1` SCM lifecycle smoke. The smoke is the authoritative
-operational check for the Windows dispatcher and service lifecycle; it is not
-part of the short local development loop.
-
-The Windows foreground and SCM smoke assertions also cover configured
-`system.name` and NUL-free native `system.hostname` output.
-
-**Release preflight (non-publishing):**
-
-```bash
-./scripts/check-local.sh --release
-```
-
-Adds: clean-tree check, version consistency, package lists, installed-binary v2 loopback smoke, protocol dry-run.
-
 **Running a single test:**
 
 ```bash
@@ -61,57 +45,6 @@ cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
 ```
 
-## Key constraints
+**CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings errors. Local clippy pedantic is a warning only.
 
-- **MSRV: Rust 1.75.** Toolchain pinned in `rust-toolchain.toml` (stable channel). All member crates inherit `rust-version = "1.75"` from workspace.
-- **Clippy pedantic** is a warning, not an error. Don't suppress new warnings unless fixing pre-existing ones.
-- **Unsafe is heavily restricted.** Only allowed in: `crates/greggd/src/collector/linux/source.rs` (statvfs), `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI), `crates/gregg/src/` (Unix flock + Windows file lock), `crates/greggd/src/collector/windows/source.rs`. Every unsafe block must have a safety comment.
-- **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
-- **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
-- **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
-- The client scheduler intentionally uses isolated per-endpoint tasks plus a
-  semaphore: retain ordered one-result-per-endpoint batches, panic isolation,
-  fixed cadence, and bounded cancellation unless a replacement is materially
-  smaller without weakening those guarantees.
-- The optional EggPool worker intentionally uses bounded command/result
-  channels and generation checks. Evaluate latest-state channels only when
-  they reduce both production concepts and focused test coverage.
-- **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
-- Daemon runtime and CLI library paths return errors; only the `greggd` binary
-  boundary prints diagnostics, initializes tracing with `try_init()`, and maps
-  errors to exit codes.
-- The binary selects command mode before creating Tokio. Foreground `run` and
-  Windows SCM `service` first enters `service_dispatcher::start`; its generated
-  `ServiceMain` worker owns one current-thread runtime and receives the
-  resolved config path through one process-local launch context. SCM callbacks
-  must signal shutdown without blocking or entering a runtime, and service
-  `RUNNING` is published only after the shared daemon listener binds.
-
-## Workspace structure
-
-Three Rust crates in a workspace, strict one-way dependency direction:
-
-```
-gregg-protocol  ◄── greggd      (daemon, metrics collection, HTTP server)
-gregg-protocol  ◄── gregg       (client, TUI, polling)
-```
-
-- `gregg-protocol`: shared wire types (serde, serde_json, thiserror only). `#![forbid(unsafe_code)]`
-- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets.
-- `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`.
-
-`greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on either application crate.
-
-## What not to do
-
-- Don't broaden scope (no process monitoring, alerting, web dashboards, plugins, TLS, auth)
-- Don't add dependencies without checking existing patterns and MSRV compatibility
-- Don't add `cargo publish` to any script or workflow
-- Don't add automated tagging, GitHub Release creation, or publication to CI
-- Don't add self-daemonization or PID-file management to the daemon
-- Don't fabricate metric values for unsupported platform capabilities
-- On Unix, `greggd run` owns the foreground daemon; `croncheck` is a bounded
-  `/v2/healthz` probe. It reads at most 512 bytes of the CRLF-terminated
-  HTTP/1.x status line, accepts only HTTP/1.0 or HTTP/1.1 status 200, and
-  `host`/`port` only persist configuration. Do not add systemd/launchd calls,
-  self-daemonization, or process discovery.
+For workspace structure, key constraints, and what not to do, see `AGENTS.md`. For deep architecture details, see `architecture/overview.md`.

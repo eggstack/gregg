@@ -63,12 +63,12 @@ space, so reservations or quotas may make used plus available less than total.
 | Module | File | Purpose |
 |--------|------|---------|
 | `mod` | `mod.rs` | `LinuxCollector` struct, `SystemCollector` impl |
-| `source` | `source.rs:1-450` | `FileSource` trait, `ProcSource` (prod), `MemorySource` (test) |
-| `cpu` | `cpu.rs:1-203` | `/proc/stat` parsing, delta percentages |
-| `memory` | `memory.rs:1-181` | `/proc/meminfo` parsing, memory + swap |
-| `identity` | `identity.rs:1-158` | hostname, kernel, `/etc/os-release` |
-| `drives` | `drives.rs:1-258` | `/proc/self/mountinfo` + `statvfs` |
-| `fixtures` | `fixtures.rs:1-29` | Test fixture loader |
+| `source` | `source.rs` | `FileSource` trait, `ProcSource` (prod), `MemorySource` (test) |
+| `cpu` | `cpu.rs` | `/proc/stat` parsing, delta percentages |
+| `memory` | `memory.rs` | `/proc/meminfo` parsing, memory + swap |
+| `identity` | `identity.rs` | hostname, kernel, `/etc/os-release` |
+| `drives` | `drives.rs` | `/proc/self/mountinfo` + `statvfs` |
+| `fixtures` | `fixtures.rs` | Test fixture loader |
 
 ### CPU (`/proc/stat`)
 
@@ -134,12 +134,12 @@ MetricCapabilitiesV2 { cpu_iowait: true, load_average: true, swap: true, memory_
 | Module | File | Purpose |
 |--------|------|---------|
 | `mod` | `mod.rs` | `MacOsCollector` struct, `SystemCollector` impl |
-| `ffi` | `ffi.rs:1-1157` | Mach FFI, sysctl, RAII HostPort, `MacNativeQueries` trait |
-| `cpu` | `cpu.rs:1-167` | Mach CPU tick deltas |
-| `memory` | `memory.rs:1-213` | VM page counts → memory metrics |
-| `swap` | `swap.rs:1-98` | sysctl `vm.swapusage` |
-| `identity` | `identity.rs:1-108` | sysctl + SystemVersion.plist |
-| `normalize` | `normalize.rs:1-65` | `percent()`, `clip_identifier()` |
+| `ffi` | `ffi.rs` | Mach FFI, sysctl, RAII HostPort, `MacNativeQueries` trait |
+| `cpu` | `cpu.rs` | Mach CPU tick deltas |
+| `memory` | `memory.rs` | VM page counts → memory metrics |
+| `swap` | `swap.rs` | sysctl `vm.swapusage` |
+| `identity` | `identity.rs` | sysctl + SystemVersion.plist |
+| `normalize` | `normalize.rs` | `percent()`, `clip_identifier()` |
 
 ### FFI seam
 
@@ -226,11 +226,11 @@ MetricCapabilitiesV2 { cpu_iowait: false, load_average: true, swap: false, memor
 | Module | File | Purpose |
 |--------|------|---------|
 | `mod` | `mod.rs` | `WindowsCollector` struct, `SystemCollector` impl |
-| `source` | `source.rs:1-910` | `WindowsSource` trait, `NativeWindowsSource` (prod), `Mock` |
-| `cpu` | `cpu.rs:1-244` | `GetSystemTimes` delta percentages |
-| `memory` | `memory.rs:1-168` | `GlobalMemoryStatusEx` |
-| `commit` | `commit.rs:1-196` | `GetPerformanceInfo` (commit charge) |
-| `identity` | `identity.rs:1-165` | `GetComputerNameExW`, `RtlGetVersion` |
+| `source` | `source.rs` | `WindowsSource` trait, `NativeWindowsSource` (prod), `Mock` |
+| `cpu` | `cpu.rs` | `GetSystemTimes` delta percentages |
+| `memory` | `memory.rs` | `GlobalMemoryStatusEx` |
+| `commit` | `commit.rs` | `GetPerformanceInfo` (commit charge) |
+| `identity` | `identity.rs` | `GetComputerNameExW`, `RtlGetVersion` |
 
 ### FFI seam
 

@@ -148,9 +148,10 @@ cleanup. CI does not build documentation, publish, or upload evidence.
 ## Files to read before implementing
 
 1. `README.md` — public scope and command behavior
-2. `plans/000-roadmap-v1.md` — sequencing and release gates
-3. Active phase plan in `plans/` for current requirements
-4. `architecture/protocol.md` — wire format details
+2. `architecture/overview.md` — bird's-eye view, data flow, module map, and index of all architecture documents
+3. `plans/000-roadmap-v1.md` — sequencing and release gates
+4. Active phase plan in `plans/` for current requirements
+5. `architecture/protocol.md` — wire format details
 
 ## Architecture index
 

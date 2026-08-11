@@ -19,13 +19,13 @@ depends on nothing from either.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs:1-149` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
-| `snapshot` | `src/snapshot.rs:1-164` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs:1-403` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
-| `validate` | `src/validate.rs:1-196` | V1 validation: 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs:1-818` | V2 validation: 13 violation kinds, capability/value consistency |
-| `health` | `src/health.rs:1-100` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
-| `test_support` | `src/test_support.rs:1-591` | Feature-gated builder fixtures for tests |
+| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
+| `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
+| `validate` | `src/validate.rs` | V1 validation: 6 violation kinds |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: 13 violation kinds, capability/value consistency |
+| `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
+| `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 
 ## Wire format
 

@@ -20,49 +20,49 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs:1-513` | Entry point, event loop, TUI wiring |
-| `cli` | `src/cli.rs:1-1267` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
-| `config` | `src/config.rs:1-2899` | Config model, validation, atomic I/O, cross-process locking |
-| `state` | `src/state.rs:1-1385` | AppState reducer, viewport logic |
-| `action` | `src/action.rs:1-133` | Action enum (14 state transition triggers) |
+| `main` | `src/main.rs` | Entry point, event loop, TUI wiring |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
+| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
+| `state` | `src/state.rs` | AppState reducer, viewport logic |
+| `action` | `src/action.rs` | Action enum (14 state transition triggers) |
 
 ### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs:1-1255` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
-| `scheduler` | `src/scheduler.rs:1-1186` | Periodic poll scheduler, generation-based concurrency |
-| `endpoint` | `src/endpoint.rs:1-778` | Endpoint parsing: IPv4, IPv6, DNS |
-| `clock` | `src/clock.rs:1-100` | Clock trait for deterministic testing |
-| `normalized` | `src/normalized.rs:1-344` | Normalized v1/v2 snapshot for UI consumption |
+| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
+| `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, generation-based concurrency |
+| `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS |
+| `clock` | `src/clock.rs` | Clock trait for deterministic testing |
+| `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption |
 
 ### Input
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `event` | `src/event.rs:1-467` | Key-to-action translation (Vim-style) |
-| `input` | `src/input.rs:1-238` | Crossterm event stream adapter |
-| `terminal` | `src/terminal.rs:1-194` | Terminal lifecycle (raw mode, alt screen, panic hook) |
+| `event` | `src/event.rs` | Key-to-action translation (Vim-style) |
+| `input` | `src/input.rs` | Crossterm event stream adapter |
+| `terminal` | `src/terminal.rs` | Terminal lifecycle (raw mode, alt screen, panic hook) |
 
 ### UI
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `ui/mod` | `src/ui/mod.rs:1-1474` | Render dispatcher |
-| `ui/layout` | `src/ui/layout.rs:1-85` | Viewport computation |
-| `ui/system_block` | `src/ui/system_block.rs:1-248` | Normal-view system rendering |
-| `ui/condensed` | `src/ui/condensed.rs:1-222` | Condensed one-row fleet view |
-| `ui/bar` | `src/ui/bar.rs:1-97` | Reusable usage bar widget |
-| `ui/text` | `src/ui/text.rs:1-156` | Text formatting (bytes, percentages) |
-| `ui/diagnostics` | `src/ui/diagnostics.rs:1-59` | Empty-config, too-small messages |
-| `ui/eggpool` | `src/ui/eggpool.rs:1-283` | EggPool summary pane rendering |
+| `ui/mod` | `src/ui/mod.rs` | Render dispatcher |
+| `ui/layout` | `src/ui/layout.rs` | Viewport computation |
+| `ui/system_block` | `src/ui/system_block.rs` | Normal-view system rendering |
+| `ui/condensed` | `src/ui/condensed.rs` | Condensed one-row fleet view |
+| `ui/bar` | `src/ui/bar.rs` | Reusable usage bar widget |
+| `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages) |
+| `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config, too-small messages |
+| `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering |
 
 ### EggPool
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `eggpool` | `src/eggpool.rs:1-900` | EggPool summary client and background worker |
-| `eggpool_endpoint` | `src/eggpool_endpoint.rs:1-207` | EggPool-specific endpoint parsing |
+| `eggpool` | `src/eggpool.rs` | EggPool summary client and background worker |
+| `eggpool_endpoint` | `src/eggpool_endpoint.rs` | EggPool-specific endpoint parsing |
 
 ### Test modules
 
