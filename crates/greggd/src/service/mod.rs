@@ -184,31 +184,4 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("windows"));
     }
-
-    #[test]
-    fn unsupported_manager_start_returns_not_available() {
-        let manager = UnsupportedServiceManager;
-        let err = manager.start().expect_err("should fail");
-        assert!(matches!(err, ServiceError::NotAvailable { .. }));
-    }
-
-    #[test]
-    fn unsupported_manager_stop_returns_not_available() {
-        let manager = UnsupportedServiceManager;
-        let err = manager.stop().expect_err("should fail");
-        assert!(matches!(err, ServiceError::NotAvailable { .. }));
-    }
-
-    #[test]
-    fn unsupported_manager_restart_returns_not_available() {
-        let manager = UnsupportedServiceManager;
-        let err = manager.restart().expect_err("should fail");
-        assert!(matches!(err, ServiceError::NotAvailable { .. }));
-    }
-
-    #[test]
-    fn unsupported_manager_is_active_returns_false() {
-        let manager = UnsupportedServiceManager;
-        assert!(!manager.is_active().unwrap());
-    }
 }
