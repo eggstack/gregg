@@ -461,7 +461,12 @@ The `cargo test -p gregg main` filter matched no tests in this binary crate;
 the full `--bin gregg` run is the applicable main/dispatch coverage. The clean
 tree `./scripts/check-local.sh --release` preflight also passed, including
 clippy, documentation, package lists, installed-daemon loopback smoke, and the
-protocol publish dry-run. Remote CI is recorded after the push.
+protocol publish dry-run. The resulting remote CI run is recorded below.
+
+The push-triggered GitHub Actions run `31533109605` passed all Linux, macOS
+(Apple Silicon and Intel), Windows, and Rust 1.75 MSRV jobs, including the
+Windows SCM lifecycle smoke. It emitted only the repository's existing Node.js
+20 deprecation annotation for GitHub actions and had no failed checks.
 
 ## Handoff notes
 
