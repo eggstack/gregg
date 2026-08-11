@@ -1,15 +1,9 @@
 //! Service management abstraction.
 //!
-//! Provides a platform-independent trait for controlling the native system
-//! service manager (systemd on Linux, launchd on macOS, Windows SCM).
-//! External command invocation is acceptable for systemd/launchd because
-//! `systemctl`/`launchctl` are the native administrative interfaces.
-//! Windows uses native APIs through the `windows-service` crate.
+//! Provides the Windows SCM abstraction used by the Windows-only CLI path.
 
 use std::fmt;
 
-pub mod launchd;
-pub mod systemd;
 pub mod windows;
 
 /// Errors returned by service management operations.
@@ -147,63 +141,11 @@ pub trait ServiceManager: Send + Sync {
     fn is_active(&self) -> Result<bool, ServiceError>;
 }
 
-/// A service manager for platforms without native service integration.
-///
-/// Start, stop, and restart return [`ServiceError::NotAvailable`].
-/// `is_active` returns `Ok(false)` so that `croncheck` will attempt
-/// (and fail with) a start command rather than silently succeeding.
-#[derive(Debug, Default)]
-pub struct UnsupportedServiceManager;
-
-impl ServiceManager for UnsupportedServiceManager {
-    fn start(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::NotAvailable {
-            platform: "windows".to_string(),
-        })
-    }
-
-    fn stop(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::NotAvailable {
-            platform: "windows".to_string(),
-        })
-    }
-
-    fn restart(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::NotAvailable {
-            platform: "windows".to_string(),
-        })
-    }
-
-    fn is_active(&self) -> Result<bool, ServiceError> {
-        Ok(false)
-    }
-}
-
-/// Return the platform-appropriate service manager.
-///
-/// On Linux, returns a [`systemd::SystemdManager`]. On macOS, returns a
-/// [`launchd::LaunchdManager`]. On Windows, returns a
-/// `windows::WindowsServiceManager`. On other platforms, returns an
-/// [`UnsupportedServiceManager`] that returns
-/// [`ServiceError::NotAvailable`] for lifecycle commands.
+/// Return the native Windows SCM manager.
+#[cfg(target_os = "windows")]
 #[must_use]
 pub fn platform_service_manager() -> Box<dyn ServiceManager> {
-    #[cfg(target_os = "linux")]
-    {
-        Box::new(systemd::SystemdManager::new())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        Box::new(launchd::LaunchdManager::production())
-    }
-    #[cfg(target_os = "windows")]
-    {
-        Box::new(windows::WindowsServiceManager::production())
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        Box::new(UnsupportedServiceManager)
-    }
+    Box::new(windows::WindowsServiceManager::production())
 }
 
 #[cfg(test)]

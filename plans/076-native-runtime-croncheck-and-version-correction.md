@@ -1,6 +1,6 @@
 # Phase 076: native runtime, croncheck, and version correction
 
-Status: planned.
+Status: implemented.
 
 Depends on: Plan 075.
 
@@ -596,5 +596,28 @@ Ubuntu E2E: <run command, health/status result, live croncheck result, stopped c
 CI changes: none
 Remaining work: none / concrete defect only
 ```
+
+## Implementation record
+
+Implementation SHA is recorded after the implementation commit. Unix runtime
+ownership is now native foreground execution; systemd and launchd source
+adapters were removed while packaging assets remain. `croncheck` probes
+`/v2/healthz` over a bounded TCP connection and never starts a process. Unix
+`host` and `port` persist atomically without service-manager calls; Windows
+retains SCM lifecycle and post-mutation restart behavior. `greggd version` and
+`gregg version` print their compile-time package versions.
+
+Verification completed locally:
+
+- `cargo fmt --all -- --check`
+- `cargo test --workspace`
+- `./scripts/check-local.sh`
+- `cargo build --release -p greggd -p gregg`
+- Ubuntu end-to-end run with a temporary user-owned config: live `/v2/healthz`
+  and `/v2/status`, live `croncheck`, and nonzero stopped-daemon `croncheck`
+- Source search found no `systemctl` or `launchctl` command invocation under
+  `crates/greggd/src`.
+
+CI changes: none.
 
 Do not create a separate evidence document. After implementation and the required local Ubuntu E2E pass, mark this plan complete and update `plans/README.md` directly.

@@ -16,12 +16,13 @@ A lightweight daemon (`greggd`) runs on each machine you want to monitor and exp
 
 ### 1. Install the daemon on each machine
 
-**Linux (systemd):**
+**Linux (direct foreground or optional systemd):**
 
 ```bash
 cargo build --release -p greggd
 sudo ./packaging/install-linux.sh target/release/greggd
-sudo systemctl enable --now greggd
+greggd run
+# Optional operator-managed service: sudo systemctl enable --now greggd
 ```
 
 **macOS (launchd):**
@@ -29,7 +30,7 @@ sudo systemctl enable --now greggd
 ```bash
 cargo build --release -p greggd
 sudo ./packaging/install-macos.sh target/release/greggd
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
+# Optional operator-managed service: sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
 ```
 
 **Windows (PowerShell, as Administrator):**
@@ -37,7 +38,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
 ```powershell
 cargo build --release -p greggd
 .\packaging\install-windows.ps1 -SourcePath .\target\release\greggd.exe
-greggd start
+greggd run
 ```
 
 ### 2. Install the client on your workstation
@@ -82,6 +83,8 @@ Change the daemon name or bind address:
 greggd host my-lab-server          # set the display name
 greggd port 11311                  # change the listen port
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
+greggd croncheck                   # probe /v2/healthz; never starts the daemon
+greggd version                     # print the daemon version
 ```
 
 The client stores its config at:
@@ -99,6 +102,7 @@ gregg list                     # list configured endpoints
 gregg remove 192.168.1.10      # remove an endpoint
 gregg refresh 30               # set polling interval (seconds)
 gregg edit                     # open config in $EDITOR
+gregg version                  # print the client version
 ```
 
 ### TUI navigation

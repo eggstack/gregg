@@ -9,4 +9,5 @@ pub mod config;
 pub mod run;
 pub mod sampler;
 pub mod server;
+#[cfg(target_os = "windows")]
 pub mod service;

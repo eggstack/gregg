@@ -81,7 +81,11 @@ stale_after_ms = 10000
 
 Use `greggd host 127.0.0.1` to restrict to localhost only (recommended for SSH-tunnel-only access).
 
-## Service Management
+## Optional Service Management
+
+`greggd run` is the normal foreground daemon command. Unix service lifecycle is
+owned by the operator and these packaging assets; the binary does not invoke
+systemd or launchd. `greggd croncheck` is a read-only HTTP probe of `/v2/healthz`.
 
 ### Linux (systemd)
 
@@ -176,8 +180,8 @@ System installation and mutation of system config/service state generally requir
 
 - **Installation scripts** require root (`sudo`). They detect missing privileges and print the exact command requiring elevation.
 - **`greggd run --config <writable temp path>`** can run unprivileged for development and testing.
-- **Service lifecycle commands** (`start`, `stop`, `restart`, `croncheck`) delegate to the native service manager and require appropriate privileges.
-- **Config mutation commands** (`host`, `port`) atomically persist the config and restart the service, requiring write access to the config directory and service manager privileges.
+- **Windows service lifecycle commands** (`start`, `stop`, `restart`) use native SCM and require appropriate privileges.
+- **Config mutation commands** (`host`, `port`) atomically persist the config. On Unix, the new value applies on the next daemon start; they do not invoke a service manager.
 
 The systemd unit runs as the dedicated `greggd` user with
 `NoNewPrivileges=true` and comprehensive filesystem/capability restrictions.

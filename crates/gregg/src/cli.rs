@@ -43,6 +43,8 @@ pub struct Cli {
 /// Available subcommands.
 #[derive(Subcommand)]
 pub enum Command {
+    /// Print the client version.
+    Version,
     /// Add a monitored endpoint.
     ///
     /// Parses the endpoint, assigns a stable UUID, and appends it to the
@@ -224,6 +226,10 @@ pub fn resolve_config_path(explicit: Option<&PathBuf>) -> PathBuf {
 /// Returns a boxed error if the command fails.
 pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        Command::Version => {
+            println!("{}", version_string());
+            Ok(())
+        }
         Command::Add {
             endpoint,
             name,
@@ -235,6 +241,12 @@ pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn st
         Command::Edit => cmd_edit(store),
         Command::Eggpool { command } => dispatch_eggpool(command, store),
     }
+}
+
+/// Return the compile-time version rendered for the client binary.
+#[must_use]
+pub fn version_string() -> String {
+    format!("gregg {}", env!("CARGO_PKG_VERSION"))
 }
 
 fn dispatch_eggpool(
@@ -702,6 +714,16 @@ mod tests {
     fn cli_parses_no_command() {
         let cli = Cli::try_parse_from(["gregg"]).unwrap();
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn cli_parses_version_without_config() {
+        let cli = Cli::try_parse_from(["gregg", "version"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Version)));
+        assert_eq!(
+            version_string(),
+            format!("gregg {}", env!("CARGO_PKG_VERSION"))
+        );
     }
 
     #[test]

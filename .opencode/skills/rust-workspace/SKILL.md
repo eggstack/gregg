@@ -110,3 +110,6 @@ gregg-protocol  ◄── gregg       (client, TUI, polling)
 - Don't add automated tagging, GitHub Release creation, or publication to CI
 - Don't add self-daemonization or PID-file management to the daemon
 - Don't fabricate metric values for unsupported platform capabilities
+- On Unix, `greggd run` owns the foreground daemon; `croncheck` is a bounded
+  `/v2/healthz` probe and `host`/`port` only persist configuration. Do not add
+  systemd/launchd calls, self-daemonization, or process discovery.

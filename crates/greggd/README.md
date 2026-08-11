@@ -10,20 +10,27 @@ cargo install greggd
 
 ## Usage
 
-Run the daemon in the foreground (intended for systemd, launchd, or interactive diagnostics):
+Run the daemon directly in the foreground. On Unix, systemd and launchd are optional
+operator-managed deployment mechanisms; `greggd` does not invoke them.
 
 ```sh
 greggd run
 greggd run --config /path/to/greggd.toml
 ```
 
-Manage the system service:
+On Windows, native SCM lifecycle commands remain available:
 
 ```sh
 greggd start
 greggd stop
 greggd restart
+```
+
+Probe daemon health on any platform without changing process state:
+
+```sh
 greggd croncheck
+greggd version
 ```
 
 On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`.

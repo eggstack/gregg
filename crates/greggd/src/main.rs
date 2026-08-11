@@ -46,17 +46,28 @@ fn run_main() -> Result<(), Box<dyn Error>> {
         greggd::cli::Command::Service => {
             greggd::service::windows::start_service_dispatcher(config_path)
         }
-        #[cfg(not(target_os = "windows"))]
-        greggd::cli::Command::Service => Err("service mode is only available on Windows".into()),
+        #[cfg(target_os = "windows")]
+        command @ (greggd::cli::Command::Start
+        | greggd::cli::Command::Stop
+        | greggd::cli::Command::Restart) => {
+            let service = greggd::service::platform_service_manager();
+            match command {
+                greggd::cli::Command::Start => service.start().map_err(Into::into),
+                greggd::cli::Command::Stop => service.stop().map_err(Into::into),
+                greggd::cli::Command::Restart => service.restart().map_err(Into::into),
+                _ => unreachable!(),
+            }
+        }
+        #[cfg(target_os = "windows")]
+        command @ (greggd::cli::Command::Host { .. } | greggd::cli::Command::Port { .. }) => {
+            greggd::cli::dispatch_with_config_intent(&command, &config_path, config_was_explicit)?;
+            greggd::service::platform_service_manager()
+                .restart()
+                .map_err(Into::into)
+        }
         command => {
             // Non-run commands are synchronous.
-            let service = greggd::service::platform_service_manager();
-            greggd::cli::dispatch_with_config_intent(
-                &command,
-                &config_path,
-                config_was_explicit,
-                service.as_ref(),
-            )
+            greggd::cli::dispatch_with_config_intent(&command, &config_path, config_was_explicit)
         }
     }
 }
@@ -80,6 +91,7 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
         let _ = error;
         return greggd::cli::ExitCode::ConfigError;
     }
+    #[cfg(target_os = "windows")]
     if let Some(error) = error.downcast_ref::<greggd::service::ServiceError>() {
         return greggd::cli::ExitCode::from(error);
     }
@@ -125,12 +137,6 @@ mod tests {
             greggd::cli::ExitCode::PermissionDenied
         );
 
-        let service = greggd::service::ServiceError::AccessDenied;
-        assert_eq!(
-            classify_error(&service),
-            greggd::cli::ExitCode::PermissionDenied
-        );
-
         let runtime = greggd::server::error::ServerError::Runtime(std::io::Error::other("runtime"));
         assert_eq!(
             classify_error(&runtime),
@@ -157,9 +163,6 @@ mod tests {
             &greggd::cli::Command::Run
         ));
         assert!(!command_requires_foreground_runtime(
-            &greggd::cli::Command::Start
-        ));
-        assert!(!command_requires_foreground_runtime(
             &greggd::cli::Command::Host {
                 address: "127.0.0.1".parse().expect("valid test address")
             }
@@ -167,7 +170,7 @@ mod tests {
         // Windows service mode owns its runtime inside the SCM service worker, after
         // this synchronous dispatch boundary has selected the command.
         assert!(!command_requires_foreground_runtime(
-            &greggd::cli::Command::Service
+            &greggd::cli::Command::Version
         ));
     }
 }

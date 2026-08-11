@@ -120,7 +120,7 @@ manages its own OS service lifecycle.
 | `main` | `src/main.rs` | Entry point, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
 | `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port` |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows SCM lifecycle commands |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle, clock abstraction |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, five endpoints, staleness detection |
@@ -131,9 +131,7 @@ manages its own OS service lifecycle.
 | `collector/linux/` | `src/collector/linux/` | Linux collector: `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` |
 | `collector/macos/` | `src/collector/macos/` | macOS collector: Mach FFI, sysctl, `getloadavg`, `getmntinfo` |
 | `collector/windows/` | `src/collector/windows/` | Windows collector: native metrics, hostname, and configured display-name override |
-| `service/mod` | `src/service/mod.rs` | `ServiceManager` trait: `start`, `stop`, `restart`, `is_active` |
-| `service/systemd` | `src/service/systemd.rs` | Linux: `systemctl` wrapper |
-| `service/launchd` | `src/service/launchd.rs` | macOS: `launchctl` wrapper with state machine |
+| `service/mod` | `src/service/mod.rs` | Windows-only `ServiceManager` trait |
 | `service/windows` | `src/service/windows.rs` | Windows: SCM integration via `windows-service` crate |
 
 ### Key concepts
@@ -143,7 +141,7 @@ manages its own OS service lifecycle.
   stamps timestamps, produces immutable cached snapshots
 - **HTTP server** — serves cached snapshots (never triggers collection); staleness
   detection; v1 + v2 endpoints
-- **Service manager** — wraps systemd/launchd/Windows SCM for start/stop/restart
+- **Service manager** — Windows SCM only; Unix supervisors remain external packaging
 
 **Deep dive:** [greggd-daemon.md](greggd-daemon.md)
 

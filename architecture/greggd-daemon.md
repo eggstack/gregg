@@ -2,7 +2,8 @@
 
 The daemon crate is the metrics collection agent that runs on each monitored
 host. It collects system metrics, samples them on a timer, serves them over
-HTTP, and manages its own OS service lifecycle.
+HTTP. On Unix it runs natively in the foreground; Windows SCM support remains
+available through the Windows-only service path.
 
 **Source:** `crates/greggd/`
 
@@ -11,8 +12,7 @@ HTTP, and manages its own OS service lifecycle.
 - Collect CPU, memory, swap, load, and drive metrics using native OS interfaces
 - Sample metrics at a configurable interval with delta-based CPU computation
 - Serve cached snapshots over HTTP (v1 and v2 endpoints)
-- Manage OS service lifecycle (systemd, launchd, Windows SCM)
-- Expose CLI for config editing, service control, and runtime mutations
+- Expose CLI for configuration mutation, health probing, and runtime control
 
 ## Module map
 
@@ -20,7 +20,7 @@ HTTP, and manages its own OS service lifecycle.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs:1-12` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs:1-900` | Clap CLI: `run`, `start`, `stop`, `restart`, `croncheck`, `host`, `port`; config-intent-aware dispatch |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
 | `run` | `src/run.rs:1-822` | Foreground daemon: wiring + supervision loop |
 | `config` | `src/config.rs:1-841` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs:1-867` | Periodic sampling loop, readiness lifecycle |
@@ -30,8 +30,6 @@ HTTP, and manages its own OS service lifecycle.
 | `collector/error` | `src/collector/error.rs:1-95` | `CollectErrorKind` taxonomy |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization with independent total-free and caller-available capacity |
 | `service/mod` | `src/service/mod.rs:1-272` | `ServiceManager` trait |
-| `service/systemd` | `src/service/systemd.rs:1-142` | Linux: systemctl wrapper |
-| `service/launchd` | `src/service/launchd.rs:1-929` | macOS: launchctl wrapper |
 | `service/windows` | `src/service/windows.rs:1-902` | Windows: SCM integration |
 
 ## Architecture
@@ -145,19 +143,17 @@ Platform defaults:
 
 When `host` or `port` is run without `--config`, a missing default file is
 initialized from `Config::default()`. A missing explicitly supplied path is a
-configuration error and is neither written nor followed by a service restart.
+configuration error and is neither written nor followed by process management.
 
 ### CLI subcommands
 
 | Command | Purpose |
 |---------|---------|
 | `run` | Start foreground daemon |
-| `start` | Start OS service |
-| `stop` | Stop OS service |
-| `restart` | Restart OS service |
-| `croncheck` | Check service status (scripting) |
-| `host` | Mutate bind host and restart |
-| `port` | Mutate port and restart |
+| `croncheck` | Bounded HTTP probe of `/v2/healthz` |
+| `host` | Atomically mutate bind host; applies on next start |
+| `port` | Atomically mutate port; applies on next start |
+| `version` | Print compile-time daemon version |
 
 The binary boundary owns logging initialization and error presentation. The
 runtime and CLI library functions return errors and never call
@@ -166,14 +162,11 @@ prints one diagnostic for failures, and applies the exit-code taxonomy: `0`
 success, `1` configuration, `2` service management, `3` runtime, and `4`
 permission denied.
 
-### Service management
+### Windows service management
 
-The `ServiceManager` trait provides `start`, `stop`, `restart`, `is_active`.
-Platform adapters:
+The Windows-only `ServiceManager` trait provides `start`, `stop`, `restart`, and
+`is_active`:
 
-- **systemd** (`systemd.rs`) — wraps `systemctl` with fixed argument arrays
-- **launchd** (`launchd.rs`) — state machine: NotLoaded → bootstrap, Loaded →
-  kickstart, Running → no-op
 - **Windows SCM** (`windows.rs`) — uses the `windows-service` dispatcher and
   generated `ServiceMain` for the daemon entry, a one-shot control signal for
   Stop/Shutdown, and an `ScmAdapter` trait for lifecycle-manager testability
@@ -237,7 +230,6 @@ Every module has inline `#[cfg(test)]` tests:
 | `config.rs` | 410 | Validation, atomic writes, TOML round-trips |
 | `sampler.rs` | 550 | Interval validation, readiness lifecycle, counter reset |
 | `server/tests.rs` | 954 | All handlers, staleness, concurrency (50 parallel) |
-| `service/launchd.rs` | 517 | State machine via FakeRunner |
 | `service/windows.rs` | 316 | MockScmAdapter for all states |
 | `collector/linux/tests.rs` | 952 | 40+ tests with fixture-driven invariants |
 | `collector/macos/tests.rs` | 586 | Mock-based + native smoke tests |
@@ -254,5 +246,4 @@ Every module has inline `#[cfg(test)]` tests:
 - `MemorySource` (Linux) — in-memory file map for deterministic tests
 - `MockNativeQueries` (macOS) — injectable FFI with auto-increment CPU
 - `MockWindowsSource` (Windows) — injectable API with auto-increment CPU
-- `FakeRunner` (macOS launchd) — scripted launchctl responses
 - `MockScmAdapter` (Windows SCM) — injectable service state

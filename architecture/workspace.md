@@ -84,10 +84,10 @@ loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 ## CLI and configuration
 
 The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
-for structured argument parsing. Subcommands include `run`, `start`, `stop`,
-`restart`, `croncheck`, `host`, and `port`. The `run` command loads validated
-TOML configuration and enters the foreground daemon loop. Lifecycle commands
-delegate to the platform service manager.
+for structured argument parsing. Subcommands include `run`, `croncheck`, `host`,
+`port`, and `version`. Windows also exposes `start`, `stop`, and `restart`
+through native SCM. Unix config mutations only persist atomically; Unix service
+lifecycle is owned by optional external packaging.
 
 Configuration lives in `crates/greggd/src/config.rs`. The `Config` struct is
 serialized/deserialized via `serde` and `toml` with `deny_unknown_fields` to
@@ -222,20 +222,11 @@ and panic paths.
 
 ## Service management
 
-The service abstraction lives in `crates/greggd/src/service/`. A `ServiceManager`
-trait provides `start`, `stop`, `restart`, and `is_active` operations. Platform
-adapters wrap native tools:
+Only the Windows SCM service abstraction remains in `crates/greggd/src/service/`.
+Unix service lifecycle is operator-managed through optional packaging assets:
 
-- `service/systemd.rs` — wraps `systemctl` with fixed argument arrays.
-- `service/launchd.rs` — wraps `launchctl` with `bootstrap`, `bootout`, and
-  `kickstart` flows.
 - `service/windows.rs` — wraps the Windows SCM through the `windows-service`
   crate with `start_service`, `stop_service`, and `service_control_handler`.
-
-An `UnsupportedServiceManager` provides `NotAvailable` errors for platforms without
-native service integration (e.g. FreeBSD). External command invocation is
-acceptable for service management because `systemctl`/`launchctl` are the native
-administrative interfaces.
 
 ## MSRV
 
