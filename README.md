@@ -114,7 +114,7 @@ gregg version                  # print the client version
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
 - `e`: expand/collapse drives for the selected system
-- `Ctrl-R`: reload the current Systems config and poll its endpoints, or refresh EggPool
+- `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint replacement, and poll it immediately; on EggPool, refresh that pane
 
 ## Display
 

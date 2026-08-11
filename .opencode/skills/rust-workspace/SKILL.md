@@ -45,6 +45,11 @@ cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
 ```
 
+For Systems endpoint-reload changes, include the production-path bounded
+command-pressure and sequential replacement tests in `cargo test -p gregg
+--bin gregg`. A successful reload must await the existing bounded scheduler
+sender; do not make the channel unbounded or discard replacement-send errors.
+
 **CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings errors. Local clippy pedantic is a warning only.
 
 For workspace structure, key constraints, and what not to do, see `AGENTS.md`. For deep architecture details, see `architecture/overview.md`.

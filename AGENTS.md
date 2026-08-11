@@ -74,9 +74,12 @@ passes locally, the distinction is the cause.
   equivalent design.
 - `gregg` `Ctrl-R` on the Systems pane is the explicit config reload boundary:
   reload the already-resolved client `ConfigStore`, reconcile stable system IDs,
-  replace the scheduler endpoint set, and poll immediately. Invalid reloads
-  preserve the last-known-good state; there is no filesystem watcher. EggPool
-  refresh behavior remains pane-local.
+  reliably deliver the replacement through the existing bounded scheduler
+  command channel, and poll immediately. A full channel applies backpressure;
+  a closed scheduler receiver is returned through the TUI error boundary rather
+  than silently diverging state from the scheduler. Invalid reloads preserve
+  the last-known-good state; there is no filesystem watcher. EggPool refresh
+  behavior remains pane-local.
 - `gregg add` accepts canonical host/port input plus HTTP URL convenience input,
   but persists only normalized `host` and `port`; HTTPS is not accepted or
   downgraded to HTTP.

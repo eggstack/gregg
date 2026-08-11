@@ -212,7 +212,7 @@ async fn run_event_loop(
                                 scheduler_tx,
                                 Some(store),
                                 eggpool_commands,
-                            ).await;
+                            ).await?;
                         }
                     }
                     None => break,
@@ -251,7 +251,9 @@ async fn dispatch_action(
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
 ) {
-    dispatch_action_with_store(app_state, action, scheduler_tx, None, eggpool_commands).await;
+    dispatch_action_with_store(app_state, action, scheduler_tx, None, eggpool_commands)
+        .await
+        .expect("scheduler refresh without a config store cannot fail");
 }
 
 async fn dispatch_action_with_store(
@@ -260,7 +262,7 @@ async fn dispatch_action_with_store(
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: Option<&config::ConfigStore>,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
-) {
+) -> Result<(), SchedulerUnavailable> {
     let is_refresh = matches!(action, action::Action::RefreshNow);
     let before_pane = app_state.active_pane;
     let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
@@ -268,9 +270,9 @@ async fn dispatch_action_with_store(
 
     let Some(commands) = eggpool_commands else {
         if is_refresh {
-            refresh_systems(app_state, scheduler_tx, store);
+            refresh_systems(app_state, scheduler_tx, store).await?;
         }
-        return;
+        return Ok(());
     };
 
     if is_refresh {
@@ -284,9 +286,9 @@ async fn dispatch_action_with_store(
                 .await;
             }
         } else {
-            refresh_systems(app_state, scheduler_tx, store);
+            refresh_systems(app_state, scheduler_tx, store).await?;
         }
-        return;
+        return Ok(());
     }
 
     if before_pane != app_state.active_pane {
@@ -318,27 +320,36 @@ async fn dispatch_action_with_store(
             .await;
         }
     }
+
+    Ok(())
 }
 
-fn refresh_systems(
+#[derive(Debug, thiserror::Error)]
+#[error("poll scheduler command channel closed")]
+struct SchedulerUnavailable;
+
+async fn refresh_systems(
     app_state: &mut state::AppState,
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: Option<&config::ConfigStore>,
-) {
+) -> Result<(), SchedulerUnavailable> {
     let Some(store) = store else {
         let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
-        return;
+        return Ok(());
     };
 
     match store.load_existing() {
         Ok(config) => {
-            app_state.reconcile_systems(&config);
             let endpoints = config
                 .systems
                 .iter()
                 .map(config::SystemEntry::to_endpoint)
                 .collect();
-            let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints));
+            scheduler_tx
+                .send(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints))
+                .await
+                .map_err(|_| SchedulerUnavailable)?;
+            app_state.reconcile_systems(&config);
         }
         Err(_) => {
             // Keep the last-known-good state when an external edit is
@@ -346,6 +357,8 @@ fn refresh_systems(
             let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
         }
     }
+
+    Ok(())
 }
 
 async fn send_eggpool_command(
@@ -362,6 +375,7 @@ async fn send_eggpool_command(
 mod tests {
     use super::*;
     use crate::config::{Config, EggpoolEntry, EggpoolScheme, SystemEntry};
+    use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use std::fs;
 
     fn mixed_state() -> state::AppState {
@@ -495,7 +509,8 @@ mod tests {
             Some(&store),
             None,
         )
-        .await;
+        .await
+        .unwrap();
 
         assert_eq!(app.systems[0].endpoint.host, "192.168.183.143");
         assert_eq!(app.systems[0].reachability, state::Reachability::Pending);
@@ -513,12 +528,219 @@ mod tests {
             Some(&store),
             None,
         )
-        .await;
+        .await
+        .unwrap();
         assert_eq!(app.systems[0].endpoint.host, "192.168.183.143");
         assert!(matches!(
             received.recv().await,
             Some(scheduler::SchedulerCommand::Refresh)
         ));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn systems_refresh_waits_for_replacement_capacity_and_reconciles_after_delivery() {
+        let dir =
+            std::env::temp_dir().join(format!("gregg-main-reload-pressure-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gregg.toml");
+        let store = config::ConfigStore::new(path.clone());
+
+        let mut old_config = Config::default();
+        old_config.systems.push(SystemEntry {
+            id: "stable".into(),
+            host: "endpoint-a.local".into(),
+            port: 11310,
+            name: None,
+        });
+        old_config.write_atomic(&path).unwrap();
+        let mut app = state::AppState::from_config(&old_config);
+        app.apply_batch(&poller::PollBatch {
+            generation: 1,
+            started_at: std::time::Instant::now(),
+            completed_at: std::time::Instant::now(),
+            results: vec![poller::PollResult {
+                system_id: "stable".into(),
+                endpoint: old_config.systems[0].to_endpoint(),
+                outcome: poller::PollOutcome::Online(Box::new(
+                    LinuxSnapshotBuilder::default().build(),
+                )),
+                latency: Duration::from_millis(1),
+            }],
+        });
+        assert_eq!(app.systems[0].reachability, state::Reachability::Online);
+        assert!(app.systems[0].latest.is_some());
+
+        let (commands, mut received) = tokio::sync::mpsc::channel(1);
+        commands
+            .send(scheduler::SchedulerCommand::Refresh)
+            .await
+            .unwrap();
+
+        let mut new_config = old_config.clone();
+        new_config.systems[0].host = "endpoint-b.local".into();
+        new_config.write_atomic(&path).unwrap();
+
+        let mut dispatch = Box::pin(dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        ));
+        tokio::select! {
+            biased;
+
+            result = &mut dispatch => panic!("replacement dispatch completed while the channel was full: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::Refresh)
+        ));
+        tokio::time::timeout(Duration::from_secs(1), dispatch)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints))
+                if endpoints.len() == 1 && endpoints[0].host == "endpoint-b.local"
+        ));
+        assert_eq!(app.systems[0].endpoint.host, "endpoint-b.local");
+        assert_eq!(app.systems[0].reachability, state::Reachability::Pending);
+        assert!(app.systems[0].latest.is_none());
+        assert!(app.systems[0].last_success_at.is_none());
+        assert!(app.systems[0].last_attempt_at.is_none());
+        assert!(app.systems[0].latency.is_none());
+        assert!(app.systems[0].last_error.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sequential_system_replacements_converge_in_command_order() {
+        let dir =
+            std::env::temp_dir().join(format!("gregg-main-reload-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gregg.toml");
+        let store = config::ConfigStore::new(path.clone());
+
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "stable".into(),
+            host: "endpoint-a.local".into(),
+            port: 11310,
+            name: None,
+        });
+        config.write_atomic(&path).unwrap();
+        let mut app = state::AppState::from_config(&config);
+        let (commands, mut received) = tokio::sync::mpsc::channel(1);
+        commands
+            .send(scheduler::SchedulerCommand::Refresh)
+            .await
+            .unwrap();
+
+        config.systems[0].host = "endpoint-b.local".into();
+        config.write_atomic(&path).unwrap();
+        let mut dispatch_b = Box::pin(dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        ));
+        tokio::select! {
+            biased;
+
+            result = &mut dispatch_b => panic!("replacement B completed while the channel was full: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::Refresh)
+        ));
+        tokio::time::timeout(Duration::from_secs(1), &mut dispatch_b)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(dispatch_b);
+
+        config.systems[0].host = "endpoint-c.local".into();
+        config.write_atomic(&path).unwrap();
+        let mut dispatch_c = Box::pin(dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        ));
+        tokio::select! {
+            biased;
+
+            result = &mut dispatch_c => panic!("replacement C completed while replacement B was queued: {result:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints))
+                if endpoints[0].host == "endpoint-b.local"
+        ));
+        tokio::time::timeout(Duration::from_secs(1), dispatch_c)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints))
+                if endpoints[0].host == "endpoint-c.local"
+        ));
+        assert_eq!(app.systems[0].endpoint.host, "endpoint-c.local");
+        assert_eq!(app.systems[0].reachability, state::Reachability::Pending);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn closed_scheduler_channel_does_not_commit_reloaded_state() {
+        let dir =
+            std::env::temp_dir().join(format!("gregg-main-reload-closed-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gregg.toml");
+        let store = config::ConfigStore::new(path.clone());
+
+        let mut old_config = Config::default();
+        old_config.systems.push(SystemEntry {
+            id: "stable".into(),
+            host: "endpoint-a.local".into(),
+            port: 11310,
+            name: None,
+        });
+        old_config.write_atomic(&path).unwrap();
+        let mut app = state::AppState::from_config(&old_config);
+        let (commands, receiver) = tokio::sync::mpsc::channel(1);
+        drop(receiver);
+
+        let mut new_config = old_config.clone();
+        new_config.systems[0].host = "endpoint-b.local".into();
+        new_config.write_atomic(&path).unwrap();
+
+        let result = dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(app.systems[0].endpoint.host, "endpoint-a.local");
 
         let _ = fs::remove_dir_all(&dir);
     }

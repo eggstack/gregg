@@ -188,10 +188,12 @@ for configured EggPool state, activates it when the pane is visible, routes
 pane/period/manual-refresh actions to it, applies optional results without
 affecting greggd polling, and cancels it during TUI shutdown. The Systems-pane
 `Ctrl-R` boundary reloads the already-resolved client config, reconciles stable
-system IDs, replaces the scheduler endpoint set, and polls immediately. Failed
-reloads retain the last-known-good state. There is no filesystem watcher or
-continuous hot-reload task; CLI configuration commands use the normal
-read-edit-write path.
+system IDs, reliably delivers the replacement through the bounded scheduler
+command channel, and polls immediately. A full channel backpressures the
+explicit reload; a closed scheduler receiver returns through the TUI error
+boundary. Failed reloads retain the last-known-good state. There is no
+filesystem watcher or continuous hot-reload task; CLI configuration commands
+use the normal read-edit-write path.
 
 ## Client TUI
 

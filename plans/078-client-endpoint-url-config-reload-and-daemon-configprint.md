@@ -16,7 +16,13 @@ The required product behavior after this phase is:
 2. `gregg add` accepts either the existing endpoint forms or an HTTP URL such as `http://192.168.183.143:11310/`, extracts only the host and optional explicit port, and persists the existing canonical `host` + `port` representation;
 3. `greggd configprint` loads the same daemon config selected by the rest of the CLI and writes exactly the configured bind `host:port` to stdout, with no `http://` prefix and no process/network side effects.
 
-The current Ubuntu environment has a verified working `greggd` endpoint at `192.168.182.143:11310`. Use that endpoint for the final local client smoke so this phase proves the actual failure mode rather than only synthetic loopback behavior.
+The originating live report identified `192.168.183.143:11310` as the
+verified working `greggd` endpoint while the running client displayed/polled
+the stale `192.168.182.143:11310` address. The later closure environment had
+changed: `.183` was unavailable and `.182` returned ready health, so the final
+operational smoke exercised the reverse `.183` -> `.182` replacement direction.
+These are separate environment observations; the later smoke does not rewrite
+the original report or prove that `.183` was never working.
 
 ## Baseline findings
 
@@ -301,7 +307,8 @@ $ greggd --config /tmp/greggd-v6.toml configprint
 - Keep the persisted system schema as `host` + `port` only.
 - Add `greggd configprint` with exact one-line host:port output.
 - Add focused tests for all three behaviors.
-- Run one local Ubuntu smoke against the verified `192.168.182.143:11310` daemon.
+- Retain the originating `.183`-working/`.182`-stale report and separately record
+  the later local Ubuntu smoke against the reachable `.182` daemon.
 - Update only directly affected user/architecture documentation and planning records.
 
 ### Out of scope
@@ -560,13 +567,15 @@ No new GitHub Actions work is required.
 
 ### Step 9: local Ubuntu end-to-end smoke against the real daemon
 
-Use the current Ubuntu environment and the verified live daemon at:
+The final closure smoke used the later environment's reachable daemon at:
 
 ```text
 192.168.182.143:11310
 ```
 
-This smoke is required because the originating bug was observed with a real Gregg/greggd pair.
+This smoke is useful evidence because the originating bug was observed with a
+real Gregg/greggd pair, but its reachable address is a later environment fact,
+not a replacement for the originating `.183`-working report.
 
 #### A. Verify the daemon is genuinely reachable
 
@@ -718,7 +727,12 @@ After implementation and verification:
 
 ## Implementation and verification record
 
-Implementation commit `1867d22` contains the code and documentation changes.
+Implementation commit `1867d22` contains the original code and documentation
+changes. The originating report was `.183` working / `.182` stale; during the
+later closure run `.182` was reachable and `.183` was not, so the live smoke
+used `.183` -> `.182`. This demonstrates address replacement without rewriting
+the original observation. Plan 079 subsequently corrected the bounded
+scheduler replacement-delivery edge found during post-implementation review.
 Deterministic
 verification passed with `cargo fmt --all -- --check`, the full workspace
 default check, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
@@ -742,4 +756,9 @@ Keep the three changes independent at the code level:
 
 Do not couple `configprint` to the client reload work or use URL-form input as a reason to change the persisted configuration schema.
 
-The most important closure evidence is the local real-host reproduction: start with `.183`, correct the same stable-ID entry to `.182`, press `Ctrl-R`, and observe Gregg switch to the verified live `192.168.182.143:11310` daemon without a client restart.
+The most important later-environment closure evidence is the local real-host
+reproduction: start with `.183`, correct the same stable-ID entry to `.182`,
+press `Ctrl-R`, and observe Gregg switch to the reachable live
+`192.168.182.143:11310` daemon without a client restart. The originating report
+remains that `.183` was the verified working endpoint and `.182` was the stale
+address displayed by the running client.

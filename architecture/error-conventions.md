@@ -35,6 +35,12 @@ best-effort `STOPPED` status with a nonzero exit code, and are not returned
 through ordinary `main` propagation. Stop and Shutdown are forwarded to the
 shared daemon runtime through a nonblocking one-shot signal.
 
+The Gregg TUI treats a closed Systems scheduler command channel as a runtime
+error. A successful config reload sends its endpoint replacement through the
+bounded channel before committing the corresponding `AppState` reconciliation;
+channel pressure therefore waits for capacity instead of silently allowing the
+displayed endpoint set and scheduler endpoint set to diverge.
+
 The protocol crate's own validation surface is structured: a `validate()`
 method returns a list of violations rather than panicking or wrapping serde
 deserialization with opaque checks. This keeps forward compatibility

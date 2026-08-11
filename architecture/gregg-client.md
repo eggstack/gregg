@@ -116,6 +116,13 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 - Fixed-cadence ticks skip missed deadlines, and manual refresh does not reset
   the periodic cadence
 
+The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives
+the replacement endpoint vector, and awaits delivery through the bounded
+scheduler command channel before reconciling `AppState`. A full channel creates
+backpressure rather than dropping a replacement; a closed receiver returns
+through the TUI's normal error boundary. Failed config loads retain the
+last-known-good state and may issue an ordinary best-effort refresh.
+
 Plan 070 evaluated replacing the per-endpoint tasks and semaphore with a
 buffered future stream. That candidate was rejected because it would remove
 task isolation and the panic-to-`Cancelled` guarantee while still needing
@@ -168,7 +175,7 @@ condensed = 1 row). Selected system is always visible.
 | `e` | Toggle drive expansion |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
-| `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
+| `Ctrl-R` | Reload Systems config and reliably replace/poll endpoints, or refresh EggPool |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 
 ### Width degradation
