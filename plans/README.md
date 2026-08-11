@@ -19,7 +19,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
-Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. The repository implementation, local CI checks, and required real-host smoke are complete against `192.168.182.143:11310`.
+Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Post-implementation review found one remaining bounded-channel correctness edge: successful config reconciliation can currently be followed by a silently dropped scheduler `ReplaceEndpoints` command when the command channel is full. Plan 079 is the single active corrective phase to make replacement delivery reliable and to correct Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -35,15 +35,16 @@ Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 | [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
-| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete |
+| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | implemented; follow-up delivery edge tracked by 079 |
+| [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | planned; active |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 is the single narrow corrective pass discovered during review of that implementation. Plan 078 is a separate live-testing correction and CLI ergonomics phase; do not create another phase solely to mark 078 complete if its acceptance criteria pass.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review; do not create Plan 080 solely to mark 079 complete if its acceptance criteria pass.
 
 ## Execution record for Plan 075
 
@@ -71,23 +72,22 @@ Manual release preflight remains:
 ./scripts/check-local.sh --release
 ```
 
-For Plan 078, focused local verification is sufficient in addition to the default local check:
+For Plan 079, focused deterministic local verification is sufficient in addition to the default local check:
 
 ```text
 cargo fmt --all -- --check
-cargo test -p gregg endpoint
-cargo test -p gregg state
+cargo test -p gregg main
 cargo test -p gregg scheduler
-cargo test -p gregg cli
+cargo test -p gregg state
 cargo test -p gregg --bin gregg
-cargo test -p greggd cli
-cargo test -p greggd --bin greggd
 ./scripts/check-local.sh
 ```
 
-Plan 078 additionally requires one narrow local Ubuntu operational smoke against the verified live `greggd` endpoint at `192.168.182.143:11310`: URL-form `gregg add`, running-TUI `.183` -> `.182` `Ctrl-R` reconciliation, and exact `greggd configprint` output. This remains local-only and is not moved into CI.
+The key Plan 079 proof is a bounded scheduler-command channel test that fills capacity, performs a valid endpoint reload, and demonstrates that `ReplaceEndpoints` is delivered rather than silently dropped. A second A -> B -> C test must prove convergence to the latest accepted replacement under bounded capacity.
 
-The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 078 does not change SCM behavior or add CI coverage; common CLI compilation/tests are sufficient for the new `configprint` command, with existing native CI continuing to guard platform compilation.
+A second external private-LAN smoke is optional for Plan 079 and must not determine completion. Plan 078 already demonstrated the address-replacement path against a live daemon in the environment available at that time. Plan 079 corrects command-delivery semantics deterministically and corrects the record to preserve both the originating `.183`-working/`.182`-stale report and the later `.182`-reachable smoke environment.
+
+The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 079 does not change SCM behavior or add CI coverage.
 
 A plan does not require:
 
@@ -111,34 +111,32 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-## Active scope control for Plan 078
+## Active scope control for Plan 079
 
 Allowed:
 
-- reload the current Gregg system config at the existing `Ctrl-R` boundary;
-- reconcile added/removed/changed system endpoints by stable ID;
-- replace or narrowly restart only the system polling endpoint set;
-- reset metrics when a stable ID changes host/port so old-machine data is not shown under a new endpoint;
-- accept syntactically valid plain-HTTP URL input for `gregg add` and persist only host/port;
-- preserve explicit URL ports and Gregg's configured default-port behavior when a URL omits a port;
-- add one read-only `greggd configprint` command with exact canonical socket-address output;
-- focused tests and one real Ubuntu smoke using `192.168.182.143:11310`;
-- direct documentation and plan-index updates.
+- make successful Systems endpoint replacement delivery reliable through the existing bounded scheduler command channel;
+- use bounded async backpressure or an equivalently small latest-replacement mechanism;
+- explicitly handle a closed scheduler command receiver;
+- retain the existing state reconciliation, endpoint host/port stale-result guard, scheduler generation model, and immediate replacement poll;
+- add deterministic capacity-pressure tests and an A -> B -> C convergence test;
+- correct Plan 078 so it separately records the originating `.183`-working/`.182`-stale report and the later `.182`-reachable closure environment;
+- focused local checks and direct planning-record updates.
 
 Not allowed:
 
+- an unbounded scheduler command channel;
 - filesystem watcher libraries or continuous hot reload;
 - a new background config-monitor subsystem;
-- TLS/HTTPS polling or silent HTTPS-to-HTTP downgrade;
-- persisting schemes, paths, or URL credentials in client config;
-- endpoint discovery or network probing during `gregg add`;
-- dynamic daemon reload, PID/process discovery, or service-manager changes;
-- a full config dump under `configprint`;
-- changes to `croncheck` semantics;
+- scheduler/actor rewrite, generic priority queue, or watch-channel architecture unless a tiny equivalent is strictly smaller than awaited delivery;
+- changes to poll concurrency or endpoint schemas;
+- TLS/HTTPS polling or changes to URL-form `gregg add`;
+- changes to `greggd configprint` or `croncheck`;
+- EggPool redesign;
 - broad TUI redesign, test-suite restructuring, or unrelated cleanup;
 - new workflows, jobs, matrices, artifacts, evidence bundles, or CI gates;
 - release automation or publication work;
-- a Plan 079 created only to record Plan 078 closure.
+- a Plan 080 created only to record Plan 079 closure.
 
 ## Completed roadmap groups
 
