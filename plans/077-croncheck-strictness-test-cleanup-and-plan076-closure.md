@@ -360,7 +360,7 @@ After all implementation and local verification succeeds:
 
 ## Implementation record
 
-Implementation SHA: `<recorded after commit>`
+Implementation SHA: `ecee696` (implementation and documentation commit)
 
 Croncheck now uses a fixed 512-byte stack buffer, requires CRLF before parsing,
 accepts only HTTP/1.0 or HTTP/1.1 with status 200, and rejects premature EOF,
