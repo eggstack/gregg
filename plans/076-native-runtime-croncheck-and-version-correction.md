@@ -599,7 +599,7 @@ Remaining work: none / concrete defect only
 
 ## Implementation record
 
-Implementation SHA is recorded after the implementation commit. Unix runtime
+Implementation SHA: `b17037d`. Unix runtime
 ownership is now native foreground execution; systemd and launchd source
 adapters were removed while packaging assets remain. `croncheck` probes
 `/v2/healthz` over a bounded TCP connection and never starts a process. Unix
