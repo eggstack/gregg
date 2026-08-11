@@ -27,7 +27,7 @@ path = "src/bin/lock_helper.rs"
 required-features = ["test-helper"]
 
 [dependencies]
-gregg-protocol = { version = "1.0.2", path = "../gregg-protocol" }
+gregg-protocol = { version = "1.0.3", path = "../gregg-protocol" }
 clap = { version = ">=4.0, <4.5", features = ["derive"] }
 # Compatibility-only bounds keep fresh transitive resolution within Rust 1.75.
 indexmap = ">=2.0, <2.12"
@@ -61,7 +61,7 @@ libc = "0.2"
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
-gregg-protocol = { version = "1.0.2", path = "../gregg-protocol", features = ["test_support"] }
+gregg-protocol = { version = "1.0.3", path = "../gregg-protocol", features = ["test_support"] }
 tokio = { version = "1", features = ["test-util"] }
 
 [lints]

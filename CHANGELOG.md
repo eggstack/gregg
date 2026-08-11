@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.3] - 2026-08-11
+
 ### Added
 
 - Bounded mounted-local-filesystem capacity metrics in v2 status responses,
