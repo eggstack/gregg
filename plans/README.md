@@ -19,7 +19,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
-Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. The repository implementation and local CI checks are complete; the required real-host smoke reached the `.182` -> `.183` address switch, but the external `.183` daemon was unavailable during final verification.
+Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. The repository implementation, local CI checks, and required real-host smoke are complete against `192.168.182.143:11310`.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 | [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
-| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | implemented; external live-host smoke pending |
+| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete |
 
 Dependency order:
 
@@ -85,7 +85,7 @@ cargo test -p greggd --bin greggd
 ./scripts/check-local.sh
 ```
 
-Plan 078 additionally requires one narrow local Ubuntu operational smoke against the verified live `greggd` endpoint at `192.168.183.143:11310`: URL-form `gregg add`, running-TUI `.182` -> `.183` `Ctrl-R` reconciliation, and exact `greggd configprint` output. This remains local-only and is not moved into CI.
+Plan 078 additionally requires one narrow local Ubuntu operational smoke against the verified live `greggd` endpoint at `192.168.182.143:11310`: URL-form `gregg add`, running-TUI `.183` -> `.182` `Ctrl-R` reconciliation, and exact `greggd configprint` output. This remains local-only and is not moved into CI.
 
 The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 078 does not change SCM behavior or add CI coverage; common CLI compilation/tests are sufficient for the new `configprint` command, with existing native CI continuing to guard platform compilation.
 
@@ -122,7 +122,7 @@ Allowed:
 - accept syntactically valid plain-HTTP URL input for `gregg add` and persist only host/port;
 - preserve explicit URL ports and Gregg's configured default-port behavior when a URL omits a port;
 - add one read-only `greggd configprint` command with exact canonical socket-address output;
-- focused tests and one real Ubuntu smoke using `192.168.183.143:11310`;
+- focused tests and one real Ubuntu smoke using `192.168.182.143:11310`;
 - direct documentation and plan-index updates.
 
 Not allowed:

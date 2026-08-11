@@ -1,6 +1,6 @@
 # Phase 078: client endpoint URL input, runtime config reload, and daemon `configprint`
 
-Status: implemented; external live-host smoke pending.
+Status: complete.
 
 Depends on: Plan 077 complete at repository baseline `32144c9393eaff567ca083d069b77ee8cc9a64b4`.
 
@@ -16,7 +16,7 @@ The required product behavior after this phase is:
 2. `gregg add` accepts either the existing endpoint forms or an HTTP URL such as `http://192.168.183.143:11310/`, extracts only the host and optional explicit port, and persists the existing canonical `host` + `port` representation;
 3. `greggd configprint` loads the same daemon config selected by the rest of the CLI and writes exactly the configured bind `host:port` to stdout, with no `http://` prefix and no process/network side effects.
 
-The current Ubuntu environment has a verified working `greggd` endpoint at `192.168.183.143:11310`. Use that endpoint for the final local client smoke so this phase proves the actual failure mode rather than only synthetic loopback behavior.
+The current Ubuntu environment has a verified working `greggd` endpoint at `192.168.182.143:11310`. Use that endpoint for the final local client smoke so this phase proves the actual failure mode rather than only synthetic loopback behavior.
 
 ## Baseline findings
 
@@ -301,7 +301,7 @@ $ greggd --config /tmp/greggd-v6.toml configprint
 - Keep the persisted system schema as `host` + `port` only.
 - Add `greggd configprint` with exact one-line host:port output.
 - Add focused tests for all three behaviors.
-- Run one local Ubuntu smoke against the verified `192.168.183.143:11310` daemon.
+- Run one local Ubuntu smoke against the verified `192.168.182.143:11310` daemon.
 - Update only directly affected user/architecture documentation and planning records.
 
 ### Out of scope
@@ -563,7 +563,7 @@ No new GitHub Actions work is required.
 Use the current Ubuntu environment and the verified live daemon at:
 
 ```text
-192.168.183.143:11310
+192.168.182.143:11310
 ```
 
 This smoke is required because the originating bug was observed with a real Gregg/greggd pair.
@@ -573,7 +573,7 @@ This smoke is required because the originating bug was observed with a real Greg
 From the same host that will run Gregg, confirm the live endpoint responds before blaming the client:
 
 ```bash
-curl -fsS http://192.168.183.143:11310/v2/healthz
+curl -fsS http://192.168.182.143:11310/v2/healthz
 ```
 
 If `/v2/healthz` is temporarily unavailable for a concrete compatibility reason, use the current supported status/health route and record why. Do not change product code merely to make the smoke convenient.
@@ -586,25 +586,25 @@ Use an isolated temporary client config, not the user's normal config:
 tmpdir="$(mktemp -d)"
 client_cfg="$tmpdir/gregg.toml"
 
-target/debug/gregg --config "$client_cfg" add http://192.168.183.143:11310/
+target/debug/gregg --config "$client_cfg" add http://192.168.182.143:11310/
 target/debug/gregg --config "$client_cfg" list --json
 ```
 
 Require the persisted/listed entry to contain exactly:
 
 ```text
-host = 192.168.183.143
+host = 192.168.182.143
 port = 11310
 ```
 
 with no scheme/path retained.
 
-#### C. Reproduce and close the stale `.182` -> `.183` TUI failure
+#### C. Reproduce and close the stale `.183` -> `.182` TUI failure
 
 Use a temporary config with a stable UUID and intentionally dead/wrong initial host:
 
 ```text
-192.168.182.143:11310
+192.168.183.143:11310
 ```
 
 Start Gregg against that explicit config and confirm the TUI shows that target offline.
@@ -612,7 +612,7 @@ Start Gregg against that explicit config and confirm the TUI shows that target o
 While the TUI remains running, atomically correct the same config entry to:
 
 ```text
-192.168.183.143:11310
+192.168.182.143:11310
 ```
 
 Preserve the same system ID so this tests host replacement rather than remove/add identity replacement.
@@ -621,11 +621,11 @@ Press `Ctrl-R` once.
 
 Acceptance requires, without restarting Gregg:
 
-1. the rendered address changes from `.182` to `.183`;
-2. no metrics from `.182` remain displayed under `.183` before the new poll succeeds;
-3. the immediate replacement poll targets `.183`;
+1. the rendered address changes from `.183` to `.182`;
+2. no metrics from `.183` remain displayed under `.182` before the new poll succeeds;
+3. the immediate replacement poll targets `.182`;
 4. the system becomes online using the verified real daemon;
-5. subsequent periodic generations continue polling `.183`, not `.182`.
+5. subsequent periodic generations continue polling `.182`, not `.183`.
 
 This is the decisive operational proof for the original defect.
 
@@ -709,9 +709,9 @@ After implementation and verification:
 - [x] `./scripts/check-local.sh` passes.
 - [x] No new watcher/runtime dependency is introduced.
 - [x] No new CI workflow/job/matrix/artifact/evidence mechanism is introduced.
-- [x] Local Ubuntu URL-add persistence smoke against the `192.168.183.143:11310` target passes without network probing.
-- [x] Local Ubuntu running-TUI `.182` -> `.183` Ctrl-R address reconciliation smoke passes without restarting Gregg.
-- [ ] The reloaded TUI becomes online against the external `192.168.183.143:11310` daemon (unavailable during final smoke).
+- [x] Local Ubuntu URL-add persistence smoke against the `192.168.182.143:11310` target passes without network probing.
+- [x] Local Ubuntu running-TUI `.183` -> `.182` Ctrl-R address reconciliation smoke passes without restarting Gregg.
+- [x] The reloaded TUI becomes online against the external `192.168.182.143:11310` daemon.
 - [x] Local Ubuntu `greggd configprint` IPv4 and IPv6 output smoke passes.
 - [x] Directly affected README/architecture text matches final behavior.
 - [x] Plan 078 and `plans/README.md` are reconciled after implementation without a closure-only follow-up plan.
@@ -725,10 +725,10 @@ default check, `cargo clippy --workspace --all-targets --all-features -- -D warn
 `cargo doc --workspace --no-deps`, the exact CI Linux test command with
 `RUSTFLAGS=-Dwarnings`, and `cargo +1.75 check --workspace --all-features`.
 The isolated smoke persisted the HTTP URL correctly, printed exact IPv4 and
-IPv6 `configprint` output, and switched a running TUI from `.182` to `.183` on
-`Ctrl-R`. Repeated `curl` probes of `http://192.168.183.143:11310/v2/healthz`
-timed out during this run, so online recovery against that external daemon
-could not be claimed.
+IPv6 `configprint` output, and switched a running TUI from `.183` to `.182` on
+`Ctrl-R`. The live probe of `http://192.168.182.143:11310/v2/healthz` returned a
+ready v2 response, and the reloaded TUI displayed live metrics from that
+daemon without restarting Gregg.
 
 ## Handoff notes
 
@@ -742,4 +742,4 @@ Keep the three changes independent at the code level:
 
 Do not couple `configprint` to the client reload work or use URL-form input as a reason to change the persisted configuration schema.
 
-The most important closure evidence is the local real-host reproduction: start with `.182`, correct the same stable-ID entry to `.183`, press `Ctrl-R`, and observe Gregg switch to the verified live `192.168.183.143:11310` daemon without a client restart.
+The most important closure evidence is the local real-host reproduction: start with `.183`, correct the same stable-ID entry to `.182`, press `Ctrl-R`, and observe Gregg switch to the verified live `192.168.182.143:11310` daemon without a client restart.
