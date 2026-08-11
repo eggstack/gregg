@@ -459,7 +459,9 @@ updates the user, architecture, agent, and skill guidance and corrects Plan
 
 The `cargo test -p gregg main` filter matched no tests in this binary crate;
 the full `--bin gregg` run is the applicable main/dispatch coverage. The clean
-tree release preflight and remote CI are recorded after the closure commit.
+tree `./scripts/check-local.sh --release` preflight also passed, including
+clippy, documentation, package lists, installed-daemon loopback smoke, and the
+protocol publish dry-run. Remote CI is recorded after the push.
 
 ## Handoff notes
 
