@@ -1,6 +1,6 @@
 # Phase 078: client endpoint URL input, runtime config reload, and daemon `configprint`
 
-Status: planned.
+Status: implemented; external live-host smoke pending.
 
 Depends on: Plan 077 complete at repository baseline `32144c9393eaff567ca083d069b77ee8cc9a64b4`.
 
@@ -659,61 +659,76 @@ After implementation and verification:
 
 ### Original stale-endpoint defect
 
-- [ ] A regression test proves the renderer/state preserve the exact configured IP and do not transform `.183` into `.182`.
-- [ ] `Ctrl-R` on the Systems pane reloads the current client config from the same resolved ConfigStore used at startup.
-- [ ] A valid host/port edit is reconciled into `AppState` without restarting Gregg.
-- [ ] A host/port change for an existing ID clears the old target's snapshot, reachability, latency, timestamps, and last error before the replacement poll result is applied.
-- [ ] Unchanged endpoint state is preserved across reload.
-- [ ] Name-only changes do not discard valid metrics.
-- [ ] Added/removed system IDs reconcile correctly.
-- [ ] Selection/viewport remain valid after reconciliation.
-- [ ] The scheduler polls only the replacement endpoint after reconfiguration.
-- [ ] Superseded in-flight results cannot overwrite the replacement target's state.
-- [ ] Invalid/unreadable reloaded config is not partially applied and does not crash the running TUI.
-- [ ] No filesystem watcher, new config-monitor task, or background hot-reload subsystem is added.
+- [x] A regression test proves the renderer/state preserve the exact configured IP and do not transform `.183` into `.182`.
+- [x] `Ctrl-R` on the Systems pane reloads the current client config from the same resolved ConfigStore used at startup.
+- [x] A valid host/port edit is reconciled into `AppState` without restarting Gregg.
+- [x] A host/port change for an existing ID clears the old target's snapshot, reachability, latency, timestamps, and last error before the replacement poll result is applied.
+- [x] Unchanged endpoint state is preserved across reload.
+- [x] Name-only changes do not discard valid metrics.
+- [x] Added/removed system IDs reconcile correctly.
+- [x] Selection/viewport remain valid after reconciliation.
+- [x] The scheduler polls only the replacement endpoint after reconfiguration.
+- [x] Superseded in-flight results cannot overwrite the replacement target's state.
+- [x] Invalid/unreadable reloaded config is not partially applied and does not crash the running TUI.
+- [x] No filesystem watcher, new config-monitor task, or background hot-reload subsystem is added.
 
 ### URL-form `gregg add`
 
-- [ ] Existing bare IPv4, DNS, IPv6, and host:port input remains supported.
-- [ ] `gregg add http://192.168.183.143:11310/` succeeds.
-- [ ] URL input persists only canonical host + port.
-- [ ] URL path/query/fragment are never persisted.
-- [ ] URL without an explicit port uses Gregg's configured `default_port`, not HTTP port 80.
-- [ ] Explicit `:80` remains explicit port 80.
-- [ ] Bracketed IPv6 HTTP URL input is parsed correctly and persisted without URL brackets in the host field.
-- [ ] Credentials/userinfo are rejected.
-- [ ] `https://` and non-HTTP schemes are rejected rather than silently downgraded.
-- [ ] Invalid/missing host and invalid port fail with the endpoint-error class.
-- [ ] `gregg add` does not perform a network probe.
-- [ ] No new URL parsing dependency is added solely for this feature.
-- [ ] Config schema/version remains unchanged.
+- [x] Existing bare IPv4, DNS, IPv6, and host:port input remains supported.
+- [x] `gregg add http://192.168.183.143:11310/` succeeds.
+- [x] URL input persists only canonical host + port.
+- [x] URL path/query/fragment are never persisted.
+- [x] URL without an explicit port uses Gregg's configured `default_port`, not HTTP port 80.
+- [x] Explicit `:80` remains explicit port 80.
+- [x] Bracketed IPv6 HTTP URL input is parsed correctly and persisted without URL brackets in the host field.
+- [x] Credentials/userinfo are rejected.
+- [x] `https://` and non-HTTP schemes are rejected rather than silently downgraded.
+- [x] Invalid/missing host and invalid port fail with the endpoint-error class.
+- [x] `gregg add` does not perform a network probe.
+- [x] No new URL parsing dependency is added solely for this feature.
+- [x] Config schema/version remains unchanged.
 
 ### `greggd configprint`
 
-- [ ] `greggd configprint` exists on Linux, macOS, and Windows builds through the common CLI.
-- [ ] Successful output is exactly one configured `host:port` line with no label and no `http://`.
-- [ ] IPv4 output is canonical.
-- [ ] IPv6 output uses unambiguous brackets.
-- [ ] Wildcard configured addresses remain wildcard in output and are not mapped to loopback.
-- [ ] Explicit `--config` path semantics match `run`/`croncheck` loading behavior.
-- [ ] Missing explicit config fails nonzero.
-- [ ] Default missing config follows the existing default-config contract.
-- [ ] `configprint` does not probe HTTP, bind a socket, start/stop/restart services, or write config.
-- [ ] Existing `croncheck`, `host`, `port`, `run`, `version`, and Windows SCM behavior remains unchanged.
+- [x] `greggd configprint` exists on Linux, macOS, and Windows builds through the common CLI.
+- [x] Successful output is exactly one configured `host:port` line with no label and no `http://`.
+- [x] IPv4 output is canonical.
+- [x] IPv6 output uses unambiguous brackets.
+- [x] Wildcard configured addresses remain wildcard in output and are not mapped to loopback.
+- [x] Explicit `--config` path semantics match `run`/`croncheck` loading behavior.
+- [x] Missing explicit config fails nonzero.
+- [x] Default missing config follows the existing default-config contract.
+- [x] `configprint` does not probe HTTP, bind a socket, start/stop/restart services, or write config.
+- [x] Existing `croncheck`, `host`, `port`, `run`, `version`, and Windows SCM behavior remains unchanged.
 
 ### Verification and scope
 
-- [ ] Focused Gregg endpoint/state/scheduler/CLI tests pass.
-- [ ] Focused greggd CLI tests pass.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] No new watcher/runtime dependency is introduced.
-- [ ] No new CI workflow/job/matrix/artifact/evidence mechanism is introduced.
-- [ ] Local Ubuntu URL-add smoke against `192.168.183.143:11310` passes.
-- [ ] Local Ubuntu running-TUI `.182` -> `.183` Ctrl-R reconciliation smoke passes without restarting Gregg.
-- [ ] Local Ubuntu `greggd configprint` IPv4 and IPv6 output smoke passes.
-- [ ] Directly affected README/architecture text matches final behavior.
-- [ ] Plan 078 and `plans/README.md` are reconciled after implementation without a closure-only follow-up plan.
+- [x] Focused Gregg endpoint/state/scheduler/CLI tests pass.
+- [x] Focused greggd CLI tests pass.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] No new watcher/runtime dependency is introduced.
+- [x] No new CI workflow/job/matrix/artifact/evidence mechanism is introduced.
+- [x] Local Ubuntu URL-add persistence smoke against the `192.168.183.143:11310` target passes without network probing.
+- [x] Local Ubuntu running-TUI `.182` -> `.183` Ctrl-R address reconciliation smoke passes without restarting Gregg.
+- [ ] The reloaded TUI becomes online against the external `192.168.183.143:11310` daemon (unavailable during final smoke).
+- [x] Local Ubuntu `greggd configprint` IPv4 and IPv6 output smoke passes.
+- [x] Directly affected README/architecture text matches final behavior.
+- [x] Plan 078 and `plans/README.md` are reconciled after implementation without a closure-only follow-up plan.
+
+## Implementation and verification record
+
+Implementation commit `cd67109` contains the code and documentation changes.
+Deterministic
+verification passed with `cargo fmt --all -- --check`, the full workspace
+default check, `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo doc --workspace --no-deps`, the exact CI Linux test command with
+`RUSTFLAGS=-Dwarnings`, and `cargo +1.75 check --workspace --all-features`.
+The isolated smoke persisted the HTTP URL correctly, printed exact IPv4 and
+IPv6 `configprint` output, and switched a running TUI from `.182` to `.183` on
+`Ctrl-R`. Repeated `curl` probes of `http://192.168.183.143:11310/v2/healthz`
+timed out during this run, so online recovery against that external daemon
+could not be claimed.
 
 ## Handoff notes
 

@@ -12,7 +12,7 @@ available through the Windows-only service path.
 - Collect CPU, memory, swap, load, and drive metrics using native OS interfaces
 - Sample metrics at a configurable interval with delta-based CPU computation
 - Serve cached snapshots over HTTP (v1 and v2 endpoints)
-- Expose CLI for configuration mutation, health probing, and runtime control
+- Expose CLI for configuration mutation, health probing, bind-address inspection, and runtime control
 
 ## Module map
 
@@ -20,7 +20,7 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle |
@@ -151,6 +151,7 @@ configuration error and is neither written nor followed by process management.
 |---------|---------|
 | `run` | Start foreground daemon |
 | `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200 |
+| `configprint` | Read configured bind address and print one canonical `host:port` line; no network, service, or write side effects |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
 | `version` | Print compile-time daemon version |

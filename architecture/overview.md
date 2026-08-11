@@ -127,7 +127,7 @@ integration tests.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
 | `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals; graceful shutdown with 10s deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `host`, `port`, `version`; Windows SCM lifecycle commands |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows SCM lifecycle commands |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`), clock abstraction |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, five endpoints, staleness detection |
@@ -178,7 +178,7 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, event loop, TUI wiring |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool`; `add` also accepts HTTP URL input |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, viewport logic |
 | `action` | `src/action.rs` | `Action` enum (14 state transition triggers) |

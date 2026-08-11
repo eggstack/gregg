@@ -1,8 +1,8 @@
 //! Endpoint parsing, normalization, and identity.
 //!
 //! An endpoint represents a single `host:port` pair that identifies a
-//! remote `greggd` instance. Parsing is strict and deterministic:
-//! schemes, paths, credentials, and whitespace-only input are rejected.
+//! remote `greggd` instance. Canonical endpoint parsing is strict and
+//! deterministic; the `gregg add` command has a separate HTTP URL adapter.
 
 use std::fmt;
 use std::net::IpAddr;
@@ -109,6 +109,10 @@ pub enum EndpointError {
     EmptyInput,
     /// Input contains a URL scheme (e.g. `http://`).
     HasScheme { input: String },
+    /// Input contains a URL scheme other than HTTP.
+    UnsupportedScheme { scheme: String, input: String },
+    /// Input looked like an HTTP URL but was not syntactically valid.
+    MalformedUrl { input: String },
     /// Input contains a path separator.
     HasPath { input: String },
     /// Input contains credentials.
@@ -134,6 +138,10 @@ impl fmt::Display for EndpointError {
             Self::HasScheme { input } => {
                 write!(f, "endpoint must not include a URL scheme: {input}")
             }
+            Self::UnsupportedScheme { scheme, input } => {
+                write!(f, "unsupported endpoint URL scheme '{scheme}': {input}")
+            }
+            Self::MalformedUrl { input } => write!(f, "malformed endpoint URL: {input}"),
             Self::HasPath { input } => {
                 write!(f, "endpoint must not include a path: {input}")
             }
@@ -264,6 +272,67 @@ impl EndpointSpec {
                 }
             }
         }
+    }
+
+    /// Parse the endpoint input accepted by `gregg add`.
+    ///
+    /// Canonical host and port input is delegated to [`Self::parse`]. An HTTP
+    /// URL is reduced to its authority first; path, query, and fragment are
+    /// validated by the URL parser and then discarded. URL parsing retains
+    /// whether an explicit port was supplied so `:80` is not confused with a
+    /// missing port.
+    pub fn parse_add_input(input: &str) -> Result<Self, EndpointError> {
+        let trimmed = input.trim();
+        if !trimmed.contains("://") {
+            return Self::parse(trimmed);
+        }
+
+        let url = reqwest::Url::parse(trimmed).map_err(|_| EndpointError::MalformedUrl {
+            input: trimmed.to_string(),
+        })?;
+        let scheme = url.scheme();
+        if !scheme.eq_ignore_ascii_case("http") {
+            return Err(EndpointError::UnsupportedScheme {
+                scheme: scheme.to_string(),
+                input: trimmed.to_string(),
+            });
+        }
+
+        let authority = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest.split(['/', '?', '#']).next().unwrap_or(rest))
+            .unwrap_or_default();
+        if authority.contains('@') || !url.username().is_empty() || url.password().is_some() {
+            return Err(EndpointError::HasCredentials {
+                input: trimmed.to_string(),
+            });
+        }
+
+        let host = url
+            .host_str()
+            .ok_or(EndpointError::EmptyHost)?
+            .trim_matches(['[', ']']);
+        let authority_host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host.to_string()
+        };
+        let explicit_port = if authority.starts_with('[') {
+            authority
+                .find(']')
+                .and_then(|close| authority.get(close + 1..))
+                .and_then(|rest| rest.strip_prefix(':'))
+        } else {
+            authority
+                .rsplit_once(':')
+                .filter(|(host, _)| !host.contains(':'))
+                .map(|(_, port)| port)
+        };
+        let canonical = match explicit_port {
+            Some(port) => format!("{authority_host}:{port}"),
+            None => authority_host,
+        };
+        Self::parse(&canonical)
     }
 
     fn parse_bracketed_ipv6(input: &str) -> Result<Self, EndpointError> {
@@ -446,6 +515,43 @@ mod tests {
         assert_eq!(spec.host, "macmini.local");
         assert_eq!(spec.port, 11320);
         assert!(spec.port_was_explicit);
+    }
+
+    #[test]
+    fn add_input_accepts_http_urls_and_discards_path() {
+        let spec =
+            EndpointSpec::parse_add_input("http://192.168.183.143:11310/v2/status?x=1#fragment")
+                .unwrap();
+        assert_eq!(spec.host, "192.168.183.143");
+        assert_eq!(spec.port, 11310);
+        assert!(spec.port_was_explicit);
+    }
+
+    #[test]
+    fn add_input_preserves_missing_and_explicit_default_http_ports() {
+        let missing = EndpointSpec::parse_add_input("http://192.168.183.143/").unwrap();
+        assert_eq!(missing.port, DEFAULT_PORT);
+        assert!(!missing.port_was_explicit);
+
+        let explicit = EndpointSpec::parse_add_input("http://192.168.183.143:80/").unwrap();
+        assert_eq!(explicit.port, 80);
+        assert!(explicit.port_was_explicit);
+    }
+
+    #[test]
+    fn add_input_accepts_bracketed_ipv6_and_rejects_non_http_urls() {
+        let spec = EndpointSpec::parse_add_input("http://[fd00::10]:11310/").unwrap();
+        assert_eq!(spec.host, "fd00::10");
+        assert_eq!(spec.port, 11310);
+
+        assert!(matches!(
+            EndpointSpec::parse_add_input("https://host:11310/"),
+            Err(EndpointError::UnsupportedScheme { .. })
+        ));
+        assert!(matches!(
+            EndpointSpec::parse_add_input("http://user:password@host:11310/"),
+            Err(EndpointError::HasCredentials { .. })
+        ));
     }
 
     // --- Valid IPv6 parsing ---

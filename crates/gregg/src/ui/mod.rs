@@ -357,6 +357,17 @@ mod tests {
     }
 
     #[test]
+    fn render_offline_system_preserves_configured_ip() {
+        let mut config = test_config(&["web1"]);
+        config.systems[0].host = "192.168.183.143".into();
+        let mut state = AppState::from_config(&config);
+        apply_offline(&mut state, 0);
+        let output = render_state(&state, 80, 4);
+        assert!(output.contains("192.168.183.143:11310"), "{output}");
+        assert!(!output.contains("192.168.182.143"), "{output}");
+    }
+
+    #[test]
     fn render_pending_system() {
         let config = test_config(&["web1"]);
         let state = AppState::from_config(&config);

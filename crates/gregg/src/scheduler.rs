@@ -21,6 +21,15 @@ pub(crate) enum SchedulerRunError {
     ReceiverDropped,
 }
 
+/// Commands accepted by the systems poll scheduler.
+#[derive(Debug)]
+pub(crate) enum SchedulerCommand {
+    /// Poll the current endpoint list immediately.
+    Refresh,
+    /// Atomically replace the endpoint list and poll it immediately.
+    ReplaceEndpoints(Vec<Endpoint>),
+}
+
 /// Receiver and completion handle for an observed scheduler run.
 pub(crate) struct SchedulerRunHandle {
     pub(crate) batches: mpsc::Receiver<PollBatch>,
@@ -64,16 +73,15 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     /// Returns a receiver that yields [`PollBatch`]es. The loop runs
     /// until the `cancel` token is cancelled or the receiver is dropped.
     ///
-    /// The `refresh_rx` channel delivers immediate-refresh signals (e.g.
-    /// from Ctrl-R). When a signal arrives, a generation is started
-    /// immediately without waiting for the next periodic interval.
+    /// The command channel delivers immediate refreshes and endpoint
+    /// replacements. A replacement is applied before its next generation.
     pub fn run(
         self,
         endpoints: Vec<Endpoint>,
         cancel: CancellationToken,
-        refresh_rx: mpsc::Receiver<()>,
+        command_rx: mpsc::Receiver<SchedulerCommand>,
     ) -> mpsc::Receiver<PollBatch> {
-        self.run_observed(endpoints, cancel, refresh_rx).batches
+        self.run_observed(endpoints, cancel, command_rx).batches
     }
 
     /// Start a polling loop while retaining a handle for positive shutdown observation.
@@ -81,12 +89,12 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         self,
         endpoints: Vec<Endpoint>,
         cancel: CancellationToken,
-        refresh_rx: mpsc::Receiver<()>,
+        command_rx: mpsc::Receiver<SchedulerCommand>,
     ) -> SchedulerRunHandle {
         let (tx, rx) = mpsc::channel::<PollBatch>(4);
 
         let task =
-            tokio::spawn(async move { self.poll_loop(endpoints, tx, cancel, refresh_rx).await });
+            tokio::spawn(async move { self.poll_loop(endpoints, tx, cancel, command_rx).await });
 
         SchedulerRunHandle { batches: rx, task }
     }
@@ -107,18 +115,14 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     /// receiver.
     async fn poll_loop(
         self,
-        endpoints: Vec<Endpoint>,
+        mut endpoints: Vec<Endpoint>,
         tx: mpsc::Sender<PollBatch>,
         cancel: CancellationToken,
-        mut refresh_rx: mpsc::Receiver<()>,
+        mut command_rx: mpsc::Receiver<SchedulerCommand>,
     ) -> Result<(), SchedulerRunError> {
-        if endpoints.is_empty() {
-            return Ok(());
-        }
-
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let mut generation: u64 = 0;
-        let mut refresh_open = true;
+        let mut command_open = true;
 
         // Use a fixed-cadence interval so manual refresh does not reset
         // the periodic schedule. Skip missed ticks if a generation runs
@@ -126,16 +130,19 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         let mut interval = tokio::time::interval(self.refresh_interval);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-        // First generation is immediate (no initial sleep).
-        generation = generation.saturating_add(1);
-        let batch = self
-            .poll_generation(&endpoints, &semaphore, generation)
-            .await;
-        if tokio::select! {
-            result = tx.send(batch) => result.is_err(),
-            () = cancel.cancelled() => false,
-        } {
-            return Err(SchedulerRunError::ReceiverDropped);
+        // First generation is immediate when there are endpoints. An empty
+        // config keeps the scheduler alive so Ctrl-R can add systems.
+        if !endpoints.is_empty() {
+            generation = generation.saturating_add(1);
+            let batch = self
+                .poll_generation(&endpoints, &semaphore, generation)
+                .await;
+            if tokio::select! {
+                result = tx.send(batch) => result.is_err(),
+                () = cancel.cancelled() => false,
+            } {
+                return Err(SchedulerRunError::ReceiverDropped);
+            }
         }
 
         // Consume the interval's initial immediate tick so the next tick
@@ -148,11 +155,17 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
 
                 () = cancel.cancelled() => break,
 
-                // RefreshNow signal (Ctrl-R). Disabled permanently when
+                // Refresh/replacement commands. Disabled permanently when
                 // the channel closes to avoid busy-polling a closed receiver.
-                msg = refresh_rx.recv(), if refresh_open => {
+                msg = command_rx.recv(), if command_open => {
                     match msg {
-                        Some(()) => {
+                        Some(command) => {
+                            if let SchedulerCommand::ReplaceEndpoints(replacement) = command {
+                                endpoints = replacement;
+                            }
+                            if endpoints.is_empty() {
+                                continue;
+                            }
                             generation = generation.saturating_add(1);
                             let batch = self
                                 .poll_generation(&endpoints, &semaphore, generation)
@@ -166,22 +179,24 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                         }
                         None => {
                             // Channel closed — disable this branch permanently.
-                            refresh_open = false;
+                            command_open = false;
                         }
                     }
                 }
 
                 // Periodic tick at the fixed cadence.
                 _ = interval.tick() => {
-                    generation = generation.saturating_add(1);
-                    let batch = self
-                        .poll_generation(&endpoints, &semaphore, generation)
-                        .await;
-                    if tokio::select! {
-                        result = tx.send(batch) => result.is_err(),
-                        () = cancel.cancelled() => false,
-                    } {
-                        return Err(SchedulerRunError::ReceiverDropped);
+                    if !endpoints.is_empty() {
+                        generation = generation.saturating_add(1);
+                        let batch = self
+                            .poll_generation(&endpoints, &semaphore, generation)
+                            .await;
+                        if tokio::select! {
+                            result = tx.send(batch) => result.is_err(),
+                            () = cancel.cancelled() => false,
+                        } {
+                            return Err(SchedulerRunError::ReceiverDropped);
+                        }
                     }
                 }
             }
@@ -257,7 +272,10 @@ mod tests {
     use tokio::net::TcpListener;
 
     /// Helper: create a channel pair for refresh signals.
-    fn refresh_channel() -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
+    fn refresh_channel() -> (
+        mpsc::Sender<SchedulerCommand>,
+        mpsc::Receiver<SchedulerCommand>,
+    ) {
         mpsc::channel(4)
     }
 
@@ -344,6 +362,43 @@ mod tests {
             .unwrap();
         assert_eq!(batch2.generation, 2);
 
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn replacement_command_polls_only_the_replacement_endpoint() {
+        let old = endpoint_for_url(&valid_snapshot_server().await);
+        let replacement = endpoint_for_url(&valid_snapshot_server().await);
+        assert_ne!(old.port, replacement.port);
+
+        let scheduler = PollScheduler::new(
+            FakeClock::new(std::time::Instant::now()),
+            HttpClient::new(Duration::from_secs(5)),
+            Duration::from_secs(60),
+            1,
+        );
+        let cancel = CancellationToken::new();
+        let (commands, command_rx) = refresh_channel();
+        let mut batches = scheduler.run(vec![old.clone()], cancel.clone(), command_rx);
+
+        let first = tokio::time::timeout(Duration::from_secs(5), batches.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.results[0].endpoint, old);
+
+        commands
+            .send(SchedulerCommand::ReplaceEndpoints(
+                vec![replacement.clone()],
+            ))
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(5), batches.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.generation, 2);
+        assert_eq!(second.results[0].endpoint, replacement);
         cancel.cancel();
     }
 
@@ -447,18 +502,29 @@ mod tests {
 
     #[tokio::test]
     async fn empty_endpoint_list() {
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
         let client = HttpClient::new(Duration::from_secs(5));
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
         let scheduler = PollScheduler::new(clock, client, Duration::from_millis(10), 4);
         let cancel = CancellationToken::new();
-        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let (refresh_tx, refresh_rx) = refresh_channel();
         let mut rx = scheduler.run(vec![], cancel.clone(), refresh_rx);
 
         // Should not produce any batches.
         let result = tokio::time::timeout(Duration::from_millis(100), rx.recv()).await;
-        assert!(result.unwrap().is_none());
+        assert!(result.is_err());
+
+        refresh_tx
+            .send(SchedulerCommand::ReplaceEndpoints(vec![ep]))
+            .await
+            .unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .is_some());
 
         cancel.cancel();
     }
@@ -918,7 +984,7 @@ mod tests {
         assert_eq!(batch1.generation, 1);
 
         // Send a RefreshNow signal.
-        refresh_tx.send(()).await.unwrap();
+        refresh_tx.send(SchedulerCommand::Refresh).await.unwrap();
 
         // The scheduler should produce a second batch promptly.
         let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -995,7 +1061,7 @@ mod tests {
         assert_eq!(batch1.generation, 1);
 
         // Send a single RefreshNow signal.
-        refresh_tx.send(()).await.unwrap();
+        refresh_tx.send(SchedulerCommand::Refresh).await.unwrap();
 
         // Should receive exactly one additional batch (generation 2).
         let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -1102,7 +1168,7 @@ mod tests {
         let _t2 = std::time::Instant::now();
 
         // Send a manual refresh immediately after generation 2.
-        refresh_tx.send(()).await.unwrap();
+        refresh_tx.send(SchedulerCommand::Refresh).await.unwrap();
 
         // Should receive the manual refresh batch (generation 3) promptly.
         let batch3 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
@@ -1165,7 +1231,7 @@ mod tests {
 
         // Send 3 rapid refresh signals.
         for _ in 0..3 {
-            refresh_tx.send(()).await.unwrap();
+            refresh_tx.send(SchedulerCommand::Refresh).await.unwrap();
         }
 
         // Should receive exactly 3 additional batches (generations 2-4).

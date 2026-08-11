@@ -32,6 +32,7 @@ requires CRLF termination and accepts only HTTP/1.0 or HTTP/1.1 status 200:
 
 ```sh
 greggd croncheck
+greggd configprint
 greggd version
 ```
 
@@ -46,6 +47,10 @@ Default config path:
 - **Windows:** `%ProgramData%\gregg\greggd.toml`
 
 Override the default with `--config PATH`.
+
+`configprint` is read-only and prints exactly the configured bind address as a
+canonical socket address, such as `0.0.0.0:11310` or `[::]:11310`. It does not
+probe, bind, start, stop, or modify the daemon.
 
 ## Network
 

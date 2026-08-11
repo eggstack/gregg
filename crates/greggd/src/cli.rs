@@ -57,6 +57,8 @@ pub enum Command {
     Restart,
     /// Probe the daemon health endpoint without changing process state.
     Croncheck,
+    /// Print the configured bind address without probing or mutating state.
+    Configprint,
     /// Update the bind address (applies on the next daemon start).
     Host {
         /// The new IPv4 or IPv6 address to bind to.
@@ -226,6 +228,12 @@ pub fn croncheck_target(config: &Config) -> SocketAddr {
     SocketAddr::new(probe_address(config.host), config.port)
 }
 
+/// Return the configured bind address in canonical socket-address form.
+#[must_use]
+pub fn config_address(config: &Config) -> SocketAddr {
+    SocketAddr::new(config.host, config.port)
+}
+
 /// Probe `/v2/healthz`, accepting only a syntactically valid HTTP 200 status.
 pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
     const TIMEOUT: Duration = Duration::from_millis(750);
@@ -315,6 +323,11 @@ pub fn dispatch_with_config_intent(
             println!("greggd healthy");
             Ok(())
         }
+        Command::Configprint => {
+            let config = load_config(config_path, explicit)?;
+            println!("{}", config_address(&config));
+            Ok(())
+        }
         Command::Host { address } => mutate_config(config_path, explicit, |config| {
             config.host = *address;
         }),
@@ -345,7 +358,7 @@ mod native_tests {
 
     #[test]
     fn parser_accepts_run_croncheck_mutations_and_version_but_not_windows_lifecycle() {
-        for args in ["run", "croncheck", "version"] {
+        for args in ["run", "croncheck", "configprint", "version"] {
             let argv = if args == "host" {
                 vec!["greggd", "host", "127.0.0.1"]
             } else if args == "port" {
@@ -376,6 +389,34 @@ mod native_tests {
             probe_address("192.0.2.1".parse::<IpAddr>().unwrap()),
             "192.0.2.1".parse::<IpAddr>().unwrap()
         );
+    }
+
+    #[test]
+    fn config_address_preserves_wildcards_and_formats_ipv6() {
+        let mut config = Config::default();
+        assert_eq!(config_address(&config).to_string(), "0.0.0.0:11310");
+        config.host = "fd00::10".parse().unwrap();
+        config.port = 11320;
+        assert_eq!(config_address(&config).to_string(), "[fd00::10]:11320");
+    }
+
+    #[test]
+    fn configprint_uses_default_for_missing_implicit_config() {
+        let path =
+            std::env::temp_dir().join(format!("greggd-configprint-{}.toml", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        dispatch_with_config_intent(&Command::Configprint, &path, false).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn configprint_rejects_missing_explicit_config() {
+        let path = std::env::temp_dir().join(format!(
+            "greggd-configprint-missing-{}.toml",
+            std::process::id(),
+        ));
+        let _ = std::fs::remove_file(&path);
+        assert!(dispatch_with_config_intent(&Command::Configprint, &path, true).is_err());
     }
 
     #[test]

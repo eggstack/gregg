@@ -84,8 +84,8 @@ loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 ## CLI and configuration
 
 The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
-for structured argument parsing. Subcommands include `run`, `croncheck`, `host`,
-`port`, and `version`. Windows also exposes `start`, `stop`, and `restart`
+for structured argument parsing. Subcommands include `run`, `croncheck`,
+`configprint`, `host`, `port`, and `version`. Windows also exposes `start`, `stop`, and `restart`
 through native SCM. Unix config mutations only persist atomically; Unix service
 lifecycle is owned by optional external packaging.
 
@@ -124,10 +124,12 @@ Cross-process locking:
 - Windows: `LockFileEx` exclusive lock on `<config>.lock`
 - Other platforms: in-process `Mutex` only
 
-The endpoint parser lives in `crates/gregg/src/endpoint.rs`. It supports IPv4,
-IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional ports. The parser
-rejects URL schemes, paths, credentials, and malformed input. Host-only removal
-semantics are supported for the `remove` command.
+The endpoint parser lives in `crates/gregg/src/endpoint.rs`. Canonical parsing
+supports IPv4, IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional
+ports, while rejecting URL schemes, paths, credentials, and malformed input.
+`gregg add` has a separate HTTP URL convenience adapter that persists only the
+normalized host and explicit-or-default port. Host-only removal semantics are
+supported for the `remove` command.
 
 ## Client polling and state engine
 
@@ -154,7 +156,7 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
   geometry; all paging, viewport, and layout calculations use the same
   state-aware height function.
 - `action.rs` — `Action` enum for typed state transitions (selection navigation,
-  page scrolling, transient view/drive expansion, config reload, resize, quit).
+  page scrolling, transient view/drive expansion, resize, quit).
 
 The `run_tui` async function in `main.rs` wires the config store, HTTP client,
 scheduler, state reducer, terminal lifecycle, crossterm event stream, and
@@ -184,8 +186,12 @@ once per 60 seconds while active. Generation numbers and cancellation make
 superseded results safe for the reducer. Focused paused-time worker tests cover generation retention, request-relative cadence, bounded command delivery, inactive gating, and prompt cancellation. `main.rs` constructs this worker only
 for configured EggPool state, activates it when the pane is visible, routes
 pane/period/manual-refresh actions to it, applies optional results without
-affecting greggd polling, and cancels it during TUI shutdown. Configuration file
-Configuration file watching and live configuration reload are not implemented. CLI configuration commands use the normal read-edit-write path.
+affecting greggd polling, and cancels it during TUI shutdown. The Systems-pane
+`Ctrl-R` boundary reloads the already-resolved client config, reconciles stable
+system IDs, replaces the scheduler endpoint set, and polls immediately. Failed
+reloads retain the last-known-good state. There is no filesystem watcher or
+continuous hot-reload task; CLI configuration commands use the normal
+read-edit-write path.
 
 ## Client TUI
 

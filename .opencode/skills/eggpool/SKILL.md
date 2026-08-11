@@ -76,7 +76,8 @@ gregg eggpool remove <host>
 - `h`/`l` (and arrow keys): cycle between Systems and EggPool panes
 - `j`/`Down`: select next window (`1h`, `24h`, `7d`, `30d`)
 - `k`/`Up`: select previous window
-- `Ctrl-R`: refresh only the visible pane; EggPool refreshes are active-only
+- `Ctrl-R`: on Systems, the client reloads its resolved system config and
+  refreshes endpoints; on EggPool, refresh remains active-only and pane-local
 
 ## Rendering
 

@@ -72,6 +72,16 @@ passes locally, the distinction is the cause.
   on a separate bounded channel with generation checks; do not replace either
   state machine merely to reduce line count without a smaller behaviorally
   equivalent design.
+- `gregg` `Ctrl-R` on the Systems pane is the explicit config reload boundary:
+  reload the already-resolved client `ConfigStore`, reconcile stable system IDs,
+  replace the scheduler endpoint set, and poll immediately. Invalid reloads
+  preserve the last-known-good state; there is no filesystem watcher. EggPool
+  refresh behavior remains pane-local.
+- `gregg add` accepts canonical host/port input plus HTTP URL convenience input,
+  but persists only normalized `host` and `port`; HTTPS is not accepted or
+  downgraded to HTTP.
+- `greggd configprint` is read-only and prints only the configured canonical
+  bind `host:port`; it must not probe, bind, mutate config, or manage services.
 - Reusable `greggd` library/runtime code must return errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.

@@ -19,7 +19,7 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
-Plan 078 is the one active product-correctness phase. It fixes stale client endpoint state at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. This is new product work discovered during live testing, not a closure-only continuation of Plan 077.
+Plan 078 implements the stale client endpoint correction at the existing `Ctrl-R` boundary, adds HTTP URL input convenience to `gregg add`, and adds read-only `greggd configprint`. The repository implementation and local CI checks are complete; the required real-host smoke reached the `.182` -> `.183` address switch, but the external `.183` daemon was unavailable during final verification.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ Plan 078 is the one active product-correctness phase. It fixes stale client endp
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 | [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
-| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | planned; active |
+| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | implemented; external live-host smoke pending |
 
 Dependency order:
 

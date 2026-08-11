@@ -58,7 +58,7 @@ pub enum Command {
     /// gregg add 10.0.0.5:8080 --replace
     /// ```
     Add {
-        /// Endpoint in host:port format (default port 11310).
+        /// Endpoint in host:port or HTTP URL form (default port 11310).
         endpoint: String,
         /// Optional display name for this endpoint.
         #[arg(long)]
@@ -409,7 +409,7 @@ fn cmd_add(
         crate::endpoint::validate_name(n)?;
     }
 
-    let spec = EndpointSpec::parse(endpoint_str)?;
+    let spec = EndpointSpec::parse_add_input(endpoint_str)?;
 
     let result = store.mutate_with_result(|config| {
         let resolved_port = if spec.port_was_explicit {
@@ -928,6 +928,49 @@ mod tests {
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems[0].port, 11310);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_http_url_persists_only_canonical_authority() {
+        let dir = tmp_dir("add_http_url");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(
+            &store,
+            "http://192.168.183.143:11310/v2/status",
+            None,
+            false,
+        )
+        .unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].host, "192.168.183.143");
+        assert_eq!(config.systems[0].port, 11310);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_http_url_without_port_uses_configured_default_and_keeps_explicit_80() {
+        let dir = tmp_dir("add_http_ports");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        store
+            .mutate(|config| {
+                config.default_port = 11320;
+                Ok(())
+            })
+            .unwrap();
+        cmd_add(&store, "http://default.example/", None, false).unwrap();
+        cmd_add(&store, "http://explicit.example:80/", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].port, 11320);
+        assert_eq!(config.systems[1].port, 80);
 
         let _ = fs::remove_dir_all(&dir);
     }

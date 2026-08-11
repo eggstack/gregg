@@ -14,7 +14,7 @@ use crate::clock::RealClock;
 use crate::config::{Config, SystemEntry};
 use crate::endpoint::Endpoint;
 use crate::poller::PollOutcome;
-use crate::scheduler::PollScheduler;
+use crate::scheduler::{PollScheduler, SchedulerCommand};
 use crate::state::{AppState, Reachability};
 
 struct FixtureProcess {
@@ -266,7 +266,10 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         );
     }
 
-    refresh_tx.send(()).await.expect("send recovery refresh");
+    refresh_tx
+        .send(SchedulerCommand::Refresh)
+        .await
+        .expect("send recovery refresh");
     let second = timeout(Duration::from_secs(5), batches.recv())
         .await
         .expect("recovery generation timed out")

@@ -93,10 +93,10 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         ctrl_c_cancel.cancel();
     });
 
-    let (refresh_tx, refresh_rx) = tokio::sync::mpsc::channel::<()>(4);
+    let (scheduler_tx, scheduler_rx) = tokio::sync::mpsc::channel::<scheduler::SchedulerCommand>(4);
 
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
-    let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), refresh_rx));
+    let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), scheduler_rx));
 
     let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone());
     if app_state.active_pane == state::Pane::Eggpool {
@@ -134,7 +134,8 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         &mut batch_rx,
         &mut event_rx,
         &cancel,
-        &refresh_tx,
+        &scheduler_tx,
+        &store,
         eggpool_commands.as_ref(),
         &mut eggpool_results,
     )
@@ -157,7 +158,8 @@ async fn run_event_loop(
     batch_rx: &mut Option<tokio::sync::mpsc::Receiver<poller::PollBatch>>,
     event_rx: &mut tokio::sync::mpsc::Receiver<event::Event>,
     cancel: &tokio_util::sync::CancellationToken,
-    refresh_tx: &tokio::sync::mpsc::Sender<()>,
+    scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
+    store: &config::ConfigStore,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
     eggpool_results: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -204,10 +206,11 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
-                            dispatch_action(
+                            dispatch_action_with_store(
                                 app_state,
                                 action,
-                                refresh_tx,
+                                scheduler_tx,
+                                Some(store),
                                 eggpool_commands,
                             ).await;
                         }
@@ -241,10 +244,21 @@ async fn recv_eggpool_result(
     }
 }
 
+#[cfg(test)]
 async fn dispatch_action(
     app_state: &mut state::AppState,
     action: action::Action,
-    refresh_tx: &tokio::sync::mpsc::Sender<()>,
+    scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
+    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+) {
+    dispatch_action_with_store(app_state, action, scheduler_tx, None, eggpool_commands).await;
+}
+
+async fn dispatch_action_with_store(
+    app_state: &mut state::AppState,
+    action: action::Action,
+    scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
+    store: Option<&config::ConfigStore>,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
 ) {
     let is_refresh = matches!(action, action::Action::RefreshNow);
@@ -254,7 +268,7 @@ async fn dispatch_action(
 
     let Some(commands) = eggpool_commands else {
         if is_refresh {
-            let _ = refresh_tx.try_send(());
+            refresh_systems(app_state, scheduler_tx, store);
         }
         return;
     };
@@ -270,7 +284,7 @@ async fn dispatch_action(
                 .await;
             }
         } else {
-            let _ = refresh_tx.try_send(());
+            refresh_systems(app_state, scheduler_tx, store);
         }
         return;
     }
@@ -306,6 +320,34 @@ async fn dispatch_action(
     }
 }
 
+fn refresh_systems(
+    app_state: &mut state::AppState,
+    scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
+    store: Option<&config::ConfigStore>,
+) {
+    let Some(store) = store else {
+        let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
+        return;
+    };
+
+    match store.load_existing() {
+        Ok(config) => {
+            app_state.reconcile_systems(&config);
+            let endpoints = config
+                .systems
+                .iter()
+                .map(config::SystemEntry::to_endpoint)
+                .collect();
+            let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints));
+        }
+        Err(_) => {
+            // Keep the last-known-good state when an external edit is
+            // temporarily missing, malformed, or invalid.
+            let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
+        }
+    }
+}
+
 async fn send_eggpool_command(
     app_state: &mut state::AppState,
     commands: &tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>,
@@ -320,6 +362,7 @@ async fn send_eggpool_command(
 mod tests {
     use super::*;
     use crate::config::{Config, EggpoolEntry, EggpoolScheme, SystemEntry};
+    use std::fs;
 
     fn mixed_state() -> state::AppState {
         AppStateBuilder::mixed().build()
@@ -415,8 +458,69 @@ mod tests {
             Some(&commands),
         )
         .await;
-        assert!(matches!(refresh_rx.try_recv(), Ok(())));
+        assert!(matches!(
+            refresh_rx.try_recv(),
+            Ok(scheduler::SchedulerCommand::Refresh)
+        ));
         assert!(received.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn systems_refresh_reloads_the_same_store_and_replaces_endpoints() {
+        let dir = std::env::temp_dir().join(format!("gregg-main-reload-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gregg.toml");
+        let store = config::ConfigStore::new(path.clone());
+
+        let mut old_config = Config::default();
+        old_config.systems.push(SystemEntry {
+            id: "stable".into(),
+            host: "192.168.182.143".into(),
+            port: 11310,
+            name: None,
+        });
+        old_config.write_atomic(&path).unwrap();
+        let mut app = state::AppState::from_config(&old_config);
+
+        let mut new_config = old_config.clone();
+        new_config.systems[0].host = "192.168.183.143".into();
+        new_config.write_atomic(&path).unwrap();
+
+        let (commands, mut received) = tokio::sync::mpsc::channel(2);
+        dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        )
+        .await;
+
+        assert_eq!(app.systems[0].endpoint.host, "192.168.183.143");
+        assert_eq!(app.systems[0].reachability, state::Reachability::Pending);
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::ReplaceEndpoints(endpoints))
+                if endpoints[0].host == "192.168.183.143"
+        ));
+
+        fs::write(&path, "not valid toml").unwrap();
+        dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        )
+        .await;
+        assert_eq!(app.systems[0].endpoint.host, "192.168.183.143");
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::Refresh)
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -53,6 +53,7 @@ cargo install gregg
 gregg add 192.168.1.10
 gregg add 192.168.1.11
 gregg add myserver.local
+gregg add http://192.168.1.10:11310/
 gregg refresh 30
 gregg
 ```
@@ -84,6 +85,7 @@ greggd host my-lab-server          # set the display name
 greggd port 11311                  # change the listen port
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
 greggd croncheck                   # bounded /v2/healthz probe; never starts the daemon
+greggd configprint                 # print the configured bind address, e.g. 0.0.0.0:11310
 greggd version                     # print the daemon version
 ```
 
@@ -98,6 +100,7 @@ The client stores its config at:
 gregg                          # launch the TUI
 gregg add 192.168.1.10         # add an endpoint
 gregg add server.local:11310   # add with custom port
+gregg add http://server.local:11310/ # HTTP URL input; only host and port are persisted
 gregg list                     # list configured endpoints
 gregg remove 192.168.1.10      # remove an endpoint
 gregg refresh 30               # set polling interval (seconds)
@@ -111,7 +114,7 @@ gregg version                  # print the client version
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
 - `e`: expand/collapse drives for the selected system
-- `Ctrl-R`: refresh the visible pane
+- `Ctrl-R`: reload the current Systems config and poll its endpoints, or refresh EggPool
 
 ## Display
 

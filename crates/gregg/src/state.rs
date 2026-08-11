@@ -147,21 +147,7 @@ impl AppState {
     /// (in display order) is selected if any systems exist.
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
-        let systems: Vec<SystemState> = config
-            .systems
-            .iter()
-            .map(|entry| SystemState {
-                id: entry.id.clone(),
-                endpoint: entry.to_endpoint(),
-                configured_name: entry.name.clone(),
-                reachability: Reachability::Pending,
-                latest: None,
-                last_success_at: None,
-                last_attempt_at: None,
-                latency: None,
-                last_error: None,
-            })
-            .collect();
+        let systems: Vec<SystemState> = config.systems.iter().map(system_from_entry).collect();
 
         let selected_id = systems.first().map(|s| s.id.clone());
         let viewport_top_id = selected_id.clone();
@@ -194,6 +180,50 @@ impl AppState {
         }
     }
 
+    /// Reconcile the configured system endpoint list while retaining safe
+    /// state for unchanged stable IDs.
+    pub fn reconcile_systems(&mut self, config: &Config) {
+        let old_systems = std::mem::take(&mut self.systems);
+        let old_selected = self.selected_id.clone();
+        let old_by_id = old_systems
+            .into_iter()
+            .map(|system| (system.id.clone(), system))
+            .collect::<std::collections::HashMap<_, _>>();
+
+        self.systems = config
+            .systems
+            .iter()
+            .map(|entry| {
+                let Some(mut old) = old_by_id.get(&entry.id).cloned() else {
+                    return system_from_entry(entry);
+                };
+
+                let endpoint = entry.to_endpoint();
+                if old.endpoint.host == endpoint.host && old.endpoint.port == endpoint.port {
+                    old.endpoint = endpoint;
+                    old.configured_name.clone_from(&entry.name);
+                    old
+                } else {
+                    system_from_entry(entry)
+                }
+            })
+            .collect();
+
+        self.selected_id = old_selected
+            .filter(|id| self.systems.iter().any(|system| &system.id == id))
+            .or_else(|| self.systems.first().map(|system| system.id.clone()));
+        self.viewport_top_id = self
+            .viewport_top_id
+            .take()
+            .filter(|id| self.systems.iter().any(|system| &system.id == id))
+            .or_else(|| self.selected_id.clone());
+        ensure_selected_visible(self);
+        if self.systems.is_empty() {
+            self.selected_id = None;
+            self.viewport_top_id = None;
+        }
+    }
+
     /// Apply a poll batch to the state.
     ///
     /// Rejects batches whose generation is less than or equal to the
@@ -206,6 +236,14 @@ impl AppState {
 
         for result in &batch.results {
             if let Some(system) = self.systems.iter_mut().find(|s| s.id == result.system_id) {
+                // A stable ID may be retained while its configured target
+                // changes. Results from the superseded target are stale even
+                // when their scheduler generation is otherwise current.
+                if system.endpoint.host != result.endpoint.host
+                    || system.endpoint.port != result.endpoint.port
+                {
+                    continue;
+                }
                 match &result.outcome {
                     PollOutcome::Cancelled => {}
                     PollOutcome::Online(snapshot) => {
@@ -464,6 +502,20 @@ impl AppState {
     }
 }
 
+fn system_from_entry(entry: &crate::config::SystemEntry) -> SystemState {
+    SystemState {
+        id: entry.id.clone(),
+        endpoint: entry.to_endpoint(),
+        configured_name: entry.name.clone(),
+        reachability: Reachability::Pending,
+        latest: None,
+        last_success_at: None,
+        last_attempt_at: None,
+        latency: None,
+        last_error: None,
+    }
+}
+
 /// Return the full row height for a system entry in the current view.
 #[must_use]
 pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
@@ -692,6 +744,141 @@ mod tests {
             assert_eq!(system.reachability, Reachability::Pending);
             assert!(system.latest.is_none());
         }
+    }
+
+    #[test]
+    fn from_config_preserves_configured_endpoint_host_exactly() {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "exact".into(),
+            host: "192.168.183.143".into(),
+            port: 11310,
+            name: None,
+        });
+
+        let state = AppState::from_config(&config);
+        assert_eq!(state.systems[0].endpoint.host, "192.168.183.143");
+    }
+
+    #[test]
+    fn reconcile_systems_replaces_targets_preserves_unchanged_state_and_repairs_ids() {
+        let old_config = Config {
+            systems: vec![
+                SystemEntry {
+                    id: "changed".into(),
+                    host: "192.168.182.143".into(),
+                    port: 11310,
+                    name: Some("Old".into()),
+                },
+                SystemEntry {
+                    id: "same".into(),
+                    host: "same.local".into(),
+                    port: 11311,
+                    name: Some("Same".into()),
+                },
+                SystemEntry {
+                    id: "removed".into(),
+                    host: "removed.local".into(),
+                    port: 11312,
+                    name: None,
+                },
+            ],
+            ..Config::default()
+        };
+        let mut state = AppState::from_config(&old_config);
+        state.selected_id = Some("removed".into());
+
+        let first_batch = PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: state
+                .systems
+                .iter()
+                .take(2)
+                .map(|system| crate::poller::PollResult {
+                    system_id: system.id.clone(),
+                    endpoint: system.endpoint.clone(),
+                    outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                    latency: Duration::from_millis(25),
+                })
+                .collect(),
+        };
+        state.apply_batch(&first_batch);
+        state.systems[0].last_error = Some(PollOutcome::Timeout);
+
+        let retained_snapshot = state.systems[1].latest.clone();
+        let retained_success = state.systems[1].last_success_at;
+        let new_config = Config {
+            systems: vec![
+                SystemEntry {
+                    id: "changed".into(),
+                    host: "192.168.183.143".into(),
+                    port: 11310,
+                    name: Some("New".into()),
+                },
+                SystemEntry {
+                    id: "same".into(),
+                    host: "same.local".into(),
+                    port: 11311,
+                    name: Some("Renamed".into()),
+                },
+                SystemEntry {
+                    id: "added".into(),
+                    host: "added.local".into(),
+                    port: 11313,
+                    name: None,
+                },
+            ],
+            ..old_config.clone()
+        };
+
+        state.reconcile_systems(&new_config);
+
+        assert_eq!(state.systems.len(), 3);
+        assert_eq!(state.systems[0].endpoint.host, "192.168.183.143");
+        assert_eq!(state.systems[0].configured_name.as_deref(), Some("New"));
+        assert_eq!(state.systems[0].reachability, Reachability::Pending);
+        assert!(state.systems[0].latest.is_none());
+        assert!(state.systems[0].last_success_at.is_none());
+        assert!(state.systems[0].last_attempt_at.is_none());
+        assert!(state.systems[0].latency.is_none());
+        assert!(state.systems[0].last_error.is_none());
+
+        assert_eq!(state.systems[1].configured_name.as_deref(), Some("Renamed"));
+        assert_eq!(state.systems[1].reachability, Reachability::Online);
+        assert_eq!(state.systems[1].latest, retained_snapshot);
+        assert_eq!(state.systems[1].last_success_at, retained_success);
+        assert_eq!(state.selected_id.as_deref(), Some("changed"));
+        assert_eq!(state.viewport_top_id.as_deref(), Some("changed"));
+        assert_eq!(state.systems[2].id, "added");
+        assert_eq!(state.systems[2].reachability, Reachability::Pending);
+    }
+
+    #[test]
+    fn apply_batch_rejects_result_from_superseded_endpoint() {
+        let mut config = test_config_with_ids(&["a"]);
+        config.systems[0].host = "new.local".into();
+        let mut state = AppState::from_config(&config);
+        let old_endpoint = Endpoint::new("old.local".into(), 11310, None);
+        state.systems[0].endpoint = old_endpoint.clone();
+        state.reconcile_systems(&config);
+
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: old_endpoint,
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(1),
+            }],
+        });
+
+        assert_eq!(state.systems[0].endpoint.host, "new.local");
+        assert_eq!(state.systems[0].reachability, Reachability::Pending);
+        assert!(state.systems[0].latest.is_none());
     }
 
     #[test]

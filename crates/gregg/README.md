@@ -22,6 +22,7 @@ Manage endpoints:
 ```sh
 gregg add 192.168.1.10
 gregg add deadpool.local:11320
+gregg add http://192.168.1.10:11310/
 gregg list
 gregg remove 192.168.1.10
 gregg refresh 30
@@ -38,7 +39,7 @@ gregg edit
 | `l` / Right | Next view |
 | `v` | Toggle Normal/Condensed Systems view |
 | `e` | Expand or collapse selected-system drives |
-| `Ctrl-R` | Refresh the active pane |
+| `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 
 ## Requirements
 

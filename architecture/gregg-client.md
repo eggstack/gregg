@@ -32,7 +32,7 @@ renders a Ratatui-based terminal UI.
 |--------|------|---------|
 | `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, generation-based concurrency |
-| `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS |
+| `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing plus HTTP URL adaptation for `add` |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption |
 
@@ -109,6 +109,7 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 
 **Scheduler** (`scheduler.rs`):
 - Produces `PollBatch`es on a configurable interval
+- Accepts bounded `Refresh` and atomic endpoint-replacement commands; a replacement polls immediately
 - Spawns one isolated poll task per endpoint; a semaphore bounds active polls
 - A task panic is converted into that endpoint's `Cancelled` result
 - Generation numbers increase monotonically; stale batches rejected
@@ -167,7 +168,7 @@ condensed = 1 row). Selected system is always visible.
 | `e` | Toggle drive expansion |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
-| `Ctrl-R` | Refresh now |
+| `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 
 ### Width degradation
@@ -227,7 +228,7 @@ Platform defaults:
 
 | Command | Purpose |
 |---------|---------|
-| `add <host:port>` | Add endpoint (with optional name) |
+| `add <host:port or http://URL>` | Add endpoint (with optional name); persist only host and port |
 | `list` | List configured endpoints |
 | `remove <host:port>` | Remove endpoint(s) |
 | `refresh` | Force refresh all endpoints |
