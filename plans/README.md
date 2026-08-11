@@ -17,9 +17,9 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 ## Roadmap status
 
-Plans 066-077 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
+Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
-Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Post-implementation review found one remaining bounded-channel correctness edge: successful config reconciliation can currently be followed by a silently dropped scheduler `ReplaceEndpoints` command when the command channel is full. Plan 079 is the single active corrective phase to make replacement delivery reliable and to correct Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
+Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation. No corrective phase remains active.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -35,8 +35,8 @@ Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-
 | [`075-configured-name-and-windows-hostname-correction.md`](075-configured-name-and-windows-hostname-correction.md) | Remove the native Windows hostname NUL and honor configured daemon names in foreground and SCM modes | complete; CI run `31189587467` |
 | [`076-native-runtime-croncheck-and-version-correction.md`](076-native-runtime-croncheck-and-version-correction.md) | Separate Unix foreground runtime, health probing, config mutation, and version commands | complete; implementation and corrected strict-parser verification recorded |
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
-| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | implemented; follow-up delivery edge tracked by 079 |
-| [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | planned; active |
+| [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete; historical wording corrected by 079 |
+| [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | complete; implementation `49c4c7d` |
 
 Dependency order:
 
@@ -72,7 +72,7 @@ Manual release preflight remains:
 ./scripts/check-local.sh --release
 ```
 
-For Plan 079, focused deterministic local verification is sufficient in addition to the default local check:
+For Plan 079, focused deterministic local verification was run in addition to the default local check:
 
 ```text
 cargo fmt --all -- --check
@@ -83,9 +83,9 @@ cargo test -p gregg --bin gregg
 ./scripts/check-local.sh
 ```
 
-The key Plan 079 proof is a bounded scheduler-command channel test that fills capacity, performs a valid endpoint reload, and demonstrates that `ReplaceEndpoints` is delivered rather than silently dropped. A second A -> B -> C test must prove convergence to the latest accepted replacement under bounded capacity.
+The key Plan 079 proof is a bounded scheduler-command channel test that fills capacity, performs a valid endpoint reload, and demonstrates that `ReplaceEndpoints` is delivered rather than silently dropped. A second A -> B -> C test proves convergence to the latest accepted replacement under bounded capacity.
 
-A second external private-LAN smoke is optional for Plan 079 and must not determine completion. Plan 078 already demonstrated the address-replacement path against a live daemon in the environment available at that time. Plan 079 corrects command-delivery semantics deterministically and corrects the record to preserve both the originating `.183`-working/`.182`-stale report and the later `.182`-reachable smoke environment.
+A second external private-LAN smoke was optional for Plan 079 and did not determine completion. Plan 078 already demonstrated the address-replacement path against a live daemon in the environment available at that time. Plan 079 corrected command-delivery semantics deterministically and corrected the record to preserve both the originating `.183`-working/`.182`-stale report and the later `.182`-reachable smoke environment.
 
 The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 079 does not change SCM behavior or add CI coverage.
 
@@ -111,9 +111,9 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-## Active scope control for Plan 079
+## Closed scope record for Plan 079
 
-Allowed:
+Completed:
 
 - make successful Systems endpoint replacement delivery reliable through the existing bounded scheduler command channel;
 - use bounded async backpressure or an equivalently small latest-replacement mechanism;
@@ -123,7 +123,7 @@ Allowed:
 - correct Plan 078 so it separately records the originating `.183`-working/`.182`-stale report and the later `.182`-reachable closure environment;
 - focused local checks and direct planning-record updates.
 
-Not allowed:
+Preserved exclusions:
 
 - an unbounded scheduler command channel;
 - filesystem watcher libraries or continuous hot reload;

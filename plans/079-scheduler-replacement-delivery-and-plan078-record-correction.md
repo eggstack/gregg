@@ -1,6 +1,6 @@
 # Phase 079: reliable scheduler endpoint replacement and Plan 078 record correction
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 078 implementation through `18aebb1edbbbfe39924709257ec127a59dee689a`.
 
@@ -391,54 +391,75 @@ After code/tests pass:
 
 ### Reliable replacement delivery
 
-- [ ] Successful Systems config reload cannot silently lose `ReplaceEndpoints` because the scheduler command channel is full.
-- [ ] Bounded channel capacity is retained; no unbounded command queue is introduced.
-- [ ] A full channel produces bounded backpressure or an equivalently reliable latest-replacement mechanism.
-- [ ] After a valid reload is committed, scheduler and `AppState` cannot remain permanently divergent because of a dropped replacement command.
-- [ ] A closed scheduler command receiver is handled explicitly rather than ignored.
-- [ ] Endpoint replacement still triggers an immediate poll once accepted by the scheduler.
-- [ ] Periodic polling after replacement uses the replacement endpoint set.
-- [ ] Existing host/port stale-result rejection remains intact.
-- [ ] Existing generation monotonicity remains intact.
-- [ ] Empty endpoint-list replacement remains supported.
+- [x] Successful Systems config reload cannot silently lose `ReplaceEndpoints` because the scheduler command channel is full.
+- [x] Bounded channel capacity is retained; no unbounded command queue is introduced.
+- [x] A full channel produces bounded backpressure or an equivalently reliable latest-replacement mechanism.
+- [x] After a valid reload is committed, scheduler and `AppState` cannot remain permanently divergent because of a dropped replacement command.
+- [x] A closed scheduler command receiver is handled explicitly rather than ignored.
+- [x] Endpoint replacement still triggers an immediate poll once accepted by the scheduler.
+- [x] Periodic polling after replacement uses the replacement endpoint set.
+- [x] Existing host/port stale-result rejection remains intact.
+- [x] Existing generation monotonicity remains intact.
+- [x] Empty endpoint-list replacement remains supported.
 
 ### Bounded-pressure regression coverage
 
-- [ ] A production-path test fills the scheduler command channel and proves the replacement is not silently dropped.
-- [ ] The pressure test verifies final `AppState` and delivered scheduler endpoints agree.
-- [ ] A rapid A -> B -> C replacement test proves convergence to C under bounded capacity.
-- [ ] Existing normal replacement scheduler test remains green.
-- [ ] Existing invalid-config reload behavior remains green and last-known-good.
-- [ ] Tests use deterministic channel synchronization rather than arbitrary sleeps.
+- [x] A production-path test fills the scheduler command channel and proves the replacement is not silently dropped.
+- [x] The pressure test verifies final `AppState` and delivered scheduler endpoints agree.
+- [x] A rapid A -> B -> C replacement test proves convergence to C under bounded capacity.
+- [x] Existing normal replacement scheduler test remains green.
+- [x] Existing invalid-config reload behavior remains green and last-known-good.
+- [x] Tests use deterministic channel synchronization rather than arbitrary sleeps.
 
 ### Scope preservation
 
-- [ ] No watcher/config-monitor subsystem is added.
-- [ ] No new dependency is added.
-- [ ] No scheduler architecture rewrite or generic prioritized queue is added.
-- [ ] URL-form `gregg add` behavior remains unchanged and green.
-- [ ] `greggd configprint` behavior remains unchanged and green.
-- [ ] `greggd croncheck` and daemon runtime ownership remain unchanged.
-- [ ] EggPool command behavior remains unchanged.
-- [ ] No CI workflow/job/matrix/artifact changes are introduced.
+- [x] No watcher/config-monitor subsystem is added.
+- [x] No new dependency is added.
+- [x] No scheduler architecture rewrite or generic prioritized queue is added.
+- [x] URL-form `gregg add` behavior remains unchanged and green.
+- [x] `greggd configprint` behavior remains unchanged and green.
+- [x] `greggd croncheck` and daemon runtime ownership remain unchanged.
+- [x] EggPool command behavior remains unchanged.
+- [x] No CI workflow/job/matrix/artifact changes are introduced.
 
 ### Plan 078 record correction
 
-- [ ] Plan 078 explicitly preserves the originating report that `.183` was the verified working endpoint and `.182` was the stale/wrong displayed endpoint.
-- [ ] Plan 078 separately records that `.182` was reachable and `.183` unavailable during the later closure smoke.
-- [ ] The record no longer rewrites the later environment as though it were the original observation.
-- [ ] Plan 078 retains the valid reverse-direction live smoke as evidence of address-replacement behavior.
-- [ ] Plan 078 notes that Plan 079 corrected the bounded scheduler-command delivery edge found during post-implementation review.
+- [x] Plan 078 explicitly preserves the originating report that `.183` was the verified working endpoint and `.182` was the stale/wrong displayed endpoint.
+- [x] Plan 078 separately records that `.182` was reachable and `.183` unavailable during the later closure smoke.
+- [x] The record no longer rewrites the later environment as though it were the original observation.
+- [x] Plan 078 retains the valid reverse-direction live smoke as evidence of address-replacement behavior.
+- [x] Plan 078 notes that Plan 079 corrected the bounded scheduler-command delivery edge found during post-implementation review.
 
 ### Verification and closure
 
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] Focused `gregg` main/scheduler/state tests pass.
-- [ ] `cargo test -p gregg --bin gregg` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Plan 079 records final implementation SHA and verification results.
-- [ ] `plans/README.md` records Plan 079 complete with no remaining active corrective phase.
-- [ ] No Plan 080 is created solely to close this work.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] Focused `gregg` main/scheduler/state tests pass.
+- [x] `cargo test -p gregg --bin gregg` passes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Plan 079 records final implementation SHA and verification results.
+- [x] `plans/README.md` records Plan 079 complete with no remaining active corrective phase.
+- [x] No Plan 080 is created solely to close this work.
+
+## Implementation and verification record
+
+Implementation commit `49c4c7d` makes successful Systems reloads await the
+existing bounded scheduler sender before reconciling `AppState`, propagates a
+closed scheduler channel through the TUI error boundary, and adds deterministic
+capacity-pressure, A -> B -> C ordering, and closed-channel tests. It also
+updates the user, architecture, agent, and skill guidance and corrects Plan
+078's historical endpoint wording. Local verification passed with:
+
+- `cargo fmt --all -- --check`;
+- `cargo test -p gregg --bin gregg` (392 passed, 1 ignored);
+- `cargo test -p gregg scheduler` (23 passed) and `cargo test -p gregg state` (38 passed);
+- `./scripts/check-local.sh` (646 tests, 1 ignored);
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`;
+- `RUSTFLAGS=-Dwarnings cargo test --workspace --all-targets --all-features`;
+- `cargo +1.75 check --workspace --all-features`.
+
+The `cargo test -p gregg main` filter matched no tests in this binary crate;
+the full `--bin gregg` run is the applicable main/dispatch coverage. The clean
+tree release preflight and remote CI are recorded after the closure commit.
 
 ## Handoff notes
 
