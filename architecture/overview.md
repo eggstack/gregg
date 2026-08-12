@@ -181,7 +181,7 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool`; `add` also accepts HTTP URL input |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, viewport logic |
-| `action` | `src/action.rs` | `Action` enum (14 state transition triggers) |
+| `action` | `src/action.rs` | `Action` enum (13 state transition triggers) |
 
 #### Polling
 
@@ -350,7 +350,7 @@ appear on the wire.
 | Daemon runtime | Returns typed errors; binary boundary formats diagnostics |
 | Wire responses | `HealthCategory` + short message; no paths or error chains |
 | Collector | 6 `CollectErrorKind` variants; crate-local, never on wire |
-| Client | `PollOutcome` with 12 failure classifications |
+| Client | `PollOutcome` with 12 outcome classifications (10 failure, 2 success) |
 
 **Deep dive:** [error-conventions.md](error-conventions.md)
 

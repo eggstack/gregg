@@ -133,7 +133,7 @@ design is retained intentionally.
 - v2-first, endpoint-bound schema parsing, v1 fallback only on 404
 - Accepts only the schema matching the requested endpoint; malformed, invalid, and wrong-version responses never trigger fallback
 - 64 KiB body cap, no redirects, bounded connection pool
-- `PollOutcome` classifies 12 failure modes
+- `PollOutcome` classifies 12 outcome variants (2 success: `Online`/`OnlineV2`, 10 failure/cancellation)
 
 **Normalization** (`normalized.rs`):
 - v1 and v2 wire formats → `NormalizedSnapshot` with capability flags
