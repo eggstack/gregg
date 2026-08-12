@@ -24,7 +24,7 @@ renders a Ratatui-based terminal UI.
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | AppState reducer, viewport logic |
-| `action` | `src/action.rs` | Action enum (14 state transition triggers) |
+| `action` | `src/action.rs` | Action enum (13 state transition triggers) |
 
 ### Polling
 
@@ -144,13 +144,16 @@ design is retained intentionally.
 
 ```rust
 struct AppState {
-    systems: Vec<SystemState>,      // per-system state
-    selected: SystemId,             // current selection
-    viewport: Viewport,             // scroll position
-    pane: Pane,                     // Systems or Eggpool
-    view_mode: SystemViewMode,      // Normal or Condensed
-    drives_expanded: bool,          // drive detail rows visible
-    eggpool: EggpoolState,          // EggPool pane state
+    systems: Vec<SystemState>,           // per-system state
+    selected_id: Option<SystemId>,       // current selection
+    viewport_top_id: Option<SystemId>,   // scroll position (first visible)
+    last_applied_generation: u64,        // stale batch rejection
+    refresh_status: RefreshStatus,       // idle or polling
+    terminal_size: Option<(u16, u16)>,   // terminal dimensions
+    active_pane: Pane,                   // Systems or Eggpool
+    system_view_mode: SystemViewMode,    // Normal or Condensed
+    drives_expanded: bool,               // drive detail rows visible
+    eggpool: Option<EggpoolState>,       // EggPool pane state (None if unconfigured)
 }
 ```
 
@@ -238,8 +241,9 @@ Platform defaults:
 | `add <host:port or http://URL>` | Add endpoint (with optional name); persist only host and port |
 | `list` | List configured endpoints |
 | `remove <host:port>` | Remove endpoint(s) |
-| `refresh` | Force refresh all endpoints |
+| `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
+| `version` | Print client version |
 | `eggpool add/list/remove` | Manage EggPool endpoint |
 
 ## EggPool
@@ -277,11 +281,11 @@ Every module has inline `#[cfg(test)]` tests:
 | Module | ~Lines | Coverage |
 |--------|--------|----------|
 | `cli.rs` | 30+ tests | CLI parsing, add/remove/replace, port resolution |
-| `config.rs` | 40+ tests | Validation, atomic writes, cross-process locking |
-| `state.rs` | 30+ tests | Batch application, selection, viewport, config rebuild |
+| `config.rs` | 60+ tests | Validation, atomic writes, cross-process locking |
+| `state.rs` | 45+ tests | Batch application, selection, viewport, config rebuild |
 | `event.rs` | 18 tests | All key mappings, modifier handling |
-| `poller.rs` | 25+ tests | Mock servers for all failure modes |
-| `scheduler.rs` | 15+ tests | Generation monotonicity, concurrency bounds |
+| `poller.rs` | 30+ tests | Mock servers for all failure modes |
+| `scheduler.rs` | 20+ tests | Generation monotonicity, concurrency bounds |
 | `ui/mod.rs` | 40+ tests | Buffer tests for all view modes and widths |
 
 ### Integration tests
@@ -293,6 +297,5 @@ Every module has inline `#[cfg(test)]` tests:
 
 ### Test helpers
 
-- `FakeClock` — manually advancing clock
-- `SyntheticClock` / `SyntheticCollector` — deterministic sampler testing
+- `FakeClock` — manually advancing clock for deterministic testing
 - cross-process lock contention is covered by the test-only `lock_helper` target, gated behind the private `test-helper` feature

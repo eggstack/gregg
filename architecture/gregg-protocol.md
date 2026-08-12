@@ -21,9 +21,9 @@ depends on nothing from either.
 |--------|------|---------|
 | `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2` |
-| `validate` | `src/validate.rs` | V1 validation: 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs` | V2 validation: 13 violation kinds, capability/value consistency |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
+| `validate` | `src/validate.rs` | V1 validation: 6 violation kinds; re-exports `validate()` |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: 13 violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 
@@ -116,21 +116,31 @@ Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
 v2 status and health remain independently ready after a valid sample.
 
 Both v1 (`HealthResponse`) and v2 (`HealthResponseV2`) have constructors for
-each state.
+each state: `ready()`, `warming()`, `warming_with_message()`, `failed()`.
+`StatusPayloadV2` also has its own `validate()` method.
 
 ## Test support
 
-The `test_support` feature flag exposes builder fixtures:
+The `test_support` feature flag exposes builder fixtures and shared identity
+defaults:
 
 | Builder | Produces |
 |---------|----------|
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
-| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives |
-| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit |
+| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives and `build_payload()` |
+| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit and `build_payload()` |
 
-All builders call `validate()` on `build()` and panic if the fixture is
-invalid. This ensures tests always start from valid baselines.
+`IdentityFixture` provides `linux()`, `macos()`, and `windows()` const
+constructors for shared identity defaults across all builders.
+
+All builders call `validate()` on `build()` (and `validate()` on
+`build_payload()`) and panic if the fixture is invalid. This ensures tests
+always start from valid baselines.
+
+**Design note:** `DriveMetrics.available_bytes` is `Option<u64>` — callers
+cannot assume it is always present. The `drive.total_bytes != 0` invariant
+is enforced by validation.
 
 ## Fixture files
 

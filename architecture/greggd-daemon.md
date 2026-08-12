@@ -21,14 +21,14 @@ available through the Windows-only service path.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
-| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop |
-| `config` | `src/config.rs` | TOML config, validation, atomic writes |
-| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle |
-| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness |
+| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
+| `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
+| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
+| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
 | `server/error` | `src/server/error.rs` | Server error types |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics` |
-| `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy |
-| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization with independent total-free and caller-available capacity |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()` |
+| `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
+| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait |
 | `service/windows` | `src/service/windows.rs` | Windows: SCM integration |
 
@@ -115,7 +115,7 @@ The sampler owns the clock and cadence. Key behaviors:
 - Produces both v1 `StatusSnapshot` and v2 `StatusPayloadV2` from one collection
 - Manages readiness lifecycle: `Warming` → `Ready` (on first delta) or `Failed`
   (on collector error)
-- `Clock` trait for deterministic testing with `FakeClock`
+- `Clock` trait for deterministic testing with `SyntheticClock`
 
 ### Configuration
 
@@ -183,17 +183,19 @@ handoff, post-bind readiness, restart/recovery, reinstall, and cleanup.
 ### SystemCollector trait
 
 ```rust
-pub trait SystemCollector {
-    fn identity(&self) -> SystemIdentity;
+pub trait SystemCollector: Send {
+    fn identity(&self) -> Result<SystemIdentity, CollectError>;
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError>;
     fn capabilities(&self) -> MetricCapabilities;
-    fn capabilities_v2(&self) -> MetricCapabilitiesV2;
-    fn supports_v1_snapshot(&self) -> bool;
+    fn capabilities_v2(&self) -> MetricCapabilitiesV2 { /* default */ }
+    fn supports_v1_snapshot(&self) -> bool { true }
 }
 ```
 
-One call to `sample()` produces `CollectedMetrics` which converts to both v1
-and v2 wire formats without duplicate collection.
+`capabilities_v2()` and `supports_v1_snapshot()` have default implementations
+that derive from v1 capabilities. Windows overrides `supports_v1_snapshot()`
+to return `false`. One call to `sample()` produces `CollectedMetrics` which
+converts to both v1 and v2 wire formats without duplicate collection.
 
 ### CollectErrorKind
 
@@ -226,15 +228,15 @@ Every module has inline `#[cfg(test)]` tests:
 
 | Module | ~Lines | Coverage |
 |--------|--------|----------|
-| `cli.rs` | 590 | CLI parsing, config resolution, exit codes, mutations |
-| `run.rs` | 290 | Supervision select, task joining, non-cooperative abort |
+| `cli.rs` | 137 | CLI parsing, config resolution, exit codes, mutations |
+| `run.rs` | 399 | Supervision select, task joining, non-cooperative abort |
 | `config.rs` | 410 | Validation, atomic writes, TOML round-trips |
 | `sampler.rs` | 550 | Interval validation, readiness lifecycle, counter reset |
-| `server/tests.rs` | 954 | All handlers, staleness, concurrency (50 parallel) |
-| `service/windows.rs` | 316 | MockScmAdapter for all states |
+| `server/tests.rs` | 1016 | All handlers, staleness, concurrency (50 parallel) |
+| `service/windows.rs` | 421 | MockScmAdapter for all states |
 | `collector/linux/tests.rs` | 952 | 40+ tests with fixture-driven invariants |
-| `collector/macos/tests.rs` | 586 | Mock-based + native smoke tests |
-| `collector/windows/mod.rs` | 286 | Topology guards, structural invariants |
+| `collector/macos/tests.rs` | 600 | Mock-based + native smoke tests |
+| `collector/windows/mod.rs` | 298 | Topology guards, structural invariants |
 
 ### Integration tests
 
@@ -243,7 +245,7 @@ Every module has inline `#[cfg(test)]` tests:
 
 ### Test infrastructure
 
-- 40+ JSON/text fixture files in `src/collector/test_fixtures/`
+- 46 JSON/text fixture files in `src/collector/test_fixtures/`
 - `MemorySource` (Linux) — in-memory file map for deterministic tests
 - `MockNativeQueries` (macOS) — injectable FFI with auto-increment CPU
 - `MockWindowsSource` (Windows) — injectable API with auto-increment CPU

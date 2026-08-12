@@ -166,7 +166,7 @@ lifecycle. CI remains read-only, nonpublishing, and artifact-free.
 
 **`Cargo.toml`** (workspace root):
 - Three members: `gregg-protocol`, `greggd`, `gregg`
-- Version: `1.0.2`, edition 2021, MSRV 1.75
+- Version: `1.0.4`, edition 2021, MSRV 1.75
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 
 **`deny.toml`** (cargo-deny):

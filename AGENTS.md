@@ -1,6 +1,7 @@
 # AGENTS.md
 
 Compact instructions for AI coding agents working in this repository.
+Every line answers: "Would an agent likely miss this without help?"
 
 ## Project structure
 
@@ -195,3 +196,5 @@ Reusable agent instructions live in `.opencode/skills/`:
 | `platform-collectors` | Platform-specific metric collectors |
 | `release-process` | Manual release procedure |
 | `eggpool` | EggPool summary pane implementation |
+
+Use the skill tool to load a skill when a task matches its description.
