@@ -7,6 +7,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.5] - 2026-08-12
+
+### Fixed
+
+- **Scheduler endpoint replacement** (`gregg`): Ctrl-R now reliably delivers the
+  replacement endpoint through the bounded scheduler command channel and polls
+  it immediately, instead of silently diverging state.
+- **Client endpoint reload** (`gregg`): Reloaded configs reconcile stable system
+  IDs and deliver replacements without losing pending state.
+- **README** (`greggd`): Corrected `greggd host` description — it sets the bind
+  address, not the display name.
+
 ## [1.0.3] - 2026-08-11
 
 ### Added
