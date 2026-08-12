@@ -78,12 +78,13 @@ sample_interval_ms = 1000
 stale_after_ms = 10000
 ```
 
-Change the daemon name or bind address:
+Edit the config file to change the display name (`name` field).
+
+Change the bind address or port:
 
 ```bash
-greggd host my-lab-server          # set the display name
-greggd port 11311                  # change the listen port
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
+greggd port 11311                  # change the listen port
 greggd croncheck                   # bounded /v2/healthz probe; never starts the daemon
 greggd configprint                 # print the configured bind address, e.g. 0.0.0.0:11310
 greggd version                     # print the daemon version
