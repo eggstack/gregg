@@ -116,11 +116,11 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
         return greggd::cli::ExitCode::from(error);
     }
     #[cfg(unix)]
-    if let Some(error) = error.downcast_ref::<greggd::control::ControlError>() {
-        if let greggd::control::ControlError::Io(source) = error {
-            if source.kind() == std::io::ErrorKind::PermissionDenied {
-                return greggd::cli::ExitCode::PermissionDenied;
-            }
+    if let Some(greggd::control::ControlError::Io(source)) =
+        error.downcast_ref::<greggd::control::ControlError>()
+    {
+        if source.kind() == std::io::ErrorKind::PermissionDenied {
+            return greggd::cli::ExitCode::PermissionDenied;
         }
     }
     if let Some(greggd::server::error::ServerError::Bind(source)) =

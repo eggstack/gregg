@@ -107,7 +107,7 @@ pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
 /// `[A-Za-z0-9._-]` to avoid path separators or other surprising bytes.
 #[must_use]
 pub fn fallback_control_path(config: &Config) -> Option<PathBuf> {
-    let host = sanitize_host(config.host.to_string());
+    let host = sanitize_host(&config.host.to_string());
     let filename = format!("greggd-{host}-{}.control.sock", config.port);
     let path = std::env::temp_dir().join(filename);
     if path.as_os_str().len() > UNIX_PATH_MAX {
@@ -148,7 +148,7 @@ pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
 /// This keeps the deterministic fallback path inside a single path segment
 /// even if an operator configures a hostname that would otherwise contain
 /// separators or whitespace.
-fn sanitize_host(input: String) -> String {
+fn sanitize_host(input: &str) -> String {
     input
         .chars()
         .map(|c| {
@@ -249,8 +249,7 @@ pub fn send_stop(config_path: &Path, config: &Config) -> Result<StopOutcome, Con
             Ok(StopOutcome::NotRunning)
         }
         Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(ControlError::Io(e)),
-        Some(_) => Ok(StopOutcome::NotRunning),
-        None => Ok(StopOutcome::NotRunning),
+        Some(_) | None => Ok(StopOutcome::NotRunning),
     }
 }
 
@@ -276,7 +275,7 @@ pub enum ControlBind {
     Bound {
         /// Bound socket path.
         path: PathBuf,
-        /// Tokio UnixListener ready for `accept()`.
+        /// Tokio `UnixListener` ready for `accept()`.
         listener: tokio::net::UnixListener,
     },
     /// No listener could be bound. The caller should fall back to a
@@ -402,13 +401,13 @@ pub fn spawn_stop_task(
     notify: tokio::sync::oneshot::Sender<std::io::Result<&'static str>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let _guard = ControlSocketGuard { path: path.clone() };
+        let guard = ControlSocketGuard { path: path.clone() };
         let result = stop_loop(listener).await;
         if let Err(e) = crate::control::remove_control_socket(&path) {
             tracing::warn!(path = %path.display(), error = %e, "control socket cleanup failed");
         }
         let _ = notify.send(result);
-        drop(_guard);
+        drop(guard);
     })
 }
 
@@ -449,14 +448,13 @@ async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'stat
         // Read until we see a newline, run out of buffer, or get EOF.
         while length < buf.len() && received.is_none() {
             match stream.read(&mut buf[length..]).await {
-                Ok(0) => break,
+                Ok(0) | Err(_) => break,
                 Ok(read) => {
                     length += read;
                     if let Some(end) = buf[..length].iter().position(|b| *b == b'\n') {
                         received = Some(buf[..=end].to_vec());
                     }
                 }
-                Err(_) => break,
             }
         }
 
@@ -479,19 +477,16 @@ async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'stat
 /// returned an I/O error. If no control task was registered (for example
 /// because `bind_listener` could not bind a socket), this future never
 /// resolves and the daemon must rely on signals instead.
-#[must_use]
-pub fn wait_for_stop_task(
+pub async fn wait_for_stop_task(
     receiver: tokio::sync::oneshot::Receiver<std::io::Result<&'static str>>,
-) -> impl std::future::Future<Output = Option<&'static str>> {
-    async move {
-        match receiver.await {
-            Ok(Ok(reason)) => Some(reason),
-            Ok(Err(e)) => {
-                tracing::warn!(error = %e, "control stop task ended with I/O error");
-                None
-            }
-            Err(_) => None,
+) -> Option<&'static str> {
+    match receiver.await {
+        Ok(Ok(reason)) => Some(reason),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "control stop task ended with I/O error");
+            None
         }
+        Err(_) => None,
     }
 }
 
@@ -537,10 +532,10 @@ mod tests {
 
     #[test]
     fn sanitize_host_replaces_path_separators_and_whitespace() {
-        assert_eq!(sanitize_host("127.0.0.1".into()), "127.0.0.1");
-        assert_eq!(sanitize_host("::1".into()), "__1");
-        assert_eq!(sanitize_host("host name".into()), "host_name");
-        assert_eq!(sanitize_host("../etc/gregg".into()), ".._etc_gregg");
+        assert_eq!(sanitize_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(sanitize_host("::1"), "__1");
+        assert_eq!(sanitize_host("host name"), "host_name");
+        assert_eq!(sanitize_host("../etc/gregg"), ".._etc_gregg");
     }
 
     #[test]
