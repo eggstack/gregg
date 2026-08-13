@@ -19,7 +19,9 @@ Local tests remain the primary development path. The one existing GitHub Actions
 
 Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manager separation, HTTP `croncheck`, config-only Unix mutation, and explicit version commands. Plan 077 completed the strict bounded status-line correction, negative-path coverage, stale test cleanup, and planning reconciliation.
 
-Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation. No corrective phase remains active.
+Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
+
+Plan 080 is active product-correctness work. It must reproduce/classify the current Ubuntu `croncheck` refusal, preserve passive health-probe semantics, add a direct Linux/macOS `greggd stop` command without restoring service-manager coupling, preserve Windows SCM stop behavior, and close only after a real release-binary Ubuntu lifecycle smoke.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -37,14 +39,15 @@ Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
 | [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete; historical wording corrected by 079 |
 | [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | complete; implementation `49c4c7d` |
+| [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | ready for implementation |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review; do not create Plan 080 solely to mark 079 complete if its acceptance criteria pass.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and new direct-stop product requirement; it is not a closure-only continuation of Plan 079.
 
 ## Execution record for Plan 075
 
@@ -87,7 +90,15 @@ The key Plan 079 proof is a bounded scheduler-command channel test that fills ca
 
 A second external private-LAN smoke was optional for Plan 079 and did not determine completion. Plan 078 already demonstrated the address-replacement path against a live daemon in the environment available at that time. Plan 079 corrected command-delivery semantics deterministically and corrected the record to preserve both the originating `.183`-working/`.182`-stale report and the later `.182`-reachable smoke environment.
 
-The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 079 does not change SCM behavior or add CI coverage.
+Plan 080 requires a direct lifecycle proof in addition to focused tests and the default local check. The real release binary on the current Ubuntu host must demonstrate:
+
+```text
+greggd run -> croncheck succeeds -> greggd stop -> daemon exits -> croncheck fails
+```
+
+The smoke must verify the expected TCP listener and local Unix control socket exist while running and disappear after stop. It must also record the actual cause of the original connection refusal. No new CI job is required.
+
+The existing Windows CI job remains the authoritative native Windows environment for Windows-specific SCM behavior. Plan 080 preserves the current Windows SCM stop path and does not add Windows control-socket work.
 
 A plan does not require:
 
@@ -110,6 +121,8 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 - direct documentation inspection for scope and behavior claims.
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
+
+Plan 080 cannot be closed from compilation/unit tests alone; its mandatory Ubuntu release-binary lifecycle smoke and refusal root-cause record must be present before marking it complete.
 
 ## Closed scope record for Plan 079
 
