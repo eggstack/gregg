@@ -783,11 +783,6 @@ mod tests {
         let cfg = dir.join("greggd.toml");
         std::fs::write(&cfg, b"").unwrap();
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
         // Bind a raw std listener at the primary path and serve a bad response.
         let primary = primary_control_path(&cfg).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(&primary).unwrap();
