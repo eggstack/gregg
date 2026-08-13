@@ -46,12 +46,12 @@ pub struct Cli {
 pub enum Command {
     /// Run the daemon in the foreground.
     Run,
+    /// Stop a running greggd instance via the local Unix control socket
+    /// (Linux/macOS) or via the Windows Service Control Manager (Windows).
+    Stop,
     /// Start the greggd Windows service.
     #[cfg(target_os = "windows")]
     Start,
-    /// Stop the greggd Windows service.
-    #[cfg(target_os = "windows")]
-    Stop,
     /// Restart the greggd Windows service.
     #[cfg(target_os = "windows")]
     Restart,
@@ -239,30 +239,34 @@ pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
     const TIMEOUT: Duration = Duration::from_millis(750);
     const MAX_STATUS_LINE_BYTES: usize = 512;
     let mut stream = TcpStream::connect_timeout(&target, TIMEOUT)
-        .map_err(|e| CroncheckError(format!("health probe connection failed: {e}")))?;
+        .map_err(|e| CroncheckError(format!("health probe connection to {target} failed: {e}")))?;
     stream
         .set_read_timeout(Some(TIMEOUT))
         .and_then(|()| stream.set_write_timeout(Some(TIMEOUT)))
-        .map_err(|e| CroncheckError(format!("health probe timeout setup failed: {e}")))?;
+        .map_err(|e| {
+            CroncheckError(format!(
+                "health probe timeout setup to {target} failed: {e}"
+            ))
+        })?;
     stream
         .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .map_err(|e| CroncheckError(format!("health probe request failed: {e}")))?;
+        .map_err(|e| CroncheckError(format!("health probe request to {target} failed: {e}")))?;
 
     let mut response = [0_u8; MAX_STATUS_LINE_BYTES];
     let mut length = 0;
     let line_length = loop {
         if length == response.len() {
-            return Err(CroncheckError(
-                "health probe response status line too long".into(),
-            ));
+            return Err(CroncheckError(format!(
+                "health probe response from {target} status line too long"
+            )));
         }
-        let read = stream
-            .read(&mut response[length..])
-            .map_err(|e| CroncheckError(format!("health probe response failed: {e}")))?;
+        let read = stream.read(&mut response[length..]).map_err(|e| {
+            CroncheckError(format!("health probe response from {target} failed: {e}"))
+        })?;
         if read == 0 {
-            return Err(CroncheckError(
-                "health probe response ended before status line CRLF".into(),
-            ));
+            return Err(CroncheckError(format!(
+                "health probe response from {target} ended before status line CRLF"
+            )));
         }
         length += read;
         if let Some(end) = response[..length]
@@ -273,8 +277,11 @@ pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
         }
     };
 
-    let line = std::str::from_utf8(&response[..line_length])
-        .map_err(|_| CroncheckError("health probe response status line is not text".into()))?;
+    let line = std::str::from_utf8(&response[..line_length]).map_err(|_| {
+        CroncheckError(format!(
+            "health probe response from {target} status line is not text"
+        ))
+    })?;
     let mut fields = line.split_ascii_whitespace();
     let http = fields.next();
     let status = fields.next();
@@ -286,7 +293,7 @@ pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
         Ok(())
     } else {
         Err(CroncheckError(format!(
-            "health probe returned malformed or unhealthy status: {line}"
+            "health probe to {target} returned malformed or unhealthy status: {line}"
         )))
     }
 }
@@ -317,6 +324,19 @@ pub fn dispatch_with_config_intent(
             // This is handled in main.rs.
             unreachable!("Command::Run is handled in main.rs")
         }
+        Command::Stop => {
+            // Unix uses the local control socket and is dispatched at the
+            // binary boundary (see main.rs) so it can return errors as the
+            // runtime/library boundary without a global tracing init.
+            #[cfg(unix)]
+            {
+                unreachable!("Command::Stop is handled at the binary boundary on Unix")
+            }
+            #[cfg(not(unix))]
+            {
+                unreachable!("Command::Stop is handled at the binary boundary on Windows")
+            }
+        }
         Command::Croncheck => {
             let config = load_config(config_path, explicit)?;
             probe_health(croncheck_target(&config))?;
@@ -339,7 +359,7 @@ pub fn dispatch_with_config_intent(
             Ok(())
         }
         #[cfg(target_os = "windows")]
-        Command::Start | Command::Stop | Command::Restart => {
+        Command::Start | Command::Restart => {
             unreachable!("Windows service commands are dispatched at the binary boundary")
         }
         #[cfg(target_os = "windows")]
@@ -357,8 +377,8 @@ mod native_tests {
     use std::thread;
 
     #[test]
-    fn parser_accepts_run_croncheck_mutations_and_version_but_not_windows_lifecycle() {
-        for args in ["run", "croncheck", "configprint", "version"] {
+    fn parser_accepts_run_stop_croncheck_mutations_and_version_but_not_windows_lifecycle() {
+        for args in ["run", "stop", "croncheck", "configprint", "version"] {
             let argv = if args == "host" {
                 vec!["greggd", "host", "127.0.0.1"]
             } else if args == "port" {
@@ -370,7 +390,7 @@ mod native_tests {
         }
         assert!(Cli::try_parse_from(["greggd", "host", "127.0.0.1"]).is_ok());
         assert!(Cli::try_parse_from(["greggd", "port", "11310"]).is_ok());
-        for command in ["start", "stop", "restart"] {
+        for command in ["start", "restart"] {
             assert!(Cli::try_parse_from(["greggd", command]).is_err());
         }
     }
@@ -485,5 +505,19 @@ mod native_tests {
         drop(listener);
 
         assert!(probe_health(target).is_err());
+    }
+
+    #[test]
+    fn health_probe_connection_error_includes_target_address() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap();
+        drop(listener);
+
+        let err = probe_health(target).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&target.to_string()),
+            "expected diagnostic to mention target {target}, got: {msg}"
+        );
     }
 }

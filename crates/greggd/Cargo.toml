@@ -24,7 +24,7 @@ path = "src/lib.rs"
 [dependencies]
 gregg-protocol = { version = "1.0.5", path = "../gregg-protocol" }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
-tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1.0", features = ["derive"] }

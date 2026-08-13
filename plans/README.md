@@ -21,7 +21,7 @@ Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manage
 
 Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
 
-Plan 080 is active product-correctness work. It must reproduce/classify the current Ubuntu `croncheck` refusal, preserve passive health-probe semantics, add a direct Linux/macOS `greggd stop` command without restoring service-manager coupling, preserve Windows SCM stop behavior, and close only after a real release-binary Ubuntu lifecycle smoke.
+Plan 080 is complete. It reproduced the Ubuntu `croncheck` refusal as service-not-running (no installed unit), added target-address diagnostics to `croncheck`, implemented direct local Unix `greggd stop` via a tiny control socket without restoring service-manager coupling, preserved Windows SCM stop behavior, and passed the mandatory Ubuntu release-binary lifecycle smoke.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -39,7 +39,7 @@ Plan 080 is active product-correctness work. It must reproduce/classify the curr
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
 | [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete; historical wording corrected by 079 |
 | [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | complete; implementation `49c4c7d` |
-| [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | ready for implementation |
+| [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | complete; mandatory Ubuntu lifecycle smoke passed |
 
 Dependency order:
 

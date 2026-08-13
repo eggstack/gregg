@@ -86,9 +86,16 @@ Change the bind address or port:
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
 greggd port 11311                  # change the listen port
 greggd croncheck                   # bounded /v2/healthz probe; never starts the daemon
+greggd stop                        # stop a running foreground greggd via the local control socket (Unix) or SCM (Windows)
 greggd configprint                 # print the configured bind address, e.g. 0.0.0.0:11310
 greggd version                     # print the daemon version
 ```
+
+`greggd stop` only targets the local `greggd` instance associated with the
+same resolved config identity as `greggd run`. On Linux/macOS it speaks to a
+local Unix-domain control socket owned by the daemon; on Windows it asks the
+Service Control Manager. The HTTP API is read-only and has no shutdown
+endpoint.
 
 The client stores its config at:
 

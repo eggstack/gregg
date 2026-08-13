@@ -1,6 +1,6 @@
 # Phase 080: greggd runtime/croncheck correction and direct stop command
 
-Status: ready for implementation.
+Status: complete.
 
 Depends on: Plans 076-079.
 
@@ -772,3 +772,82 @@ greggd stop -> daemon exits -> croncheck fails because listener is gone
 ```
 
 Compilation and unit tests alone are insufficient. The local release-binary smoke is the authoritative proof for this phase.
+
+## Closure record
+
+**Date:** 2026-08-13
+**Binary version:** `greggd 1.0.5`
+**Host:** Ubuntu 24.04.4 LTS (Noble Numbat, aarch64)
+
+### Root cause of original croncheck refusal
+
+The original `Connection refused (os error 111)` error was caused by the daemon
+not running. No installed unit, no foreground process, no TCP listener at the
+configured address. The `croncheck` probe correctly identified the target and
+correctly refused the connection. The diagnostic lacked the target address but
+the binary itself was functioning correctly.
+
+### Implementation summary
+
+1. **`croncheck` diagnostics:** Added the attempted socket address to all
+   connection/timeout/request error messages. The format is now:
+   `error: health probe connection to 127.0.0.1:11310 failed: Connection refused (os error 111)`
+
+2. **Unix `Command::Stop`:** Added `stop` to the CLI parser on Linux/macOS
+   (previously Windows-only). The parser now accepts `run`, `stop`, `croncheck`,
+   `configprint`, `host`, `port`, `version` and rejects `start`/`restart`.
+
+3. **Control socket module:** Added `control.rs` with:
+   - Config-adjacent primary path (`greggd.control.sock` in config directory)
+   - Deterministic temp-dir fallback path (`greggd-{host}-{port}.control.sock`)
+   - Shared candidate derivation used by both `run` and `stop`
+   - Socket binding with stale-socket detection and `0600` permissions
+   - RAII cleanup guard (`ControlSocketGuard`) for socket removal on any exit path
+   - Wire protocol: `STOP\n` -> `OK\n`
+   - Client-side send_stop with candidate fallback and idempotent not-running
+
+4. **Shutdown integration:** `run_with_control_path` wires the control listener
+   into the same `select!` as SIGTERM/SIGINT. The shutdown future resolves when
+   any source fires; the shared cleanup path runs identically. A dedicated
+   tokio task owns the control listener for clean separation from the
+   supervision loop.
+
+5. **Windows SCM behavior preserved:** `Command::Stop` on Windows continues to
+   delegate to `platform_service_manager().stop()`. No named-pipe control
+   mechanism added.
+
+### Local E2E smoke results
+
+```
+Binary version:   greggd 1.0.5
+Config path:      /tmp/gregg-e2e/config.toml
+Bind address:     127.0.0.1:11403
+Control socket:   /tmp/gregg-e2e/greggd.control.sock
+
+greggd run -> croncheck healthy:    OK (exit 0)
+TCP listener present:               OK (ss confirms)
+Control socket created (0600):      OK (ls -l confirms)
+greggd stop exit:                   OK (exit 0, "greggd stopped")
+Daemon process exited:              OK (wait returns 0)
+TCP listener gone after stop:       OK (ss confirms)
+Control socket removed after stop:  OK (ls confirms)
+Subsequent croncheck:               OK (exit 3, "Connection refused")
+Second stop (idempotent):           OK (exit 0, "greggd not running")
+SIGTERM cleanup:                    OK (control socket removed)
+```
+
+### Packaged-service smoke
+
+Not performed. The host lacks an installed systemd unit. This is explicitly
+permitted by the plan: "If this environment lacks the installed unit or
+privilege needed for this optional packaging-specific smoke, record that
+explicitly. The direct foreground Ubuntu smoke remains mandatory and cannot
+be skipped."
+
+### Test coverage
+
+- 14 control module tests (path derivation, bind/rebind, send/recv protocol, malformed response, cleanup)
+- 13 CLI tests (parser accepts stop, rejects start/restart, croncheck target diagnostics, probe health)
+- 172+ existing tests (run, sampler, server, config) remain green
+- `cargo fmt --all -- --check` passes
+- `./scripts/check-local.sh` passes

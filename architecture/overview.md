@@ -126,9 +126,10 @@ integration tests.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals; graceful shutdown with 10s deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows SCM lifecycle commands |
+| `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals, local Unix control socket; graceful shutdown with 10s deadline |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes |
+| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; config-adjacent primary + temp-dir fallback paths |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`), clock abstraction |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, five endpoints, staleness detection |
 | `server/error` | `src/server/error.rs` | Server error types |

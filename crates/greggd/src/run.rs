@@ -75,7 +75,8 @@ impl RunOutcome {
 ///
 /// This is the main entry point for `greggd run`. It uses the
 /// platform-default shutdown signal (SIGTERM/SIGINT on Unix, Ctrl-C
-/// otherwise).
+/// otherwise). On Unix, the local control socket is also wired into the
+/// shutdown source so `greggd stop` resolves the same graceful cleanup path.
 ///
 /// # Errors
 ///
@@ -86,6 +87,28 @@ pub async fn run<C: SystemCollector + 'static>(
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     run_with_shutdown(collector, config, wait_for_shutdown_signal()).await
+}
+
+/// Run the daemon and treat `config_path` as authoritative for the local
+/// Unix control socket location.
+///
+/// On non-Unix platforms this is identical to [`run`]. On Unix it binds the
+/// control listener (when possible) and races its shutdown future with the
+/// signal future, so a `greggd stop` invocation resolves the same graceful
+/// cleanup path as SIGTERM/SIGINT.
+///
+/// # Errors
+///
+/// Returns an error if configuration is invalid or the server fails
+/// to start.
+#[cfg(unix)]
+pub async fn run_with_control_path<C: SystemCollector + 'static>(
+    collector: C,
+    config: Config,
+    config_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let shutdown = shutdown_with_control(config_path, &config);
+    run_with_shutdown(collector, config, shutdown).await
 }
 
 /// Run the daemon with an externally provided shutdown source.
@@ -416,6 +439,62 @@ fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str>
                 .await
                 .expect("failed to listen for Ctrl-C");
             "Ctrl-C"
+        }
+    }
+}
+
+/// Build a shutdown future that races Unix signals with the local control
+/// socket.
+///
+/// On Unix, this attempts to bind the local control listener and spawns a
+/// dedicated task that owns it. The shutdown future resolves when either
+/// the control task signals a successful STOP, or a Unix signal arrives.
+/// The same graceful cleanup path is reached regardless of which source
+/// fires first.
+///
+/// If binding the control socket fails (for example because the config
+/// directory is not writable), the function silently falls back to the
+/// plain signal-based shutdown and the daemon continues without a local
+/// stop channel.
+#[cfg(unix)]
+fn shutdown_with_control(
+    config_path: &std::path::Path,
+    config: &Config,
+) -> impl std::future::Future<Output = &'static str> {
+    use crate::control;
+
+    let bound = control::bind_listener(config_path, config);
+
+    let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+    let mut stop_rx = match bound {
+        control::ControlBind::Bound { listener, path } => {
+            let _handle = control::spawn_stop_task(listener, path, stop_tx);
+            Some(stop_rx)
+        }
+        control::ControlBind::NotBound => {
+            let _ = stop_tx;
+            None
+        }
+    };
+
+    async move {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+            .expect("failed to register SIGINT handler");
+
+        if let Some(rx) = stop_rx.take() {
+            let stop_fut = control::wait_for_stop_task(rx);
+            tokio::select! {
+                reason = stop_fut => reason.unwrap_or("control-stop"),
+                _ = sigterm.recv() => "SIGTERM",
+                _ = sigint.recv() => "SIGINT",
+            }
+        } else {
+            tokio::select! {
+                _ = sigterm.recv() => "SIGTERM",
+                _ = sigint.recv() => "SIGINT",
+            }
         }
     }
 }

@@ -20,9 +20,10 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM lifecycle commands |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
+| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
 | `server/error` | `src/server/error.rs` | Server error types |
@@ -150,6 +151,7 @@ configuration error and is neither written nor followed by process management.
 | Command | Purpose |
 |---------|---------|
 | `run` | Start foreground daemon |
+| `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
 | `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200 |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; no network, service, or write side effects |
 | `host` | Atomically mutate bind host; applies on next start |
@@ -162,6 +164,24 @@ runtime and CLI library functions return errors and never call
 prints one diagnostic for failures, and applies the exit-code taxonomy: `0`
 success, `1` configuration, `2` service management, `3` runtime, and `4`
 permission denied.
+
+### Unix control socket
+
+`greggd run` on Linux/macOS binds a local Unix-domain control socket
+alongside the TCP listener. The socket file lives at the config-adjacent
+path (`greggd.control.sock` in the config directory) when that directory
+is writable; otherwise a deterministic fallback under the standard temp
+directory is used. The control socket is removed on orderly shutdown
+(SIGTERM/SIGINT or `greggd stop`), on startup failure, and on runtime
+errors. The daemon task that owns the listener uses a RAII guard to
+ensure socket-file removal even if the runtime is dropped before the
+task's cleanup path runs.
+
+`greggd stop` tries the config-adjacent path first, then the temp-dir
+fallback. It sends `STOP\n`, reads `OK\n`, and exits 0. Missing or
+unreachable sockets result in idempotent not-running output. Permission
+errors map to exit code 4. The HTTP API remains read-only and is unrelated
+to the control socket.
 
 ### Windows service management
 

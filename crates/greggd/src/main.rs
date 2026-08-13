@@ -40,20 +40,40 @@ fn run_main() -> Result<(), Box<dyn Error>> {
         greggd::cli::Command::Run => {
             let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
             let collector = NativeCollector::new(Some(config.name.as_str()))?;
-            build_runtime()?.block_on(greggd::run::run(collector, config))
+            build_runtime()?.block_on(greggd::run::run_with_control_path(
+                collector,
+                config,
+                &config_path,
+            ))
         }
+        #[cfg(unix)]
+        greggd::cli::Command::Stop => {
+            let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
+            match greggd::control::send_stop(&config_path, &config) {
+                Ok(greggd::control::StopOutcome::Stopped { .. }) => {
+                    println!("greggd stopped");
+                    Ok(())
+                }
+                Ok(greggd::control::StopOutcome::NotRunning) => {
+                    println!("greggd not running");
+                    Ok(())
+                }
+                Err(e) => Err(Box::new(e)),
+            }
+        }
+        #[cfg(target_os = "windows")]
+        greggd::cli::Command::Stop => greggd::service::platform_service_manager()
+            .stop()
+            .map_err(Into::into),
         #[cfg(target_os = "windows")]
         greggd::cli::Command::Service => {
             greggd::service::windows::start_service_dispatcher(config_path)
         }
         #[cfg(target_os = "windows")]
-        command @ (greggd::cli::Command::Start
-        | greggd::cli::Command::Stop
-        | greggd::cli::Command::Restart) => {
+        command @ (greggd::cli::Command::Start | greggd::cli::Command::Restart) => {
             let service = greggd::service::platform_service_manager();
             match command {
                 greggd::cli::Command::Start => service.start().map_err(Into::into),
-                greggd::cli::Command::Stop => service.stop().map_err(Into::into),
                 greggd::cli::Command::Restart => service.restart().map_err(Into::into),
                 _ => unreachable!(),
             }
@@ -94,6 +114,14 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
     #[cfg(target_os = "windows")]
     if let Some(error) = error.downcast_ref::<greggd::service::ServiceError>() {
         return greggd::cli::ExitCode::from(error);
+    }
+    #[cfg(unix)]
+    if let Some(error) = error.downcast_ref::<greggd::control::ControlError>() {
+        if let greggd::control::ControlError::Io(source) = error {
+            if source.kind() == std::io::ErrorKind::PermissionDenied {
+                return greggd::cli::ExitCode::PermissionDenied;
+            }
+        }
     }
     if let Some(greggd::server::error::ServerError::Bind(source)) =
         error.downcast_ref::<greggd::server::error::ServerError>()

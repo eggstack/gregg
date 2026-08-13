@@ -6,6 +6,8 @@
 pub mod cli;
 pub mod collector;
 pub mod config;
+#[cfg(unix)]
+pub mod control;
 pub mod run;
 pub mod sampler;
 pub mod server;

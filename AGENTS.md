@@ -91,14 +91,24 @@ passes locally, the distinction is the cause.
   diagnostics, and exit-code classification.
 - Unix `greggd croncheck` is a read-only `/v2/healthz` probe with a short
   timeout and a fixed 512-byte CRLF-terminated HTTP/1.0 or HTTP/1.1 status-line
-  read; only status 200 is healthy. `host` and `port` only persist config.
+  read; only status 200 is healthy. Connection diagnostics include the
+  attempted target address. `host` and `port` only persist config.
+- `greggd stop` on Linux/macOS targets only the local foreground `greggd`
+  instance associated with the resolved config identity via a single tiny
+  Unix-domain control socket (`STOP\n` -> `OK\n`). It must not invoke
+  `systemctl`, `launchctl`, `pkill`, `killall`, shell commands, PID-file
+  management, or process-name scanning. The HTTP API remains read-only.
+  Windows `greggd stop` continues to delegate to the native SCM manager.
 - `greggd` dispatches synchronously before entering Tokio: foreground `run` and
   Windows SCM `service` first enters `service_dispatcher::start`; the generated
   `ServiceMain` worker then owns exactly one current-thread runtime. Its
   selected config path comes from one process-local launch context, and it
   publishes `RUNNING` only after the shared daemon has bound its listener.
   SCM Stop and Shutdown callbacks only send a nonblocking one-shot signal into
-  the shared `run_with_shutdown()` core.
+  the shared `run_with_shutdown()` core. The same shutdown path is reused on
+  Unix for SIGTERM/SIGINT and a successful `STOP\n` over the local control
+  socket; the control socket is cleaned up on every exit path including
+  SIGINT/SIGTERM and the runtime-error cleanup.
 - **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
 
 ## Schema protocol
