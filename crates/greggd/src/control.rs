@@ -521,7 +521,7 @@ mod tests {
     fn fallback_path_is_deterministic_and_in_temp_dir() {
         let config = Config {
             name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 11310,
             sample_interval_ms: 1000,
             stale_after_ms: 5000,
@@ -548,7 +548,7 @@ mod tests {
         let cfg_path = temp_config_path();
         let config = Config {
             name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 11310,
             sample_interval_ms: 1000,
             stale_after_ms: 5000,
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn remove_control_socket_is_a_noop_for_missing_paths() {
         let missing =
-            std::env::temp_dir().join(format!("greggd-no-such-{}.sock", std::process::id(),));
+            std::env::temp_dir().join(format!("greggd-no-such-{}.sock", std::process::id()));
         remove_control_socket(&missing).unwrap();
     }
 
@@ -595,7 +595,7 @@ mod tests {
     fn test_config() -> Config {
         Config {
             name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
             port: 11320,
             sample_interval_ms: 1000,
             stale_after_ms: 5000,
@@ -605,7 +605,7 @@ mod tests {
     fn fresh_temp_dir(name: &str) -> PathBuf {
         // Use a short prefix so the resulting control socket path stays
         // inside the OS-level `sun_path` limit (`UNIX_PATH_MAX = 108`).
-        let dir = std::env::temp_dir().join(format!("gd{name}-{}", std::process::id(),));
+        let dir = std::env::temp_dir().join(format!("gd{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -675,7 +675,7 @@ mod tests {
         let cfg = dir.join("greggd.toml");
         std::fs::write(&cfg, b"").unwrap();
         let primary = primary_control_path(&cfg).unwrap();
-        let _live = std::os::unix::net::UnixListener::bind(&primary).unwrap();
+        let live = std::os::unix::net::UnixListener::bind(&primary).unwrap();
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -694,7 +694,7 @@ mod tests {
             ControlBind::NotBound => panic!("fallback should have bound when primary is live"),
         }
 
-        drop(_live);
+        drop(live);
         remove_control_socket(&primary).unwrap();
         remove_control_socket(&fallback_control_path(&test_config()).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
