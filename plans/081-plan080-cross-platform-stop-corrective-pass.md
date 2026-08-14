@@ -720,3 +720,21 @@ Sock B removed:       yes
   test, the release `greggd` build, and the SCM lifecycle smoke; it
   must be green for cross-platform closure. No new workflow, job,
   matrix, or artifact is added.
+
+### CI run
+
+The implementation commit was pushed to `main` and the existing GitHub
+Actions workflow (`ci.yml`) was re-run against it. All five jobs
+succeeded:
+
+```text
+Linux                         success
+macOS (macos-15)              success
+macOS (macos-15-intel)        success
+MSRV (Rust 1.75)              success
+Windows (workspace + build + SCM smoke)   success
+```
+
+CI run ID: see `gh run list --limit 1` against `main` immediately after
+the Plan 081 commit; the same record is recorded in `plans/README.md`'s
+Plan 081 line and the planning-record updates above.
