@@ -377,7 +377,7 @@ This phase should remain small. If implementation begins to require a new IPC me
 ## Closure record
 
 **Date:** 2026-08-14
-**Implementation SHA:** recorded after the implementation commit is created.
+**Implementation SHA:** `c29c12675863fc0b71ea0bf94bd0bc7cd2b0c011`.
 **Host:** Ubuntu 24.04.4 LTS (Noble Numbat, aarch64)
 
 ### Implementation summary
