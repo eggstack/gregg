@@ -218,8 +218,9 @@ impl HttpClient {
         if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
             // v2 returned 404 - fall back to v1.
             let v1_url = status_url(&endpoint.host, endpoint.port);
+            let v1_start = clock.now();
             return self
-                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, start)
+                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, v1_start)
                 .await;
         }
 
@@ -332,7 +333,7 @@ fn classify_reqwest_error(e: &reqwest::Error) -> PollOutcome {
     }
 
     // Walk the error source chain for io::ErrorKind::ConnectionRefused.
-    if is_connection_refused(&e) {
+    if is_connection_refused(e) {
         return PollOutcome::ConnectionRefused;
     }
 
@@ -345,21 +346,16 @@ fn classify_reqwest_error(e: &reqwest::Error) -> PollOutcome {
 }
 
 /// Walk the error source chain looking for `ConnectionRefused`.
-fn is_connection_refused(e: &dyn std::error::Error) -> bool {
-    // Check the error message for connection refused indicators.
-    let msg = format!("{e}");
-    if msg.contains("connection refused") || msg.contains("Connection refused") {
-        return true;
-    }
-
-    // Check the source chain.
-    let mut source: Option<&(dyn std::error::Error + 'static)> = e.source();
-    while let Some(err) = source {
-        let msg = format!("{err}");
-        if msg.contains("connection refused") || msg.contains("Connection refused") {
+fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(error) = current {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
             return true;
         }
-        source = err.source();
+        current = error.source();
     }
     false
 }
@@ -368,14 +364,14 @@ fn is_connection_refused(e: &dyn std::error::Error) -> bool {
 fn is_dns_failure(e: &dyn std::error::Error) -> bool {
     // Check the error itself first.
     let msg = format!("{e}");
-    if msg.contains("dns") || msg.contains("resolve") || msg.contains("name") {
+    if msg.contains("dns") || msg.contains("resolve") {
         return true;
     }
 
     let mut source: Option<&(dyn std::error::Error + 'static)> = e.source();
     while let Some(err) = source {
         let msg = format!("{err}");
-        if msg.contains("dns") || msg.contains("resolve") || msg.contains("name") {
+        if msg.contains("dns") || msg.contains("resolve") {
             return true;
         }
         source = err.source();
@@ -868,8 +864,8 @@ mod tests {
 
         let result = client.poll(&ep, &clock).await;
         assert!(
-            matches!(result.outcome, PollOutcome::DecodeError),
-            "expected Online, got {:?}",
+            matches!(result.outcome, PollOutcome::UnsupportedSchema),
+            "expected UnsupportedSchema, got {:?}",
             result.outcome
         );
     }

@@ -57,6 +57,8 @@ pub struct HealthResponse {
 
 impl HealthResponse {
     /// A `Ready` response wrapping the supplied snapshot.
+    ///
+    /// Callers must validate `snapshot` before constructing a ready response.
     #[must_use]
     pub fn ready(snapshot: crate::StatusSnapshot) -> Self {
         Self {

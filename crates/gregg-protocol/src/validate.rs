@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{
     snapshot::{CpuMetrics, LoadAverage, MemoryMetrics, StatusSnapshot, SwapMetrics},
-    SCHEMA_VERSION_V1,
+    MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
 };
 
 /// A single protocol-invariant violation.
@@ -42,10 +42,14 @@ pub enum ViolationKind {
     UnsupportedSchemaVersion { found: u16 },
     /// An integer count that must be positive was zero.
     ZeroNotAllowed,
+    /// The sampling cadence exceeded the protocol maximum.
+    SampleIntervalOutOfRange { max_ms: u64 },
     /// A percentage value was not finite (NaN or infinite).
     PercentageNotFinite,
     /// A percentage value was outside the closed `0.0..=100.0` interval.
     PercentageOutOfRange,
+    /// A load average was non-finite or negative.
+    LoadValueOutOfRange,
     /// `used_bytes` exceeded `total_bytes`.
     UsedExceedsTotal,
     /// `cpu_iowait` capability and `iowait_pct` presence disagreed.
@@ -60,8 +64,14 @@ impl fmt::Display for ViolationKind {
                 "unsupported schema_version {found} (expected {SCHEMA_VERSION_V1})"
             ),
             Self::ZeroNotAllowed => f.write_str("value must be positive"),
+            Self::SampleIntervalOutOfRange { max_ms } => {
+                write!(f, "sample interval must be at most {max_ms} ms")
+            }
             Self::PercentageNotFinite => f.write_str("percentage must be finite"),
             Self::PercentageOutOfRange => f.write_str("percentage must be in 0.0..=100.0"),
+            Self::LoadValueOutOfRange => {
+                f.write_str("load average must be finite and non-negative")
+            }
             Self::UsedExceedsTotal => f.write_str("used_bytes exceeds total_bytes"),
             Self::IowaitCapabilityMismatch => {
                 f.write_str("iowait_pct must be Some(_) iff cpu_iowait capability is true")
@@ -92,6 +102,13 @@ pub(crate) fn validate(snap: &StatusSnapshot) -> Result<(), Vec<ValidationViolat
     if snap.sample_interval_ms == 0 {
         violations.push(ValidationViolation::new(
             ViolationKind::ZeroNotAllowed,
+            "sample_interval_ms",
+        ));
+    } else if snap.sample_interval_ms > MAX_SAMPLE_INTERVAL_MS {
+        violations.push(ValidationViolation::new(
+            ViolationKind::SampleIntervalOutOfRange {
+                max_ms: MAX_SAMPLE_INTERVAL_MS,
+            },
             "sample_interval_ms",
         ));
     }
@@ -147,7 +164,7 @@ fn validate_load(load: &LoadAverage, out: &mut Vec<ValidationViolation>) {
 fn check_load(value: f32, field: &str, out: &mut Vec<ValidationViolation>) {
     if !value.is_finite() || value < 0.0 {
         out.push(ValidationViolation::new(
-            ViolationKind::PercentageOutOfRange,
+            ViolationKind::LoadValueOutOfRange,
             field,
         ));
     }
@@ -159,6 +176,12 @@ fn validate_memory(memory: &MemoryMetrics, out: &mut Vec<ValidationViolation>) {
         out.push(ValidationViolation::new(
             ViolationKind::UsedExceedsTotal,
             "memory.used_bytes",
+        ));
+    }
+    if memory.total_bytes == 0 && memory.usage_pct != 0.0 {
+        out.push(ValidationViolation::new(
+            ViolationKind::PercentageOutOfRange,
+            "memory.usage_pct",
         ));
     }
 }

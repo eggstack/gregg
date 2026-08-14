@@ -435,6 +435,11 @@ impl Config {
     ///
     /// Returns [`ConfigError`] if any step fails.
     pub fn write_atomic(&self, path: &Path) -> Result<(), ConfigError> {
+        let violations = self.validate();
+        if !violations.is_empty() {
+            return Err(ConfigError::Validation(violations));
+        }
+
         let dir = path.parent().ok_or_else(|| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
             source: AtomicWriteError::NoParentDirectory,
@@ -569,10 +574,12 @@ impl ConfigStore {
     /// Returns [`ConfigError`] if the file exists but cannot be read or
     /// parsed.
     pub fn load_or_default(&self) -> Result<Config, ConfigError> {
-        if self.path.exists() {
-            Config::load(&self.path)
-        } else {
-            Ok(Config::default())
+        match Config::load(&self.path) {
+            Ok(config) => Ok(config),
+            Err(error) if matches!(&error, ConfigError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound) => {
+                Ok(Config::default())
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1774,14 +1781,14 @@ unknown_field = "oops"
 
         for i in 0..10 {
             let config = Config {
-                refresh_seconds: i,
+                refresh_seconds: i + 1,
                 ..Default::default()
             };
             config.write_atomic(&path).unwrap();
         }
 
         let loaded = Config::load(&path).unwrap();
-        assert_eq!(loaded.refresh_seconds, 9);
+        assert_eq!(loaded.refresh_seconds, 10);
         assert!(loaded.is_valid());
 
         let _ = fs::remove_dir_all(&dir);

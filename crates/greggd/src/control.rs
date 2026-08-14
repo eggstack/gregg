@@ -302,7 +302,11 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
             Ok(StopOutcome::NotRunning)
         }
         Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(ControlError::Io(e)),
-        Some(_) | None => Ok(StopOutcome::NotRunning),
+        Some(e) => {
+            tracing::warn!(error = ?e, "control socket stop attempt failed unexpectedly");
+            Ok(StopOutcome::NotRunning)
+        }
+        None => Ok(StopOutcome::NotRunning),
     }
 }
 

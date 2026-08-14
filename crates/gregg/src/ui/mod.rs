@@ -1330,9 +1330,10 @@ mod tests {
         state.systems[0].reachability = Reachability::Online;
         // latest is None.
         let output = render_state(&state, 80, 8);
-        // render_online returns early when snap is None, so the five-row
-        // block is allocated but left blank. Verify no crash occurred.
-        assert!(!output.is_empty(), "should render without crashing");
+        assert!(
+            output.contains("waiting for data"),
+            "should show a pending state: {output}"
+        );
     }
 
     #[test]

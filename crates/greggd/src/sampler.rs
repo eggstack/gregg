@@ -293,6 +293,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 _ => {
                     if self.readiness == ReadinessState::Ready {
                         tracing::info!(from = "ready", to = "failed", "sampler state transition");
+                    } else if self.readiness == ReadinessState::Warming {
+                        tracing::info!(from = "warming", to = "failed", "sampler state transition");
                     }
                     self.readiness = ReadinessState::Failed;
                     self.consecutive_failures = self.consecutive_failures.saturating_add(1);

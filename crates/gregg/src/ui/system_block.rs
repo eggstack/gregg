@@ -24,6 +24,24 @@ pub fn render_online(
     }
 
     let Some(snap) = &system.latest else {
+        let sel_style = if is_selected {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        let header = text::header_line(system, area.width);
+        f.render_widget(
+            Line::from(Span::styled(header, sel_style)),
+            Rect { height: 1, ..area },
+        );
+        f.render_widget(
+            Line::from(Span::styled("waiting for data…", sel_style)),
+            Rect {
+                y: area.y.saturating_add(1),
+                height: 1,
+                ..area
+            },
+        );
         return;
     };
 

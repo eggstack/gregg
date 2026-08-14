@@ -147,3 +147,6 @@ pub use validate_v2::{validate_payload_v2, validate_v2, ValidationViolationV2, V
 /// are allowed by the compatibility policy; breaking changes require a new
 /// schema major and explicit migration handling.
 pub const SCHEMA_VERSION_V1: u16 = 1;
+
+/// Maximum sampling cadence accepted by the wire validation rules.
+pub const MAX_SAMPLE_INTERVAL_MS: u64 = 86_400_000;

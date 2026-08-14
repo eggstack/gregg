@@ -12,7 +12,7 @@ use crate::v2::{
     CommitMetrics, StatusPayloadV2, StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES,
     MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
 };
-use crate::{LoadAverage, MemoryMetrics};
+use crate::{LoadAverage, MemoryMetrics, MAX_SAMPLE_INTERVAL_MS};
 
 /// A single protocol-invariant violation for v2 snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -42,10 +42,16 @@ pub enum ViolationKindV2 {
     },
     /// An integer count that must be positive was zero.
     ZeroNotAllowed,
+    /// The sampling cadence exceeded the protocol maximum.
+    SampleIntervalOutOfRange {
+        max_ms: u64,
+    },
     /// A percentage value was not finite (NaN or infinite).
     PercentageNotFinite,
     /// A percentage value was outside the closed `0.0..=100.0` interval.
     PercentageOutOfRange,
+    /// A load average was non-finite or negative.
+    LoadValueOutOfRange,
     /// `used_bytes` exceeded `total_bytes` or `limit_bytes`.
     UsedExceedsTotal,
     AvailableExceedsTotal,
@@ -77,8 +83,14 @@ impl fmt::Display for ViolationKindV2 {
                 "unsupported schema_version {found} (expected {SCHEMA_VERSION_V2})"
             ),
             Self::ZeroNotAllowed => f.write_str("value must be positive"),
+            Self::SampleIntervalOutOfRange { max_ms } => {
+                write!(f, "sample interval must be at most {max_ms} ms")
+            }
             Self::PercentageNotFinite => f.write_str("percentage must be finite"),
             Self::PercentageOutOfRange => f.write_str("percentage must be in 0.0..=100.0"),
+            Self::LoadValueOutOfRange => {
+                f.write_str("load average must be finite and non-negative")
+            }
             Self::UsedExceedsTotal => f.write_str("used exceeds total/limit"),
             Self::AvailableExceedsTotal => f.write_str("available exceeds total"),
             Self::IowaitCapabilityMismatch => {
@@ -131,6 +143,13 @@ pub fn validate_v2(snap: &StatusSnapshotV2) -> Result<(), Vec<ValidationViolatio
     if snap.sample_interval_ms == 0 {
         violations.push(ValidationViolationV2::new(
             ViolationKindV2::ZeroNotAllowed,
+            "sample_interval_ms",
+        ));
+    } else if snap.sample_interval_ms > MAX_SAMPLE_INTERVAL_MS {
+        violations.push(ValidationViolationV2::new(
+            ViolationKindV2::SampleIntervalOutOfRange {
+                max_ms: MAX_SAMPLE_INTERVAL_MS,
+            },
             "sample_interval_ms",
         ));
     }
@@ -285,7 +304,7 @@ fn validate_load_v2(
 fn check_load_v2(value: f32, field: &str, out: &mut Vec<ValidationViolationV2>) {
     if !value.is_finite() || value < 0.0 {
         out.push(ValidationViolationV2::new(
-            ViolationKindV2::PercentageOutOfRange,
+            ViolationKindV2::LoadValueOutOfRange,
             field,
         ));
     }
@@ -297,6 +316,12 @@ fn validate_memory_v2(memory: &MemoryMetrics, out: &mut Vec<ValidationViolationV
         out.push(ValidationViolationV2::new(
             ViolationKindV2::UsedExceedsTotal,
             "memory.used_bytes",
+        ));
+    }
+    if memory.total_bytes == 0 && memory.usage_pct != 0.0 {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::PercentageOutOfRange,
+            "memory.usage_pct",
         ));
     }
 }
@@ -361,6 +386,18 @@ fn validate_commit_v2(
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::UsedExceedsTotal,
                         "commit.used_bytes",
+                    ));
+                }
+                if c.limit_bytes == 0 {
+                    out.push(ValidationViolationV2::new(
+                        ViolationKindV2::ZeroNotAllowed,
+                        "commit.limit_bytes",
+                    ));
+                }
+                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
+                    out.push(ValidationViolationV2::new(
+                        ViolationKindV2::PercentageOutOfRange,
+                        "commit.usage_pct",
                     ));
                 }
             } else {
@@ -643,6 +680,67 @@ mod tests {
         snap.sample_interval_ms = 0;
         let err = validate_v2(&snap).unwrap_err();
         assert!(err.iter().any(|v| v.field == "sample_interval_ms"));
+    }
+
+    #[test]
+    fn rejects_sample_interval_above_protocol_limit() {
+        let mut snap = valid_linux_v2();
+        snap.sample_interval_ms = MAX_SAMPLE_INTERVAL_MS + 1;
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "sample_interval_ms"
+                && matches!(
+                    violation.kind,
+                    ViolationKindV2::SampleIntervalOutOfRange { .. }
+                )
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_load_value_with_load_specific_violation() {
+        let mut snap = valid_linux_v2();
+        snap.load.as_mut().unwrap().one = -1.0;
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "load.one" && violation.kind == ViolationKindV2::LoadValueOutOfRange
+        }));
+    }
+
+    #[test]
+    fn rejects_nonzero_memory_usage_with_zero_total() {
+        let mut snap = valid_linux_v2();
+        snap.memory.total_bytes = 0;
+        snap.memory.usage_pct = 1.0;
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "memory.usage_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
+    }
+
+    #[test]
+    fn rejects_zero_commit_limit_and_nonzero_usage() {
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: true,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(crate::v2::CommitMetrics {
+                used_bytes: 0,
+                limit_bytes: 0,
+                usage_pct: 1.0,
+            }),
+            ..valid_linux_v2()
+        };
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "commit.limit_bytes"
+                && violation.kind == ViolationKindV2::ZeroNotAllowed
+        }));
+        assert!(err.iter().any(|violation| {
+            violation.field == "commit.usage_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
     }
 
     #[test]

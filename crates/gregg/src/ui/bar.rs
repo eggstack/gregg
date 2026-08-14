@@ -68,7 +68,9 @@ pub fn render_unavailable(f: &mut Frame, area: Rect, label: &str) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    let line = format!("{label}  [                    ] —");
+    let fixed_width = label.len().saturating_add(4).saturating_add(3);
+    let empty_width = usize::from(area.width).saturating_sub(fixed_width);
+    let line = format!("{label}  [{}] —", " ".repeat(empty_width));
     f.render_widget(Line::from(line), area);
 }
 

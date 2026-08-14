@@ -3,11 +3,10 @@
 //! Reads crossterm events in a dedicated thread and sends them as
 //! typed [`Event`]s through a bounded channel.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 use crate::event::{Event, Key, KeyEvent as CrateKeyEvent};
 
@@ -15,7 +14,7 @@ use crate::event::{Event, Key, KeyEvent as CrateKeyEvent};
 /// forwards them through a bounded channel.
 #[allow(dead_code)]
 pub struct EventStream {
-    shutdown: Arc<AtomicBool>,
+    shutdown: Arc<Notify>,
     _handle: std::thread::JoinHandle<()>,
 }
 
@@ -24,7 +23,7 @@ impl EventStream {
     /// of a bounded channel (capacity 32).
     pub fn new() -> (Self, mpsc::Receiver<Event>) {
         let (tx, rx) = mpsc::channel(32);
-        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(Notify::new());
         let shutdown_clone = shutdown.clone();
 
         let handle = std::thread::spawn(move || {
@@ -36,11 +35,7 @@ impl EventStream {
                 let mut stream = crossterm::event::EventStream::new();
                 loop {
                     tokio::select! {
-                        () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                            if shutdown_clone.load(Ordering::Relaxed) {
-                                break;
-                            }
-                        }
+                        () = shutdown_clone.notified() => break,
                         next_event = stream.next() => {
                             match next_event {
                                 Some(Ok(crossterm_event)) => {
@@ -71,7 +66,7 @@ impl EventStream {
     /// Signal the background thread to stop. Dropping the `EventStream`
     /// also triggers shutdown.
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        self.shutdown.notify_one();
     }
 }
 

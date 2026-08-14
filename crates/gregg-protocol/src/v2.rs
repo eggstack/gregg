@@ -108,17 +108,22 @@ impl StatusSnapshotV2 {
 /// A `false` flag means the metric is **unsupported on this platform**.
 /// Servers must report `None` for the corresponding value rather than
 /// fabricating a zero or placeholder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[serde(default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricCapabilitiesV2 {
     /// Whether aggregate CPU I/O wait is reported.
+    #[serde(default)]
     pub cpu_iowait: bool,
     /// Whether one-/five-/fifteen-minute load averages are reported.
+    #[serde(default)]
     pub load_average: bool,
     /// Whether swap utilization is reported.
+    #[serde(default)]
     pub swap: bool,
     /// Whether memory commit charge is reported.
+    #[serde(default)]
     pub memory_commit: bool,
 }
 
@@ -190,6 +195,8 @@ pub struct HealthResponseV2 {
 
 impl HealthResponseV2 {
     /// A `Ready` response wrapping the supplied v2 snapshot.
+    ///
+    /// Callers must validate `snapshot` before constructing a ready response.
     #[must_use]
     pub fn ready(snapshot: StatusSnapshotV2) -> Self {
         Self {

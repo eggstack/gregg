@@ -43,7 +43,8 @@ Every snapshot carries:
   non-matching value is rejected by validation.
 - `observed_at_unix_ms: u64` — Unix epoch in milliseconds when the counters
   were sampled.
-- `sample_interval_ms: u64` — sampling cadence used to derive percentages.
+- `sample_interval_ms: u64` — sampling cadence used to derive percentages;
+  validation accepts values from 1 ms through 24 hours.
 - `capabilities` — per-metric support flags. A `false` flag means the metric
   is unsupported on this platform; servers must report `None` (null) for
   unsupported values rather than zero.
@@ -119,8 +120,10 @@ are:
 - `UnsupportedSchemaVersion { found: u16 }`
 - `ZeroNotAllowed` (for `observed_at_unix_ms`, `sample_interval_ms`,
   `cpu.logical_cores`)
+- `SampleIntervalOutOfRange` — `sample_interval_ms` exceeds 24 hours
 - `PercentageNotFinite`
 - `PercentageOutOfRange`
+- `LoadValueOutOfRange`
 - `UsedExceedsTotal` (memory or swap)
 - `IowaitCapabilityMismatch`
 
@@ -130,6 +133,8 @@ are:
 `Err(Vec<ValidationViolationV2>)`. In addition to v1 kinds, v2 adds:
 
 - `AvailableExceedsTotal` — `available_bytes` exceeded `total_bytes`
+- `SampleIntervalOutOfRange` — `sample_interval_ms` exceeds 24 hours
+- `LoadValueOutOfRange` — a load average was non-finite or negative
 - `LoadCapabilityMismatch` — load presence disagrees with capability
 - `SwapCapabilityMismatch` — swap presence disagrees with capability
 - `CommitCapabilityMismatch` — commit presence disagrees with capability

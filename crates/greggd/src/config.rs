@@ -225,26 +225,23 @@ impl Config {
         })?;
 
         // 4. Flush the file.
-        #[cfg(unix)]
-        {
-            let file = fs::OpenOptions::new()
-                .write(true)
-                .open(&temp_path)
-                .map_err(|e| {
-                    let _ = fs::remove_file(&temp_path);
-                    ConfigError::AtomicWrite {
-                        path: path.to_path_buf(),
-                        source: AtomicWriteError::Io(e),
-                    }
-                })?;
-            file.sync_all().map_err(|e| {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&temp_path)
+            .map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
                 ConfigError::AtomicWrite {
                     path: path.to_path_buf(),
                     source: AtomicWriteError::Io(e),
                 }
             })?;
-        }
+        file.sync_all().map_err(|e| {
+            let _ = fs::remove_file(&temp_path);
+            ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::Io(e),
+            }
+        })?;
 
         // 5. Rename atomically over the destination.
         fs::rename(&temp_path, path).map_err(|e| {

@@ -396,6 +396,11 @@ pub fn validate_name(name: &str) -> Result<(), EndpointError> {
             reason: "name is empty".to_string(),
         });
     }
+    if trimmed.chars().any(|character| character.is_control()) {
+        return Err(EndpointError::InvalidName {
+            reason: "name contains control characters".to_string(),
+        });
+    }
     if trimmed.len() > MAX_ENDPOINT_NAME_LEN {
         return Err(EndpointError::InvalidName {
             reason: format!(
@@ -784,6 +789,12 @@ mod tests {
     fn empty_name_rejected() {
         assert!(validate_name("").is_err());
         assert!(validate_name("   ").is_err());
+    }
+
+    #[test]
+    fn control_characters_in_name_rejected() {
+        assert!(validate_name("server\nname").is_err());
+        assert!(validate_name("server\u{7f}name").is_err());
     }
 
     #[test]

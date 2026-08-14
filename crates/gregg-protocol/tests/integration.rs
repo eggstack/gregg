@@ -7,7 +7,7 @@ use gregg_protocol::v2::{
 use gregg_protocol::{
     CpuMetrics, HealthResponse, LoadAverage, MemoryMetrics, MetricCapabilities, ReadinessState,
     StatusSnapshot, SwapMetrics, SystemIdentity, ValidationViolation, ViolationKind,
-    SCHEMA_VERSION_V1,
+    MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
 };
 
 fn fixture(rel: &str) -> Vec<u8> {
@@ -505,6 +505,72 @@ fn identity(name: &str) -> SystemIdentity {
     }
 }
 
+fn valid_v1_snapshot() -> StatusSnapshot {
+    StatusSnapshot {
+        schema_version: SCHEMA_VERSION_V1,
+        observed_at_unix_ms: 1,
+        sample_interval_ms: 1000,
+        capabilities: MetricCapabilities { cpu_iowait: false },
+        system: identity("test"),
+        cpu: CpuMetrics {
+            logical_cores: 1,
+            usage_pct: 0.0,
+            iowait_pct: None,
+        },
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 1,
+            usage_pct: 0.0,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+    }
+}
+
+#[test]
+fn validation_uses_load_specific_violation() {
+    let mut snap = valid_v1_snapshot();
+    snap.load.one = -1.0;
+    let violations = snap.validate().unwrap_err();
+    assert!(violations.iter().any(|violation| {
+        violation.field == "load.one" && violation.kind == ViolationKind::LoadValueOutOfRange
+    }));
+}
+
+#[test]
+fn validation_rejects_nonzero_memory_usage_with_zero_total() {
+    let mut snap = valid_v1_snapshot();
+    snap.memory.total_bytes = 0;
+    snap.memory.usage_pct = 1.0;
+    let violations = snap.validate().unwrap_err();
+    assert!(violations.iter().any(|violation| {
+        violation.field == "memory.usage_pct"
+            && violation.kind == ViolationKind::PercentageOutOfRange
+    }));
+}
+
+#[test]
+fn validation_rejects_sample_interval_above_protocol_limit() {
+    let mut snap = valid_v1_snapshot();
+    snap.sample_interval_ms = MAX_SAMPLE_INTERVAL_MS + 1;
+    let violations = snap.validate().unwrap_err();
+    assert!(violations.iter().any(|violation| {
+        violation.field == "sample_interval_ms"
+            && matches!(
+                violation.kind,
+                ViolationKind::SampleIntervalOutOfRange { .. }
+            )
+    }));
+}
+
 #[test]
 fn violation_messages_mention_field_and_reason() {
     let snap = StatusSnapshot {
@@ -578,7 +644,7 @@ fn health_response_accessors() {
             usage_pct: 0.0,
         },
     };
-    let ready = HealthResponse::ready(snap.clone());
+    let ready = HealthResponse::ready(snap);
     assert_eq!(ready.state, ReadinessState::Ready);
     assert!(ready.snapshot.is_some());
 
@@ -1323,11 +1389,13 @@ fn v2_fixture_paths_exist() {
 #[test]
 fn v1_fixture_not_accidentally_parsed_as_v2() {
     let bytes = fixture("linux-v1.json");
-    // v1 has load as required (not optional), so parsing as v2 should fail
+    // V2 capability defaults make this additive shape parseable, but the
+    // explicit schema version still rejects it as a v2 snapshot.
     let result = serde_json::from_slice::<StatusSnapshotV2>(&bytes);
+    let parsed = result.expect("v1 and v2 have an additive JSON shape");
     assert!(
-        result.is_err(),
-        "v1 fixture must not parse as v2 (load is required in v1, optional in v2)"
+        parsed.validate().is_err(),
+        "v1 schema must not validate as v2"
     );
 }
 
