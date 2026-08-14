@@ -511,71 +511,71 @@ No new crate or dependency is expected.
 
 ### Windows regression correction
 
-- [ ] Windows no longer references Unix-only `run_with_control_path` from a compiled code path.
-- [ ] Linux/macOS foreground `run` still uses the local control socket.
-- [ ] Windows foreground `run` uses the ordinary shared daemon runtime.
-- [ ] Windows `greggd stop` still delegates to the SCM manager.
-- [ ] Windows SCM dispatcher/readiness/shutdown behavior is unchanged.
-- [ ] Existing Windows workspace tests pass.
-- [ ] Existing Windows release `greggd` build passes.
-- [ ] Existing Windows SCM lifecycle smoke passes.
+- [x] Windows no longer references Unix-only `run_with_control_path` from a compiled code path.
+- [x] Linux/macOS foreground `run` still uses the local control socket.
+- [x] Windows foreground `run` uses the ordinary shared daemon runtime.
+- [x] Windows `greggd stop` still delegates to the SCM manager.
+- [x] Windows SCM dispatcher/readiness/shutdown behavior is unchanged.
+- [x] Existing Windows workspace tests pass.
+- [x] Existing Windows release `greggd` build passes.
+- [x] Existing Windows SCM lifecycle smoke passes.
 
 ### Config-specific Unix stop identity
 
-- [ ] Control identity is derived from resolved config path, not only config directory.
-- [ ] Control identity does not depend on mutable host/port fields.
-- [ ] Same config path produces the same primary/fallback paths across host/port edits.
-- [ ] Two different config paths in the same directory produce different primary paths.
-- [ ] Two different config paths in the same directory produce different fallback paths.
-- [ ] Socket paths remain below Unix path-length limits.
-- [ ] No random/PID/time-based identity is introduced.
-- [ ] No new config field is introduced.
-- [ ] `greggd --config B stop` cannot stop daemon A solely because A and B share a directory.
-- [ ] Deterministic A/B regression test proves stop isolation.
-- [ ] Real Ubuntu two-config smoke proves stop isolation with release binaries.
+- [x] Control identity is derived from resolved config path, not only config directory.
+- [x] Control identity does not depend on mutable host/port fields.
+- [x] Same config path produces the same primary/fallback paths across host/port edits.
+- [x] Two different config paths in the same directory produce different primary paths.
+- [x] Two different config paths in the same directory produce different fallback paths.
+- [x] Socket paths remain below Unix path-length limits.
+- [x] No random/PID/time-based identity is introduced.
+- [x] No new config field is introduced.
+- [x] `greggd --config B stop` cannot stop daemon A solely because A and B share a directory.
+- [x] Deterministic A/B regression test proves stop isolation.
+- [x] Real Ubuntu two-daemon smoke proves stop isolation with release binaries.
 
 ### Permission enforcement
 
-- [ ] Every active Unix control socket has successfully applied restrictive `0600` permissions.
-- [ ] Permission-setting errors are not ignored.
-- [ ] A socket whose permissions cannot be restricted is closed and removed if created by that attempt.
-- [ ] Fallback may be tried after a failed primary secure setup.
-- [ ] If no secure candidate succeeds, Unix foreground `run` returns a clear error rather than silently disabling `greggd stop`.
-- [ ] Normal-path test verifies actual socket mode.
+- [x] Every active Unix control socket has successfully applied restrictive `0600` permissions.
+- [x] Permission-setting errors are not ignored.
+- [x] A socket whose permissions cannot be restricted is closed and removed if created by that attempt.
+- [x] Fallback may be tried after a failed primary secure setup.
+- [x] If no secure candidate succeeds, Unix foreground `run` returns a clear error rather than silently disabling `greggd stop`.
+- [x] Normal-path test verifies actual socket mode.
 
 ### Stale-socket safety
 
-- [ ] Existing entries are metadata-checked before unlink.
-- [ ] Regular files are never removed by stale-socket cleanup.
-- [ ] Live connect success never unlinks the socket.
-- [ ] `ConnectionRefused` is treated as stale.
-- [ ] `NotFound` is treated as disappeared/absent.
-- [ ] `PermissionDenied` is never treated as stale.
-- [ ] Timeout/other unexpected connect errors are never treated as stale without explicit proof.
-- [ ] Focused classification tests cover the allowed/disallowed error kinds.
+- [x] Existing entries are metadata-checked before unlink.
+- [x] Regular files are never removed by stale-socket cleanup.
+- [x] Live connect success never unlinks the socket.
+- [x] `ConnectionRefused` is treated as stale.
+- [x] `NotFound` is treated as disappeared/absent.
+- [x] `PermissionDenied` is never treated as stale.
+- [x] Timeout/other unexpected connect errors are never treated as stale without explicit proof.
+- [x] Focused classification tests cover the allowed/disallowed error kinds.
 
 ### Local verification
 
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] Focused `greggd` control tests pass.
-- [ ] Focused CLI/run tests pass.
-- [ ] `cargo test -p greggd --bin greggd` passes.
-- [ ] `cargo test -p greggd` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Ubuntu release binary one-daemon lifecycle smoke passes.
-- [ ] Ubuntu release binary two-config same-directory isolation smoke passes.
-- [ ] No new CI workflow/job/matrix is added.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] Focused `greggd` control tests pass.
+- [x] Focused CLI/run tests pass.
+- [x] `cargo test -p greggd --bin greggd` passes.
+- [x] `cargo test -p greggd` passes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Ubuntu release binary one-daemon lifecycle smoke passes.
+- [x] Ubuntu release binary two-config same-directory isolation smoke passes.
+- [x] No new CI workflow/job/matrix is added.
 
 ### Cross-platform closure
 
-- [ ] Existing Linux CI job passes.
-- [ ] Existing Rust 1.75 MSRV job passes.
-- [ ] Existing macOS native jobs pass.
-- [ ] Existing Windows job passes through tests, release build, and SCM smoke.
-- [ ] Plan 080 receives a truthful corrective-follow-up note without deleting its valid historical E2E record.
-- [ ] Plan 081 records implementation SHA and exact local/CI verification results.
-- [ ] `plans/README.md` identifies Plan 081 as the active corrective phase until all criteria pass.
-- [ ] No Plan 082 is created solely for closure.
+- [x] Existing Linux CI job passes.
+- [x] Existing Rust 1.75 MSRV job passes.
+- [x] Existing macOS native jobs pass.
+- [x] Existing Windows job passes through tests, release build, and SCM smoke.
+- [x] Plan 080 receives a truthful corrective-follow-up note without deleting its valid historical E2E record.
+- [x] Plan 081 records implementation SHA and exact local/CI verification results.
+- [x] `plans/README.md` identifies Plan 081 as the completed corrective phase after all criteria pass.
+- [x] No Plan 082 was created solely for closure; Plan 082 is separately justified by same-file path-spelling identity normalization.
 
 ## Closure standard
 
@@ -600,7 +600,7 @@ A green Linux-only test run is insufficient because the regression includes a na
 ## Closure record
 
 **Date:** 2026-08-14
-**Implementation SHA:** see `git log -1 --format=%H` on the Plan 081 commit.
+**Implementation SHA:** `59e17551c211df382c6f0219d0d465ef1c198a8a`.
 **Binary version:** `greggd 1.0.5`
 **Host:** Ubuntu 24.04.4 LTS (Noble Numbat, aarch64)
 
@@ -617,7 +617,7 @@ A green Linux-only test run is insufficient because the regression includes a na
 2. **Config-path-scoped Unix control identity**
    (`crates/greggd/src/control.rs`). Introduced `config_id_for_path`
    which returns the 16-character lowercase hex digest of a stable 64-bit
-   FNV-1a hash over the canonical config-path bytes. The digest does
+   FNV-1a hash over the resolved config-path bytes. The digest does
    not depend on `host`, `port`, `name`, the current PID, the time, or
    any random source. Both `primary_control_path` and `fallback_control_path`
    now produce `greggd-<id>.control.sock`, so two different config files
@@ -735,6 +735,12 @@ MSRV (Rust 1.75)              success
 Windows (workspace + build + SCM smoke)   success
 ```
 
-CI run ID: see `gh run list --limit 1` against `main` immediately after
-the Plan 081 commit; the same record is recorded in `plans/README.md`'s
-Plan 081 line and the planning-record updates above.
+CI implementation run: `31813136597` for implementation SHA
+`59e17551c211df382c6f0219d0d465ef1c198a8a`.
+
+The later green current-main record commit
+`6fb005b4a469cdd1ea4baf498fe4a18f5858f3be` passed in run `31813615708`.
+
+Plan 082 subsequently tightened the identity-path normalization for
+same-file relative/absolute/symlink spellings without changing the Plan 081
+protocol or A/B isolation behavior.

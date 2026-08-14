@@ -396,7 +396,7 @@ pub fn validate_name(name: &str) -> Result<(), EndpointError> {
             reason: "name is empty".to_string(),
         });
     }
-    if trimmed.chars().any(|character| character.is_control()) {
+    if trimmed.chars().any(char::is_control) {
         return Err(EndpointError::InvalidName {
             reason: "name contains control characters".to_string(),
         });

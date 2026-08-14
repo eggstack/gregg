@@ -23,7 +23,7 @@ available through the Windows-only service path.
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; config-path-scoped identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
+| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
 | `server/error` | `src/server/error.rs` | Server error types |
@@ -168,13 +168,16 @@ permission denied.
 ### Unix control socket
 
 `greggd run` on Linux/macOS binds a local Unix-domain control socket
-alongside the TCP listener. The socket identity is derived from the
-resolved config path via a deterministic 64-bit FNV-1a hex digest, so
-two different config files in the same directory always produce
+alongside the TCP listener. The socket identity is derived from a normalized
+config identity path via a deterministic 64-bit FNV-1a hex digest. Existing
+config files are filesystem-canonicalized, so relative, absolute, and symlink
+spellings of the same file produce the same control paths; an absent implicit
+default uses a deterministic lexical absolute path without requiring the TOML
+file to exist. Two different config files in the same directory still produce
 different control paths (`greggd-<id>.control.sock`). Editing `host` or
-`port` inside the same TOML does not change the `<id>`, so the same
-daemon continues to advertise `greggd stop` at the same path. The socket
-file lives at the config-adjacent path when that directory is writable;
+`port` inside the same TOML does not change the `<id>`, so the same daemon
+continues to advertise `greggd stop` at the same path. The socket file lives at
+the canonical config-adjacent path when that directory is writable;
 otherwise a deterministic fallback under the standard temp directory is
 used. The chosen socket is created with restrictive `0600` permissions;
 a failed `chmod` causes the candidate to be discarded before the next

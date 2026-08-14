@@ -92,7 +92,10 @@ greggd version                     # print the daemon version
 ```
 
 `greggd stop` only targets the local `greggd` instance associated with the
-same resolved config identity as `greggd run`. On Linux/macOS it speaks to a
+same resolved config identity as `greggd run`. On Linux/macOS, existing config
+files use their filesystem-canonical path for that identity, so relative,
+absolute, and symlink spellings of the same file converge; a missing implicit
+default config uses a deterministic lexical absolute path. Stop speaks to a
 local Unix-domain control socket owned by the daemon; on Windows it asks the
 Service Control Manager. The HTTP API is read-only and has no shutdown
 endpoint.

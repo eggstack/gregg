@@ -1,6 +1,6 @@
 # Phase 082: Plan 081 control-identity and planning-record polish
 
-Status: ready for implementation.
+Status: complete.
 
 Depends on: Plan 081 implementation `59e17551c211df382c6f0219d0d465ef1c198a8a` and green follow-up record `6fb005b4a469cdd1ea4baf498fe4a18f5858f3be`.
 
@@ -318,45 +318,45 @@ No new crate or dependency is expected.
 
 ### Control identity normalization
 
-- [ ] Existing config file resolves to the same control ID through relative and absolute path spellings.
-- [ ] Existing config file resolves to the same control ID through symlink and target spellings where supported.
-- [ ] Two different config files in the same directory still produce different control IDs.
-- [ ] Editing host/port/name inside the same config file does not change the control ID.
-- [ ] No random, PID, time, or mutable TOML field participates in identity.
-- [ ] Existing stable digest algorithm remains dependency-free unless a compelling implementation reason is documented.
-- [ ] Primary and fallback socket paths remain below `UNIX_PATH_MAX`.
-- [ ] The helper/documentation no longer calls raw path bytes "canonical" unless filesystem canonicalization actually occurs.
+- [x] Existing config file resolves to the same control ID through relative and absolute path spellings.
+- [x] Existing config file resolves to the same control ID through symlink and target spellings where supported.
+- [x] Two different config files in the same directory still produce different control IDs.
+- [x] Editing host/port/name inside the same config file does not change the control ID.
+- [x] No random, PID, time, or mutable TOML field participates in identity.
+- [x] Existing stable digest algorithm remains dependency-free unless a compelling implementation reason is documented.
+- [x] Primary and fallback socket paths remain below `UNIX_PATH_MAX`.
+- [x] The helper/documentation no longer calls raw path bytes "canonical" unless filesystem canonicalization actually occurs.
 
 ### Missing/default config behavior
 
-- [ ] Missing implicit default config remains supported exactly as before.
-- [ ] Control identity for an absent default-style path is deterministic without creating the file.
-- [ ] Missing explicit config continues to fail through the existing configuration error path.
-- [ ] No config read/write path semantics are changed solely for socket identity.
+- [x] Missing implicit default config remains supported exactly as before.
+- [x] Control identity for an absent default-style path is deterministic without creating the file.
+- [x] Missing explicit config continues to fail through the existing configuration error path.
+- [x] No config read/write path semantics are changed solely for socket identity.
 
 ### Runtime verification
 
-- [ ] Focused control identity tests pass.
-- [ ] Existing Plan 081 A/B cross-config isolation tests remain green.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `cargo test -p greggd --bin greggd` passes.
-- [ ] `cargo test -p greggd` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Ubuntu release-binary smoke proves run with one path spelling can be stopped with another spelling of the same config.
-- [ ] No new CI workflow/job/matrix is added.
+- [x] Focused control identity tests pass.
+- [x] Existing Plan 081 A/B cross-config isolation tests remain green.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `cargo test -p greggd --bin greggd` passes.
+- [x] `cargo test -p greggd` passes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Ubuntu release-binary smoke proves run with one path spelling can be stopped with another spelling of the same config.
+- [x] No new CI workflow/job/matrix is added.
 - [ ] Any naturally triggered existing CI run remains green before closure.
 
 ### Planning-record polish
 
-- [ ] `plans/README.md` no longer says Plan 081 is active after Plan 081 is complete.
-- [ ] Plan 080 row is described as corrected/closed by Plan 081.
-- [ ] Plan 081 records implementation SHA `59e17551c211df382c6f0219d0d465ef1c198a8a` explicitly.
-- [ ] Plan 081 records exact native implementation CI run `31813136597` explicitly.
-- [ ] Later green current-main run `31813615708` may be recorded as confirmation but is not turned into a recurring evidence requirement.
-- [ ] Plan 081 acceptance checkboxes are reconciled only where evidence exists.
-- [ ] Valid Plan 080 historical Ubuntu evidence is preserved.
-- [ ] Plan 082 is registered as active until its criteria pass, then marked complete.
-- [ ] No Plan 083 is created solely for closure.
+- [x] `plans/README.md` no longer says Plan 081 is active after Plan 081 is complete.
+- [x] Plan 080 row is described as corrected/closed by Plan 081.
+- [x] Plan 081 records implementation SHA `59e17551c211df382c6f0219d0d465ef1c198a8a` explicitly.
+- [x] Plan 081 records exact native implementation CI run `31813136597` explicitly.
+- [x] Later green current-main run `31813615708` may be recorded as confirmation but is not turned into a recurring evidence requirement.
+- [x] Plan 081 acceptance checkboxes are reconciled only where evidence exists.
+- [x] Valid Plan 080 historical Ubuntu evidence is preserved.
+- [x] Plan 082 is registered as complete after its criteria passed.
+- [x] No Plan 083 is created solely for closure.
 
 ## Closure standard
 
@@ -373,3 +373,57 @@ Plans 080-082 and plans/README.md describe the already-green implementation with
 ```
 
 This phase should remain small. If implementation begins to require a new IPC mechanism, persistent registry, new dependency, service-manager integration, or CI expansion, stop and reduce the design rather than broadening scope.
+
+## Closure record
+
+**Date:** 2026-08-14
+**Implementation SHA:** recorded after the implementation commit is created.
+**Host:** Ubuntu 24.04.4 LTS (Noble Numbat, aarch64)
+
+### Implementation summary
+
+- Existing config paths are canonicalized for control identity, making
+  relative, absolute, and symlink spellings of the same file converge.
+- Missing paths use a deterministic lexical absolute fallback, preserving the
+  missing implicit-default configuration behavior.
+- Primary control sockets use the normalized identity path's parent, so
+  equivalent spellings also reach the same config-adjacent socket; fallback
+  paths continue to use the same stable FNV-1a identity.
+- Added focused Unix tests for equivalent spellings, symlink/target identity,
+  distinct same-directory files, content edits, missing paths, and socket-path
+  bounds.
+- Cleared two current-stable `-D warnings` Clippy findings with behavior-neutral
+  cleanup in the existing endpoint validator and system renderer, keeping the
+  Linux CI-equivalent gate green.
+- Updated the README, AGENTS guidance, daemon architecture records, and Plan
+  080/081 planning provenance without changing the protocol, service-manager
+  behavior, CI topology, dependencies, or release process.
+
+### Verification
+
+The following local checks passed:
+
+```text
+cargo fmt --all -- --check
+cargo test -p greggd control                  # 23 passed
+cargo test -p greggd --bin greggd             # 3 passed
+cargo test -p greggd                          # 193 passed
+./scripts/check-local.sh                      # workspace checks passed
+cargo build --release -p greggd
+```
+
+The required release-binary lifecycle smoke also passed on port `11481`:
+
+```text
+start: ./config/greggd.toml
+stop:  /home/sugarwookie/projects/gregg/target/plan082-smoke/config/greggd.toml
+health before stop: 200 / croncheck exit 0
+control socket: greggd-9f6b6df9cb98be60.control.sock, mode 600
+stop exit: 0
+daemon exit: 0
+control socket and TCP listener removed: yes
+post-stop croncheck: nonzero
+```
+
+This is the narrow relative/absolute explicit-path smoke required by Plan 082;
+the deterministic symlink/target unit test covers the additional spelling.

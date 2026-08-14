@@ -96,9 +96,11 @@ passes locally, the distinction is the cause.
 - `greggd stop` on Linux/macOS targets only the local foreground `greggd`
   instance associated with the resolved config identity via a single tiny
   Unix-domain control socket (`STOP\n` -> `OK\n`). The control identity is
-  derived from the resolved config path (deterministic FNV-1a digest),
-  never from the config parent directory alone, so two configs in the same
-  directory cannot cross-stop. The control socket is created with
+  derived from a deterministic FNV-1a digest of the normalized config path:
+  existing files use filesystem canonicalization so relative, absolute, and
+  symlink spellings converge; a missing implicit default uses a lexical
+  absolute fallback. It is never derived from the config parent directory
+  alone, so two configs in the same directory cannot cross-stop. The control socket is created with
   restrictive `0600` permissions; a failed `chmod` discards the candidate
   and tries the next legitimate one. Stale socket cleanup unlinks only
   after metadata confirms a socket and the connect result classifies as

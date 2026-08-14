@@ -14,7 +14,7 @@
 //!
 //! 1. **Primary (config-adjacent)**: `<config_parent>/greggd-<id>.control.sock`,
 //!    where `<id>` is a deterministic 64-bit FNV-1a hex digest of the
-//!    canonical config path. This is preferred because the packaged Linux
+//!    normalized config identity path. This is preferred because the packaged Linux
 //!    service writes its config to `/etc/gregg/` (writable by the daemon user)
 //!    and systemd's `PrivateTmp=true` would otherwise isolate a `/tmp`-only
 //!    fallback from the operator's CLI.
@@ -23,12 +23,15 @@
 //!    writable by the daemon user (for example when running `greggd run`
 //!    from a non-root account while reading an operator-installed config).
 //!
-//! The `<id>` is derived from the resolved config path bytes only. Editing
-//! `host` or `port` inside the same TOML does not change the `<id>`, so the
-//! daemon continues to advertise `greggd stop` at the same path. Two
-//! different config files in the same directory produce different `<id>`
-//! values, so `greggd --config B stop` cannot reach a daemon launched from
-//! config A merely because the two configs share a parent directory.
+//! The `<id>` is derived from the normalized config identity path only.
+//! Existing files use their filesystem-canonical path, so relative, absolute,
+//! and symlink spellings of the same file converge. A missing implicit default
+//! uses a deterministic lexical absolute path instead. Editing `host` or
+//! `port` inside the same TOML does not change the `<id>`, so the daemon
+//! continues to advertise `greggd stop` at the same path. Two different config
+//! files in the same directory produce different `<id>` values, so
+//! `greggd --config B stop` cannot reach a daemon launched from config A merely
+//! because the two configs share a parent directory.
 //!
 //! `run` selects whichever path it can actually bind. `stop` tries the
 //! primary first and falls back to the deterministic temp path if the
@@ -48,6 +51,7 @@
 //! The daemon never mutates the HTTP API or TOML configuration through this
 //! socket.
 
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
@@ -113,11 +117,13 @@ pub enum ControlSetupError {
     },
 }
 
-/// Compute a stable 64-bit FNV-1a hex digest for the given config path.
+/// Compute a stable 64-bit FNV-1a hex digest for the given config identity.
 ///
-/// The digest is computed over the canonical, lossless representation of
-/// the path so that two operators using the same config file observe the
-/// same control-socket filename across runs. The algorithm is FNV-1a
+/// The digest is computed over a normalized representation of the path so that
+/// two operators using the same config file observe the same control-socket
+/// filename across runs. Existing files are normalized with filesystem
+/// canonicalization; absent paths use a lexical absolute fallback. The
+/// algorithm is FNV-1a
 /// (Fowler-Noll-Vo) using the standard 64-bit offset basis and prime, which
 /// is deliberately stable across Rust releases (unlike `DefaultHasher`,
 /// whose algorithm is not a compatibility contract).
@@ -130,25 +136,46 @@ pub fn config_id_for_path(config_path: &Path) -> String {
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    let bytes = canonical_path_bytes(config_path);
+    let bytes = control_identity_path(config_path);
+    let bytes = bytes.as_os_str().as_bytes();
     let mut hash = FNV_OFFSET_BASIS;
-    for byte in bytes {
+    for &byte in bytes {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
     format!("{hash:016x}")
 }
 
-/// Return a canonical, lossless byte representation of `path` for hashing.
+/// Normalize a config path for control-socket identity.
 ///
-/// We use the path's `OsStr` as a UTF-8 byte string when possible; on Unix
-/// `OsStr` is always representable as bytes. The canonical form preserves
-/// the path exactly as supplied to the daemon, including trailing
-/// separators and case, so two distinct paths always produce distinct
-/// digests.
-fn canonical_path_bytes(path: &Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().to_vec()
+/// Existing paths are filesystem-canonicalized so relative, absolute, and
+/// symlink spellings of one file converge. A missing path is made absolute and
+/// normalized lexically without requiring the file to exist; this preserves
+/// the supported implicit-default configuration behavior.
+fn control_identity_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(path)
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                let _ = normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
 }
 
 /// Compute the primary config-adjacent control socket path.
@@ -159,7 +186,8 @@ fn canonical_path_bytes(path: &Path) -> Vec<u8> {
 /// it as the first candidate.
 #[must_use]
 pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
-    let parent = config_path.parent()?;
+    let identity_path = control_identity_path(config_path);
+    let parent = identity_path.parent()?;
     let path = parent.join(format!(
         "greggd-{}.control.sock",
         config_id_for_path(config_path)
@@ -399,7 +427,6 @@ pub fn stale_connect_error(kind: std::io::ErrorKind) -> bool {
 
 fn try_bind_secure(path: &Path) -> Option<ControlBind> {
     use std::os::unix::fs::PermissionsExt;
-    use tracing::warn;
 
     let listener = try_bind(path)?;
 
@@ -641,6 +668,16 @@ mod tests {
         ))
     }
 
+    fn repo_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join(format!("gd{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     #[test]
     fn config_id_for_path_is_deterministic_and_hex_encoded() {
         let cfg_path = temp_config_path("id-deterministic");
@@ -658,6 +695,87 @@ mod tests {
         let a = temp_config_path("id-a");
         let b = temp_config_path("id-b");
         assert_ne!(config_id_for_path(&a), config_id_for_path(&b));
+    }
+
+    #[test]
+    fn existing_file_relative_and_absolute_spellings_share_identity() {
+        let dir = repo_temp_dir("path-spellings");
+        let config = make_config_file(&dir, "greggd.toml");
+        let current_dir = std::env::current_dir().unwrap();
+        let relative = PathBuf::from(".").join(config.strip_prefix(current_dir).unwrap());
+
+        assert!(relative.is_relative());
+        assert_eq!(
+            config_id_for_path(&relative),
+            config_id_for_path(&config),
+            "relative and absolute spellings of one existing file must converge"
+        );
+        assert_eq!(
+            primary_control_path(&relative),
+            primary_control_path(&config),
+            "equivalent spellings must select the same primary socket"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_file_symlink_and_target_share_identity() {
+        let dir = fresh_temp_dir("symlink-identity");
+        let target = make_config_file(&dir, "target.toml");
+        let link_dir = dir.join("links");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("config-link.toml");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            config_id_for_path(&link),
+            config_id_for_path(&target),
+            "symlink and target spellings must converge"
+        );
+        assert_eq!(primary_control_path(&link), primary_control_path(&target));
+        assert_eq!(fallback_control_path(&link), fallback_control_path(&target));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn existing_different_files_keep_distinct_identities() {
+        let dir = fresh_temp_dir("different-files");
+        let a = make_config_file(&dir, "a.toml");
+        let b = make_config_file(&dir, "b.toml");
+
+        assert_ne!(config_id_for_path(&a), config_id_for_path(&b));
+        assert_ne!(primary_control_path(&a), primary_control_path(&b));
+        assert_ne!(fallback_control_path(&a), fallback_control_path(&b));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_contents_do_not_change_existing_file_identity() {
+        let dir = fresh_temp_dir("content-identity");
+        let config = make_config_file(&dir, "greggd.toml");
+        let before = config_id_for_path(&config);
+
+        std::fs::write(&config, b"host = \"127.0.0.1\"\nport = 11311\n").unwrap();
+
+        assert_eq!(before, config_id_for_path(&config));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absent_absolute_path_has_deterministic_identity_without_creation() {
+        let dir = std::env::temp_dir().join(format!("gdmissing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("greggd.toml");
+        assert!(!config.exists());
+
+        assert_eq!(config_id_for_path(&config), config_id_for_path(&config));
+        let primary = primary_control_path(&config).unwrap();
+        let fallback = fallback_control_path(&config).unwrap();
+        assert!(primary.as_os_str().len() <= UNIX_PATH_MAX);
+        assert!(fallback.as_os_str().len() <= UNIX_PATH_MAX);
     }
 
     #[test]

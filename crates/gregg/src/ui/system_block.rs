@@ -24,24 +24,7 @@ pub fn render_online(
     }
 
     let Some(snap) = &system.latest else {
-        let sel_style = if is_selected {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default()
-        };
-        let header = text::header_line(system, area.width);
-        f.render_widget(
-            Line::from(Span::styled(header, sel_style)),
-            Rect { height: 1, ..area },
-        );
-        f.render_widget(
-            Line::from(Span::styled("waiting for data…", sel_style)),
-            Rect {
-                y: area.y.saturating_add(1),
-                height: 1,
-                ..area
-            },
-        );
+        render_waiting(f, area, system, is_selected);
         return;
     };
 
@@ -93,8 +76,38 @@ pub fn render_online(
     // Row 3: SWAP or COMMIT bar
     render_swap_or_commit_row(f, area, snap);
 
-    // Row 4: aggregate disk bar. Invalid, unavailable, and empty drive data
-    // all remain visibly unavailable rather than looking like measured zero.
+    render_disk_and_drives(f, area, snap, drive_rows_visible);
+}
+
+fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_selected: bool) {
+    let sel_style = if is_selected {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default()
+    };
+    let header = text::header_line(system, area.width);
+    f.render_widget(
+        Line::from(Span::styled(header, sel_style)),
+        Rect { height: 1, ..area },
+    );
+    f.render_widget(
+        Line::from(Span::styled("waiting for data…", sel_style)),
+        Rect {
+            y: area.y.saturating_add(1),
+            height: 1,
+            ..area
+        },
+    );
+}
+
+fn render_disk_and_drives(
+    f: &mut Frame,
+    area: Rect,
+    snap: &NormalizedSnapshot,
+    drive_rows_visible: usize,
+) {
+    // Invalid, unavailable, and empty drive data remain visibly unavailable
+    // rather than looking like measured zero.
     if let Some(drives) = snap.drives.as_deref().and_then(aggregate_drives) {
         let disk_detail = format!(
             "{} used / {} avail",
@@ -125,31 +138,33 @@ pub fn render_online(
         );
     }
 
-    if drive_rows_visible > 0 {
-        if let Some(drives) = snap.drives.as_deref() {
-            for (offset, drive) in drives
-                .iter()
-                .filter(|drive| drive.total_bytes > 0 && drive.used_bytes <= drive.total_bytes)
-                .take(drive_rows_visible)
-                .enumerate()
-            {
-                let row = area
-                    .y
-                    .saturating_add(5 + u16::try_from(offset).unwrap_or(u16::MAX));
-                if row >= area.y.saturating_add(area.height) {
-                    break;
-                }
-                let line = text::drive_detail_line(drive, area.width);
-                f.render_widget(
-                    Line::from(Span::raw(line)),
-                    Rect {
-                        y: row,
-                        height: 1,
-                        ..area
-                    },
-                );
-            }
+    if drive_rows_visible == 0 {
+        return;
+    }
+    let Some(drives) = snap.drives.as_deref() else {
+        return;
+    };
+    for (offset, drive) in drives
+        .iter()
+        .filter(|drive| drive.total_bytes > 0 && drive.used_bytes <= drive.total_bytes)
+        .take(drive_rows_visible)
+        .enumerate()
+    {
+        let row = area
+            .y
+            .saturating_add(5 + u16::try_from(offset).unwrap_or(u16::MAX));
+        if row >= area.y.saturating_add(area.height) {
+            break;
         }
+        let line = text::drive_detail_line(drive, area.width);
+        f.render_widget(
+            Line::from(Span::raw(line)),
+            Rect {
+                y: row,
+                height: 1,
+                ..area
+            },
+        );
     }
 }
 
