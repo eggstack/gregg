@@ -344,7 +344,7 @@ No new crate or dependency is expected.
 - [x] `./scripts/check-local.sh` passes.
 - [x] Ubuntu release-binary smoke proves run with one path spelling can be stopped with another spelling of the same config.
 - [x] No new CI workflow/job/matrix is added.
-- [ ] Any naturally triggered existing CI run remains green before closure.
+- [x] Naturally triggered existing CI run `31841994426` remains green before closure.
 
 ### Planning-record polish
 
@@ -427,3 +427,10 @@ post-stop croncheck: nonzero
 
 This is the narrow relative/absolute explicit-path smoke required by Plan 082;
 the deterministic symlink/target unit test covers the additional spelling.
+
+### Existing CI verification
+
+The existing GitHub Actions workflow passed in run `31841994426` for the
+pushed implementation, including Linux format/Clippy/workspace tests, both
+native macOS jobs, Rust 1.75 compilation, and the Windows workspace, release,
+and SCM lifecycle checks. No workflow, job, matrix, or release gate was added.
