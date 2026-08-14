@@ -21,7 +21,9 @@ Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manage
 
 Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
 
-Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke passed. Post-closure review then found two product defects: Windows foreground `run` references a Unix-only control wrapper and the Unix primary control socket is directory-scoped, allowing configs in the same directory to cross-stop. Plan 081 closed those defects plus permission/stale-socket hardening, preserved the valid Plan 080 historical record, and demonstrated the corrected Unix one-daemon and two-daemon same-directory stop-isolation smokes; the existing native Windows CI job must remain green for cross-platform closure.
+Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke passed. Post-closure review then found two product defects: Windows foreground `run` referenced a Unix-only control wrapper and the Unix primary control socket was directory-scoped, allowing configs in the same directory to cross-stop. Plan 081 closed those defects plus permission/stale-socket hardening, preserved the valid Plan 080 historical record, demonstrated the corrected Unix one-daemon and two-daemon same-directory stop-isolation smokes, and passed the existing native CI workflow at implementation SHA `59e17551c211df382c6f0219d0d465ef1c198a8a` in run `31813136597`. Current `main` at the subsequent Plan 081 record commit `6fb005b4a469cdd1ea4baf498fe4a18f5858f3be` also passed the existing workflow in run `31813615708`.
+
+Plan 082 is the active final polish pass. It addresses one concrete remaining Unix control-identity edge: different ordinary path spellings of the same existing explicit config file currently hash differently. It also reconciles the remaining Plan 080/081 status/checklist/provenance wording. It does not reopen the daemon lifecycle architecture or add verification infrastructure.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -39,16 +41,17 @@ Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke p
 | [`077-croncheck-strictness-test-cleanup-and-plan076-closure.md`](077-croncheck-strictness-test-cleanup-and-plan076-closure.md) | Bound and tighten `croncheck` status parsing, remove stale disabled tests, and close Plan 076 truthfully | complete |
 | [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete; historical wording corrected by 079 |
 | [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | complete; implementation `49c4c7d` |
-| [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | implemented; Ubuntu lifecycle smoke passed; corrective follow-up 081 active |
-| [`081-plan080-cross-platform-stop-corrective-pass.md`](081-plan080-cross-platform-stop-corrective-pass.md) | Restore Windows foreground compatibility and make Unix stop identity/permissions/stale-socket handling safe | complete; Ubuntu one-daemon + two-daemon same-directory stop-isolation smokes passed; existing Windows CI must remain green |
+| [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | implemented and corrected by completed Plan 081; original Ubuntu lifecycle evidence preserved |
+| [`081-plan080-cross-platform-stop-corrective-pass.md`](081-plan080-cross-platform-stop-corrective-pass.md) | Restore Windows foreground compatibility and make Unix stop identity/permissions/stale-socket handling safe | complete; implementation `59e17551`; CI run `31813136597`; Ubuntu one-daemon + two-daemon stop-isolation smokes passed |
+| [`082-plan081-control-identity-and-record-polish.md`](082-plan081-control-identity-and-record-polish.md) | Normalize equivalent explicit config path spellings for Unix stop identity and reconcile Plan 080/081 records | ready for implementation |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and new direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect; it is not a closure-only record.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record.
 
 ## Execution record for Plan 075
 
@@ -97,7 +100,9 @@ Plan 080's original direct lifecycle proof remains valid historical evidence:
 greggd run -> croncheck succeeds -> greggd stop -> daemon exits -> croncheck fails
 ```
 
-Plan 081 closed that gap: the Ubuntu one-daemon lifecycle smoke and the two-config same-directory stop-isolation smoke were both run against the corrected config-specific control identity, and the Windows foreground compile regression from Plan 080 was fixed by the cfg-gated dispatch helper. The existing Windows CI job (workspace tests, release build, SCM lifecycle smoke) must remain green for cross-platform closure. No new CI job was added.
+Plan 081 closed the post-080 defects: the Ubuntu one-daemon lifecycle smoke and the two-config same-directory stop-isolation smoke both passed against the corrected config-specific control identity. Existing CI run `31813136597` passed Linux, both macOS jobs, Rust 1.75, and Windows; the Windows job completed workspace tests, release `greggd` build, and SCM lifecycle smoke. No new CI job was added. Later run `31813615708` confirms the documentation-only follow-up commit also left current `main` green; repeated green runs are not a standing requirement.
+
+Plan 082 requires only focused Unix identity tests, the default local check, and one narrow Ubuntu release-binary smoke proving that a daemon started with one ordinary spelling of an existing config path can be stopped with another spelling of the same file. Existing CI may run naturally on push and must not regress, but Plan 082 adds no workflow/job/matrix requirement.
 
 A plan does not require:
 
@@ -121,7 +126,31 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-Plan 081 was not closed from Linux compilation/unit tests alone. Its Ubuntu one-daemon lifecycle smoke and Ubuntu two-config stop-isolation smoke both passed locally; the existing native Windows test/build/SCM CI job must remain green for cross-platform closure.
+Plan 081 is complete because its Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed. Plan 082 remains active until the same existing config file derives one control identity across ordinary equivalent path spellings and the Plan 080/081 records are reconciled with exact provenance.
+
+## Active scope record for Plan 082
+
+Required:
+
+- normalize the Unix control identity for the same existing config file across relative/absolute and symlink/target spellings where supported;
+- preserve deterministic distinct identities for genuinely different config files in the same directory;
+- preserve missing implicit default-config behavior without requiring the TOML file to exist;
+- correct misleading `canonical` naming/comments if raw path bytes remain anywhere in the identity helper;
+- add focused identity tests and one narrow release-binary explicit-path lifecycle smoke;
+- replace ambiguous Plan 081 `gh run list --limit 1` provenance with exact run `31813136597`;
+- reconcile Plan 081 checkboxes only where closure evidence exists;
+- keep Plan 080's valid historical Ubuntu record intact;
+- keep CI and release machinery unchanged.
+
+Preserved exclusions:
+
+- control-protocol redesign;
+- persistent control registry;
+- service-manager integration;
+- PID/process discovery;
+- new dependencies;
+- new workflows/jobs/matrices/evidence bundles;
+- unrelated refactoring.
 
 ## Closed scope record for Plan 081
 
@@ -133,11 +162,15 @@ Completed:
 - narrow stale-socket cleanup to a tiny `stale_connect_error` helper that only `ConnectionRefused` and `NotFound` authorize, after metadata confirms a socket entry;
 - add a deterministic A/B cross-stop regression test plus identity, primary/fallback, and permission-path tests;
 - preserve Plan 080's valid Ubuntu root-cause and lifecycle record and append a short correction note rather than rewriting history;
-- rerun focused local checks, the Ubuntu one-daemon release-binary lifecycle smoke, and a two-config same-directory stop-isolation smoke.
+- rerun focused local checks, the Ubuntu one-daemon release-binary lifecycle smoke, and a two-config same-directory stop-isolation smoke;
+- pass native CI run `31813136597`, including Windows workspace tests, release `greggd` build, and SCM lifecycle smoke.
 
 Preserved exclusions:
 
-- a Plan 082 created solely to record Plan 081 closure.
+- permanent legacy directory-scoped stop fallback;
+- Windows named-pipe redesign;
+- Unix service-manager coupling;
+- new CI infrastructure.
 
 ## Closed scope record for Plan 079
 
