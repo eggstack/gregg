@@ -851,3 +851,41 @@ be skipped."
 - 172+ existing tests (run, sampler, server, config) remain green
 - `cargo fmt --all -- --check` passes
 - `./scripts/check-local.sh` passes
+
+## Post-closure correction note (added by Plan 081)
+
+Plan 080's original `greggd run` -> `croncheck` -> `stop` lifecycle smoke
+above remains valid historical evidence. After Plan 080 closed, two
+product defects were discovered and corrected by Plan 081 without
+rewriting this historical record:
+
+1. **Windows foreground `run` regression.** Plan 080 introduced
+   `run_with_control_path` behind `#[cfg(unix)]` and unconditionally called
+   it from `Command::Run` in `main.rs`. The resulting native Windows
+   workspace build failed with "cannot find function `run_with_control_path`".
+   Plan 081 introduces a tiny `run_with_control_path_or_default` helper
+   that dispatches `run_with_control_path` on Unix and the ordinary `run`
+   on Windows. No Unix code is referenced from a Windows build and the SCM
+   service worker is unchanged.
+
+2. **Directory-scoped Unix control identity.** Plan 080 named the primary
+   control socket `greggd.control.sock` in the config directory, so two
+   configs sharing that directory (for example `a.toml` and `b.toml`)
+   produced a single shared primary socket. `greggd --config B stop`
+   could then target a daemon launched from config A. Plan 081 replaces
+   that with a deterministic FNV-1a digest of the resolved config path
+   (`greggd-<id>.control.sock`), so each config file in the same
+   directory produces a distinct primary and a distinct fallback control
+   path.
+
+Plan 081 also tightens two adjacent safety properties without broadening
+scope:
+
+- Restrictive `0600` permissions are now verified after the `chmod`, not
+  silently ignored; a failed permission update discards the candidate
+  and the foreground entry point returns a clear runtime error if no
+  secure candidate succeeds.
+- Stale-socket cleanup is conservative: only `ConnectionRefused` and
+  `NotFound` connect failures, after metadata confirms a socket, authorize
+  unlinking. `PermissionDenied`, `TimedOut`, or any other unexpected
+  error no longer triggers removal of an existing entry.

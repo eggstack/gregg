@@ -95,7 +95,15 @@ passes locally, the distinction is the cause.
   attempted target address. `host` and `port` only persist config.
 - `greggd stop` on Linux/macOS targets only the local foreground `greggd`
   instance associated with the resolved config identity via a single tiny
-  Unix-domain control socket (`STOP\n` -> `OK\n`). It must not invoke
+  Unix-domain control socket (`STOP\n` -> `OK\n`). The control identity is
+  derived from the resolved config path (deterministic FNV-1a digest),
+  never from the config parent directory alone, so two configs in the same
+  directory cannot cross-stop. The control socket is created with
+  restrictive `0600` permissions; a failed `chmod` discards the candidate
+  and tries the next legitimate one. Stale socket cleanup unlinks only
+  after metadata confirms a socket and the connect result classifies as
+  `ConnectionRefused` or `NotFound`; `PermissionDenied` and unexpected
+  connect errors never authorize unlinking. It must not invoke
   `systemctl`, `launchctl`, `pkill`, `killall`, shell commands, PID-file
   management, or process-name scanning. The HTTP API remains read-only.
   Windows `greggd stop` continues to delegate to the native SCM manager.

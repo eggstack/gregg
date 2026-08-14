@@ -107,8 +107,40 @@ pub async fn run_with_control_path<C: SystemCollector + 'static>(
     config: Config,
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let shutdown = shutdown_with_control(config_path, &config);
+    let shutdown = shutdown_with_control(config_path)
+        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     run_with_shutdown(collector, config, shutdown).await
+}
+
+/// Dispatch the foreground daemon entry point for the current platform.
+///
+/// On Unix this binds the local control listener and races its shutdown
+/// future with SIGTERM/SIGINT. On Windows the foreground entry point uses
+/// the shared daemon core with the platform-default shutdown source, leaving
+/// SCM Stop to the existing service dispatcher.
+///
+/// This helper exists so the binary dispatch boundary has exactly one
+/// platform-aware call site without needing inline `cfg` blocks at every
+/// `Command::Run` arm.
+///
+/// # Errors
+///
+/// Returns an error if configuration is invalid or the server fails
+/// to start.
+pub async fn run_with_control_path_or_default<C: SystemCollector + 'static>(
+    collector: C,
+    config: Config,
+    config_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        run_with_control_path(collector, config, config_path).await
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = config_path;
+        run(collector, config).await
+    }
 }
 
 /// Run the daemon with an externally provided shutdown source.
@@ -452,38 +484,40 @@ fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str>
 /// The same graceful cleanup path is reached regardless of which source
 /// fires first.
 ///
-/// If binding the control socket fails (for example because the config
-/// directory is not writable), the function silently falls back to the
-/// plain signal-based shutdown and the daemon continues without a local
-/// stop channel.
+/// If neither candidate path could be bound with restrictive `0600`
+/// permissions, the function returns [`ControlSetupError::NoSecureControl`]
+/// so the foreground entry point can surface a clear diagnostic instead
+/// of silently starting a daemon that advertises `greggd stop` but cannot
+/// be controlled by it.
 #[cfg(unix)]
 fn shutdown_with_control(
     config_path: &std::path::Path,
-    config: &Config,
-) -> impl std::future::Future<Output = &'static str> {
+) -> Result<impl std::future::Future<Output = &'static str>, crate::control::ControlSetupError> {
     use crate::control;
 
-    let bound = control::bind_listener(config_path, config);
-
+    let bound = control::bind_listener(config_path);
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-    let mut stop_rx = match bound {
+    let stop_rx = match bound {
         control::ControlBind::Bound { listener, path } => {
             let _handle = control::spawn_stop_task(listener, path, stop_tx);
             Some(stop_rx)
         }
         control::ControlBind::NotBound => {
             let _ = stop_tx;
-            None
+            return Err(crate::control::ControlSetupError::NoSecureControl {
+                primary: control::primary_control_path(config_path),
+                fallback: control::fallback_control_path(config_path),
+            });
         }
     };
 
-    async move {
+    Ok(async move {
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .expect("failed to register SIGTERM handler");
         let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
             .expect("failed to register SIGINT handler");
 
-        if let Some(rx) = stop_rx.take() {
+        if let Some(rx) = stop_rx {
             let stop_fut = control::wait_for_stop_task(rx);
             tokio::select! {
                 reason = stop_fut => reason.unwrap_or("control-stop"),
@@ -496,7 +530,7 @@ fn shutdown_with_control(
                 _ = sigint.recv() => "SIGINT",
             }
         }
-    }
+    })
 }
 
 #[cfg(test)]

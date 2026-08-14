@@ -10,17 +10,25 @@
 //!
 //! ## Path selection
 //!
-//! Two candidates are derived from the daemon configuration:
+//! Two candidates are derived from the resolved daemon configuration path:
 //!
-//! 1. **Primary (config-adjacent)**: `<config_parent>/greggd.control.sock`.
-//!    This is preferred because the packaged Linux service writes its
-//!    config to `/etc/gregg/` (writable by the daemon user) and systemd's
-//!    `PrivateTmp=true` would otherwise isolate a `/tmp`-only fallback from
-//!    the operator's CLI.
-//! 2. **Fallback (temp dir)**: `<temp_dir>/greggd-<host>-<port>.control.sock`.
-//!    Used when the config parent directory is not writable by the daemon
-//!    user (for example when running `greggd run` from a non-root account
-//!    while reading an operator-installed config).
+//! 1. **Primary (config-adjacent)**: `<config_parent>/greggd-<id>.control.sock`,
+//!    where `<id>` is a deterministic 64-bit FNV-1a hex digest of the
+//!    canonical config path. This is preferred because the packaged Linux
+//!    service writes its config to `/etc/gregg/` (writable by the daemon user)
+//!    and systemd's `PrivateTmp=true` would otherwise isolate a `/tmp`-only
+//!    fallback from the operator's CLI.
+//! 2. **Fallback (temp dir)**: `<temp_dir>/greggd-<id>.control.sock`, using
+//!    the same `<id>` digest. Used when the config parent directory is not
+//!    writable by the daemon user (for example when running `greggd run`
+//!    from a non-root account while reading an operator-installed config).
+//!
+//! The `<id>` is derived from the resolved config path bytes only. Editing
+//! `host` or `port` inside the same TOML does not change the `<id>`, so the
+//! daemon continues to advertise `greggd stop` at the same path. Two
+//! different config files in the same directory produce different `<id>`
+//! values, so `greggd --config B stop` cannot reach a daemon launched from
+//! config A merely because the two configs share a parent directory.
 //!
 //! `run` selects whichever path it can actually bind. `stop` tries the
 //! primary first and falls back to the deterministic temp path if the
@@ -45,8 +53,6 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use tracing::warn;
-
-use crate::config::Config;
 
 /// Maximum length of the `sun_path` field on Unix-domain sockets.
 ///
@@ -84,15 +90,80 @@ pub enum ControlError {
     BadResponse,
 }
 
+/// Errors returned when the foreground daemon cannot establish a secure
+/// control listener. The runtime error variant is intended to surface a
+/// clear diagnostic instead of silently starting a daemon that advertises
+/// `greggd stop` but cannot be controlled by it.
+#[derive(Debug, Error)]
+pub enum ControlSetupError {
+    /// Neither candidate control-socket path could be bound with
+    /// restrictive `0600` permissions. The variant retains both attempted
+    /// paths so the operator can inspect or correct the filesystem state.
+    #[error(
+        "could not bind a restrictive greggd control socket; \
+         primary {primary:?}, fallback {fallback:?}. \
+         Run greggd from a directory the daemon user can own, or fix \
+         permissions on the temp directory."
+    )]
+    NoSecureControl {
+        /// The config-adjacent candidate path, if one was computed.
+        primary: Option<PathBuf>,
+        /// The temp-dir fallback candidate path, if one was computed.
+        fallback: Option<PathBuf>,
+    },
+}
+
+/// Compute a stable 64-bit FNV-1a hex digest for the given config path.
+///
+/// The digest is computed over the canonical, lossless representation of
+/// the path so that two operators using the same config file observe the
+/// same control-socket filename across runs. The algorithm is FNV-1a
+/// (Fowler-Noll-Vo) using the standard 64-bit offset basis and prime, which
+/// is deliberately stable across Rust releases (unlike `DefaultHasher`,
+/// whose algorithm is not a compatibility contract).
+///
+/// The result is rendered as 16 lowercase hex characters and never depends
+/// on host/port fields, the current PID, the system time, or any random
+/// source.
+#[must_use]
+pub fn config_id_for_path(config_path: &Path) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let bytes = canonical_path_bytes(config_path);
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    format!("{hash:016x}")
+}
+
+/// Return a canonical, lossless byte representation of `path` for hashing.
+///
+/// We use the path's `OsStr` as a UTF-8 byte string when possible; on Unix
+/// `OsStr` is always representable as bytes. The canonical form preserves
+/// the path exactly as supplied to the daemon, including trailing
+/// separators and case, so two distinct paths always produce distinct
+/// digests.
+fn canonical_path_bytes(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+
 /// Compute the primary config-adjacent control socket path.
 ///
-/// Returns `<config_parent>/greggd.control.sock` if the parent directory
-/// exists. The daemon uses this when the parent is writable by its own
-/// user; the client uses it as the first candidate.
+/// Returns `<config_parent>/greggd-<id>.control.sock` where `<id>` is the
+/// [`config_id_for_path`] digest of the resolved config path. The daemon
+/// uses this when the parent is writable by its own user; the client uses
+/// it as the first candidate.
 #[must_use]
 pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
     let parent = config_path.parent()?;
-    let path = parent.join("greggd.control.sock");
+    let path = parent.join(format!(
+        "greggd-{}.control.sock",
+        config_id_for_path(config_path)
+    ));
     if path.as_os_str().len() > UNIX_PATH_MAX {
         return None;
     }
@@ -101,15 +172,15 @@ pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
 
 /// Compute the deterministic fallback control socket path.
 ///
-/// The fallback lives under the standard system temp directory and is
-/// derived only from validated host/port data so it cannot be used for
-/// arbitrary path traversal. The hostname component is restricted to
-/// `[A-Za-z0-9._-]` to avoid path separators or other surprising bytes.
+/// The fallback lives under the standard system temp directory and shares
+/// the same `<id>` digest as the primary, so the two paths always agree on
+/// the daemon's identity regardless of host/port edits inside the TOML.
 #[must_use]
-pub fn fallback_control_path(config: &Config) -> Option<PathBuf> {
-    let host = sanitize_host(&config.host.to_string());
-    let filename = format!("greggd-{host}-{}.control.sock", config.port);
-    let path = std::env::temp_dir().join(filename);
+pub fn fallback_control_path(config_path: &Path) -> Option<PathBuf> {
+    let path = std::env::temp_dir().join(format!(
+        "greggd-{}.control.sock",
+        config_id_for_path(config_path)
+    ));
     if path.as_os_str().len() > UNIX_PATH_MAX {
         return None;
     }
@@ -118,12 +189,12 @@ pub fn fallback_control_path(config: &Config) -> Option<PathBuf> {
 
 /// All candidates `stop` should try, in priority order.
 #[must_use]
-pub fn stop_candidates(config_path: &Path, config: &Config) -> Vec<PathBuf> {
+pub fn stop_candidates(config_path: &Path) -> Vec<PathBuf> {
     let mut out = Vec::with_capacity(2);
     if let Some(primary) = primary_control_path(config_path) {
         out.push(primary);
     }
-    if let Some(fallback) = fallback_control_path(config) {
+    if let Some(fallback) = fallback_control_path(config_path) {
         if !out.iter().any(|p| p == &fallback) {
             out.push(fallback);
         }
@@ -143,24 +214,6 @@ pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Replace any character in `input` that is not `[A-Za-z0-9._-]` with `_`.
-///
-/// This keeps the deterministic fallback path inside a single path segment
-/// even if an operator configures a hostname that would otherwise contain
-/// separators or whitespace.
-fn sanitize_host(input: &str) -> String {
-    input
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// Send one `STOP\n` command to a running `greggd` via its local Unix
 /// control socket and block until the `OK\n` acknowledgement arrives.
 ///
@@ -172,14 +225,14 @@ fn sanitize_host(input: &str) -> String {
 /// The function does not invoke `systemctl`, `launchctl`, a shell, or any
 /// process-discovery mechanism. It connects only to local Unix-domain
 /// sockets.
-pub fn send_stop(config_path: &Path, config: &Config) -> Result<StopOutcome, ControlError> {
+pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
     const IO_TIMEOUT: Duration = Duration::from_millis(750);
 
-    let candidates = stop_candidates(config_path, config);
+    let candidates = stop_candidates(config_path);
     let mut last_io_error: Option<std::io::Error> = None;
 
     for candidate in &candidates {
@@ -285,42 +338,112 @@ pub enum ControlBind {
 
 /// Bind the daemon's local Unix control listener.
 ///
-/// Tries the config-adjacent path first; if it is unavailable, falls back to
-/// the deterministic temp-dir path. The chosen socket file is created with
-/// restrictive permissions (`0600`) so unrelated local users cannot inject
-/// a stop command.
+/// Tries the config-adjacent path first; if that path cannot be bound or its
+/// permissions cannot be secured, falls back to the deterministic temp-dir
+/// path. The chosen socket file is created with restrictive permissions
+/// (`0600`) so unrelated local users cannot inject a stop command. A
+/// listener is only published if `0600` was applied successfully; if neither
+/// candidate yields a secure listener the function returns
+/// [`ControlBind::NotBound`] so the caller can decide whether a
+/// permission-failure or no-secure-control-channel is the appropriate
+/// runtime error for the platform.
 ///
 /// Stale sockets at the candidate paths are only removed after a metadata
 /// inspection confirms they are actually socket files (never regular files
-/// or directories).
-pub fn bind_listener(config_path: &Path, config: &Config) -> ControlBind {
-    use std::os::unix::fs::PermissionsExt;
+/// or directories) and the local connect attempt is classified as
+/// [`stale_connect_error`] rather than a permission or unknown error.
+pub fn bind_listener(config_path: &Path) -> ControlBind {
     use tracing::info;
 
     if let Some(primary) = primary_control_path(config_path) {
-        if let Some(listener) = try_bind(&primary) {
-            let _ = std::fs::set_permissions(&primary, std::fs::Permissions::from_mode(0o600));
+        if let Some(bound) = try_bind_secure(&primary) {
             info!(path = %primary.display(), "control socket bound");
-            return ControlBind::Bound {
-                path: primary,
-                listener,
-            };
+            return bound;
         }
     }
-    if let Some(fallback) = fallback_control_path(config) {
+    if let Some(fallback) = fallback_control_path(config_path) {
         if Some(&fallback) != primary_control_path(config_path).as_ref() {
-            if let Some(listener) = try_bind(&fallback) {
-                let _ = std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o600));
+            if let Some(bound) = try_bind_secure(&fallback) {
                 info!(path = %fallback.display(), "control socket bound (fallback)");
-                return ControlBind::Bound {
-                    path: fallback,
-                    listener,
-                };
+                return bound;
             }
         }
     }
     warn!("control socket not bound; daemon will only respond to signals");
     ControlBind::NotBound
+}
+
+/// Return true when the I/O error kind from a `connect()` attempt is
+/// sufficient evidence that no live listener owns the socket file.
+///
+/// The classification deliberately permits only:
+/// - [`std::io::ErrorKind::ConnectionRefused`] (no listener accepted);
+/// - [`std::io::ErrorKind::NotFound`] (the path disappeared between
+///   metadata and connect).
+///
+/// Other kinds — including `PermissionDenied`, `TimedOut`, and any
+/// platform-specific surprise — are never treated as proof of staleness,
+/// because the underlying socket may still belong to a live daemon that is
+/// merely temporarily inaccessible to the caller.
+#[must_use]
+pub fn stale_connect_error(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+    )
+}
+
+fn try_bind_secure(path: &Path) -> Option<ControlBind> {
+    use std::os::unix::fs::PermissionsExt;
+    use tracing::warn;
+
+    let listener = try_bind(path)?;
+
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        warn!(
+            path = %path.display(),
+            error = %e,
+            "control socket permission update failed; closing listener"
+        );
+        // Drop the listener before removing the socket file so the path is
+        // not deleted out from under an active accept loop.
+        drop(listener);
+        let _ = std::fs::remove_file(path);
+        return None;
+    }
+
+    // Verify the permission update actually landed. Some filesystems can
+    // report success while silently retaining wider permissions.
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let mode = meta.permissions().mode() & 0o777;
+            if mode != 0o600 {
+                warn!(
+                    path = %path.display(),
+                    mode = format!("{mode:o}"),
+                    "control socket permissions are not 0600 after chmod; closing listener"
+                );
+                drop(listener);
+                let _ = std::fs::remove_file(path);
+                return None;
+            }
+        }
+        Err(e) => {
+            warn!(
+                path = %path.display(),
+                error = %e,
+                "control socket metadata check failed; closing listener"
+            );
+            drop(listener);
+            let _ = std::fs::remove_file(path);
+            return None;
+        }
+    }
+
+    Some(ControlBind::Bound {
+        path: path.to_path_buf(),
+        listener,
+    })
 }
 
 fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
@@ -344,9 +467,18 @@ fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
                     // Live listener; do not rebind.
                     return None;
                 }
-                Err(_) => {
+                Err(e) if stale_connect_error(e.kind()) => {
                     // Stale; safe to remove and rebind.
                     let _ = std::fs::remove_file(path);
+                }
+                Err(e) => {
+                    warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "control socket connect failed with non-stale classification; \
+                         leaving existing entry in place"
+                    );
+                    return None;
                 }
             }
         }
@@ -393,7 +525,7 @@ fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
 /// connection is closed.
 ///
 /// If the task is cancelled (for example because the runtime is dropped
-/// during a signal-driven shutdown), the [`ControlSocketGuard`] ensures
+/// during a signal-driven shutdown), the control-socket RAII guard ensures
 /// the socket file is removed before any cleanup paths become observable.
 pub fn spawn_stop_task(
     listener: tokio::net::UnixListener,
@@ -493,65 +625,113 @@ pub async fn wait_for_stop_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr};
     use std::os::unix::fs::PermissionsExt;
 
-    fn temp_config_path() -> PathBuf {
+    fn temp_config_path(tag: &str) -> PathBuf {
+        // Keep the path short enough to stay below UNIX_PATH_MAX even after
+        // the `greggd-<id>.control.sock` suffix is appended.
         std::env::temp_dir().join(format!(
-            "greggd-control-test-{}-{}.toml",
+            "gd{tag}-{}-{}.toml",
             std::process::id(),
             std::thread::current().name().unwrap_or("main"),
         ))
     }
 
     #[test]
+    fn config_id_for_path_is_deterministic_and_hex_encoded() {
+        let cfg_path = temp_config_path("id-deterministic");
+        let id = config_id_for_path(&cfg_path);
+        assert_eq!(id.len(), 16);
+        assert!(id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        // Deterministic: same path -> same digest.
+        assert_eq!(id, config_id_for_path(&cfg_path));
+    }
+
+    #[test]
+    fn config_id_changes_only_when_path_changes() {
+        let a = temp_config_path("id-a");
+        let b = temp_config_path("id-b");
+        assert_ne!(config_id_for_path(&a), config_id_for_path(&b));
+    }
+
+    #[test]
+    fn primary_path_derives_from_config_path_in_same_directory() {
+        let dir = std::env::temp_dir().join(format!("gd-id-cf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let a = dir.join("a.toml");
+        let b = dir.join("b.toml");
+        let pa = primary_control_path(&a);
+        let pb = primary_control_path(&b);
+        assert!(
+            pa.is_some() && pb.is_some(),
+            "both primary paths must fit in UNIX_PATH_MAX; got {pa:?} / {pb:?}"
+        );
+        assert_ne!(
+            pa, pb,
+            "different config files in the same directory must produce different control identities"
+        );
+        assert_ne!(
+            fallback_control_path(&a),
+            fallback_control_path(&b),
+            "fallback identities must also differ"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn primary_path_is_config_adjacent_and_within_sun_path_limit() {
-        let cfg_path = temp_config_path();
+        let cfg_path = temp_config_path("primary-adjacent");
         let primary = primary_control_path(&cfg_path).unwrap();
-        assert!(primary.ends_with("greggd.control.sock"));
+        let name = primary.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("greggd-"));
+        assert!(name.ends_with(".control.sock"));
         assert!(primary.as_os_str().len() <= UNIX_PATH_MAX);
     }
 
     #[test]
     fn fallback_path_is_deterministic_and_in_temp_dir() {
-        let config = Config {
-            name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 11310,
-            sample_interval_ms: 1000,
-            stale_after_ms: 5000,
-        };
-        let first = fallback_control_path(&config).unwrap();
-        let second = fallback_control_path(&config).unwrap();
+        let cfg_path = temp_config_path("fallback-deterministic");
+        let first = fallback_control_path(&cfg_path).unwrap();
+        let second = fallback_control_path(&cfg_path).unwrap();
         assert_eq!(first, second);
         assert!(first.starts_with(std::env::temp_dir()));
         assert!(first.as_os_str().len() <= UNIX_PATH_MAX);
         let name = first.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("greggd-127.0.0.1-11310.control.sock"));
-    }
-
-    #[test]
-    fn sanitize_host_replaces_path_separators_and_whitespace() {
-        assert_eq!(sanitize_host("127.0.0.1"), "127.0.0.1");
-        assert_eq!(sanitize_host("::1"), "__1");
-        assert_eq!(sanitize_host("host name"), "host_name");
-        assert_eq!(sanitize_host("../etc/gregg"), ".._etc_gregg");
+        assert!(name.starts_with("greggd-"));
+        assert!(name.ends_with(".control.sock"));
     }
 
     #[test]
     fn stop_candidates_returns_primary_then_fallback() {
-        let cfg_path = temp_config_path();
-        let config = Config {
-            name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 11310,
-            sample_interval_ms: 1000,
-            stale_after_ms: 5000,
-        };
-        let candidates = stop_candidates(&cfg_path, &config);
+        // Use a deep directory so primary (config-adjacent) and fallback
+        // (temp-dir root) point at different paths. Putting the file at
+        // the temp-dir root directly would alias the two candidates.
+        let parent = std::env::temp_dir().join(format!("gd-cand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).unwrap();
+        let cfg_path = parent.join("greggd.toml");
+
+        let candidates = stop_candidates(&cfg_path);
+        let primary = primary_control_path(&cfg_path);
+        let fallback = fallback_control_path(&cfg_path);
+        assert!(
+            primary.is_some() && fallback.is_some(),
+            "both candidates must fit in UNIX_PATH_MAX; primary={primary:?} fallback={fallback:?}"
+        );
+        assert_ne!(
+            primary, fallback,
+            "primary and fallback must not alias each other"
+        );
         assert_eq!(candidates.len(), 2);
-        assert_eq!(candidates[0], primary_control_path(&cfg_path).unwrap());
-        assert_eq!(candidates[1], fallback_control_path(&config).unwrap());
+        assert_eq!(candidates[0], primary.unwrap());
+        assert_eq!(candidates[1], fallback.unwrap());
+
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     #[test]
@@ -570,7 +750,7 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let regular = dir.join("greggd.control.sock");
+        let regular = dir.join("greggd-control-regular-file");
         std::fs::write(&regular, b"not a socket").unwrap();
 
         // A regular file at the control path must not be removed. The
@@ -587,14 +767,16 @@ mod tests {
         assert_eq!(OK_RESPONSE, b"OK\n");
     }
 
-    fn test_config() -> Config {
-        Config {
-            name: "test".into(),
-            host: IpAddr::V4(Ipv4Addr::LOCALHOST),
-            port: 11320,
-            sample_interval_ms: 1000,
-            stale_after_ms: 5000,
-        }
+    #[test]
+    fn stale_connect_error_classifies_only_documented_kinds() {
+        assert!(stale_connect_error(std::io::ErrorKind::ConnectionRefused));
+        assert!(stale_connect_error(std::io::ErrorKind::NotFound));
+        // Other kinds must NOT be treated as stale. Each one would be
+        // unsafe evidence that the socket file is abandoned.
+        assert!(!stale_connect_error(std::io::ErrorKind::PermissionDenied));
+        assert!(!stale_connect_error(std::io::ErrorKind::TimedOut));
+        assert!(!stale_connect_error(std::io::ErrorKind::AddrInUse));
+        assert!(!stale_connect_error(std::io::ErrorKind::Other));
     }
 
     fn fresh_temp_dir(name: &str) -> PathBuf {
@@ -606,17 +788,22 @@ mod tests {
         dir
     }
 
+    fn make_config_file(dir: &Path, name: &str) -> PathBuf {
+        let cfg = dir.join(name);
+        std::fs::write(&cfg, b"").unwrap();
+        cfg
+    }
+
     #[test]
     fn bind_listener_prefers_config_adjacent_path_when_available() {
         let dir = fresh_temp_dir("bind-primary");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg, &test_config()) });
+        let bound = rt.block_on(async { bind_listener(&cfg) });
 
         match bound {
             ControlBind::Bound { path, .. } => {
@@ -638,8 +825,7 @@ mod tests {
     #[test]
     fn bind_listener_falls_back_when_config_parent_is_not_writable() {
         let dir = fresh_temp_dir("bind-fallback");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
         let primary = primary_control_path(&cfg).unwrap();
         // Place a regular file at the primary path so the primary bind is
         // refused and we are forced into the fallback branch.
@@ -649,26 +835,25 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg, &test_config()) });
+        let bound = rt.block_on(async { bind_listener(&cfg) });
 
         match bound {
             ControlBind::Bound { path, .. } => {
-                assert_eq!(path, fallback_control_path(&test_config()).unwrap());
+                assert_eq!(path, fallback_control_path(&cfg).unwrap());
                 assert!(path.exists());
             }
             ControlBind::NotBound => panic!("fallback bind should have succeeded"),
         }
 
         let _ = std::fs::remove_file(&primary);
-        remove_control_socket(&fallback_control_path(&test_config()).unwrap()).unwrap();
+        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn bind_listener_skips_live_primary_listener() {
         let dir = fresh_temp_dir("bind-live");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
         let primary = primary_control_path(&cfg).unwrap();
         let live = std::os::unix::net::UnixListener::bind(&primary).unwrap();
 
@@ -676,13 +861,13 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg, &test_config()) });
+        let bound = rt.block_on(async { bind_listener(&cfg) });
 
         match bound {
             ControlBind::Bound { path, .. } => {
                 assert_eq!(
                     path,
-                    fallback_control_path(&test_config()).unwrap(),
+                    fallback_control_path(&cfg).unwrap(),
                     "live primary listener must be left alone"
                 );
             }
@@ -691,17 +876,16 @@ mod tests {
 
         drop(live);
         remove_control_socket(&primary).unwrap();
-        remove_control_socket(&fallback_control_path(&test_config()).unwrap()).unwrap();
+        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn send_stop_reports_not_running_when_no_socket_is_present() {
         let dir = fresh_temp_dir("send-stop-missing");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
 
-        let outcome = send_stop(&cfg, &test_config()).unwrap();
+        let outcome = send_stop(&cfg).unwrap();
         assert_eq!(outcome, StopOutcome::NotRunning);
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -710,8 +894,7 @@ mod tests {
     #[test]
     fn send_stop_delivers_stop_and_receives_ok_response() {
         let dir = fresh_temp_dir("send-stop-ok");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -719,7 +902,7 @@ mod tests {
             .unwrap();
 
         let outcome = rt.block_on(async {
-            let bound = bind_listener(&cfg, &test_config());
+            let bound = bind_listener(&cfg);
             let (path, listener) = match bound {
                 ControlBind::Bound { path, listener } => (path, listener),
                 ControlBind::NotBound => panic!("expected bound listener"),
@@ -731,8 +914,7 @@ mod tests {
             // Wait briefly so the listener is parked in accept().
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             let cfg_clone = cfg.clone();
-            let config_clone = test_config();
-            let client = tokio::task::spawn_blocking(move || send_stop(&cfg_clone, &config_clone));
+            let client = tokio::task::spawn_blocking(move || send_stop(&cfg_clone));
             let reason = rx.await.expect("control task must signal completion");
             let outcome = client.await.expect("client task must complete");
             (outcome, reason)
@@ -748,8 +930,7 @@ mod tests {
     #[test]
     fn bind_listener_rebinds_stale_primary_socket_file() {
         let dir = fresh_temp_dir("rebind-stale");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
         let primary = primary_control_path(&cfg).unwrap();
         // Bind a unix listener then immediately drop it (leaving a stale socket file).
         let stale = std::os::unix::net::UnixListener::bind(&primary).unwrap();
@@ -759,7 +940,7 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        let bound = rt.block_on(async { bind_listener(&cfg, &test_config()) });
+        let bound = rt.block_on(async { bind_listener(&cfg) });
 
         match bound {
             ControlBind::Bound { path, .. } => {
@@ -775,8 +956,7 @@ mod tests {
     #[test]
     fn send_stop_rejects_malformed_responses() {
         let dir = fresh_temp_dir("send-stop-malformed");
-        let cfg = dir.join("greggd.toml");
-        std::fs::write(&cfg, b"").unwrap();
+        let cfg = make_config_file(&dir, "greggd.toml");
 
         // Bind a raw std listener at the primary path and serve a bad response.
         let primary = primary_control_path(&cfg).unwrap();
@@ -792,9 +972,113 @@ mod tests {
             }
         });
 
-        let outcome = send_stop(&cfg, &test_config());
+        let outcome = send_stop(&cfg);
         assert!(matches!(outcome, Err(ControlError::BadResponse)));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cross_config_stop_isolates_two_daemons_in_same_directory() {
+        let dir = fresh_temp_dir("cross-stop");
+        let cfg_a = make_config_file(&dir, "a.toml");
+        let cfg_b = make_config_file(&dir, "b.toml");
+
+        let primary_a = primary_control_path(&cfg_a).unwrap();
+        let primary_b = primary_control_path(&cfg_b).unwrap();
+        assert_ne!(primary_a, primary_b);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let (b_stopped, b_reason_ok, a_socket_present, a_final_stop) = rt.block_on(async {
+            let bound_a = bind_listener(&cfg_a);
+            let bound_b = bind_listener(&cfg_b);
+
+            let (
+                ControlBind::Bound {
+                    path: path_a,
+                    listener: listener_a,
+                },
+                ControlBind::Bound {
+                    path: path_b,
+                    listener: listener_b,
+                },
+            ) = (bound_a, bound_b)
+            else {
+                panic!("both control listeners must bind concurrently")
+            };
+            assert_eq!(path_a, primary_a);
+            assert_eq!(path_b, primary_b);
+
+            let (tx_a, mut rx_a) = tokio::sync::oneshot::channel();
+            let (tx_b, rx_b) = tokio::sync::oneshot::channel();
+            let _task_a = spawn_stop_task(listener_a, path_a.clone(), tx_a);
+            let _task_b = spawn_stop_task(listener_b, path_b.clone(), tx_b);
+
+            // Give the listeners a moment to park in accept().
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+            let cfg_b_for_stop_b = cfg_b.clone();
+            let client_b = tokio::task::spawn_blocking(move || send_stop(&cfg_b_for_stop_b));
+            let stopped_b = client_b.await.expect("client task must complete");
+
+            // B's notification must resolve because we targeted B.
+            let reason_b = rx_b.await.expect("B control task must signal completion");
+
+            // A's notification must NOT have resolved yet because we never
+            // targeted A. `try_recv` returns `Empty` when the sender is
+            // still alive and no value has been sent. Both `Closed` and
+            // `Ok` would prove A responded (incorrectly).
+            let a_still_alive = matches!(
+                rx_a.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            );
+            let a_socket_present = a_still_alive && primary_a.exists();
+
+            // Now stop A explicitly while the runtime is still alive so the
+            // task does not get cancelled and the RAII guard removes the
+            // socket out from under send_stop.
+            let cfg_a_for_stop_a = cfg_a.clone();
+            let client_a = tokio::task::spawn_blocking(move || send_stop(&cfg_a_for_stop_a));
+            let stopped_a = client_a.await.expect("client task must complete");
+            let reason_a = rx_a.await.expect("A control task must signal completion");
+
+            (
+                stopped_b,
+                reason_b.is_ok(),
+                a_socket_present,
+                (stopped_a, reason_a.is_ok()),
+            )
+        });
+
+        match &b_stopped {
+            Ok(StopOutcome::Stopped { path }) => assert_eq!(
+                path, &primary_b,
+                "send_stop(cfg_b) must resolve on the B primary path"
+            ),
+            other => panic!("send_stop(cfg_b) must succeed; got {other:?}"),
+        }
+        assert!(b_reason_ok, "daemon B control task must complete cleanly");
+        assert!(
+            a_socket_present,
+            "daemon A's primary socket must remain on disk after sending STOP to daemon B"
+        );
+        assert!(
+            matches!(a_final_stop.0, Ok(StopOutcome::Stopped { .. })),
+            "daemon A must respond to a follow-up send_stop(cfg_a)"
+        );
+        assert!(
+            a_final_stop.1,
+            "daemon A control task must complete cleanly"
+        );
+
+        remove_control_socket(&primary_a).unwrap();
+        remove_control_socket(&primary_b).unwrap();
+        remove_control_socket(&fallback_control_path(&cfg_a).unwrap()).unwrap();
+        remove_control_socket(&fallback_control_path(&cfg_b).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

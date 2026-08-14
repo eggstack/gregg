@@ -23,7 +23,7 @@ available through the Windows-only service path.
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
+| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; config-path-scoped identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
 | `server/error` | `src/server/error.rs` | Server error types |
@@ -168,10 +168,19 @@ permission denied.
 ### Unix control socket
 
 `greggd run` on Linux/macOS binds a local Unix-domain control socket
-alongside the TCP listener. The socket file lives at the config-adjacent
-path (`greggd.control.sock` in the config directory) when that directory
-is writable; otherwise a deterministic fallback under the standard temp
-directory is used. The control socket is removed on orderly shutdown
+alongside the TCP listener. The socket identity is derived from the
+resolved config path via a deterministic 64-bit FNV-1a hex digest, so
+two different config files in the same directory always produce
+different control paths (`greggd-<id>.control.sock`). Editing `host` or
+`port` inside the same TOML does not change the `<id>`, so the same
+daemon continues to advertise `greggd stop` at the same path. The socket
+file lives at the config-adjacent path when that directory is writable;
+otherwise a deterministic fallback under the standard temp directory is
+used. The chosen socket is created with restrictive `0600` permissions;
+a failed `chmod` causes the candidate to be discarded before the next
+candidate is tried, and if neither candidate yields a secure listener the
+foreground entry point returns a clear runtime error rather than silently
+losing stop capability. The control socket is removed on orderly shutdown
 (SIGTERM/SIGINT or `greggd stop`), on startup failure, and on runtime
 errors. The daemon task that owns the listener uses a RAII guard to
 ensure socket-file removal even if the runtime is dropped before the
@@ -181,7 +190,11 @@ task's cleanup path runs.
 fallback. It sends `STOP\n`, reads `OK\n`, and exits 0. Missing or
 unreachable sockets result in idempotent not-running output. Permission
 errors map to exit code 4. The HTTP API remains read-only and is unrelated
-to the control socket.
+to the control socket. Stale socket cleanup is conservative: only
+`ConnectionRefused` and `NotFound` connect failures, after metadata has
+confirmed the entry is a socket, authorize unlinking. `PermissionDenied`,
+`TimedOut`, or any other unexpected error never unlinks an existing
+entry.
 
 ### Windows service management
 

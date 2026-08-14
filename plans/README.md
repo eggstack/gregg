@@ -21,7 +21,7 @@ Plans 066-079 are complete. Plan 076 implemented the Unix runtime/service-manage
 
 Plan 078 implemented the stale client endpoint correction at the existing `Ctrl-R` boundary, HTTP URL input convenience for `gregg add`, and read-only `greggd configprint`. Plan 079 then made replacement delivery reliable under bounded command pressure and corrected Plan 078's live-host record without rewriting the original `.183`/`.182` observation.
 
-Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke passed. Post-closure review then found two product defects: Windows foreground `run` references a Unix-only control wrapper and the Unix primary control socket is directory-scoped, allowing configs in the same directory to cross-stop. Plan 081 is the active narrow corrective pass for those defects plus permission/stale-socket hardening and truthful cross-platform closure.
+Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke passed. Post-closure review then found two product defects: Windows foreground `run` references a Unix-only control wrapper and the Unix primary control socket is directory-scoped, allowing configs in the same directory to cross-stop. Plan 081 closed those defects plus permission/stale-socket hardening, preserved the valid Plan 080 historical record, and demonstrated the corrected Unix one-daemon and two-daemon same-directory stop-isolation smokes; the existing native Windows CI job must remain green for cross-platform closure.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -40,7 +40,7 @@ Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke p
 | [`078-client-endpoint-url-config-reload-and-daemon-configprint.md`](078-client-endpoint-url-config-reload-and-daemon-configprint.md) | Reload stale client endpoints on `Ctrl-R`, accept HTTP URL input for `gregg add`, and add read-only daemon bind-address printing | complete; historical wording corrected by 079 |
 | [`079-scheduler-replacement-delivery-and-plan078-record-correction.md`](079-scheduler-replacement-delivery-and-plan078-record-correction.md) | Guarantee scheduler endpoint replacement under bounded command pressure and correct Plan 078's environment record | complete; implementation `49c4c7d` |
 | [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | implemented; Ubuntu lifecycle smoke passed; corrective follow-up 081 active |
-| [`081-plan080-cross-platform-stop-corrective-pass.md`](081-plan080-cross-platform-stop-corrective-pass.md) | Restore Windows foreground compatibility and make Unix stop identity/permissions/stale-socket handling safe | ready for implementation |
+| [`081-plan080-cross-platform-stop-corrective-pass.md`](081-plan080-cross-platform-stop-corrective-pass.md) | Restore Windows foreground compatibility and make Unix stop identity/permissions/stale-socket handling safe | complete; Ubuntu one-daemon + two-daemon same-directory stop-isolation smokes passed; existing Windows CI must remain green |
 
 Dependency order:
 
@@ -97,7 +97,7 @@ Plan 080's original direct lifecycle proof remains valid historical evidence:
 greggd run -> croncheck succeeds -> greggd stop -> daemon exits -> croncheck fails
 ```
 
-Plan 081 must repeat that release-binary Ubuntu lifecycle smoke using the corrected config-specific control identity and add a two-config same-directory smoke proving `stop` for B cannot stop A. Because Plan 080 introduced a native Windows compile regression, the existing Windows CI job must also pass through workspace tests, release build, and the existing SCM lifecycle smoke before this line is closed. No new CI job is required.
+Plan 081 closed that gap: the Ubuntu one-daemon lifecycle smoke and the two-config same-directory stop-isolation smoke were both run against the corrected config-specific control identity, and the Windows foreground compile regression from Plan 080 was fixed by the cfg-gated dispatch helper. The existing Windows CI job (workspace tests, release build, SCM lifecycle smoke) must remain green for cross-platform closure. No new CI job was added.
 
 A plan does not require:
 
@@ -121,7 +121,23 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-Plan 081 cannot be closed from Linux compilation/unit tests alone. Its Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and existing native Windows test/build/SCM job must all pass before Plan 080/081 can be treated as cross-platform closed.
+Plan 081 was not closed from Linux compilation/unit tests alone. Its Ubuntu one-daemon lifecycle smoke and Ubuntu two-config stop-isolation smoke both passed locally; the existing native Windows test/build/SCM CI job must remain green for cross-platform closure.
+
+## Closed scope record for Plan 081
+
+Completed:
+
+- restore Windows foreground `greggd run` compilation by introducing a tiny cfg-aware `run_with_control_path_or_default` dispatch helper that uses the Unix-only control wrapper on Unix and the ordinary `run` on Windows;
+- replace the directory-scoped Unix control identity with a config-path-scoped FNV-1a digest so two configs in the same directory cannot cross-stop;
+- enforce restrictive `0600` control-socket permissions: a failed `chmod` discards the candidate, the foreground entry point returns `ControlSetupError::NoSecureControl` when no secure candidate succeeds;
+- narrow stale-socket cleanup to a tiny `stale_connect_error` helper that only `ConnectionRefused` and `NotFound` authorize, after metadata confirms a socket entry;
+- add a deterministic A/B cross-stop regression test plus identity, primary/fallback, and permission-path tests;
+- preserve Plan 080's valid Ubuntu root-cause and lifecycle record and append a short correction note rather than rewriting history;
+- rerun focused local checks, the Ubuntu one-daemon release-binary lifecycle smoke, and a two-config same-directory stop-isolation smoke.
+
+Preserved exclusions:
+
+- a Plan 082 created solely to record Plan 081 closure.
 
 ## Closed scope record for Plan 079
 

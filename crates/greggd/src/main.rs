@@ -40,7 +40,7 @@ fn run_main() -> Result<(), Box<dyn Error>> {
         greggd::cli::Command::Run => {
             let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
             let collector = NativeCollector::new(Some(config.name.as_str()))?;
-            build_runtime()?.block_on(greggd::run::run_with_control_path(
+            build_runtime()?.block_on(greggd::run::run_with_control_path_or_default(
                 collector,
                 config,
                 &config_path,
@@ -48,8 +48,8 @@ fn run_main() -> Result<(), Box<dyn Error>> {
         }
         #[cfg(unix)]
         greggd::cli::Command::Stop => {
-            let config = greggd::cli::load_config(&config_path, config_was_explicit)?;
-            match greggd::control::send_stop(&config_path, &config) {
+            let _ = greggd::cli::load_config(&config_path, config_was_explicit)?;
+            match greggd::control::send_stop(&config_path) {
                 Ok(greggd::control::StopOutcome::Stopped { .. }) => {
                     println!("greggd stopped");
                     Ok(())

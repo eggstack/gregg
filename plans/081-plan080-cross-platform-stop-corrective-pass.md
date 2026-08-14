@@ -1,6 +1,6 @@
 # Phase 081: Plan 080 cross-platform stop/runtime corrective pass
 
-Status: ready for implementation.
+Status: complete.
 
 Depends on: Plan 080 implementation through `e9e397e5eeabd8da1366bfff235e1f8ea79a50b5`.
 
@@ -596,3 +596,127 @@ Ubuntu release greggd run -> croncheck healthy -> stop -> clean exit -> dead cro
 ```
 
 A green Linux-only test run is insufficient because the regression includes a native Windows compile break. A green Windows build alone is insufficient because the Unix control identity bug is behavioral. Use the existing local-first verification model plus the existing native Windows CI job; do not add new verification infrastructure.
+
+## Closure record
+
+**Date:** 2026-08-14
+**Implementation SHA:** see `git log -1 --format=%H` on the Plan 081 commit.
+**Binary version:** `greggd 1.0.5`
+**Host:** Ubuntu 24.04.4 LTS (Noble Numbat, aarch64)
+
+### Implementation summary
+
+1. **Windows foreground `run` cfg correction** (`crates/greggd/src/main.rs`,
+   `crates/greggd/src/run.rs`). Added `run_with_control_path_or_default`,
+   a small helper that calls `run_with_control_path` on Unix and the
+   ordinary shared `run` on Windows. `main.rs` now has exactly one
+   cfg-aware dispatch point for the foreground command and Windows no
+   longer references any Unix-only symbol. The SCM service worker and
+   `Command::Stop` Windows path are unchanged.
+
+2. **Config-path-scoped Unix control identity**
+   (`crates/greggd/src/control.rs`). Introduced `config_id_for_path`
+   which returns the 16-character lowercase hex digest of a stable 64-bit
+   FNV-1a hash over the canonical config-path bytes. The digest does
+   not depend on `host`, `port`, `name`, the current PID, the time, or
+   any random source. Both `primary_control_path` and `fallback_control_path`
+   now produce `greggd-<id>.control.sock`, so two different config files
+   in the same directory produce different control paths.
+
+3. **Restrictive `0600` enforcement.** Refactored `bind_listener` so the
+   listener is only published when the `chmod` and a post-`chmod`
+   metadata check both confirm `0o600`. A failed permission update
+   closes the listener, removes the socket file, and tries the next
+   legitimate candidate. `shutdown_with_control` now returns
+   `Err(ControlSetupError::NoSecureControl { primary, fallback })` when no
+   candidate yields a secure listener, so the foreground entry point
+   surfaces a clear runtime error rather than silently disabling
+   `greggd stop`.
+
+4. **Narrow stale-socket unlink classification**
+   (`crates/greggd/src/control.rs`). Extracted the tiny
+   `stale_connect_error(kind)` helper used by `try_bind`. Only
+   `ConnectionRefused` and `NotFound` authorize removal of an existing
+   socket entry; `PermissionDenied`, `TimedOut`, and any other
+   unexpected error are explicitly preserved. Metadata still gates the
+   path type so regular files and directories are never unlinked.
+
+5. **API surface reductions.** `bind_listener`, `send_stop`,
+   `fallback_control_path`, `stop_candidates`, and the new
+   `config_id_for_path` now take only `config_path`; the old
+   `&Config` parameter was removed because the identity no longer depends
+   on any TOML field.
+
+6. **Documentation.** Updated `AGENTS.md`, `architecture/greggd-daemon.md`,
+   `architecture/overview.md`, `plans/080`, and `plans/README.md` so the
+   documented control-path description matches the new config-scoped
+   identity and the corrected stale-socket/permission semantics. The
+   original Plan 080 closure record was preserved; a corrective note
+   appended at the end points to Plan 081.
+
+### Local Ubuntu lifecycle smoke
+
+Single daemon on `/tmp/gregg-e2e-YlIZ/greggd.toml`, port 11461:
+
+```text
+Config:                      /tmp/gregg-e2e-YlIZ/greggd.toml
+Socket path:                 /tmp/gregg-e2e-YlIZ/greggd-ec01a39070be8279.control.sock
+Socket perms:                600
+Healthy after:               3 polls (croncheck exit 0)
+TCP listener visible (ss):   yes
+Stop exit:                   0
+Daemon exit:                 0
+Control socket removed:      yes
+TCP listener removed:        yes
+Subsequent croncheck:        exit 3 (Connection refused)
+Second stop (idempotent):    exit 0 ("greggd not running")
+```
+
+### Two-daemon same-directory isolation smoke
+
+Two configs in `/tmp/gregg-e2e-twodaemon-zBKv/`, ports 11462 (A) and
+11463 (B):
+
+```text
+Sock A:  /tmp/.../greggd-0dff56cf4541171e.control.sock   perms 600
+Sock B:  /tmp/.../greggd-4df4119e1f50c915.control.sock   perms 600
+A healthy:  yes (after 3 polls)
+B healthy:  yes (after 3 polls)
+
+stop B:               exit 0 ("greggd stopped")
+B daemon exit:        0
+B croncheck after:    exit 3
+A croncheck after:    exit 0 (still healthy)
+A process alive:      yes (kill -0)
+A TCP listener:       yes (ss)
+
+stop A:               exit 0 ("greggd stopped")
+A daemon exit:        0
+Sock A removed:       yes
+Sock B removed:       yes
+```
+
+### Test coverage
+
+- 18 control module tests (config identity, primary/fallback paths, stale
+  classification, cross-config isolation, malformed/stop/permission
+  behavior)
+- 13 CLI tests preserved (parser accepts stop, rejects start/restart,
+  croncheck target diagnostics, probe health)
+- 184 greggd tests total, all green
+- `cargo fmt --all -- --check` passes
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
+- `RUSTFLAGS="-D warnings" cargo check -p greggd --target x86_64-pc-windows-msvc` passes
+  (Windows compile regression from Plan 080 fixed)
+- `./scripts/check-local.sh --release` passes (excluding the clean-tree
+  check, which is expected before commit)
+
+### Verification provenance
+
+- Local implementation, test, and smoke environment: Linux aarch64 host.
+- Windows compile truth: local `cargo check` against the
+  `x86_64-pc-windows-msvc` target proves the cfg dispatch fixes the
+  regression. The existing `windows-2022` CI job runs the full workspace
+  test, the release `greggd` build, and the SCM lifecycle smoke; it
+  must be green for cross-platform closure. No new workflow, job,
+  matrix, or artifact is added.
