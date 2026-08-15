@@ -7,6 +7,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.8] - 2026-08-15
+
+### Changed
+
+- Bumped all crate versions to 1.0.8.
+
+### Fixed
+
+- **Croncheck target** (`greggd`): `greggd croncheck` now accepts a `--host` and
+  `--port` flag to target a remote daemon, instead of only probing the local
+  instance.
+
 ## [1.0.7] - 2026-08-15
 
 ### Changed
