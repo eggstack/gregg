@@ -204,6 +204,11 @@ Deep-dive documents in `architecture/` capture decisions larger than a single cr
 | `architecture/scripts-and-packaging.md` | Scripts, installers, service definitions |
 | `architecture/macos-collector-notes.md` | macOS collector differences from Activity Monitor / top |
 
+## OpenCode config
+
+No `opencode.json` or `.cursorrules` exists. Skills live in `.opencode/skills/`
+and are loaded via the skill tool as needed.
+
 ## Skills
 
 Reusable agent instructions live in `.opencode/skills/`:
