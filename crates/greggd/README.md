@@ -32,9 +32,14 @@ requires CRLF termination and accepts only HTTP/1.0 or HTTP/1.1 status 200:
 
 ```sh
 greggd croncheck
+greggd croncheck --target HOST:PORT
 greggd configprint
 greggd version
 ```
+
+Without `--target`, `croncheck` probes the configured local daemon address.
+The optional target is useful for checking a reachable daemon from another
+host; it does not start, stop, or modify any process or configuration.
 
 On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`.
 

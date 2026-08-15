@@ -56,7 +56,11 @@ pub enum Command {
     #[cfg(target_os = "windows")]
     Restart,
     /// Probe the daemon health endpoint without changing process state.
-    Croncheck,
+    Croncheck {
+        /// Optional remote target to probe instead of the configured local bind.
+        #[arg(long, value_name = "HOST:PORT")]
+        target: Option<SocketAddr>,
+    },
     /// Print the configured bind address without probing or mutating state.
     Configprint,
     /// Update the bind address (applies on the next daemon start).
@@ -337,9 +341,14 @@ pub fn dispatch_with_config_intent(
                 unreachable!("Command::Stop is handled at the binary boundary on Windows")
             }
         }
-        Command::Croncheck => {
-            let config = load_config(config_path, explicit)?;
-            probe_health(croncheck_target(&config))?;
+        Command::Croncheck { target } => {
+            let target = if let Some(target) = target {
+                *target
+            } else {
+                let config = load_config(config_path, explicit)?;
+                croncheck_target(&config)
+            };
+            probe_health(target)?;
             println!("greggd healthy");
             Ok(())
         }
@@ -390,6 +399,10 @@ mod native_tests {
         }
         assert!(Cli::try_parse_from(["greggd", "host", "127.0.0.1"]).is_ok());
         assert!(Cli::try_parse_from(["greggd", "port", "11310"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["greggd", "croncheck", "--target", "192.168.182.143:11310"])
+                .is_ok()
+        );
         for command in ["start", "restart"] {
             assert!(Cli::try_parse_from(["greggd", command]).is_err());
         }
@@ -519,5 +532,34 @@ mod native_tests {
             msg.contains(&target.to_string()),
             "expected diagnostic to mention target {target}, got: {msg}"
         );
+    }
+
+    #[test]
+    fn targeted_croncheck_does_not_require_a_config_file() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 256];
+            let _ = std::io::Read::read(&mut stream, &mut request);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+                .unwrap();
+        });
+
+        let path = std::env::temp_dir().join(format!(
+            "greggd-targeted-croncheck-missing-{}.toml",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        dispatch_with_config_intent(
+            &Command::Croncheck {
+                target: Some(target),
+            },
+            &path,
+            true,
+        )
+        .unwrap();
+        worker.join().unwrap();
     }
 }

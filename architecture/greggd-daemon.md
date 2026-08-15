@@ -152,7 +152,7 @@ configuration error and is neither written nor followed by process management.
 |---------|---------|
 | `run` | Start foreground daemon |
 | `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
-| `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200 |
+| `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200; optional `--target HOST:PORT` for an explicit remote target |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; no network, service, or write side effects |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |

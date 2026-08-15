@@ -86,6 +86,7 @@ Change the bind address or port:
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
 greggd port 11311                  # change the listen port
 greggd croncheck                   # bounded /v2/healthz probe; never starts the daemon
+greggd croncheck --target HOST:PORT # probe a reachable daemon explicitly
 greggd stop                        # stop a running foreground greggd via the local control socket (Unix) or SCM (Windows)
 greggd configprint                 # print the configured bind address, e.g. 0.0.0.0:11310
 greggd version                     # print the daemon version
@@ -99,6 +100,10 @@ default config uses a deterministic lexical absolute path. Stop speaks to a
 local Unix-domain control socket owned by the daemon; on Windows it asks the
 Service Control Manager. The HTTP API is read-only and has no shutdown
 endpoint.
+
+Without `--target`, `greggd croncheck` probes the configured local bind address
+using the same wildcard-to-loopback normalization as `greggd run`. Use
+`--target HOST:PORT` when checking a daemon on another host.
 
 The client stores its config at:
 
