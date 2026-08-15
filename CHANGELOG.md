@@ -7,6 +7,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.6] - 2026-08-14
+
+### Changed
+
+- Bumped all crate versions to 1.0.6.
+
 ## [1.0.5] - 2026-08-12
 
 ### Fixed
