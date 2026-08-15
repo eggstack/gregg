@@ -219,6 +219,7 @@ Reusable agent instructions live in `.opencode/skills/`:
 | `architecture-docs` | Read and update architecture documentation |
 | `protocol-wire` | Wire types, schema versions, validation |
 | `platform-collectors` | Platform-specific metric collectors |
+| `gregg-client` | Client crate: TUI, polling, state engine, CLI |
 | `release-process` | Manual release procedure |
 | `eggpool` | EggPool summary pane implementation |
 
