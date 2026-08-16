@@ -1248,4 +1248,35 @@ mod tests {
             result.outcome
         );
     }
+
+    #[tokio::test]
+    #[ignore = "live probe against a real daemon; run with --ignored --nocapture"]
+    async fn live_probe_classifies_real_response() {
+        let host = std::env::var("PROBE_HOST").unwrap_or_else(|_| "192.168.182.143".to_string());
+        let port: u16 = std::env::var("PROBE_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(11310);
+
+        let endpoint = Endpoint {
+            id: "probe".to_string(),
+            host: host.clone(),
+            port,
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_millis(1500));
+        let clock = crate::clock::RealClock;
+
+        eprintln!("--- before poll ---");
+        eprintln!("pid={}", std::process::id());
+        let result = client.poll(&endpoint, &clock).await;
+        eprintln!("host={host} port={port}");
+        eprintln!("latency={:?}", result.latency);
+        eprintln!("outcome={:?}", result.outcome);
+        eprintln!("--- mid-test ---");
+
+        // Hold the test alive so we can capture netstat from the parent shell.
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        eprintln!("--- done ---");
+    }
 }
