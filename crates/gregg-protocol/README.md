@@ -1,5 +1,10 @@
 # gregg-protocol
 
+[![Crates.io](https://img.shields.io/crates/v/gregg-protocol.svg)](https://crates.io/crates/gregg-protocol)
+[![Docs.rs](https://docs.rs/gregg-protocol/badge.svg)](https://docs.rs/gregg-protocol)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/gregg-protocol.svg)](https://crates.io/crates/gregg-protocol)
+
 Versioned JSON wire types, metric capabilities, and identity structures shared
 by the gregg daemon and client.
 

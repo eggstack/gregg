@@ -1,5 +1,10 @@
 # gregg
 
+[![Crates.io](https://img.shields.io/crates/v/gregg.svg)](https://crates.io/crates/gregg)
+[![Docs.rs](https://docs.rs/gregg/badge.svg)](https://docs.rs/gregg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/gregg.svg)](https://crates.io/crates/gregg)
+
 A compact terminal monitor for observing CPU, memory, swap, load, and disk usage across multiple machines over LAN.
 
 A lightweight daemon (`greggd`) runs on each machine you want to monitor and exposes a read-only JSON API on port `11310`. The `gregg` client polls configured daemons and renders a live TUI.

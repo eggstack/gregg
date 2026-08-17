@@ -1,5 +1,10 @@
 # greggd
 
+[![Crates.io](https://img.shields.io/crates/v/greggd.svg)](https://crates.io/crates/greggd)
+[![Docs.rs](https://docs.rs/greggd/badge.svg)](https://docs.rs/greggd)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/greggd.svg)](https://crates.io/crates/greggd)
+
 Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ecosystem.
 
 ## Installation

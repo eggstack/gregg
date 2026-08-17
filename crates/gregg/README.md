@@ -1,5 +1,10 @@
 # gregg
 
+[![Crates.io](https://img.shields.io/crates/v/gregg.svg)](https://crates.io/crates/gregg)
+[![Docs.rs](https://docs.rs/gregg/badge.svg)](https://docs.rs/gregg)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Downloads](https://img.shields.io/crates/d/gregg.svg)](https://crates.io/crates/gregg)
+
 Compact keyboard-first terminal monitor for observing system metrics across
 multiple machines.
 
