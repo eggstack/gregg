@@ -39,6 +39,13 @@ pub struct PollActivityObserver {
 }
 
 #[cfg(test)]
+impl Default for PollActivityObserver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
 impl PollActivityObserver {
     /// Create a new observer with zeroed counters.
     #[must_use]

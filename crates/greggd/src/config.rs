@@ -225,6 +225,7 @@ impl Config {
             path: path.to_path_buf(),
             source: AtomicWriteError::NoParentDirectory,
         })?;
+        #[cfg(unix)]
         let dir_existed = dir.is_dir();
         fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
