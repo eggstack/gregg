@@ -148,6 +148,13 @@ impl DriveTableLayout {
     }
 }
 
+/// Compute the percentage for a drive as `used / total * 100`. Eligibility
+/// (`total > 0` and `used <= total`) is the caller's responsibility.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+fn percentage_for_drive(drive: &NormalizedDrive) -> f32 {
+    (drive.used_bytes as f64 * 100.0 / drive.total_bytes as f64) as f32
+}
+
 /// Format one drive's pre-table fields. Eligibility (`used <= total`,
 /// `total > 0`) must be checked by the caller.
 pub(crate) fn build_drive_detail_row(drive: &NormalizedDrive) -> DriveDetailRow {
@@ -157,10 +164,7 @@ pub(crate) fn build_drive_detail_row(drive: &NormalizedDrive) -> DriveDetailRow 
         .available_bytes
         .unwrap_or(drive.total_bytes - drive.used_bytes);
     let remaining = format!("({})", format_bytes(remaining_bytes));
-    let percent = format!(
-        "{}",
-        format_pct((drive.used_bytes as f64 * 100.0 / drive.total_bytes as f64) as f32)
-    );
+    let percent = format_pct(percentage_for_drive(drive));
     DriveDetailRow {
         name: drive.name.clone(),
         used,
@@ -198,12 +202,12 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
     let mut max_remaining = 0usize;
     let mut max_percent = 0usize;
     for row in rows {
-        let (n, u, t, r, p) = drive_row_widths(row);
-        max_name = max_name.max(n);
-        max_used = max_used.max(u);
-        max_total = max_total.max(t);
-        max_remaining = max_remaining.max(r);
-        max_percent = max_percent.max(p);
+        let (name_w, used_w, total_w, remaining_w, percent_w) = drive_row_widths(row);
+        max_name = max_name.max(name_w);
+        max_used = max_used.max(used_w);
+        max_total = max_total.max(total_w);
+        max_remaining = max_remaining.max(remaining_w);
+        max_percent = max_percent.max(percent_w);
     }
 
     // Full layout width = name + used + " / " + total + "  " + remaining + "  " + percent.

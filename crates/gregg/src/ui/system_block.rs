@@ -38,7 +38,7 @@ const METRIC_ROW_INDENT: &str = "    ";
 
 /// Render a normal-view online system block using the precomputed
 /// fleet-wide metric geometry.
-#[allow(clippy::too_many_lines)]
+#[allow(clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]
 pub(crate) fn render_online(
     f: &mut Frame,
     area: Rect,
@@ -248,6 +248,7 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> [MetricRow; 4] {
 /// across devices. Per-row suffix strings live with each system because
 /// they depend on that system's own metric values.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::trivially_copy_pass_by_ref)]
 pub(crate) struct MetricFleetLayout {
     /// Display-cell width of the longest metric label across every
     /// participating system (so mixed `SWP`/`COMMIT` fleets pick the
@@ -388,6 +389,7 @@ fn max_suffix_display(suffixes: &[String; 4]) -> usize {
 }
 
 /// Render a single metric row using the shared fleet geometry.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn render_metric_row(
     f: &mut Frame,
     area: Rect,
@@ -583,6 +585,7 @@ mod tests {
         );
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     fn build_row_line(row: &MetricRow, layout: &MetricFleetLayout, suffix: &str) -> String {
         let label_padded = format!(
             "{}{label:<width$}",

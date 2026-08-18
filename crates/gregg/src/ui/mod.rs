@@ -1697,8 +1697,10 @@ mod tests {
                             || trimmed[name.len()..].starts_with(' ')
                             || trimmed[name.len()..].starts_with("  "))
                 })
-                .map(|offset| offset + search_from)
-                .unwrap_or_else(|| panic!("missing header for {name}"));
+                .map_or_else(
+                    || panic!("missing header for {name}"),
+                    |offset| offset + search_from,
+                );
             let mut rows = Vec::new();
             for line in lines.iter().skip(block_start + 1).take(4) {
                 rows.push((*line).to_string());
@@ -2134,47 +2136,6 @@ mod tests {
         let lines = collect_drive_lines(&output);
         assert_eq!(lines.len(), 2, "expected 2 drive rows: {lines:?}");
 
-        // Locate the slash between used and total columns by scanning
-        // terminal cells (not bytes). The shared layout must align the
-        // slash at the same cell column on every row, including rows
-        // whose names contain wide Unicode characters.
-        fn used_total_slash_cell(line: &str) -> usize {
-            use unicode_width::UnicodeWidthChar;
-            let mut cells = 0usize;
-            let mut chars = line.chars().peekable();
-            // Skip leading indent.
-            while let Some(&c) = chars.peek() {
-                if c != ' ' {
-                    break;
-                }
-                chars.next();
-            }
-            // Skip name (until first space).
-            while let Some(&c) = chars.peek() {
-                if c == ' ' {
-                    break;
-                }
-                cells += UnicodeWidthChar::width(c).unwrap_or(0);
-                chars.next();
-            }
-            // Skip gap (run of spaces).
-            while let Some(&c) = chars.peek() {
-                if c != ' ' {
-                    break;
-                }
-                chars.next();
-            }
-            // Skip used value (until next space).
-            while let Some(&c) = chars.peek() {
-                if c == ' ' {
-                    break;
-                }
-                cells += UnicodeWidthChar::width(c).unwrap_or(0);
-                chars.next();
-            }
-            cells
-        }
-
         let sep_columns: Vec<usize> = lines.iter().map(|l| used_total_slash_cell(l)).collect();
         assert!(
             sep_columns.iter().all(|&c| c == sep_columns[0]),
@@ -2249,7 +2210,10 @@ mod tests {
                 system_id: state.systems[i].id.clone(),
                 endpoint: state.systems[i].endpoint.clone(),
                 outcome: PollOutcome::Online(Box::new(linux_snap_custom(
-                    10.0 + 30.0 * i as f32,
+                    #[allow(clippy::cast_precision_loss)]
+                    {
+                        10.0 + 30.0 * i as f32
+                    },
                     0.0,
                     4,
                 ))),
@@ -2269,6 +2233,7 @@ mod tests {
         let names = ["pi5", "server3", "deadpool"];
         for index in 2..=4 {
             let row = condensed_row(&output, index).to_string();
+            #[allow(clippy::cast_precision_loss)]
             let cpu_pct = 10.0 + 30.0 * (index - 2) as f32;
             let cpu_value = format!("{cpu_pct:.0}%");
             let host_value = names[index - 2];
@@ -2319,6 +2284,48 @@ mod tests {
                 return cells;
             }
             cells += UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        cells
+    }
+
+    /// Locate the slash between `used` and `total` columns of a
+    /// drive-detail row by scanning terminal cells (not bytes). The
+    /// shared table layout must align the slash at the same cell on
+    /// every row, including rows whose names contain wide Unicode
+    /// characters.
+    fn used_total_slash_cell(line: &str) -> usize {
+        use unicode_width::UnicodeWidthChar;
+        let mut cells = 0usize;
+        let mut chars = line.chars().peekable();
+        // Skip leading indent.
+        while let Some(&c) = chars.peek() {
+            if c != ' ' {
+                break;
+            }
+            chars.next();
+        }
+        // Skip name (until first space).
+        while let Some(&c) = chars.peek() {
+            if c == ' ' {
+                break;
+            }
+            cells += UnicodeWidthChar::width(c).unwrap_or(0);
+            chars.next();
+        }
+        // Skip gap (run of spaces).
+        while let Some(&c) = chars.peek() {
+            if c != ' ' {
+                break;
+            }
+            chars.next();
+        }
+        // Skip used value (until next space).
+        while let Some(&c) = chars.peek() {
+            if c == ' ' {
+                break;
+            }
+            cells += UnicodeWidthChar::width(c).unwrap_or(0);
+            chars.next();
         }
         cells
     }
@@ -2412,6 +2419,8 @@ mod tests {
 
     #[test]
     fn condensed_unicode_nickname_does_not_shift_numeric_columns() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
         // A wide-character nickname must not push the numeric columns
         // relative to ASCII rows. Both rows must place "20%" in the
         // same terminal cell.
@@ -2448,8 +2457,6 @@ mod tests {
 
         // Use TestBackend directly so we can compare terminal cells
         // (not bytes) for both rows.
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
         let backend = TestBackend::new(100, 6);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| super::render(f, &state)).unwrap();

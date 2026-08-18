@@ -253,7 +253,7 @@ pub(crate) fn compute_condensed_table_layout(
                 Column::Disk => widths[3],
                 Column::Load => widths[4],
                 Column::Iowait => widths[5],
-                _ => 0,
+                Column::Host => 0,
             })
             .sum();
         let host_budget = available
@@ -461,10 +461,10 @@ mod tests {
     #[test]
     fn tiers_drop_low_priority_columns() {
         let systems = vec![system("srv")];
-        assert!(tier(64) == Tier::Wide);
-        assert!(tier(48) == Tier::Medium);
-        assert!(tier(30) == Tier::Narrow);
-        assert!(tier(20) == Tier::Minimal);
+        assert_eq!(tier(64), Tier::Wide);
+        assert_eq!(tier(48), Tier::Medium);
+        assert_eq!(tier(30), Tier::Narrow);
+        assert_eq!(tier(20), Tier::Minimal);
 
         assert!(compute_condensed_table_layout(&systems, 64)
             .tier
