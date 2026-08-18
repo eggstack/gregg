@@ -49,6 +49,8 @@ pub(crate) enum RunOutcome {
     Server(Result<Result<(), ServerError>, tokio::task::JoinError>),
     /// The sampler task completed (or panicked).
     Sampler(Result<(), tokio::task::JoinError>),
+    /// A fatal internal error prevented supervision (e.g., a missing task handle).
+    Fatal(&'static str),
 }
 
 impl RunOutcome {
@@ -67,6 +69,7 @@ impl RunOutcome {
             Self::Server(Err(e)) => Err(Box::new(e)),
             Self::Sampler(Ok(())) => Err("sampler exited unexpectedly".into()),
             Self::Sampler(Err(e)) => Err(Box::new(e)),
+            Self::Fatal(msg) => Err(msg.into()),
         }
     }
 }
@@ -86,7 +89,8 @@ pub async fn run<C: SystemCollector + 'static>(
     collector: C,
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    run_with_shutdown(collector, config, wait_for_shutdown_signal()).await
+    let shutdown = wait_for_shutdown_signal()?;
+    run_with_shutdown(collector, config, shutdown).await
 }
 
 /// Run the daemon and treat `config_path` as authoritative for the local
@@ -298,8 +302,12 @@ where
     // does not consume its handle. The selected handle is taken after the
     // select completes.
     let outcome = {
-        let mut server_fut = server_handle.as_mut().unwrap();
-        let mut sampler_fut = sampler_handle.as_mut().unwrap();
+        let Some(mut server_fut) = server_handle.as_mut() else {
+            return RunOutcome::Fatal("server task handle missing");
+        };
+        let Some(mut sampler_fut) = sampler_handle.as_mut() else {
+            return RunOutcome::Fatal("sampler task handle missing");
+        };
 
         tokio::select! {
             signal_result = shutdown => {
@@ -343,7 +351,7 @@ where
         RunOutcome::Sampler(_) => {
             let _ = sampler_handle.take();
         }
-        RunOutcome::Signal(_) => {}
+        RunOutcome::Signal(_) | RunOutcome::Fatal(_) => {}
     }
 
     outcome
@@ -448,30 +456,28 @@ async fn sync_sampler_state(
 }
 
 /// Wait for a platform-appropriate shutdown signal.
-fn wait_for_shutdown_signal() -> impl std::future::Future<Output = &'static str> {
+fn wait_for_shutdown_signal(
+) -> Result<impl std::future::Future<Output = &'static str>, std::io::Error> {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        async move {
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-            let mut sigint =
-                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
-
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let mut sigint = signal(SignalKind::interrupt())?;
+        Ok(async move {
             tokio::select! {
                 _ = sigterm.recv() => "SIGTERM",
                 _ = sigint.recv() => "SIGINT",
             }
-        }
+        })
     }
     #[cfg(not(unix))]
     {
-        async {
+        Ok(async {
             tokio::signal::ctrl_c()
                 .await
                 .expect("failed to listen for Ctrl-C");
             "Ctrl-C"
-        }
+        })
     }
 }
 
@@ -511,12 +517,10 @@ fn shutdown_with_control(
         }
     };
 
-    Ok(async move {
-        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("failed to register SIGTERM handler");
-        let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-            .expect("failed to register SIGINT handler");
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
+    Ok(async move {
         if let Some(rx) = stop_rx {
             let stop_fut = control::wait_for_stop_task(rx);
             tokio::select! {

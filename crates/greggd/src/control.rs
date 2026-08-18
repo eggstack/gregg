@@ -115,6 +115,9 @@ pub enum ControlSetupError {
         /// The temp-dir fallback candidate path, if one was computed.
         fallback: Option<PathBuf>,
     },
+    /// Failed to register a Unix signal handler during shutdown-source setup.
+    #[error("failed to register signal handler: {0}")]
+    SignalRegistration(#[from] std::io::Error),
 }
 
 /// Compute a stable 64-bit FNV-1a hex digest for the given config identity.
@@ -566,9 +569,6 @@ pub fn spawn_stop_task(
     tokio::spawn(async move {
         let guard = ControlSocketGuard { path: path.clone() };
         let result = stop_loop(listener).await;
-        if let Err(e) = crate::control::remove_control_socket(&path) {
-            tracing::warn!(path = %path.display(), error = %e, "control socket cleanup failed");
-        }
         let _ = notify.send(result);
         drop(guard);
     })

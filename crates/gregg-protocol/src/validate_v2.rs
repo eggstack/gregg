@@ -37,15 +37,11 @@ impl ValidationViolationV2 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViolationKindV2 {
     /// `schema_version` did not match the supported version.
-    UnsupportedSchemaVersion {
-        found: u16,
-    },
+    UnsupportedSchemaVersion { found: u16 },
     /// An integer count that must be positive was zero.
     ZeroNotAllowed,
     /// The sampling cadence exceeded the protocol maximum.
-    SampleIntervalOutOfRange {
-        max_ms: u64,
-    },
+    SampleIntervalOutOfRange { max_ms: u64 },
     /// A percentage value was not finite (NaN or infinite).
     PercentageNotFinite,
     /// A percentage value was outside the closed `0.0..=100.0` interval.
@@ -54,6 +50,7 @@ pub enum ViolationKindV2 {
     LoadValueOutOfRange,
     /// `used_bytes` exceeded `total_bytes` or `limit_bytes`.
     UsedExceedsTotal,
+    /// `available_bytes` exceeded `total_bytes`.
     AvailableExceedsTotal,
     /// `cpu_iowait` capability and `iowait_pct` presence disagreed.
     IowaitCapabilityMismatch,
@@ -66,13 +63,9 @@ pub enum ViolationKindV2 {
     /// A drive display name was empty.
     EmptyDriveName,
     /// A drive display name exceeded the protocol bound.
-    DriveNameTooLong {
-        max_bytes: usize,
-    },
+    DriveNameTooLong { max_bytes: usize },
     /// The drive collection exceeded the protocol bound.
-    TooManyDrives {
-        max_entries: usize,
-    },
+    TooManyDrives { max_entries: usize },
 }
 
 impl fmt::Display for ViolationKindV2 {

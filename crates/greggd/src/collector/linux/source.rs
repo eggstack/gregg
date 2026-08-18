@@ -8,8 +8,6 @@
 //!
 //! No external commands are invoked for metrics collection.
 
-#![allow(unsafe_code)]
-
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -260,6 +258,7 @@ impl ProcSource {
 #[derive(Debug)]
 struct HostSource;
 
+#[allow(unsafe_code)]
 impl FileSource for HostSource {
     fn read_to_string(&self, path: &Path) -> Result<String, CollectError> {
         match fs::read_to_string(path) {

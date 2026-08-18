@@ -362,7 +362,19 @@ async fn status_handler(State(state): State<ServerState>) -> Response {
         if snapshot_is_stale {
             return health_response(&health_state, StatusCode::SERVICE_UNAVAILABLE);
         }
-        let body = serde_json::to_vec(&*snap).expect("snapshot serializes");
+        let body = match serde_json::to_vec(&*snap) {
+            Ok(body) => body,
+            Err(e) => {
+                let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                    .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("content-type", "application/json")],
+                    error_body,
+                )
+                    .into_response();
+            }
+        };
         return (StatusCode::OK, [("content-type", "application/json")], body).into_response();
     }
     health_response(&health_state, StatusCode::SERVICE_UNAVAILABLE)
@@ -391,7 +403,19 @@ async fn fallback_handler(method: Method, uri: axum::http::Uri) -> (StatusCode, 
 }
 
 fn health_response(health: &HealthResponse, status: StatusCode) -> Response {
-    let body = serde_json::to_vec(&health).expect("health response serializes");
+    let body = match serde_json::to_vec(&health) {
+        Ok(body) => body,
+        Err(e) => {
+            let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "application/json")],
+                error_body,
+            )
+                .into_response();
+        }
+    };
     (status, [("content-type", "application/json")], body).into_response()
 }
 
@@ -408,7 +432,19 @@ async fn status_handler_v2(State(state): State<ServerState>) -> Response {
         if snapshot_is_stale {
             return health_response_v2(&health_state, StatusCode::SERVICE_UNAVAILABLE);
         }
-        let body = serde_json::to_vec(&*snap).expect("v2 snapshot serializes");
+        let body = match serde_json::to_vec(&*snap) {
+            Ok(body) => body,
+            Err(e) => {
+                let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                    .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("content-type", "application/json")],
+                    error_body,
+                )
+                    .into_response();
+            }
+        };
         return (StatusCode::OK, [("content-type", "application/json")], body).into_response();
     }
     health_response_v2(&health_state, StatusCode::SERVICE_UNAVAILABLE)
@@ -429,7 +465,19 @@ async fn health_handler_v2(State(state): State<ServerState>) -> Response {
 }
 
 fn health_response_v2(health: &HealthResponseV2, status: StatusCode) -> Response {
-    let body = serde_json::to_vec(&health).expect("v2 health response serializes");
+    let body = match serde_json::to_vec(&health) {
+        Ok(body) => body,
+        Err(e) => {
+            let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
+                .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "application/json")],
+                error_body,
+            )
+                .into_response();
+        }
+    };
     (status, [("content-type", "application/json")], body).into_response()
 }
 

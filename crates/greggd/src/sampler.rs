@@ -165,13 +165,12 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     #[must_use]
     pub fn health_response(&self) -> HealthResponse {
         match self.readiness {
-            ReadinessState::Ready => {
-                let snap = self
-                    .snapshot
-                    .as_ref()
-                    .expect("Ready implies snapshot is Some");
-                HealthResponse::ready((**snap).clone())
-            }
+            ReadinessState::Ready => match self.snapshot.as_ref() {
+                Some(snap) => HealthResponse::ready((**snap).clone()),
+                None => {
+                    HealthResponse::failed(HealthCategory::CollectorFailure, "snapshot unavailable")
+                }
+            },
             ReadinessState::Warming => HealthResponse::warming(),
             ReadinessState::Failed => {
                 let msg = format!("{} consecutive failures", self.consecutive_failures);

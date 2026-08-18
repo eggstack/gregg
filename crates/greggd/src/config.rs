@@ -8,6 +8,9 @@ use std::fmt;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +59,24 @@ impl Default for Config {
             stale_after_ms: 10_000,
         }
     }
+}
+
+/// Remove stale `.greggd-*.toml.tmp` files left by prior crashes.
+fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
+    let entries = fs::read_dir(dir)?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if let Some(name_str) = name.to_str() {
+            if name_str.starts_with(".greggd-") && name_str.ends_with(".toml.tmp") {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.is_file() {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Config {
@@ -204,16 +225,26 @@ impl Config {
             path: path.to_path_buf(),
             source: AtomicWriteError::NoParentDirectory,
         })?;
+        let dir_existed = dir.is_dir();
         fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
             source: AtomicWriteError::Io(e),
         })?;
+        #[cfg(unix)]
+        if !dir_existed {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+        }
 
         // 2. Serialize the complete config.
         let content = self.to_toml();
 
+        // 2b. Clean up stale temp files from prior crashes.
+        let _ = cleanup_stale_temps(dir);
+
         // 3. Write to a uniquely named temporary file.
-        let temp_name = format!(".greggd-{}.toml.tmp", std::process::id());
+        let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let temp_name = format!(".greggd-{}-{}.toml.tmp", std::process::id(), id);
         let temp_path = dir.join(&temp_name);
 
         fs::write(&temp_path, content.as_bytes()).map_err(|e| {

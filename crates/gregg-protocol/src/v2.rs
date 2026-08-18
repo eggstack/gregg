@@ -32,6 +32,9 @@ pub struct DriveMetrics {
     pub used_bytes: u64,
     /// Total capacity in bytes.
     pub total_bytes: u64,
+    /// `available_bytes` may exceed `total_bytes - used_bytes` because of
+    /// filesystem reservations, quotas, or sparse layouts; the field is not
+    /// required to complement `used_bytes`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub available_bytes: Option<u64>,
 }
