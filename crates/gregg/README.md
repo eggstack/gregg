@@ -61,9 +61,16 @@ Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
 The normal view uses five rows for an online system, including aggregate disk
-capacity. The condensed view uses one comparison row per system. `e` adds
-bounded detail rows for valid mounted-local-filesystem records belonging only
-to the selected online system; view and expansion state are not persisted.
+capacity. All four metric rows share a fleet-wide `bar_width` so the opening
+`[` and closing `]` columns align across every online system. The aggregate
+DISK suffix renders `<used bytes> / <total bytes>` so the denominator matches
+the percentage; explicit caller-available space is preserved by the normalized
+model and surfaced only through the expanded per-drive rows. The condensed
+view uses one comparison row per system. `e` adds bounded detail rows for
+valid mounted-local-filesystem records belonging only to the selected online
+system; the expanded rows share one table layout so mount names, used,
+total, remaining, and percentage columns stay aligned across drives. View
+and expansion state are not persisted.
 
 ## Supported platforms
 

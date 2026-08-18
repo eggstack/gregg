@@ -208,13 +208,20 @@ The header line drops lower-priority segments as width decreases:
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
 
-The four metric rows share one label width and one bar width; their
-opening `[` and closing `]` always occupy the same terminal column.
-Geometry is computed once via `build_metric_rows`,
-`compute_metric_group_layout`, and `render_metric_row`. Metric rows are
-indented by exactly four spaces. The disk aggregate suffix is rendered as
-`<used bytes> / <available bytes>` without `used` or `avail` words. Unavailable metrics
-render `—` rather than fabricating a `0.0%`.
+The four metric rows share one fleet-wide label width and one
+fleet-wide `bar_width`; their opening `[` and closing `]` always occupy
+the same terminal column across every online system. Geometry is
+computed once per render via `build_metric_rows`,
+`compute_fleet_metric_layout`, and `resolve_system_suffixes`; the
+layout population includes every online system with a current
+normalized snapshot, not only the entries returned by `compute_viewport`,
+so scrolling does not cause horizontal reflow. Metric rows are indented
+by exactly four spaces. The disk aggregate suffix is rendered as
+`<used bytes> / <total bytes>` so the slash denominator matches the
+percentage calculation; explicit caller-available capacity remains
+preserved by the normalized model and is surfaced only through the
+expanded drive detail rows. Unavailable metrics render `—` rather than
+fabricating a `0.0%`.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`): When the
 configured client name is set the row reads `name@host:port offline`;
@@ -222,9 +229,26 @@ otherwise it reads `host:port offline` and never duplicates the host.
 The configured client name persists on `SystemEntry.name`; the daemon's
 `system.name` is not used for client-side display.
 
+**Expanded drive rows** (`e` in normal or condensed view, shared between
+`ui/system_block.rs` and `ui/condensed.rs`): one table layout per
+selected system, computed from every eligible drive before the visible
+subset is rendered. The full shape is
+`<name>  <used> / <total>  (<remaining>) <percent>`. Remaining uses
+explicit `available_bytes` when present, otherwise the compatibility
+fallback `total_bytes - used_bytes`. Percent always uses
+`used / total`. Narrow terminals degrade through Compact
+(`name  (remaining) percent`) and Minimal (`name  percent`) without
+overflow.
+
 **Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate
 columns based on terminal width (Wide ≥ 64, Medium 48-63, Narrow 30-47,
-Minimal < 30).
+Minimal < 30). Header and online rows use one shared
+`CondensedTableLayout` (`compute_condensed_table_layout` +
+`render_header_line` + `render_online_row`) so headings and values
+always occupy the same terminal cell. HOST is the flexible/truncatable
+column; numeric columns remain intact whenever the natural fleet widths
+fit, and the layout falls back to the next narrower tier before any
+numeric column is clipped.
 
 ## Configuration
 

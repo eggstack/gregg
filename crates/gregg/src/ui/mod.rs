@@ -46,8 +46,17 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
+    let condensed_layout = if state.system_view_mode == SystemViewMode::Condensed {
+        condensed::compute_condensed_table_layout(&state.systems, area.width)
+    } else {
+        // The condensed layout is unused outside the condensed branch;
+        // build a placeholder so the borrow checker is satisfied without
+        // paying for the format pass.
+        condensed::compute_condensed_table_layout(&[], area.width)
+    };
+
     if state.system_view_mode == SystemViewMode::Condensed {
-        condensed::render_header(f, area);
+        condensed::render_header(f, area, &condensed_layout);
     }
 
     let entries = layout::compute_viewport(state, area);
@@ -59,6 +68,26 @@ pub fn render(f: &mut Frame, state: &AppState) {
         .saturating_add(area.height)
         .saturating_sub(entries_bottom);
 
+    // Compute the fleet-wide metric geometry once per render, from every
+    // online system with a current normalized snapshot, so the opening
+    // and closing brackets line up across all online systems. The
+    // population includes systems outside the viewport so scrolling
+    // does not cause horizontal reflow.
+    let fleet_layout = if state.system_view_mode == SystemViewMode::Normal {
+        let mut system_rows: Vec<[system_block::MetricRow; 4]> = Vec::new();
+        for system in &state.systems {
+            if system.reachability != crate::state::Reachability::Online {
+                continue;
+            }
+            if let Some(snap) = system.latest.as_ref() {
+                system_rows.push(system_block::build_metric_rows(snap));
+            }
+        }
+        system_block::compute_fleet_metric_layout(system_rows.iter(), area.width)
+    } else {
+        system_block::MetricFleetLayout::empty()
+    };
+
     for entry in &entries {
         let system = &state.systems[entry.index];
         if state.system_view_mode == SystemViewMode::Condensed {
@@ -66,6 +95,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 f,
                 entry.rect,
                 system,
+                &condensed_layout,
                 entry.is_selected,
                 entry.drive_rows_visible,
             );
@@ -77,6 +107,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                     f,
                     entry.rect,
                     system,
+                    &fleet_layout,
                     entry.is_selected,
                     entry.drive_rows_visible,
                 );
@@ -804,11 +835,13 @@ mod tests {
 
         let output = render_state(&state, 200, 8);
         assert!(output.lines().nth(4).unwrap().contains("DISK"));
-        // Phase 083: aggregate disk text is `<used> / <available>` with
-        // no `used` or `avail` words, both bytes shown so the user can
-        // still read both directions.
+        // Phase 085: aggregate disk text is `<used> / <total>` so the
+        // slash denominator matches the percentage calculation. The
+        // `<used> / <available>` shape was retired in 085; explicit
+        // caller-available space remains reachable through the expanded
+        // drive detail rows.
         assert!(
-            output.contains("380.0 GiB /"),
+            output.contains("380.0 GiB / 1.4 TiB"),
             "expected aggregate detail in output:\n{output}"
         );
         assert!(
@@ -1645,5 +1678,804 @@ mod tests {
         assert!(condensed.contains("IOWAIT"));
         assert!(condensed.contains("/home"));
         assert!(!condensed.contains("/Volumes/data"));
+    }
+
+    // ── Fleet-wide normal-view geometry ────────────────────────────────
+
+    fn collect_metric_rows(output: &str, names: &[&str]) -> Vec<Vec<String>> {
+        let lines: Vec<&str> = output.lines().collect();
+        let mut out = Vec::new();
+        let mut search_from = 0;
+        for name in names {
+            let block_start = lines
+                .iter()
+                .skip(search_from)
+                .position(|line| {
+                    let trimmed = line.trim_start();
+                    trimmed.starts_with(name)
+                        && (trimmed.len() == name.len()
+                            || trimmed[name.len()..].starts_with(' ')
+                            || trimmed[name.len()..].starts_with("  "))
+                })
+                .map(|offset| offset + search_from)
+                .unwrap_or_else(|| panic!("missing header for {name}"));
+            let mut rows = Vec::new();
+            for line in lines.iter().skip(block_start + 1).take(4) {
+                rows.push((*line).to_string());
+            }
+            out.push(rows);
+            search_from = block_start + 5;
+        }
+        out
+    }
+
+    fn bracket_columns(rows: &[String]) -> (Vec<usize>, Vec<usize>) {
+        let opens = rows.iter().map(|line| terminal_column(line, '[')).collect();
+        let closes = rows.iter().map(|line| terminal_column(line, ']')).collect();
+        (opens, closes)
+    }
+
+    fn assert_brackets_align(blocks: &[Vec<String>], context: &str) {
+        let mut all_opens = Vec::new();
+        let mut all_closes = Vec::new();
+        for rows in blocks {
+            let (o, c) = bracket_columns(rows);
+            all_opens.extend(o);
+            all_closes.extend(c);
+        }
+        let first_open = *all_opens.first().expect("at least one bracket");
+        let first_close = *all_closes.first().expect("at least one bracket");
+        assert!(
+            all_opens.iter().all(|&c| c == first_open),
+            "{context}: opening brackets drifted: {all_opens:?}"
+        );
+        assert!(
+            all_closes.iter().all(|&c| c == first_close),
+            "{context}: closing brackets drifted: {all_closes:?}"
+        );
+    }
+
+    #[test]
+    fn fleet_brackets_align_when_suffix_widths_differ_across_devices() {
+        // Two online systems: one with small suffixes, one with TiB-scale
+        // disk detail. Both must agree on every opening `[` and closing `]`
+        // column at every representative width.
+        let mut config = Config::default();
+        for (i, host) in ["box.local", "big.local"].iter().enumerate() {
+            config.systems.push(SystemEntry {
+                id: format!("id-{i}"),
+                host: (*host).to_string(),
+                port: 11310,
+                name: Some(format!("box{i}")),
+            });
+        }
+        let mut state = AppState::from_config(&config);
+        apply_online_v2(
+            &mut state,
+            0,
+            LinuxSnapshotV2Builder::default()
+                .memory(2 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)
+                .logical_cores(4)
+                .build_payload(),
+            1,
+        );
+        apply_online_v2(
+            &mut state,
+            1,
+            LinuxSnapshotV2Builder::default()
+                .memory(120 * 1024 * 1024 * 1024, 150 * 1024 * 1024 * 1024)
+                .logical_cores(128)
+                .drives(Some(vec![
+                    DriveMetrics {
+                        name: "/".into(),
+                        used_bytes: 1200 * 1024 * 1024 * 1024 * 1024,
+                        total_bytes: 1400 * 1024 * 1024 * 1024 * 1024,
+                        available_bytes: None,
+                    },
+                    DriveMetrics {
+                        name: "/mnt/big".into(),
+                        used_bytes: 900 * 1024 * 1024 * 1024 * 1024,
+                        total_bytes: 1100 * 1024 * 1024 * 1024 * 1024,
+                        available_bytes: None,
+                    },
+                ]))
+                .build_payload(),
+            2,
+        );
+        state.viewport_top_id = None;
+
+        for width in [40u16, 60, 80, 120] {
+            let output = render_state(&state, width, 12);
+            let blocks = collect_metric_rows(&output, &["box0", "box1"]);
+            assert_brackets_align(&blocks, &format!("width {width}"));
+        }
+    }
+
+    #[test]
+    fn fleet_brackets_align_with_mixed_linux_windows_labels() {
+        // A Linux-shaped system (SWP) and a Windows-shaped system (COMMIT)
+        // must share one fleet label column and one bar column. COMMIT is
+        // the wider label so the fleet label width is `len("COMMIT")`.
+        let mut config = Config::default();
+        for (i, name) in ["linux-host", "windows-host"].iter().enumerate() {
+            config.systems.push(SystemEntry {
+                id: format!("id-{i}"),
+                host: format!("host{i}.local"),
+                port: 11310,
+                name: Some((*name).to_string()),
+            });
+        }
+        let mut state = AppState::from_config(&config);
+        apply_online_v2(
+            &mut state,
+            0,
+            LinuxSnapshotV2Builder::default().build_payload(),
+            1,
+        );
+        apply_online_v2(
+            &mut state,
+            1,
+            WindowsSnapshotV2Builder::default().build_payload(),
+            2,
+        );
+        state.viewport_top_id = None;
+
+        for width in [40u16, 60, 80, 120] {
+            let output = render_state(&state, width, 12);
+            let blocks = collect_metric_rows(&output, &["linux-host", "windows-host"]);
+            assert_brackets_align(&blocks, &format!("mixed fleet at width {width}"));
+        }
+    }
+
+    #[test]
+    fn fleet_brackets_remain_stable_when_longest_suffix_system_scrolls_off_viewport() {
+        // With many systems online, the longest suffix belongs to a system
+        // that initially sits below the viewport. Moving the viewport so
+        // that system is visible must not change the bracket columns.
+        let names: Vec<String> = (0..6).map(|i| format!("sys{i}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let config = test_config(&name_refs);
+        let mut state = AppState::from_config(&config);
+        // Apply one batch with all six systems so they all become online
+        // in the same generation.
+        let results: Vec<crate::poller::PollResult> = (0..6)
+            .map(|i| {
+                let drives = if i == 5 {
+                    Some(vec![DriveMetrics {
+                        name: "/".into(),
+                        used_bytes: 1200 * 1024 * 1024 * 1024 * 1024,
+                        total_bytes: 1400 * 1024 * 1024 * 1024 * 1024,
+                        available_bytes: None,
+                    }])
+                } else {
+                    None
+                };
+                let payload = LinuxSnapshotV2Builder::default()
+                    .drives(drives)
+                    .build_payload();
+                crate::poller::PollResult {
+                    system_id: state.systems[i].id.clone(),
+                    endpoint: state.systems[i].endpoint.clone(),
+                    outcome: PollOutcome::OnlineV2(Box::new(payload)),
+                    latency: Duration::from_millis(10),
+                }
+            })
+            .collect();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results,
+        });
+        // Six online systems: only the first one fits in a 7-row viewport.
+        // The system with the widest suffix is far below the viewport.
+        state.viewport_top_id = Some("id-0".into());
+        let before = render_state(&state, 120, 7);
+        let before_blocks = collect_metric_rows(&before, &["sys0"]);
+        assert_brackets_align(&before_blocks, "initial viewport");
+
+        // Scroll down so the wide-suffix system becomes visible.
+        state.viewport_top_id = Some("id-5".into());
+        let after = render_state(&state, 120, 7);
+        let after_blocks = collect_metric_rows(&after, &["sys5"]);
+        assert_brackets_align(&after_blocks, "scrolled viewport");
+
+        // Bracket columns must agree across the two viewports because the
+        // fleet geometry was stable across the scroll.
+        let (before_opens, before_closes) = bracket_columns(&before_blocks[0]);
+        let (after_opens, after_closes) = bracket_columns(&after_blocks[0]);
+        assert_eq!(
+            before_opens, after_opens,
+            "opening brackets must not drift on scroll"
+        );
+        assert_eq!(
+            before_closes, after_closes,
+            "closing brackets must not drift on scroll"
+        );
+    }
+
+    #[test]
+    fn fleet_brackets_remain_aligned_at_narrow_widths() {
+        // Narrow widths still produce aligned brackets as long as the bar
+        // remains renderable; the intentional no-bracket fallback at very
+        // small widths must drop brackets uniformly across systems.
+        let names: Vec<String> = (0..3).map(|i| format!("srv{i}")).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let config = test_config(&name_refs);
+        let mut state = AppState::from_config(&config);
+        // Apply one batch containing all three systems so each becomes
+        // online in the same generation.
+        let results: Vec<crate::poller::PollResult> = (0..3)
+            .map(|i| crate::poller::PollResult {
+                system_id: state.systems[i].id.clone(),
+                endpoint: state.systems[i].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap_custom(20.0, 0.0, 4))),
+                latency: Duration::from_millis(10),
+            })
+            .collect();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results,
+        });
+        state.viewport_top_id = None;
+
+        let wide = render_state(&state, 80, 30);
+        let blocks_wide = collect_metric_rows(&wide, &name_refs);
+        assert_brackets_align(&blocks_wide, "wide fleet");
+
+        let narrow = render_state(&state, 60, 30);
+        let blocks_narrow = collect_metric_rows(&narrow, &name_refs);
+        assert_brackets_align(&blocks_narrow, "narrow fleet");
+    }
+
+    // ── Expanded drive-detail table layout ────────────────────────────
+
+    fn collect_drive_lines(output: &str) -> Vec<String> {
+        // Drive detail rows start with exactly two leading spaces (the
+        // drive-row indent) followed by a non-space character. Metric
+        // rows use four leading spaces and are not drive detail rows.
+        let mut out = Vec::new();
+        for line in output.lines() {
+            let bytes = line.as_bytes();
+            if bytes.len() >= 3 && bytes[0] == b' ' && bytes[1] == b' ' && bytes[2] != b' ' {
+                out.push(line.to_string());
+            }
+        }
+        out
+    }
+
+    /// Byte offset of the space preceding the slash between the `used`
+    /// and `total` columns of a drive-detail row. This is the column
+    /// the table layout guarantees across rows.
+    fn used_total_slash(line: &str) -> usize {
+        let bytes = line.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i] != b' ' {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i] != b' ' {
+            i += 1;
+        }
+        i
+    }
+
+    #[test]
+    fn drive_detail_columns_align_across_mixed_unit_drives() {
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
+            NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 238 * 1024 * 1024 * 1024,
+                total_bytes: 952 * 1024 * 1024 * 1024,
+                available_bytes: Some(714 * 1024 * 1024 * 1024),
+            },
+            NormalizedDrive {
+                name: "/mnt/archive".into(),
+                used_bytes: 142 * 1024 * 1024 * 1024,
+                total_bytes: 477 * 1024 * 1024 * 1024,
+                available_bytes: Some(335 * 1024 * 1024 * 1024),
+            },
+            NormalizedDrive {
+                name: "/mnt/backup".into(),
+                used_bytes: 1200 * 1024 * 1024 * 1024 * 1024,
+                total_bytes: 2000 * 1024 * 1024 * 1024 * 1024,
+                available_bytes: Some(800 * 1024 * 1024 * 1024),
+            },
+        ]);
+        state.drives_expanded = true;
+
+        let output = render_state(&state, 120, 12);
+        let lines = collect_drive_lines(&output);
+        assert_eq!(lines.len(), 3, "expected 3 drive rows: {lines:?}");
+
+        let sep_columns: Vec<usize> = lines.iter().map(|l| used_total_slash(l)).collect();
+        assert!(
+            sep_columns.iter().all(|&c| c == sep_columns[0]),
+            "separator columns drifted: {sep_columns:?} from {lines:?}"
+        );
+
+        // The "%" character (closing the percent field) must occupy the
+        // same column on every row.
+        let pct_columns: Vec<usize> = lines
+            .iter()
+            .map(|line| line.rfind('%').expect("percent"))
+            .collect();
+        assert!(
+            pct_columns.iter().all(|&c| c == pct_columns[0]),
+            "percent columns drifted: {pct_columns:?}"
+        );
+
+        // Explicit availability is preserved inside `(...)` for each row.
+        assert!(lines.iter().any(|l| l.contains("714.0 GiB")), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("800.0 GiB")),
+            "TiB-scale explicit availability fallback: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn drive_detail_remaining_falls_back_to_total_minus_used() {
+        let config = test_config(&["legacy"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
+            name: "/".into(),
+            used_bytes: 80 * 1024 * 1024 * 1024,
+            total_bytes: 100 * 1024 * 1024 * 1024,
+            available_bytes: None,
+        }]);
+        state.drives_expanded = true;
+
+        let output = render_state(&state, 80, 8);
+        let lines = collect_drive_lines(&output);
+        assert_eq!(lines.len(), 1, "expected 1 drive row: {lines:?}");
+        assert!(
+            lines[0].contains("(20.0 GiB)"),
+            "compatibility fallback: {:?}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn drive_detail_columns_unchanged_when_some_rows_are_clipped() {
+        // Plan 085: vertical clipping must not shift horizontal columns.
+        // A drive list that scrolls in one row should not move the
+        // separator or percent columns.
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
+            NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 238 * 1024 * 1024 * 1024,
+                total_bytes: 952 * 1024 * 1024 * 1024,
+                available_bytes: None,
+            },
+            NormalizedDrive {
+                name: "/mnt/archive".into(),
+                used_bytes: 142 * 1024 * 1024 * 1024,
+                total_bytes: 477 * 1024 * 1024 * 1024,
+                available_bytes: None,
+            },
+            NormalizedDrive {
+                name: "/mnt/backup".into(),
+                used_bytes: 1200 * 1024 * 1024 * 1024 * 1024,
+                total_bytes: 2000 * 1024 * 1024 * 1024 * 1024,
+                available_bytes: None,
+            },
+        ]);
+        state.drives_expanded = true;
+
+        let wide = render_state(&state, 120, 12);
+        let wide_lines = collect_drive_lines(&wide);
+        assert_eq!(
+            wide_lines.len(),
+            3,
+            "all three rows visible: {wide_lines:?}"
+        );
+
+        let narrow = render_state(&state, 120, 7);
+        let narrow_lines = collect_drive_lines(&narrow);
+        assert!(
+            narrow_lines.len() < wide_lines.len(),
+            "clipping expected: {narrow_lines:?}"
+        );
+        for narrow_line in &narrow_lines {
+            let wide_match = wide_lines
+                .iter()
+                .find(|w| w.contains('/') && w.contains(&narrow_line[..narrow_line.len().min(8)]))
+                .expect("matching wide row");
+            assert_eq!(
+                narrow_line.find(" / "),
+                wide_match.find(" / "),
+                "separator column drifted on clip"
+            );
+            assert_eq!(
+                narrow_line.rfind('%'),
+                wide_match.rfind('%'),
+                "percent column drifted on clip"
+            );
+        }
+    }
+
+    #[test]
+    fn drive_detail_unicode_name_uses_terminal_cells() {
+        // Wide-character mount names must not push the numeric columns.
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
+            NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 80 * 1024 * 1024 * 1024,
+                total_bytes: 100 * 1024 * 1024 * 1024,
+                available_bytes: None,
+            },
+            NormalizedDrive {
+                name: "/データ".into(),
+                used_bytes: 50 * 1024 * 1024 * 1024,
+                total_bytes: 100 * 1024 * 1024 * 1024,
+                available_bytes: None,
+            },
+        ]);
+        state.drives_expanded = true;
+
+        let output = render_state(&state, 80, 8);
+        let lines = collect_drive_lines(&output);
+        assert_eq!(lines.len(), 2, "expected 2 drive rows: {lines:?}");
+
+        // Locate the slash between used and total columns by scanning
+        // terminal cells (not bytes). The shared layout must align the
+        // slash at the same cell column on every row, including rows
+        // whose names contain wide Unicode characters.
+        fn used_total_slash_cell(line: &str) -> usize {
+            use unicode_width::UnicodeWidthChar;
+            let mut cells = 0usize;
+            let mut chars = line.chars().peekable();
+            // Skip leading indent.
+            while let Some(&c) = chars.peek() {
+                if c != ' ' {
+                    break;
+                }
+                chars.next();
+            }
+            // Skip name (until first space).
+            while let Some(&c) = chars.peek() {
+                if c == ' ' {
+                    break;
+                }
+                cells += UnicodeWidthChar::width(c).unwrap_or(0);
+                chars.next();
+            }
+            // Skip gap (run of spaces).
+            while let Some(&c) = chars.peek() {
+                if c != ' ' {
+                    break;
+                }
+                chars.next();
+            }
+            // Skip used value (until next space).
+            while let Some(&c) = chars.peek() {
+                if c == ' ' {
+                    break;
+                }
+                cells += UnicodeWidthChar::width(c).unwrap_or(0);
+                chars.next();
+            }
+            cells
+        }
+
+        let sep_columns: Vec<usize> = lines.iter().map(|l| used_total_slash_cell(l)).collect();
+        assert!(
+            sep_columns.iter().all(|&c| c == sep_columns[0]),
+            "separator columns drifted under Unicode name: {sep_columns:?} from {lines:?}"
+        );
+        // Each line is width-bounded after trimming the TestBackend's
+        // tail-pad (which does not subtract wide-character cells).
+        for line in &lines {
+            let trimmed = line.trim_end();
+            assert!(
+                UnicodeWidthStr::width(trimmed) <= 80,
+                "line exceeds width: {trimmed:?} ({} cells)",
+                UnicodeWidthStr::width(trimmed)
+            );
+        }
+    }
+
+    #[test]
+    fn drive_detail_degrades_to_compact_at_narrow_widths() {
+        // At a constrained width the full shape should degrade to
+        // either Compact or Minimal without overflowing.
+        let config = test_config(&["storage"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
+            name: "/mnt/long/mount/point".into(),
+            used_bytes: 80 * 1024 * 1024 * 1024,
+            total_bytes: 100 * 1024 * 1024 * 1024,
+            available_bytes: None,
+        }]);
+        state.drives_expanded = true;
+
+        let output = render_state(&state, 24, 8);
+        let lines = collect_drive_lines(&output);
+        assert_eq!(lines.len(), 1, "expected 1 drive row: {lines:?}");
+        let line = &lines[0];
+        assert!(
+            UnicodeWidthStr::width(line.trim_end()) <= 24,
+            "line exceeds width: {line:?}"
+        );
+        // Percentage must remain visible after degradation.
+        assert!(line.contains("80.0%"), "percentage lost: {line:?}");
+    }
+
+    // ── Condensed view alignment ──────────────────────────────────────
+
+    fn condensed_header(output: &str) -> &str {
+        output.lines().next().unwrap_or("")
+    }
+
+    fn condensed_row(output: &str, index: usize) -> &str {
+        output.lines().nth(index).unwrap_or("")
+    }
+
+    #[test]
+    fn condensed_header_columns_align_with_value_columns_for_mixed_nicknames() {
+        // Different configured nicknames must keep the HOST, CPU, MEM,
+        // DISK, LOAD, and IOWAIT headings aligned with their value
+        // columns at the same terminal cell.
+        let mut config = Config::default();
+        for (i, name) in ["pi5", "server3", "deadpool"].iter().enumerate() {
+            config.systems.push(SystemEntry {
+                id: format!("id-{i}"),
+                host: format!("host{i}.local"),
+                port: 11310,
+                name: Some((*name).to_string()),
+            });
+        }
+        let mut state = AppState::from_config(&config);
+        let results: Vec<crate::poller::PollResult> = (0..3)
+            .map(|i| crate::poller::PollResult {
+                system_id: state.systems[i].id.clone(),
+                endpoint: state.systems[i].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap_custom(
+                    10.0 + 30.0 * i as f32,
+                    0.0,
+                    4,
+                ))),
+                latency: Duration::from_millis(10),
+            })
+            .collect();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results,
+        });
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+
+        let output = render_state(&state, 100, 10);
+        let header = condensed_header(&output).to_string();
+        let names = ["pi5", "server3", "deadpool"];
+        for index in 2..=4 {
+            let row = condensed_row(&output, index).to_string();
+            let cpu_pct = 10.0 + 30.0 * (index - 2) as f32;
+            let cpu_value = format!("{cpu_pct:.0}%");
+            let host_value = names[index - 2];
+            let pairs: &[(&str, &str)] = &[
+                ("HOST", host_value),
+                ("CPU", &cpu_value),
+                ("MEM", "38%"),
+                ("DISK", "—"),
+                ("LOAD", "1.32"),
+                ("IOWAIT", "0.0"),
+            ];
+            for (heading, value) in pairs {
+                let header_idx = header
+                    .find(heading)
+                    .unwrap_or_else(|| panic!("heading {heading:?} missing in header: {header:?}"));
+                let value_byte_idx = row.find(value).unwrap_or_else(|| {
+                    panic!(
+                        "value {value:?} for heading {heading:?} not present in row {index}: \
+                         {row:?}, header={header:?}"
+                    )
+                });
+                let header_cell_idx = header_cell_at(&header, header_idx);
+                let row_cell_idx = row_cell_at(&row, value_byte_idx);
+                if *heading == "HOST" {
+                    assert_eq!(
+                        header_cell_idx, row_cell_idx,
+                        "heading {heading:?} start cell column drifted between header and \
+                         row {index}: header={header:?}, row={row:?}"
+                    );
+                } else {
+                    let header_end = header_cell_idx + heading.chars().count();
+                    let value_end = row_cell_idx + value.chars().count();
+                    assert_eq!(
+                        header_end, value_end,
+                        "heading {heading:?} end cell column drifted between header and \
+                         row {index}: header_end={header_end}, value_end={value_end}, \
+                         header={header:?}, row={row:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn row_cell_at(row: &str, byte_idx: usize) -> usize {
+        let mut cells = 0usize;
+        for (i, c) in row.char_indices() {
+            if i >= byte_idx {
+                return cells;
+            }
+            cells += UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        cells
+    }
+
+    fn header_cell_at(header: &str, byte_idx: usize) -> usize {
+        let mut cells = 0usize;
+        for (i, c) in header.char_indices() {
+            if i >= byte_idx {
+                return cells;
+            }
+            cells += UnicodeWidthChar::width(c).unwrap_or(0);
+        }
+        cells
+    }
+
+    #[test]
+    fn condensed_host_column_does_not_consume_all_spare_width() {
+        // The HOST column should track the longest required name, not
+        // balloon to consume every spare terminal cell.
+        let mut config = Config::default();
+        for (i, name) in ["pi5", "deadpool-longer-name"].iter().enumerate() {
+            config.systems.push(SystemEntry {
+                id: format!("id-{i}"),
+                host: format!("host{i}.local"),
+                port: 11310,
+                name: Some((*name).to_string()),
+            });
+        }
+        let mut state = AppState::from_config(&config);
+        let results: Vec<crate::poller::PollResult> = (0..2)
+            .map(|i| crate::poller::PollResult {
+                system_id: state.systems[i].id.clone(),
+                endpoint: state.systems[i].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap_custom(15.0, 0.0, 4))),
+                latency: Duration::from_millis(10),
+            })
+            .collect();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results,
+        });
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+
+        let output = render_state(&state, 120, 10);
+        let header = condensed_header(&output).to_string();
+        let row = condensed_row(&output, 2).to_string();
+        // Locate where the CPU value begins on the row and confirm it
+        // starts shortly after the longest required name plus the
+        // inter-column gap, not after every spare cell.
+        let longest_name = "deadpool-longer-name".chars().count();
+        let cpu_byte_idx = row.find("15%").expect("cpu value present");
+        let host_cell_end = longest_name;
+        let cpu_cell_idx = row_cell_at(&row, cpu_byte_idx);
+        assert!(
+            cpu_cell_idx <= host_cell_end + 4,
+            "CPU column should begin shortly after host width: \
+             host_cell_end={host_cell_end}, cpu_cell_idx={cpu_cell_idx}, row={row:?}, header={header:?}"
+        );
+    }
+
+    #[test]
+    fn condensed_tier_degradation_preserves_documented_priority() {
+        // Wide/Medium/Narrow/Minimal must drop the same lower-priority
+        // columns as before, in the same order.
+        let config = test_config(&["srv"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+
+        let wide = render_state(&state, 80, 4);
+        assert!(condensed_header(&wide).contains("IOWAIT"));
+        assert!(condensed_header(&wide).contains("LOAD"));
+
+        let medium = render_state(&state, 60, 4);
+        let medium_header = condensed_header(&medium);
+        assert!(medium_header.contains("LOAD"));
+        assert!(!medium_header.contains("IOWAIT"));
+
+        let narrow = render_state(&state, 40, 4);
+        let narrow_header = condensed_header(&narrow);
+        assert!(narrow_header.contains("DISK"));
+        assert!(!narrow_header.contains("LOAD"));
+
+        let minimal = render_state(&state, 24, 4);
+        let minimal_header = condensed_header(&minimal);
+        assert!(minimal_header.contains("MEM"));
+        assert!(!minimal_header.contains("DISK"));
+    }
+
+    #[test]
+    fn condensed_unicode_nickname_does_not_shift_numeric_columns() {
+        // A wide-character nickname must not push the numeric columns
+        // relative to ASCII rows. Both rows must place "20%" in the
+        // same terminal cell.
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "u1".into(),
+            host: "host.local".into(),
+            port: 11310,
+            name: Some("サーバー".into()),
+        });
+        config.systems.push(SystemEntry {
+            id: "u2".into(),
+            host: "host2.local".into(),
+            port: 11310,
+            name: Some("srv".into()),
+        });
+        let mut state = AppState::from_config(&config);
+        let results: Vec<crate::poller::PollResult> = (0..2)
+            .map(|i| crate::poller::PollResult {
+                system_id: state.systems[i].id.clone(),
+                endpoint: state.systems[i].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap_custom(20.0, 0.0, 4))),
+                latency: Duration::from_millis(10),
+            })
+            .collect();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results,
+        });
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+        state.viewport_top_id = None;
+
+        // Use TestBackend directly so we can compare terminal cells
+        // (not bytes) for both rows.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let backend = TestBackend::new(100, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| super::render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+
+        // Build char-by-char strings so each char represents one cell.
+        let mut unicode_cells = String::new();
+        let mut ascii_cells = String::new();
+        for x in 0..100 {
+            unicode_cells.push(
+                buf.cell((x, 2))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' ')),
+            );
+            ascii_cells.push(
+                buf.cell((x, 3))
+                    .map_or(' ', |c| c.symbol().chars().next().unwrap_or(' ')),
+            );
+        }
+        // Count characters (each char == one cell) to find the cell
+        // index of "20%".
+        let unicode_cell_idx = unicode_cells.chars().take_while(|&c| c != '2').count();
+        let ascii_cell_idx = ascii_cells.chars().take_while(|&c| c != '2').count();
+        assert_eq!(
+            unicode_cell_idx, ascii_cell_idx,
+            "Unicode nickname shifted numeric columns at terminal cell: \
+             unicode_cells={unicode_cells:?}, ascii_cells={ascii_cells:?}"
+        );
     }
 }

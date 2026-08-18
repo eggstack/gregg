@@ -27,6 +27,8 @@ Plan 082 completed the final polish pass. It corrected the remaining Unix contro
 
 Plan 083 implemented six bounded client UI/CLI corrections: a shared normal-view metric-row geometry (aligned `[` and `]` across CPU/MEM/SWP-or-COMMIT/DISK with one common `bar_width`), concise disk aggregate text without `used` / `avail` words, fresh-launch viewport snap to `display_order[0]` on the first accepted poll batch only, an explicit-port requirement on `gregg add` accepting the ergonomic `nickname@host:port` form, named versus unnamed offline rendering without duplicate host printing, and a regression test locking in continued polling of offline endpoints across generations. The default local check and remote CI run `32094925174` both passed all five jobs (Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.75). Post-closure review identified four narrow corrective items; completed Plan 084 closes them without reopening the client architecture, with CI run `32100189772` green across all five jobs.
 
+Plan 085 corrects four narrow client-rendering defects that survived the Plan 083/084 follow-ups without reopening the daemon, protocol, scheduler, or release architecture: a fleet-wide (not block-local) normal-view metric geometry so opening `[` and closing `]` columns line up across devices, the DISK slash denominator switched from `available_bytes` to `total_bytes` so the percentage and the slash use the same number, a shared selected-system drive-detail table layout so expanded mount/used/total/remaining/percent columns stop drifting between rows, and one shared `CondensedTableLayout` so condensed headings and value columns always sit in the same terminal cell. The default local check passes; one existing remote CI run is recorded below as evidence.
+
 | Plan | Purpose | Status |
 | --- | --- | --- |
 | [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform defects, retain only justified simplification, and close through bounded verification | complete through 074; CI-backed Windows SCM verification passed |
@@ -48,14 +50,15 @@ Plan 083 implemented six bounded client UI/CLI corrections: a shared normal-view
 | [`082-plan081-control-identity-and-record-polish.md`](082-plan081-control-identity-and-record-polish.md) | Normalize equivalent explicit config path spellings for Unix stop identity and reconcile Plan 080/081 records | complete; focused tests and relative/absolute release smoke passed |
 | [`083-compact-tui-endpoint-nicknames-and-polling-invariant.md`](083-compact-tui-endpoint-nicknames-and-polling-invariant.md) | Six bounded client UI/CLI corrections: shared normal-view metric geometry, concise disk text, fresh-launch viewport snap, explicit-port `gregg add` with `nickname@host:port`, named versus unnamed offline rendering, offline-endpoint polling invariant | complete; corrective follow-up 084 closed |
 | [`084-plan083-corrective-closure.md`](084-plan083-corrective-closure.md) | Close `--name` validation parity, renderer-level geometry proof, Unicode-aware offline padding, and stale `default_port` documentation | complete; implementation `020188f`; CI run `32100189772` |
+| [`085-fleet-wide-tui-column-and-storage-display-correction.md`](085-fleet-wide-tui-column-and-storage-display-correction.md) | Fleet-wide normal-view metric geometry, `<used>/<total>` DISK slash denominator, shared expanded drive-detail table layout, shared condensed-view column layout | active |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record.
 
 ## Execution record for Plan 075
 
@@ -131,6 +134,26 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
 Plans 081 and 082 are complete because Plan 081's Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed, and Plan 082's same-file identity tests, local checks, release-binary relative/absolute smoke, and record reconciliation all passed. Plan 083 is complete because its client behavior and focused tests passed under the default local check and CI run `32094925174`; Plan 084 is complete because its four corrective findings passed the exact local CI-equivalent checks and CI run `32100189772`.
+
+## Active scope record for Plan 085
+
+Required:
+
+- compute one fleet-wide `MetricFleetLayout` from every online system with a current normalized snapshot so the normal-view opening `[` and closing `]` columns line up across devices and survive viewport scrolling;
+- switch the normal DISK slash denominator from `aggregate.available_bytes` to `aggregate.total_bytes` while keeping the percentage at `used / total` and preserving explicit `available_bytes` for the expanded remaining-space field;
+- replace the per-row drive-detail formatter with one selected-system `DriveTableLayout` so expanded mount/used/total/remaining/percent columns stop drifting between rows, with a documented degradation path for narrow terminals;
+- introduce one shared `CondensedTableLayout` so condensed headings and value columns always sit in the same terminal cell and `HOST` is the only flexible/truncatable column;
+- update active documentation (`README.md`, `crates/gregg/README.md`, `architecture/gregg-client.md`, `.opencode/skills/gregg-client/SKILL.md`, this index) to describe the fleet geometry, the `<used>/<total>` DISK shape, and the shared expanded drive and condensed layouts;
+- run focused renderer tests plus the default local check; one ordinary existing remote CI run is sufficient evidence and is not a standing requirement.
+
+Preserved exclusions:
+
+- daemon, protocol, scheduler, state/viewport, drive collector, or release-architecture redesign;
+- Plan 067 caller-available semantics, normalized drive model, or KiB/MiB/GiB/TiB unit conversion;
+- new dependencies, workflows, jobs, matrices, evidence bundles, or self-daemonization;
+- rewriting Plan 067, Plan 083, or Plan 084 historical records;
+- horizontal scrolling, mouse controls, themes, snapshot/golden tests, or table-framework dependencies;
+- unrelated cleanup or scope expansion beyond the four documented display defects.
 
 ## Closed scope record for Plan 084
 

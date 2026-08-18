@@ -93,12 +93,20 @@ passes locally, the distinction is the cause.
   schema for compatibility but is not used by `gregg add`. Do not introduce
   implicit-port `gregg add` examples anywhere in the repo.
 - The shared normal-view metric-row geometry in `crates/gregg/src/ui/system_block.rs`
-  (via `MetricRow`, `build_metric_rows`, `compute_metric_group_layout`,
-  and `render_metric_row`) is the authoritative path for the four
-  CPU/MEM/SWP-or-COMMIT/DISK rows. All four rows share one `bar_width`
-  so the opening `[` and closing `]` columns align at every supported
-  terminal width. Metric rows are indented by exactly four spaces.
-  Unavailable rows render `—` instead of fabricating a `0.0%`.
+  (via `MetricRow`, `build_metric_rows`, `compute_fleet_metric_layout`,
+  `resolve_system_suffixes`, and `render_metric_row`) is the
+  authoritative path for the four CPU/MEM/SWP-or-COMMIT/DISK rows. The
+  layout is computed once per render via `compute_fleet_metric_layout`
+  from every online system with a current normalized snapshot so the
+  opening `[` and closing `]` columns align across the fleet at every
+  supported terminal width. Scrolling the viewport does not change
+  bracket columns because the layout population is the whole fleet,
+  not just the visible entries. Metric rows are indented by exactly
+  four spaces. The DISK aggregate suffix is `<used bytes> / <total bytes>`
+  so the slash denominator matches the percentage calculation; explicit
+  caller-available capacity (`available_bytes`) is preserved by the
+  normalized model and surfaced only through the expanded drive detail
+  rows. Unavailable rows render `—` instead of fabricating a `0.0%`.
   Offline endpoints render as `name@host:port offline` or
   `host:port offline`; the host is never duplicated when a name is set.
 - `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to

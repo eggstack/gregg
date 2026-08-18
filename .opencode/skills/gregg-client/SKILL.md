@@ -140,6 +140,9 @@ Header line drops lower-priority segments as width decreases:
 - < 50 cols: no OS
 - < 80 cols: no architecture
 
+Condensed-view column priority (Wide ≥ 64, Medium 48-63, Narrow 30-47,
+Minimal < 30) drops IOWAIT before LOAD before DISK before MEM.
+
 ### UI views
 
 **Normal view** (`ui/system_block.rs`): 5-row blocks per system:
@@ -149,20 +152,46 @@ Header line drops lower-priority segments as width decreases:
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
 
-The four metric rows share one label width and one bar width via
-`build_metric_rows`, `compute_metric_group_layout`, and
+The four metric rows share one fleet-wide label width and one
+fleet-wide bar width via `build_metric_rows`,
+`compute_fleet_metric_layout`, `resolve_system_suffixes`, and
 `render_metric_row`. The opening `[` and closing `]` columns always
-align. Rows are indented by exactly four spaces. The disk aggregate
-suffix is rendered as `<used bytes> / <available bytes>` without the
-words `used` or `avail`. Unavailable rows render `—` rather than
-fabricating `0.0%`.
+align across every online system, including mixed `SWP`/`COMMIT`
+fleets and across systems with very different suffix widths. Scrolling
+the viewport does not change bar columns because the fleet layout is
+computed once per render. Rows are indented by exactly four spaces.
+The DISK aggregate suffix is rendered as `<used bytes> / <total bytes>`
+so the slash denominator matches the percentage; explicit
+caller-available capacity remains part of the normalized model and is
+surfaced through the expanded drive detail rows. Unavailable rows
+render `—` rather than fabricating `0.0%`.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`):
 - configured client name set:  `name@host:port offline`
 - no configured name:          `host:port offline`
 The host is never duplicated when a name is configured.
 
-**Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47, Minimal < 30).
+**Expanded drive rows** (shared between normal and condensed views):
+`text::build_drive_detail_row` + `text::compute_drive_table_layout` +
+`text::render_drive_detail_row` produce one table layout from every
+eligible drive in the selected system. The full shape is
+`<name>  <used> / <total>  (<remaining>) <percent>` with explicit
+`available_bytes` inside `(...)` when present, otherwise the
+compatibility fallback `total_bytes - used_bytes`. The percentage is
+always `used / total`. Layouts are computed before the visible subset
+is taken so vertical clipping never shifts horizontal columns. Narrow
+terminals degrade through Compact (`name  (remaining) percent`) and
+Minimal (`name  percent`).
+
+**Condensed view** (`ui/condensed.rs`): One row per system with
+tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47,
+Minimal < 30). Header and online rows share one
+`CondensedTableLayout` (`compute_condensed_table_layout` +
+`render_header_line` + `render_online_row`) so heading and value
+cells line up. HOST is the flexible/truncatable column; numeric
+columns stay intact whenever the natural fleet widths fit, and the
+layout falls back to the next narrower tier before any numeric column
+is clipped.
 
 ## Configuration
 
