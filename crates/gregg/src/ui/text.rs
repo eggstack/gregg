@@ -518,7 +518,7 @@ mod tests {
                 DriveDetailMode::Full => {
                     let line_below = render_drive_detail_row(&rows[0], &layout_below);
                     assert!(
-                        UnicodeWidthStr::width(line_below.as_str()) <= exact - 1,
+                        UnicodeWidthStr::width(line_below.as_str()) < exact,
                         "Full at one cell below exact width overflows: {line_below:?}"
                     );
                 }

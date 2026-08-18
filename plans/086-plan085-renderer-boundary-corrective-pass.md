@@ -552,7 +552,7 @@ Report at handoff:
 
 ## Completion record
 
-Implemented in commit `IMPLEMENTATION_SHA` (recorded after push). Files changed:
+Implemented in commit `c69498a`. Files changed:
 
 - `crates/gregg/src/ui/condensed.rs` — include all system names in HOST width, decouple status-row width from online numeric tables, add identity regression tests.
 - `crates/gregg/src/ui/text.rs` — centralize structural width constants (`DRIVE_INDENT_CELLS`, `DRIVE_GAP_CELLS`, `DRIVE_SLASH_CELLS`), rewrite `compute_drive_table_layout` to use them, restructure Compact fallback to consider truncated names before Minimal, add exact-boundary tests.

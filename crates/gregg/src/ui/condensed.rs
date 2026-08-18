@@ -562,7 +562,7 @@ mod tests {
     fn status_line_does_not_show_stale_metrics() {
         let mut sys = system("offline-host");
         sys.reachability = Reachability::Offline;
-        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
         let line = status_line(&sys, &layout, "offline");
         assert!(line.contains("offline"), "{line:?}");
         assert!(!line.contains('%'), "{line:?}");
@@ -580,7 +580,7 @@ mod tests {
     #[test]
     fn offline_system_with_nickname_preserves_identity() {
         let sys = offline_system(Some("deadpool"), "192.168.182.146");
-        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
         let line = status_line(&sys, &layout, "offline");
         assert!(
             line.contains("deadpool"),
@@ -597,7 +597,7 @@ mod tests {
     #[test]
     fn offline_system_without_nickname_uses_endpoint_host() {
         let sys = offline_system(None, "192.168.182.146");
-        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
         let line = status_line(&sys, &layout, "offline");
         assert!(
             line.contains("192.168.182.146"),
@@ -615,7 +615,7 @@ mod tests {
         let short_line = status_line(&short, &layout, "offline");
         let long_line = status_line(&long, &layout, "offline");
         assert!(
-            short_line.contains("a"),
+            short_line.contains('a'),
             "short name must remain visible: {short_line:?}"
         );
         assert!(
@@ -648,7 +648,7 @@ mod tests {
     fn pending_status_preserves_identity() {
         let mut sys = offline_system(Some("deadpool"), "192.168.182.146");
         sys.reachability = Reachability::Pending;
-        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
         let line = status_line(&sys, &layout, "pending");
         assert!(
             line.contains("deadpool"),
@@ -662,7 +662,7 @@ mod tests {
     fn unicode_offline_nickname_preserves_identity() {
         let mut sys = offline_system(Some("サーバー"), "192.168.182.146");
         sys.reachability = Reachability::Offline;
-        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
         let line = status_line(&sys, &layout, "offline");
         let width = UnicodeWidthStr::width(line.as_str());
         assert!(
@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn status_line_remains_width_bounded_at_narrow_widths() {
         let sys = offline_system(Some("deadpool"), "192.168.182.146");
-        let layout = compute_condensed_table_layout(&[sys.clone()], 24);
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 24);
         let line = status_line(&sys, &layout, "offline");
         let width = UnicodeWidthStr::width(line.as_str());
         assert!(width <= 24, "line must fit width: {line:?} ({width} cells)");
