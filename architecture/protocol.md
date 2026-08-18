@@ -133,14 +133,14 @@ are:
 `Err(Vec<ValidationViolationV2>)`. In addition to v1 kinds, v2 adds:
 
 - `AvailableExceedsTotal` — `available_bytes` exceeded `total_bytes`
-- `SampleIntervalOutOfRange` — `sample_interval_ms` exceeds 24 hours
-- `LoadValueOutOfRange` — a load average was non-finite or negative
 - `LoadCapabilityMismatch` — load presence disagrees with capability
 - `SwapCapabilityMismatch` — swap presence disagrees with capability
 - `CommitCapabilityMismatch` — commit presence disagrees with capability
 - `EmptyDriveName` — drive name is empty string
 - `DriveNameTooLong` — drive name exceeds 512 UTF-8 bytes
 - `TooManyDrives` — more than 32 drive entries
+
+V2 total: 15 violation kinds (8 from v1 + 7 additional).
 
 V2 validation rejects capability/value contradictions:
 - `cpu_iowait == false` requires `iowait_pct == None`

@@ -93,11 +93,11 @@ or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, schema version constants (`SCHEMA_VERSION_V1`, `SCHEMA_VERSION_V2`), `MAX_SAMPLE_INTERVAL_MS` |
+| `lib` | `src/lib.rs` | Root, re-exports, schema version constant (`SCHEMA_VERSION_V1`), `MAX_SAMPLE_INTERVAL_MS` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
-| `validate` | `src/validate.rs` | V1 validation: `validate()` returns `Result<(), Vec<ValidationViolation>>` with 6 violation kinds |
-| `validate_v2` | `src/validate_v2.rs` | V2 validation: `validate_v2()` and `validate_payload_v2()` with 13 violation kinds, capability/value consistency |
+| `validate` | `src/validate.rs` | V1 validation: `validate()` returns `Result<(), Vec<ValidationViolation>>` with 8 violation kinds |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: `validate_v2()` and `validate_payload_v2()` with 15 violation kinds, capability/value consistency |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures: `LinuxSnapshotBuilder`, `MacosSnapshotBuilder`, `LinuxSnapshotV2Builder`, `WindowsSnapshotV2Builder`, `IdentityFixture` |
 
@@ -339,8 +339,8 @@ present. Validation is structured and separate from deserialization.
 
 | Concept | Details |
 |---------|---------|
-| Schema v1 | Original Linux/macOS format; required load/swap; 6 validation violation kinds |
-| Schema v2 | Extended with capability flags; optional load/swap/commit; drives array; 13 validation violation kinds |
+| Schema v1 | Original Linux/macOS format; required load/swap; 8 validation violation kinds |
+| Schema v2 | Extended with capability flags; optional load/swap/commit; drives array; 15 validation violation kinds |
 | Validation | Structured violation lists (`Vec<ValidationViolation>`), not serde errors |
 | Compatibility | Additive within schema; breaking changes require new major |
 | Health responses | Three states (`Ready`, `Warming`, `Failed`) with coarse categories |

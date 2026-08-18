@@ -11,7 +11,7 @@ native kernel interfaces. No external commands are executed for metric collectio
 
 ```rust
 pub trait SystemCollector {
-    fn identity(&self) -> SystemIdentity;
+    fn identity(&self) -> Result<SystemIdentity, CollectError>;
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError>;
     fn capabilities(&self) -> MetricCapabilities;      // v1
     fn capabilities_v2(&self) -> MetricCapabilitiesV2; // v2

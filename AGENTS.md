@@ -170,7 +170,7 @@ Platform-specific rules:
   v2 `available_bytes` is optional caller-available capacity and may not
   complement used bytes because of reservations or quotas.
 
-Validation uses `validate()` methods returning structured violations, not serde failures.
+Validation uses `validate()` methods returning structured violations, not serde failures. V1 has 8 violation kinds; V2 has 15 (8 from V1 + 7 additional).
 
 ## Crate versions and publishing
 

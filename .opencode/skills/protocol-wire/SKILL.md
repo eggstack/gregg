@@ -61,8 +61,10 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 |------|----------------|
 | `UnsupportedSchemaVersion` | `schema_version` != 1 |
 | `ZeroNotAllowed` | Timestamps or logical_cores = 0 |
+| `SampleIntervalOutOfRange` | `sample_interval_ms` exceeds 24-hour protocol maximum |
 | `PercentageNotFinite` | NaN or infinity in percentage fields |
 | `PercentageOutOfRange` | Percentage outside `0.0..=100.0` |
+| `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
 
@@ -78,7 +80,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 13 violation kinds (6 from V1 + 7 additional).
+V2 total: 15 violation kinds (8 from V1 + 7 additional).
 
 ## Test support
 
