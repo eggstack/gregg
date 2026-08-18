@@ -95,6 +95,7 @@ impl Config {
         Ok(())
     }
 
+    /// Returns the resolved socket address the server will bind to.
     #[must_use]
     pub fn socket_addr(&self) -> SocketAddr {
         SocketAddr::new(self.host, self.port)

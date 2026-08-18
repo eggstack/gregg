@@ -1,20 +1,19 @@
 use std::time::Duration;
 
-mod action;
-mod cli;
-mod clock;
-mod config;
-mod eggpool;
-mod eggpool_endpoint;
-mod endpoint;
-mod event;
-mod input;
-mod normalized;
-mod poller;
-mod scheduler;
-mod state;
-mod terminal;
-mod ui;
+use gregg::action;
+use gregg::cli;
+use gregg::clock;
+use gregg::config;
+use gregg::eggpool;
+use gregg::eggpool_endpoint;
+use gregg::endpoint;
+use gregg::event;
+use gregg::input;
+use gregg::poller;
+use gregg::scheduler;
+use gregg::state;
+use gregg::terminal;
+use gregg::ui;
 
 fn spawn_eggpool_worker(
     config: &config::Config,
@@ -25,12 +24,6 @@ fn spawn_eggpool_worker(
         eggpool::spawn_worker(eggpool::EggpoolClient::new(timeout), endpoint, cancel)
     })
 }
-
-#[cfg(test)]
-mod mixed_fleet_evidence;
-
-#[cfg(test)]
-mod sustained_workload;
 
 use clap::Parser;
 
@@ -79,7 +72,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let refresh = Duration::from_secs(config.refresh_seconds);
     let max_concurrent = config.max_concurrent_requests as usize;
 
-    let endpoints: Vec<crate::endpoint::Endpoint> = config
+    let endpoints: Vec<gregg::endpoint::Endpoint> = config
         .systems
         .iter()
         .map(config::SystemEntry::to_endpoint)
@@ -374,7 +367,7 @@ async fn send_eggpool_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, EggpoolEntry, EggpoolScheme, SystemEntry};
+    use gregg::config::{Config, EggpoolEntry, EggpoolScheme, SystemEntry};
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use std::fs;
 

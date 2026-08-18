@@ -500,7 +500,7 @@ fn cmd_add(
 /// # Errors
 ///
 /// Returns [`EndpointError`] when the endpoint parser rejects the input,
-/// when the inline nickname fails [`validate_name`], or when the
+/// when the inline nickname fails [`crate::endpoint::validate_name`], or when the
 /// remainder contains `@` after the nickname split.
 fn parse_add_target(input: &str) -> Result<AddTarget, EndpointError> {
     let trimmed = input.trim();

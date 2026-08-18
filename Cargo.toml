@@ -27,8 +27,8 @@ missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 result_large_err = "allow"
 
-[workspace.metadata]
-"docs.rs" = { all-features = true }
+[workspace.metadata.docs.rs]
+all-features = true
 
 [profile.release]
 lto = "fat"

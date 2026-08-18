@@ -16,14 +16,14 @@ use crate::poller::{HttpClient, PollBatch, PollOutcome, PollResult};
 
 /// The scheduler could not deliver a batch because its consumer disappeared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SchedulerRunError {
+pub enum SchedulerRunError {
     /// The batch receiver was dropped while a batch was pending.
     ReceiverDropped,
 }
 
 /// Commands accepted by the systems poll scheduler.
 #[derive(Debug)]
-pub(crate) enum SchedulerCommand {
+pub enum SchedulerCommand {
     /// Poll the current endpoint list immediately.
     Refresh,
     /// Atomically replace the endpoint list and poll it immediately.
@@ -31,7 +31,7 @@ pub(crate) enum SchedulerCommand {
 }
 
 /// Receiver and completion handle for an observed scheduler run.
-pub(crate) struct SchedulerRunHandle {
+pub struct SchedulerRunHandle {
     pub(crate) batches: mpsc::Receiver<PollBatch>,
     // The public run API returns only `batches`; tests use this handle to
     // assert that cancellation completes the scheduler task cleanly.
