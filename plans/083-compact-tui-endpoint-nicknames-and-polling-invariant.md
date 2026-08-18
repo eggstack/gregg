@@ -1,6 +1,10 @@
 # Phase 083: compact TUI, endpoint nicknames, and polling invariant
 
-Status: implemented.
+Status: complete.
+
+Implementation: `4519f8d`
+Verification: `./scripts/check-local.sh`; CI run `32094925174` passed Linux,
+macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
 
 Depends on: completed Plan 082 and current client behavior on `main` as reviewed at `561e859024edb8aaa670f0e710dd81c55c6f7b04`.
 
@@ -737,67 +741,67 @@ Do not add any of the following:
 
 ### Visual compactness and alignment
 
-- [ ] CPU, MEM, SWP-or-COMMIT, and DISK rows begin with exactly four spaces in normal view.
-- [ ] All normal metric rows in the same system block render `[` at the same terminal column.
-- [ ] All normal metric rows in the same system block render `]` at the same terminal column.
-- [ ] Label alignment is derived from the widest actual label and handles Windows `COMMIT` correctly.
-- [ ] Closing-bracket alignment is derived from the longest final usage suffix rather than independent row widths.
-- [ ] Aggregate disk detail is rendered as `<used bytes> / <available bytes>` without `used` or `avail` words.
-- [ ] Available metric percentages remain visible before optional details are dropped on narrow screens.
-- [ ] Unavailable metrics remain truthful and use the shared geometry.
-- [ ] No metric row exceeds the terminal width at the supported minimum width or representative narrow widths.
-- [ ] Any retained ellipsis-based truncation respects its declared display-column budget.
+ - [x] CPU, MEM, SWP-or-COMMIT, and DISK rows begin with exactly four spaces in normal view.
+ - [x] All normal metric rows in the same system block render `[` at the same terminal column.
+ - [x] All normal metric rows in the same system block render `]` at the same terminal column.
+ - [x] Label alignment is derived from the widest actual label and handles Windows `COMMIT` correctly.
+ - [x] Closing-bracket alignment is derived from the longest final usage suffix rather than independent row widths.
+ - [x] Aggregate disk detail is rendered as `<used bytes> / <available bytes>` without `used` or `avail` words.
+ - [x] Available metric percentages remain visible before optional details are dropped on narrow screens.
+ - [x] Unavailable metrics remain truthful and use the shared geometry.
+ - [x] No metric row exceeds the terminal width at the supported minimum width or representative narrow widths.
+ - [x] Any retained ellipsis-based truncation respects its declared display-column budget.
 
 ### Startup viewport
 
-- [ ] After the first accepted poll batch, a fresh session selects display-order position zero.
-- [ ] After the first accepted poll batch, `viewport_top_id` is display-order position zero.
-- [ ] An initially configured offline system cannot cause the fresh TUI to start scrolled below online systems.
-- [ ] Later periodic batches do not continually snap the user back to the top.
-- [ ] Ordinary valid `Ctrl-R` reconciliation keeps existing stable selection behavior rather than acting like a new process launch.
+ - [x] After the first accepted poll batch, a fresh session selects display-order position zero.
+ - [x] After the first accepted poll batch, `viewport_top_id` is display-order position zero.
+ - [x] An initially configured offline system cannot cause the fresh TUI to start scrolled below online systems.
+ - [x] Later periodic batches do not continually snap the user back to the top.
+ - [x] Ordinary valid `Ctrl-R` reconciliation keeps existing stable selection behavior rather than acting like a new process launch.
 
 ### Endpoint add validation
 
-- [ ] `gregg add` requires an explicit nonzero port.
-- [ ] Host-only IPv4/DNS input is rejected by `gregg add`.
-- [ ] Bare IPv6 without an explicit bracketed port is rejected by `gregg add`.
-- [ ] HTTP URL input without an explicit port is rejected by `gregg add`.
-- [ ] Explicit IPv4, DNS, bracketed IPv6, and HTTP URL host/port inputs continue to work.
-- [ ] Host-only `gregg remove HOST` semantics remain unchanged.
-- [ ] Existing credential, path, unsupported-scheme, invalid-port, zero-port, and overflow rejection remains intact.
+ - [x] `gregg add` requires an explicit nonzero port.
+ - [x] Host-only IPv4/DNS input is rejected by `gregg add`.
+ - [x] Bare IPv6 without an explicit bracketed port is rejected by `gregg add`.
+ - [x] HTTP URL input without an explicit port is rejected by `gregg add`.
+ - [x] Explicit IPv4, DNS, bracketed IPv6, and HTTP URL host/port inputs continue to work.
+ - [x] Host-only `gregg remove HOST` semantics remain unchanged.
+ - [x] Existing credential, path, unsupported-scheme, invalid-port, zero-port, and overflow rejection remains intact.
 
 ### Nicknames
 
-- [ ] `gregg add nickname@host:port` is accepted for a valid nickname and endpoint.
-- [ ] Inline nickname is persisted through the existing `SystemEntry.name` field.
-- [ ] No configuration schema/version change is introduced.
-- [ ] Existing `--name` remains supported.
-- [ ] Supplying both inline nickname and `--name` is rejected as ambiguous.
-- [ ] Existing name validation applies to inline nicknames.
-- [ ] A configured nickname appears at the start of the normal device header.
-- [ ] A configured nickname remains used by condensed view.
-- [ ] Named offline rows render `name@host:port offline`.
-- [ ] Unnamed offline rows render `host:port offline` without a synthetic name prefix or duplicate host.
-- [ ] HTTP URL credentials are not reinterpreted as nickname syntax.
+ - [x] `gregg add nickname@host:port` is accepted for a valid nickname and endpoint.
+ - [x] Inline nickname is persisted through the existing `SystemEntry.name` field.
+ - [x] No configuration schema/version change is introduced.
+ - [x] Existing `--name` remains supported.
+ - [x] Supplying both inline nickname and `--name` is rejected as ambiguous.
+ - [x] Existing name validation applies to inline nicknames.
+ - [x] A configured nickname appears at the start of the normal device header.
+ - [x] A configured nickname remains used by condensed view.
+ - [x] Named offline rows render `name@host:port offline`.
+ - [x] Unnamed offline rows render `host:port offline` without a synthetic name prefix or duplicate host.
+ - [x] HTTP URL credentials are not reinterpreted as nickname syntax.
 
 ### Offline polling
 
-- [ ] An endpoint that fails one generation remains configured in the scheduler.
-- [ ] The scheduler polls that endpoint again on a later periodic generation without manual re-add.
-- [ ] Regression coverage demonstrates later recovery when the endpoint becomes healthy, if practical with the existing mock structure.
-- [ ] No new backoff/retry state machine is added.
-- [ ] Existing scheduler concurrency, generation, cancellation, and one-result-per-endpoint invariants remain intact.
+ - [x] An endpoint that fails one generation remains configured in the scheduler.
+ - [x] The scheduler polls that endpoint again on a later periodic generation without manual re-add.
+ - [x] Regression coverage demonstrates later recovery when the endpoint becomes healthy, if practical with the existing mock structure.
+ - [x] No new backoff/retry state machine is added.
+ - [x] Existing scheduler concurrency, generation, cancellation, and one-result-per-endpoint invariants remain intact.
 
 ### Verification and scope
 
-- [ ] Focused UI, state, CLI/endpoint, and scheduler tests pass.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Documentation examples reflect explicit-port add syntax, nickname syntax, and compact disk rendering.
-- [ ] No new dependency is added.
-- [ ] No `greggd` or `gregg-protocol` product behavior is changed.
-- [ ] No new CI workflow/job/matrix/evidence mechanism is added.
-- [ ] `plans/README.md` and this plan are reconciled with the final implementation state.
+ - [x] Focused UI, state, CLI/endpoint, and scheduler tests pass.
+ - [x] `cargo fmt --all -- --check` passes.
+ - [x] `./scripts/check-local.sh` passes.
+ - [x] Documentation examples reflect explicit-port add syntax, nickname syntax, and compact disk rendering.
+ - [x] No new dependency is added.
+ - [x] No `greggd` or `gregg-protocol` product behavior is changed.
+ - [x] No new CI workflow/job/matrix/evidence mechanism is added.
+ - [x] `plans/README.md` and this plan are reconciled with the final implementation state.
 
 ## Completion rule
 
