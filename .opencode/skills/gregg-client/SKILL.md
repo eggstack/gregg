@@ -153,8 +153,9 @@ The four metric rows share one label width and one bar width via
 `build_metric_rows`, `compute_metric_group_layout`, and
 `render_metric_row`. The opening `[` and closing `]` columns always
 align. Rows are indented by exactly four spaces. The disk aggregate
-suffix is rendered as `used / avail` without the words `used` or
-`avail`. Unavailable rows render `—` rather than fabricating `0.0%`.
+suffix is rendered as `<used bytes> / <available bytes>` without the
+words `used` or `avail`. Unavailable rows render `—` rather than
+fabricating `0.0%`.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`):
 - configured client name set:  `name@host:port offline`
@@ -170,6 +171,7 @@ config_version = 1
 refresh_seconds = 2
 request_timeout_ms = 5000
 max_concurrent_requests = 64
+# Retained for configuration compatibility; `gregg add` requires an explicit port.
 default_port = 11310
 
 [[systems]]
@@ -197,6 +199,8 @@ The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives th
   combined with `--name`. HTTPS is never accepted or downgraded. The
   inline `nickname@` form populates the existing `SystemEntry.name`
   field; persisted fields remain normalized `host` and `port`.
+- `default_port` remains in the configuration schema for compatibility but is
+  not used by `gregg add`, which requires an explicit port.
 - `gregg remove` still accepts host-only input.
 - Do not introduce implicit-port `gregg add` examples anywhere in the repo.
 

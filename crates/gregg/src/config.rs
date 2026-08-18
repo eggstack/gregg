@@ -109,10 +109,11 @@ pub const MAX_ENV_NAME_LEN: usize = 128;
 /// A single monitored system entry.
 ///
 /// Only the resolved host and port are persisted. The `port_was_explicit`
-/// distinction is needed only during command parsing (to decide whether to
-/// use the configured `default_port` or the user-supplied port) and is not
-/// stored, so list/remove semantics depend solely on the current command
-/// input rather than historical persistence of the flag.
+/// distinction is needed only during command parsing and is not stored, so
+/// list/remove semantics depend solely on the current command input rather
+/// than historical persistence of the flag. `gregg add` requires an explicit
+/// port; the retained `default_port` configuration field is not used for new
+/// system additions.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SystemEntry {
     /// Stable unique identifier (UUID v4).
@@ -203,7 +204,8 @@ pub struct Config {
     pub request_timeout_ms: u64,
     /// Maximum concurrent polling requests.
     pub max_concurrent_requests: u32,
-    /// Default port for endpoints that don't specify one.
+    /// Retained for configuration compatibility; `gregg add` requires an
+    /// explicit port and does not use this field for new system additions.
     pub default_port: u16,
     /// Configured monitored systems.
     #[serde(default)]

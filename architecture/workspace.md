@@ -129,8 +129,9 @@ The endpoint parser lives in `crates/gregg/src/endpoint.rs`. Canonical parsing
 supports IPv4, IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional
 ports, while rejecting URL schemes, paths, credentials, and malformed input.
 `gregg add` has a separate HTTP URL convenience adapter that persists only the
-normalized host and explicit-or-default port. Host-only removal semantics are
-supported for the `remove` command.
+normalized host and explicit port. The retained `default_port` configuration
+field is not used by `gregg add`; host-only removal semantics are supported
+for the `remove` command.
 
 ## Client polling and state engine
 

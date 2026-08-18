@@ -6,6 +6,13 @@ Implementation: `4519f8d`
 Verification: `./scripts/check-local.sh`; CI run `32094925174` passed Linux,
 macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
 
+Post-closure review found four narrow follow-up issues: standalone `--name`
+validation no longer shared the inline nickname validator, renderer-level
+TestBackend geometry proof was incomplete, offline padding used UTF-8 byte
+length, and live `default_port` wording still described removed add behavior.
+These do not invalidate the implementation or its CI record; Plan 084 is the
+bounded corrective phase for that follow-up.
+
 Depends on: completed Plan 082 and current client behavior on `main` as reviewed at `561e859024edb8aaa670f0e710dd81c55c6f7b04`.
 
 ## Objective

@@ -66,8 +66,9 @@ gregg
 `gregg add` requires an explicit port. Host-only input such as
 `gregg add 192.168.1.10` is rejected; the port must be supplied either
 as `host:port`, as an HTTP URL (`http://host:port/`), or through
-`nickname@host:port`. Use `gregg remove HOST` if you want host-only
-matching for removal.
+`nickname@host:port`. The retained `default_port` setting is kept for
+configuration compatibility but is not used by `gregg add`. Use
+`gregg remove HOST` if you want host-only matching for removal.
 
 ## Configuration
 

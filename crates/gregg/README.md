@@ -39,7 +39,9 @@ gregg edit
 `gregg add` requires an explicit port. Host-only input such as
 `gregg add 192.168.1.10` is rejected; supply `host:port`, an HTTP URL
 (`http://host:port/`), or `nickname@host:port`. Combining the inline
-`nickname@` form with `--name` is rejected as ambiguous.
+`nickname@` form with `--name` is rejected as ambiguous. The retained
+`default_port` setting is configuration-compatible but is not used by
+`gregg add`.
 
 ## Navigation
 

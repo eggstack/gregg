@@ -444,6 +444,10 @@ fn cmd_add(
         .clone()
         .or_else(|| name.map(std::string::ToString::to_string));
 
+    if let Some(final_name) = final_name.as_deref() {
+        crate::endpoint::validate_name(final_name)?;
+    }
+
     let result = store.mutate_with_result(|config| {
         let host = target.endpoint.host.clone();
         let port = target.endpoint.port;
@@ -980,6 +984,87 @@ mod tests {
         assert_eq!(config.systems[0].host, "192.168.1.1");
         assert_eq!(config.systems[0].port, 8080);
         assert_eq!(config.systems[0].name.as_deref(), Some("My Server"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_inline_nickname_is_persisted() {
+        let dir = tmp_dir("add_inline_nickname");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "deadpool@192.168.1.1:11310", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems[0].name.as_deref(), Some("deadpool"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn assert_rejected_name_preserves_config(test_name: &str, endpoint: &str, name: Option<&str>) {
+        let dir = tmp_dir(test_name);
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+        cmd_add(&store, "existing.example:11310", Some("existing"), false).unwrap();
+        let before = store.load_existing().unwrap();
+
+        let result = cmd_add(&store, endpoint, name, false);
+        assert!(
+            result.is_err(),
+            "invalid name should be rejected: {result:?}"
+        );
+        assert_eq!(
+            store.load_existing().unwrap(),
+            before,
+            "rejected name must not mutate configuration"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_name_validation_has_inline_and_flag_parity() {
+        let cases = [
+            ("control_inline", "bad\nname@inline.example:11310", None),
+            ("control_flag", "flag.example:11310", Some("bad\nname")),
+            (
+                "overlong_inline",
+                "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@inline.example:11310",
+                None,
+            ),
+            (
+                "overlong_flag",
+                "flag.example:11310",
+                Some("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"),
+            ),
+            ("empty_inline", "@inline.example:11310", None),
+            ("empty_flag", "flag.example:11310", Some("")),
+            ("whitespace_inline", "   @inline.example:11310", None),
+            ("whitespace_flag", "flag.example:11310", Some("   ")),
+        ];
+
+        for (test_name, endpoint, name) in cases {
+            assert_rejected_name_preserves_config(test_name, endpoint, name);
+        }
+    }
+
+    #[test]
+    fn add_inline_and_flag_names_are_ambiguous_without_mutation() {
+        let dir = tmp_dir("add_ambiguous_name");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+        cmd_add(&store, "existing.example:11310", Some("existing"), false).unwrap();
+        let before = store.load_existing().unwrap();
+
+        let result = cmd_add(
+            &store,
+            "inline.example@192.168.1.1:11310",
+            Some("flag"),
+            false,
+        );
+        assert!(result.is_err(), "inline and --name must be ambiguous");
+        assert_eq!(store.load_existing().unwrap(), before);
 
         let _ = fs::remove_dir_all(&dir);
     }

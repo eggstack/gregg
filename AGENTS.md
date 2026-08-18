@@ -89,8 +89,9 @@ passes locally, the distinction is the cause.
   never accepted and is not downgraded to HTTP. `gregg remove` still
   accepts host-only input. Persisted fields remain normalized `host`
   and `port`; the inline `nickname@` form just populates the existing
-  `SystemEntry.name` field. Do not introduce implicit-port `gregg add`
-  examples anywhere in the repo.
+  `SystemEntry.name` field. `default_port` remains in the configuration
+  schema for compatibility but is not used by `gregg add`. Do not introduce
+  implicit-port `gregg add` examples anywhere in the repo.
 - The shared normal-view metric-row geometry in `crates/gregg/src/ui/system_block.rs`
   (via `MetricRow`, `build_metric_rows`, `compute_metric_group_layout`,
   and `render_metric_row`) is the authoritative path for the four

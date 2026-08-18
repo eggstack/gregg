@@ -100,6 +100,7 @@ mod tests {
     use ratatui::backend::TestBackend;
     use ratatui::style::Modifier;
     use ratatui::Terminal;
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
     use crate::config::{Config, SystemEntry};
     use crate::normalized::NormalizedDrive;
@@ -240,6 +241,21 @@ mod tests {
             .is_some_and(|l| l.contains(needle))
     }
 
+    fn metric_lines(output: &str) -> Vec<&str> {
+        output.lines().skip(1).take(4).collect()
+    }
+
+    fn terminal_column(line: &str, needle: char) -> usize {
+        let mut column = 0;
+        for character in line.chars() {
+            if character == needle {
+                return column;
+            }
+            column += UnicodeWidthChar::width(character).unwrap_or(0);
+        }
+        panic!("{needle:?} not found in rendered line {line:?}");
+    }
+
     // ── 1. Empty config ──────────────────────────────────────────────
 
     #[test]
@@ -365,6 +381,32 @@ mod tests {
         let output = render_state(&state, 80, 4);
         assert!(output.contains("192.168.183.143:11310"), "{output}");
         assert!(!output.contains("192.168.182.143"), "{output}");
+    }
+
+    #[test]
+    fn render_offline_unicode_name_uses_display_width_for_padding() {
+        let mut config = test_config(&["サーバー"]);
+        config.systems[0].name = Some("é".into());
+        let mut state = AppState::from_config(&config);
+        apply_offline(&mut state, 0);
+
+        let width = 40u16;
+        let output = render_state(&state, width, 1);
+        let line = output.lines().next().unwrap();
+        let prefix = "é@host0.local:11310 offline ";
+        let expected_dots = usize::from(width) - UnicodeWidthStr::width(prefix);
+
+        assert!(line.starts_with(prefix), "rendered line: {line:?}");
+        let trailing_dots = line.strip_prefix(prefix).unwrap().trim_end_matches(' ');
+        assert_eq!(
+            trailing_dots
+                .chars()
+                .filter(|&character| character == '.')
+                .count(),
+            expected_dots,
+            "offline padding must use terminal cells, not UTF-8 bytes: {line:?}"
+        );
+        assert!(UnicodeWidthStr::width(line) <= usize::from(width));
     }
 
     #[test]
@@ -1378,6 +1420,116 @@ mod tests {
             "Windows row 3 should not contain 'SWP', got: {}",
             lines[3]
         );
+    }
+
+    #[test]
+    fn rendered_linux_metric_geometry_is_aligned_at_representative_widths() {
+        let config = test_config(&["linux"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+
+        for width in [24u16, 32, 40, 60, 80] {
+            let output = render_state(&state, width, 8);
+            let rows = metric_lines(&output);
+            assert_eq!(rows.len(), 4, "metric rows at width {width}: {output}");
+
+            let opening_columns: Vec<_> =
+                rows.iter().map(|line| terminal_column(line, '[')).collect();
+            let closing_columns: Vec<_> =
+                rows.iter().map(|line| terminal_column(line, ']')).collect();
+            assert!(
+                opening_columns
+                    .iter()
+                    .all(|&column| column == opening_columns[0]),
+                "opening brackets drifted at width {width}: {opening_columns:?}\n{output}"
+            );
+            assert!(
+                closing_columns
+                    .iter()
+                    .all(|&column| column == closing_columns[0]),
+                "closing brackets drifted at width {width}: {closing_columns:?}\n{output}"
+            );
+
+            for (label, line) in ["CPU", "MEM", "SWP", "DISK"].iter().zip(rows.iter()) {
+                assert!(
+                    line.starts_with("    "),
+                    "{label} indentation at width {width}: {line:?}"
+                );
+                if *label != "DISK" {
+                    assert!(
+                        line.contains('%'),
+                        "{label} percentage at width {width}: {line:?}"
+                    );
+                }
+                assert!(
+                    UnicodeWidthStr::width(*line) <= usize::from(width),
+                    "{label} exceeds width {width}: {line:?}"
+                );
+            }
+            let disk = rows[3];
+            assert!(disk.contains('—'), "DISK should be unavailable: {disk:?}");
+            assert!(
+                !disk.contains("0.0%"),
+                "DISK must not fabricate zero: {disk:?}"
+            );
+            assert!(!disk.contains("used"), "DISK should omit 'used': {disk:?}");
+            assert!(
+                !disk.contains("avail"),
+                "DISK should omit 'avail': {disk:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rendered_windows_metric_geometry_keeps_commit_aligned_at_representative_widths() {
+        let config = test_config(&["windows"]);
+        let mut state = AppState::from_config(&config);
+        let payload = WindowsSnapshotV2Builder::default().build_payload();
+        apply_online_v2(&mut state, 0, payload, 1);
+
+        for width in [24u16, 32, 40, 60, 80] {
+            let output = render_state(&state, width, 8);
+            let rows = metric_lines(&output);
+            assert_eq!(rows.len(), 4, "metric rows at width {width}: {output}");
+            assert!(
+                rows[2].contains("COMMIT"),
+                "third row at width {width}: {rows:?}"
+            );
+
+            let opening_columns: Vec<_> =
+                rows.iter().map(|line| terminal_column(line, '[')).collect();
+            let closing_columns: Vec<_> =
+                rows.iter().map(|line| terminal_column(line, ']')).collect();
+            assert!(
+                opening_columns
+                    .iter()
+                    .all(|&column| column == opening_columns[0]),
+                "opening brackets drifted at width {width}: {opening_columns:?}\n{output}"
+            );
+            assert!(
+                closing_columns
+                    .iter()
+                    .all(|&column| column == closing_columns[0]),
+                "closing brackets drifted at width {width}: {closing_columns:?}\n{output}"
+            );
+
+            for (label, line) in ["CPU", "MEM", "COMMIT", "DISK"].iter().zip(rows.iter()) {
+                assert!(
+                    line.starts_with("    "),
+                    "{label} indentation at width {width}: {line:?}"
+                );
+                if *label != "DISK" {
+                    assert!(
+                        line.contains('%'),
+                        "{label} percentage at width {width}: {line:?}"
+                    );
+                }
+                assert!(
+                    UnicodeWidthStr::width(*line) <= usize::from(width),
+                    "{label} exceeds width {width}: {line:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -378,11 +378,9 @@ fn make_bar_string(pct: Option<f32>, bar_width: u16) -> String {
             } else {
                 0.0
             };
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "value is pre-clamped to [0, u16::MAX] (Rust 1.75 has no TryFrom<f32>)"
-            )]
+            // The value is pre-clamped to [0, u16::MAX]; Rust 1.75 has no
+            // TryFrom<f32> for this conversion.
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let filled_u32 = clamped_scaled as u32;
             let filled = usize::try_from(filled_u32.min(u32::from(bar_width))).unwrap_or(0);
             let empty = (usize::from(bar_width)).saturating_sub(filled);
@@ -457,7 +455,7 @@ pub fn render_offline(f: &mut Frame, area: Rect, system: &SystemState, is_select
 
     let prefix_with_status = format!("{prefix} {status_text} ");
     let total_width = area.width as usize;
-    let used = prefix_with_status.len();
+    let used = UnicodeWidthStr::width(prefix_with_status.as_str());
     let dot_count = total_width.saturating_sub(used);
     let line_text = format!("{prefix_with_status}{}", ".".repeat(dot_count));
 

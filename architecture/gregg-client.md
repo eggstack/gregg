@@ -212,8 +212,8 @@ The four metric rows share one label width and one bar width; their
 opening `[` and closing `]` always occupy the same terminal column.
 Geometry is computed once via `build_metric_rows`,
 `compute_metric_group_layout`, and `render_metric_row`. Metric rows are
-indented by exactly four spaces. The disk aggregate suffix is rendered
-as `used / avail` without `used` or `avail` words. Unavailable metrics
+indented by exactly four spaces. The disk aggregate suffix is rendered as
+`<used bytes> / <available bytes>` without `used` or `avail` words. Unavailable metrics
 render `—` rather than fabricating a `0.0%`.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`): When the
@@ -233,6 +233,7 @@ config_version = 1
 refresh_seconds = 2
 request_timeout_ms = 5000
 max_concurrent_requests = 64
+# Retained for configuration compatibility; `gregg add` requires an explicit port.
 default_port = 11310
 
 [[systems]]

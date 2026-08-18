@@ -15,10 +15,8 @@ request_timeout_ms = 1500
 # Maximum concurrent polling requests (1..=64).
 max_concurrent_requests = 16
 
-# Default port for endpoints that don't specify one (1..=65535).
-# Note: the `gregg add` CLI always requires an explicit port on the
-# command line, so this fallback only influences legacy config files
-# that may omit port on old systems rows.
+# Retained for configuration compatibility (1..=65535). The `gregg add`
+# CLI requires an explicit port and does not use this field for new systems.
 default_port = 11310
 
 # Monitored systems.
