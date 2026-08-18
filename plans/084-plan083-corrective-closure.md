@@ -1,8 +1,12 @@
 # Phase 084: Plan 083 corrective closure
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 083 implementation `4519f8d6e26fb3222c52c9759f479338b3a26b46` and closure record `13456c6f34146637737f42887c3b91750cfa2ce2`.
+
+Implementation: `020188f2720510d762ec20b0cb77a9f52ed6ff10`.
+Verification: focused client tests, the default local check, exact Linux CI
+clippy/tests, Rust 1.75 compilation, and CI run `32100189772` all passed.
 
 ## Objective
 
@@ -433,6 +437,18 @@ cargo test -p gregg --bin gregg
 ./scripts/check-local.sh
 ```
 
+Additional CI-equivalent checks completed:
+
+```text
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+RUSTFLAGS=-Dwarnings cargo +1.75 check --workspace --all-features
+```
+
+The MSRV check also required removing a Rust-1.75-incompatible lint-reason
+attribute from the existing renderer; this was a behavior-neutral syntax
+correction and did not broaden the product scope.
+
 If the test filter layout differs, run the nearest exact tests and record the actual commands.
 
 A release preflight is not required for this corrective client-only phase.
@@ -443,54 +459,54 @@ No new CI obligation is required. If the existing workflow runs naturally on pus
 
 ### `--name` validation parity
 
-- [ ] `gregg add host:port --name NAME` validates `NAME` with the same `endpoint::validate_name()` semantics as inline `nickname@host:port`.
-- [ ] Valid `--name` remains accepted and persisted through `SystemEntry.name`.
-- [ ] Control-character `--name` is rejected before config mutation.
-- [ ] Overlong `--name` is rejected before config mutation.
-- [ ] Empty/whitespace-only `--name` is rejected before config mutation.
-- [ ] Equivalent invalid inline nicknames remain rejected.
-- [ ] Inline nickname + `--name` remains an ambiguity error.
-- [ ] Failed name validation leaves the existing config unchanged.
+- [x] `gregg add host:port --name NAME` validates `NAME` with the same `endpoint::validate_name()` semantics as inline `nickname@host:port`.
+- [x] Valid `--name` remains accepted and persisted through `SystemEntry.name`.
+- [x] Control-character `--name` is rejected before config mutation.
+- [x] Overlong `--name` is rejected before config mutation.
+- [x] Empty/whitespace-only `--name` is rejected before config mutation.
+- [x] Equivalent invalid inline nicknames remain rejected.
+- [x] Inline nickname + `--name` remains an ambiguity error.
+- [x] Failed name validation leaves the existing config unchanged.
 
 ### Renderer-level geometry proof
 
-- [ ] Final Ratatui-rendered Linux CPU/MEM/SWP/DISK rows begin with exactly four spaces wherever normal metric rows are rendered.
-- [ ] At representative widths where bars are present, final rendered Linux rows place `[` at one shared terminal column.
-- [ ] At representative widths where bars are present, final rendered Linux rows place `]` at one shared terminal column.
-- [ ] Final rendered Windows CPU/MEM/COMMIT/DISK rows use the same opening/closing bracket columns.
-- [ ] The `COMMIT` label does not shift the metric geometry.
-- [ ] Unavailable DISK remains truthful and does not fabricate `0.0%`.
-- [ ] Narrow-width rendering preserves percentage before optional detail.
-- [ ] No tested metric row exceeds the terminal's display-cell width.
-- [ ] Existing helper-level layout/truncation tests remain green.
+- [x] Final Ratatui-rendered Linux CPU/MEM/SWP/DISK rows begin with exactly four spaces wherever normal metric rows are rendered.
+- [x] At representative widths where bars are present, final rendered Linux rows place `[` at one shared terminal column.
+- [x] At representative widths where bars are present, final rendered Linux rows place `]` at one shared terminal column.
+- [x] Final rendered Windows CPU/MEM/COMMIT/DISK rows use the same opening/closing bracket columns.
+- [x] The `COMMIT` label does not shift the metric geometry.
+- [x] Unavailable DISK remains truthful and does not fabricate `0.0%`.
+- [x] Narrow-width rendering preserves percentage before optional detail.
+- [x] No tested metric row exceeds the terminal's display-cell width.
+- [x] Existing helper-level layout/truncation tests remain green.
 
 ### Offline display width
 
-- [ ] Offline dot padding is calculated from terminal display width, not UTF-8 byte length.
-- [ ] Named ASCII offline rendering remains `name@host:port offline`.
-- [ ] Unnamed offline rendering remains `host:port offline`.
-- [ ] A Unicode nickname regression test demonstrates correct bounded padding.
-- [ ] No new Unicode/layout dependency is added.
+- [x] Offline dot padding is calculated from terminal display width, not UTF-8 byte length.
+- [x] Named ASCII offline rendering remains `name@host:port offline`.
+- [x] Unnamed offline rendering remains `host:port offline`.
+- [x] A Unicode nickname regression test demonstrates correct bounded padding.
+- [x] No new Unicode/layout dependency is added.
 
 ### `default_port` documentation truth
 
-- [ ] `default_port` remains in the configuration schema.
-- [ ] Current comments no longer claim `gregg add` uses `default_port` for omitted ports.
-- [ ] Current comments no longer claim a missing required `SystemEntry.port` is auto-filled unless source inspection proves that behavior exists.
-- [ ] User-facing examples continue to require explicit ports for `gregg add`.
-- [ ] Historical plans are not rewritten solely to remove accurate historical implicit-port behavior.
+- [x] `default_port` remains in the configuration schema.
+- [x] Current comments no longer claim `gregg add` uses `default_port` for omitted ports.
+- [x] Current comments no longer claim a missing required `SystemEntry.port` is auto-filled unless source inspection proves that behavior exists.
+- [x] User-facing examples continue to require explicit ports for `gregg add`.
+- [x] Historical plans are not rewritten solely to remove accurate historical implicit-port behavior.
 
 ### Scope and closure
 
-- [ ] No scheduler, daemon, protocol, state/viewport, or service-runtime product behavior is changed.
-- [ ] No new dependency is added.
-- [ ] No new CI workflow/job/matrix/evidence system is added.
-- [ ] Focused client/UI tests pass.
-- [ ] `cargo fmt --all -- --check` passes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Plan 083 records the existence of this corrective follow-up without erasing its valid implementation/CI history.
-- [ ] `plans/README.md` identifies Plan 084 accurately.
-- [ ] Plan 084 records the implementation SHA and checks actually run when complete.
+- [x] No scheduler, daemon, protocol, state/viewport, or service-runtime product behavior is changed.
+- [x] No new dependency is added.
+- [x] No new CI workflow/job/matrix/evidence system is added.
+- [x] Focused client/UI tests pass.
+- [x] `cargo fmt --all -- --check` passes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Plan 083 records the existence of this corrective follow-up without erasing its valid implementation/CI history.
+- [x] `plans/README.md` identifies Plan 084 accurately.
+- [x] Plan 084 records the implementation SHA and checks actually run when complete.
 
 ## Completion rule
 
