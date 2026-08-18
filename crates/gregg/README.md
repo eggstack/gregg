@@ -25,14 +25,21 @@ gregg
 Manage endpoints:
 
 ```sh
-gregg add 192.168.1.10
+gregg add 192.168.1.10:11310
 gregg add deadpool.local:11320
+gregg add deadpool@192.168.1.10:11310          # `nickname@host:port` form
 gregg add http://192.168.1.10:11310/
+gregg add 192.168.1.10:11310 --name deadpool  # explicit `--name` instead of `@`
 gregg list
-gregg remove 192.168.1.10
+gregg remove 192.168.1.10                     # host-only remove is still supported
 gregg refresh 30
 gregg edit
 ```
+
+`gregg add` requires an explicit port. Host-only input such as
+`gregg add 192.168.1.10` is rejected; supply `host:port`, an HTTP URL
+(`http://host:port/`), or `nickname@host:port`. Combining the inline
+`nickname@` form with `--name` is rejected as ambiguous.
 
 ## Navigation
 

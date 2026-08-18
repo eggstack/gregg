@@ -47,20 +47,43 @@ pub enum Command {
     Version,
     /// Add a monitored endpoint.
     ///
-    /// Parses the endpoint, assigns a stable UUID, and appends it to the
-    /// configuration. Exact duplicates are rejected unless `--replace` is set.
+    /// Parses the endpoint, optionally extracts a `nickname@` prefix,
+    /// requires an explicit port, assigns a stable UUID, and appends
+    /// the entry to the configuration. Exact duplicates are rejected
+    /// unless `--replace` is set.
+    ///
+    /// The add path accepts the following forms:
+    ///
+    /// ```text
+    /// gregg add 192.168.182.146:11310
+    /// gregg add server.local:11310
+    /// gregg add [fd00::10]:11310
+    /// gregg add http://server.local:11310/
+    /// gregg add deadpool@192.168.182.146:11310
+    /// gregg add deadpool@server.local:11310
+    /// ```
+    ///
+    /// Forms that omit the port (`gregg add 192.168.182.146`,
+    /// `gregg add host`, `gregg add ::1`, `gregg add http://host/`)
+    /// are rejected. Supplying both `nickname@host:port` and `--name`
+    /// is also rejected.
     ///
     /// # Examples
     ///
     /// ```text
-    /// gregg add 192.168.1.8
+    /// gregg add 192.168.182.146:11310
     /// gregg add macmini.local:11310 --name "Mac Mini"
+    /// gregg add deadpool@10.0.0.5:8080
     /// gregg add 10.0.0.5:8080 --replace
     /// ```
     Add {
-        /// Endpoint in host:port or HTTP URL form (default port 11310).
+        /// Endpoint in `host:port`, bracketed IPv6, HTTP URL, or
+        /// `nickname@host:port` form. The port is mandatory.
         endpoint: String,
         /// Optional display name for this endpoint.
+        ///
+        /// Mutually exclusive with the inline `nickname@host:port`
+        /// nickname syntax.
         #[arg(long)]
         name: Option<String>,
         /// Replace an existing endpoint with the same host:port.
@@ -404,25 +427,32 @@ fn cmd_add(
     name: Option<&str>,
     replace: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Validate name early.
-    if let Some(n) = name {
-        crate::endpoint::validate_name(n)?;
+    let target = parse_add_target(endpoint_str)?;
+
+    if let (Some(_), Some(_)) = (target.name.as_deref(), name) {
+        return Err(Box::new(EndpointError::AmbiguousName {
+            input: endpoint_str.to_string(),
+        }));
     }
 
-    let spec = EndpointSpec::parse_add_input(endpoint_str)?;
+    if !target.endpoint.port_was_explicit {
+        return Err(Box::new(EndpointError::ExplicitPortRequired));
+    }
+
+    let final_name = target
+        .name
+        .clone()
+        .or_else(|| name.map(std::string::ToString::to_string));
 
     let result = store.mutate_with_result(|config| {
-        let resolved_port = if spec.port_was_explicit {
-            spec.port
-        } else {
-            config.default_port
-        };
+        let host = target.endpoint.host.clone();
+        let port = target.endpoint.port;
 
-        // Check for exact duplicate using the resolved port.
+        // Check for exact duplicate.
         let existing_idx = config
             .systems
             .iter()
-            .position(|s| s.host == spec.host && s.port == resolved_port);
+            .position(|s| s.host == host && s.port == port);
 
         if let Some(idx) = existing_idx {
             if replace {
@@ -430,7 +460,7 @@ fn cmd_add(
             } else {
                 return Err(ConfigError::Validation(vec![
                     crate::config::ConfigViolation::DuplicateAddress {
-                        address: crate::endpoint::display_address(&spec.host, resolved_port),
+                        address: crate::endpoint::display_address(&host, port),
                     },
                 ]));
             }
@@ -438,9 +468,9 @@ fn cmd_add(
 
         let entry = crate::config::SystemEntry {
             id: uuid::Uuid::new_v4().to_string(),
-            host: spec.host.clone(),
-            port: resolved_port,
-            name: name.map(std::string::ToString::to_string),
+            host,
+            port,
+            name: final_name.clone(),
         };
         config.systems.push(entry);
 
@@ -454,6 +484,71 @@ fn cmd_add(
         }
         Err(e) => Err(Box::new(e)),
     }
+}
+
+/// Parse the input accepted by `gregg add`.
+///
+/// Returns the optional configured name alongside the parsed endpoint
+/// specification. Inline `nickname@host:port` syntax is extracted only
+/// when the full input is **not** an HTTP URL, so HTTP URL credentials
+/// remain rejected and never reinterpreted as a nickname.
+///
+/// # Errors
+///
+/// Returns [`EndpointError`] when the endpoint parser rejects the input,
+/// when the inline nickname fails [`validate_name`], or when the
+/// remainder contains `@` after the nickname split.
+fn parse_add_target(input: &str) -> Result<AddTarget, EndpointError> {
+    let trimmed = input.trim();
+
+    // If the *full* input starts as an HTTP URL, do not attempt
+    // nickname extraction. This preserves the existing credential
+    // rejection for `http://user:password@host:port/` and forwards
+    // missing-port URLs to the explicit-port check.
+    if looks_like_http_url(trimmed) {
+        let spec = EndpointSpec::parse_add_input(trimmed)?;
+        return Ok(AddTarget {
+            name: None,
+            endpoint: spec,
+        });
+    }
+
+    if let Some((nick, rest)) = trimmed.split_once('@') {
+        if rest.contains('@') {
+            // `a@b@c` style is ambiguous: refuse rather than guess.
+            return Err(EndpointError::MalformedBrackets {
+                input: trimmed.to_string(),
+            });
+        }
+        if nick.is_empty() {
+            return Err(EndpointError::InvalidName {
+                reason: "nickname prefix is empty".to_string(),
+            });
+        }
+        crate::endpoint::validate_name(nick)?;
+        let spec = EndpointSpec::parse_add_input(rest)?;
+        return Ok(AddTarget {
+            name: Some(nick.to_string()),
+            endpoint: spec,
+        });
+    }
+
+    let spec = EndpointSpec::parse_add_input(trimmed)?;
+    Ok(AddTarget {
+        name: None,
+        endpoint: spec,
+    })
+}
+
+fn looks_like_http_url(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+#[derive(Debug)]
+struct AddTarget {
+    name: Option<String>,
+    endpoint: EndpointSpec,
 }
 
 fn cmd_list(store: &ConfigStore, json: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -728,14 +823,14 @@ mod tests {
 
     #[test]
     fn cli_parses_add() {
-        let cli = Cli::try_parse_from(["gregg", "add", "192.168.1.1"]).unwrap();
+        let cli = Cli::try_parse_from(["gregg", "add", "192.168.1.1:11310"]).unwrap();
         match cli.command.unwrap() {
             Command::Add {
                 endpoint,
                 name,
                 replace,
             } => {
-                assert_eq!(endpoint, "192.168.1.1");
+                assert_eq!(endpoint, "192.168.1.1:11310");
                 assert!(name.is_none());
                 assert!(!replace);
             }
@@ -745,10 +840,11 @@ mod tests {
 
     #[test]
     fn cli_parses_add_with_name() {
-        let cli = Cli::try_parse_from(["gregg", "add", "192.168.1.1", "--name", "Server"]).unwrap();
+        let cli =
+            Cli::try_parse_from(["gregg", "add", "192.168.1.1:11310", "--name", "Server"]).unwrap();
         match cli.command.unwrap() {
             Command::Add { endpoint, name, .. } => {
-                assert_eq!(endpoint, "192.168.1.1");
+                assert_eq!(endpoint, "192.168.1.1:11310");
                 assert_eq!(name.as_deref(), Some("Server"));
             }
             _ => panic!("expected Add command"),
@@ -757,7 +853,7 @@ mod tests {
 
     #[test]
     fn cli_parses_add_with_replace() {
-        let cli = Cli::try_parse_from(["gregg", "add", "192.168.1.1", "--replace"]).unwrap();
+        let cli = Cli::try_parse_from(["gregg", "add", "192.168.1.1:11310", "--replace"]).unwrap();
         match cli.command.unwrap() {
             Command::Add { replace, .. } => {
                 assert!(replace);
@@ -861,7 +957,7 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems.len(), 1);
@@ -894,8 +990,8 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
-        let result = cmd_add(&store, "192.168.1.1", None, false);
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
+        let result = cmd_add(&store, "192.168.1.1:11310", None, false);
         assert!(result.is_err());
 
         let _ = fs::remove_dir_all(&dir);
@@ -907,8 +1003,8 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", Some("Old"), false).unwrap();
-        cmd_add(&store, "192.168.1.1", Some("New"), true).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", Some("Old"), false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", Some("New"), true).unwrap();
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems.len(), 1);
@@ -918,16 +1014,19 @@ mod tests {
     }
 
     #[test]
-    fn add_without_explicit_port_uses_default_port() {
+    fn add_without_explicit_port_is_rejected_after_phase_083() {
         let dir = tmp_dir("add_default_port");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        // Add without explicit port — should use default_port.
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
-
-        let config = store.load_existing().unwrap();
-        assert_eq!(config.systems[0].port, 11310);
+        // Phase 083: `gregg add` requires an explicit port. The
+        // historical `config.default_port` fallback is preserved for
+        // configuration files but no longer auto-fills new add input.
+        let result = cmd_add(&store, "192.168.1.1", None, false);
+        assert!(
+            result.is_err(),
+            "portless input must be rejected, got {result:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -954,7 +1053,7 @@ mod tests {
     }
 
     #[test]
-    fn add_http_url_without_port_uses_configured_default_and_keeps_explicit_80() {
+    fn add_http_url_without_port_is_rejected_after_phase_083() {
         let dir = tmp_dir("add_http_ports");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
@@ -965,12 +1064,26 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        cmd_add(&store, "http://default.example/", None, false).unwrap();
+        let result = cmd_add(&store, "http://default.example/", None, false);
+        assert!(
+            result.is_err(),
+            "URL input without a port must be rejected, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn add_http_url_with_explicit_port_keeps_explicit() {
+        let dir = tmp_dir("add_http_explicit");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
         cmd_add(&store, "http://explicit.example:80/", None, false).unwrap();
 
         let config = store.load_existing().unwrap();
-        assert_eq!(config.systems[0].port, 11320);
-        assert_eq!(config.systems[1].port, 80);
+        assert_eq!(config.systems[0].host, "explicit.example");
+        assert_eq!(config.systems[0].port, 80);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1005,12 +1118,13 @@ mod tests {
     }
 
     #[test]
-    fn add_portless_with_non_default_port_stores_configured_port() {
+    fn add_portless_with_non_default_port_is_rejected_after_phase_083() {
         let dir = tmp_dir("add_non_default_port");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        // Set a non-default default_port.
+        // Set a non-default default_port to prove the historical
+        // fallback is no longer honored by the add command.
         store
             .mutate(|config| {
                 config.default_port = 12000;
@@ -1018,11 +1132,11 @@ mod tests {
             })
             .unwrap();
 
-        // Add without explicit port — should use the configured default_port.
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
-
-        let config = store.load_existing().unwrap();
-        assert_eq!(config.systems[0].port, 12000);
+        let result = cmd_add(&store, "192.168.1.1", None, false);
+        assert!(
+            result.is_err(),
+            "portless input must be rejected regardless of default_port, got {result:?}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1051,48 +1165,37 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_detection_uses_resolved_port() {
-        let dir = tmp_dir("dup_resolved_port");
+    fn duplicate_detection_uses_explicit_port() {
+        let dir = tmp_dir("dup_explicit_port");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        // Set a non-default default_port.
-        store
-            .mutate(|config| {
-                config.default_port = 12000;
-                Ok(())
-            })
-            .unwrap();
+        cmd_add(&store, "192.168.1.1:12000", None, false).unwrap();
 
-        // Add without explicit port — stores 12000.
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+        // Adding the same host without explicit port is now rejected.
+        let portless = cmd_add(&store, "192.168.1.1", None, false);
+        assert!(portless.is_err(), "portless add must be rejected");
 
-        // Adding the same host without explicit port should be a duplicate.
-        let result = cmd_add(&store, "192.168.1.1", None, false);
-        assert!(result.is_err(), "duplicate should be rejected");
+        // Different explicit port is permitted.
+        cmd_add(&store, "192.168.1.1:12001", None, false).unwrap();
+
+        // Adding the same host:port without --replace is a duplicate.
+        let exact = cmd_add(&store, "192.168.1.1:12000", None, false);
+        assert!(exact.is_err(), "duplicate should be rejected");
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn replace_uses_resolved_port() {
-        let dir = tmp_dir("replace_resolved_port");
+    fn replace_uses_explicit_port() {
+        let dir = tmp_dir("replace_explicit_port");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        // Set a non-default default_port.
-        store
-            .mutate(|config| {
-                config.default_port = 12000;
-                Ok(())
-            })
-            .unwrap();
+        cmd_add(&store, "192.168.1.1:12000", None, false).unwrap();
 
-        // Add without explicit port — stores 12000.
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
-
-        // Replace with a name — should replace the resolved address.
-        cmd_add(&store, "192.168.1.1", Some("Replaced"), true).unwrap();
+        // Replace with a name — should replace the explicit address.
+        cmd_add(&store, "192.168.1.1:12000", Some("Replaced"), true).unwrap();
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems.len(), 1);
@@ -1159,7 +1262,7 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", Some("Server"), false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", Some("Server"), false).unwrap();
         cmd_add(&store, "10.0.0.1:8080", None, false).unwrap();
 
         // Just verify it doesn't panic.
@@ -1174,7 +1277,7 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
 
         // Just verify it doesn't panic.
         cmd_list(&store, true).unwrap();
@@ -1210,7 +1313,7 @@ mod tests {
 
         cmd_add(&store, "192.168.1.1:8080", None, false).unwrap();
         cmd_add(&store, "192.168.1.1:9090", None, false).unwrap();
-        cmd_add(&store, "10.0.0.1", None, false).unwrap();
+        cmd_add(&store, "10.0.0.1:11310", None, false).unwrap();
 
         cmd_remove(&store, "192.168.1.1").unwrap();
 
@@ -1281,9 +1384,9 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
-        cmd_add(&store, "10.0.0.1", None, false).unwrap();
-        cmd_add(&store, "172.16.0.1", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
+        cmd_add(&store, "10.0.0.1:11310", None, false).unwrap();
+        cmd_add(&store, "172.16.0.1:11310", None, false).unwrap();
 
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems[0].host, "192.168.1.1");
@@ -1301,7 +1404,7 @@ mod tests {
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
 
         let config1 = store.load_existing().unwrap();
         let id1 = config1.systems[0].id.clone();
@@ -1322,10 +1425,176 @@ mod tests {
         let store = ConfigStore::new(path);
 
         // These should all complete without error.
-        cmd_add(&store, "192.168.1.1", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:11310", None, false).unwrap();
         cmd_list(&store, false).unwrap();
         cmd_list(&store, true).unwrap();
         cmd_refresh(&store, 10).unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- Inline nickname parsing (Phase 083) ---
+
+    #[test]
+    fn parse_add_target_extracts_nickname_and_endpoint() {
+        let target = parse_add_target("deadpool@192.168.182.146:11310").unwrap();
+        assert_eq!(target.name.as_deref(), Some("deadpool"));
+        assert_eq!(target.endpoint.host, "192.168.182.146");
+        assert_eq!(target.endpoint.port, 11310);
+        assert!(target.endpoint.port_was_explicit);
+    }
+
+    #[test]
+    fn parse_add_target_does_not_split_inside_http_url() {
+        // The userinfo `@` in an HTTP URL is still a URL credential and
+        // must not be reinterpreted as a nickname.
+        let target = parse_add_target("http://user:password@host:11310/");
+        assert!(
+            target.is_err(),
+            "URL credentials must continue to be rejected"
+        );
+
+        // And a URL with explicit port still parses cleanly with no name.
+        let target = parse_add_target("http://server.local:11310/").unwrap();
+        assert!(target.name.is_none());
+        assert_eq!(target.endpoint.host, "server.local");
+        assert_eq!(target.endpoint.port, 11310);
+    }
+
+    #[test]
+    fn parse_add_target_rejects_empty_nickname() {
+        let result = parse_add_target("@192.168.1.1:11310");
+        assert!(
+            matches!(result, Err(EndpointError::InvalidName { .. })),
+            "empty nickname must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_add_target_rejects_trailing_at() {
+        let result = parse_add_target("deadpool@");
+        assert!(
+            result.is_err(),
+            "trailing '@' must leave the parser with no endpoint"
+        );
+    }
+
+    #[test]
+    fn cmd_add_accepts_nickname_at_host_port() {
+        let dir = tmp_dir("add_nickname_at");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "deadpool@192.168.182.146:11310", None, false).unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems.len(), 1);
+        assert_eq!(config.systems[0].host, "192.168.182.146");
+        assert_eq!(config.systems[0].port, 11310);
+        assert_eq!(config.systems[0].name.as_deref(), Some("deadpool"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_add_rejects_inline_nickname_with_flag_name() {
+        let dir = tmp_dir("add_ambiguous_name");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        let result = cmd_add(
+            &store,
+            "deadpool@192.168.182.146:11310",
+            Some("other-name"),
+            false,
+        );
+        assert!(result.is_err(), "two name sources must be rejected");
+
+        let config = store.load_existing().unwrap_or_default();
+        assert!(config.systems.is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_add_rejects_portless_host_input() {
+        let dir = tmp_dir("add_no_port_reject");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        let result = cmd_add(&store, "192.168.1.1", None, false);
+        assert!(
+            matches!(
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<EndpointError>()),
+                Some(EndpointError::ExplicitPortRequired)
+            ),
+            "portless host must trigger ExplicitPortRequired, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_add_rejects_bare_ipv6_without_bracketed_port() {
+        let dir = tmp_dir("add_ipv6_default");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        let result = cmd_add(&store, "::1", None, false);
+        assert!(
+            matches!(
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<EndpointError>()),
+                Some(EndpointError::ExplicitPortRequired)
+            ),
+            "bare IPv6 default port must trigger ExplicitPortRequired, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_add_rejects_url_without_port() {
+        let dir = tmp_dir("add_url_no_port");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        let result = cmd_add(&store, "http://host.example/", None, false);
+        assert!(
+            matches!(
+                result
+                    .as_ref()
+                    .err()
+                    .and_then(|e| e.downcast_ref::<EndpointError>()),
+                Some(EndpointError::ExplicitPortRequired)
+            ),
+            "URL without explicit port must trigger ExplicitPortRequired, got {result:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cmd_remove_still_accepts_host_only_after_phase_083() {
+        let dir = tmp_dir("remove_host_only_phase083");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "192.168.1.1:8080", None, false).unwrap();
+        cmd_add(&store, "192.168.1.1:9090", None, false).unwrap();
+
+        // Host-only `gregg remove` semantics are preserved unchanged
+        // because the endpoint parser (not the add parser) accepts
+        // host-only inputs.
+        cmd_remove(&store, "192.168.1.1").unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert!(config.systems.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

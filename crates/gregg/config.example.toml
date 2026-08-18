@@ -16,11 +16,15 @@ request_timeout_ms = 1500
 max_concurrent_requests = 16
 
 # Default port for endpoints that don't specify one (1..=65535).
+# Note: the `gregg add` CLI always requires an explicit port on the
+# command line, so this fallback only influences legacy config files
+# that may omit port on old systems rows.
 default_port = 11310
 
 # Monitored systems.
 # Each entry requires: id (UUID v4), host, port.
-# An optional name provides a display label.
+# An optional name provides a display label (`name@host:port` in the
+# offline header).
 
 [[systems]]
 id = "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"

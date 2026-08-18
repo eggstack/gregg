@@ -1,6 +1,6 @@
 # Phase 083: compact TUI, endpoint nicknames, and polling invariant
 
-Status: planned.
+Status: implemented.
 
 Depends on: completed Plan 082 and current client behavior on `main` as reviewed at `561e859024edb8aaa670f0e710dd81c55c6f7b04`.
 

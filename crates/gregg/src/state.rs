@@ -234,6 +234,8 @@ impl AppState {
             return;
         }
 
+        let was_initialized = self.last_applied_generation == 0;
+
         for result in &batch.results {
             if let Some(system) = self.systems.iter_mut().find(|s| s.id == result.system_id) {
                 // A stable ID may be retained while its configured target
@@ -272,6 +274,23 @@ impl AppState {
         }
 
         self.last_applied_generation = batch.generation;
+
+        // The first accepted poll batch establishes the
+        // reachability-sorted display order for a fresh TUI. Pinning
+        // selection and viewport top to that order prevents an offline
+        // first-configured system from dragging the viewport below any
+        // online entries that came back first. Later batches must
+        // preserve ordinary selection/scroll semantics.
+        if was_initialized {
+            if let Some(first_index) = self.display_order().first() {
+                if let Some(first_system) = self.systems.get(*first_index) {
+                    let id = first_system.id.clone();
+                    self.selected_id = Some(id.clone());
+                    self.viewport_top_id = Some(id);
+                }
+            }
+        }
+
         ensure_selected_visible(self);
     }
 
@@ -1246,13 +1265,25 @@ mod tests {
         let config = test_config_with_ids(&["a", "b", "c"]);
         let mut state = AppState::from_config(&config);
 
+        // Move past the launch-initialization phase so later batches
+        // observe ordinary selection/scroll semantics, matching the
+        // production flow (per Phase 083 the *first* accepted batch
+        // pins selection and viewport to display-order position zero).
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![],
+        });
+        assert_eq!(state.last_applied_generation, 1);
+
         // Select b.
         state.apply_action(Action::MoveDown);
         assert_eq!(state.selected_id.as_deref(), Some("b"));
 
         // Make a online (changes display order but b is still selected).
         let batch = PollBatch {
-            generation: 1,
+            generation: 2,
             started_at: Instant::now(),
             completed_at: Instant::now(),
             results: vec![crate::poller::PollResult {
@@ -1265,6 +1296,89 @@ mod tests {
         state.apply_batch(&batch);
 
         assert_eq!(state.selected_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn first_batch_snaps_selection_and_viewport_to_display_order_top() {
+        // Phase 083: a fresh launch must place selection and viewport
+        // at display-order position zero after the first accepted
+        // batch — an offline first-configured system must not pull the
+        // viewport below later online systems.
+        let config = test_config_with_ids(&["offline0", "online2", "offline1"]);
+        let mut state = AppState::from_config(&config);
+        // Operator already scrolled before the first poll arrives.
+        state.apply_action(Action::SelectLast);
+        assert_eq!(state.selected_id.as_deref(), Some("offline1"));
+
+        let endpoints: Vec<_> = state
+            .systems
+            .iter()
+            .map(|system| system.endpoint.clone())
+            .collect();
+        let batch = PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: endpoints
+                .iter()
+                .enumerate()
+                .map(|(idx, endpoint)| {
+                    let outcome = if idx == 1 {
+                        PollOutcome::Online(Box::new(make_snapshot()))
+                    } else {
+                        PollOutcome::ConnectionRefused
+                    };
+                    crate::poller::PollResult {
+                        system_id: state.systems[idx].id.clone(),
+                        endpoint: endpoint.clone(),
+                        outcome,
+                        latency: Duration::from_millis(50),
+                    }
+                })
+                .collect(),
+        };
+        state.apply_batch(&batch);
+
+        let order = state.display_order();
+        let first_id = &state.systems[order[0]].id;
+        assert_eq!(state.selected_id.as_deref(), Some(first_id.as_str()));
+        assert_eq!(state.viewport_top_id.as_deref(), Some(first_id.as_str()));
+        // online2 is the only online system, must be at the top.
+        assert_eq!(first_id, "online2");
+    }
+
+    #[test]
+    fn subsequent_batches_do_not_reset_selection_to_top() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::from_config(&config);
+        // First batch initializes the session.
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![],
+        });
+        // Pick something offline on purpose to verify reachability does
+        // not drive the second-batch reset.
+        state.apply_action(Action::SelectLast);
+        let chosen = state.selected_id.clone();
+        assert_eq!(chosen.as_deref(), Some("c"));
+
+        let endpoint = state.systems[0].endpoint.clone();
+        state.apply_batch(&PollBatch {
+            generation: 2,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint,
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(50),
+            }],
+        });
+
+        // The existing offline selection survives the second batch.
+        assert_eq!(state.selected_id, chosen);
     }
 
     #[test]

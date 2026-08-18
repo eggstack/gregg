@@ -762,9 +762,20 @@ mod tests {
 
         let output = render_state(&state, 200, 8);
         assert!(output.lines().nth(4).unwrap().contains("DISK"));
+        // Phase 083: aggregate disk text is `<used> / <available>` with
+        // no `used` or `avail` words, both bytes shown so the user can
+        // still read both directions.
         assert!(
-            output.contains("380.0 GiB used"),
+            output.contains("380.0 GiB /"),
             "expected aggregate detail in output:\n{output}"
+        );
+        assert!(
+            !output.contains("used /"),
+            "aggregate detail must not contain 'used':\n{output}"
+        );
+        assert!(
+            !output.contains("GiB avail"),
+            "aggregate detail must not contain 'avail':\n{output}"
         );
         assert!(output.contains("/mnt/archive"));
         assert!(output.contains("142.0 GiB"));
@@ -873,8 +884,8 @@ mod tests {
         let output = render_state(&state, 80, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
-            cpu_line.starts_with("CPU"),
-            "CPU bar should start with label, got: {cpu_line}"
+            cpu_line.contains("CPU"),
+            "CPU bar should contain label, got: {cpu_line}"
         );
         assert!(
             cpu_line.contains("25.2%"),
@@ -895,8 +906,8 @@ mod tests {
         let output = render_state(&state, 80, 8);
         let mem_line = output.lines().nth(2).unwrap();
         assert!(
-            mem_line.starts_with("MEM"),
-            "MEM bar should start with label, got: {mem_line}"
+            mem_line.contains("MEM"),
+            "MEM bar should contain label, got: {mem_line}"
         );
         assert!(
             mem_line.contains("50.0%"),
@@ -915,8 +926,8 @@ mod tests {
         let output = render_state(&state, 80, 8);
         let swap_line = output.lines().nth(3).unwrap();
         assert!(
-            swap_line.starts_with("SWP"),
-            "SWP bar should start with label, got: {swap_line}"
+            swap_line.contains("SWP"),
+            "SWP bar should contain label, got: {swap_line}"
         );
         assert!(
             swap_line.contains("25.0%"),

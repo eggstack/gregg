@@ -1,99 +1,62 @@
 #![allow(dead_code)]
 
+//! Low-level text and rendering helpers shared by `system_block` and other
+//! views.
+//!
+//! These primitives intentionally keep no per-row layout state. Each `ui`
+//! module is responsible for computing its own label, bar, and suffix
+//! widths so that all sibling rows align. The helpers here provide
+//! display-cell-aware truncation plus a tiny line renderer that the
+//! higher-level layout code drives.
+
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
+use unicode_width::UnicodeWidthChar;
 
-use super::text;
-
-/// Render a reusable usage bar.
+/// Truncate a string to at most `max_width` display cells.
 ///
-/// Format: `CPU  [||||||||        ] 25.2% 8 cores`
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-pub fn render_bar(
-    f: &mut Frame,
-    area: Rect,
-    label: &str,
-    pct: f32,
-    detail: Option<&str>,
-    _is_selected: bool,
-) {
-    if area.height == 0 || area.width == 0 {
-        return;
+/// If the source already fits, it is returned unchanged. When truncation
+/// occurs the returned string is the longest prefix whose terminal-cell
+/// width does not exceed `max_width` after appending an ellipsis; the
+/// ellipsis is dropped whenever it would itself overflow the budget so
+/// the caller can rely on `width(truncate_to_cells(s, n)) <= n`.
+#[must_use]
+pub fn truncate_to_cells(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
     }
-
-    let clamped_pct = pct.clamp(0.0, 100.0);
-    let pct_str = text::format_pct(clamped_pct);
-    let label_len = (label.len() as u16).min(area.width);
-    let fixed_width = label_len
-        .saturating_add(2)
-        .saturating_add(2)
-        .saturating_add(1)
-        .saturating_add(u16::try_from(pct_str.len()).unwrap_or(u16::MAX));
-    let detail = detail.map(|value| {
-        let budget = usize::from(area.width.saturating_sub(fixed_width.saturating_add(1))) / 2;
-        truncate_str(value, u16::try_from(budget).unwrap_or(u16::MAX))
-    });
-    let detail_width = detail.as_deref().map_or(0, |value| {
-        u16::try_from(value.len() + 1).unwrap_or(u16::MAX)
-    });
-    let bar_width = area
-        .width
-        .saturating_sub(fixed_width.saturating_add(detail_width));
-
-    let filled = if bar_width > 0 {
-        ((clamped_pct / 100.0) * f32::from(bar_width)) as u16
-    } else {
-        0
-    };
-    let empty = bar_width.saturating_sub(filled);
-
-    let bar_chars: String = "|".repeat(filled as usize);
-    let space_chars: String = " ".repeat(empty as usize);
-
-    let mut spans = vec![Span::raw(format!(
-        "{label}  [{bar_chars}{space_chars}] {pct_str}"
-    ))];
-
-    if let Some(d) = detail {
-        spans.push(Span::raw(format!(" {d}")));
-    }
-
-    let line = Line::from(spans);
-    f.render_widget(line, area);
-}
-
-/// Render a metric whose value is unavailable.
-pub fn render_unavailable(f: &mut Frame, area: Rect, label: &str) {
-    if area.height == 0 || area.width == 0 {
-        return;
-    }
-    let fixed_width = label.len().saturating_add(4).saturating_add(3);
-    let empty_width = usize::from(area.width).saturating_sub(fixed_width);
-    let line = format!("{label}  [{}] —", " ".repeat(empty_width));
-    f.render_widget(Line::from(line), area);
-}
-
-/// Truncate a string to at most `max_width` display columns.
-fn truncate_str(s: &str, max_width: u16) -> String {
-    use unicode_width::UnicodeWidthChar;
-
-    let max = max_width as usize;
     let mut width = 0usize;
     let mut end = 0usize;
     for (i, ch) in s.char_indices() {
-        let w = ch.width().unwrap_or(0);
-        if width + w > max {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + w > max_width {
             break;
         }
         width += w;
         end = i + ch.len_utf8();
     }
     if end >= s.len() {
+        // The source already fits exactly.
         s.to_string()
-    } else if end > 0 {
+    } else if width < max_width {
+        // Room for the ellipsis after the last kept character.
         format!("{}…", &s[..end])
+    } else if end > 0 {
+        // Even an ellipsis would overflow; return what fits.
+        s[..end].to_string()
     } else {
         String::new()
     }
+}
+
+/// Render one pre-built text line into a single-row area.
+///
+/// The caller is responsible for ensuring `line` already fits inside
+/// `area.width`; this helper does not truncate or wrap.
+pub fn render_text_line(f: &mut Frame, area: Rect, line: &str) {
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+    f.render_widget(Line::from(Span::raw(line.to_string())), area);
 }

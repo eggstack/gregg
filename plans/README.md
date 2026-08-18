@@ -25,6 +25,8 @@ Plan 080 implementation landed and its mandatory Ubuntu direct lifecycle smoke p
 
 Plan 082 completed the final polish pass. It corrected the remaining Unix control-identity edge so different ordinary path spellings of the same existing explicit config file converge, reconciled the remaining Plan 080/081 status/checklist/provenance wording, and passed existing CI run `31841994426` across all five jobs. It did not reopen the daemon lifecycle architecture or add verification infrastructure.
 
+Plan 083 implemented six bounded client UI/CLI corrections: a shared normal-view metric-row geometry (aligned `[` and `]` across CPU/MEM/SWP-or-COMMIT/DISK with one common `bar_width`), concise disk aggregate text without `used` / `avail` words, fresh-launch viewport snap to `display_order[0]` on the first accepted poll batch only, an explicit-port requirement on `gregg add` accepting the ergonomic `nickname@host:port` form, named versus unnamed offline rendering without duplicate host printing, and a regression test locking in continued polling of offline endpoints across generations. Local checks passed; remote CI run will be recorded after the next push.
+
 | Plan | Purpose | Status |
 | --- | --- | --- |
 | [`066-bounded-correctness-and-maintainability-roadmap.md`](066-bounded-correctness-and-maintainability-roadmap.md) | Correct concrete cross-platform defects, retain only justified simplification, and close through bounded verification | complete through 074; CI-backed Windows SCM verification passed |
@@ -44,14 +46,15 @@ Plan 082 completed the final polish pass. It corrected the remaining Unix contro
 | [`080-greggd-runtime-croncheck-and-direct-stop-correction.md`](080-greggd-runtime-croncheck-and-direct-stop-correction.md) | Diagnose/correct the daemon refusal and add direct local Unix `greggd stop` without restoring service-manager coupling | implemented and corrected by completed Plan 081; original Ubuntu lifecycle evidence preserved |
 | [`081-plan080-cross-platform-stop-corrective-pass.md`](081-plan080-cross-platform-stop-corrective-pass.md) | Restore Windows foreground compatibility and make Unix stop identity/permissions/stale-socket handling safe | complete; implementation `59e17551`; CI run `31813136597`; Ubuntu one-daemon + two-daemon stop-isolation smokes passed |
 | [`082-plan081-control-identity-and-record-polish.md`](082-plan081-control-identity-and-record-polish.md) | Normalize equivalent explicit config path spellings for Unix stop identity and reconcile Plan 080/081 records | complete; focused tests and relative/absolute release smoke passed |
+| [`083-compact-tui-endpoint-nicknames-and-polling-invariant.md`](083-compact-tui-endpoint-nicknames-and-polling-invariant.md) | Six bounded client UI/CLI corrections: shared normal-view metric geometry, concise disk text, fresh-launch viewport snap, explicit-port `gregg add` with `nickname@host:port`, named versus unnamed offline rendering, offline-endpoint polling invariant | complete; local checks passed |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; it is not a closure-only record.
 
 ## Execution record for Plan 075
 
@@ -126,7 +129,7 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
-Plans 081 and 082 are complete because Plan 081's Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed, and Plan 082's same-file identity tests, local checks, release-binary relative/absolute smoke, and record reconciliation all passed.
+Plans 081 and 082 are complete because Plan 081's Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed, and Plan 082's same-file identity tests, local checks, release-binary relative/absolute smoke, and record reconciliation all passed. Plan 083 is complete because the shared normal-view metric geometry, fresh-launch viewport snap, explicit-port `gregg add` with `nickname@host:port`, named versus unnamed offline rendering, and offline-endpoint polling tests all pass under the default local check and the workspace test run; CI run id is recorded below once the next push lands.
 
 ## Active scope record for Plan 082
 
@@ -151,6 +154,28 @@ Preserved exclusions:
 - new dependencies;
 - new workflows/jobs/matrices/evidence bundles;
 - unrelated refactoring.
+
+## Closed scope record for Plan 083
+
+Completed:
+
+- introduce `crates/gregg/src/ui/bar.rs` width primitives (`truncate_to_cells`, `render_text_line`) and rewrite `crates/gregg/src/ui/system_block.rs` around `MetricRow`, `build_metric_rows`, `MetricGroupLayout`, `compute_metric_group_layout`, and `render_metric_row` so the four normal metric rows share one label width and one bar width with brackets aligned at the same terminal column, plus `make_bar_string`, `render_drive_details`, and a named-versus-unnamed `render_offline` that never duplicates the host after `name@`;
+- shorten the aggregate disk suffix to `used / avail` (no `used` or `avail` words) and emit the unavailable `—` marker instead of a fabricated `0.0%`;
+- snap `selected_id` and `viewport_top_id` to `display_order()[0]` only on the first accepted poll batch (`last_applied_generation == 0` snapshot) and preserve ordinary selection/viewport behavior thereafter; `Ctrl-R` does not re-snap;
+- require an explicit port on `gregg add` and accept `nickname@host:port`, `http://host:port/` URL form, `[ipv6]:port`, and bare `host:port`; reject host-only, URL-without-port, `nickname@host`, `@host:port`, and the ambiguous combination of inline nickname with `--name`;
+- keep `--name` as an alternate explicit form, retain HTTP URL credential/userinfo rejection, keep HTTPS downgraded/never accepted, keep host-only `gregg remove HOST` semantics unchanged, and reuse the existing `SystemEntry.name` schema field (no configuration migration);
+- add two `crates/gregg/src/scheduler.rs` regression tests proving offline endpoints are polled again on the next generation and recover automatically when the mock becomes reachable, plus a two-generation failure-only assertion that demonstrates the configured endpoint is never silently suppressed;
+- update the user-facing documentation surface (`README.md`, `AGENTS.md`, `architecture/gregg-client.md`, `crates/gregg/config.example.toml`, `.opencode/skills/gregg-client/SKILL.md`) to use explicit-port examples and `nickname@host:port`, show the aligned four-space metric block, and forbid future agents from reintroducing implicit-port `gregg add` examples;
+- run focused local checks (`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`) and the existing ordinary remote CI workflow once.
+
+Preserved exclusions:
+
+- configuration schema additions or migrations;
+- daemon, protocol, scheduler architecture, or polling cadence changes;
+- offline backoff, retry queue, or exponential-backoff state machine;
+- HTTPS acceptance, credential/userinfo reuse, or generalized URL forms;
+- new dependencies, workflows, jobs, matrices, or evidence bundles;
+- unrelated TUI redesign or test-suite restructuring.
 
 ## Closed scope record for Plan 081
 

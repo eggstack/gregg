@@ -129,6 +129,11 @@ pub enum EndpointError {
     EmptyHost,
     /// Display name is empty or too long.
     InvalidName { reason: String },
+    /// `gregg add` was given input without a port; the add command
+    /// requires an explicit nonzero port.
+    ExplicitPortRequired,
+    /// `gregg add` was given a nickname in addition to `--name`.
+    AmbiguousName { input: String },
 }
 
 impl fmt::Display for EndpointError {
@@ -161,6 +166,16 @@ impl fmt::Display for EndpointError {
             Self::EmptyHost => write!(f, "host is empty"),
             Self::InvalidName { reason } => {
                 write!(f, "invalid display name: {reason}")
+            }
+            Self::ExplicitPortRequired => write!(
+                f,
+                "gregg add requires an explicit port; specify host:port instead of host"
+            ),
+            Self::AmbiguousName { input } => {
+                write!(
+                    f,
+                    "gregg add received both an inline nickname and --name; pick one: {input}"
+                )
             }
         }
     }

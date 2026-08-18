@@ -1249,4 +1249,166 @@ mod tests {
 
         cancel.cancel();
     }
+
+    /// Mock server that fails the first `failure_count` connections by
+    /// dropping the request without responding, then succeeds on later
+    /// connections. Models a temporarily offline endpoint that later
+    /// becomes reachable without operator intervention.
+    async fn flaky_then_valid_server(failure_count: usize) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let snap = LinuxSnapshotBuilder::default().build();
+        let body = serde_json::to_string(&snap).unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                let mut buf = vec![0u8; 4096];
+                let mut total = 0;
+                loop {
+                    let n = stream.read(&mut buf[total..]).await.unwrap();
+                    total += n;
+                    if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let count = accepted.fetch_add(1, Ordering::SeqCst);
+                if count < failure_count {
+                    drop(stream);
+                    continue;
+                }
+                let request = String::from_utf8_lossy(&buf[..total]);
+                let status = if request
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("/v2/"))
+                {
+                    "404 Not Found"
+                } else {
+                    "200 OK"
+                };
+                let header = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://127.0.0.1:{}", addr.port())
+    }
+
+    /// Phase 083 invariant: a failed endpoint is kept in the scheduler
+    /// and polled again on later generations, recovering automatically
+    /// when reachable. The scheduler does not silently suppress
+    /// offline endpoints.
+    #[tokio::test]
+    async fn offline_endpoint_is_retried_and_recovers_on_next_generation() {
+        let url = flaky_then_valid_server(/* failure_count */ 1).await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let mut clock = FakeClock::new(anchor);
+
+        let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
+        let cancel = CancellationToken::new();
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep.clone()], cancel.clone(), refresh_rx);
+
+        // Generation 1: connection is dropped, expect one offline result.
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .expect("scheduler must produce the first batch");
+        assert_eq!(batch1.generation, 1);
+        assert_eq!(batch1.results.len(), 1, "exactly one result per endpoint");
+        assert!(
+            !matches!(
+                batch1.results[0].outcome,
+                PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+            ),
+            "first attempt should not be online: got {:?}",
+            batch1.results[0].outcome,
+        );
+        assert_eq!(batch1.results[0].system_id, ep.id);
+
+        // Generation 2: same endpoint polled again, success expected.
+        clock.advance(Duration::from_millis(20));
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .expect("scheduler must produce the second batch");
+        assert_eq!(batch2.generation, 2);
+        assert_eq!(batch2.results.len(), 1, "exactly one result per endpoint");
+        assert_eq!(
+            batch2.results[0].system_id, ep.id,
+            "the same endpoint must be polled again"
+        );
+        let recovered = matches!(
+            batch2.results[0].outcome,
+            PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+        );
+        assert!(
+            recovered,
+            "second generation should recover; got {:?}",
+            batch2.results[0].outcome,
+        );
+
+        cancel.cancel();
+    }
+
+    /// Two-generation offline assertion: a still-offline endpoint must
+    /// still appear in the next batch's result set, demonstrating the
+    /// scheduler does not silently drop unreachable endpoints after one
+    /// failure.
+    #[tokio::test]
+    async fn offline_endpoint_remains_in_scheduler_across_generations() {
+        let url = flaky_then_valid_server(/* failure_count */ 99).await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let anchor = std::time::Instant::now();
+        let mut clock = FakeClock::new(anchor);
+
+        let scheduler = PollScheduler::new(clock.clone(), client, Duration::from_millis(10), 4);
+        let cancel = CancellationToken::new();
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let mut rx = scheduler.run(vec![ep.clone()], cancel.clone(), refresh_rx);
+
+        // Generation 1: offline.
+        let batch1 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch1.generation, 1);
+        assert!(
+            !matches!(
+                batch1.results[0].outcome,
+                PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+            ),
+            "first attempt must be offline"
+        );
+
+        // Generation 2: same endpoint appears again even though it is
+        // still unhealthy.
+        clock.advance(Duration::from_millis(20));
+        let batch2 = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch2.generation, 2);
+        assert_eq!(batch2.results.len(), 1);
+        assert_eq!(batch2.results[0].system_id, ep.id);
+        assert!(
+            !matches!(
+                batch2.results[0].outcome,
+                PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+            ),
+            "second attempt should still be offline, got {:?}",
+            batch2.results[0].outcome,
+        );
+
+        cancel.cancel();
+    }
 }

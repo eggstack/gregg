@@ -81,9 +81,36 @@ passes locally, the distinction is the cause.
   than silently diverging state from the scheduler. Invalid reloads preserve
   the last-known-good state; there is no filesystem watcher. EggPool refresh
   behavior remains pane-local.
-- `gregg add` accepts canonical host/port input plus HTTP URL convenience input,
-  but persists only normalized `host` and `port`; HTTPS is not accepted or
-  downgraded to HTTP.
+- `gregg add` requires an explicit port on every accepted form. Accepted:
+  `host:port`, `[ipv6]:port`, `http://host:port/`, and `nickname@host:port`.
+  Rejected: host-only (`host`, `192.168.182.146`, `::1`), HTTP URL
+  without a port, `nickname@host` without a port, `nickname@`, and the
+  ambiguous combination of inline `nickname@` with `--name`. HTTPS is
+  never accepted and is not downgraded to HTTP. `gregg remove` still
+  accepts host-only input. Persisted fields remain normalized `host`
+  and `port`; the inline `nickname@` form just populates the existing
+  `SystemEntry.name` field. Do not introduce implicit-port `gregg add`
+  examples anywhere in the repo.
+- The shared normal-view metric-row geometry in `crates/gregg/src/ui/system_block.rs`
+  (via `MetricRow`, `build_metric_rows`, `compute_metric_group_layout`,
+  and `render_metric_row`) is the authoritative path for the four
+  CPU/MEM/SWP-or-COMMIT/DISK rows. All four rows share one `bar_width`
+  so the opening `[` and closing `]` columns align at every supported
+  terminal width. Metric rows are indented by exactly four spaces.
+  Unavailable rows render `—` instead of fabricating a `0.0%`.
+  Offline endpoints render as `name@host:port offline` or
+  `host:port offline`; the host is never duplicated when a name is set.
+- `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to
+  `display_order()[0]` only on the **first** accepted poll batch (when
+  `last_applied_generation == 0` before applying). Subsequent batches
+  preserve ordinary selection/viewport semantics. `Ctrl-R` does not
+  re-snap. Do not add a new scroll state machine for this.
+- Offline endpoints continue to be polled on every configured cadence
+  (no backoff/retry queue). The scheduler always returns one ordered
+  result per endpoint per generation; the new
+  `offline_endpoint_is_retried_and_recovers_on_next_generation` and
+  `offline_endpoint_remains_in_scheduler_across_generations` tests in
+  `crates/gregg/src/scheduler.rs` lock that invariant in.
 - `greggd configprint` is read-only and prints only the configured canonical
   bind `host:port`; it must not probe, bind, mutate config, or manage services.
 - Reusable `greggd` library/runtime code must return errors without printing or

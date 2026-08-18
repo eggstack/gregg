@@ -55,13 +55,19 @@ cargo install gregg
 ### 3. Add endpoints and launch
 
 ```bash
-gregg add 192.168.1.10
-gregg add 192.168.1.11
-gregg add myserver.local
-gregg add http://192.168.1.10:11310/
+gregg add 192.168.1.10:11310
+gregg add 192.168.1.11:11310
+gregg add deadpool@192.168.1.10:11310     # `nickname@host:port` form
+gregg add http://192.168.1.10:11310/      # HTTP URL input; only host and port are persisted
 gregg refresh 30
 gregg
 ```
+
+`gregg add` requires an explicit port. Host-only input such as
+`gregg add 192.168.1.10` is rejected; the port must be supplied either
+as `host:port`, as an HTTP URL (`http://host:port/`), or through
+`nickname@host:port`. Use `gregg remove HOST` if you want host-only
+matching for removal.
 
 ## Configuration
 
@@ -124,11 +130,13 @@ The client stores its config at:
 
 ```bash
 gregg                          # launch the TUI
-gregg add 192.168.1.10         # add an endpoint
+gregg add 192.168.1.10:11310   # add an endpoint (explicit port required)
 gregg add server.local:11310   # add with custom port
-gregg add http://server.local:11310/ # HTTP URL input; only host and port are persisted
+gregg add deadpool@server.local:11310  # nickname@host:port
+gregg add http://server.local:11310/   # HTTP URL input; only host and port are persisted
+gregg add 192.168.1.10:11310 --name deadpool  # explicit `--name` instead of `@`
 gregg list                     # list configured endpoints
-gregg remove 192.168.1.10      # remove an endpoint
+gregg remove 192.168.1.10      # host-only remove is still supported
 gregg refresh 30               # set polling interval (seconds)
 gregg edit                     # open config in $EDITOR
 gregg version                  # print the client version
@@ -144,21 +152,36 @@ gregg version                  # print the client version
 
 ## Display
 
-Reachable systems show five rows (normal view):
+Reachable systems show five rows (normal view). All four metric rows
+share the same `bar_width` so the opening `[` and closing `]` columns
+always align, and the metric rows are indented by exactly four spaces:
 
 ```text
 Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
-CPU  [||||||||||||                                  ] 25.2%
-MEM  [||||||||||||||||||                            ] 37.8%  5.9/15.6 GiB
-SWAP [                                                ]  0.0%  0/4.0 GiB
-DISK [||||||||||||                                  ] 25.0% 238.0 GiB used / 714.0 GiB avail
+    CPU  [||||||||||||                                  ] 25.2% 8 cores
+    MEM  [||||||||||||||||||                            ] 37.8% 5.9 GiB / 15.6 GiB
+    SWP  [                                                ]  0.0% 0 B / 4.0 GiB
+    DISK [||||||||||||                                  ] 25.0% 238.0 GiB / 714.0 GiB
 ```
 
-Unreachable systems collapse to one row:
+On Windows, the third row uses `COMMIT` (memory commit charge) instead
+of `SWP`. Unreachable rows render `—` instead of fabricating a `0.0%`.
+
+Unreachable systems collapse to one row. With a configured nickname:
 
 ```text
-Deadpool@192.168.1.10:11310 offline
+deadpool@192.168.1.10:11310 offline
 ```
+
+Without a nickname the host is rendered once:
+
+```text
+192.168.1.10:11310 offline
+```
+
+Offline endpoints continue to be polled on every configured cadence; they
+automatically recover and switch to the normal view as soon as the
+daemon becomes reachable again.
 
 Condensed view shows one comparison row per system with CPU, memory, disk, load, and I/O-wait columns.
 

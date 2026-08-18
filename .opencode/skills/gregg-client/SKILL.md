@@ -81,6 +81,11 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 - Task panic converted to `Cancelled` result
 - Generation numbers increase monotonically; stale batches rejected
 - Fixed-cadence ticks skip missed deadlines; manual refresh does not reset cadence
+- Offline endpoints are kept in the endpoint list and retried on every
+  generation; reachability state never suppresses or prunes them. The
+  `offline_endpoint_is_retried_and_recovers_on_next_generation` and
+  `offline_endpoint_remains_in_scheduler_across_generations` tests in
+  `scheduler.rs` lock in one ordered result per endpoint per generation.
 
 **Poller** (`poller.rs`):
 - v2-first, v1 fallback only on 404
@@ -110,6 +115,10 @@ struct AppState {
 
 **Display order:** Online systems first (stable order), then offline/pending.
 **Viewport:** Computes visible range for mixed-height entries; selected system always visible.
+**First-batch snap:** `AppState::apply_batch` snaps `selected_id` and
+`viewport_top_id` to `display_order()[0]` only when
+`last_applied_generation == 0` before the batch is applied. Later
+batches and `Ctrl-R` reloads preserve ordinary selection/viewport.
 
 ### Key bindings
 
@@ -137,8 +146,20 @@ Header line drops lower-priority segments as width decreases:
 1. Header (name, IO, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
-4. SWAP or COMMIT bar (platform-dependent)
+4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
+
+The four metric rows share one label width and one bar width via
+`build_metric_rows`, `compute_metric_group_layout`, and
+`render_metric_row`. The opening `[` and closing `]` columns always
+align. Rows are indented by exactly four spaces. The disk aggregate
+suffix is rendered as `used / avail` without the words `used` or
+`avail`. Unavailable rows render `—` rather than fabricating `0.0%`.
+
+**Offline rendering** (`ui/system_block.rs::render_offline`):
+- configured client name set:  `name@host:port offline`
+- no configured name:          `host:port offline`
+The host is never duplicated when a name is configured.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47, Minimal < 30).
 
@@ -169,7 +190,15 @@ The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives th
 - One ordered result per endpoint, the semaphore limit, panic-to-`Cancelled` conversion, fixed periodic cadence, and cancellation behavior are all intentional.
 - EggPool commands remain on a separate bounded channel with generation checks.
 - Do not replace either state machine to reduce line count without a smaller behaviorally equivalent design.
-- `gregg add` accepts canonical host/port input plus HTTP URL convenience input, but persists only normalized `host` and `port`; HTTPS is not accepted or downgraded.
+- `gregg add` requires an explicit port. Accepted: `host:port`,
+  `[ipv6]:port`, `http://host:port/`, and `nickname@host:port`. Rejected:
+  host-only (`host`, `192.168.182.146`, `::1`), HTTP URL without a port,
+  `nickname@host` without a port, `nickname@`, and inline `nickname@`
+  combined with `--name`. HTTPS is never accepted or downgraded. The
+  inline `nickname@` form populates the existing `SystemEntry.name`
+  field; persisted fields remain normalized `host` and `port`.
+- `gregg remove` still accepts host-only input.
+- Do not introduce implicit-port `gregg add` examples anywhere in the repo.
 
 ## Tests
 

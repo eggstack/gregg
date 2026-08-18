@@ -115,6 +115,11 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 - Generation numbers increase monotonically; stale batches rejected
 - Fixed-cadence ticks skip missed deadlines, and manual refresh does not reset
   the periodic cadence
+- Offline endpoints are kept in the endpoint list and retried on every
+  generation; reachability state does not prune or suppress them. The
+  regression tests `offline_endpoint_is_retried_and_recovers_on_next_generation`
+  and `offline_endpoint_remains_in_scheduler_across_generations` lock in
+  that one ordered result per endpoint per generation.
 
 The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives
 the replacement endpoint vector, and awaits delivery through the bounded
@@ -162,6 +167,12 @@ struct AppState {
 **Viewport:** Computes visible range for mixed-height entries (normal = 5 rows,
 condensed = 1 row). Selected system is always visible.
 
+**First-batch snap:** `AppState::apply_batch` snaps `selected_id` and
+`viewport_top_id` to `display_order()[0]` only when `last_applied_generation
+== 0` before the batch is applied (the first accepted poll batch).
+Subsequent batches preserve the existing selection/viewport semantics.
+`Ctrl-R` does not re-snap.
+
 ### Terminal lifecycle
 
 - `terminal.rs` — raw mode, alternate screen, cursor hiding, panic hook
@@ -194,8 +205,22 @@ The header line drops lower-priority segments as width decreases:
 1. Header (name, IO, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
-4. SWAP or COMMIT bar (platform-dependent)
+4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
+
+The four metric rows share one label width and one bar width; their
+opening `[` and closing `]` always occupy the same terminal column.
+Geometry is computed once via `build_metric_rows`,
+`compute_metric_group_layout`, and `render_metric_row`. Metric rows are
+indented by exactly four spaces. The disk aggregate suffix is rendered
+as `used / avail` without `used` or `avail` words. Unavailable metrics
+render `—` rather than fabricating a `0.0%`.
+
+**Offline rendering** (`ui/system_block.rs::render_offline`): When the
+configured client name is set the row reads `name@host:port offline`;
+otherwise it reads `host:port offline` and never duplicates the host.
+The configured client name persists on `SystemEntry.name`; the daemon's
+`system.name` is not used for client-side display.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate
 columns based on terminal width (Wide ≥ 64, Medium 48-63, Narrow 30-47,
@@ -238,9 +263,9 @@ Platform defaults:
 
 | Command | Purpose |
 |---------|---------|
-| `add <host:port or http://URL>` | Add endpoint (with optional name); persist only host and port |
+| `add <host:port or http://host:port/> or nickname@host:port>` | Add endpoint with required explicit port; `--name` and an inline `nickname@` are mutually exclusive; persisted fields are normalized `host`/`port` and optional `name` |
 | `list` | List configured endpoints |
-| `remove <host:port>` | Remove endpoint(s) |
+| `remove <host>` | Host-only remove is still supported |
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
