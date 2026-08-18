@@ -225,6 +225,45 @@ pub fn config_address(config: &Config) -> SocketAddr {
     SocketAddr::new(config.host, config.port)
 }
 
+/// Return the bind address for `configprint`, resolving wildcards to
+/// the host's primary local IP so the output is a usable address a
+/// remote client can dial.
+///
+/// A specific host is returned unchanged. A `0.0.0.0` wildcard is
+/// resolved to the local IPv4 address and an `::` wildcard to the
+/// local IPv6 address (with an IPv4 fallback). If the local interface
+/// cannot be resolved, the wildcard is preserved verbatim so the
+/// output is still a valid socket address.
+#[must_use]
+pub fn display_address(config: &Config) -> SocketAddr {
+    display_address_from(
+        config,
+        crate::net::local_ipv4_address,
+        crate::net::local_ipv6_address,
+    )
+}
+
+/// Same as [`display_address`] but with explicit local-address probes
+/// for testability. The probes are plain `fn() -> Option<IpAddr>`
+/// callbacks so callers can inject deterministic addresses without
+/// touching the kernel's routing table.
+#[must_use]
+#[allow(clippy::module_name_repetitions)]
+pub fn display_address_from(
+    config: &Config,
+    local_ipv4: fn() -> Option<IpAddr>,
+    local_ipv6: fn() -> Option<IpAddr>,
+) -> SocketAddr {
+    let host = match config.host {
+        IpAddr::V4(value) if value.is_unspecified() => local_ipv4().unwrap_or(config.host),
+        IpAddr::V6(value) if value.is_unspecified() => {
+            local_ipv6().or_else(local_ipv4).unwrap_or(config.host)
+        }
+        other => other,
+    };
+    SocketAddr::new(host, config.port)
+}
+
 /// Bounded TCP-connect check used by `croncheck`.
 ///
 /// Returns `true` if a listener accepts the connection within the
@@ -323,7 +362,7 @@ pub fn dispatch_with_config_intent(
         }
         Command::Configprint => {
             let config = load_config(config_path, explicit)?;
-            println!("{}", config_address(&config));
+            println!("{}", display_address(&config));
             Ok(())
         }
         Command::Host { address } => mutate_config(config_path, explicit, |config| {
@@ -401,6 +440,99 @@ mod native_tests {
         config.host = "fd00::10".parse().unwrap();
         config.port = 11320;
         assert_eq!(config_address(&config).to_string(), "[fd00::10]:11320");
+    }
+
+    #[test]
+    fn display_address_preserves_specific_hosts() {
+        let config = Config {
+            host: "192.168.182.143".parse().unwrap(),
+            port: 11310,
+            ..Config::default()
+        };
+        assert_eq!(
+            display_address_from(&config, || None, || None).to_string(),
+            "192.168.182.143:11310"
+        );
+        let config = Config {
+            host: "fd00::10".parse().unwrap(),
+            port: 11320,
+            ..Config::default()
+        };
+        assert_eq!(
+            display_address_from(&config, || None, || None).to_string(),
+            "[fd00::10]:11320"
+        );
+    }
+
+    #[test]
+    fn display_address_resolves_ipv4_wildcard_to_local_ipv4() {
+        let config = Config {
+            host: "0.0.0.0".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(
+            &config,
+            || Some("192.168.182.143".parse().unwrap()),
+            || None,
+        );
+        assert_eq!(resolved.to_string(), "192.168.182.143:11310");
+    }
+
+    #[test]
+    fn display_address_resolves_ipv6_wildcard_to_local_ipv6() {
+        let config = Config {
+            host: "::".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(&config, || None, || Some("fd00::10".parse().unwrap()));
+        assert_eq!(resolved.to_string(), "[fd00::10]:11310");
+    }
+
+    #[test]
+    fn display_address_falls_back_from_ipv6_to_ipv4_wildcard() {
+        let config = Config {
+            host: "::".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(
+            &config,
+            || Some("192.168.182.143".parse().unwrap()),
+            || None,
+        );
+        assert_eq!(resolved.to_string(), "192.168.182.143:11310");
+    }
+
+    #[test]
+    fn display_address_preserves_wildcard_when_no_local_address() {
+        let config = Config {
+            host: "0.0.0.0".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(&config, || None, || None);
+        assert_eq!(resolved.to_string(), "0.0.0.0:11310");
+
+        let config = Config {
+            host: "::".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(&config, || None, || None);
+        assert_eq!(resolved.to_string(), "[::]:11310");
+    }
+
+    #[test]
+    fn display_address_prefers_configured_loopback_over_resolved_address() {
+        // 127.0.0.1 is loopback but not unspecified, so it must pass
+        // through unchanged; resolution only applies to wildcards.
+        let config = Config {
+            host: "127.0.0.1".parse().unwrap(),
+            ..Config::default()
+        };
+        let resolved = display_address_from(
+            &config,
+            || Some("192.168.182.143".parse().unwrap()),
+            || None,
+        );
+        assert_eq!(resolved.to_string(), "127.0.0.1:11310");
     }
 
     #[test]

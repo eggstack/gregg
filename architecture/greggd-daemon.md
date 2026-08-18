@@ -153,7 +153,7 @@ configuration error and is neither written nor followed by process management.
 | `run` | Start foreground daemon |
 | `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
 | `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded TCP connect to the configured local bind (wildcards normalized to loopback); exits `0` on a listener, otherwise spawns `<current_exe> run` as a detached child (stdin/stdout/stderr closed, Unix-only new process group); no service manager, shell, or PID-file management |
-| `configprint` | Read configured bind address and print one canonical `host:port` line; no network, service, or write side effects |
+| `configprint` | Read configured bind address and print one canonical `host:port` line; bind wildcards (`0.0.0.0`, `::`) are resolved to the host's primary local IP so the output is a usable address, and the original wildcard is preserved if the local IP cannot be resolved; no network I/O beyond a local route lookup, no listener bind, no service, no config mutation |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
 | `version` | Print compile-time daemon version |

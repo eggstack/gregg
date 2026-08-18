@@ -92,7 +92,7 @@ greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
 greggd port 11311                  # change the listen port
 greggd croncheck                   # ensure the daemon is running; start it if not (cron watchdog)
 greggd stop                        # stop a running foreground greggd via the local control socket (Unix) or SCM (Windows)
-greggd configprint                 # print the configured bind address, e.g. 0.0.0.0:11310
+greggd configprint                 # print the configured bind address with wildcards resolved to the local IP, e.g. 192.168.182.143:11310
 greggd version                     # print the daemon version
 ```
 

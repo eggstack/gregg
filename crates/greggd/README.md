@@ -55,9 +55,15 @@ Default config path:
 
 Override the default with `--config PATH`.
 
-`configprint` is read-only and prints exactly the configured bind address as a
-canonical socket address, such as `0.0.0.0:11310` or `[::]:11310`. It does not
-probe, bind, start, stop, or modify the daemon.
+`configprint` is read-only and prints the configured bind address as a
+canonical socket address, with bind wildcards resolved to the host's primary
+local IP so the output is a usable address a remote client can dial. A
+specific configured host is preserved unchanged, and a wildcard is preserved
+verbatim if the local IP cannot be resolved. The output looks like
+`192.168.182.143:11310` or `[fd00::10]:11310`. The command does not probe
+the network, bind a listener, start, stop, or modify the daemon; wildcard
+resolution uses a transient UDP `connect()` that performs a local route
+lookup only and transmits no packets.
 
 ## Network
 

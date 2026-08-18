@@ -8,6 +8,7 @@ pub mod collector;
 pub mod config;
 #[cfg(unix)]
 pub mod control;
+pub mod net;
 pub mod run;
 pub mod sampler;
 pub mod server;
