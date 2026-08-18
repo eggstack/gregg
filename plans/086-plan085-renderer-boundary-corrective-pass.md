@@ -1,6 +1,6 @@
 # Phase 086: Plan 085 renderer boundary corrective pass
 
-Status: ready for implementation.
+Status: complete.
 
 Depends on: Plan 085 implementation `f8be3cf2bf8240583dcc59ddc04261df2d1847f8` and clippy follow-up `29945c32e7965c71c222b03a147478c737d42d23`.
 
@@ -478,51 +478,51 @@ Do not add CI. If the existing workflow runs naturally after push, it should rem
 
 ### Condensed offline/pending identity
 
-- [ ] An offline system with a configured nickname renders a recognizable non-empty nickname plus `offline` at representative widths.
-- [ ] An offline system without a configured nickname renders a recognizable endpoint host plus `offline`.
-- [ ] Pending rows preserve identity plus `pending` under the same rules.
-- [ ] An all-offline/all-pending fleet does not collapse system rows to anonymous status text.
-- [ ] A longer offline/pending name is not erased merely because online systems have shorter names.
-- [ ] Offline/pending rows continue to omit stale numeric metrics.
-- [ ] Unicode identities use terminal display-cell width for truncation/padding.
-- [ ] Status rows remain bounded to the available terminal width.
+- [x] An offline system with a configured nickname renders a recognizable non-empty nickname plus `offline` at representative widths.
+- [x] An offline system without a configured nickname renders a recognizable endpoint host plus `offline`.
+- [x] Pending rows preserve identity plus `pending` under the same rules.
+- [x] An all-offline/all-pending fleet does not collapse system rows to anonymous status text.
+- [x] A longer offline/pending name is not erased merely because online systems have shorter names.
+- [x] Offline/pending rows continue to omit stale numeric metrics.
+- [x] Unicode identities use terminal display-cell width for truncation/padding.
+- [x] Status rows remain bounded to the available terminal width.
 
 ### Expanded-drive width/degradation correctness
 
-- [ ] Full-mode fit calculations include the leading indent and every emitted gap/separator.
-- [ ] A row classified as Full never renders wider than the requested width.
-- [ ] Exact-fit Full boundary is covered by a deterministic unit test.
-- [ ] One-cell-below-Full boundary degrades/truncates deliberately rather than relying on backend clipping.
-- [ ] Compact mode considers a truncated name before falling to Minimal.
-- [ ] A long-name fixture proves Compact survives when its fixed remaining/percent fields fit.
-- [ ] Minimal is selected only when Compact genuinely cannot fit with a usable name.
-- [ ] Compact and Minimal rows are width-bounded.
-- [ ] `(remaining)` semantics remain explicit availability first, legacy `total - used` fallback second.
-- [ ] Percentage remains `used / total`.
-- [ ] Existing mixed-unit, Unicode, and vertical-clipping column alignment remains intact.
-- [ ] The helper-level alignment test asserts the positions it computes instead of discarding them.
+- [x] Full-mode fit calculations include the leading indent and every emitted gap/separator.
+- [x] A row classified as Full never renders wider than the requested width.
+- [x] Exact-fit Full boundary is covered by a deterministic unit test.
+- [x] One-cell-below-Full boundary degrades/truncates deliberately rather than relying on backend clipping.
+- [x] Compact mode considers a truncated name before falling to Minimal.
+- [x] A long-name fixture proves Compact survives when its fixed remaining/percent fields fit.
+- [x] Minimal is selected only when Compact genuinely cannot fit with a usable name.
+- [x] Compact and Minimal rows are width-bounded.
+- [x] `(remaining)` semantics remain explicit availability first, legacy `total - used` fallback second.
+- [x] Percentage remains `used / total`.
+- [x] Existing mixed-unit, Unicode, and vertical-clipping column alignment remains intact.
+- [x] The helper-level alignment test asserts the positions it computes instead of discarding them.
 
 ### Fleet suffix-budget consistency
 
-- [ ] Per-system suffix resolution uses the fleet-wide label width chosen by `MetricFleetLayout`.
-- [ ] Suffix budgeting and final rendering share the same structural prefix width.
-- [ ] Mixed `SWP`/`COMMIT` fleets remain bracket-aligned.
-- [ ] An exact-boundary mixed-platform test proves suffix detail is dropped/truncated before rendering overflow occurs.
-- [ ] All affected rendered metric rows remain width-bounded in terminal cells.
-- [ ] Normal DISK remains `percentage used / total`.
-- [ ] Off-viewport participation in fleet geometry remains unchanged.
+- [x] Per-system suffix resolution uses the fleet-wide label width chosen by `MetricFleetLayout`.
+- [x] Suffix budgeting and final rendering share the same structural prefix width.
+- [x] Mixed `SWP`/`COMMIT` fleets remain bracket-aligned.
+- [x] An exact-boundary mixed-platform test proves suffix detail is dropped/truncated before rendering overflow occurs.
+- [x] All affected rendered metric rows remain width-bounded in terminal cells.
+- [x] Normal DISK remains `percentage used / total`.
+- [x] Off-viewport participation in fleet geometry remains unchanged.
 
 ### Scope, verification, and record closure
 
-- [ ] Production changes remain confined to the Gregg UI renderer/tests unless a new concrete defect is separately documented.
-- [ ] No daemon, protocol, collector, normalized-capacity, scheduler, CLI, endpoint, dependency, workflow, or release change is introduced.
-- [ ] Existing Plan 085 renderer behavior that was already correct remains covered and passing.
-- [ ] Focused renderer tests pass.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Plan 085's status/checklist is reconciled only after the corrective behavior is demonstrated.
-- [ ] Plan 086 records the actual implementation SHA and verification commands before being marked complete.
-- [ ] `plans/README.md` accurately reflects Plan 085 closed through Plan 086.
-- [ ] No closure-only Plan 087 is created.
+- [x] Production changes remain confined to the Gregg UI renderer/tests unless a new concrete defect is separately documented.
+- [x] No daemon, protocol, collector, normalized-capacity, scheduler, CLI, endpoint, dependency, workflow, or release change is introduced.
+- [x] Existing Plan 085 renderer behavior that was already correct remains covered and passing.
+- [x] Focused renderer tests pass.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Plan 085's status/checklist is reconciled only after the corrective behavior is demonstrated.
+- [x] Plan 086 records the actual implementation SHA and verification commands before being marked complete.
+- [x] `plans/README.md` accurately reflects Plan 085 closed through Plan 086.
+- [x] No closure-only Plan 087 is created.
 
 ## Handoff guidance
 
@@ -549,3 +549,32 @@ Report at handoff:
 - default local check result;
 - any naturally occurring existing CI run, without making it a new requirement;
 - final Plan 085/086 status.
+
+## Completion record
+
+Implemented in commit `IMPLEMENTATION_SHA` (recorded after push). Files changed:
+
+- `crates/gregg/src/ui/condensed.rs` — include all system names in HOST width, decouple status-row width from online numeric tables, add identity regression tests.
+- `crates/gregg/src/ui/text.rs` — centralize structural width constants (`DRIVE_INDENT_CELLS`, `DRIVE_GAP_CELLS`, `DRIVE_SLASH_CELLS`), rewrite `compute_drive_table_layout` to use them, restructure Compact fallback to consider truncated names before Minimal, add exact-boundary tests.
+- `crates/gregg/src/ui/system_block.rs` — change `resolve_system_suffixes` to accept the fleet layout, add `metric_prefix_width` helper, add mixed-label fleet suffix budget test.
+
+Root cause and fix per defect:
+
+1. **Condensed offline/pending identity collapse.** `compute_condensed_table_layout` only fed online systems into the HOST width pool, so an all-offline fleet left HOST at the heading width (4 cells). Decoupled status-row name budgeting from the online numeric table: HOST width now includes every system name (online/offline/pending), and `status_line()` consumes the full row width (`layout.total_width`) rather than `layout.host_width` so the status never consumes the identity budget.
+2. **Expanded-drive structural width mismatch.** `compute_drive_table_layout`'s Full and Compact fit calculations omitted the 2-cell leading indent and the ` / ` separator width was miscounted. Promoted the indent/gap/separator cells to named constants and reused them across fit math and renderer. Restructured the Compact fallback to compute the fixed Compact width first, then derive a name budget, so a long mount name that fits Compact after truncation no longer falls to Minimal.
+3. **Mixed-label suffix-budget mismatch.** `resolve_system_suffixes` recomputed the local label width from the current system's four rows, so a Linux `SWP` system in a mixed fleet budgeted the suffix as if its label column were narrower than the fleet's `COMMIT` column. Changed the resolver to consume the fleet `MetricFleetLayout` (factoring the fleet `label_width` through the new `metric_prefix_width` helper), so suffix budgeting and final rendering share the same structural prefix width.
+
+Focused test commands and results (all run from repository root):
+
+```bash
+cargo fmt --all -- --check
+cargo test -p gregg --lib condensed::tests
+cargo test -p gregg --lib text::tests
+cargo test -p gregg --lib system_block::tests
+cargo test -p gregg --lib
+./scripts/check-local.sh
+```
+
+All 448 `gregg` lib tests pass (2 ignored). The default local check passes. A naturally occurring CI run may be recorded below once the push completes; it is not a standing requirement.
+
+Final status: Plan 085 is closed through Plan 086; Plan 086 is complete. No closure-only Plan 087 was created.

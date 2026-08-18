@@ -221,7 +221,10 @@ by exactly four spaces. The disk aggregate suffix is rendered as
 percentage calculation; explicit caller-available capacity remains
 preserved by the normalized model and is surfaced only through the
 expanded drive detail rows. Unavailable metrics render `—` rather than
-fabricating a `0.0%`.
+fabricating a `0.0%`. Plan 086 threads the fleet `MetricFleetLayout`
+through `resolve_system_suffixes` (via the shared `metric_prefix_width`
+helper) so mixed `SWP`/`COMMIT` fleets budget and render suffixes
+against the same structural prefix width.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`): When the
 configured client name is set the row reads `name@host:port offline`;
@@ -238,7 +241,11 @@ explicit `available_bytes` when present, otherwise the compatibility
 fallback `total_bytes - used_bytes`. Percent always uses
 `used / total`. Narrow terminals degrade through Compact
 (`name  (remaining) percent`) and Minimal (`name  percent`) without
-overflow.
+overflow. Plan 086 centralizes the indent/gap/separator cells as named
+constants (`DRIVE_INDENT_CELLS`, `DRIVE_GAP_CELLS`, `DRIVE_SLASH_CELLS`)
+shared between the fit calculation and the renderer, and rewrites the
+Compact fallback so Compact considers a truncated name before falling to
+Minimal.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate
 columns based on terminal width (Wide ≥ 64, Medium 48-63, Narrow 30-47,
@@ -248,7 +255,11 @@ Minimal < 30). Header and online rows use one shared
 always occupy the same terminal cell. HOST is the flexible/truncatable
 column; numeric columns remain intact whenever the natural fleet widths
 fit, and the layout falls back to the next narrower tier before any
-numeric column is clipped.
+numeric column is clipped. Plan 086 widens the HOST budget to include
+every visible system name (online/offline/pending) so offline/pending
+rows never collapse to anonymous status text, and decouples status-row
+width budgeting from the online numeric table so the status never
+erases the device identity.
 
 ## Configuration
 

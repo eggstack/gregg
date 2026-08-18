@@ -36,6 +36,15 @@ use super::text;
 /// Indent applied to every metric row in normal view.
 const METRIC_ROW_INDENT: &str = "    ";
 
+/// Display-cell width of the prefix portion of a metric row:
+/// `indent + label + " ["`. Shared by the fleet layout and the
+/// per-system suffix resolver so they cannot disagree about the
+/// fixed-width structural prefix.
+fn metric_prefix_width(label_width: u16) -> u16 {
+    let indent_w = u16::try_from(METRIC_ROW_INDENT.len()).unwrap_or(u16::MAX);
+    indent_w.saturating_add(label_width).saturating_add(2) // " ["
+}
+
 /// Render a normal-view online system block using the precomputed
 /// fleet-wide metric geometry.
 #[allow(clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]
@@ -71,7 +80,7 @@ pub(crate) fn render_online(
     // geometry so the opening/closing brackets line up with every other
     // online system in the same render.
     let rows = build_metric_rows(snap);
-    let suffixes = resolve_system_suffixes(&rows, area.width, fleet_layout.bar_width);
+    let suffixes = resolve_system_suffixes(&rows, area.width, fleet_layout);
 
     let row_areas = [
         Rect {
@@ -297,8 +306,7 @@ where
     // Fixed structural prefix/suffix widths:
     //   prefix:  METRIC_ROW_INDENT + label + ' ['
     //   suffix:  '] ' + suffix_text
-    let indent_w = u16::try_from(METRIC_ROW_INDENT.len()).unwrap_or(u16::MAX);
-    let prefix_w = indent_w.saturating_add(label_width).saturating_add(2); // " ["
+    let prefix_w = metric_prefix_width(label_width);
     let after_bracket_w: u16 = 2; // "] "
 
     // Total budget available for "suffix bar + suffix text" before the
@@ -329,18 +337,20 @@ where
 }
 
 /// Resolve the suffix strings for one system against the fleet's
-/// shared `bar_width`. Each suffix budget equals
-/// `width - prefix - after_bracket - fleet_bar_width`, so the resolved
-/// suffix strings line up at the same terminal column across every
-/// participating system.
-fn resolve_system_suffixes(rows: &[MetricRow; 4], width: u16, fleet_bar_width: u16) -> [String; 4] {
-    let label_width = rows.iter().map(MetricRow::label_width).max().unwrap_or(0);
-    let indent_w = u16::try_from(METRIC_ROW_INDENT.len()).unwrap_or(u16::MAX);
-    let prefix_w = indent_w.saturating_add(label_width).saturating_add(2); // " ["
+/// shared geometry. The available suffix budget is computed from the
+/// fleet-wide `label_width`, so mixed Linux/Windows fleets (where
+/// `COMMIT` widens the label column) do not silently let the Linux
+/// row retain detail that overflows the rendered fleet geometry.
+fn resolve_system_suffixes(
+    rows: &[MetricRow; 4],
+    width: u16,
+    fleet_layout: &MetricFleetLayout,
+) -> [String; 4] {
+    let prefix_w = metric_prefix_width(fleet_layout.label_width);
     let after_bracket_w: u16 = 2; // "] "
     let suffix_budget = width
         .saturating_sub(prefix_w + after_bracket_w)
-        .saturating_sub(fleet_bar_width);
+        .saturating_sub(fleet_layout.bar_width);
     resolve_metric_suffixes(rows, usize::from(suffix_budget))
 }
 
@@ -552,7 +562,7 @@ mod tests {
             row("DISK", 60.4, Some("283.8 GiB / 167.1 GiB")),
         ];
         let layout = compute_fleet_metric_layout([&rows], 80);
-        let suffixes = resolve_system_suffixes(&rows, 80, layout.bar_width);
+        let suffixes = resolve_system_suffixes(&rows, 80, &layout);
         // The closing `]` must fall in the same terminal column for
         // every row because `bar_width` is shared.
         for (idx, (r, suffix)) in rows.iter().zip(suffixes.iter()).enumerate() {
@@ -616,7 +626,7 @@ mod tests {
             row("DISK", 60.4, Some("283.8 GiB / 167.1 GiB")),
         ];
         let layout = compute_fleet_metric_layout([&rows], 30);
-        let suffixes = resolve_system_suffixes(&rows, 30, layout.bar_width);
+        let suffixes = resolve_system_suffixes(&rows, 30, &layout);
         let max = suffixes_max_width(&suffixes);
         for suffix in &suffixes {
             assert!(
@@ -666,7 +676,7 @@ mod tests {
             },
         ];
         let layout = compute_fleet_metric_layout([&rows], 80);
-        let suffixes = resolve_system_suffixes(&rows, 80, layout.bar_width);
+        let suffixes = resolve_system_suffixes(&rows, 80, &layout);
         let disk = &suffixes[3];
         assert!(
             disk.contains('—'),
@@ -724,8 +734,8 @@ mod tests {
         ];
         let layout = compute_fleet_metric_layout([&small, &large], 120);
 
-        let suffixes_small = resolve_system_suffixes(&small, 120, layout.bar_width);
-        let suffixes_large = resolve_system_suffixes(&large, 120, layout.bar_width);
+        let suffixes_small = resolve_system_suffixes(&small, 120, &layout);
+        let suffixes_large = resolve_system_suffixes(&large, 120, &layout);
 
         let line_small = build_row_line(&small[0], &layout, &suffixes_small[0]);
         let line_large = build_row_line(&large[0], &layout, &suffixes_large[0]);
@@ -747,6 +757,68 @@ mod tests {
             .map(|s| UnicodeWidthStr::width(s.as_str()))
             .max()
             .unwrap_or(0)
+    }
+
+    #[test]
+    fn mixed_label_fleet_suffix_budget_uses_fleet_label_width() {
+        // Plan 086: a Linux system with a long detail must have its
+        // suffix budget computed from the fleet-wide `COMMIT` label
+        // width, not the local `SWP` label width. Otherwise the
+        // rendered line will exceed the terminal width and be clipped
+        // by the backend.
+        let linux = [
+            row("CPU", 25.0, Some("128 cores")),
+            row(
+                "MEM",
+                80.0,
+                // Detail chosen so the default suffix
+                // ("80.0% " + detail) exceeds the total fleet
+                // suffix budget = 80 - 14 = 66 cells but fits in the
+                // OLD local budget of (fleet_max + 3). The OLD code
+                // would truncate the suffix to (fleet_max + 3) cells,
+                // which renders the line 1 cell wider than the
+                // terminal width.
+                Some("12000.0 GiB / 15000.0 GiB / 8000.0 GiB / 500.0 GiB / 300.0 GiB"),
+            ),
+            row("SWP", 0.0, Some("0 B / 4.0 GiB")),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        let windows = [
+            row("CPU", 25.0, Some("128 cores")),
+            row("MEM", 80.0, Some("120.0 GiB / 150.0 GiB")),
+            row("COMMIT", 50.0, Some("4.0 GiB / 8.0 GiB")),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        let width = 80u16;
+        let layout = compute_fleet_metric_layout([&linux, &windows], width);
+        assert_eq!(
+            layout.label_width,
+            u16::try_from("COMMIT".len()).unwrap(),
+            "fleet label column must use the wider COMMIT label"
+        );
+        let suffixes = resolve_system_suffixes(&linux, width, &layout);
+        let fleet_suffix_budget = usize::from(
+            width
+                .saturating_sub(metric_prefix_width(layout.label_width))
+                .saturating_sub(2) // "] "
+                .saturating_sub(layout.bar_width),
+        );
+        for suffix in &suffixes {
+            let suffix_width = UnicodeWidthStr::width(suffix.as_str());
+            assert!(
+                suffix_width <= fleet_suffix_budget,
+                "suffix '{suffix}' ({} cells) exceeds fleet suffix budget {fleet_suffix_budget}",
+                suffix_width
+            );
+        }
+        // The rendered line must remain width-bounded in terminal cells.
+        for (row, suffix) in linux.iter().zip(suffixes.iter()) {
+            let line = build_row_line(row, &layout, suffix);
+            assert!(
+                UnicodeWidthStr::width(line.as_str()) <= usize::from(width),
+                "rendered line exceeds terminal width: {line:?}"
+            );
+        }
     }
 
     #[test]

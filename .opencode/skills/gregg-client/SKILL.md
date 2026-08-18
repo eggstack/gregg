@@ -164,7 +164,10 @@ The DISK aggregate suffix is rendered as `<used bytes> / <total bytes>`
 so the slash denominator matches the percentage; explicit
 caller-available capacity remains part of the normalized model and is
 surfaced through the expanded drive detail rows. Unavailable rows
-render `—` rather than fabricating `0.0%`.
+render `—` rather than fabricating `0.0%`. Plan 086 threads the fleet
+`MetricFleetLayout` through `resolve_system_suffixes` (via the shared
+`metric_prefix_width` helper) so mixed `SWP`/`COMMIT` fleets budget
+and render suffixes against the same structural prefix width.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`):
 - configured client name set:  `name@host:port offline`
@@ -181,7 +184,11 @@ compatibility fallback `total_bytes - used_bytes`. The percentage is
 always `used / total`. Layouts are computed before the visible subset
 is taken so vertical clipping never shifts horizontal columns. Narrow
 terminals degrade through Compact (`name  (remaining) percent`) and
-Minimal (`name  percent`).
+Minimal (`name  percent`). Plan 086 centralizes the
+`DRIVE_INDENT_CELLS` / `DRIVE_GAP_CELLS` / `DRIVE_SLASH_CELLS`
+constants so the fit calculation and renderer share the same
+structural cells, and rewrites the Compact fallback so Compact
+considers a truncated name before falling to Minimal.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with
 tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47,
@@ -191,7 +198,10 @@ Minimal < 30). Header and online rows share one
 cells line up. HOST is the flexible/truncatable column; numeric
 columns stay intact whenever the natural fleet widths fit, and the
 layout falls back to the next narrower tier before any numeric column
-is clipped.
+is clipped. Plan 086 widens the HOST budget to include every visible
+system name (online/offline/pending) and decouples status-row width
+budgeting from the online numeric table so offline/pending rows never
+collapse to anonymous status text.
 
 ## Configuration
 

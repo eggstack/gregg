@@ -9,6 +9,14 @@ const MIB: u64 = KIB * 1024;
 const GIB: u64 = MIB * 1024;
 const TIB: u64 = GIB * 1024;
 
+// Plan 086: structural width constants shared by the drive-table fit
+// calculation and renderer. Every emitted cell must be accounted for,
+// so the fit math and the rendered text cannot disagree about the
+// fixed-width structural cells.
+const DRIVE_INDENT_CELLS: usize = 2;
+const DRIVE_GAP_CELLS: usize = 2;
+const DRIVE_SLASH_CELLS: usize = 3; // " / "
+
 /// Format a byte count as a human-readable string using binary units.
 #[allow(clippy::cast_precision_loss)]
 pub fn format_bytes(bytes: u64) -> String {
@@ -187,11 +195,15 @@ fn drive_row_widths(row: &DriveDetailRow) -> (usize, usize, usize, usize, usize)
 /// Compute the drive-detail table layout from every eligible drive's
 /// pre-formatted fields and the available width.
 ///
-/// Layout modes are tried in Plan 085's documented order:
+/// Layout modes are tried in Plan 085/086's documented order:
 /// 1. full `name  used / total  (remaining) percent`;
 /// 2. shrink the name column only while keeping numeric columns intact;
 /// 3. compact `name  (remaining) percent`;
 /// 4. minimal `name  percent`.
+///
+/// Plan 086: every fit calculation accounts for the indent, gaps, and
+/// the ` / ` separator, and the Compact fallback considers a
+/// truncated name before falling to Minimal.
 pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) -> DriveTableLayout {
     let available = usize::from(width);
 
@@ -210,19 +222,20 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         max_percent = max_percent.max(percent_w);
     }
 
-    // Full layout width = name + used + " / " + total + "  " + remaining + "  " + percent.
-    let full_width = max_name
-        .saturating_add(2) // "  "
+    // Full layout width = indent + name + gap + used + " / " + total + gap + remaining + gap + percent.
+    let full_fixed = DRIVE_INDENT_CELLS
+        .saturating_add(DRIVE_GAP_CELLS)
         .saturating_add(max_used)
-        .saturating_add(2) // " /"
-        .saturating_add(1) // " "
+        .saturating_add(DRIVE_SLASH_CELLS)
         .saturating_add(max_total)
-        .saturating_add(2) // "  "
+        .saturating_add(DRIVE_GAP_CELLS)
         .saturating_add(max_remaining)
-        .saturating_add(2) // "  "
+        .saturating_add(DRIVE_GAP_CELLS)
         .saturating_add(max_percent);
+    let full_name_budget = available.saturating_sub(full_fixed);
 
-    if available >= full_width {
+    if full_name_budget >= max_name {
+        // Full natural fits.
         return DriveTableLayout {
             name_width: max_name,
             used_width: max_used,
@@ -233,27 +246,10 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         };
     }
 
-    // Try shrinking the name column only, keeping every numeric column
-    // intact. We must leave two spaces of indent plus the "  " / "/ "
-    // separators consumed by the row.
-    let fixed_numeric = max_used
-        .saturating_add(2)
-        .saturating_add(1)
-        .saturating_add(max_total)
-        .saturating_add(2)
-        .saturating_add(max_remaining)
-        .saturating_add(2)
-        .saturating_add(max_percent);
-    let available_for_name_and_indent = available.saturating_sub(fixed_numeric);
-    // Indent is 2 cells ("  "), separator between name and values is
-    // another 2 cells. Subtract both from the name budget.
-    let name_budget = available_for_name_and_indent
-        .saturating_sub(2) // indent
-        .saturating_sub(2); // "  " before used
-    if name_budget >= 1 {
-        let effective_name_width = max_name.min(name_budget);
+    if full_name_budget >= 1 {
+        // Full truncated: keep all numeric columns, truncate the name.
         return DriveTableLayout {
-            name_width: effective_name_width,
+            name_width: full_name_budget,
             used_width: max_used,
             total_width: max_total,
             remaining_width: max_remaining,
@@ -262,22 +258,19 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         };
     }
 
-    // Compact fallback: name + remaining + percent.
-    let compact_width = max_name
-        .saturating_add(2)
+    // Compact fallback: indent + name + gap + remaining + gap + percent.
+    let compact_fixed = DRIVE_INDENT_CELLS
+        .saturating_add(DRIVE_GAP_CELLS)
         .saturating_add(max_remaining)
-        .saturating_add(2)
+        .saturating_add(DRIVE_GAP_CELLS)
         .saturating_add(max_percent);
-    if available >= compact_width {
-        let compact_name_budget = available
-            .saturating_sub(max_remaining)
-            .saturating_sub(max_percent)
-            .saturating_sub(2) // indent
-            .saturating_sub(2) // "  " between name and remaining
-            .saturating_sub(2); // "  " before percent
-        let effective_name_width = max_name.min(compact_name_budget);
+    let compact_name_budget = available.saturating_sub(compact_fixed);
+
+    if compact_name_budget >= 1 {
+        // Compact with a truncated name keeps `(remaining)` and percent.
+        let name_width = max_name.min(compact_name_budget);
         return DriveTableLayout {
-            name_width: effective_name_width,
+            name_width,
             used_width: 0,
             total_width: 0,
             remaining_width: max_remaining,
@@ -286,14 +279,14 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         };
     }
 
-    // Minimal fallback: name + percent.
-    let minimal_name_budget = available
-        .saturating_sub(max_percent)
-        .saturating_sub(2) // indent
-        .saturating_sub(2); // "  " before percent
-    let effective_name_width = max_name.min(minimal_name_budget);
+    // Minimal fallback: indent + name + gap + percent.
+    let minimal_fixed = DRIVE_INDENT_CELLS
+        .saturating_add(DRIVE_GAP_CELLS)
+        .saturating_add(max_percent);
+    let minimal_name_budget = available.saturating_sub(minimal_fixed);
+    let name_width = max_name.min(minimal_name_budget);
     DriveTableLayout {
-        name_width: effective_name_width,
+        name_width,
         used_width: 0,
         total_width: 0,
         remaining_width: 0,
@@ -471,5 +464,231 @@ mod tests {
         assert_ne!(layout.mode(), DriveDetailMode::Full);
         let line = render_drive_detail_row(&rows[0], &layout);
         assert!(line.contains("80.0%"), "percentage still shown: {line:?}");
+    }
+
+    #[test]
+    fn full_mode_natural_width_matches_rendered_width() {
+        // Plan 086: the fit calculation must include every emitted
+        // structural cell (indent, gaps, separator) or the rendered
+        // row will overflow the requested display width.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        let layout = compute_drive_table_layout(&rows, 80);
+        assert_eq!(layout.mode(), DriveDetailMode::Full);
+        let line = render_drive_detail_row(&rows[0], &layout);
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 80,
+            "rendered line overflows requested width: {line:?} ({} cells)",
+            UnicodeWidthStr::width(line.as_str())
+        );
+    }
+
+    #[test]
+    fn full_mode_exact_fit_boundary_classifies_correctly() {
+        // Plan 086: at the exact natural Full width the layout must
+        // classify Full, and one cell narrower must not classify Full
+        // with an overflowing row.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        let layout_at_80 = compute_drive_table_layout(&rows, 80);
+        assert_eq!(layout_at_80.mode(), DriveDetailMode::Full);
+        let line = render_drive_detail_row(&rows[0], &layout_at_80);
+        let exact = UnicodeWidthStr::width(line.as_str());
+
+        let layout_at_exact = compute_drive_table_layout(&rows, u16::try_from(exact).unwrap_or(80));
+        assert_eq!(layout_at_exact.mode(), DriveDetailMode::Full);
+        let line_at_exact = render_drive_detail_row(&rows[0], &layout_at_exact);
+        assert!(
+            UnicodeWidthStr::width(line_at_exact.as_str()) <= exact,
+            "line at exact width overflows: {line_at_exact:?}"
+        );
+
+        if exact > 4 {
+            let layout_below =
+                compute_drive_table_layout(&rows, u16::try_from(exact - 1).unwrap_or(80));
+            match layout_below.mode() {
+                DriveDetailMode::Full => {
+                    let line_below = render_drive_detail_row(&rows[0], &layout_below);
+                    assert!(
+                        UnicodeWidthStr::width(line_below.as_str()) <= exact - 1,
+                        "Full at one cell below exact width overflows: {line_below:?}"
+                    );
+                }
+                DriveDetailMode::Compact | DriveDetailMode::Minimal => {}
+            }
+        }
+    }
+
+    #[test]
+    fn compact_mode_considers_truncated_name_before_minimal() {
+        // Plan 086: a long mount name must not skip Compact just
+        // because the natural name would overflow. The remaining and
+        // percent fields must remain visible.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/some/really/long/mount/name",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        // Total structural width for Compact with the fixed fields is
+        // 2 + 2 + 10 + 2 + 5 = 21 + a small name budget. Any width that
+        // exceeds the Full truncation budget but allows Compact must
+        // pick Compact, not Minimal.
+        let layout = compute_drive_table_layout(&rows, 28);
+        assert_eq!(
+            layout.mode(),
+            DriveDetailMode::Compact,
+            "Compact should win when fixed fields fit with a truncated name: layout={layout:?}"
+        );
+        let line = render_drive_detail_row(&rows[0], &layout);
+        assert!(line.contains("(10.0 GiB)"), "remaining present: {line:?}");
+        assert!(line.contains("80.0%"), "percent present: {line:?}");
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 28,
+            "line exceeds width: {line:?} ({} cells)",
+            UnicodeWidthStr::width(line.as_str())
+        );
+    }
+
+    #[test]
+    fn minimal_mode_is_only_used_when_compact_cannot_fit() {
+        // Plan 086: Minimal is only the right answer when the fixed
+        // Compact fields plus a usable name still cannot fit.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/short",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        let layout = compute_drive_table_layout(&rows, 14);
+        assert_eq!(layout.mode(), DriveDetailMode::Minimal);
+        let line = render_drive_detail_row(&rows[0], &layout);
+        assert!(line.contains("80.0%"), "percent still shown: {line:?}");
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 14,
+            "line exceeds width: {line:?}"
+        );
+    }
+
+    #[test]
+    fn compact_mode_renders_within_requested_width() {
+        // Plan 086: the fit calculation must include the indent, so a
+        // Compact row at the requested width must not exceed it.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/some/long/mount/path",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        for width in [22u16, 25, 28, 30] {
+            let layout = compute_drive_table_layout(&rows, width);
+            let line = render_drive_detail_row(&rows[0], &layout);
+            assert!(
+                UnicodeWidthStr::width(line.as_str()) <= usize::from(width),
+                "line exceeds width at {width}: {line:?} ({} cells)",
+                UnicodeWidthStr::width(line.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn unicode_drive_name_uses_display_cells_for_fit_decisions() {
+        // Plan 086: a wide-character name must shrink the name
+        // according to terminal-cell width, not UTF-8 byte length.
+        let rows = vec![build_drive_detail_row(&drive(
+            "/マウント/ポイント",
+            80 * GIB,
+            100 * GIB,
+            Some(10 * GIB),
+        ))];
+        for width in [60u16, 80] {
+            let layout = compute_drive_table_layout(&rows, width);
+            let line = render_drive_detail_row(&rows[0], &layout);
+            assert!(
+                UnicodeWidthStr::width(line.as_str()) <= usize::from(width),
+                "unicode line exceeds width at {width}: {line:?} ({} cells)",
+                UnicodeWidthStr::width(line.as_str())
+            );
+        }
+    }
+
+    #[test]
+    fn full_mode_renders_complete_columns_uses_aligned_positions() {
+        // Plan 086: the existing test must actually assert the
+        // computed alignment positions agree across rows, not merely
+        // that the cells are present.
+        let rows = vec![
+            build_drive_detail_row(&drive("/", 238 * GIB, 952 * GIB, None)),
+            build_drive_detail_row(&drive("/mnt/archive", 142 * GIB, 477 * GIB, None)),
+        ];
+        let layout = compute_drive_table_layout(&rows, 80);
+        assert_eq!(layout.mode(), DriveDetailMode::Full);
+
+        let rendered: Vec<String> = rows
+            .iter()
+            .map(|r| render_drive_detail_row(r, &layout))
+            .collect();
+
+        // Locate the '/' separator at the same cell on both rows.
+        let slash_0 = locate_slash_cell(&rendered[0]).expect("slash on row 0");
+        let slash_1 = locate_slash_cell(&rendered[1]).expect("slash on row 1");
+        assert_eq!(slash_0, slash_1, "slash separator must align: {rendered:?}");
+
+        // Locate the '(' that opens the remaining space at the same cell.
+        let paren_0 = locate_remaining_open_cell(&rendered[0]).expect("paren on row 0");
+        let paren_1 = locate_remaining_open_cell(&rendered[1]).expect("paren on row 1");
+        assert_eq!(
+            paren_0, paren_1,
+            "remaining open paren must align: {rendered:?}"
+        );
+
+        // Locate the percent column at the same cell.
+        let pct_0 = UnicodeWidthStr::width(rendered[0].as_str())
+            - rendered[0]
+                .trim_end()
+                .chars()
+                .rev()
+                .take_while(|c| *c != '%')
+                .count()
+            - 1;
+        let pct_1 = UnicodeWidthStr::width(rendered[1].as_str())
+            - rendered[1]
+                .trim_end()
+                .chars()
+                .rev()
+                .take_while(|c| *c != '%')
+                .count()
+            - 1;
+        assert_eq!(pct_0, pct_1, "percent column must align: {rendered:?}");
+    }
+
+    fn locate_slash_cell(line: &str) -> Option<usize> {
+        let mut cells = 0usize;
+        for ch in line.chars() {
+            if ch == '/' {
+                return Some(cells);
+            }
+            cells += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        None
+    }
+
+    fn locate_remaining_open_cell(line: &str) -> Option<usize> {
+        let mut cells = 0usize;
+        for ch in line.chars() {
+            if ch == '(' {
+                return Some(cells);
+            }
+            cells += UnicodeWidthChar::width(ch).unwrap_or(0);
+        }
+        None
     }
 }

@@ -223,10 +223,25 @@ pub(crate) fn compute_condensed_table_layout(
         .filter(|s| s.reachability == Reachability::Online)
         .map(preformat_online)
         .collect();
+    // Plan 086: the HOST width budget must include every visible
+    // system name (online/offline/pending) so status rows do not get
+    // their device identity erased when the online fleet happens to
+    // have shorter nicknames.
+    let host_max_value = systems
+        .iter()
+        .map(|s| {
+            s.configured_name
+                .as_deref()
+                .unwrap_or(&s.endpoint.host)
+                .to_string()
+        })
+        .map(|name| cell_width(&name))
+        .max()
+        .unwrap_or(0);
 
     let mut current_tier = tier(width);
     loop {
-        let widths = [
+        let mut widths = [
             Column::Host,
             Column::Cpu,
             Column::Mem,
@@ -235,6 +250,7 @@ pub(crate) fn compute_condensed_table_layout(
             Column::Iowait,
         ]
         .map(|c| column_max(&online_values, c));
+        widths[0] = widths[0].max(host_max_value);
         let total = total_layout_width(current_tier, &widths);
 
         if total <= available {
@@ -423,10 +439,16 @@ fn status_line(system: &SystemState, layout: &CondensedTableLayout, status: &str
         .configured_name
         .as_deref()
         .unwrap_or(&system.endpoint.host);
-    let name_width = layout.host_width;
-    let truncated =
-        text::truncate_width(name, name_width.saturating_sub(status.chars().count() + 2));
-    format!("{}  {status}", pad_right(&truncated, name_width))
+    // Plan 086: status rows use the full rendered row width rather than
+    // the online HOST numeric-table cell. The online table header
+    // already drives the HOST column width, so this branch must not
+    // erase device identity when the online fleet has shorter names.
+    let status_suffix = format!("  {status}");
+    let status_width = cell_width(&status_suffix);
+    let row_width = layout.total_width;
+    let name_budget = row_width.saturating_sub(status_width);
+    let truncated = text::truncate_width(name, name_budget);
+    format!("{truncated}{status_suffix}")
 }
 
 #[cfg(test)]
@@ -435,6 +457,7 @@ mod tests {
     use crate::endpoint::Endpoint;
     use crate::normalized::NormalizedSnapshot;
     use std::time::Instant;
+    use unicode_width::UnicodeWidthStr;
 
     fn system(name: &str) -> SystemState {
         let snapshot = NormalizedSnapshot::from_v1(
@@ -543,5 +566,120 @@ mod tests {
         let line = status_line(&sys, &layout, "offline");
         assert!(line.contains("offline"), "{line:?}");
         assert!(!line.contains('%'), "{line:?}");
+    }
+
+    fn offline_system(name: Option<&str>, host: &str) -> SystemState {
+        let mut sys = system(name.unwrap_or("online-only"));
+        sys.configured_name = name.map(str::to_string);
+        sys.endpoint = Endpoint::new(host.into(), 11310, None);
+        sys.reachability = Reachability::Offline;
+        sys.latest = None;
+        sys
+    }
+
+    #[test]
+    fn offline_system_with_nickname_preserves_identity() {
+        let sys = offline_system(Some("deadpool"), "192.168.182.146");
+        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let line = status_line(&sys, &layout, "offline");
+        assert!(
+            line.contains("deadpool"),
+            "nickname must remain visible: {line:?}"
+        );
+        assert!(line.contains("offline"), "{line:?}");
+        assert!(!line.contains('%'), "{line:?}");
+        assert!(
+            UnicodeWidthStr::width(line.as_str()) <= 80,
+            "line must fit width: {line:?}"
+        );
+    }
+
+    #[test]
+    fn offline_system_without_nickname_uses_endpoint_host() {
+        let sys = offline_system(None, "192.168.182.146");
+        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let line = status_line(&sys, &layout, "offline");
+        assert!(
+            line.contains("192.168.182.146"),
+            "endpoint host must remain visible: {line:?}"
+        );
+        assert!(line.contains("offline"), "{line:?}");
+        assert!(!line.contains('%'), "{line:?}");
+    }
+
+    #[test]
+    fn offline_fleet_with_mixed_name_lengths_preserves_identity() {
+        let short = offline_system(Some("a"), "host1.local");
+        let long = offline_system(Some("deadpool"), "192.168.182.146");
+        let layout = compute_condensed_table_layout(&[short.clone(), long.clone()], 80);
+        let short_line = status_line(&short, &layout, "offline");
+        let long_line = status_line(&long, &layout, "offline");
+        assert!(
+            short_line.contains("a"),
+            "short name must remain visible: {short_line:?}"
+        );
+        assert!(
+            long_line.contains("deadpool"),
+            "long name must remain visible: {long_line:?}"
+        );
+        assert!(short_line.contains("offline"), "{short_line:?}");
+        assert!(long_line.contains("offline"), "{long_line:?}");
+        assert!(!short_line.contains('%'), "{short_line:?}");
+        assert!(!long_line.contains('%'), "{long_line:?}");
+    }
+
+    #[test]
+    fn mixed_online_offline_fleet_preserves_longer_offline_name() {
+        // Online system has a short configured name; offline system has a
+        // longer one. The offline nickname must not be erased by the
+        // online table's HOST width.
+        let online = system("pi");
+        let offline = offline_system(Some("deadpool"), "192.168.182.146");
+        let layout = compute_condensed_table_layout(&[online, offline.clone()], 80);
+        let line = status_line(&offline, &layout, "offline");
+        assert!(
+            line.contains("deadpool"),
+            "longer offline name must survive: {line:?}"
+        );
+        assert!(line.contains("offline"), "{line:?}");
+    }
+
+    #[test]
+    fn pending_status_preserves_identity() {
+        let mut sys = offline_system(Some("deadpool"), "192.168.182.146");
+        sys.reachability = Reachability::Pending;
+        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let line = status_line(&sys, &layout, "pending");
+        assert!(
+            line.contains("deadpool"),
+            "pending nickname must remain visible: {line:?}"
+        );
+        assert!(line.contains("pending"), "{line:?}");
+        assert!(!line.contains('%'), "{line:?}");
+    }
+
+    #[test]
+    fn unicode_offline_nickname_preserves_identity() {
+        let mut sys = offline_system(Some("サーバー"), "192.168.182.146");
+        sys.reachability = Reachability::Offline;
+        let layout = compute_condensed_table_layout(&[sys.clone()], 80);
+        let line = status_line(&sys, &layout, "offline");
+        let width = UnicodeWidthStr::width(line.as_str());
+        assert!(
+            line.contains("サーバー"),
+            "unicode nickname must remain visible: {line:?}"
+        );
+        assert!(line.contains("offline"), "{line:?}");
+        assert!(width <= 80, "line must fit width: {line:?} ({width} cells)");
+    }
+
+    #[test]
+    fn status_line_remains_width_bounded_at_narrow_widths() {
+        let sys = offline_system(Some("deadpool"), "192.168.182.146");
+        let layout = compute_condensed_table_layout(&[sys.clone()], 24);
+        let line = status_line(&sys, &layout, "offline");
+        let width = UnicodeWidthStr::width(line.as_str());
+        assert!(width <= 24, "line must fit width: {line:?} ({width} cells)");
+        assert!(line.contains("offline"), "{line:?}");
     }
 }

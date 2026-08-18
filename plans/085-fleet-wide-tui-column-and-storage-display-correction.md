@@ -1,8 +1,8 @@
 # Phase 085: fleet-wide TUI column and storage display correction
 
-Status: ready for implementation.
+Status: complete; closed through Plan 086.
 
-Depends on: completed Plans 083 and 084.
+Depends on: completed Plans 083 and 084. Implementation landed in `f8be3cf2` and clippy cleanup in `29945c3`. Post-implementation review found three narrow boundary defects corrected by Plan 086 (condensed status identity, expanded-drive structural width, mixed-label suffix budget). Plan 086 records the corrections and reconciles this plan's acceptance checklist.
 
 ## Objective
 
@@ -552,63 +552,63 @@ Do not add new CI. The existing workflow may run naturally after push and should
 
 ### Normal fleet-wide metric geometry
 
-- [ ] Normal-view metric geometry is computed once per render/fleet width and reused by every online system block.
-- [ ] Layout population includes all online systems with usable snapshots, not only currently visible viewport entries.
-- [ ] Global label width accounts for the widest participating label, including `COMMIT` in a mixed Linux/Windows fleet.
-- [ ] All rendered normal-view opening `[` characters occupy one terminal column across devices where bars are present.
-- [ ] All rendered normal-view closing `]` characters occupy one terminal column across devices where bars are present.
-- [ ] Different device suffix lengths do not produce different bracket columns.
-- [ ] Scrolling or moving the viewport does not change bracket columns merely because a longest-suffix system moves on/off screen.
-- [ ] Narrow-width fallback remains width-safe and does not force brackets where no bar budget exists.
-- [ ] Geometry uses terminal display-cell widths rather than UTF-8 byte lengths.
+- [x] Normal-view metric geometry is computed once per render/fleet width and reused by every online system block.
+- [x] Layout population includes all online systems with usable snapshots, not only currently visible viewport entries.
+- [x] Global label width accounts for the widest participating label, including `COMMIT` in a mixed Linux/Windows fleet.
+- [x] All rendered normal-view opening `[` characters occupy one terminal column across devices where bars are present.
+- [x] All rendered normal-view closing `]` characters occupy one terminal column across devices where bars are present.
+- [x] Different device suffix lengths do not produce different bracket columns.
+- [x] Scrolling or moving the viewport does not change bracket columns merely because a longest-suffix system moves on/off screen.
+- [x] Narrow-width fallback remains width-safe and does not force brackets where no bar budget exists.
+- [x] Geometry uses terminal display-cell widths rather than UTF-8 byte lengths.
 
 ### Normal DISK semantics
 
-- [ ] Normal DISK percentage remains `used_bytes / total_bytes * 100`.
-- [ ] Normal DISK detail renders `used_bytes / total_bytes`.
-- [ ] Explicit `available_bytes` is not used as the slash denominator.
-- [ ] A regression fixture with `available_bytes != total_bytes - used_bytes` proves the denominator correction.
-- [ ] Existing binary KiB/MiB/GiB/TiB conversion remains unchanged.
-- [ ] No protocol, normalized-capacity, or collector semantics are weakened to make the display complementary.
+- [x] Normal DISK percentage remains `used_bytes / total_bytes * 100`.
+- [x] Normal DISK detail renders `used_bytes / total_bytes`.
+- [x] Explicit `available_bytes` is not used as the slash denominator.
+- [x] A regression fixture with `available_bytes != total_bytes - used_bytes` proves the denominator correction.
+- [x] Existing binary KiB/MiB/GiB/TiB conversion remains unchanged.
+- [x] No protocol, normalized-capacity, or collector semantics are weakened to make the display complementary.
 
 ### Expanded drive table
 
-- [ ] Expanded rows render the full-width shape `name  used / total  (remaining) percent` when it fits.
-- [ ] Remaining space uses explicit `available_bytes` when present.
-- [ ] Remaining space falls back to `total_bytes - used_bytes` for legacy records with no explicit availability.
-- [ ] Percentage remains based on `used / total`.
-- [ ] One layout is calculated from all eligible drives in the selected system.
-- [ ] Visible-row clipping does not change horizontal column positions.
-- [ ] Name, used, separator, total, remaining, and percentage fields align consistently across rows.
-- [ ] Numeric quantities and percentages are right aligned; names are left aligned/truncatable.
-- [ ] Unicode drive names are measured in terminal cells.
-- [ ] Narrow terminals degrade in the defined order without overflow or panic.
-- [ ] Normal and condensed expanded-drive rendering reuse the same drive-table layout/formatter.
+- [x] Expanded rows render the full-width shape `name  used / total  (remaining) percent` when it fits.
+- [x] Remaining space uses explicit `available_bytes` when present.
+- [x] Remaining space falls back to `total_bytes - used_bytes` for legacy records with no explicit availability.
+- [x] Percentage remains based on `used / total`.
+- [x] One layout is calculated from all eligible drives in the selected system.
+- [x] Visible-row clipping does not change horizontal column positions.
+- [x] Name, used, separator, total, remaining, and percentage fields align consistently across rows.
+- [x] Numeric quantities and percentages are right aligned; names are left aligned/truncatable.
+- [x] Unicode drive names are measured in terminal cells.
+- [x] Narrow terminals degrade in the defined order without overflow or panic.
+- [x] Normal and condensed expanded-drive rendering reuse the same drive-table layout/formatter.
 
 ### Condensed (`v`) view
 
-- [ ] Header and online rows use the same `CondensedTableLayout`.
-- [ ] HOST, CPU, MEM, DISK, LOAD, and IOWAIT headings align with their value columns whenever the tier includes them.
-- [ ] Column widths are derived from headings and fleet values using terminal display width.
-- [ ] HOST width is based on the longest required displayed name and is not inflated to consume all spare terminal width.
-- [ ] Spare width may remain at the right side rather than pushing metrics away from headings.
-- [ ] The HOST column is the first column truncated when natural table width is too large.
-- [ ] Existing Wide/Medium/Narrow/Minimal column-priority behavior remains intact.
-- [ ] Systems with short and long nicknames remain column-aligned.
-- [ ] A Unicode nickname does not shift numeric columns relative to ASCII names.
-- [ ] Offline/pending status rendering remains truthful and width-safe; no redesign is required.
+- [x] Header and online rows use the same `CondensedTableLayout`.
+- [x] HOST, CPU, MEM, DISK, LOAD, and IOWAIT headings align with their value columns whenever the tier includes them.
+- [x] Column widths are derived from headings and fleet values using terminal display width.
+- [x] HOST width is based on the longest required displayed name and is not inflated to consume all spare terminal width.
+- [x] Spare width may remain at the right side rather than pushing metrics away from headings.
+- [x] The HOST column is the first column truncated when natural table width is too large.
+- [x] Existing Wide/Medium/Narrow/Minimal column-priority behavior remains intact.
+- [x] Systems with short and long nicknames remain column-aligned.
+- [x] A Unicode nickname does not shift numeric columns relative to ASCII names.
+- [x] Offline/pending status rendering remains truthful and width-safe; no redesign is required. *(Plan 086 strengthens the offline/pending identity guarantee with explicit tests.)*
 
 ### Scope and verification
 
-- [ ] Production changes remain confined to the client UI unless a new concrete defect is documented.
-- [ ] `crates/greggd/**` and `crates/gregg-protocol/**` require no Plan 085 product changes.
-- [ ] No new dependency, generic table framework, CI job, workflow, release step, or evidence artifact is added.
-- [ ] Existing Plan 067 truthful availability semantics remain preserved.
-- [ ] Existing Plan 083/084 CLI, polling, viewport-initialization, offline rendering, and validation behavior remain unchanged.
-- [ ] Focused `gregg` UI tests pass.
-- [ ] Relevant normalized tests pass without semantic changes.
-- [ ] `./scripts/check-local.sh` passes.
-- [ ] Active documentation/comments accurately describe fleet-wide geometry and `used / total` normal DISK display.
+- [x] Production changes remain confined to the client UI unless a new concrete defect is documented.
+- [x] `crates/greggd/**` and `crates/gregg-protocol/**` require no Plan 085 product changes.
+- [x] No new dependency, generic table framework, CI job, workflow, release step, or evidence artifact is added.
+- [x] Existing Plan 067 truthful availability semantics remain preserved.
+- [x] Existing Plan 083/084 CLI, polling, viewport-initialization, offline rendering, and validation behavior remain unchanged.
+- [x] Focused `gregg` UI tests pass.
+- [x] Relevant normalized tests pass without semantic changes.
+- [x] `./scripts/check-local.sh` passes.
+- [x] Active documentation/comments accurately describe fleet-wide geometry and `used / total` normal DISK display.
 
 ## Handoff guidance
 
@@ -634,3 +634,7 @@ When complete, record:
 - any existing CI run that occurred naturally, without making it a new standing requirement.
 
 Do not create a separate evidence document or a closure-only Plan 086.
+
+## Completion record
+
+Implemented in `f8be3cf2` (renderer changes) and `29945c3` (clippy cleanup). Focused deterministic tests and the default local check (`./scripts/check-local.sh`) passed. Three narrow boundary defects were discovered in post-implementation review; they are corrected by Plan 086 without reopening the daemon, protocol, scheduler, or release architecture. Plan 086 also reconciles this plan's acceptance checklist once the corrected behavior is demonstrated.
