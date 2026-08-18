@@ -10,8 +10,10 @@
 //! service worker and keeps its selected config path in a process-local launch
 //! context.
 //!
-//! The CLI `start`/`stop`/`restart`/`croncheck` commands use
-//! `WindowsServiceManager` to control the service through native APIs.
+//! The CLI `start`/`stop`/`restart` commands use `WindowsServiceManager` to
+//! control the service through native APIs. `croncheck` is a
+//! process-local watchdog that probes the TCP listener and spawns `run`
+//! directly; it does not interact with the SCM.
 //!
 //! ## Architecture
 //!

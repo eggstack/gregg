@@ -89,10 +89,17 @@ passes locally, the distinction is the cause.
 - Reusable `greggd` library/runtime code must return errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification.
-- Unix `greggd croncheck` is a read-only `/v2/healthz` probe with a short
-  timeout and a fixed 512-byte CRLF-terminated HTTP/1.0 or HTTP/1.1 status-line
-  read; only status 200 is healthy. Connection diagnostics include the
-  attempted target address. `host` and `port` only persist config.
+- `greggd croncheck` is a watchdog for non-systemd supervisors (cron,
+  Task Scheduler, etc.). It opens a bounded TCP connect to the configured
+  local bind address (`127.0.0.1:port`, with wildcards normalized to
+  loopback). If a listener accepts the connection, it exits silently with
+  status `0`. If nothing is listening, it spawns `<current_exe> run`
+  (passing `--config PATH` when an explicit path was given) as a detached
+  child with stdio closed to `/dev/null` and, on Unix, in a new process
+  group so signals sent to croncheck's group do not reach the daemon. It
+  must not invoke `systemctl`, `launchctl`, `pkill`, `killall`, shell
+  commands, or PID-file management. The HTTP API is not consulted.
+  `host` and `port` only persist config.
 - `greggd stop` on Linux/macOS targets only the local foreground `greggd`
   instance associated with the resolved config identity via a single tiny
   Unix-domain control socket (`STOP\n` -> `OK\n`). The control identity is

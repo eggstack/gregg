@@ -446,7 +446,7 @@ mod tests {
                     &status
                 };
                 let header = format!(
-                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\n\r\n",
+                    "HTTP/1.1 {response_status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
                 stream.write_all(header.as_bytes()).await.unwrap();
@@ -1110,7 +1110,7 @@ mod tests {
                         (v1_resp.0.clone(), v1_resp.1.clone())
                     };
                     let header = format!(
-                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n",
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                         body.len()
                     );
                     let _ = stream.write_all(header.as_bytes()).await;

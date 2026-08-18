@@ -84,7 +84,8 @@ loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 ## CLI and configuration
 
 The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
-for structured argument parsing. Subcommands include `run`, `croncheck`,
+for structured argument parsing. Subcommands include `run`, `croncheck` (a
+TCP-connect watchdog that spawns `run` if nothing is listening),
 `configprint`, `host`, `port`, and `version`. Windows also exposes `start`, `stop`, and `restart`
 through native SCM. Unix config mutations only persist atomically; Unix service
 lifecycle is owned by optional external packaging.

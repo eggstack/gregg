@@ -4,9 +4,9 @@
 //! subcommand has a stable help message and returns a meaningful exit code.
 
 use std::fmt;
-use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
+use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -55,12 +55,11 @@ pub enum Command {
     /// Restart the greggd Windows service.
     #[cfg(target_os = "windows")]
     Restart,
-    /// Probe the daemon health endpoint without changing process state.
-    Croncheck {
-        /// Optional remote target to probe instead of the configured local bind.
-        #[arg(long, value_name = "HOST:PORT")]
-        target: Option<SocketAddr>,
-    },
+    /// Ensure greggd is running. Probes the configured local TCP port and,
+    /// if nothing is listening, spawns `greggd run` as a detached child.
+    /// Intended for cron, Task Scheduler, and other operator-managed
+    /// supervisors that have no built-in readiness monitoring.
+    Croncheck,
     /// Print the configured bind address without probing or mutating state.
     Configprint,
     /// Update the bind address (applies on the next daemon start).
@@ -204,18 +203,6 @@ pub fn version_string() -> String {
     format!("greggd {}", env!("CARGO_PKG_VERSION"))
 }
 
-/// Error returned by the bounded local health probe.
-#[derive(Debug)]
-pub struct CroncheckError(String);
-
-impl std::fmt::Display for CroncheckError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for CroncheckError {}
-
 /// Map wildcard bind addresses to local loopback addresses for probing.
 #[must_use]
 pub fn probe_address(address: IpAddr) -> IpAddr {
@@ -226,7 +213,7 @@ pub fn probe_address(address: IpAddr) -> IpAddr {
     }
 }
 
-/// Derive the local health-probe target from daemon configuration.
+/// Derive the local probe target from daemon configuration.
 #[must_use]
 pub fn croncheck_target(config: &Config) -> SocketAddr {
     SocketAddr::new(probe_address(config.host), config.port)
@@ -238,68 +225,45 @@ pub fn config_address(config: &Config) -> SocketAddr {
     SocketAddr::new(config.host, config.port)
 }
 
-/// Probe `/v2/healthz`, accepting only a syntactically valid HTTP 200 status.
-pub fn probe_health(target: SocketAddr) -> Result<(), CroncheckError> {
+/// Bounded TCP-connect check used by `croncheck`.
+///
+/// Returns `true` if a listener accepts the connection within the
+/// timeout, `false` otherwise. A refusal, timeout, or unreachable host
+/// all mean the daemon is not accepting traffic on this address.
+fn is_listening(target: SocketAddr) -> bool {
     const TIMEOUT: Duration = Duration::from_millis(750);
-    const MAX_STATUS_LINE_BYTES: usize = 512;
-    let mut stream = TcpStream::connect_timeout(&target, TIMEOUT)
-        .map_err(|e| CroncheckError(format!("health probe connection to {target} failed: {e}")))?;
-    stream
-        .set_read_timeout(Some(TIMEOUT))
-        .and_then(|()| stream.set_write_timeout(Some(TIMEOUT)))
-        .map_err(|e| {
-            CroncheckError(format!(
-                "health probe timeout setup to {target} failed: {e}"
-            ))
-        })?;
-    stream
-        .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .map_err(|e| CroncheckError(format!("health probe request to {target} failed: {e}")))?;
+    TcpStream::connect_timeout(&target, TIMEOUT).is_ok()
+}
 
-    let mut response = [0_u8; MAX_STATUS_LINE_BYTES];
-    let mut length = 0;
-    let line_length = loop {
-        if length == response.len() {
-            return Err(CroncheckError(format!(
-                "health probe response from {target} status line too long"
-            )));
-        }
-        let read = stream.read(&mut response[length..]).map_err(|e| {
-            CroncheckError(format!("health probe response from {target} failed: {e}"))
-        })?;
-        if read == 0 {
-            return Err(CroncheckError(format!(
-                "health probe response from {target} ended before status line CRLF"
-            )));
-        }
-        length += read;
-        if let Some(end) = response[..length]
-            .windows(2)
-            .position(|window| window == b"\r\n")
-        {
-            break end;
-        }
-    };
-
-    let line = std::str::from_utf8(&response[..line_length]).map_err(|_| {
-        CroncheckError(format!(
-            "health probe response from {target} status line is not text"
-        ))
-    })?;
-    let mut fields = line.split_ascii_whitespace();
-    let http = fields.next();
-    let status = fields.next();
-    let valid_version = matches!(http, Some("HTTP/1.0" | "HTTP/1.1"));
-    let valid_status = status.is_some_and(|value| {
-        value.len() == 3 && value.as_bytes().iter().all(u8::is_ascii_digit) && value == "200"
-    });
-    if valid_version && valid_status {
-        Ok(())
-    } else {
-        Err(CroncheckError(format!(
-            "health probe to {target} returned malformed or unhealthy status: {line}"
-        )))
+/// Build the [`Command`] used by `croncheck` to spawn `greggd run` as a
+/// detached watchdog child. Stdio is closed; the daemon's own logging is
+/// independent of croncheck's. On Unix the child is placed in a new
+/// process group so signals sent to croncheck's group (for example
+/// SIGHUP from a closing terminal) do not reach the daemon.
+///
+/// Exposed crate-internally so tests can inspect `program()` and `get_args()`
+/// without actually forking. The caller is responsible for `.spawn()`.
+fn build_daemon_command(
+    config_path: &std::path::Path,
+    explicit: bool,
+) -> std::io::Result<ProcessCommand> {
+    let exe = std::env::current_exe()?;
+    let mut cmd = ProcessCommand::new(exe);
+    cmd.arg("run");
+    if explicit {
+        cmd.arg("--config").arg(config_path);
     }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+
+    Ok(cmd)
 }
 
 /// Dispatch a subcommand using the path's current existence as a compatibility
@@ -341,15 +305,20 @@ pub fn dispatch_with_config_intent(
                 unreachable!("Command::Stop is handled at the binary boundary on Windows")
             }
         }
-        Command::Croncheck { target } => {
-            let target = if let Some(target) = target {
-                *target
-            } else {
-                let config = load_config(config_path, explicit)?;
-                croncheck_target(&config)
-            };
-            probe_health(target)?;
-            println!("greggd healthy");
+        Command::Croncheck => {
+            let config = load_config(config_path, explicit)?;
+            let target = croncheck_target(&config);
+            if is_listening(target) {
+                // Daemon is already accepting traffic on the configured
+                // bind. Nothing to do.
+                return Ok(());
+            }
+            // Nothing is listening: spawn `greggd run` as a detached
+            // watchdog child. The kernel's bind semantics prevent a
+            // second concurrent start once the first child binds its
+            // listener; any spawn that loses the race surfaces as a
+            // nonzero exit and the next cron tick will retry.
+            build_daemon_command(config_path, explicit)?.spawn()?;
             Ok(())
         }
         Command::Configprint => {
@@ -383,7 +352,6 @@ mod native_tests {
     use super::*;
     use clap::Parser;
     use std::net::TcpListener;
-    use std::thread;
 
     #[test]
     fn parser_accepts_run_stop_croncheck_mutations_and_version_but_not_windows_lifecycle() {
@@ -399,9 +367,11 @@ mod native_tests {
         }
         assert!(Cli::try_parse_from(["greggd", "host", "127.0.0.1"]).is_ok());
         assert!(Cli::try_parse_from(["greggd", "port", "11310"]).is_ok());
+        // `croncheck` no longer takes a `--target` flag: it operates on
+        // the configured local bind only.
         assert!(
             Cli::try_parse_from(["greggd", "croncheck", "--target", "192.168.182.143:11310"])
-                .is_ok()
+                .is_err()
         );
         for command in ["start", "restart"] {
             assert!(Cli::try_parse_from(["greggd", command]).is_err());
@@ -471,95 +441,93 @@ mod native_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn probe_against(response: impl Into<Vec<u8>>) -> Result<(), CroncheckError> {
+    fn bind_loopback() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let target = listener.local_addr().unwrap();
-        let response = response.into();
-        let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 256];
-            let _ = std::io::Read::read(&mut stream, &mut request);
-            stream.write_all(&response).unwrap();
-        });
-        let result = probe_health(target);
-        worker.join().unwrap();
-        result
+        // Hold the listener for the duration of the test by leaking it;
+        // both `is_listening` paths own nothing and tests close over the
+        // target only.
+        std::mem::forget(listener);
+        target
     }
 
-    #[test]
-    fn health_probe_accepts_only_http_200() {
-        assert!(probe_against(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").is_ok());
-        assert!(probe_against(b"HTTP/1.0 200 OK\r\n\r\n").is_ok());
-        assert!(probe_against(b"HTTP/1.1 503 Service Unavailable\r\n\r\n").is_err());
-        assert!(probe_against(b"not HTTP\r\n").is_err());
-    }
-
-    #[test]
-    fn health_probe_rejects_premature_eof() {
-        assert!(probe_against(b"HTTP/1.1 200 OK").is_err());
-    }
-
-    #[test]
-    fn health_probe_rejects_overlong_status_line() {
-        let mut response = vec![b'X'; 512];
-        response.extend_from_slice(b"\r\n");
-        assert!(probe_against(response).is_err());
-    }
-
-    #[test]
-    fn health_probe_rejects_invalid_http_version() {
-        assert!(probe_against(b"HTTP/1.xyz 200 OK\r\n").is_err());
-    }
-
-    #[test]
-    fn health_probe_rejects_closed_port() {
+    fn unbound_loopback() -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let target = listener.local_addr().unwrap();
-        drop(listener);
-
-        assert!(probe_health(target).is_err());
+        listener.local_addr().unwrap()
     }
 
     #[test]
-    fn health_probe_connection_error_includes_target_address() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let target = listener.local_addr().unwrap();
-        drop(listener);
-
-        let err = probe_health(target).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains(&target.to_string()),
-            "expected diagnostic to mention target {target}, got: {msg}"
-        );
+    fn is_listening_accepts_a_bound_port() {
+        let target = bind_loopback();
+        assert!(is_listening(target));
     }
 
     #[test]
-    fn targeted_croncheck_does_not_require_a_config_file() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let target = listener.local_addr().unwrap();
-        let worker = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = [0_u8; 256];
-            let _ = std::io::Read::read(&mut stream, &mut request);
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
-                .unwrap();
-        });
+    fn is_listening_rejects_a_closed_port() {
+        let target = unbound_loopback();
+        assert!(!is_listening(target));
+    }
 
-        let path = std::env::temp_dir().join(format!(
-            "greggd-targeted-croncheck-missing-{}.toml",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        dispatch_with_config_intent(
-            &Command::Croncheck {
-                target: Some(target),
-            },
+    #[test]
+    fn croncheck_dispatch_exits_when_listener_up_without_spawning() {
+        // With a listener up on the configured port, `croncheck` must
+        // return Ok and never invoke the spawn path. The only observable
+        // side effect would be a backgrounded child, which we cannot
+        // inspect here; the assertion is the Ok result.
+        let target = bind_loopback();
+        let dir = std::env::temp_dir().join("greggd_croncheck_listener_up_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        std::fs::write(
             &path,
-            true,
+            format!(
+                "name = \"loopback-croncheck-test\"\n\
+                 host = \"127.0.0.1\"\n\
+                 port = {}\n\
+                 sample_interval_ms = 1000\n\
+                 stale_after_ms = 10000\n",
+                target.port()
+            ),
         )
         .unwrap();
-        worker.join().unwrap();
+        dispatch_with_config_intent(&Command::Croncheck, &path, true).unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn build_daemon_command_includes_run_and_explicit_config() {
+        let dir = std::env::temp_dir().join("greggd_build_daemon_explicit_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let cmd = build_daemon_command(&path, true).unwrap();
+        assert_eq!(
+            cmd.get_program(),
+            std::env::current_exe().unwrap().as_os_str()
+        );
+        let args: Vec<std::ffi::OsString> =
+            cmd.get_args().map(std::ffi::OsStr::to_os_string).collect();
+        assert_eq!(
+            args,
+            vec![
+                std::ffi::OsString::from("run"),
+                std::ffi::OsString::from("--config"),
+                path.as_os_str().to_os_string(),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn build_daemon_command_omits_config_when_implicit() {
+        let cmd = build_daemon_command(std::path::Path::new("/nonexistent.toml"), false).unwrap();
+        assert_eq!(
+            cmd.get_program(),
+            std::env::current_exe().unwrap().as_os_str()
+        );
+        let args: Vec<std::ffi::OsString> =
+            cmd.get_args().map(std::ffi::OsStr::to_os_string).collect();
+        assert_eq!(args, vec![std::ffi::OsString::from("run")]);
     }
 }

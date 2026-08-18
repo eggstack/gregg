@@ -31,20 +31,17 @@ greggd stop
 greggd restart
 ```
 
-Probe daemon health on any platform without changing process state. The probe
-uses a short timeout and a fixed 512-byte HTTP/1.x status-line limit; it
-requires CRLF termination and accepts only HTTP/1.0 or HTTP/1.1 status 200:
+Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
+Scheduler, and other supervisors without built-in readiness monitoring: it
+probes the configured local TCP port and, if nothing is listening, spawns
+`greggd run` as a detached child. The HTTP API is not consulted and no
+service manager is invoked.
 
 ```sh
 greggd croncheck
-greggd croncheck --target HOST:PORT
 greggd configprint
 greggd version
 ```
-
-Without `--target`, `croncheck` probes the configured local daemon address.
-The optional target is useful for checking a reachable daemon from another
-host; it does not start, stop, or modify any process or configuration.
 
 On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`.
 

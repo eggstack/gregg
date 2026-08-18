@@ -7,6 +7,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`greggd croncheck` is now a watchdog** (`greggd`): the subcommand no
+  longer performs a read-only HTTP probe of `/v2/healthz`. It opens a
+  bounded TCP connect to the configured local bind address (with wildcards
+  normalized to loopback). If a listener accepts the connection, it exits
+  silently with status `0`. If nothing is listening, it spawns
+  `greggd run` as a detached child (stdin/stdout/stderr closed; on Unix,
+  in a new process group so signals sent to croncheck's group do not
+  reach the daemon) and exits `0`. This restores the intended semantics
+  for cron, Task Scheduler, and other supervisors that have no built-in
+  readiness monitoring and need `croncheck` to actually start the daemon
+  when it is not running.
+- **`greggd croncheck --target HOST:PORT` removed** (`greggd`): the new
+  watchdog operates only on the configured local bind. There is no remote
+  probe mode; existing callers must drop the flag.
+
 ## [1.0.8] - 2026-08-15
 
 ### Changed

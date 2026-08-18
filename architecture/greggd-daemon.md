@@ -20,7 +20,7 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing is listening), `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
@@ -152,7 +152,7 @@ configuration error and is neither written nor followed by process management.
 |---------|---------|
 | `run` | Start foreground daemon |
 | `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
-| `croncheck` | Bounded HTTP probe of `/v2/healthz`; fixed 512-byte CRLF-terminated HTTP/1.x status-line read, accepting only HTTP/1.0/1.1 status 200; optional `--target HOST:PORT` for an explicit remote target |
+| `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded TCP connect to the configured local bind (wildcards normalized to loopback); exits `0` on a listener, otherwise spawns `<current_exe> run` as a detached child (stdin/stdout/stderr closed, Unix-only new process group); no service manager, shell, or PID-file management |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; no network, service, or write side effects |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |

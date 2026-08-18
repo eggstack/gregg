@@ -85,7 +85,9 @@ Use `greggd host 127.0.0.1` to restrict to localhost only (recommended for SSH-t
 
 `greggd run` is the normal foreground daemon command. Unix service lifecycle is
 owned by the operator and these packaging assets; the binary does not invoke
-systemd or launchd. `greggd croncheck` is a read-only HTTP probe of `/v2/healthz`.
+systemd or launchd. `greggd croncheck` is a watchdog for cron and other
+non-systemd supervisors: it probes the configured local TCP port and, if
+nothing is listening, spawns `greggd run` as a detached child.
 
 ### Linux (systemd)
 

@@ -130,7 +130,7 @@ integration tests.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules: `cli`, `collector`, `config`, `control` (Unix), `run`, `sampler`, `server`, `service` (Windows) |
 | `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals, local Unix control socket; `RunOutcome` enum, `run_with_shutdown_on_ready()` callback seam, 10s graceful shutdown deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck`, `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy (0-4) |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing is listening), `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy (0-4) |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`), clock abstraction; `SamplerError`, `SyntheticClock` |
