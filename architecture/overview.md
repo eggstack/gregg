@@ -462,6 +462,7 @@ evidence.
 | [workspace.md](workspace.md) | Cargo workspace layout, crate boundaries, dependency direction, module structure |
 | [protocol.md](protocol.md) | Wire format specification, schema versions, capabilities, validation, compatibility |
 | [error-conventions.md](error-conventions.md) | Error boundary design, wire response constraints |
+| [scripts-and-packaging.md](scripts-and-packaging.md) | Scripts, installers, service definitions, CI |
 | [macos-collector-notes.md](macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / `top` / `vm_stat` |
 
 ### Supporting files

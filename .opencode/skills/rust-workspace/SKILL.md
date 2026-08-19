@@ -43,6 +43,7 @@ cargo test -p greggd --all-targets -- collector::windows    # Windows
 ```bash
 cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
+cargo test -p gregg -- <test_name>
 ```
 
 For Systems endpoint-reload changes, include the production-path bounded
