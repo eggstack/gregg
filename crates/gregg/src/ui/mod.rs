@@ -604,7 +604,7 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED),
             "header must not be reversed before any selection action: row 0 = {:?}",
-            buf.cell((0, 0)).map(|c| c.symbol())
+            buf.cell((0, 0)).map(ratatui::buffer::Cell::symbol)
         );
         assert!(
             !buf.cell((0, 5))
@@ -1359,7 +1359,7 @@ mod tests {
         apply_online(&mut state, 0, linux_snap());
         state.selection_highlight_active = true;
         let selected = state.selected_id.clone();
-        assert!(state.drives_expanded == false);
+        assert!(!state.drives_expanded);
         // Visual highlight expires.
         state.apply_action(crate::action::Action::ClearSelectionHighlight);
         assert!(!state.selection_highlight_active);

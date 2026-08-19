@@ -90,37 +90,24 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
     let kernel_str = format!("{} {}", snap.system.kernel_name, snap.system.kernel_release);
     let arch_str = &snap.system.architecture;
 
-    // Helper to join the optional `IO` token with the rest of the
-    // header components. The token is omitted (with no extra gap or
-    // doubled separator) when the platform cannot supply a real value.
-    fn append_io(line: &mut String, io: Option<&str>) {
-        if let Some(io) = io {
-            line.push_str("  ");
-            line.push_str(io);
-        }
-    }
+    // Plan 087: when the IO token is present, prepend it to the
+    // remaining header components with a leading separator. The token
+    // is omitted entirely (no separator artifact) when the platform
+    // cannot supply a real value, so we use `Option`-aware formatting
+    // rather than an unconditional placeholder.
+    let io_suffix = io_str
+        .as_deref()
+        .map(|io| format!("  {io}"))
+        .unwrap_or_default();
 
     if width >= 80 {
-        let mut line = format!("{name}");
-        append_io(&mut line, io_str.as_deref());
-        line.push_str(&format!(
-            "  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}"
-        ));
-        line
+        format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}")
     } else if width >= 50 {
-        let mut line = format!("{name}");
-        append_io(&mut line, io_str.as_deref());
-        line.push_str(&format!("  {load_str}  {cores_str}  {os_str}"));
-        line
+        format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}")
     } else if width >= 32 {
-        let mut line = format!("{name}");
-        append_io(&mut line, io_str.as_deref());
-        line.push_str(&format!("  {load_str}  {cores_str}"));
-        line
+        format!("{name}{io_suffix}  {load_str}  {cores_str}")
     } else {
-        let mut line = format!("{name}");
-        append_io(&mut line, io_str.as_deref());
-        line
+        format!("{name}{io_suffix}")
     }
 }
 
@@ -428,7 +415,7 @@ mod tests {
         };
         snap.cpu_iowait_supported = supported;
         snap.iowait_pct = iowait;
-        let system = crate::state::SystemState {
+        crate::state::SystemState {
             id: "id".into(),
             endpoint: crate::endpoint::Endpoint::new("host".into(), 11310, None),
             configured_name: Some("srv".into()),
@@ -438,8 +425,7 @@ mod tests {
             last_attempt_at: None,
             latency: None,
             last_error: None,
-        };
-        system
+        }
     }
 
     #[test]
