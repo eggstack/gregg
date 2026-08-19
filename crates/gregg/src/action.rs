@@ -34,6 +34,11 @@ pub enum Action {
     ToggleDrives,
     /// Trigger an immediate poll cycle (handled by the scheduler).
     RefreshNow,
+    /// Plan 087: drop the visual selection highlight (the reversed
+    /// styling) without touching logical `selected_id`. Produced by the
+    /// event-loop timer about ten seconds after the most recent
+    /// selection-changing Systems action.
+    ClearSelectionHighlight,
     /// The terminal was resized.
     Resize {
         /// New width in columns.
@@ -63,6 +68,7 @@ mod tests {
             Action::ToggleSystemView,
             Action::ToggleDrives,
             Action::RefreshNow,
+            Action::ClearSelectionHighlight,
             Action::Resize {
                 width: 80,
                 height: 24,
@@ -81,14 +87,15 @@ mod tests {
         assert!(matches!(actions[8], Action::ToggleSystemView));
         assert!(matches!(actions[9], Action::ToggleDrives));
         assert!(matches!(actions[10], Action::RefreshNow));
+        assert!(matches!(actions[11], Action::ClearSelectionHighlight));
         assert!(matches!(
-            actions[11],
+            actions[12],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[12], Action::Quit));
+        assert!(matches!(actions[13], Action::Quit));
     }
 
     #[test]

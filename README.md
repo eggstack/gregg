@@ -151,6 +151,13 @@ gregg version                  # print the client version
 - `e`: expand/collapse drives for the selected system
 - `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint replacement, and poll it immediately; on EggPool, refresh that pane
 
+The selected system keeps its logical selection (`e` still toggles its
+drive details), but the reverse-video highlight is transient — it
+appears when you navigate, and fades after roughly ten seconds of
+inactivity so stale reverse-video does not survive a quiet screen.
+Leaving the Systems pane or returning to it does not extend or
+re-trigger the highlight.
+
 ## Display
 
 Reachable systems show five rows (normal view). All four metric rows
@@ -172,6 +179,17 @@ capacity is preserved by the normalized model and surfaced only through
 the expanded per-drive rows. On Windows, the third row uses `COMMIT`
 (memory commit charge) instead of `SWP`. Unreachable rows render `—`
 instead of fabricating a `0.0%`.
+
+When the longest natural metric suffix across the entire online fleet
+exceeds one quarter of the terminal width, every normal-view metric row
+collapses to bar-only — the bars remain aligned, but the percentage,
+core counts, and byte counts disappear until the terminal widens again.
+Resizing wider restores them dynamically with no restart.
+
+The header line omits the `IO` token entirely when CPU I/O wait is
+unsupported (macOS) or no real value is available, rather than
+rendering a placeholder; the remaining fields keep their normal
+separators.
 
 Unreachable systems collapse to one row. With a configured nickname:
 

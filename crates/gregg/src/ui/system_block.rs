@@ -45,6 +45,19 @@ fn metric_prefix_width(label_width: u16) -> u16 {
     indent_w.saturating_add(label_width).saturating_add(2) // " ["
 }
 
+/// Number of cells reserved between the closing `]` and the suffix
+/// text when suffixes are visible. Plan 087: when suffixes are
+/// suppressed, the cell that would otherwise be the suffix separator
+/// is returned to the bar budget.
+const METRIC_SUFFIX_GAP_CELLS: u16 = 2; // "] "
+
+/// Display-cell width of the prefix portion of a metric row when the
+/// suffix is suppressed: `indent + label + " ["` plus the closing
+/// `]` itself (no gap). Used to size the bar in bar-only mode.
+fn metric_compact_prefix_width(label_width: u16) -> u16 {
+    metric_prefix_width(label_width).saturating_add(1) // "]"
+}
+
 /// Render a normal-view online system block using the precomputed
 /// fleet-wide metric geometry.
 #[allow(clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]
@@ -53,7 +66,8 @@ pub(crate) fn render_online(
     area: Rect,
     system: &SystemState,
     fleet_layout: &MetricFleetLayout,
-    is_selected: bool,
+    is_visually_selected: bool,
+    is_logically_selected: bool,
     drive_rows_visible: usize,
 ) {
     if area.height < 5 || area.width == 0 {
@@ -61,11 +75,11 @@ pub(crate) fn render_online(
     }
 
     let Some(snap) = &system.latest else {
-        render_waiting(f, area, system, is_selected);
+        render_waiting(f, area, system, is_visually_selected);
         return;
     };
 
-    let sel_style = if is_selected {
+    let sel_style = if is_visually_selected {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
         Style::default()
@@ -109,11 +123,14 @@ pub(crate) fn render_online(
         render_metric_row(f, row_areas[idx], row, fleet_layout, &suffixes[idx]);
     }
 
+    // Drive-detail visibility is governed by logical selection so the
+    // expanded drive list survives highlight timeout.
+    let _ = is_logically_selected;
     render_drive_details(f, area, snap, drive_rows_visible);
 }
 
-fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_selected: bool) {
-    let sel_style = if is_selected {
+fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_visually_selected: bool) {
+    let sel_style = if is_visually_selected {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
         Style::default()
@@ -266,6 +283,11 @@ pub(crate) struct MetricFleetLayout {
     /// Common bar width shared by all four metric rows and every
     /// online system block in the same render.
     pub bar_width: u16,
+    /// Plan 087: when false, normal metric rows render as bar-only —
+    /// the text after the closing `]` (percentage, byte counts) is
+    /// suppressed fleet-wide. The decision is made once per render
+    /// from the longest natural suffix across the entire online fleet.
+    pub show_suffix: bool,
 }
 
 impl MetricFleetLayout {
@@ -277,6 +299,7 @@ impl MetricFleetLayout {
         Self {
             label_width,
             bar_width: 0,
+            show_suffix: true,
         }
     }
 }
@@ -287,9 +310,14 @@ impl MetricFleetLayout {
 /// `rows` is an iterator of references to each system's four metric
 /// rows. The resulting layout picks the widest label seen across the
 /// fleet (so mixed Linux/Windows fleets keep `COMMIT` wider than `SWP`)
-/// and reserves a bar width that is uniform across every system. The
-/// bar shrinks when the longest resolved suffix across all systems
-/// pushes the available width down.
+/// and reserves a bar width that is uniform across every system.
+///
+/// Plan 087: when the longest *natural* suffix across the fleet would
+/// occupy more than one quarter of the available terminal width, the
+/// entire normal-view suffix region disappears. The fleet then renders
+/// pure bar-only rows, the bar grows by the cell that would otherwise
+/// be the suffix separator, and the existing Plan 085/086 percentage
+/// fallback is not consulted for visible output (no suffix is rendered).
 pub(crate) fn compute_fleet_metric_layout<'a, I>(rows: I, width: u16) -> MetricFleetLayout
 where
     I: IntoIterator<Item = &'a [MetricRow; 4]>,
@@ -303,11 +331,44 @@ where
         }
     }
 
+    // Plan 087: compute the longest natural (full-detail) suffix
+    // across every participating system before deciding whether to
+    // suppress suffixes at all. The decision uses the natural width
+    // so it describes the content the operator is trying to hide, not
+    // an already-truncated result of the suffix resolver.
+    let mut max_natural_suffix: usize = 0;
+    for system_rows in &collected {
+        let natural = [
+            system_rows[0].default_suffix(),
+            system_rows[1].default_suffix(),
+            system_rows[2].default_suffix(),
+            system_rows[3].default_suffix(),
+        ];
+        let w = max_suffix_display(&natural);
+        if w > max_natural_suffix {
+            max_natural_suffix = w;
+        }
+    }
+
+    let show_suffix = !should_suppress_suffix(width, max_natural_suffix);
+
+    if !show_suffix {
+        // Bar-only mode: the row terminator is the closing `]`. No
+        // gap, no suffix text — the bar can claim every remaining cell.
+        let prefix_w = metric_compact_prefix_width(label_width);
+        let bar_width = width.saturating_sub(prefix_w);
+        return MetricFleetLayout {
+            label_width,
+            bar_width,
+            show_suffix: false,
+        };
+    }
+
     // Fixed structural prefix/suffix widths:
     //   prefix:  METRIC_ROW_INDENT + label + ' ['
     //   suffix:  '] ' + suffix_text
     let prefix_w = metric_prefix_width(label_width);
-    let after_bracket_w: u16 = 2; // "] "
+    let after_bracket_w: u16 = METRIC_SUFFIX_GAP_CELLS;
 
     // Total budget available for "suffix bar + suffix text" before the
     // bar width is chosen.
@@ -333,7 +394,27 @@ where
     MetricFleetLayout {
         label_width,
         bar_width,
+        show_suffix: true,
     }
+}
+
+/// Plan 087: decide whether the fleet's normal-view suffix region
+/// should be suppressed.
+///
+/// Suppression is strict and integer-safe:
+///
+/// ```text
+/// hide suffixes when:
+///     longest_suffix_display_width * 4 > terminal_width
+/// ```
+///
+/// This is equivalent to `longest > terminal / 4` without the
+/// rounding ambiguity introduced by integer division. Widths are in
+/// terminal display cells; the same cell width is used to compose
+/// and render the suffix.
+pub(crate) fn should_suppress_suffix(width: u16, longest_suffix_width: usize) -> bool {
+    let width_cells = usize::from(width);
+    longest_suffix_width.saturating_mul(4) > width_cells
 }
 
 /// Resolve the suffix strings for one system against the fleet's
@@ -341,13 +422,21 @@ where
 /// fleet-wide `label_width`, so mixed Linux/Windows fleets (where
 /// `COMMIT` widens the label column) do not silently let the Linux
 /// row retain detail that overflows the rendered fleet geometry.
+///
+/// Plan 087: when the fleet layout chose `show_suffix == false`,
+/// every row renders empty suffixes and the renderer omits the `] `
+/// separator so the bar can claim the cells that would otherwise be
+/// the suffix budget.
 fn resolve_system_suffixes(
     rows: &[MetricRow; 4],
     width: u16,
     fleet_layout: MetricFleetLayout,
 ) -> [String; 4] {
+    if !fleet_layout.show_suffix {
+        return [String::new(), String::new(), String::new(), String::new()];
+    }
     let prefix_w = metric_prefix_width(fleet_layout.label_width);
-    let after_bracket_w: u16 = 2; // "] "
+    let after_bracket_w: u16 = METRIC_SUFFIX_GAP_CELLS;
     let suffix_budget = width
         .saturating_sub(prefix_w + after_bracket_w)
         .saturating_sub(fleet_layout.bar_width);
@@ -425,6 +514,12 @@ fn render_metric_row(
         } else {
             format!("{label_padded}  {suffix}")
         }
+    } else if !layout.show_suffix {
+        // Plan 087: bar-only fleet mode suppresses every cell after the
+        // closing `]`. The suffix separator that would normally follow
+        // is returned to the bar budget, so the rendered shape is
+        // exactly `<label prefix> [<bar>]` with no trailing space.
+        format!("{label_padded} [{bar}]")
     } else {
         format!("{label_padded} [{bar}] {suffix}")
     };
@@ -494,12 +589,12 @@ fn render_drive_details(
 }
 
 /// Render a 1-row offline system line.
-pub fn render_offline(f: &mut Frame, area: Rect, system: &SystemState, is_selected: bool) {
+pub fn render_offline(f: &mut Frame, area: Rect, system: &SystemState, is_visually_selected: bool) {
     if area.height == 0 || area.width == 0 {
         return;
     }
 
-    let style = if is_selected {
+    let style = if is_visually_selected {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
         Style::default()
@@ -609,6 +704,14 @@ mod tests {
             } else {
                 format!("{label_padded}  {suffix}")
             }
+        } else if !layout.show_suffix {
+            // Plan 087: bar-only fleet mode suppresses the suffix
+            // separator; the row terminates at `]` with no trailing
+            // space.
+            format!(
+                "{label_padded} [{bar}]",
+                bar = make_bar_string(row.pct, layout.bar_width)
+            )
         } else {
             format!(
                 "{label_padded} [{bar}] {suffix}",
@@ -618,7 +721,11 @@ mod tests {
     }
 
     #[test]
-    fn detail_dropped_when_budget_too_tight() {
+    fn compact_mode_suppresses_suffixes_when_natural_exceeds_one_quarter() {
+        // Plan 087: at narrow widths the natural metric suffix already
+        // exceeds one quarter of the terminal width, so the entire
+        // fleet drops every suffix and the metric rows render as pure
+        // bar-only rows.
         let rows = [
             row("CPU", 25.2, Some("8 cores")),
             row("MEM", 37.8, Some("5.9 GiB / 15.6 GiB")),
@@ -626,17 +733,140 @@ mod tests {
             row("DISK", 60.4, Some("283.8 GiB / 167.1 GiB")),
         ];
         let layout = compute_fleet_metric_layout([&rows], 30);
+        assert!(
+            !layout.show_suffix,
+            "narrow width must suppress the suffix region: layout={layout:?}"
+        );
         let suffixes = resolve_system_suffixes(&rows, 30, layout);
-        let max = suffixes_max_width(&suffixes);
         for suffix in &suffixes {
             assert!(
-                UnicodeWidthStr::width(suffix.as_str()) <= max,
-                "suffix must fit the resolved max width"
+                suffix.is_empty(),
+                "compact mode must not render any suffix text: {suffix:?}"
             );
         }
-        for suffix in &suffixes {
-            assert!(suffix.contains('%'), "percentage must survive: {suffix:?}");
+        let rendered = build_row_line(&rows[0], &layout, &suffixes[0]);
+        assert!(
+            !rendered.contains('%'),
+            "compact mode must omit percentage: {rendered:?}"
+        );
+        assert!(
+            rendered.ends_with(']'),
+            "compact row must terminate at `]` with no trailing suffix: {rendered:?}"
+        );
+        assert!(
+            UnicodeWidthStr::width(rendered.as_str()) <= 30,
+            "compact row must fit terminal width: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn should_suppress_suffix_one_quarter_boundary_keeps_suffix() {
+        // Plan 087: the strict integer-safe boundary
+        // `longest * 4 > width` means a suffix exactly one quarter of
+        // the terminal width must keep suffixes visible.
+        assert!(!should_suppress_suffix(80, 20));
+        assert!(!should_suppress_suffix(40, 10));
+        assert!(!should_suppress_suffix(24, 6));
+    }
+
+    #[test]
+    fn should_suppress_suffix_one_cell_above_quarter_disables_suffix() {
+        // Plan 087: one cell above the one-quarter boundary trips
+        // suppression.
+        assert!(should_suppress_suffix(80, 21));
+        assert!(should_suppress_suffix(40, 11));
+        assert!(should_suppress_suffix(24, 7));
+    }
+
+    #[test]
+    fn should_suppress_suffix_helper_compares_in_display_cells() {
+        // Plan 087: the helper applies `longest * 4 > width` in
+        // integer arithmetic. The caller is responsible for measuring
+        // the suffix in terminal display cells, which the production
+        // site does via `UnicodeWidthStr::width`. Verify the boundary
+        // arithmetic with concrete numeric inputs so a regression in
+        // the threshold formula is caught.
+        assert!(!should_suppress_suffix(80, 0));
+        assert!(!should_suppress_suffix(80, 20));
+        assert!(should_suppress_suffix(80, 21));
+        assert!(!should_suppress_suffix(40, 10));
+        assert!(should_suppress_suffix(40, 11));
+        // Integer overflow protection: an enormous suffix must not
+        // wrap; comparison remains well-defined for u16 widths.
+        assert!(should_suppress_suffix(u16::MAX, usize::MAX));
+        assert!(!should_suppress_suffix(u16::MAX, 0));
+    }
+
+    #[test]
+    fn compact_mode_off_viewport_systems_participate_in_fleet_decision() {
+        // Plan 087: an off-viewport system with the longest natural
+        // suffix must drive the fleet-wide compact-mode decision the
+        // same way an in-viewport system would, because the fleet
+        // layout is computed from every online system with a snapshot.
+        let tiny = [
+            row("CPU", 25.0, Some("4 cores")),
+            row("MEM", 30.0, Some("1.0 GiB / 4.0 GiB")),
+            row("SWP", 0.0, None),
+            row("DISK", 25.0, Some("50.0 GiB / 200.0 GiB")),
+        ];
+        let wide = [
+            row("CPU", 25.0, Some("128 cores")),
+            row("MEM", 50.0, Some("8.0 GiB / 16.0 GiB")),
+            row("SWP", 0.0, None),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        // Build a fleet of three systems: two tiny in-viewport systems
+        // and one with the wide natural suffix that would otherwise
+        // sit below the viewport. Compact mode must engage regardless
+        // of which system "owns" the longest natural suffix.
+        let layout = compute_fleet_metric_layout([&tiny, &tiny, &wide], 80);
+        assert!(
+            !layout.show_suffix,
+            "wide-suffix system must trigger fleet-wide compact mode: {layout:?}"
+        );
+    }
+
+    #[test]
+    fn compact_mode_renders_no_trailing_separator_after_bracket() {
+        // Plan 087: in compact mode the row must terminate exactly at
+        // the closing `]`. There must be no trailing suffix separator
+        // (no " " or "  ") between `]` and the line terminator.
+        let rows = [
+            row("CPU", 25.0, Some("4 cores")),
+            row("MEM", 30.0, Some("1.0 GiB / 4.0 GiB")),
+            row("SWP", 0.0, None),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        let layout = compute_fleet_metric_layout([&rows], 32);
+        assert!(!layout.show_suffix);
+        let suffixes = resolve_system_suffixes(&rows, 32, layout);
+        for (idx, row_) in rows.iter().enumerate() {
+            let line = build_row_line(row_, &layout, &suffixes[idx]);
+            let close = line.rfind(']').expect("] present");
+            let after = &line[close + 1..];
+            assert!(
+                after.is_empty(),
+                "no characters after `]` in compact mode: {line:?}"
+            );
         }
+    }
+
+    #[test]
+    fn compact_mode_returns_to_full_suffixes_when_resized_wider() {
+        // Plan 087: the threshold is computed from the terminal width
+        // per render, so resizing a terminal from a narrow width that
+        // suppresses suffixes back to a wide width must restore
+        // suffixes without touching application state.
+        let rows = [
+            row("CPU", 25.0, Some("8 cores")),
+            row("MEM", 50.0, Some("8.0 GiB / 16.0 GiB")),
+            row("SWP", 0.0, None),
+            row("DISK", 50.0, Some("50.0 GiB / 100.0 GiB")),
+        ];
+        let narrow = compute_fleet_metric_layout([&rows], 32);
+        assert!(!narrow.show_suffix);
+        let wide = compute_fleet_metric_layout([&rows], 120);
+        assert!(wide.show_suffix);
     }
 
     #[test]
@@ -766,20 +996,15 @@ mod tests {
         // width, not the local `SWP` label width. Otherwise the
         // rendered line will exceed the terminal width and be clipped
         // by the backend.
+        //
+        // Plan 087: at width=80 the Linux MEM detail would push the
+        // natural suffix past one quarter of the terminal width and
+        // trip compact mode, leaving the resolver without a suffix to
+        // budget. Verify the Plan 086 invariant at a width where the
+        // suffix remains visible (compact mode off).
         let linux = [
             row("CPU", 25.0, Some("128 cores")),
-            row(
-                "MEM",
-                80.0,
-                // Detail chosen so the default suffix
-                // ("80.0% " + detail) exceeds the total fleet
-                // suffix budget = 80 - 14 = 66 cells but fits in the
-                // OLD local budget of (fleet_max + 3). The OLD code
-                // would truncate the suffix to (fleet_max + 3) cells,
-                // which renders the line 1 cell wider than the
-                // terminal width.
-                Some("12000.0 GiB / 15000.0 GiB / 8000.0 GiB / 500.0 GiB / 300.0 GiB"),
-            ),
+            row("MEM", 80.0, Some("120.0 GiB / 150.0 GiB")),
             row("SWP", 0.0, Some("0 B / 4.0 GiB")),
             row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
         ];
@@ -789,12 +1014,16 @@ mod tests {
             row("COMMIT", 50.0, Some("4.0 GiB / 8.0 GiB")),
             row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
         ];
-        let width = 80u16;
+        let width = 120u16;
         let layout = compute_fleet_metric_layout([&linux, &windows], width);
         assert_eq!(
             layout.label_width,
             u16::try_from("COMMIT".len()).unwrap(),
             "fleet label column must use the wider COMMIT label"
+        );
+        assert!(
+            layout.show_suffix,
+            "compact mode must remain disabled at width 120 with these details"
         );
         let suffixes = resolve_system_suffixes(&linux, width, layout);
         let fleet_suffix_budget = usize::from(
@@ -818,6 +1047,47 @@ mod tests {
                 "rendered line exceeds terminal width: {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn compact_mode_engages_for_mixed_label_fleet_at_narrow_width() {
+        // Plan 087: in a mixed Linux/Windows fleet, the Linux system
+        // is the one most likely to push the natural suffix past the
+        // quarter-width boundary. Compact mode must engage fleet-wide
+        // (not just on the wide-suffix system) so the bracket columns
+        // stay aligned.
+        let linux = [
+            row("CPU", 25.0, Some("128 cores")),
+            row("MEM", 80.0, Some("12000.0 GiB / 15000.0 GiB")),
+            row("SWP", 0.0, Some("0 B / 4.0 GiB")),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        let windows = [
+            row("CPU", 25.0, Some("128 cores")),
+            row("MEM", 80.0, Some("120.0 GiB / 150.0 GiB")),
+            row("COMMIT", 50.0, Some("4.0 GiB / 8.0 GiB")),
+            row("DISK", 90.0, Some("1.2 TiB / 1.4 TiB")),
+        ];
+        let layout = compute_fleet_metric_layout([&linux, &windows], 80);
+        assert!(
+            !layout.show_suffix,
+            "wide Linux MEM detail must trigger fleet-wide compact mode"
+        );
+        // Bracket columns must still align across the two systems.
+        let linux_suffixes = resolve_system_suffixes(&linux, 80, layout);
+        let windows_suffixes = resolve_system_suffixes(&windows, 80, layout);
+        let linux_line = build_row_line(&linux[0], &layout, &linux_suffixes[0]);
+        let windows_line = build_row_line(&windows[0], &layout, &windows_suffixes[0]);
+        assert_eq!(
+            linux_line.find('['),
+            windows_line.find('['),
+            "opening bracket columns must agree across mixed-label compact fleet"
+        );
+        assert_eq!(
+            linux_line.rfind(']'),
+            windows_line.rfind(']'),
+            "closing bracket columns must agree across mixed-label compact fleet"
+        );
     }
 
     #[test]

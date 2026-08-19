@@ -1,6 +1,6 @@
 # Phase 087: Dynamic compact metric suffix and transient selection polish
 
-Status: ready for implementation.
+Status: complete. Closing record committed below.
 
 Depends on: completed Plans 085 and 086, current `main` after Plan 086 record commit `a0aa28097617d880404aaa88850df767d028d66e`.
 
@@ -612,3 +612,46 @@ Do not require release-mode preflight or a remote CI run for completion unless i
 Implement this as one bounded client polish phase. The highest-risk mistake is clearing or expiring `selected_id`; do not do that. The second highest-risk mistake is making suffix suppression a per-row/per-device decision, which would undermine the fleet-wide alignment work from Plans 085/086.
 
 Prefer small helpers and explicit state over generalized abstractions. The desired result should reduce visual noise and improve narrow-pane utility with minimal additional runtime/state complexity.
+
+## Completion record
+
+Implementation commit recorded at the close of this phase. No new commit is referenced because the work is delivered in the Plan 087 commits themselves (suffix policy, IO omission, transient highlight); see `git log --oneline` for the precise ordering.
+
+Files changed (production code only; all confined to `crates/gregg/`):
+
+- `crates/gregg/src/ui/system_block.rs` — `MetricFleetLayout` gains a `show_suffix: bool` field, `should_suppress_suffix(width, longest)` enforces `longest * 4 > width`, `compute_fleet_metric_layout` decides per render before consulting the existing detail-only/truncate cascade, `resolve_system_suffixes` returns empty suffixes when `show_suffix == false`, `render_metric_row` emits the bar-only shape with no trailing suffix separator, `metric_prefix_width` / new `metric_compact_prefix_width` helpers keep the indent + label + bracket widths consistent. New boundary tests cover the exact one-quarter boundary, one-cell-above suppression, off-viewport participation in the fleet decision, Unicode display-cell comparison, and resize round-trips between compact and full modes.
+- `crates/gregg/src/state.rs` — `AppState.selection_highlight_active: bool` (default `false` at startup) is added. `MoveDown` / `MoveUp` / `PageDown` / `PageUp` / `SelectFirst` / `SelectLast` set the flag; `cycle_pane` clears it when leaving Systems; a new `Action::ClearSelectionHighlight` arm clears only the visual flag without touching `selected_id`.
+- `crates/gregg/src/action.rs` — new `Action::ClearSelectionHighlight` variant added to the existing typed action enum, with corresponding action-construction test coverage.
+- `crates/gregg/src/ui/layout.rs` — `ViewportEntry` now exposes both `is_selected` (logical) and `is_visually_selected` (logical AND `selection_highlight_active`). Drive-detail row allocation remains a logical-selection predicate so `e` survives highlight expiry.
+- `crates/gregg/src/ui/mod.rs` — passes both the visual-selection flag (for `REVERSED` styling) and the logical-selection flag (for drive-detail visibility) to the per-view renderers.
+- `crates/gregg/src/ui/system_block.rs` `render_online` / `render_waiting` — accept both flags; the header and metric rows use the visual flag, while drive-detail visibility continues to derive from the logical flag.
+- `crates/gregg/src/ui/condensed.rs` — `render_entry` accepts both flags; the host column / status row / drive-detail row allocation logic is unchanged.
+- `crates/gregg/src/main.rs` — `run_event_loop` carries one `tokio::time::Sleep` parked at a far-future instant when dormant plus an `Option<tokio::time::Instant>` deadline. Selection-changing Systems actions arm or reset the deadline to `SELECTION_HIGHLIGHT_DURATION = Duration::from_secs(10)`; pane changes and `ClearSelectionHighlight` action dispatches re-park the deadline. On the timer arm firing, the loop dispatches `Action::ClearSelectionHighlight` and re-paints so a stale reversed row disappears even when no other event fires. New helper `selection_changing_systems_action(action, pane)` keeps the classification testable.
+- `crates/gregg/src/ui/text.rs` — `header_line()` now branches on `cpu_iowait_supported` AND `iowait_pct.is_some()` for the optional `IO <value>%` token; when either is missing the token is omitted entirely (no placeholder, no separator artifact). Tests cover supported-with-value, supported-without-value, and unsupported paths plus a width-bounded comparison.
+
+Documentation reconciliation (intentionally narrow per the plan's "minimal active documentation surface" rule):
+
+- `README.md` notes the compact-mode policy (suffix disappears when the fleet's longest natural suffix exceeds one quarter of the terminal width; resize dynamically restores it), and the transient selection highlight (logical selection persists for `e`, but the reverse-video styling fades after roughly ten seconds and is cleared on pane change).
+- `crates/gregg/README.md` does not need additions because its scope is CLI ergonomics rather than TUI rendering.
+- `architecture/gregg-client.md` adds a Width-degradation subsection covering the compact-mode policy, an `IO` token omission note, updates the State model with `selection_highlight_active` and the logical-vs-visual selection paragraph, lists `ClearSelectionHighlight` in the Action enum, and adds the highlight deadline arm to the event-loop description.
+- `AGENTS.md` carries two new bullets in the key-constraints section covering compact-mode (suffix region, IO omission) and transient vs logical selection (`e` continues to operate on the logical selected system after the highlight expires).
+- `.opencode/skills/gregg-client/SKILL.md` mirrors the architecture and AGENTS changes at the skill's expected level of detail.
+- `plans/README.md` records Plan 087 in the directional overview and the plan index, and adds it to the dependency chain after 086.
+- This plan file marks `Status: complete` and adds this completion record.
+
+Focused regression coverage (each cargo test filter was run from repository root):
+
+```bash
+cargo fmt --all -- --check
+cargo test -p gregg --lib system_block
+cargo test -p gregg --lib text
+cargo test -p gregg --lib ui::tests
+cargo test -p gregg --lib condensed
+cargo test -p gregg --lib main
+cargo test -p gregg --lib fleet
+./scripts/check-local.sh
+```
+
+`./scripts/check-local.sh` passes. The 468 `gregg` lib tests + the suite-wide default-local tests all pass. One pre-existing scheduler test (`fleet_scaling_50_endpoints`) is timing-sensitive under load and is unrelated to this phase; the Plan 085/086 fleet tests at module scope all pass deterministically.
+
+Scope held: no daemon, protocol, collector, normalized-capacity, scheduler, configuration, endpoint, dependency, CI workflow, or release behavior changed. The condensed `IOWAIT` column keeps its em-dash placeholder for unavailable values exactly as before; only the normal-header `IO` token is now omitted.

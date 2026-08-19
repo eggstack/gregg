@@ -136,6 +136,13 @@ pub struct AppState {
     pub system_view_mode: SystemViewMode,
     /// Whether the selected online system's drives are expanded.
     pub drives_expanded: bool,
+    /// Plan 087: whether the logical selection is currently being
+    /// visually highlighted with `Modifier::REVERSED`. Independent of
+    /// `selected_id`; cleared by the event-loop timer (about ten
+    /// seconds of inactivity) and on pane changes away from Systems.
+    /// Logical selection itself remains available for keyboard actions
+    /// (`e` and friends) when this flag is `false`.
+    pub selection_highlight_active: bool,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
 }
@@ -176,6 +183,7 @@ impl AppState {
             },
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            selection_highlight_active: false,
             eggpool,
         }
     }
@@ -305,6 +313,7 @@ impl AppState {
                 }
                 let order = self.display_order();
                 self.move_selection(&order, 1);
+                self.selection_highlight_active = true;
             }
             Action::MoveUp => {
                 if self.active_pane == Pane::Eggpool {
@@ -313,16 +322,19 @@ impl AppState {
                 }
                 let order = self.display_order();
                 self.move_selection(&order, -1_isize);
+                self.selection_highlight_active = true;
             }
             Action::PageDown if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 let page = self.page_size();
                 self.move_selection(&order, page);
+                self.selection_highlight_active = true;
             }
             Action::PageUp if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
                 let page = self.page_size();
                 self.move_selection(&order, -page);
+                self.selection_highlight_active = true;
             }
             Action::SelectFirst if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
@@ -330,6 +342,7 @@ impl AppState {
                     .first()
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
+                self.selection_highlight_active = true;
             }
             Action::SelectLast if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
@@ -337,9 +350,13 @@ impl AppState {
                     .last()
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
+                self.selection_highlight_active = true;
             }
             Action::PreviousPane => self.cycle_pane(false),
             Action::NextPane => self.cycle_pane(true),
+            Action::ClearSelectionHighlight => {
+                self.selection_highlight_active = false;
+            }
             Action::ToggleSystemView if self.active_pane == Pane::Systems => {
                 self.system_view_mode = match self.system_view_mode {
                     SystemViewMode::Normal => SystemViewMode::Condensed,
@@ -450,6 +467,7 @@ impl AppState {
     }
 
     fn cycle_pane(&mut self, next: bool) {
+        let before = self.active_pane;
         match (
             self.active_pane,
             self.systems.is_empty(),
@@ -461,6 +479,13 @@ impl AppState {
                 self.active_pane = Pane::Systems;
             }
             _ => {}
+        }
+        // Plan 087: leaving the Systems pane must drop the visual
+        // selection highlight immediately so a stale reversed row
+        // does not reappear when the operator comes back. Re-entering
+        // Systems does not activate the highlight on its own.
+        if before == Pane::Systems && self.active_pane != Pane::Systems {
+            self.selection_highlight_active = false;
         }
     }
 
@@ -1403,6 +1428,7 @@ mod tests {
             active_pane: Pane::Systems,
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            selection_highlight_active: false,
             eggpool: None,
         };
         assert_eq!(entry_height(&state, 0), 5);

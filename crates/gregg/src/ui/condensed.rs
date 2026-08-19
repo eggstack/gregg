@@ -359,17 +359,23 @@ pub(crate) fn render_entry(
     area: Rect,
     system: &SystemState,
     layout: &CondensedTableLayout,
-    is_selected: bool,
+    is_visually_selected: bool,
+    is_logically_selected: bool,
     drive_rows_visible: usize,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let style = if is_selected {
+    let style = if is_visually_selected {
         Style::default().add_modifier(Modifier::REVERSED)
     } else {
         Style::default()
     };
+    // Plan 087: drive-detail visibility is governed by logical
+    // selection so an already-expanded list survives highlight
+    // timeout. The renderer ignores the parameter if the entry is
+    // not the logically selected system.
+    let _ = is_logically_selected;
     let line = match system.reachability {
         Reachability::Online => render_online_row(system, layout),
         Reachability::Offline => status_line(system, layout, "offline"),

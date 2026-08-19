@@ -58,7 +58,9 @@ pub fn format_load(load: &gregg_protocol::LoadAverage) -> String {
 ///
 /// Priority (dropped as width decreases):
 /// 1. Display name or hostname
-/// 2. I/O-wait value or "--" for unsupported
+/// 2. I/O-wait value (Plan 087: emitted only when `cpu_iowait_supported`
+///    and a real `iowait_pct` are present; otherwise the entire
+///    `IO <value>%` token is omitted instead of producing a placeholder)
 /// 3. Load averages or "--" for unsupported
 /// 4. Logical core count
 /// 5. OS name/version
@@ -71,13 +73,12 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
 
     let name = display_name(system);
 
-    let io_str = if snap.cpu_iowait_supported {
-        match snap.iowait_pct {
-            Some(iowait) => format!("IO {iowait:.1}%"),
-            None => "IO \u{2014}".to_string(),
-        }
-    } else {
-        "IO \u{2014}".to_string()
+    // Plan 087: only emit an `IO` token when the platform both
+    // supports and is actually reporting a real value. The UI never
+    // infers a zero from a missing measurement.
+    let io_str: Option<String> = match (snap.cpu_iowait_supported, snap.iowait_pct) {
+        (true, Some(iowait)) => Some(format!("IO {iowait:.1}%")),
+        _ => None,
     };
 
     let load_str = match &snap.load {
@@ -89,14 +90,37 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
     let kernel_str = format!("{} {}", snap.system.kernel_name, snap.system.kernel_release);
     let arch_str = &snap.system.architecture;
 
+    // Helper to join the optional `IO` token with the rest of the
+    // header components. The token is omitted (with no extra gap or
+    // doubled separator) when the platform cannot supply a real value.
+    fn append_io(line: &mut String, io: Option<&str>) {
+        if let Some(io) = io {
+            line.push_str("  ");
+            line.push_str(io);
+        }
+    }
+
     if width >= 80 {
-        format!("{name}  {io_str}  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}")
+        let mut line = format!("{name}");
+        append_io(&mut line, io_str.as_deref());
+        line.push_str(&format!(
+            "  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}"
+        ));
+        line
     } else if width >= 50 {
-        format!("{name}  {io_str}  {load_str}  {cores_str}  {os_str}")
+        let mut line = format!("{name}");
+        append_io(&mut line, io_str.as_deref());
+        line.push_str(&format!("  {load_str}  {cores_str}  {os_str}"));
+        line
     } else if width >= 32 {
-        format!("{name}  {io_str}  {load_str}  {cores_str}")
+        let mut line = format!("{name}");
+        append_io(&mut line, io_str.as_deref());
+        line.push_str(&format!("  {load_str}  {cores_str}"));
+        line
     } else {
-        format!("{name}  {io_str}")
+        let mut line = format!("{name}");
+        append_io(&mut line, io_str.as_deref());
+        line
     }
 }
 
@@ -379,6 +403,7 @@ pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::normalized::NormalizedSnapshot;
 
     fn drive(name: &str, used: u64, total: u64, available: Option<u64>) -> NormalizedDrive {
         NormalizedDrive {
@@ -386,6 +411,94 @@ mod tests {
             used_bytes: used,
             total_bytes: total,
             available_bytes: available,
+        }
+    }
+
+    fn system_with_io(supported: bool, iowait: Option<f32>) -> crate::state::SystemState {
+        let mut snap = if supported {
+            NormalizedSnapshot::from_v1(
+                &gregg_protocol::test_support::LinuxSnapshotBuilder::default()
+                    .iowait_pct(0.4)
+                    .build(),
+            )
+        } else {
+            NormalizedSnapshot::from_v1(
+                &gregg_protocol::test_support::MacosSnapshotBuilder::default().build(),
+            )
+        };
+        snap.cpu_iowait_supported = supported;
+        snap.iowait_pct = iowait;
+        let mut system = crate::state::SystemState {
+            id: "id".into(),
+            endpoint: crate::endpoint::Endpoint::new("host".into(), 11310, None),
+            configured_name: Some("srv".into()),
+            reachability: crate::state::Reachability::Online,
+            latest: Some(snap),
+            last_success_at: None,
+            last_attempt_at: None,
+            latency: None,
+            last_error: None,
+        };
+        system
+    }
+
+    #[test]
+    fn header_line_renders_io_for_supported_linux_value() {
+        let system = system_with_io(true, Some(1.7));
+        let line = header_line(&system, 120);
+        assert!(
+            line.contains("IO 1.7%"),
+            "supported Linux value must show: {line:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_omits_io_token_for_unsupported_platform() {
+        let system = system_with_io(false, None);
+        let line = header_line(&system, 120);
+        assert!(!line.contains("IO "), "must omit IO token: {line:?}");
+        assert!(!line.contains("—"), "must not render placeholder: {line:?}");
+    }
+
+    #[test]
+    fn header_line_omits_io_token_when_capability_supported_but_value_missing() {
+        let system = system_with_io(true, None);
+        let line = header_line(&system, 120);
+        assert!(!line.contains("IO "), "must omit IO token: {line:?}");
+        assert!(!line.contains("0.0%"), "must not fabricate 0.0%: {line:?}");
+    }
+
+    #[test]
+    fn header_line_avoids_double_separator_when_io_omitted() {
+        let system = system_with_io(false, None);
+        let line = header_line(&system, 80);
+        // The name is followed by the load component. There must be
+        // exactly one separator gap (two spaces), not three.
+        assert!(
+            !line.starts_with("srv   "),
+            "no tripled separator after the name when IO is omitted: {line:?}"
+        );
+    }
+
+    #[test]
+    fn header_line_remains_bounded_when_io_omitted() {
+        // Plan 087 documents that the existing priority-aware width
+        // behavior is preserved unchanged at the tier thresholds.
+        // Verify that omitting the IO token never causes a regression
+        // compared to the supported path: the unsupported header must
+        // be at least as short as the supported one.
+        let supported = system_with_io(true, Some(1.2));
+        let unsupported = system_with_io(false, None);
+        for width in [32u16, 50, 80, 120, 200] {
+            let supported_line = header_line(&supported, width);
+            let unsupported_line = header_line(&unsupported, width);
+            assert!(
+                UnicodeWidthStr::width(unsupported_line.as_str())
+                    <= UnicodeWidthStr::width(supported_line.as_str()),
+                "omitting IO must not make the header longer than the supported \
+                 path at width {width}: supported={supported_line:?}, \
+                 unsupported={unsupported_line:?}"
+            );
         }
     }
 

@@ -15,6 +15,34 @@ use gregg::state;
 use gregg::terminal;
 use gregg::ui;
 
+/// Plan 087: how long the visual selection highlight remains active
+/// after the most recent selection-changing Systems action.
+pub(crate) const SELECTION_HIGHLIGHT_DURATION: Duration = Duration::from_secs(10);
+
+/// Plan 087: a far-future sleep deadline used to keep the highlight
+/// timer dormant when no selection highlight is active. The value is
+/// chosen to be large enough that no realistic test or operator
+/// session ever crosses it.
+const HIGHLIGHT_DORMANT_DEADLINE: Duration = Duration::from_secs(60 * 60 * 24 * 365);
+
+/// Plan 087: does this action activate or reset the Systems selection
+/// highlight when the operator is currently on the Systems pane? Used
+/// by the event loop to decide when to reset the highlight deadline.
+fn selection_changing_systems_action(action: action::Action, pane: state::Pane) -> bool {
+    if pane != state::Pane::Systems {
+        return false;
+    }
+    matches!(
+        action,
+        action::Action::MoveDown
+            | action::Action::MoveUp
+            | action::Action::PageDown
+            | action::Action::PageUp
+            | action::Action::SelectFirst
+            | action::Action::SelectLast
+    )
+}
+
 fn spawn_eggpool_worker(
     config: &config::Config,
     timeout: Duration,
@@ -156,6 +184,13 @@ async fn run_event_loop(
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
     eggpool_results: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Plan 087: highlight deadline bookkeeping. The dormant sleep
+    // sits far in the future so the highlight arm never fires while
+    // no selection highlight is active.
+    let mut highlight_deadline: Option<tokio::time::Instant> = None;
+    let mut highlight_sleep: std::pin::Pin<Box<tokio::time::Sleep>> =
+        Box::pin(tokio::time::sleep(HIGHLIGHT_DORMANT_DEADLINE));
+
     // Initial render.
     terminal.draw(|f| ui::render(f, app_state))?;
 
@@ -199,6 +234,10 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
+                            let before_pane = app_state.active_pane;
+                            let before_highlight = app_state.selection_highlight_active;
+                            let resets_highlight =
+                                selection_changing_systems_action(action, before_pane);
                             dispatch_action_with_store(
                                 app_state,
                                 action,
@@ -206,10 +245,37 @@ async fn run_event_loop(
                                 Some(store),
                                 eggpool_commands,
                             ).await?;
+                            // Plan 087: a successful Systems selection-
+                            // changing action always arms/reset the
+                            // highlight timer; leaving Systems or
+                            // clearing the highlight explicitly disarms
+                            // it so a stale reversed row cannot
+                            // reappear later.
+                            if resets_highlight {
+                                let new_deadline = tokio::time::Instant::now()
+                                    + SELECTION_HIGHLIGHT_DURATION;
+                                highlight_sleep.as_mut().reset(new_deadline);
+                                highlight_deadline = Some(new_deadline);
+                            } else if !app_state.selection_highlight_active
+                                && before_highlight
+                            {
+                                highlight_sleep
+                                    .as_mut()
+                                    .reset(tokio::time::Instant::now() + HIGHLIGHT_DORMANT_DEADLINE);
+                                highlight_deadline = None;
+                            }
                         }
                     }
                     None => break,
                 }
+            }
+
+            () = highlight_sleep.as_mut(), if highlight_deadline.is_some() => {
+                highlight_deadline = None;
+                highlight_sleep
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + HIGHLIGHT_DORMANT_DEADLINE);
+                app_state.apply_action(action::Action::ClearSelectionHighlight);
             }
         }
 

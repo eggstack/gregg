@@ -17,11 +17,11 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased), TUI wiring |
+| `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring |
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
-| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order |
-| `action` | `src/action.rs` | `Action` enum (13 variants) |
+| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight |
+| `action` | `src/action.rs` | `Action` enum (14 variants including Plan 087's `ClearSelectionHighlight`) |
 
 ### Polling
 
@@ -62,8 +62,9 @@ The main event loop uses `tokio::select!` biased to process:
 1. **Poll batches** from the scheduler → apply to state
 2. **EggPool results** from the worker → apply to state
 3. **User input events** from crossterm → translate to actions → apply to state
+4. **Highlight deadline** (`tokio::time::Sleep` arm; Plan 087) — when armed by a selection-changing Systems action, it dispatches `Action::ClearSelectionHighlight` roughly ten seconds later so the reverse-video styling disappears even when no other event fires.
 
-After every state change, the TUI renders.
+After every state change, the TUI renders. The highlight timer is parked at a far-future sleep when inactive; the select arm never fires spuriously.
 
 ### Action/Reducer pattern
 
@@ -109,6 +110,7 @@ struct AppState {
     active_pane: Pane,              // Systems or Eggpool
     system_view_mode: SystemViewMode, // Normal or Condensed
     drives_expanded: bool,
+    selection_highlight_active: bool,  // Plan 087: transient reverse-video highlight
     eggpool: Option<EggpoolState>,
 }
 ```
@@ -119,6 +121,16 @@ struct AppState {
 `viewport_top_id` to `display_order()[0]` only when
 `last_applied_generation == 0` before the batch is applied. Later
 batches and `Ctrl-R` reloads preserve ordinary selection/viewport.
+
+**Plan 087 logical vs visual selection:** `selected_id` is the
+persistent logical selection (drives `e` and viewport behavior).
+`selection_highlight_active` is the transient reverse-video flag.
+Startup leaves the highlight `false`, so the TUI never opens with a
+reversed row. Selection-changing Systems actions arm a resettable
+ten-second deadline owned by the event loop. Expiry dispatches
+`Action::ClearSelectionHighlight` (or a pane change away from
+Systems) without touching `selected_id`. EggPool `j/k` period changes
+never activate the Systems-device highlight.
 
 ### Key bindings
 
@@ -143,10 +155,20 @@ Header line drops lower-priority segments as width decreases:
 Condensed-view column priority (Wide ≥ 64, Medium 48-63, Narrow 30-47,
 Minimal < 30) drops IOWAIT before LOAD before DISK before MEM.
 
+Plan 087 also adds a strict integer-safe compact-mode policy for the
+normal metric rows: when the longest *natural* suffix across the
+entire online fleet satisfies `longest * 4 > terminal_width`, the
+entire suffix region disappears (`MetricFleetLayout::show_suffix =
+false`). The `[` and `]` columns stay aligned, the bar gains the
+cells that would otherwise be the `]` separator, and resizing wider
+restores suffixes dynamically. Plan 087 also omits the normal-header
+`IO` token entirely when the snapshot is unsupported or has no real
+I/O-wait value, instead of rendering a placeholder.
+
 ### UI views
 
 **Normal view** (`ui/system_block.rs`): 5-row blocks per system:
-1. Header (name, IO, load, cores, OS, kernel, arch)
+1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
@@ -168,6 +190,9 @@ render `—` rather than fabricating `0.0%`. Plan 086 threads the fleet
 `MetricFleetLayout` through `resolve_system_suffixes` (via the shared
 `metric_prefix_width` helper) so mixed `SWP`/`COMMIT` fleets budget
 and render suffixes against the same structural prefix width.
+Plan 087 extends `MetricFleetLayout` with `show_suffix` and switches
+between natural-detail rendering and bar-only rendering from the
+length of the longest natural suffix across the whole fleet.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`):
 - configured client name set:  `name@host:port offline`

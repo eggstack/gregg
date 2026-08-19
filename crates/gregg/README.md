@@ -55,6 +55,14 @@ gregg edit
 | `e` | Expand or collapse selected-system drives |
 | `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 
+`selected_id` is the persistent logical selection that drives `e`
+(drive expansion) and viewport behavior. The reverse-video highlight
+on the selected device is transient: it activates when you navigate,
+and disappears after about ten seconds of inactivity. Leaving the
+Systems pane or returning to it does not extend or re-trigger the
+highlight, and `e` continues to operate on the same logical system
+after the highlight fades.
+
 ## Requirements
 
 Each monitored host must have `greggd` running and reachable on the
@@ -62,12 +70,17 @@ configured port (default 11310).
 
 The normal view uses five rows for an online system, including aggregate disk
 capacity. All four metric rows share a fleet-wide `bar_width` so the opening
-`[` and closing `]` columns align across every online system. The aggregate
-DISK suffix renders `<used bytes> / <total bytes>` so the denominator matches
-the percentage; explicit caller-available space is preserved by the normalized
-model and surfaced only through the expanded per-drive rows. The condensed
-view uses one comparison row per system. `e` adds bounded detail rows for
-valid mounted-local-filesystem records belonging only to the selected online
+`[` and closing `]` columns align across every online system. When the
+longest natural metric suffix across the entire online fleet exceeds one
+quarter of the terminal width, every normal-view metric row collapses to
+bar-only — the `[` and `]` brackets remain aligned and the percentage, core
+count, and byte-count suffix disappears. Resizing wider restores them
+dynamically without restart. The aggregate DISK suffix renders
+`<used bytes> / <total bytes>` so the denominator matches the percentage;
+explicit caller-available space is preserved by the normalized model and
+surfaced only through the expanded per-drive rows. The condensed view uses
+one comparison row per system. `e` adds bounded detail rows for valid
+mounted-local-filesystem records belonging only to the selected online
 system; the expanded rows share one table layout so mount names, used,
 total, remaining, and percentage columns stay aligned across drives. View
 and expansion state are not persisted.

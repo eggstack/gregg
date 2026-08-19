@@ -8,7 +8,13 @@ use crate::state::{entry_height, view_header_height, visible_range, AppState};
 pub struct ViewportEntry {
     pub index: usize,
     pub rect: Rect,
+    /// Plan 087: logical selection (the persistent selected system
+    /// ID). Drives drive-detail row allocation and the `e` action.
     pub is_selected: bool,
+    /// Plan 087: visual selection. `true` only when the entry is
+    /// logically selected AND `AppState::selection_highlight_active`.
+    /// Drives the reversed-video styling in the renderer.
+    pub is_visually_selected: bool,
     pub drive_rows_visible: usize,
 }
 
@@ -53,6 +59,7 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             .selected_id
             .as_deref()
             .is_some_and(|sel| system.id == *sel);
+        let is_visually_selected = is_selected && state.selection_highlight_active;
 
         let rect = Rect {
             x: area.x,
@@ -65,6 +72,9 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             crate::state::SystemViewMode::Normal => 5,
             crate::state::SystemViewMode::Condensed => 1,
         };
+        // Plan 087: drive-detail visibility is tied to logical
+        // selection, not the transient visual highlight. An expanded
+        // drive list must survive a highlight timeout.
         let drive_rows_visible = if is_selected && state.drives_expanded {
             usize::from(h.saturating_sub(base_height))
         } else {
@@ -75,6 +85,7 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
             index: sys_idx,
             rect,
             is_selected,
+            is_visually_selected,
             drive_rows_visible,
         });
 

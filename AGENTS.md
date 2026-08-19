@@ -104,11 +104,30 @@ passes locally, the distinction is the cause.
   not just the visible entries. Metric rows are indented by exactly
   four spaces. The DISK aggregate suffix is `<used bytes> / <total bytes>`
   so the slash denominator matches the percentage calculation; explicit
-  caller-available capacity (`available_bytes`) is preserved by the
-  normalized model and surfaced only through the expanded drive detail
+caller-available capacity (`available_bytes`) is preserved by the
+  normalized model and surfaced through the expanded drive detail
   rows. Unavailable rows render `—` instead of fabricating a `0.0%`.
   Offline endpoints render as `name@host:port offline` or
   `host:port offline`; the host is never duplicated when a name is set.
+  Plan 087 adds two compact-mode behaviors: the entire normal-view
+  metric suffix region (percentage, core counts, byte counts) is
+  suppressed fleet-wide when the longest natural suffix exceeds one
+  quarter of the terminal width, and the normal-header `IO` token is
+  omitted entirely when the snapshot is unsupported or has no real
+  I/O-wait value, instead of rendering a placeholder. The decision is
+  per render from `MetricFleetLayout::show_suffix` / the conditional
+  `IO` branch in `text::header_line`; resize reacts immediately.
+- Logical selection and visual selection are separate: `selected_id`
+  is persistent and drives `e` (drive expansion) and viewport
+  behavior. `selection_highlight_active` is the transient
+  reverse-video flag. Startup leaves the highlight `false`, so the
+  TUI never opens with a reversed row. Selection-changing Systems
+  actions (`j`/`k`, page movement, `g`/`G`) set the flag and arm a
+  resettable ten-second deadline owned by the event loop. Expiry
+  dispatches `Action::ClearSelectionHighlight` (or pane changes away
+  from Systems) without touching `selected_id`, so `e` still works
+  after the highlight fades. Do not add a periodic frame ticker or
+  per-keypress background task.
 - `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to
   `display_order()[0]` only on the **first** accepted poll batch (when
   `last_applied_generation == 0` before applying). Subsequent batches

@@ -96,6 +96,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 entry.rect,
                 system,
                 &condensed_layout,
+                entry.is_visually_selected,
                 entry.is_selected,
                 entry.drive_rows_visible,
             );
@@ -108,12 +109,13 @@ pub fn render(f: &mut Frame, state: &AppState) {
                     entry.rect,
                     system,
                     &fleet_layout,
+                    entry.is_visually_selected,
                     entry.is_selected,
                     entry.drive_rows_visible,
                 );
             }
             crate::state::Reachability::Offline | crate::state::Reachability::Pending => {
-                system_block::render_offline(f, entry.rect, system, entry.is_selected);
+                system_block::render_offline(f, entry.rect, system, entry.is_visually_selected);
             }
         }
     }
@@ -378,14 +380,16 @@ mod tests {
             header.contains("mac1"),
             "header should contain 'mac1', got: {header}"
         );
-        // macOS has cpu_iowait = false, so header should show "IO —" not a fabricated percentage
+        // Plan 087: macOS has cpu_iowait = false so the IO token is
+        // omitted entirely. There must be no placeholder, no
+        // separator artifact, and no fabricated percentage.
         assert!(
-            header.contains("IO —"),
-            "macOS header should show 'IO —', got: {header}"
+            !header.contains("IO "),
+            "macOS header must omit the IO token, got: {header:?}"
         );
         assert!(
-            !header.contains("IO 0.0%"),
-            "macOS header must not show fabricated 'IO 0.0%', got: {header}"
+            !header.contains("0.0%"),
+            "macOS header must not fabricate any percentage, got: {header}"
         );
     }
 
@@ -524,6 +528,9 @@ mod tests {
         });
         // First system (a) is selected by default.
         assert_eq!(state.selected_id.as_deref(), Some("id-0"));
+        // Plan 087: visual highlight is independent of logical selection.
+        // Activate the highlight so the renderer applies REVERSED.
+        state.selection_highlight_active = true;
 
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -545,6 +552,9 @@ mod tests {
         let config = test_config(&["a"]);
         let mut state = AppState::from_config(&config);
         apply_offline(&mut state, 0);
+        // Plan 087: visual highlight must be explicitly activated to
+        // render the REVERSED modifier.
+        state.selection_highlight_active = true;
 
         let backend = TestBackend::new(80, 4);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -557,6 +567,123 @@ mod tests {
             style.add_modifier.contains(Modifier::REVERSED),
             "selected offline system should have REVERSED modifier, got style: {style:?}"
         );
+    }
+
+    #[test]
+    fn startup_does_not_render_logical_selection_with_reversed_style() {
+        // Plan 087: at startup no system may be visually reversed even
+        // though `selected_id` is already populated deterministically.
+        let config = test_config(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.apply_batch(&PollBatch {
+            generation: 2,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: state.systems[1].id.clone(),
+                endpoint: state.systems[1].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap())),
+                latency: Duration::from_millis(10),
+            }],
+        });
+        assert_eq!(state.selected_id.as_deref(), Some("id-0"));
+        assert!(
+            !state.selection_highlight_active,
+            "highlight must remain off until a selection-changing action"
+        );
+
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| super::render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        assert!(
+            !buf.cell((0, 0))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "header must not be reversed before any selection action: row 0 = {:?}",
+            buf.cell((0, 0)).map(|c| c.symbol())
+        );
+        assert!(
+            !buf.cell((0, 5))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "off-viewport selected system header must not be reversed either"
+        );
+    }
+
+    #[test]
+    fn clear_selection_highlight_leaves_logical_selection_intact() {
+        // Plan 087: dispatching the clear-highlight action (as the
+        // event-loop timer does) must remove the visual highlight
+        // without touching the logical `selected_id`. The renderer
+        // then renders the system block without `REVERSED`.
+        let config = test_config(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.apply_batch(&PollBatch {
+            generation: 2,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: state.systems[1].id.clone(),
+                endpoint: state.systems[1].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap())),
+                latency: Duration::from_millis(10),
+            }],
+        });
+        state.selection_highlight_active = true;
+        let selected_before = state.selected_id.clone();
+        state.apply_action(crate::action::Action::ClearSelectionHighlight);
+        assert!(!state.selection_highlight_active);
+        assert_eq!(state.selected_id, selected_before);
+
+        let backend = TestBackend::new(80, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| super::render(f, &state)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        assert!(
+            !buf.cell((0, 0))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "no REVERSED after highlight cleared"
+        );
+    }
+
+    #[test]
+    fn navigation_action_activates_visual_highlight() {
+        // Plan 087: the visual highlight activates when the operator
+        // navigates, even if `selected_id` is logically unchanged (for
+        // example when `MoveDown` is clamped at the last row).
+        let config = test_config(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.apply_batch(&PollBatch {
+            generation: 2,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: state.systems[1].id.clone(),
+                endpoint: state.systems[1].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap())),
+                latency: Duration::from_millis(10),
+            }],
+        });
+        state.selection_highlight_active = true;
+        // MoveDown is clamped at the last row; the reducer must still
+        // retain the highlight so the event-loop timer can keep
+        // counting down from this action.
+        state.apply_action(crate::action::Action::SelectLast);
+        assert!(state.selection_highlight_active);
+        // Now apply ClearSelectionHighlight as the timer would.
+        state.apply_action(crate::action::Action::ClearSelectionHighlight);
+        assert!(!state.selection_highlight_active);
     }
 
     // ── 7. Width degradation ─────────────────────────────────────────
@@ -615,7 +742,7 @@ mod tests {
         let config = test_config(&["srv"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap_custom(0.0, 0.0, 4));
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
             cpu_line.contains("0.0%"),
@@ -628,7 +755,7 @@ mod tests {
         let config = test_config(&["srv"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap_custom(50.0, 0.0, 4));
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
             cpu_line.contains("50.0%"),
@@ -646,7 +773,7 @@ mod tests {
         let config = test_config(&["srv"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap_custom(100.0, 0.0, 4));
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
             cpu_line.contains("100%"),
@@ -659,7 +786,7 @@ mod tests {
         let config = test_config(&["srv"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap_custom(99.9, 0.0, 4));
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
             cpu_line.contains("99.9%"),
@@ -675,7 +802,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         let snap = LinuxSnapshotBuilder::default().swap(0, 0).build();
         apply_online(&mut state, 0, snap);
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let swap_line = output.lines().nth(3).unwrap();
         assert!(
             swap_line.contains("SWP"),
@@ -862,7 +989,7 @@ mod tests {
         let config = test_config(&["legacy"]);
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
-        let output = render_state(&state, 80, 5);
+        let output = render_state(&state, 120, 5);
         let disk = output.lines().nth(4).unwrap();
         assert!(disk.contains("DISK"));
         assert!(disk.contains('—'));
@@ -928,9 +1055,70 @@ mod tests {
         apply_online(&mut state, 0, macos_snap());
         let output = render_state(&state, 80, 8);
         let header = output.lines().next().unwrap();
+        // Plan 087: macOS has cpu_iowait_supported = false so the IO
+        // token is omitted entirely. There must be no placeholder or
+        // separator artifact where the token would have lived.
         assert!(
-            header.contains("IO —"),
-            "macOS header should show 'IO —' (unsupported), got: {header}"
+            !header.contains("IO "),
+            "macOS header must omit the IO token, got: {header:?}"
+        );
+    }
+
+    #[test]
+    fn io_wait_unsupported_omits_token_without_separator_artifact() {
+        // Plan 087: with `cpu_iowait_supported == false` the header
+        // must not leave a separator artifact where the IO token
+        // would have been. The remaining fields are joined by the
+        // ordinary single separator gap (the previous/next component
+        // is the system name on one side and the load/cores block
+        // on the other). Specifically, the name must not be
+        // followed by three spaces because the omitted IO token left
+        // its leading separator behind.
+        let config = test_config(&["srv"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, macos_snap());
+        let output = render_state(&state, 120, 8);
+        let header = output.lines().next().unwrap().trim_end();
+        assert!(!header.contains("IO "));
+        // Plan 087: a separator artifact would mean "srv   " (three
+        // spaces after the name) because the IO token was omitted but
+        // its leading separator was kept. The trimmed header must not
+        // start with that pattern.
+        assert!(
+            !header.starts_with("srv   "),
+            "no separator artifact after the name, got: {header:?}"
+        );
+    }
+
+    #[test]
+    fn io_wait_supported_with_missing_value_omits_token() {
+        // Plan 087: a v2 snapshot that advertises `cpu_iowait =
+        // true` capability but reports `iowait_pct = None` must also
+        // omit the IO token. The UI does not infer a zero from a
+        // missing measurement. The protocol validator enforces
+        // agreement between the capability and the value at the wire
+        // level, so we bypass the validator and manipulate the
+        // normalized snapshot directly to exercise the renderer
+        // invariant.
+        let config = test_config(&["srv"]);
+        let mut state = AppState::from_config(&config);
+        let payload = LinuxSnapshotV2Builder::default().build_payload();
+        apply_online_v2(&mut state, 0, payload, 1);
+        // Strip the IO value while keeping the capability flag set.
+        state.systems[0]
+            .latest
+            .as_mut()
+            .expect("snapshot present")
+            .iowait_pct = None;
+        let output = render_state(&state, 120, 8);
+        let header = output.lines().next().unwrap();
+        assert!(
+            !header.contains("IO "),
+            "supported-without-value must omit IO token, got: {header:?}"
+        );
+        assert!(
+            !header.contains("0.0%"),
+            "must not fabricate IO 0.0%, got: {header:?}"
         );
     }
 
@@ -956,7 +1144,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         let snap = LinuxSnapshotBuilder::default().logical_cores(16).build();
         apply_online(&mut state, 0, snap);
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
         assert!(
             cpu_line.contains("CPU"),
@@ -978,7 +1166,7 @@ mod tests {
             .memory(8_000_000_000, 16_000_000_000)
             .build();
         apply_online(&mut state, 0, snap);
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let mem_line = output.lines().nth(2).unwrap();
         assert!(
             mem_line.contains("MEM"),
@@ -998,7 +1186,7 @@ mod tests {
             .swap(1_000_000_000, 4_000_000_000)
             .build();
         apply_online(&mut state, 0, snap);
-        let output = render_state(&state, 80, 8);
+        let output = render_state(&state, 120, 8);
         let swap_line = output.lines().nth(3).unwrap();
         assert!(
             swap_line.contains("SWP"),
@@ -1027,7 +1215,9 @@ mod tests {
             }],
         });
 
-        let output = render_state(&state, 80, 16);
+        // Plan 087: width 120 keeps suffixes visible for the
+        // default Linux snapshot.
+        let output = render_state(&state, 120, 16);
         let lines: Vec<&str> = output.lines().collect();
 
         // System a is first (online, selected), then system b.
@@ -1115,31 +1305,25 @@ mod tests {
             }],
         });
 
-        // System a is selected (row 0).
+        // Plan 087: even with logical selection populated at startup,
+        // no system is visually reversed until the operator navigates.
         let backend = TestBackend::new(80, 12);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal.draw(|f| super::render(f, &state)).unwrap();
         let buf = terminal.backend().buffer().clone();
 
         assert!(
-            buf.cell((0, 0))
+            !buf.cell((0, 0))
                 .unwrap()
                 .style()
                 .add_modifier
                 .contains(Modifier::REVERSED),
-            "a should be reversed"
-        );
-        assert!(
-            !buf.cell((0, 4))
-                .unwrap()
-                .style()
-                .add_modifier
-                .contains(Modifier::REVERSED),
-            "b should NOT be reversed"
+            "a should NOT be reversed before navigation"
         );
 
         // Move selection to b.
         state.apply_action(crate::action::Action::MoveDown);
+        assert!(state.selection_highlight_active);
         let backend2 = TestBackend::new(80, 12);
         let mut terminal2 = Terminal::new(backend2).unwrap();
         terminal2.draw(|f| super::render(f, &state)).unwrap();
@@ -1162,6 +1346,96 @@ mod tests {
                 .contains(Modifier::REVERSED),
             "b should be reversed after moving selection"
         );
+    }
+
+    #[test]
+    fn toggle_drives_works_after_visual_highlight_expires() {
+        // Plan 087: `e` (drive expansion) is bound to logical
+        // selection, not the transient highlight. After the highlight
+        // is cleared the drives must still expand/collapse for the
+        // logically selected system.
+        let config = test_config(&["a"]);
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.selection_highlight_active = true;
+        let selected = state.selected_id.clone();
+        assert!(state.drives_expanded == false);
+        // Visual highlight expires.
+        state.apply_action(crate::action::Action::ClearSelectionHighlight);
+        assert!(!state.selection_highlight_active);
+        // Toggle drives (the `e` action) must still operate on the
+        // logical selection.
+        state.apply_action(crate::action::Action::ToggleDrives);
+        assert!(state.drives_expanded);
+        assert_eq!(state.selected_id, selected);
+        state.apply_action(crate::action::Action::ToggleDrives);
+        assert!(!state.drives_expanded);
+        assert_eq!(state.selected_id, selected);
+    }
+
+    #[test]
+    fn pane_switch_clears_selection_highlight() {
+        // Plan 087: leaving the Systems pane clears the visual
+        // highlight so a stale reversed row does not reappear when the
+        // operator comes back. Logical selection itself is untouched.
+        let mut config = test_config(&["a"]);
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "ep".into(),
+            host: "pool.local".into(),
+            port: 11300,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        state.apply_action(crate::action::Action::MoveDown);
+        assert!(state.selection_highlight_active);
+        let selected = state.selected_id.clone();
+
+        // Switch to EggPool.
+        state.apply_action(crate::action::Action::NextPane);
+        assert_eq!(state.active_pane, crate::state::Pane::Eggpool);
+        assert!(
+            !state.selection_highlight_active,
+            "highlight must be cleared when leaving Systems"
+        );
+        assert_eq!(state.selected_id, selected);
+
+        // Switch back. The highlight must remain cleared; it does not
+        // re-arm automatically.
+        state.apply_action(crate::action::Action::PreviousPane);
+        assert_eq!(state.active_pane, crate::state::Pane::Systems);
+        assert!(!state.selection_highlight_active);
+        assert_eq!(state.selected_id, selected);
+    }
+
+    #[test]
+    fn eggpool_period_change_does_not_activate_systems_highlight() {
+        // Plan 087: `j/k` while the EggPool pane is active must not
+        // arm the Systems selection highlight.
+        let mut config = test_config(&["a"]);
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "ep".into(),
+            host: "pool.local".into(),
+            port: 11300,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        let mut state = AppState::from_config(&config);
+        apply_online(&mut state, 0, linux_snap());
+        // Move to EggPool.
+        state.apply_action(crate::action::Action::NextPane);
+        assert_eq!(state.active_pane, crate::state::Pane::Eggpool);
+        // Press j/k to cycle the EggPool period.
+        state.apply_action(crate::action::Action::MoveDown);
+        assert!(
+            !state.selection_highlight_active,
+            "EggPool period change must not activate Systems highlight"
+        );
+        state.apply_action(crate::action::Action::MoveUp);
+        assert!(!state.selection_highlight_active);
     }
 
     #[test]
@@ -1483,15 +1757,26 @@ mod tests {
                 "closing brackets drifted at width {width}: {closing_columns:?}\n{output}"
             );
 
+            // Plan 087: the default Linux snapshot's MEM detail is 24
+            // cells, so compact mode (suppress suffixes) engages when
+            // width/4 < 24, i.e. at every width in this loop. The
+            // percentage must NOT survive in compact mode.
+            let compact_mode = width < 96;
             for (label, line) in ["CPU", "MEM", "SWP", "DISK"].iter().zip(rows.iter()) {
                 assert!(
                     line.starts_with("    "),
                     "{label} indentation at width {width}: {line:?}"
                 );
-                if *label != "DISK" {
+                if *label != "DISK" && !compact_mode {
                     assert!(
                         line.contains('%'),
                         "{label} percentage at width {width}: {line:?}"
+                    );
+                }
+                if *label != "DISK" && compact_mode {
+                    assert!(
+                        !line.contains('%'),
+                        "{label} must omit percentage in compact mode at width {width}: {line:?}"
                     );
                 }
                 assert!(
@@ -1500,7 +1785,17 @@ mod tests {
                 );
             }
             let disk = rows[3];
-            assert!(disk.contains('—'), "DISK should be unavailable: {disk:?}");
+            // Plan 087: in compact mode the suffix is suppressed so
+            // the unavailable em-dash never appears. The compact
+            // shape itself is the truthful unavailable rendering.
+            if compact_mode {
+                assert!(
+                    !disk.contains('%'),
+                    "compact DISK must not fabricate a percentage: {disk:?}"
+                );
+            } else {
+                assert!(disk.contains('—'), "DISK should be unavailable: {disk:?}");
+            }
             assert!(
                 !disk.contains("0.0%"),
                 "DISK must not fabricate zero: {disk:?}"
@@ -1546,15 +1841,25 @@ mod tests {
                 "closing brackets drifted at width {width}: {closing_columns:?}\n{output}"
             );
 
+            // Plan 087: at widths below the natural-suffix threshold
+            // compact mode engages and the suffix (including %) is
+            // suppressed fleet-wide.
+            let compact_mode = width < 96;
             for (label, line) in ["CPU", "MEM", "COMMIT", "DISK"].iter().zip(rows.iter()) {
                 assert!(
                     line.starts_with("    "),
                     "{label} indentation at width {width}: {line:?}"
                 );
-                if *label != "DISK" {
+                if *label != "DISK" && !compact_mode {
                     assert!(
                         line.contains('%'),
                         "{label} percentage at width {width}: {line:?}"
+                    );
+                }
+                if *label != "DISK" && compact_mode {
+                    assert!(
+                        !line.contains('%'),
+                        "{label} must omit percentage in compact mode at width {width}: {line:?}"
                     );
                 }
                 assert!(
@@ -1665,11 +1970,23 @@ mod tests {
         let normal = render_state(&state, 120, 30);
         assert!(normal.contains("DISK"));
         assert!(normal.contains("COMMIT"));
-        assert!(normal.contains("IO —"));
+        // Plan 087: macOS systems have cpu_iowait_supported = false,
+        // so the IO token must be absent from the macOS header. The
+        // Linux system still emits "IO 0.4%" by default, so we look
+        // for the macOS-specific sentinel name rather than blanket
+        // asserting the absence of "IO " in the entire output.
         assert!(normal.contains("/home"));
         assert!(normal.contains("offline"));
         assert!(normal.contains("pending"));
         assert!(!normal.contains("/Volumes/data"));
+        // Find the macOS system header (it lives under the condensed
+        // os name `macos`) and verify it contains no IO token.
+        assert!(
+            !normal
+                .lines()
+                .any(|line| line.contains("macos") && line.contains("IO ")),
+            "macOS system header must omit the IO token entirely: {normal}"
+        );
 
         state.apply_action(crate::action::Action::ToggleSystemView);
         let condensed = render_state(&state, 120, 12);

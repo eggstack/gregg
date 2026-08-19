@@ -80,8 +80,18 @@ The main event loop in `main.rs` uses `tokio::select!` biased to process:
 1. **Poll batches** from the scheduler → apply to state
 2. **EggPool results** from the worker → apply to state
 3. **User input events** from crossterm → translate to actions → apply to state
+4. **Highlight deadline** (`tokio::time::Sleep` arm) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
 
 After every state change, the TUI renders.
+
+The highlight deadline is the only transient timer the loop owns.
+Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)
+arm or reset the deadline to ten seconds from now via
+`SELECTION_HIGHLIGHT_DURATION`. Non-selection events (poll batches,
+EggPool results, `Resize`, `RefreshNow`, `ToggleSystemView`,
+`ToggleDrives`) do not extend the deadline. The `ClearSelectionHighlight`
+arm is parked at a far-future sleep while no highlight is active so the
+select branch never fires spuriously.
 
 ### Action/Reducer pattern
 
@@ -94,6 +104,7 @@ enum Action {
     PreviousPane, NextPane,
     ToggleSystemView, ToggleDrives,
     RefreshNow,
+    ClearSelectionHighlight,   // Plan 087: dispatched by the highlight timer
     Resize, Quit,
 }
 ```
@@ -158,12 +169,12 @@ struct AppState {
     active_pane: Pane,                   // Systems or Eggpool
     system_view_mode: SystemViewMode,    // Normal or Condensed
     drives_expanded: bool,               // drive detail rows visible
+    selection_highlight_active: bool,    // transient reverse-video highlight
     eggpool: Option<EggpoolState>,       // EggPool pane state (None if unconfigured)
 }
 ```
 
 **Display order:** Online systems first (stable order), then offline/pending.
-
 **Viewport:** Computes visible range for mixed-height entries (normal = 5 rows,
 condensed = 1 row). Selected system is always visible.
 
@@ -172,6 +183,20 @@ condensed = 1 row). Selected system is always visible.
 == 0` before the batch is applied (the first accepted poll batch).
 Subsequent batches preserve the existing selection/viewport semantics.
 `Ctrl-R` does not re-snap.
+
+**Visual vs. logical selection (Plan 087):** `selected_id` is the
+persistent logical selection that drives `e` (drive expansion) and
+viewport behavior. `selection_highlight_active` is the transient
+visual-highlight flag that drives the reverse-video styling. Startup
+sets both: the logical selection is deterministic but the highlight
+is `false`, so the renderer never opens with a reversed row.
+Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)
+set the highlight to `true`; the event loop arms a one-shot ten-second
+deadline. When the deadline fires, the loop dispatches
+`Action::ClearSelectionHighlight`, which flips the flag back to
+`false` without touching `selected_id`. Pane changes away from Systems
+also clear the flag immediately so a stale reverse-video row cannot
+reappear when the operator comes back.
 
 ### Terminal lifecycle
 
@@ -199,10 +224,27 @@ The header line drops lower-priority segments as width decreases:
 - < 50 cols: no OS
 - < 80 cols: no architecture
 
+Plan 087 adds a strict integer-safe compact-mode policy for the normal
+metric rows: when the longest *natural* suffix across the entire
+online fleet satisfies `longest * 4 > terminal_width`, every metric
+row in the current render drops the entire suffix region (percentage,
+core counts, byte counts). The `[` and `]` columns still align, the
+bar gains the cells that would otherwise be the `]` separator, and
+resizing wider dynamically restores the suffix without touching
+application state. The decision is made per render from
+`should_suppress_suffix(width, longest_natural_suffix)` and lives on
+the fleet-wide `MetricFleetLayout { label_width, bar_width, show_suffix }`.
+
+Plan 087 also changes the header line: the `IO` token is omitted
+entirely (no placeholder, no doubled separator) when the snapshot is
+unsupported (`cpu_iowait_supported == false`) or when the
+capability is supported but the current `iowait_pct` value is missing.
+The UI never infers a zero from a missing measurement.
+
 ### UI views
 
 **Normal view** (`ui/system_block.rs`): 5-row blocks per system:
-1. Header (name, IO, load, cores, OS, kernel, arch)
+1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
@@ -260,6 +302,11 @@ every visible system name (online/offline/pending) so offline/pending
 rows never collapse to anonymous status text, and decouples status-row
 width budgeting from the online numeric table so the status never
 erases the device identity.
+
+Plan 087 keeps the condensed `IOWAIT` column unchanged: an unsupported
+or missing value still renders the unavailable em-dash inside its own
+column, distinct from the normal-header `IO` token which is now
+omitted entirely.
 
 ## Configuration
 
