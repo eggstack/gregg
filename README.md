@@ -124,7 +124,8 @@ PID-file management.
 
 The client stores its config at:
 
-- Linux/macOS: `~/.config/gregg/gregg.toml`
+- Linux: `~/.config/gregg/gregg.toml` (honors `XDG_CONFIG_HOME`)
+- macOS: `~/Library/Application Support/gregg/gregg.toml`
 - Windows: `%APPDATA%\gregg\gregg.toml`
 
 ## Client commands
