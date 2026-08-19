@@ -53,6 +53,7 @@ installed-binary v2 loopback smoke, and the protocol dry-run.
 ```bash
 cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
+cargo test -p gregg -- <test_name>
 ```
 
 **CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings
@@ -207,7 +208,7 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 
 - **Integration tests:** `crates/gregg-protocol/tests/integration.rs`, `crates/greggd/tests/linux_collector.rs`, `crates/greggd/tests/windows_smoke.rs`
 - **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads
-- **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` in `src/main.rs`
+- **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
 - **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by external runner scripts
 
