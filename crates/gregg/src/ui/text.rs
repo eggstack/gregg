@@ -428,7 +428,7 @@ mod tests {
         };
         snap.cpu_iowait_supported = supported;
         snap.iowait_pct = iowait;
-        let mut system = crate::state::SystemState {
+        let system = crate::state::SystemState {
             id: "id".into(),
             endpoint: crate::endpoint::Endpoint::new("host".into(), 11310, None),
             configured_name: Some("srv".into()),
