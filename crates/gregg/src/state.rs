@@ -427,7 +427,7 @@ impl AppState {
     /// Mark an `EggPool` activation or manual refresh as a new request.
     pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
         let eggpool = self.eggpool.as_mut()?;
-        eggpool.request_generation = eggpool.request_generation.wrapping_add(1);
+        eggpool.request_generation = eggpool.request_generation.saturating_add(1);
         eggpool.status = EggpoolStatus::Refreshing;
         Some((eggpool.period, eggpool.request_generation))
     }
@@ -460,7 +460,7 @@ impl AppState {
             return;
         }
         eggpool.period = next;
-        eggpool.request_generation = eggpool.request_generation.wrapping_add(1);
+        eggpool.request_generation = eggpool.request_generation.saturating_add(1);
         eggpool.status = EggpoolStatus::Refreshing;
         eggpool.summary = None;
         eggpool.last_error = None;

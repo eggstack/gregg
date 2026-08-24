@@ -524,7 +524,7 @@ fn shutdown_with_control(
         if let Some(rx) = stop_rx {
             let stop_fut = control::wait_for_stop_task(rx);
             tokio::select! {
-                reason = stop_fut => reason.unwrap_or("control-stop"),
+                reason = stop_fut => reason.unwrap_or("control-error"),
                 _ = sigterm.recv() => "SIGTERM",
                 _ = sigint.recv() => "SIGINT",
             }

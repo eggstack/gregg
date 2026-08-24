@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::fs;
+use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 use serde::{Deserialize, Serialize};
+use tracing::debug;
 
 /// Minimum allowed sample interval in milliseconds.
 pub const MIN_SAMPLE_INTERVAL_MS: u64 = 250;
@@ -70,7 +72,13 @@ fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
             if name_str.starts_with(".greggd-") && name_str.ends_with(".toml.tmp") {
                 if let Ok(meta) = entry.metadata() {
                     if meta.is_file() {
-                        let _ = fs::remove_file(entry.path());
+                        if let Err(error) = fs::remove_file(entry.path()) {
+                            debug!(
+                                path = %entry.path().display(),
+                                error = %error,
+                                "failed to remove stale config temp file"
+                            );
+                        }
                     }
                 }
             }
@@ -248,26 +256,14 @@ impl Config {
         let temp_name = format!(".greggd-{}-{}.toml.tmp", std::process::id(), id);
         let temp_path = dir.join(&temp_name);
 
-        fs::write(&temp_path, content.as_bytes()).map_err(|e| {
-            let _ = fs::remove_file(&temp_path);
-            ConfigError::AtomicWrite {
-                path: path.to_path_buf(),
-                source: AtomicWriteError::Io(e),
-            }
-        })?;
-
-        // 4. Flush the file.
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .open(&temp_path)
-            .map_err(|e| {
-                let _ = fs::remove_file(&temp_path);
-                ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(e),
-                }
-            })?;
-        file.sync_all().map_err(|e| {
+        let write_result = (|| -> std::io::Result<()> {
+            let mut file = create_secure_temp_file(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+            drop(file);
+            Ok(())
+        })();
+        write_result.map_err(|e| {
             let _ = fs::remove_file(&temp_path);
             ConfigError::AtomicWrite {
                 path: path.to_path_buf(),
@@ -318,6 +314,32 @@ impl Config {
     #[must_use]
     pub fn stale_after_ms(&self) -> u64 {
         self.stale_after_ms
+    }
+}
+
+/// Create a new temporary config file with restrictive permissions.
+fn create_secure_temp_file(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        options.mode(0o600);
+        let file = options.open(path)?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        let mode = fs::metadata(path)?.permissions().mode() & 0o777;
+        if mode != 0o600 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "temporary config file permissions are not 0600",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        options.open(path)
     }
 }
 
@@ -626,6 +648,25 @@ unknown_field = "oops"
         let loaded = Config::load(&path).unwrap();
         assert_eq!(config, loaded);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn secure_temp_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("greggd_test_secure_temp");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(".greggd-test.toml.tmp");
+
+        let file = create_secure_temp_file(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        drop(file);
         let _ = fs::remove_dir_all(&dir);
     }
 

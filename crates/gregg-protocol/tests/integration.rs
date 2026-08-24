@@ -552,6 +552,9 @@ fn validation_rejects_nonzero_memory_usage_with_zero_total() {
     snap.memory.usage_pct = 50.0;
     let violations = snap.validate().unwrap_err();
     assert!(violations.iter().any(|violation| {
+        violation.field == "memory.total_bytes" && violation.kind == ViolationKind::ZeroNotAllowed
+    }));
+    assert!(violations.iter().any(|violation| {
         violation.field == "memory.usage_pct"
             && violation.kind == ViolationKind::PercentageOutOfRange
     }));
@@ -563,6 +566,9 @@ fn validation_rejects_nonzero_swap_usage_with_zero_total() {
     snap.swap.total_bytes = 0;
     snap.swap.usage_pct = 50.0;
     let violations = snap.validate().unwrap_err();
+    assert!(violations.iter().any(|violation| {
+        violation.field == "swap.total_bytes" && violation.kind == ViolationKind::ZeroNotAllowed
+    }));
     assert!(violations.iter().any(|violation| {
         violation.field == "swap.usage_pct" && violation.kind == ViolationKind::PercentageOutOfRange
     }));

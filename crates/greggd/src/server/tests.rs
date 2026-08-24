@@ -99,6 +99,21 @@ async fn set_failed_preserves_snapshot() {
     assert_eq!(state.consecutive_failures().await, 1);
 }
 
+#[tokio::test]
+async fn v1_only_failure_preserves_v2_not_serving_semantics() {
+    let state = ServerState::new();
+    state
+        .update_snapshot_v1_only(LinuxSnapshotBuilder::default().build())
+        .await;
+
+    state.set_failed("collector crashed").await;
+
+    assert_eq!(
+        state.health_v2().await.category,
+        Some(HealthCategory::NotServing)
+    );
+}
+
 // ===== Config Validation Tests =====
 
 #[test]

@@ -252,10 +252,15 @@ fn missing_key(name: &str) -> EggpoolFetchOutcome {
 }
 
 fn summary_url(endpoint: &EggpoolEntry, period: EggpoolPeriod) -> Result<Url, ()> {
-    let host = if endpoint.host.contains(':') {
-        format!("[{}]", endpoint.host)
+    let host = endpoint
+        .host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(&endpoint.host);
+    let host = if host.contains(':') {
+        format!("[{host}]")
     } else {
-        endpoint.host.clone()
+        host.to_string()
     };
     let mut url = Url::parse(&format!(
         "{}://{}:{}/api/stats/summary",
@@ -294,6 +299,24 @@ fn normalize_summary(
 fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
     if error.is_timeout() {
         return EggpoolFetchOutcome::Timeout;
+    }
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = current {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
+        {
+            return EggpoolFetchOutcome::ConnectionRefused;
+        }
+        if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::NotFound
+            )
+        }) {
+            return EggpoolFetchOutcome::DnsFailure;
+        }
+        current = error.source();
     }
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = current {
@@ -896,5 +919,19 @@ mod tests {
             streamed_requests: 1,
         };
         assert!(normalize_summary(&wire, EggpoolPeriod::Hour).is_err());
+    }
+
+    #[test]
+    fn summary_url_normalizes_bracketed_ipv6() {
+        let endpoint = EggpoolEntry {
+            host: "[2001:db8::1]".into(),
+            port: 8080,
+            ..endpoint(8080, None)
+        };
+        let url = summary_url(&endpoint, EggpoolPeriod::Hour).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://[2001:db8::1]:8080/api/stats/summary?period=1h"
+        );
     }
 }

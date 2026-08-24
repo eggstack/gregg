@@ -180,6 +180,10 @@ fn validate_memory(memory: &MemoryMetrics, out: &mut Vec<ValidationViolation>) {
     }
     if memory.total_bytes == 0 && memory.usage_pct != 0.0 {
         out.push(ValidationViolation::new(
+            ViolationKind::ZeroNotAllowed,
+            "memory.total_bytes",
+        ));
+        out.push(ValidationViolation::new(
             ViolationKind::PercentageOutOfRange,
             "memory.usage_pct",
         ));
@@ -195,6 +199,10 @@ fn validate_swap(swap: &SwapMetrics, out: &mut Vec<ValidationViolation>) {
         ));
     }
     if swap.total_bytes == 0 && swap.usage_pct != 0.0 {
+        out.push(ValidationViolation::new(
+            ViolationKind::ZeroNotAllowed,
+            "swap.total_bytes",
+        ));
         out.push(ValidationViolation::new(
             ViolationKind::PercentageOutOfRange,
             "swap.usage_pct",

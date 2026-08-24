@@ -16,6 +16,7 @@ pub(crate) fn percent(used: u64, total: u64) -> f32 {
 
 /// Clip an identifier string to `max_len` bytes on a valid UTF-8 boundary.
 pub(crate) fn clip_identifier(input: &str, max_len: usize) -> String {
+    let input = input.trim();
     if input.len() <= max_len {
         input.to_string()
     } else {

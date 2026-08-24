@@ -218,7 +218,7 @@ impl HttpClient {
         // Try v2 first.
         let v2_url = v2_status_url(&endpoint.host, endpoint.port);
         let v2_result = self
-            .poll_single_url(&v2_url, endpoint, ExpectedSchema::V2, start)
+            .poll_single_url(&v2_url, endpoint, ExpectedSchema::V2, start, clock)
             .await;
 
         if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
@@ -226,7 +226,7 @@ impl HttpClient {
             let v1_url = status_url(&endpoint.host, endpoint.port);
             let v1_start = clock.now();
             return self
-                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, v1_start)
+                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, v1_start, clock)
                 .await;
         }
 
@@ -238,12 +238,13 @@ impl HttpClient {
         endpoint: &Endpoint,
         outcome: PollOutcome,
         start: std::time::Instant,
+        end: std::time::Instant,
     ) -> PollResult {
         PollResult {
             system_id: endpoint.id.clone(),
             endpoint: endpoint.clone(),
             outcome,
-            latency: start.elapsed(),
+            latency: end.saturating_duration_since(start),
         }
     }
 
@@ -254,32 +255,38 @@ impl HttpClient {
         endpoint: &Endpoint,
         expected_schema: ExpectedSchema,
         start: std::time::Instant,
+        clock: &impl Clock,
     ) -> PollResult {
         let response = match self.client.get(url).send().await {
             Ok(r) => r,
             Err(e) => {
-                return Self::make_result(endpoint, classify_reqwest_error(&e), start);
+                return Self::make_result(endpoint, classify_reqwest_error(&e), start, clock.now());
             }
         };
 
         let status = response.status().as_u16();
         if !response.status().is_success() {
-            return Self::make_result(endpoint, PollOutcome::HttpStatus(status), start);
+            return Self::make_result(
+                endpoint,
+                PollOutcome::HttpStatus(status),
+                start,
+                clock.now(),
+            );
         }
 
         // Reject immediately if Content-Length is known to exceed the cap.
         if let Some(content_length) = response.content_length() {
             if content_length > MAX_RESPONSE_BYTES as u64 {
-                return Self::make_result(endpoint, PollOutcome::BodyTooLarge, start);
+                return Self::make_result(endpoint, PollOutcome::BodyTooLarge, start, clock.now());
             }
         }
 
         let body = match Self::read_body(response).await {
             Ok(body) => body,
-            Err(outcome) => return Self::make_result(endpoint, outcome, start),
+            Err(outcome) => return Self::make_result(endpoint, outcome, start, clock.now()),
         };
 
-        Self::parse_response(&body, endpoint, expected_schema, start)
+        Self::parse_response(&body, endpoint, expected_schema, start, clock)
     }
 
     /// Read the response body, enforcing size limits.
@@ -302,33 +309,54 @@ impl HttpClient {
         endpoint: &Endpoint,
         expected_schema: ExpectedSchema,
         start: std::time::Instant,
+        clock: &impl Clock,
     ) -> PollResult {
         if matches!(expected_schema, ExpectedSchema::V2) {
             let Ok(payload) = serde_json::from_slice::<StatusPayloadV2>(body) else {
-                return Self::make_result(endpoint, PollOutcome::DecodeError, start);
+                return Self::make_result(endpoint, PollOutcome::DecodeError, start, clock.now());
             };
             if payload.snapshot.schema_version != SCHEMA_VERSION_V2 {
-                return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
+                return Self::make_result(
+                    endpoint,
+                    PollOutcome::UnsupportedSchema,
+                    start,
+                    clock.now(),
+                );
             }
             if payload.validate().is_err() {
-                return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start);
+                return Self::make_result(
+                    endpoint,
+                    PollOutcome::InvalidSnapshot,
+                    start,
+                    clock.now(),
+                );
             }
-            return Self::make_result(endpoint, PollOutcome::OnlineV2(Box::new(payload)), start);
+            return Self::make_result(
+                endpoint,
+                PollOutcome::OnlineV2(Box::new(payload)),
+                start,
+                clock.now(),
+            );
         }
 
         let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(body) else {
-            return Self::make_result(endpoint, PollOutcome::DecodeError, start);
+            return Self::make_result(endpoint, PollOutcome::DecodeError, start, clock.now());
         };
 
         if snapshot.schema_version != SCHEMA_VERSION_V1 {
-            return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start);
+            return Self::make_result(endpoint, PollOutcome::UnsupportedSchema, start, clock.now());
         }
 
         if snapshot.validate().is_err() {
-            return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start);
+            return Self::make_result(endpoint, PollOutcome::InvalidSnapshot, start, clock.now());
         }
 
-        Self::make_result(endpoint, PollOutcome::Online(Box::new(snapshot)), start)
+        Self::make_result(
+            endpoint,
+            PollOutcome::Online(Box::new(snapshot)),
+            start,
+            clock.now(),
+        )
     }
 }
 
@@ -344,7 +372,7 @@ fn classify_reqwest_error(e: &reqwest::Error) -> PollOutcome {
     }
 
     // Check for DNS resolution failure.
-    if is_dns_failure(&e) {
+    if is_dns_failure(e) {
         return PollOutcome::DnsFailure;
     }
 
@@ -367,22 +395,41 @@ fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 /// Walk the error source chain looking for DNS-related errors.
-fn is_dns_failure(e: &dyn std::error::Error) -> bool {
-    // Check the error itself first.
-    let msg = format!("{e}");
-    if msg.contains("dns") || msg.contains("resolve") {
-        return true;
-    }
-
-    let mut source: Option<&(dyn std::error::Error + 'static)> = e.source();
-    while let Some(err) = source {
-        let msg = format!("{err}");
-        if msg.contains("dns") || msg.contains("resolve") {
+fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(error) = current {
+        if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::NotFound
+            )
+        }) {
             return true;
         }
-        source = err.source();
+        current = error.source();
+    }
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(error) = current {
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("dns") || message.contains("resolve") {
+            return true;
+        }
+        current = error.source();
     }
     false
+}
+
+fn bracketed_host(host: &str) -> String {
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
+    if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    }
 }
 
 /// Construct the status URL for an endpoint (v1).
@@ -390,11 +437,7 @@ fn is_dns_failure(e: &dyn std::error::Error) -> bool {
 /// IPv6 hosts are bracketed per RFC 2732.
 #[must_use]
 pub fn status_url(host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("http://[{host}]:{port}/v1/status")
-    } else {
-        format!("http://{host}:{port}/v1/status")
-    }
+    format!("http://{}:{port}/v1/status", bracketed_host(host))
 }
 
 /// Construct the status URL for an endpoint (v2).
@@ -402,11 +445,7 @@ pub fn status_url(host: &str, port: u16) -> String {
 /// IPv6 hosts are bracketed per RFC 2732.
 #[must_use]
 pub fn v2_status_url(host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("http://[{host}]:{port}/v2/status")
-    } else {
-        format!("http://{host}:{port}/v2/status")
-    }
+    format!("http://{}:{port}/v2/status", bracketed_host(host))
 }
 
 #[cfg(test)]
@@ -528,6 +567,22 @@ mod tests {
         assert_eq!(result.system_id, "test-id");
         assert!(matches!(result.outcome, PollOutcome::Online(_)));
         assert!(result.latency < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn fake_clock_makes_latency_deterministic() {
+        let body = valid_snapshot_json();
+        let url = mock_server(body.into_bytes(), "200 OK").await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::FakeClock::new(
+            Instant::now()
+                .checked_sub(Duration::from_secs(3600))
+                .expect("test instant has a one-hour history"),
+        );
+
+        let result = client.poll(&ep, &clock).await;
+        assert_eq!(result.latency, Duration::ZERO);
     }
 
     #[tokio::test]
@@ -729,6 +784,10 @@ mod tests {
             v2_status_url("fe80::1%25eth0", 8080),
             "http://[fe80::1%25eth0]:8080/v2/status"
         );
+        assert_eq!(
+            status_url("[fe80::1%25eth0]", 8080),
+            "http://[fe80::1%25eth0]:8080/v1/status"
+        );
     }
 
     #[tokio::test]
@@ -779,6 +838,14 @@ mod tests {
     fn is_connection_refused_returns_true_for_refused() {
         let err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
         assert!(is_connection_refused(&err));
+    }
+
+    #[test]
+    fn is_dns_failure_matches_typed_and_resolver_errors() {
+        let typed = io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
+        assert!(is_dns_failure(&typed));
+        let resolver = io::Error::other("hickory resolver: DNS query failed");
+        assert!(is_dns_failure(&resolver));
     }
 
     #[tokio::test]

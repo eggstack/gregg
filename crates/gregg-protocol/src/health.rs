@@ -35,7 +35,7 @@ pub enum HealthCategory {
 /// The `Ready` variant carries a fresh snapshot. The other variants carry a
 /// short human-readable message and a [`HealthCategory`]; they never include
 /// filesystem paths, internal error chains, or platform-private structures.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HealthResponse {
     /// Daemon schema version, always
@@ -53,6 +53,40 @@ pub struct HealthResponse {
     /// Cached snapshot, present only when `state == Ready`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<crate::StatusSnapshot>,
+}
+
+impl<'de> Deserialize<'de> for HealthResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        struct RawHealthResponse {
+            schema_version: u16,
+            state: ReadinessState,
+            #[serde(default)]
+            category: Option<HealthCategory>,
+            #[serde(default)]
+            message: Option<String>,
+            #[serde(default)]
+            snapshot: Option<crate::StatusSnapshot>,
+        }
+
+        let raw = RawHealthResponse::deserialize(deserializer)?;
+        if raw.state == ReadinessState::Ready && raw.snapshot.is_none() {
+            return Err(serde::de::Error::custom(
+                "ready health response must include a snapshot",
+            ));
+        }
+        Ok(Self {
+            schema_version: raw.schema_version,
+            state: raw.state,
+            category: raw.category,
+            message: raw.message,
+            snapshot: raw.snapshot,
+        })
+    }
 }
 
 impl HealthResponse {
@@ -98,5 +132,16 @@ impl HealthResponse {
             message: Some(message.into()),
             snapshot: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HealthResponse;
+
+    #[test]
+    fn ready_health_requires_snapshot() {
+        let json = r#"{"schema_version":1,"state":"ready","snapshot":null}"#;
+        assert!(serde_json::from_str::<HealthResponse>(json).is_err());
     }
 }

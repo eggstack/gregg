@@ -54,6 +54,7 @@ pub fn collect_identity(
 }
 
 fn clip_identifier(input: &str) -> String {
+    let input = input.trim();
     if input.len() <= MAX_IDENTITY_LEN {
         input.to_string()
     } else {

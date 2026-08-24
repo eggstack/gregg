@@ -230,8 +230,10 @@ impl ServerState {
             state.health =
                 HealthResponse::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
         }
-        state.health_v2 =
-            HealthResponseV2::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
+        if state.health_v2.category != Some(gregg_protocol::HealthCategory::NotServing) {
+            state.health_v2 =
+                HealthResponseV2::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
+        }
         // Snapshot is deliberately NOT cleared here. The stale-snapshot
         // policy in the status handler decides whether to serve it.
         tracing::debug!(

@@ -177,7 +177,7 @@ pub struct CommitMetrics {
 }
 
 /// Health and readiness response for schema version 2.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HealthResponseV2 {
     /// Daemon schema version, always [`SCHEMA_VERSION_V2`].
@@ -194,6 +194,40 @@ pub struct HealthResponseV2 {
     /// Cached v2 snapshot, present only when `state == Ready`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<StatusSnapshotV2>,
+}
+
+impl<'de> Deserialize<'de> for HealthResponseV2 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        struct RawHealthResponseV2 {
+            schema_version: u16,
+            state: crate::ReadinessState,
+            #[serde(default)]
+            category: Option<crate::HealthCategory>,
+            #[serde(default)]
+            message: Option<String>,
+            #[serde(default)]
+            snapshot: Option<StatusSnapshotV2>,
+        }
+
+        let raw = RawHealthResponseV2::deserialize(deserializer)?;
+        if raw.state == crate::ReadinessState::Ready && raw.snapshot.is_none() {
+            return Err(serde::de::Error::custom(
+                "ready health response must include a snapshot",
+            ));
+        }
+        Ok(Self {
+            schema_version: raw.schema_version,
+            state: raw.state,
+            category: raw.category,
+            message: raw.message,
+            snapshot: raw.snapshot,
+        })
+    }
 }
 
 impl HealthResponseV2 {
@@ -404,6 +438,12 @@ mod tests {
         assert_eq!(health, parsed);
         assert_eq!(parsed.state, ReadinessState::Failed);
         assert_eq!(parsed.message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn v2_ready_health_requires_snapshot() {
+        let json = r#"{"schema_version":2,"state":"ready","snapshot":null}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
     }
 
     #[test]
