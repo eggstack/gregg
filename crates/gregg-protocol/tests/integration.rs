@@ -549,11 +549,22 @@ fn validation_uses_load_specific_violation() {
 fn validation_rejects_nonzero_memory_usage_with_zero_total() {
     let mut snap = valid_v1_snapshot();
     snap.memory.total_bytes = 0;
-    snap.memory.usage_pct = 101.0;
+    snap.memory.usage_pct = 50.0;
     let violations = snap.validate().unwrap_err();
     assert!(violations.iter().any(|violation| {
         violation.field == "memory.usage_pct"
             && violation.kind == ViolationKind::PercentageOutOfRange
+    }));
+}
+
+#[test]
+fn validation_rejects_nonzero_swap_usage_with_zero_total() {
+    let mut snap = valid_v1_snapshot();
+    snap.swap.total_bytes = 0;
+    snap.swap.usage_pct = 50.0;
+    let violations = snap.validate().unwrap_err();
+    assert!(violations.iter().any(|violation| {
+        violation.field == "swap.usage_pct" && violation.kind == ViolationKind::PercentageOutOfRange
     }));
 }
 

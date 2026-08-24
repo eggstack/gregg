@@ -6,7 +6,6 @@
 //! a typed [`PollOutcome`] that classifies every failure mode without
 //! leaking error chains to the caller.
 
-use std::net::IpAddr;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(test)]
@@ -391,7 +390,7 @@ fn is_dns_failure(e: &dyn std::error::Error) -> bool {
 /// IPv6 hosts are bracketed per RFC 2732.
 #[must_use]
 pub fn status_url(host: &str, port: u16) -> String {
-    if host.parse::<IpAddr>().is_ok() && host.contains(':') {
+    if host.contains(':') {
         format!("http://[{host}]:{port}/v1/status")
     } else {
         format!("http://{host}:{port}/v1/status")
@@ -403,7 +402,7 @@ pub fn status_url(host: &str, port: u16) -> String {
 /// IPv6 hosts are bracketed per RFC 2732.
 #[must_use]
 pub fn v2_status_url(host: &str, port: u16) -> String {
-    if host.parse::<IpAddr>().is_ok() && host.contains(':') {
+    if host.contains(':') {
         format!("http://[{host}]:{port}/v2/status")
     } else {
         format!("http://{host}:{port}/v2/status")
@@ -718,6 +717,18 @@ mod tests {
     async fn url_construction_ipv6() {
         let url = status_url("::1", 8080);
         assert_eq!(url, "http://[::1]:8080/v1/status");
+    }
+
+    #[test]
+    fn url_construction_ipv6_zone_id() {
+        assert_eq!(
+            status_url("fe80::1%25eth0", 8080),
+            "http://[fe80::1%25eth0]:8080/v1/status"
+        );
+        assert_eq!(
+            v2_status_url("fe80::1%25eth0", 8080),
+            "http://[fe80::1%25eth0]:8080/v2/status"
+        );
     }
 
     #[tokio::test]
