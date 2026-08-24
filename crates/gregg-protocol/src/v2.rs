@@ -215,10 +215,27 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
         }
 
         let raw = RawHealthResponseV2::deserialize(deserializer)?;
-        if raw.state == crate::ReadinessState::Ready && raw.snapshot.is_none() {
-            return Err(serde::de::Error::custom(
-                "ready health response must include a snapshot",
-            ));
+        if raw.schema_version != SCHEMA_VERSION_V2 {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported schema_version {} (expected {})",
+                raw.schema_version, SCHEMA_VERSION_V2
+            )));
+        }
+        match raw.state {
+            crate::ReadinessState::Ready => {
+                if raw.snapshot.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "ready health response must include a snapshot",
+                    ));
+                }
+            }
+            _ => {
+                if raw.snapshot.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "non-ready health response must not include a snapshot",
+                    ));
+                }
+            }
         }
         Ok(Self {
             schema_version: raw.schema_version,
@@ -443,6 +460,22 @@ mod tests {
     #[test]
     fn v2_ready_health_requires_snapshot() {
         let json = r#"{"schema_version":2,"state":"ready","snapshot":null}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_health_rejects_unsupported_schema_version() {
+        let json = r#"{"schema_version":99,"state":"warming"}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+        let json = r#"{"schema_version":1,"state":"warming"}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_non_ready_health_forbids_snapshot() {
+        // Any snapshot body is enough to trip the invariant; it is rejected
+        // before the snapshot itself is inspected.
+        let json = r#"{"schema_version":2,"state":"warming","snapshot":{"schema_version":2,"observed_at_unix_ms":0,"sample_interval_ms":0,"capabilities":{"cpu_iowait":false,"load_average":false,"swap":false,"memory_commit":false},"system":{"name":"","hostname":"","os_name":"","os_version":"","kernel_name":"","kernel_release":"","architecture":""},"cpu":{"logical_cores":0,"usage_pct":0.0,"iowait_pct":null},"load":null,"memory":{"used_bytes":0,"total_bytes":0,"usage_pct":0.0},"swap":null,"commit":null}}"#;
         assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
     }
 

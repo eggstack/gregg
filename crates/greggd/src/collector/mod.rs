@@ -41,6 +41,8 @@ pub mod windows;
 
 pub mod error;
 
+use error::{CollectError, CollectErrorKind};
+
 /// Normalized metric sample produced by a [`SystemCollector`].
 ///
 /// The struct is daemon-internal: it carries fields that do not appear on the
@@ -77,14 +79,16 @@ impl CollectedMetrics {
     /// Convert this sample into a wire [`StatusSnapshot`].
     ///
     /// The caller (the daemon sampler) is responsible for filling in
-    /// `schema_version`, `observed_at_unix_ms`, and `sample_interval_ms`. CPU
-    /// `usage_pct` and `iowait_pct` are coalesced from `Option` into either a
-    /// concrete value or a protocol-compatible zero with the right capability
-    /// flag set. Callers should not publish a snapshot while
-    /// [`Self::cpu_usage_pct`] is `None`; the function performs the coalesce
-    /// defensively so the result is always wire-valid for the daemon's
-    /// platform capabilities.
-    #[must_use]
+    /// `schema_version`, `observed_at_unix_ms`, and `sample_interval_ms`.
+    /// Optional metrics are set according to the platform capability flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectErrorKind::Numeric`] rather than fabricating a
+    /// `0.0` placeholder when [`Self::cpu_usage_pct`] is missing or
+    /// non-finite, or — when the platform reports I/O wait — when
+    /// [`Self::cpu_iowait_pct`] is missing or non-finite. Callers should not
+    /// publish a snapshot while [`Self::cpu_usage_pct`] is `None`.
     pub fn into_snapshot(
         self,
         schema_version: u16,
@@ -92,19 +96,25 @@ impl CollectedMetrics {
         sample_interval_ms: u64,
         capabilities: MetricCapabilities,
         system: SystemIdentity,
-    ) -> StatusSnapshot {
-        let cpu_usage_pct = self.cpu_usage_pct.unwrap_or(0.0);
-        let cpu_usage_pct = if cpu_usage_pct.is_finite() {
-            cpu_usage_pct
-        } else {
-            0.0
+    ) -> Result<StatusSnapshot, CollectError> {
+        let Some(cpu_usage_pct) = self.cpu_usage_pct.filter(|v| v.is_finite()) else {
+            return Err(CollectError::new(
+                CollectErrorKind::Numeric,
+                "cpu usage percentage is missing or non-finite",
+            ));
         };
         let cpu_iowait_pct = if capabilities.cpu_iowait {
-            Some(self.cpu_iowait_pct.unwrap_or(0.0))
+            let Some(iowait_pct) = self.cpu_iowait_pct.filter(|v| v.is_finite()) else {
+                return Err(CollectError::new(
+                    CollectErrorKind::Numeric,
+                    "cpu iowait percentage is missing or non-finite",
+                ));
+            };
+            Some(iowait_pct)
         } else {
             None
         };
-        StatusSnapshot {
+        Ok(StatusSnapshot {
             schema_version,
             observed_at_unix_ms,
             sample_interval_ms,
@@ -118,31 +128,42 @@ impl CollectedMetrics {
             load: self.load,
             memory: self.memory,
             swap: self.swap,
-        }
+        })
     }
 
     /// Convert this sample into a wire [`StatusSnapshotV2`].
     ///
     /// The caller (the daemon sampler) is responsible for filling in
-    /// `observed_at_unix_ms` and `sample_interval_ms`. CPU usage and
-    /// iowait are coalesced defensively. Optional metrics (load, swap,
-    /// commit) are set according to the v2 capability flags.
-    #[must_use]
+    /// `observed_at_unix_ms` and `sample_interval_ms`. Optional metrics
+    /// (load, swap, commit) are set according to the v2 capability flags.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectErrorKind::Numeric`] rather than fabricating a
+    /// `0.0` placeholder when [`Self::cpu_usage_pct`] is missing or
+    /// non-finite, or — when the platform reports I/O wait — when
+    /// [`Self::cpu_iowait_pct`] is missing or non-finite.
     pub fn into_snapshot_v2(
         self,
         observed_at_unix_ms: u64,
         sample_interval_ms: u64,
         capabilities: MetricCapabilitiesV2,
         system: SystemIdentity,
-    ) -> StatusSnapshotV2 {
-        let cpu_usage_pct = self.cpu_usage_pct.unwrap_or(0.0);
-        let cpu_usage_pct = if cpu_usage_pct.is_finite() {
-            cpu_usage_pct
-        } else {
-            0.0
+    ) -> Result<StatusSnapshotV2, CollectError> {
+        let Some(cpu_usage_pct) = self.cpu_usage_pct.filter(|v| v.is_finite()) else {
+            return Err(CollectError::new(
+                CollectErrorKind::Numeric,
+                "cpu usage percentage is missing or non-finite",
+            ));
         };
         let cpu_iowait_pct = if capabilities.cpu_iowait {
-            Some(self.cpu_iowait_pct.unwrap_or(0.0))
+            let Some(iowait_pct) = self.cpu_iowait_pct.filter(|v| v.is_finite()) else {
+                return Err(CollectError::new(
+                    CollectErrorKind::Numeric,
+                    "cpu iowait percentage is missing or non-finite",
+                ));
+            };
+            Some(iowait_pct)
         } else {
             None
         };
@@ -170,7 +191,7 @@ impl CollectedMetrics {
             None
         };
 
-        StatusSnapshotV2 {
+        Ok(StatusSnapshotV2 {
             schema_version: SCHEMA_VERSION_V2,
             observed_at_unix_ms,
             sample_interval_ms,
@@ -185,27 +206,31 @@ impl CollectedMetrics {
             memory: self.memory,
             swap,
             commit: self.commit,
-        }
+        })
     }
 
     /// Convert this sample into the flat v2 status payload, preserving drive
     /// availability semantics for the client.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CollectErrorKind::Numeric`] under the same conditions as
+    /// [`Self::into_snapshot_v2`].
     pub fn into_status_payload_v2(
         self,
         observed_at_unix_ms: u64,
         sample_interval_ms: u64,
         capabilities: MetricCapabilitiesV2,
         system: SystemIdentity,
-    ) -> StatusPayloadV2 {
+    ) -> Result<StatusPayloadV2, CollectError> {
         let drives = self.drives.clone();
         let snapshot = self.into_snapshot_v2(
             observed_at_unix_ms,
             sample_interval_ms,
             capabilities,
             system,
-        );
-        StatusPayloadV2 { snapshot, drives }
+        )?;
+        Ok(StatusPayloadV2 { snapshot, drives })
     }
 }
 

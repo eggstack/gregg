@@ -67,6 +67,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
+| `InvalidIdentityField` | Identity string empty or NUL-padded |
 
 ### V2 additional violation kinds
 
@@ -80,7 +81,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 15 violation kinds (8 from V1 + 7 additional).
+V2 total: 16 violation kinds (9 from V1 + 7 additional).
 
 ## Test support
 

@@ -370,6 +370,12 @@ impl MemorySource {
         self.logical_cores = Some(cores);
         self
     }
+
+    /// Replace the logical core count on an already-constructed source. Used
+    /// by tests that simulate CPU hotplug between samples.
+    pub fn set_logical_cores(&mut self, cores: usize) {
+        self.logical_cores = Some(cores);
+    }
 }
 
 impl FileSource for MemorySource {

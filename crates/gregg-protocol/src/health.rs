@@ -74,10 +74,28 @@ impl<'de> Deserialize<'de> for HealthResponse {
         }
 
         let raw = RawHealthResponse::deserialize(deserializer)?;
-        if raw.state == ReadinessState::Ready && raw.snapshot.is_none() {
-            return Err(serde::de::Error::custom(
-                "ready health response must include a snapshot",
-            ));
+        if raw.schema_version != crate::SCHEMA_VERSION_V1 {
+            return Err(serde::de::Error::custom(format!(
+                "unsupported schema_version {} (expected {})",
+                raw.schema_version,
+                crate::SCHEMA_VERSION_V1
+            )));
+        }
+        match raw.state {
+            ReadinessState::Ready => {
+                if raw.snapshot.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "ready health response must include a snapshot",
+                    ));
+                }
+            }
+            _ => {
+                if raw.snapshot.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "non-ready health response must not include a snapshot",
+                    ));
+                }
+            }
         }
         Ok(Self {
             schema_version: raw.schema_version,
@@ -142,6 +160,18 @@ mod tests {
     #[test]
     fn ready_health_requires_snapshot() {
         let json = r#"{"schema_version":1,"state":"ready","snapshot":null}"#;
+        assert!(serde_json::from_str::<HealthResponse>(json).is_err());
+    }
+
+    #[test]
+    fn health_rejects_unsupported_schema_version() {
+        let json = r#"{"schema_version":99,"state":"warming"}"#;
+        assert!(serde_json::from_str::<HealthResponse>(json).is_err());
+    }
+
+    #[test]
+    fn non_ready_health_forbids_snapshot() {
+        let json = r#"{"schema_version":1,"state":"warming","snapshot":{"schema_version":1,"observed_at_unix_ms":1,"sample_interval_ms":1000,"capabilities":{"cpu_iowait":false},"system":{"name":"n","hostname":"h","os_name":"linux","os_version":"1","kernel_name":"Linux","kernel_release":"6","architecture":"x86_64"},"cpu":{"logical_cores":1,"usage_pct":0.0,"iowait_pct":null},"load":{"one":0.0,"five":0.0,"fifteen":0.0},"memory":{"used_bytes":0,"total_bytes":1,"usage_pct":0.0},"swap":{"used_bytes":0,"total_bytes":1,"usage_pct":0.0}}}"#;
         assert!(serde_json::from_str::<HealthResponse>(json).is_err());
     }
 }

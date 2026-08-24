@@ -240,13 +240,15 @@ fn warming_then_valid_sample_produces_protocol_snapshot() {
 
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap: StatusSnapshot = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap: StatusSnapshot = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert!(snap.capabilities.cpu_iowait);
     assert!(snap.cpu.iowait_pct.is_some());
@@ -411,13 +413,15 @@ fn arm64_fixture_produces_protocol_snapshot() {
 
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.cpu.logical_cores, 4);
     // busy_prev = 200+80+4+2+1 = 287; busy_curr = 280+110+5+3+1 = 399; delta_busy = 112
@@ -455,13 +459,15 @@ fn zero_swap_host_produces_valid_snapshot() {
 
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.swap.used_bytes, 0);
     assert_eq!(snap.swap.total_bytes, 0);
@@ -753,13 +759,15 @@ fn container_collector_produces_valid_snapshot() {
 
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap: StatusSnapshot = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap: StatusSnapshot = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.cpu.logical_cores, 2);
     assert_eq!(snap.system.os_name, "linux");
@@ -793,9 +801,10 @@ fn very_large_uptime_counters_produce_valid_percentages() {
 #[test]
 fn cpu_hotplug_different_core_count() {
     // A system that goes from 2 to 4 cores between samples.
-    // The collector uses `logical_cores` from the latest source; CPU
-    // percentages are computed from aggregate counters, so hotplug does
-    // not affect the delta math (aggregate counters always sum all cores).
+    // The collector re-reads `logical_cores` from the source on every
+    // sample; CPU percentages are computed from aggregate counters, so
+    // hotplug does not affect the delta math (aggregate counters always sum
+    // all cores).
     let mut collector = LinuxCollector::with_source(
         source_from(
             &[
@@ -817,17 +826,22 @@ fn cpu_hotplug_different_core_count() {
         .memory_source_mut()
         .expect("memory source");
     inner.add_file("/proc/stat", read_fixture("hotplug_4core_proc_stat_b.txt"));
+    inner.set_logical_cores(4);
 
     let metrics = collector.sample().expect("sample after hotplug succeeds");
+    assert_eq!(metrics.logical_cores, 4, "core count must be refreshed");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates after hotplug");
+    assert_eq!(snap.cpu.logical_cores, 4);
 }
 
 // ---------- Collector hardening: swap changes ----------
@@ -863,13 +877,15 @@ fn swap_usage_change_between_samples() {
 
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     // After freeing swap: used should be less than before.
     assert!(snap.swap.used_bytes < snap.swap.total_bytes);
@@ -937,13 +953,15 @@ fn suspend_resume_counter_jump_produces_valid_snapshot() {
 
     let metrics = collector.sample().expect("sample after resume succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: true },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: true },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate()
         .expect("snapshot validates after suspend/resume");
     assert!(snap.cpu.usage_pct.is_finite());

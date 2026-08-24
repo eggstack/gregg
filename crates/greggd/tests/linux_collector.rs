@@ -36,13 +36,15 @@ fn production_collector_warms_then_validates() {
     // heavily loaded CI hosts.
     if let Ok(metrics) = collector.sample() {
         let identity = collector.identity().expect("identity");
-        let snap = metrics.into_snapshot(
-            gregg_protocol::SCHEMA_VERSION_V1,
-            1_716_460_800_000,
-            1000,
-            collector.capabilities(),
-            identity,
-        );
+        let snap = metrics
+            .into_snapshot(
+                gregg_protocol::SCHEMA_VERSION_V1,
+                1_716_460_800_000,
+                1000,
+                collector.capabilities(),
+                identity,
+            )
+            .expect("into_snapshot succeeds");
         snap.validate().expect("production snapshot validates");
         assert!(snap.cpu.iowait_pct.is_some());
     }

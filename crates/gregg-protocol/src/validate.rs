@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use crate::{
     snapshot::{CpuMetrics, LoadAverage, MemoryMetrics, StatusSnapshot, SwapMetrics},
-    MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
+    SystemIdentity, MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
 };
 
 /// A single protocol-invariant violation.
@@ -54,6 +54,8 @@ pub enum ViolationKind {
     UsedExceedsTotal,
     /// `cpu_iowait` capability and `iowait_pct` presence disagreed.
     IowaitCapabilityMismatch,
+    /// An identity string was empty or contained NUL padding.
+    InvalidIdentityField,
 }
 
 impl fmt::Display for ViolationKind {
@@ -75,6 +77,9 @@ impl fmt::Display for ViolationKind {
             Self::UsedExceedsTotal => f.write_str("used_bytes exceeds total_bytes"),
             Self::IowaitCapabilityMismatch => {
                 f.write_str("iowait_pct must be Some(_) iff cpu_iowait capability is true")
+            }
+            Self::InvalidIdentityField => {
+                f.write_str("identity field must be non-empty and contain no NUL characters")
             }
         }
     }
@@ -113,6 +118,7 @@ pub(crate) fn validate(snap: &StatusSnapshot) -> Result<(), Vec<ValidationViolat
         ));
     }
 
+    validate_identity(&snap.system, &mut violations);
     validate_cpu(&snap.cpu, snap.capabilities.cpu_iowait, &mut violations);
     validate_load(&snap.load, &mut violations);
     validate_memory(&snap.memory, &mut violations);
@@ -122,6 +128,26 @@ pub(crate) fn validate(snap: &StatusSnapshot) -> Result<(), Vec<ValidationViolat
         Ok(())
     } else {
         Err(violations)
+    }
+}
+
+fn validate_identity(system: &SystemIdentity, out: &mut Vec<ValidationViolation>) {
+    let fields = [
+        ("system.name", &system.name),
+        ("system.hostname", &system.hostname),
+        ("system.os_name", &system.os_name),
+        ("system.os_version", &system.os_version),
+        ("system.kernel_name", &system.kernel_name),
+        ("system.kernel_release", &system.kernel_release),
+        ("system.architecture", &system.architecture),
+    ];
+    for (field, value) in fields {
+        if value.is_empty() || value.contains('\0') {
+            out.push(ValidationViolation::new(
+                ViolationKind::InvalidIdentityField,
+                field,
+            ));
+        }
     }
 }
 
@@ -223,5 +249,70 @@ fn check_percentage(value: f32, field: &str, out: &mut Vec<ValidationViolation>)
             ViolationKind::PercentageOutOfRange,
             field,
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::snapshot::MetricCapabilities;
+
+    fn valid_snapshot() -> StatusSnapshot {
+        StatusSnapshot {
+            schema_version: SCHEMA_VERSION_V1,
+            observed_at_unix_ms: 1,
+            sample_interval_ms: 1000,
+            capabilities: MetricCapabilities { cpu_iowait: true },
+            system: SystemIdentity {
+                name: "test".into(),
+                hostname: "test.local".into(),
+                os_name: "linux".into(),
+                os_version: "1.0".into(),
+                kernel_name: "Linux".into(),
+                kernel_release: "6.0.0".into(),
+                architecture: "x86_64".into(),
+            },
+            cpu: CpuMetrics {
+                logical_cores: 8,
+                usage_pct: 25.2,
+                iowait_pct: Some(0.4),
+            },
+            load: LoadAverage {
+                one: 1.32,
+                five: 0.91,
+                fifteen: 0.62,
+            },
+            memory: MemoryMetrics {
+                used_bytes: 5_900_000_000,
+                total_bytes: 15_600_000_000,
+                usage_pct: 37.8,
+            },
+            swap: SwapMetrics {
+                used_bytes: 0,
+                total_bytes: 4_000_000_000,
+                usage_pct: 0.0,
+            },
+        }
+    }
+
+    #[test]
+    fn accepts_well_formed_identity() {
+        assert!(validate(&valid_snapshot()).is_ok());
+    }
+
+    #[test]
+    fn rejects_identity_fields_that_are_empty_or_nul_padded() {
+        let mut snap = valid_snapshot();
+        snap.system.name = String::new();
+        snap.system.hostname = "host\0".into();
+        let err = validate(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "system.name" && v.kind == ViolationKind::InvalidIdentityField));
+        assert!(
+            err.iter()
+                .any(|v| v.field == "system.hostname"
+                    && v.kind == ViolationKind::InvalidIdentityField)
+        );
     }
 }

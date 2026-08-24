@@ -33,13 +33,15 @@ fn warming_then_valid_sample_produces_protocol_snapshot() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap: StatusSnapshot = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap: StatusSnapshot = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert!(!snap.capabilities.cpu_iowait);
     assert!(snap.cpu.iowait_pct.is_none());
@@ -239,13 +241,15 @@ fn protocol_snapshot_validates_with_mock_values() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("second sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap: StatusSnapshot = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap: StatusSnapshot = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.system.name, "deadpool");
     assert_eq!(snap.cpu.logical_cores, 8);
@@ -294,13 +298,15 @@ fn large_vm_page_counts_no_overflow() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert!(snap.memory.used_bytes <= snap.memory.total_bytes);
 }
@@ -317,13 +323,15 @@ fn nonzero_swap_positive_values() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.swap.total_bytes, 4_000_000_000);
     assert_eq!(snap.swap.used_bytes, 1_500_000_000);
@@ -339,13 +347,15 @@ fn very_large_physical_memory() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert_eq!(snap.memory.total_bytes, 128_000_000_000);
 }
@@ -360,13 +370,15 @@ fn small_page_size_works() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
 }
 
@@ -379,13 +391,15 @@ fn zero_logical_cores_clamped_to_one() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     // Logical cores should be at least 1.
     assert!(snap.cpu.logical_cores >= 1);
@@ -473,13 +487,15 @@ fn very_large_load_averages_accepted() {
     let _ = collector.sample().expect_err("warming");
     let metrics = collector.sample().expect("sample succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates");
     assert!((snap.load.one - 1000.0).abs() < 1e-3);
 }
@@ -515,13 +531,15 @@ fn recovery_after_error() {
     collector.source_mut().vm_error = false;
     let metrics = collector.sample().expect("recovery succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate().expect("snapshot validates after recovery");
 }
 
@@ -586,13 +604,15 @@ fn sleep_wake_recovery_after_counter_reset() {
     };
     let metrics = collector.sample().expect("sample after recovery succeeds");
     let identity = collector.identity().expect("identity");
-    let snap = metrics.into_snapshot(
-        gregg_protocol::SCHEMA_VERSION_V1,
-        1_716_460_800_000,
-        1000,
-        MetricCapabilities { cpu_iowait: false },
-        identity,
-    );
+    let snap = metrics
+        .into_snapshot(
+            gregg_protocol::SCHEMA_VERSION_V1,
+            1_716_460_800_000,
+            1000,
+            MetricCapabilities { cpu_iowait: false },
+            identity,
+        )
+        .expect("into_snapshot succeeds");
     snap.validate()
         .expect("snapshot validates after wake recovery");
     assert!(snap.cpu.usage_pct.is_finite());

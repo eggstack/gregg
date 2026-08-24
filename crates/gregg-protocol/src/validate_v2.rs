@@ -12,7 +12,7 @@ use crate::v2::{
     CommitMetrics, StatusPayloadV2, StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES,
     MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
 };
-use crate::{LoadAverage, MemoryMetrics, MAX_SAMPLE_INTERVAL_MS};
+use crate::{LoadAverage, MemoryMetrics, SystemIdentity, MAX_SAMPLE_INTERVAL_MS};
 
 /// A single protocol-invariant violation for v2 snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -66,6 +66,8 @@ pub enum ViolationKindV2 {
     DriveNameTooLong { max_bytes: usize },
     /// The drive collection exceeded the protocol bound.
     TooManyDrives { max_entries: usize },
+    /// An identity string was empty or contained NUL padding.
+    InvalidIdentityField,
 }
 
 impl fmt::Display for ViolationKindV2 {
@@ -108,6 +110,9 @@ impl fmt::Display for ViolationKindV2 {
                     "drive list exceeds maximum length of {max_entries} entries"
                 )
             }
+            Self::InvalidIdentityField => {
+                f.write_str("identity field must be non-empty and contain no NUL characters")
+            }
         }
     }
 }
@@ -147,6 +152,7 @@ pub fn validate_v2(snap: &StatusSnapshotV2) -> Result<(), Vec<ValidationViolatio
         ));
     }
 
+    validate_identity_v2(&snap.system, &mut violations);
     validate_cpu_v2(&snap.cpu, snap.capabilities.cpu_iowait, &mut violations);
     validate_load_v2(
         snap.load.as_ref(),
@@ -228,6 +234,26 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         Ok(())
     } else {
         Err(violations)
+    }
+}
+
+fn validate_identity_v2(system: &SystemIdentity, out: &mut Vec<ValidationViolationV2>) {
+    let fields = [
+        ("system.name", &system.name),
+        ("system.hostname", &system.hostname),
+        ("system.os_name", &system.os_name),
+        ("system.os_version", &system.os_version),
+        ("system.kernel_name", &system.kernel_name),
+        ("system.kernel_release", &system.kernel_release),
+        ("system.architecture", &system.architecture),
+    ];
+    for (field, value) in fields {
+        if value.is_empty() || value.contains('\0') {
+            out.push(ValidationViolationV2::new(
+                ViolationKindV2::InvalidIdentityField,
+                field,
+            ));
+        }
     }
 }
 
@@ -368,13 +394,11 @@ fn validate_swap_v2(
                         "swap.used_bytes",
                     ));
                 }
-                if s.total_bytes == 0 {
+                if s.total_bytes == 0 && s.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::ZeroNotAllowed,
                         "swap.total_bytes",
                     ));
-                }
-                if s.total_bytes == 0 && s.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::PercentageOutOfRange,
                         "swap.usage_pct",
@@ -412,13 +436,11 @@ fn validate_commit_v2(
                         "commit.used_bytes",
                     ));
                 }
-                if c.limit_bytes == 0 {
+                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::ZeroNotAllowed,
                         "commit.limit_bytes",
                     ));
-                }
-                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::PercentageOutOfRange,
                         "commit.usage_pct",
@@ -432,13 +454,11 @@ fn validate_commit_v2(
                         "commit.used_bytes",
                     ));
                 }
-                if c.limit_bytes == 0 {
+                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::ZeroNotAllowed,
                         "commit.limit_bytes",
                     ));
-                }
-                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::PercentageOutOfRange,
                         "commit.usage_pct",
@@ -473,8 +493,8 @@ fn check_percentage_v2(value: f32, field: &str, out: &mut Vec<ValidationViolatio
 mod tests {
     use super::*;
     use crate::v2::{
-        CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2, StatusSnapshotV2,
-        SwapMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
+        CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
+        StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
     };
     use crate::{LoadAverage, MemoryMetrics, SystemIdentity};
 
@@ -872,6 +892,93 @@ mod tests {
         assert!(err
             .iter()
             .any(|v| matches!(v.kind, ViolationKindV2::SwapCapabilityMismatch)));
+    }
+
+    #[test]
+    fn accepts_zero_commit_metrics_when_capable() {
+        // The Windows collector treats a zero commit limit as a legitimate
+        // runtime state and reports all-zero commit metrics for it.
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: true,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(CommitMetrics {
+                used_bytes: 0,
+                limit_bytes: 0,
+                usage_pct: 0.0,
+            }),
+            ..valid_linux_v2()
+        };
+        assert!(validate_v2(&snap).is_ok());
+    }
+
+    #[test]
+    fn rejects_commit_zero_limit_with_nonzero_percentage() {
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: true,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(CommitMetrics {
+                used_bytes: 0,
+                limit_bytes: 0,
+                usage_pct: 25.0,
+            }),
+            ..valid_linux_v2()
+        };
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "commit.limit_bytes" && v.kind == ViolationKindV2::ZeroNotAllowed));
+        assert!(err
+            .iter()
+            .any(|v| v.field == "commit.usage_pct"
+                && v.kind == ViolationKindV2::PercentageOutOfRange));
+    }
+
+    #[test]
+    fn capability_mismatch_with_consistent_zeros_reports_only_the_mismatch() {
+        let mut snap = valid_linux_v2();
+        snap.capabilities.swap = false;
+        snap.swap = Some(SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        });
+        let err = validate_v2(&snap).unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].kind, ViolationKindV2::SwapCapabilityMismatch);
+
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: false,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(CommitMetrics {
+                used_bytes: 0,
+                limit_bytes: 0,
+                usage_pct: 0.0,
+            }),
+            ..valid_linux_v2()
+        };
+        let err = validate_v2(&snap).unwrap_err();
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].kind, ViolationKindV2::CommitCapabilityMismatch);
+    }
+
+    #[test]
+    fn rejects_identity_fields_that_are_empty_or_nul_padded() {
+        let mut snap = valid_linux_v2();
+        snap.system.name = String::new();
+        snap.system.hostname = "host\0".into();
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "system.name" && v.kind == ViolationKindV2::InvalidIdentityField));
+        assert!(err.iter().any(
+            |v| v.field == "system.hostname" && v.kind == ViolationKindV2::InvalidIdentityField
+        ));
     }
 
     #[test]

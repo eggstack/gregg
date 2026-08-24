@@ -39,7 +39,6 @@ pub struct LinuxCollector {
     identity: SystemIdentity,
     capabilities: MetricCapabilities,
     previous_cpu: Option<cpu::CpuCounters>,
-    logical_cores: u32,
 }
 
 impl LinuxCollector {
@@ -59,18 +58,11 @@ impl LinuxCollector {
         display_name: Option<&str>,
     ) -> Result<Self, CollectError> {
         let identity = identity::collect_identity(&source, display_name)?;
-        let logical_cores = source
-            .logical_core_count()
-            .unwrap_or(1)
-            .max(1)
-            .try_into()
-            .unwrap_or(u32::MAX);
         Ok(Self {
             source,
             identity,
             capabilities: MetricCapabilities { cpu_iowait: true },
             previous_cpu: None,
-            logical_cores,
         })
     }
 
@@ -121,8 +113,18 @@ impl SystemCollector for LinuxCollector {
 
         self.previous_cpu = stat.aggregate;
 
+        // Re-read the core count on every sample so CPU hotplug events are
+        // reflected instead of freezing the count from construction time.
+        let logical_cores = self
+            .source
+            .logical_core_count()
+            .unwrap_or(1)
+            .max(1)
+            .try_into()
+            .unwrap_or(u32::MAX);
+
         Ok(CollectedMetrics {
-            logical_cores: self.logical_cores,
+            logical_cores,
             cpu_usage_pct: Some(cpu_sample.usage_pct),
             cpu_iowait_pct: Some(cpu_sample.iowait_pct),
             load,

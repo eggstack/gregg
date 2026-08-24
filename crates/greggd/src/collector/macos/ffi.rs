@@ -567,8 +567,18 @@ impl Drop for HostPort {
 // FFI implementation functions
 // ---------------------------------------------------------------------------
 
-/// Read cumulative CPU tick counters from Mach `host_statistics`.
+/// Widen a Mach `natural_t` counter that was written into an `i32` buffer.
+///
+/// Mach writes unsigned 32-bit values into the `host_statistics` buffer even
+/// though the FFI signature exposes it as `integer_t`. Reinterpret the bit
+/// pattern as unsigned so counters above `i32::MAX` keep their true magnitude
+/// instead of sign-extending into huge `u64` deltas.
 #[allow(clippy::cast_sign_loss)]
+fn widen_natural(value: i32) -> u64 {
+    u64::from(value as u32)
+}
+
+/// Read cumulative CPU tick counters from Mach `host_statistics`.
 fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     let host = HostPort::current()?;
     // Safety: `host_statistics` writes exactly 4 natural_t values into our
@@ -594,10 +604,10 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
     }
 
     Ok(RawCpuTicks {
-        user: buf[0] as u64,
-        system: buf[1] as u64,
-        idle: buf[2] as u64,
-        nice: buf[3] as u64,
+        user: widen_natural(buf[0]),
+        system: widen_natural(buf[1]),
+        idle: widen_natural(buf[2]),
+        nice: widen_natural(buf[3]),
     })
 }
 
@@ -911,6 +921,17 @@ mod native_tests {
     }
 
     #[test]
+    fn natural_counters_widen_without_sign_extension() {
+        // Cumulative tick counters exceed i32::MAX after long uptimes; the
+        // bit pattern must be reinterpreted as unsigned, not sign-extended.
+        assert_eq!(widen_natural(0), 0);
+        assert_eq!(widen_natural(1), 1);
+        assert_eq!(widen_natural(i32::MAX), u64::from(i32::MAX as u32));
+        assert_eq!(widen_natural(-1), u64::from(u32::MAX));
+        assert_eq!(widen_natural(i32::MIN), u64::from(0x8000_0000u32));
+    }
+
+    #[test]
     fn vm_page_size_positive() {
         let q = FfiNativeQueries;
         let vm = q.vm_info64().expect("vm_info64 failed");
@@ -1094,18 +1115,20 @@ mod native_tests {
         };
 
         // 6. Validate the complete protocol snapshot.
-        let snap = metrics.into_snapshot(
-            SCHEMA_VERSION_V1,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis()
-                .try_into()
-                .unwrap(),
-            1000,
-            MetricCapabilities { cpu_iowait: false },
-            identity.clone(),
-        );
+        let snap = metrics
+            .into_snapshot(
+                SCHEMA_VERSION_V1,
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis()
+                    .try_into()
+                    .unwrap(),
+                1000,
+                MetricCapabilities { cpu_iowait: false },
+                identity.clone(),
+            )
+            .expect("into_snapshot succeeds");
         snap.validate().expect("snapshot validates");
 
         // 7. Assert cpu_iowait == false and iowait_pct == None.
@@ -1138,18 +1161,20 @@ mod native_tests {
             // Some samples may fail transiently; we only care that the
             // collector doesn't crash or leak Mach port rights.
             if let Ok(metrics) = m {
-                let snap = metrics.into_snapshot(
-                    SCHEMA_VERSION_V1,
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_millis()
-                        .try_into()
-                        .unwrap(),
-                    1000,
-                    MetricCapabilities { cpu_iowait: false },
-                    identity.clone(),
-                );
+                let snap = metrics
+                    .into_snapshot(
+                        SCHEMA_VERSION_V1,
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_millis()
+                            .try_into()
+                            .unwrap(),
+                        1000,
+                        MetricCapabilities { cpu_iowait: false },
+                        identity.clone(),
+                    )
+                    .expect("into_snapshot succeeds");
                 snap.validate().expect("repeated snapshot validates");
             }
         }

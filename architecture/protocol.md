@@ -126,6 +126,7 @@ are:
 - `LoadValueOutOfRange`
 - `UsedExceedsTotal` (memory or swap)
 - `IowaitCapabilityMismatch`
+- `InvalidIdentityField` — identity string is empty or contains NUL
 
 ### V2 validation
 
@@ -140,7 +141,7 @@ are:
 - `DriveNameTooLong` — drive name exceeds 512 UTF-8 bytes
 - `TooManyDrives` — more than 32 drive entries
 
-V2 total: 15 violation kinds (8 from v1 + 7 additional).
+V2 total: 16 violation kinds (9 from v1 + 7 additional).
 
 V2 validation rejects capability/value contradictions:
 - `cpu_iowait == false` requires `iowait_pct == None`

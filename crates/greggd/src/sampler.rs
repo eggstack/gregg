@@ -17,10 +17,8 @@ use gregg_protocol::{
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-#[cfg(test)]
-use crate::collector::error::CollectError;
-use crate::collector::error::CollectErrorKind;
-use crate::collector::SystemCollector;
+use crate::collector::error::{CollectError, CollectErrorKind};
+use crate::collector::{CollectedMetrics, SystemCollector};
 
 /// Default sampling interval in milliseconds.
 const DEFAULT_INTERVAL_MS: u64 = 1000;
@@ -226,43 +224,20 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
 
                 let now_ms = self.clock.now_unix_ms();
-                let identity =
-                    self.collector
-                        .identity()
-                        .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
-                            name: String::new(),
-                            hostname: String::new(),
-                            os_name: String::new(),
-                            os_version: String::new(),
-                            kernel_name: String::new(),
-                            kernel_release: String::new(),
-                            architecture: String::new(),
-                        });
+                let identity = self.identity_or_blank();
+                let converted = self.convert_sample(metrics, now_ms, identity);
 
-                // Produce v1 snapshot if the collector supports it.
-                // Windows does not support v1 (load/swap cannot be
-                // meaningfully represented as non-optional zero values).
-                let arc_v1 = if self.collector.supports_v1_snapshot() {
-                    let v1 = metrics.clone().into_snapshot(
-                        SCHEMA_VERSION_V1,
-                        now_ms,
-                        self.interval_ms,
-                        self.collector.capabilities(),
-                        identity.clone(),
-                    );
-                    Some(Arc::new(v1))
-                } else {
-                    None
+                let (v1, payload_v2) = match converted {
+                    Ok(converted) => converted,
+                    Err(err) => {
+                        self.transition_to_failed("snapshot conversion failed");
+                        tracing::debug!(kind = ?err.kind, "snapshot conversion failed");
+                        return;
+                    }
                 };
 
-                // Produce v2 snapshot from the same collected sample.
-                let v2 = metrics.into_status_payload_v2(
-                    now_ms,
-                    self.interval_ms,
-                    self.collector.capabilities_v2(),
-                    identity,
-                );
-                let arc_v2 = Arc::new(v2);
+                let arc_v1 = v1.map(Arc::new);
+                let arc_v2 = Arc::new(payload_v2);
 
                 if self.readiness != ReadinessState::Ready {
                     tracing::info!(
@@ -305,6 +280,78 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
             },
         }
+    }
+
+    /// Collector identity, falling back to a blank identity when the
+    /// collector cannot supply one.
+    fn identity_or_blank(&self) -> gregg_protocol::SystemIdentity {
+        self.collector
+            .identity()
+            .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
+                name: String::new(),
+                hostname: String::new(),
+                os_name: String::new(),
+                os_version: String::new(),
+                kernel_name: String::new(),
+                kernel_release: String::new(),
+                architecture: String::new(),
+            })
+    }
+
+    /// Convert one collected sample into the publishable snapshot pair.
+    ///
+    /// Produces a v1 snapshot only when the collector supports it; Windows
+    /// does not (load/swap cannot be meaningfully represented as
+    /// non-optional zero values).
+    fn convert_sample(
+        &self,
+        metrics: CollectedMetrics,
+        now_ms: u64,
+        identity: gregg_protocol::SystemIdentity,
+    ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
+        if self.collector.supports_v1_snapshot() {
+            let v1 = metrics.clone().into_snapshot(
+                SCHEMA_VERSION_V1,
+                now_ms,
+                self.interval_ms,
+                self.collector.capabilities(),
+                identity.clone(),
+            );
+            let v2 = metrics.into_status_payload_v2(
+                now_ms,
+                self.interval_ms,
+                self.collector.capabilities_v2(),
+                identity,
+            );
+            match (v1, v2) {
+                (Ok(v1), Ok(v2)) => Ok((Some(v1), v2)),
+                (Err(err), _) | (_, Err(err)) => Err(err),
+            }
+        } else {
+            metrics
+                .into_status_payload_v2(
+                    now_ms,
+                    self.interval_ms,
+                    self.collector.capabilities_v2(),
+                    identity,
+                )
+                .map(|v2| (None, v2))
+        }
+    }
+
+    /// Record one failure and move to the [`ReadinessState::Failed`] state.
+    fn transition_to_failed(&mut self, message: &'static str) {
+        if self.readiness == ReadinessState::Ready {
+            tracing::info!(from = "ready", to = "failed", "sampler state transition");
+        } else if self.readiness == ReadinessState::Warming {
+            tracing::info!(from = "warming", to = "failed", "sampler state transition");
+        }
+        self.readiness = ReadinessState::Failed;
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+        tracing::debug!(
+            consecutive_failures = self.consecutive_failures,
+            "{message}"
+        );
     }
 }
 
@@ -725,7 +772,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_metrics_produces_snapshot_with_raw_values() {
+    fn invalid_metrics_fails_rather_than_publishing() {
         let clock = SyntheticClock::new(1000);
         let collector = SyntheticCollector::returns_invalid_metrics();
         let mut sampler = Sampler::new(collector, clock);
@@ -733,14 +780,13 @@ mod tests {
         // warming
         sampler.sample_once();
         assert_eq!(sampler.readiness(), ReadinessState::Warming);
-        // invalid metrics -> into_snapshot coalesces NaN/infinity into the
-        // snapshot; the sampler publishes it without validation failure.
+        // invalid metrics -> into_snapshot refuses to fabricate a 0.0 CPU
+        // percentage, so the sampler records a failure instead of publishing.
         sampler.sample_once();
-        assert_eq!(sampler.readiness(), ReadinessState::Ready);
-        let snap = sampler.snapshot().expect("snapshot present");
-        // NaN CPU usage is coalesced to 0.0 by into_snapshot.
-        assert!((snap.cpu.usage_pct - 0.0).abs() < f32::EPSILON);
-        assert_eq!(snap.cpu.logical_cores, 0);
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.consecutive_failures, 1);
+        assert!(sampler.snapshot().is_none());
+        assert!(sampler.snapshot_v2.is_none());
     }
 
     // --- run loop integration tests ---

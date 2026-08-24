@@ -22,8 +22,8 @@ depends on nothing from either.
 | `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
-| `validate` | `src/validate.rs` | V1 validation: 8 violation kinds; re-exports `validate()` |
-| `validate_v2` | `src/validate_v2.rs` | V2 validation: 15 violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
+| `validate` | `src/validate.rs` | V1 validation: 9 violation kinds; re-exports `validate()` |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: 16 violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 
@@ -94,6 +94,7 @@ additive JSON changes from silently loosening invariants.
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
+| `InvalidIdentityField` | Identity string empty or NUL-padded |
 
 ### V2 additional violation kinds
 
@@ -107,7 +108,7 @@ additive JSON changes from silently loosening invariants.
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 15 violation kinds (8 from V1 + 7 additional).
+V2 total: 16 violation kinds (9 from V1 + 7 additional).
 
 ## Health responses
 

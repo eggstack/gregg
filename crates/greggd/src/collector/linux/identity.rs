@@ -29,7 +29,6 @@ pub fn collect_identity(
     let hostname = source.hostname()?;
     let kernel = source.kernel_identity()?;
     let architecture = source.architecture();
-    let _ = source.logical_core_count().unwrap_or(1).max(1);
 
     let os_release = source.read_os_release()?;
     let (os_name, os_version) = match os_release {
