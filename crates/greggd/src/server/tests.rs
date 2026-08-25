@@ -4,7 +4,7 @@ use axum::http::{Method, Request, StatusCode};
 use gregg_protocol::test_support::{
     LinuxSnapshotBuilder, LinuxSnapshotV2Builder, WindowsSnapshotV2Builder,
 };
-use gregg_protocol::v2::DriveMetrics;
+use gregg_protocol::v2::{DriveMetrics, HealthResponseV2};
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
 use http_body_util::BodyExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -608,8 +608,14 @@ async fn v2_only_snapshot_ages_out_on_status_and_health() {
     let app = build_test_router(state);
     let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponseV2 = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
     let response = app.oneshot(get("/v2/healthz")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponseV2 = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
 }
 
 #[test]
@@ -641,14 +647,21 @@ async fn stale_snapshot_by_age_returns_503() {
 
     // Sleep briefly so the snapshot exceeds max_snapshot_age.
     let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
 
-    // HTTP status is 503 even though the internal health state may
-    // still say Ready (no explicit failure was recorded).
+    // HTTP status is 503 and the body must not claim `ready`.
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body_str = response_body_string(response).await;
-    let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap();
-    assert!(parsed.is_object());
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
+
+    // /healthz agrees: 503 with a failed body, never a ready body.
+    let response = app.oneshot(get("/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
 }
 
 #[tokio::test]

@@ -70,9 +70,20 @@ fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
         let name = entry.file_name();
         if let Some(name_str) = name.to_str() {
             if name_str.starts_with(".greggd-") && name_str.ends_with(".toml.tmp") {
-                if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() {
-                        if let Err(error) = fs::remove_file(entry.path()) {
+                // `file_type()` never follows symlinks, so only true regular
+                // files are considered. `remove_file` operates on the final
+                // path component: if an attacker swaps the entry for a
+                // symlink after the check, the link itself is unlinked —
+                // never its target — so the check-to-unlink window cannot
+                // damage anything outside this directory.
+                let eligible = entry.file_type().is_ok_and(|file_type| file_type.is_file());
+                if eligible {
+                    match fs::remove_file(entry.path()) {
+                        Ok(()) => {}
+                        // Already gone: another process cleaned it up after
+                        // the directory listing was taken.
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
                             debug!(
                                 path = %entry.path().display(),
                                 error = %error,

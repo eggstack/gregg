@@ -325,7 +325,6 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
         }
         if message.contains("dns")
             || message.contains("resolve")
-            || message.contains("name")
             || message.contains("failed to lookup address information")
         {
             return EggpoolFetchOutcome::DnsFailure;

@@ -106,7 +106,7 @@ health response with `503` because v1 is structurally unavailable.
 
 **Staleness policy:** If `max_consecutive_failures > 0` and failures reach the
 threshold, or if `max_snapshot_age > 0` and the latest published observation is too old, the server
-returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving.
+returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving. A 503 body is always a failed health response: if staleness trips while the stored health state still says `ready`, the handlers substitute a `CollectorFailure` failure ("cached snapshot is stale"), so the body can never contradict the status code.
 
 ### Sampler
 
@@ -121,8 +121,9 @@ The sampler owns the clock and cadence. Key behaviors:
 - The runtime loop runs each collection cycle on tokio's blocking thread pool
   (`spawn_blocking`), so slow native reads (procfs, one `statvfs()` per mount)
   cannot stall the HTTP server sharing the single current-thread runtime.
-  A collection task panic loses the collector for the process lifetime and is
-  reported as a recurring source failure rather than a silent stall
+  The collector is shared with the blocking task behind a mutex; a panicked
+  task poisons it, the panic is logged and reported as a source failure for
+  that cycle only, and later ticks recover the lock and resume sampling.
 
 ### Configuration
 

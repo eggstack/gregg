@@ -60,17 +60,19 @@ pub struct MetricCapabilities {
 }
 
 /// Stable identity fields. Each field is transported separately so the TUI
-/// can degrade by width priority without parsing a combined string. Empty
-/// values are permitted when the source cannot provide an optional identity
-/// field.
+/// can degrade by width priority without parsing a combined string.
+///
+/// Validation rejects every empty value (and any value containing NUL),
+/// including for optional fields such as `name`; a source that cannot
+/// provide a value must substitute a non-empty placeholder instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct SystemIdentity {
-    /// User-facing system name (typically a configured alias). Empty values
-    /// are permitted when the source cannot provide this optional identity.
+    /// User-facing system name (typically a configured alias). Validation
+    /// rejects empty values.
     pub name: String,
-    /// Network hostname as reported by the operating system. Empty values are
-    /// permitted when the source cannot provide this optional identity.
+    /// Network hostname as reported by the operating system. Validation
+    /// rejects empty values.
     pub hostname: String,
     /// Operating-system family name (e.g. `"linux"`, `"macos"`).
     pub os_name: String,

@@ -62,6 +62,18 @@ fn decode_mountinfo(value: &str) -> Option<String> {
             "011" => '\t',
             "012" => '\n',
             "134" => '\\',
+            _ if code.len() < 3 => {
+                // A truncated escape sequence at end of input must not
+                // discard the whole mount entry; keep the raw characters
+                // so the drive still appears in metrics.
+                tracing::warn!(
+                    escape = ?code,
+                    "truncated mountinfo octal escape; keeping raw characters"
+                );
+                result.push('\\');
+                result.push_str(&code);
+                continue;
+            }
             _ => {
                 tracing::warn!(
                     escape = ?code,
@@ -159,6 +171,10 @@ pub(crate) fn collect(
             continue;
         };
         let Some((total, free, available)) = capacity(stats) else {
+            tracing::warn!(
+                mount_point = %record.mount_point,
+                "statvfs reported zero block size or overflowing capacity; skipping drive"
+            );
             continue;
         };
         candidates.push(DriveCandidate {
@@ -237,6 +253,14 @@ mod tests {
             },
         );
         assert!(collect(&source).unwrap().is_empty());
+    }
+
+    #[test]
+    fn truncated_escape_keeps_raw_characters_instead_of_dropping_entry() {
+        // A truncated escape at end of input must survive as literal
+        // characters so the mount entry is not silently discarded.
+        assert_eq!(decode_mountinfo("/mnt\\04"), Some(String::from("/mnt\\04")));
+        assert_eq!(decode_mountinfo("/tmp/x\\"), Some(String::from("/tmp/x\\")));
     }
 
     #[test]

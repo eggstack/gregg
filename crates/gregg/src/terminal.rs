@@ -48,7 +48,9 @@ impl Terminal {
     /// Restore the terminal to a usable state: show cursor, leave alternate
     /// screen, disable raw mode, and flush.
     pub fn restore(&mut self) {
-        let _ = self;
+        // Best-effort flush of any buffered frame state before tearing down
+        // global terminal state.
+        let _ = self.inner.flush();
         restore_terminal();
     }
 
@@ -69,10 +71,9 @@ impl Terminal {
 
     /// Consume the wrapper and return the inner
     /// [`ratatui::Terminal<CrosstermBackend<Stdout>>`].
-    #[allow(dead_code, clippy::unused_self)]
+    #[allow(dead_code)]
     pub fn into_inner(self) -> RatatuiTerminal<CrosstermBackend<Stdout>> {
-        let backend = CrosstermBackend::new(stdout());
-        RatatuiTerminal::new(backend).expect("failed to create terminal for into_inner")
+        self.inner
     }
 }
 

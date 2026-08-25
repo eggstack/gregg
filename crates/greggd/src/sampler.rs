@@ -7,7 +7,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use gregg_protocol::v2::StatusPayloadV2;
@@ -52,10 +52,18 @@ pub struct RealClock;
 impl Clock for RealClock {
     #[allow(clippy::cast_possible_truncation)]
     fn now_unix_ms(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis() as u64,
+            Err(error) => {
+                // A clock behind the epoch would stamp snapshots with `0`,
+                // which validation rejects and staleness math cannot use.
+                tracing::warn!(
+                    %error,
+                    "system clock precedes the Unix epoch; reporting 0 until corrected"
+                );
+                0
+            }
+        }
     }
 
     fn sleep(&self, dur: Duration) -> SleepFuture {
@@ -86,9 +94,10 @@ pub enum SamplerError {
 /// The sampler drives the collection loop, publishes immutable snapshots, and
 /// tracks daemon readiness through the warming, ready, and failed lifecycle.
 pub struct Sampler<C: SystemCollector, Clk: Clock> {
-    /// Present except during the transient window in which the collector is
-    /// moved onto the blocking thread pool inside [`Self::run`].
-    collector: Option<C>,
+    /// Shared with the blocking pool for the duration of each sampling
+    /// cycle. The mutex may be poisoned by a panicked sampling task, but
+    /// the collector itself survives so later cycles keep sampling.
+    collector: Arc<Mutex<C>>,
     clock: Clk,
     interval_ms: u64,
     readiness: ReadinessState,
@@ -105,7 +114,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     #[must_use]
     pub fn new(collector: C, clock: Clk) -> Self {
         Self {
-            collector: Some(collector),
+            collector: Arc::new(Mutex::new(collector)),
             clock,
             interval_ms: DEFAULT_INTERVAL_MS,
             readiness: ReadinessState::Warming,
@@ -124,7 +133,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     pub fn with_interval(collector: C, clock: Clk, interval_ms: u64) -> Result<Self, SamplerError> {
         Self::validate_interval(interval_ms)?;
         Ok(Self {
-            collector: Some(collector),
+            collector: Arc::new(Mutex::new(collector)),
             clock,
             interval_ms,
             readiness: ReadinessState::Warming,
@@ -225,46 +234,44 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// Direct sampling used outside the runtime loop; [`Self::run`] samples
     /// through [`Self::sample_on_blocking_pool`] instead.
     pub fn sample_once(&mut self) {
-        let result = match self.collector.as_mut() {
-            Some(collector) => collector.sample(),
-            // Unreachable outside the transient take window in `run`.
-            None => return,
-        };
+        let result = self.lock_collector().sample();
         self.apply_sample_result(result);
     }
 
     /// Run one collection cycle on tokio's blocking thread pool.
     ///
-    /// The collector is temporarily moved into the blocking task and returned
-    /// before the result is applied. If the collection task panics, its
-    /// ownership is lost; subsequent cycles then report a source failure each
-    /// tick until shutdown instead of silently stalling readiness.
+    /// The collector is shared with the blocking task behind a mutex for the
+    /// duration of one cycle. If the collection task panics, the mutex is
+    /// poisoned but the collector itself survives; later cycles recover the
+    /// lock and continue sampling instead of losing metrics permanently.
     async fn sample_on_blocking_pool(&mut self) -> Result<CollectedMetrics, CollectError>
     where
         C: Send + 'static,
     {
-        let mut collector = self.collector.take();
-        let joined = tokio::task::spawn_blocking(move || {
-            let result = collector.as_mut().map(SystemCollector::sample);
-            (collector, result)
+        let collector = Arc::clone(&self.collector);
+        tokio::task::spawn_blocking(move || {
+            let mut guard = match collector.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            guard.sample()
         })
-        .await;
-        match joined {
-            Ok((collector, Some(result))) => {
-                self.collector = collector;
-                result
-            }
-            Ok((_, None)) => Err(CollectError::new(
+        .await
+        .unwrap_or_else(|join_error| {
+            tracing::warn!(%join_error, "sampler collection task panicked");
+            Err(CollectError::new(
                 CollectErrorKind::SourceUnavailable,
-                "collector unavailable for sampling",
-            )),
-            Err(join_error) => {
-                tracing::warn!(%join_error, "sampler collection task panicked");
-                Err(CollectError::new(
-                    CollectErrorKind::SourceUnavailable,
-                    "collection task failed",
-                ))
-            }
+                "collection task panicked",
+            ))
+        })
+    }
+
+    /// Lock the shared collector, recovering from poisoning caused by a
+    /// panicked sampling task.
+    fn lock_collector(&self) -> MutexGuard<'_, C> {
+        match self.collector.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
         }
     }
 
@@ -343,10 +350,9 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// Collector identity, falling back to a blank identity when the
     /// collector cannot supply one.
     fn identity_or_blank(&self) -> gregg_protocol::SystemIdentity {
-        self.collector
-            .as_ref()
-            .and_then(|collector| collector.identity().ok())
-            .unwrap_or_else(|| gregg_protocol::SystemIdentity {
+        self.lock_collector()
+            .identity()
+            .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
                 name: String::new(),
                 hostname: String::new(),
                 os_name: String::new(),
@@ -368,13 +374,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         now_ms: u64,
         identity: gregg_protocol::SystemIdentity,
     ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
-        let Some(collector) = self.collector.as_ref() else {
-            // Unreachable outside the transient take window in `run`.
-            return Err(CollectError::new(
-                CollectErrorKind::SourceUnavailable,
-                "collector unavailable for conversion",
-            ));
-        };
+        let collector = self.lock_collector();
         if collector.supports_v1_snapshot() {
             let v1 = metrics.clone().into_snapshot(
                 SCHEMA_VERSION_V1,

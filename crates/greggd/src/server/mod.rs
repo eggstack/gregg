@@ -20,7 +20,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
 use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2};
-use gregg_protocol::{HealthResponse, StatusSnapshot};
+use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, RwLock};
 use tracing::info;
@@ -32,12 +32,21 @@ pub mod error;
 const V1_UNAVAILABLE_MESSAGE: &str = "schema v1 status is unavailable on this platform";
 
 /// Current time as milliseconds since the Unix epoch.
+///
+/// A clock behind the epoch would collapse every timestamp to `0` and defeat
+/// age-based staleness detection, so that condition is logged loudly.
 #[allow(clippy::cast_possible_truncation)]
 fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis() as u64,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                "system clock precedes the Unix epoch; staleness checks will be inaccurate until corrected"
+            );
+            0
+        }
+    }
 }
 
 /// HTTP server bind configuration.
@@ -254,11 +263,17 @@ impl ServerState {
         now_unix_ms: u64,
     ) -> (Option<Arc<StatusSnapshot>>, HealthResponse, bool) {
         let state = self.published.read().await;
-        (
-            state.snapshot.clone(),
-            state.health.clone(),
-            self.is_stale(&state, now_unix_ms),
-        )
+        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
+        let mut health = state.health.clone();
+        // A stored `ready` health response must never accompany a 503 for a
+        // stale snapshot; report the staleness as a collector failure instead.
+        if snapshot_is_stale && health.state == ReadinessState::Ready {
+            health = HealthResponse::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            );
+        }
+        (state.snapshot.clone(), health, snapshot_is_stale)
     }
 
     async fn v2_status_data(
@@ -266,11 +281,15 @@ impl ServerState {
         now_unix_ms: u64,
     ) -> (Option<Arc<StatusPayloadV2>>, HealthResponseV2, bool) {
         let state = self.published.read().await;
-        (
-            state.snapshot_v2.clone(),
-            state.health_v2.clone(),
-            self.is_stale(&state, now_unix_ms),
-        )
+        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
+        let mut health_v2 = state.health_v2.clone();
+        if snapshot_is_stale && health_v2.state == ReadinessState::Ready {
+            health_v2 = HealthResponseV2::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            );
+        }
+        (state.snapshot_v2.clone(), health_v2, snapshot_is_stale)
     }
 
     fn is_stale(&self, state: &PublishedState, now_unix_ms: u64) -> bool {

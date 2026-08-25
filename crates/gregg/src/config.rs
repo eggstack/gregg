@@ -7,6 +7,13 @@
 
 #![allow(unsafe_code)] // Required for libc::flock in FileLockGuard on unix.
 
+// The cross-process configuration lock relies on platform file-locking
+// primitives (flock on unix, LockFileEx on windows). Fail the build loudly on
+// any other target rather than silently degrading to in-process-only locking,
+// where concurrent processes could interleave config writes.
+#[cfg(not(any(unix, windows)))]
+compile_error!("cross-process config locking is only implemented for unix and windows targets");
+
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
@@ -482,17 +489,15 @@ impl Config {
                 }
             })?;
 
-            // Sync the replacement before renaming it into place.
-            #[cfg(unix)]
-            {
-                file.sync_all().map_err(|e| {
-                    let _ = fs::remove_file(&temp_path);
-                    ConfigError::AtomicWrite {
-                        path: path.to_path_buf(),
-                        source: AtomicWriteError::Io(e),
-                    }
-                })?;
-            }
+            // Sync the replacement before renaming it into place so the
+            // rename cannot reorder ahead of the data on any platform.
+            file.sync_all().map_err(|e| {
+                let _ = fs::remove_file(&temp_path);
+                ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
         }
 
         fs::rename(&temp_path, path).map_err(|e| {
@@ -706,7 +711,8 @@ impl ConfigStore {
         #[cfg(not(unix))]
         #[cfg(not(windows))]
         {
-            // On non-Unix, non-Windows platforms, fall back to the in-process mutex only.
+            // Unreachable: the module-level compile_error rejects builds on
+            // targets without a cross-process lock implementation.
             Ok(FileLockGuard { file, handle: None })
         }
     }

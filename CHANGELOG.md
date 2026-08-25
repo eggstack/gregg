@@ -9,6 +9,38 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Stale-snapshot 503 bodies no longer claim `ready`** (`greggd`): when a
+  cached snapshot ages past `max_snapshot_age` (or the failure threshold is
+  met) while the stored health state still says `ready`, the status and
+  health handlers substitute a `CollectorFailure` failure ("cached snapshot
+  is stale"), so the JSON body always agrees with the 503 status code.
+- **One sampling-task panic no longer permanently degrades the daemon**
+  (`greggd`): the collector is shared with the blocking pool behind a
+  poisoning-tolerant mutex, so a single panic fails only that cycle and
+  later ticks recover the lock and resume collection instead of losing all
+  metrics until restart.
+- **EggPool TLS errors are no longer misreported as DNS failures** (`gregg`):
+  the overly broad `"name"` substring was removed from the fetch-error
+  classifier, realigning it with the main poller's DNS classification.
+- **Truncated mountinfo escapes keep the mount entry** (`greggd`): an octal
+  escape cut off at end of input now contributes its raw characters instead
+  of silently dropping the whole drive, and a statvfs result with zero block
+  size or overflowing capacity logs a diagnostic before the drive is skipped.
+- **Pre-epoch clocks are logged loudly** (`greggd`): a system clock behind
+  the Unix epoch warns in the sampler and HTTP server instead of silently
+  producing zero timestamps that would defeat staleness detection.
+- **Client config writes fsync on every platform** (`gregg`): the temp-file
+  `sync_all()` durability barrier is no longer Unix-only; builds on targets
+  without a cross-process lock implementation (neither unix nor windows)
+  now fail to compile rather than silently locking in-process only.
+- **Terminal wrapper fixes** (`gregg`): `into_inner()` returns the wrapped
+  ratatui terminal instead of fabricating a fresh one, and `restore()`
+  flushes buffered frame state before tearing down global terminal mode.
+- **Protocol identity docs match validation** (`gregg-protocol`):
+  `SystemIdentity` docs now state that empty values are rejected for every
+  field (including `name` and `hostname`) instead of claiming they are
+  permitted.
+
 - **Windows transient commit over-commit no longer fails the sample**
   (`greggd`): a commit charge momentarily above the commit limit (pagefile
   resize windows, kernel over-commit before expansion) is clamped to the
