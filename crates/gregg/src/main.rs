@@ -128,8 +128,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
                 &mut app_state,
                 &worker.commands,
                 eggpool::EggpoolCommand::Activate { period, generation },
-            )
-            .await;
+            );
         }
     }
 
@@ -341,8 +340,7 @@ async fn dispatch_action_with_store(
                     app_state,
                     commands,
                     eggpool::EggpoolCommand::Refresh { period, generation },
-                )
-                .await;
+                );
             }
         } else {
             refresh_systems(app_state, scheduler_tx, store).await?;
@@ -358,13 +356,11 @@ async fn dispatch_action_with_store(
                         app_state,
                         commands,
                         eggpool::EggpoolCommand::Activate { period, generation },
-                    )
-                    .await;
+                    );
                 }
             }
             state::Pane::Systems => {
-                send_eggpool_command(app_state, commands, eggpool::EggpoolCommand::Deactivate)
-                    .await;
+                send_eggpool_command(app_state, commands, eggpool::EggpoolCommand::Deactivate);
             }
         }
     } else if before_pane == state::Pane::Eggpool
@@ -375,8 +371,7 @@ async fn dispatch_action_with_store(
                 app_state,
                 commands,
                 eggpool::EggpoolCommand::SetPeriod { period, generation },
-            )
-            .await;
+            );
         }
     }
 
@@ -426,13 +421,22 @@ async fn refresh_systems(
     Ok(())
 }
 
-async fn send_eggpool_command(
+/// Queue one `EggPool` command without ever blocking the event loop.
+///
+/// The command channel is bounded by design; when it is momentarily full
+/// the command is dropped and the pane is surfaced as busy instead of
+/// stalling key handling and poll-batch processing behind a slow fetch.
+fn send_eggpool_command(
     app_state: &mut state::AppState,
     commands: &tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>,
     command: eggpool::EggpoolCommand,
 ) {
-    if commands.send(command).await.is_err() {
-        app_state.mark_eggpool_worker_unavailable();
+    match commands.try_send(command) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => app_state.mark_eggpool_busy(),
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            app_state.mark_eggpool_worker_unavailable();
+        }
     }
 }
 
@@ -818,7 +822,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bounded_command_pressure_delivers_final_state_change_in_order() {
+    async fn full_command_channel_does_not_block_dispatch_and_marks_busy() {
         let mut app = mixed_state();
         let (commands, mut received) = tokio::sync::mpsc::channel(1);
         let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
@@ -827,30 +831,35 @@ mod tests {
             .await
             .unwrap();
 
-        let mut dispatch = Box::pin(dispatch_action(
+        // The single slot is occupied; dispatch must return immediately
+        // instead of stalling the event loop behind a slow fetch.
+        let dispatch = dispatch_action(
             &mut app,
             action::Action::NextPane,
             &refresh_tx,
             Some(&commands),
-        ));
+        );
         tokio::select! {
-            () = tokio::task::yield_now() => {}
-            () = &mut dispatch => panic!("dispatch should wait for bounded capacity"),
+            () = tokio::task::yield_now() => {
+                panic!("dispatch blocked on a full eggpool command channel");
+            }
+            () = dispatch => {}
         }
+        assert_eq!(app.active_pane, state::Pane::Eggpool);
+        assert_eq!(
+            app.eggpool.as_ref().unwrap().status,
+            state::EggpoolStatus::Busy
+        );
+
+        // Only the pre-filled command was ever queued; the dropped
+        // Activate must not surface later.
         assert!(matches!(
             received.recv().await,
             Some(eggpool::EggpoolCommand::Deactivate)
         ));
-        dispatch.await;
-        assert_eq!(app.active_pane, state::Pane::Eggpool);
-        assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Activate {
-                period: eggpool::EggpoolPeriod::Hour,
-                generation: 1
-            })
-        ));
+        assert!(received.try_recv().is_err());
 
+        // Once capacity frees up, the next command is delivered normally.
         dispatch_action(
             &mut app,
             action::Action::PreviousPane,

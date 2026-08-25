@@ -9,6 +9,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Windows transient commit over-commit no longer fails the sample**
+  (`greggd`): a commit charge momentarily above the commit limit (pagefile
+  resize windows, kernel over-commit before expansion) is clamped to the
+  limit with `usage_pct` saturating at 100 % instead of aborting the whole
+  collection cycle and losing CPU, memory, and drive metrics.
+- **EggPool command dispatch never blocks the TUI event loop** (`gregg`):
+  pane commands are queued with `try_send`; a momentarily full bounded
+  channel drops the command and surfaces a "worker busy" pane state instead
+  of stalling key handling and poll batches behind a slow fetch. A closed
+  channel still marks the worker unavailable.
+- **Zero-total validation reports the root cause** (`gregg-protocol`): v1/v2
+  memory, swap, and v2 commit payloads with zero capacity but nonzero used
+  bytes now also report `ZeroNotAllowed` for the total/limit field (alongside
+  `UsedExceedsTotal`) so consumers matching on violation kinds see that the
+  total must be positive; all-zero metrics remain valid.
+- **macOS VM counters widen consistently** (`greggd`): `vm_info64` now uses
+  `widen_natural()` like `cpu_load_info`, so unsigned 32-bit Mach counters
+  can never sign-extend into huge values.
+- **Control-socket read errors are logged** (`greggd`): unexpected client
+  read failures in the stop listener warn instead of being silently treated
+  as EOF.
+- **Unknown mountinfo escape sequences are logged** (`greggd`): a mount entry
+  containing an octal escape outside `{040, 011, 012, 134}` is still skipped,
+  but the skip is now visible in the log.
 - **Control-socket startup permission window closed** (`greggd`): the Unix
   control socket is bound inside a process-private `0700` staging directory
   and atomically renamed into its final path only after the `0600` mode is

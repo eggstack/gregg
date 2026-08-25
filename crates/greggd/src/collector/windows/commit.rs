@@ -45,12 +45,16 @@ impl CommitSample {
 
 /// Compute commit metrics from raw `GetPerformanceInfo` values.
 ///
+/// A transient commit charge above the commit limit (pagefile resize
+/// windows, kernel over-commit before expansion) is clamped to the limit
+/// for that sample so `usage_pct` saturates at 100 % instead of failing
+/// the whole collection cycle. This also preserves the wire invariant
+/// that committed bytes never exceed the reported limit.
+///
 /// # Errors
 ///
-/// Returns [`CollectErrorKind::Parse`] when:
-/// - `page_size_bytes` is zero.
-/// - `commit_total_pages > commit_limit_pages`.
-/// - Multiplication overflow.
+/// Returns [`CollectErrorKind::Parse`] when `page_size_bytes` is zero,
+/// and [`CollectErrorKind::Numeric`] on multiplication overflow.
 pub fn compute_commit(raw: &RawCommit) -> Result<CommitSample, CollectError> {
     if raw.page_size_bytes == 0 {
         return Err(CollectError::new(
@@ -59,15 +63,9 @@ pub fn compute_commit(raw: &RawCommit) -> Result<CommitSample, CollectError> {
         ));
     }
 
-    if raw.commit_total_pages > raw.commit_limit_pages {
-        return Err(CollectError::new(
-            CollectErrorKind::Parse,
-            "commit total exceeds commit limit",
-        ));
-    }
+    let commit_total_pages = raw.commit_total_pages.min(raw.commit_limit_pages);
 
-    let used_bytes = raw
-        .commit_total_pages
+    let used_bytes = commit_total_pages
         .checked_mul(raw.page_size_bytes)
         .ok_or_else(|| {
             CollectError::new(
@@ -141,14 +139,17 @@ mod tests {
     }
 
     #[test]
-    fn total_greater_than_limit_fails() {
+    fn total_greater_than_limit_clamps_to_limit() {
         let raw = RawCommit {
             commit_total_pages: 900_000,
             commit_limit_pages: 800_000,
             page_size_bytes: 4096,
         };
-        let err = compute_commit(&raw).expect_err("should fail");
-        assert_eq!(err.kind, CollectErrorKind::Parse);
+        let commit = compute_commit(&raw).expect("over-commit clamps instead of failing");
+        assert_eq!(commit.used_bytes, 800_000 * 4096);
+        assert_eq!(commit.limit_bytes, 800_000 * 4096);
+        let metrics = commit.into_metrics();
+        assert!((metrics.usage_pct - 100.0).abs() < 0.01);
     }
 
     #[test]

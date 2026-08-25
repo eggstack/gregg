@@ -612,7 +612,6 @@ fn cpu_load_info() -> Result<RawCpuTicks, CollectError> {
 }
 
 /// Read VM statistics from Mach `host_statistics64`.
-#[allow(clippy::cast_sign_loss)]
 fn vm_info64() -> Result<RawVmStats, CollectError> {
     let host = HostPort::current()?;
     // Safety: `host_statistics64` writes up to 64 natural_t values. We use a
@@ -639,10 +638,10 @@ fn vm_info64() -> Result<RawVmStats, CollectError> {
     let page_size = read_page_size()?;
 
     Ok(RawVmStats {
-        free_count: buf[0] as u64,
-        active_count: buf[1] as u64,
-        inactive_count: buf[2] as u64,
-        wire_count: buf[3] as u64,
+        free_count: widen_natural(buf[0]),
+        active_count: widen_natural(buf[1]),
+        inactive_count: widen_natural(buf[2]),
+        wire_count: widen_natural(buf[3]),
         page_size,
     })
 }

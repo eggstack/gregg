@@ -232,8 +232,9 @@ impl CollectedMetrics {
         capabilities: MetricCapabilitiesV2,
         system: SystemIdentity,
     ) -> Result<StatusPayloadV2, CollectError> {
-        let drives = self.drives.clone();
-        let snapshot = self.into_snapshot_v2(
+        let mut this = self;
+        let drives = this.drives.take();
+        let snapshot = this.into_snapshot_v2(
             observed_at_unix_ms,
             sample_interval_ms,
             capabilities,

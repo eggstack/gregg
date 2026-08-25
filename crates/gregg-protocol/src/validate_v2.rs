@@ -349,12 +349,12 @@ fn validate_memory_v2(memory: &MemoryMetrics, out: &mut Vec<ValidationViolationV
             "memory.used_bytes",
         ));
     }
-    if memory.total_bytes == 0 && memory.usage_pct != 0.0 {
+    if memory.total_bytes == 0 && (memory.used_bytes > 0 || memory.usage_pct != 0.0) {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::ZeroNotAllowed,
             "memory.total_bytes",
         ));
-        if !pct_flagged {
+        if !pct_flagged && memory.usage_pct != 0.0 {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::PercentageOutOfRange,
                 "memory.usage_pct",
@@ -387,12 +387,12 @@ fn validate_swap_v2(
                     "swap.used_bytes",
                 ));
             }
-            if s.total_bytes == 0 && s.usage_pct != 0.0 {
+            if s.total_bytes == 0 && (s.used_bytes > 0 || s.usage_pct != 0.0) {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::ZeroNotAllowed,
                     "swap.total_bytes",
                 ));
-                if !pct_flagged {
+                if !pct_flagged && s.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::PercentageOutOfRange,
                         "swap.usage_pct",
@@ -433,12 +433,12 @@ fn validate_commit_v2(
                     "commit.used_bytes",
                 ));
             }
-            if c.limit_bytes == 0 && c.usage_pct != 0.0 {
+            if c.limit_bytes == 0 && (c.used_bytes > 0 || c.usage_pct != 0.0) {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::ZeroNotAllowed,
                     "commit.limit_bytes",
                 ));
-                if !pct_flagged {
+                if !pct_flagged && c.usage_pct != 0.0 {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::PercentageOutOfRange,
                         "commit.usage_pct",
@@ -887,6 +887,47 @@ mod tests {
         snap.cpu.usage_pct = f32::NAN;
         let err = validate_v2(&snap).unwrap_err();
         assert!(err.iter().any(|v| v.field == "cpu.usage_pct"));
+    }
+
+    #[test]
+    fn zero_total_with_nonzero_used_reports_zero_not_allowed() {
+        let mut snap = valid_linux_v2();
+        snap.memory.total_bytes = 0;
+        snap.memory.used_bytes = 5;
+        snap.memory.usage_pct = 0.0;
+        if let Some(swap) = snap.swap.as_mut() {
+            swap.total_bytes = 0;
+            swap.used_bytes = 5;
+            swap.usage_pct = 0.0;
+        }
+        let err = validate_v2(&snap).unwrap_err();
+        for field in ["memory.total_bytes", "swap.total_bytes"] {
+            assert!(
+                err.iter()
+                    .any(|v| v.field == field && v.kind == ViolationKindV2::ZeroNotAllowed),
+                "missing ZeroNotAllowed for {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_commit_limit_with_nonzero_used_reports_zero_not_allowed() {
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: true,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(CommitMetrics {
+                used_bytes: 5,
+                limit_bytes: 0,
+                usage_pct: 0.0,
+            }),
+            ..valid_linux_v2()
+        };
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "commit.limit_bytes" && v.kind == ViolationKindV2::ZeroNotAllowed));
     }
 
     #[test]

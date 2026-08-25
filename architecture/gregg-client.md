@@ -369,6 +369,10 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - 60-second passive refresh when active
 - Generation-based staleness like greggd polling
 - In-flight requests are aborted on superseding commands and shutdown
+- Command dispatch uses `try_send` and never blocks the event loop: a
+  momentarily full queue drops the command and surfaces `EggpoolStatus::Busy`
+  ("worker busy") in the pane; a closed channel still marks the worker
+  unavailable
 
 Plan 070 also evaluated replacing the command channel with a latest-state
 `watch` channel. It was rejected because refresh nonces, generation ownership,

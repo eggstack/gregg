@@ -67,6 +67,9 @@ gregg eggpool remove <host>
 - Created only for configured EggPool state
 - Activated when pane is visible, deactivated when hidden
 - Cancelled during TUI shutdown
+- Command dispatch uses `try_send`: a full queue drops the command and sets
+  `EggpoolStatus::Busy` (rendered as "worker busy") instead of blocking the
+  event loop; a closed channel still marks `WorkerUnavailable`
 - Keep command ordering, refresh nonces/generations, stale-result rejection,
   and request-relative deadlines intact. A latest-state channel is not an
   automatic simplification if it adds state transitions or tests.

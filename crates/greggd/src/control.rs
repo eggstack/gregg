@@ -731,7 +731,14 @@ async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'stat
         // Read until we see a newline, run out of buffer, or get EOF.
         while length < buf.len() && received.is_none() {
             match stream.read(&mut buf[length..]).await {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        "control socket client read failed; dropping connection"
+                    );
+                    break;
+                }
                 Ok(read) => {
                     length += read;
                     if let Some(end) = buf[..length].iter().position(|b| *b == b'\n') {

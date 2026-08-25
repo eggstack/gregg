@@ -212,12 +212,12 @@ fn validate_memory(memory: &MemoryMetrics, out: &mut Vec<ValidationViolation>) {
             "memory.used_bytes",
         ));
     }
-    if memory.total_bytes == 0 && memory.usage_pct != 0.0 {
+    if memory.total_bytes == 0 && (memory.used_bytes > 0 || memory.usage_pct != 0.0) {
         out.push(ValidationViolation::new(
             ViolationKind::ZeroNotAllowed,
             "memory.total_bytes",
         ));
-        if !pct_flagged {
+        if !pct_flagged && memory.usage_pct != 0.0 {
             out.push(ValidationViolation::new(
                 ViolationKind::PercentageOutOfRange,
                 "memory.usage_pct",
@@ -236,12 +236,12 @@ fn validate_swap(swap: &SwapMetrics, out: &mut Vec<ValidationViolation>) {
             "swap.used_bytes",
         ));
     }
-    if swap.total_bytes == 0 && swap.usage_pct != 0.0 {
+    if swap.total_bytes == 0 && (swap.used_bytes > 0 || swap.usage_pct != 0.0) {
         out.push(ValidationViolation::new(
             ViolationKind::ZeroNotAllowed,
             "swap.total_bytes",
         ));
-        if !pct_flagged {
+        if !pct_flagged && swap.usage_pct != 0.0 {
             out.push(ValidationViolation::new(
                 ViolationKind::PercentageOutOfRange,
                 "swap.usage_pct",
@@ -345,6 +345,45 @@ mod tests {
                 .count();
             assert_eq!(count, 1, "duplicate PercentageOutOfRange for {field}");
         }
+    }
+
+    #[test]
+    fn zero_total_with_nonzero_used_reports_zero_not_allowed() {
+        let mut snap = valid_snapshot();
+        snap.memory.total_bytes = 0;
+        snap.memory.used_bytes = 5;
+        snap.memory.usage_pct = 0.0;
+        snap.swap.total_bytes = 0;
+        snap.swap.used_bytes = 5;
+        snap.swap.usage_pct = 0.0;
+        let err = validate(&snap).unwrap_err();
+        for field in ["memory.total_bytes", "swap.total_bytes"] {
+            assert!(
+                err.iter()
+                    .any(|v| v.field == field && v.kind == ViolationKind::ZeroNotAllowed),
+                "missing ZeroNotAllowed for {field}"
+            );
+        }
+        assert!(
+            !err.iter().any(|v| v.field.ends_with("usage_pct")),
+            "valid zero percentages must not be flagged: {err:?}"
+        );
+    }
+
+    #[test]
+    fn all_zero_memory_and_swap_remain_valid() {
+        let mut snap = valid_snapshot();
+        snap.memory = MemoryMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        };
+        snap.swap = SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        };
+        assert!(validate(&snap).is_ok());
     }
 
     #[test]

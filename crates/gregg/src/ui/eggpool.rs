@@ -44,6 +44,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let Some(summary) = eggpool.summary.as_ref() else {
         let message = if eggpool.status == EggpoolStatus::WorkerUnavailable {
             "EggPool worker unavailable".to_owned()
+        } else if eggpool.status == EggpoolStatus::Busy {
+            "EggPool worker busy; retry".to_owned()
         } else if eggpool.status == EggpoolStatus::Refreshing {
             "Loading summary…".to_owned()
         } else if let Some(error) = eggpool.last_error.as_ref() {
@@ -98,6 +100,16 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     if eggpool.status == EggpoolStatus::WorkerUnavailable {
         f.render_widget(
             Paragraph::new("worker unavailable"),
+            Rect {
+                x: area.x,
+                y: footer_y,
+                width: area.width,
+                height: 1,
+            },
+        );
+    } else if eggpool.status == EggpoolStatus::Busy {
+        f.render_widget(
+            Paragraph::new("worker busy"),
             Rect {
                 x: area.x,
                 y: footer_y,

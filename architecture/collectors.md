@@ -283,6 +283,12 @@ limit = commit_limit_pages * page_size
 usage_pct = used / limit * 100
 ```
 
+A transient commit charge above the commit limit (pagefile resize windows,
+kernel over-commit before expansion) is clamped to the limit for that sample
+(`usage_pct` saturates at 100 %) instead of failing the entire collection
+cycle; this also preserves the wire invariant that committed bytes never
+exceed the reported limit.
+
 ### Identity
 
 - hostname: `GetComputerNameExW(ComputerNameDnsHostname)`

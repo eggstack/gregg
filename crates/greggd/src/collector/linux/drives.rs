@@ -62,7 +62,13 @@ fn decode_mountinfo(value: &str) -> Option<String> {
             "011" => '\t',
             "012" => '\n',
             "134" => '\\',
-            _ => return None,
+            _ => {
+                tracing::warn!(
+                    escape = ?code,
+                    "unrecognized mountinfo octal escape; skipping mount entry"
+                );
+                return None;
+            }
         };
         result.push(decoded);
     }

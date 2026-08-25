@@ -67,6 +67,8 @@ pub enum EggpoolStatus {
     Idle,
     /// A request has been requested and is being dispatched.
     Refreshing,
+    /// The last command could not be queued; the worker was busy.
+    Busy,
     /// The local worker is unavailable; no request can be dispatched.
     WorkerUnavailable,
 }
@@ -448,6 +450,13 @@ impl AppState {
     pub fn mark_eggpool_worker_unavailable(&mut self) {
         if let Some(eggpool) = self.eggpool.as_mut() {
             eggpool.status = EggpoolStatus::WorkerUnavailable;
+        }
+    }
+
+    /// Mark the pane as busy because the worker's command queue was full.
+    pub fn mark_eggpool_busy(&mut self) {
+        if let Some(eggpool) = self.eggpool.as_mut() {
+            eggpool.status = EggpoolStatus::Busy;
         }
     }
 
