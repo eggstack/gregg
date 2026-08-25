@@ -1287,7 +1287,10 @@ fn v2_macos_fixture_round_trips() {
     let caps = snap.snapshot.capabilities;
     assert!(!caps.cpu_iowait, "macOS v2 capability must be false");
     assert!(caps.load_average, "macOS v2 load_average must be true");
-    assert!(!caps.swap, "macOS v2 swap must be false");
+    assert!(
+        caps.swap,
+        "macOS v2 swap must be true: vm.swapusage is meaningful native swap accounting"
+    );
     assert!(!caps.memory_commit, "macOS v2 memory_commit must be false");
     assert!(
         snap.snapshot.cpu.iowait_pct.is_none(),
@@ -1297,7 +1300,10 @@ fn v2_macos_fixture_round_trips() {
         snap.snapshot.load.is_some(),
         "macOS v2 load must be present"
     );
-    assert!(snap.snapshot.swap.is_none(), "macOS v2 swap must be null");
+    assert!(
+        snap.snapshot.swap.is_some(),
+        "macOS v2 swap must be present"
+    );
     assert!(
         snap.snapshot.commit.is_none(),
         "macOS v2 commit must be null"
