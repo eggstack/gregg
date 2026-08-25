@@ -616,6 +616,9 @@ pub fn render_offline(f: &mut Frame, area: Rect, system: &SystemState, is_visual
 
     let prefix_with_status = format!("{prefix} {status_text} ");
     let total_width = area.width as usize;
+    // Bound the prefix to the terminal width so a long name@host:port
+    // cannot push the status text into clipped cells.
+    let prefix_with_status = bar::truncate_to_cells(&prefix_with_status, total_width);
     let used = UnicodeWidthStr::width(prefix_with_status.as_str());
     let dot_count = total_width.saturating_sub(used);
     let line_text = format!("{prefix_with_status}{}", ".".repeat(dot_count));

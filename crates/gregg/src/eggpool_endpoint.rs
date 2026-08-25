@@ -98,12 +98,8 @@ impl EggpoolEndpointSpec {
 
         let colon_count = input.matches(':').count();
         if colon_count > 1 {
-            let (host, _port) = input
-                .rsplit_once(':')
-                .ok_or(EggpoolEndpointError::InvalidPort)?;
-            if host.parse::<IpAddr>().is_err() {
-                return Err(EggpoolEndpointError::MalformedBrackets);
-            }
+            // Bare multi-colon input (e.g. `::1:8080`) is ambiguous;
+            // bracketed `[ipv6]:port` is the required form.
             return Err(EggpoolEndpointError::MalformedBrackets);
         }
         if colon_count == 1 {

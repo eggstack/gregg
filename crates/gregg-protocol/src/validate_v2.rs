@@ -334,7 +334,9 @@ fn check_load_v2(value: f32, field: &str, out: &mut Vec<ValidationViolationV2>) 
 }
 
 fn validate_memory_v2(memory: &MemoryMetrics, out: &mut Vec<ValidationViolationV2>) {
+    let before = out.len();
     check_percentage_v2(memory.usage_pct, "memory.usage_pct", out);
+    let pct_flagged = out.len() > before;
     if memory.used_bytes > memory.total_bytes {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::UsedExceedsTotal,
@@ -346,10 +348,12 @@ fn validate_memory_v2(memory: &MemoryMetrics, out: &mut Vec<ValidationViolationV
             ViolationKindV2::ZeroNotAllowed,
             "memory.total_bytes",
         ));
-        out.push(ValidationViolationV2::new(
-            ViolationKindV2::PercentageOutOfRange,
-            "memory.usage_pct",
-        ));
+        if !pct_flagged {
+            out.push(ValidationViolationV2::new(
+                ViolationKindV2::PercentageOutOfRange,
+                "memory.usage_pct",
+            ));
+        }
     }
 }
 
@@ -368,8 +372,10 @@ fn validate_swap_v2(
             }
         }
         Some(s) => {
+            let before = out.len();
+            check_percentage_v2(s.usage_pct, "swap.usage_pct", out);
+            let pct_flagged = out.len() > before;
             if swap_capable {
-                check_percentage_v2(s.usage_pct, "swap.usage_pct", out);
                 if s.used_bytes > s.total_bytes {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::UsedExceedsTotal,
@@ -381,13 +387,14 @@ fn validate_swap_v2(
                         ViolationKindV2::ZeroNotAllowed,
                         "swap.total_bytes",
                     ));
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::PercentageOutOfRange,
-                        "swap.usage_pct",
-                    ));
+                    if !pct_flagged {
+                        out.push(ValidationViolationV2::new(
+                            ViolationKindV2::PercentageOutOfRange,
+                            "swap.usage_pct",
+                        ));
+                    }
                 }
             } else {
-                check_percentage_v2(s.usage_pct, "swap.usage_pct", out);
                 if s.used_bytes > s.total_bytes {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::UsedExceedsTotal,
@@ -399,10 +406,12 @@ fn validate_swap_v2(
                         ViolationKindV2::ZeroNotAllowed,
                         "swap.total_bytes",
                     ));
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::PercentageOutOfRange,
-                        "swap.usage_pct",
-                    ));
+                    if !pct_flagged {
+                        out.push(ValidationViolationV2::new(
+                            ViolationKindV2::PercentageOutOfRange,
+                            "swap.usage_pct",
+                        ));
+                    }
                 }
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::SwapCapabilityMismatch,
@@ -428,8 +437,10 @@ fn validate_commit_v2(
             }
         }
         Some(c) => {
+            let before = out.len();
+            check_percentage_v2(c.usage_pct, "commit.usage_pct", out);
+            let pct_flagged = out.len() > before;
             if commit_capable {
-                check_percentage_v2(c.usage_pct, "commit.usage_pct", out);
                 if c.used_bytes > c.limit_bytes {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::UsedExceedsTotal,
@@ -441,13 +452,14 @@ fn validate_commit_v2(
                         ViolationKindV2::ZeroNotAllowed,
                         "commit.limit_bytes",
                     ));
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::PercentageOutOfRange,
-                        "commit.usage_pct",
-                    ));
+                    if !pct_flagged {
+                        out.push(ValidationViolationV2::new(
+                            ViolationKindV2::PercentageOutOfRange,
+                            "commit.usage_pct",
+                        ));
+                    }
                 }
             } else {
-                check_percentage_v2(c.usage_pct, "commit.usage_pct", out);
                 if c.used_bytes > c.limit_bytes {
                     out.push(ValidationViolationV2::new(
                         ViolationKindV2::UsedExceedsTotal,
@@ -459,10 +471,12 @@ fn validate_commit_v2(
                         ViolationKindV2::ZeroNotAllowed,
                         "commit.limit_bytes",
                     ));
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::PercentageOutOfRange,
-                        "commit.usage_pct",
-                    ));
+                    if !pct_flagged {
+                        out.push(ValidationViolationV2::new(
+                            ViolationKindV2::PercentageOutOfRange,
+                            "commit.usage_pct",
+                        ));
+                    }
                 }
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::CommitCapabilityMismatch,
@@ -808,6 +822,54 @@ mod tests {
             violation.field == "commit.usage_pct"
                 && violation.kind == ViolationKindV2::PercentageOutOfRange
         }));
+    }
+
+    #[test]
+    fn zero_total_fields_do_not_duplicate_percentage_violations() {
+        for swap_capable in [true, false] {
+            let mut snap = valid_linux_v2();
+            snap.capabilities.swap = swap_capable;
+            snap.memory.total_bytes = 0;
+            snap.memory.usage_pct = 150.0;
+            if let Some(swap) = snap.swap.as_mut() {
+                swap.total_bytes = 0;
+                swap.usage_pct = 150.0;
+            }
+            let err = validate_v2(&snap).unwrap_err();
+            for field in ["memory.usage_pct", "swap.usage_pct"] {
+                let count = err
+                    .iter()
+                    .filter(|v| v.field == field && v.kind == ViolationKindV2::PercentageOutOfRange)
+                    .count();
+                assert_eq!(count, 1, "duplicate PercentageOutOfRange for {field}");
+            }
+        }
+    }
+
+    #[test]
+    fn zero_commit_limit_does_not_duplicate_percentage_violation() {
+        for commit_capable in [true, false] {
+            let snap = StatusSnapshotV2 {
+                capabilities: MetricCapabilitiesV2 {
+                    memory_commit: commit_capable,
+                    ..valid_linux_v2().capabilities
+                },
+                commit: Some(crate::v2::CommitMetrics {
+                    used_bytes: 0,
+                    limit_bytes: 0,
+                    usage_pct: 150.0,
+                }),
+                ..valid_linux_v2()
+            };
+            let err = validate_v2(&snap).unwrap_err();
+            let count = err
+                .iter()
+                .filter(|v| {
+                    v.field == "commit.usage_pct" && v.kind == ViolationKindV2::PercentageOutOfRange
+                })
+                .count();
+            assert_eq!(count, 1);
+        }
     }
 
     #[test]

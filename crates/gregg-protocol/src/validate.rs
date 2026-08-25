@@ -169,9 +169,8 @@ fn validate_cpu(cpu: &CpuMetrics, cpu_iowait: bool, out: &mut Vec<ValidationViol
             }
         }
         Some(value) => {
-            if cpu_iowait {
-                check_percentage(value, "cpu.iowait_pct", out);
-            } else {
+            check_percentage(value, "cpu.iowait_pct", out);
+            if !cpu_iowait {
                 out.push(ValidationViolation::new(
                     ViolationKind::IowaitCapabilityMismatch,
                     "cpu.iowait_pct",
@@ -197,7 +196,9 @@ fn check_load(value: f32, field: &str, out: &mut Vec<ValidationViolation>) {
 }
 
 fn validate_memory(memory: &MemoryMetrics, out: &mut Vec<ValidationViolation>) {
+    let before = out.len();
     check_percentage(memory.usage_pct, "memory.usage_pct", out);
+    let pct_flagged = out.len() > before;
     if memory.used_bytes > memory.total_bytes {
         out.push(ValidationViolation::new(
             ViolationKind::UsedExceedsTotal,
@@ -209,15 +210,19 @@ fn validate_memory(memory: &MemoryMetrics, out: &mut Vec<ValidationViolation>) {
             ViolationKind::ZeroNotAllowed,
             "memory.total_bytes",
         ));
-        out.push(ValidationViolation::new(
-            ViolationKind::PercentageOutOfRange,
-            "memory.usage_pct",
-        ));
+        if !pct_flagged {
+            out.push(ValidationViolation::new(
+                ViolationKind::PercentageOutOfRange,
+                "memory.usage_pct",
+            ));
+        }
     }
 }
 
 fn validate_swap(swap: &SwapMetrics, out: &mut Vec<ValidationViolation>) {
+    let before = out.len();
     check_percentage(swap.usage_pct, "swap.usage_pct", out);
+    let pct_flagged = out.len() > before;
     if swap.used_bytes > swap.total_bytes {
         out.push(ValidationViolation::new(
             ViolationKind::UsedExceedsTotal,
@@ -229,10 +234,12 @@ fn validate_swap(swap: &SwapMetrics, out: &mut Vec<ValidationViolation>) {
             ViolationKind::ZeroNotAllowed,
             "swap.total_bytes",
         ));
-        out.push(ValidationViolation::new(
-            ViolationKind::PercentageOutOfRange,
-            "swap.usage_pct",
-        ));
+        if !pct_flagged {
+            out.push(ValidationViolation::new(
+                ViolationKind::PercentageOutOfRange,
+                "swap.usage_pct",
+            ));
+        }
     }
 }
 
@@ -314,5 +321,43 @@ mod tests {
                 .any(|v| v.field == "system.hostname"
                     && v.kind == ViolationKind::InvalidIdentityField)
         );
+    }
+
+    #[test]
+    fn zero_total_does_not_duplicate_percentage_violations() {
+        let mut snap = valid_snapshot();
+        snap.memory.total_bytes = 0;
+        snap.memory.usage_pct = 150.0;
+        snap.swap.total_bytes = 0;
+        snap.swap.usage_pct = 150.0;
+        let err = validate(&snap).unwrap_err();
+        for field in ["memory.usage_pct", "swap.usage_pct"] {
+            let count = err
+                .iter()
+                .filter(|v| v.field == field && v.kind == ViolationKind::PercentageOutOfRange)
+                .count();
+            assert_eq!(count, 1, "duplicate PercentageOutOfRange for {field}");
+        }
+    }
+
+    #[test]
+    fn iowait_value_is_validated_even_when_capability_flag_is_false() {
+        let mut snap = valid_snapshot();
+        snap.capabilities.cpu_iowait = false;
+        snap.cpu.iowait_pct = Some(f32::NAN);
+        let err = validate(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "cpu.iowait_pct" && v.kind == ViolationKind::PercentageNotFinite));
+        assert!(err
+            .iter()
+            .any(|v| v.field == "cpu.iowait_pct"
+                && v.kind == ViolationKind::IowaitCapabilityMismatch));
+
+        snap.cpu.iowait_pct = Some(150.0);
+        let err = validate(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "cpu.iowait_pct" && v.kind == ViolationKind::PercentageOutOfRange));
     }
 }

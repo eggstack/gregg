@@ -245,13 +245,38 @@ pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Severity rank for candidate I/O errors: missing/refused means "not
+/// running"; other failures are real diagnostics; a permission denial
+/// must never be masked by a later lower-severity candidate.
+fn stop_error_severity(error: &std::io::Error) -> u8 {
+    match error.kind() {
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => 0,
+        std::io::ErrorKind::PermissionDenied => 2,
+        _ => 1,
+    }
+}
+
+/// Keep the most severe I/O error observed across candidates so an
+/// earlier `PermissionDenied` is not overwritten by, say, a later
+/// fallback candidate that simply has no socket.
+fn record_stop_error(slot: &mut Option<std::io::Error>, error: std::io::Error) {
+    if slot.as_ref().map_or(true, |previous| {
+        stop_error_severity(&error) > stop_error_severity(previous)
+    }) {
+        *slot = Some(error);
+    }
+}
+
 /// Send one `STOP\n` command to a running `greggd` via its local Unix
 /// control socket and block until the `OK\n` acknowledgement arrives.
 ///
 /// Tries the config-adjacent path first, then the deterministic fallback.
 /// A missing control socket on every candidate is treated as the daemon
 /// already being stopped (idempotent success). Any other I/O error or a
-/// malformed response is surfaced as a [`ControlError`].
+/// malformed response is surfaced as a [`ControlError`]. A daemon that
+/// accepts the connection but closes or goes quiet without replying is
+/// reported as not running with a warning diagnostic rather than being
+/// silently conflated with "nothing was listening".
 ///
 /// The function does not invoke `systemctl`, `launchctl`, a shell, or any
 /// process-discovery mechanism. It connects only to local Unix-domain
@@ -274,7 +299,7 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
         let mut stream = match UnixStream::connect(candidate) {
             Ok(stream) => stream,
             Err(e) => {
-                last_io_error = Some(e);
+                record_stop_error(&mut last_io_error, e);
                 continue;
             }
         };
@@ -283,7 +308,7 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
         let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
 
         if let Err(e) = stream.write_all(STOP_COMMAND) {
-            last_io_error = Some(e);
+            record_stop_error(&mut last_io_error, e);
             continue;
         }
 
@@ -300,7 +325,7 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
                     }
                 }
                 Err(e) => {
-                    last_io_error = Some(e);
+                    record_stop_error(&mut last_io_error, e);
                     break;
                 }
             }
@@ -319,6 +344,18 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
             }
             return Err(ControlError::BadResponse);
         }
+
+        // Connected and STOP was delivered, but the peer closed or went
+        // quiet without a newline-terminated reply. Record a diagnostic
+        // so a live-but-misbehaving daemon is distinguishable from
+        // "nothing was listening" in the final classification.
+        record_stop_error(
+            &mut last_io_error,
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "control socket accepted STOP but sent no complete response",
+            ),
+        );
     }
 
     // No candidate accepted the request. Surface a NotFound as the daemon
@@ -1009,6 +1046,75 @@ mod tests {
 
         let outcome = send_stop(&cfg).unwrap();
         assert_eq!(outcome, StopOutcome::NotRunning);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stop_error_bookkeeping_never_downgrades_severity() {
+        // A primary candidate failing with PermissionDenied must not be
+        // overwritten by a later fallback candidate failing with NotFound.
+        let mut slot = None;
+        record_stop_error(
+            &mut slot,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        record_stop_error(
+            &mut slot,
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert_eq!(
+            slot.as_ref().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::PermissionDenied)
+        );
+
+        // Lower-severity first, then higher: the higher wins.
+        let mut slot = None;
+        record_stop_error(
+            &mut slot,
+            std::io::Error::from(std::io::ErrorKind::TimedOut),
+        );
+        record_stop_error(
+            &mut slot,
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+        );
+        assert_eq!(
+            slot.as_ref().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::TimedOut)
+        );
+        record_stop_error(
+            &mut slot,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert_eq!(
+            slot.as_ref().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::PermissionDenied)
+        );
+    }
+
+    #[test]
+    fn send_stop_treats_silent_close_as_not_running_with_diagnostic() {
+        let dir = fresh_temp_dir("send-stop-silent");
+        let cfg = make_config_file(&dir, "greggd.toml");
+
+        // A daemon that accepts STOP and closes without replying must not
+        // be reported as Stopped; it is classified as not running with a
+        // recorded diagnostic rather than a clean "no socket" result.
+        let primary = primary_control_path(&cfg).unwrap();
+        let listener = std::os::unix::net::UnixListener::bind(&primary).unwrap();
+
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                use std::io::Read;
+                let mut stream = stream;
+                let mut buf = [0_u8; 32];
+                let _ = stream.read(&mut buf);
+                drop(stream);
+            }
+        });
+
+        let outcome = send_stop(&cfg);
+        assert_eq!(outcome.unwrap(), StopOutcome::NotRunning);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

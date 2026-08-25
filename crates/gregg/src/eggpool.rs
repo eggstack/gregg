@@ -432,11 +432,29 @@ pub fn spawn_worker(
                     request = Some(start_request(&client, &endpoint, period, generation));
                     next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                 }
-                completed = async { request.as_mut()?.await.ok() }, if request.is_some() => {
-                    request = None;
-                    if let Some((generation, period, started_at, outcome)) = completed {
-                        let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: Instant::now(), outcome }).await;
+                completed = async {
+                    match request.as_mut() {
+                        Some(handle) => Some(handle.await),
+                        None => None,
                     }
+                }, if request.is_some() => {
+                    request = None;
+                    let (generation, period, started_at, outcome) = match completed {
+                        Some(Ok(tuple)) => tuple,
+                        // A panicked fetch task must still deliver a
+                        // result so the pane's Refreshing status
+                        // resolves instead of stalling until the next
+                        // periodic refresh. The in-flight request always
+                        // carries the worker's current generation and
+                        // period, so those are safe to reuse here.
+                        Some(Err(_)) | None => (
+                            generation,
+                            period,
+                            Instant::now(),
+                            EggpoolFetchOutcome::NetworkError,
+                        ),
+                    };
+                    let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: Instant::now(), outcome }).await;
                 }
             }
         }
@@ -906,6 +924,35 @@ mod tests {
         let _ = release.send(());
         server_task.abort();
         let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_panic_in_fetch_task_still_delivers_a_result() {
+        // The injected env lookup panics inside the spawned fetch task,
+        // so the request completes as a JoinError instead of an outcome.
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(10),
+            Arc::new(|_name: &str| -> Option<OsString> { panic!("injected fetch panic") }),
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(client, endpoint(1, Some("KEY")), cancel.clone());
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        let result = worker.results.recv().await.expect("a result is delivered");
+        assert_eq!(result.outcome, EggpoolFetchOutcome::NetworkError);
+        assert_eq!((result.generation, result.period), (1, EggpoolPeriod::Hour));
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
     }
 
     #[test]

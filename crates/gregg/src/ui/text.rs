@@ -74,7 +74,10 @@ pub fn format_load(load: &gregg_protocol::LoadAverage) -> String {
 /// 7. Architecture
 pub fn header_line(system: &SystemState, width: u16) -> String {
     let Some(snap) = &system.latest else {
-        return format!("{} (no data)", display_name(system));
+        return truncate_width(
+            &format!("{} (no data)", display_name(system)),
+            usize::from(width),
+        );
     };
 
     let name = display_name(system);
@@ -106,15 +109,23 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
         .map(|io| format!("  {io}"))
         .unwrap_or_default();
 
-    if width >= 80 {
-        format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}")
-    } else if width >= 50 {
-        format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}")
-    } else if width >= 32 {
-        format!("{name}{io_suffix}  {load_str}  {cores_str}")
-    } else {
-        format!("{name}{io_suffix}")
-    }
+    // Bound the assembled header to the terminal width so a long
+    // configured name or OS/kernel string cannot overflow the row;
+    // ratatui would otherwise clip silently mid-token.
+    truncate_width(
+        &if width >= 80 {
+            format!(
+                "{name}{io_suffix}  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}"
+            )
+        } else if width >= 50 {
+            format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}")
+        } else if width >= 32 {
+            format!("{name}{io_suffix}  {load_str}  {cores_str}")
+        } else {
+            format!("{name}{io_suffix}")
+        },
+        usize::from(width),
+    )
 }
 
 /// Return the display name for a system.
@@ -374,6 +385,9 @@ pub(crate) fn render_drive_detail_lines(drives: &[NormalizedDrive], width: u16) 
 }
 
 pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
+    if max_width == 0 {
+        return String::new();
+    }
     let mut width = 0;
     let mut end = 0;
     for (index, ch) in s.char_indices() {

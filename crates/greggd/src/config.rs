@@ -217,11 +217,11 @@ impl Config {
 
     /// Atomically write this configuration to the given path.
     ///
-    /// This follows the write-flush-rename-verify pattern:
+    /// This follows the write-flush-verify-rename pattern:
     /// 1. Write to a unique temporary file in the same directory.
     /// 2. Flush the file.
-    /// 3. Rename over the destination.
-    /// 4. Reopen and re-parse as verification.
+    /// 3. Reopen and re-parse the temporary file as verification.
+    /// 4. Rename over the destination.
     ///
     /// # Errors
     ///
@@ -271,7 +271,25 @@ impl Config {
             }
         })?;
 
-        // 5. Rename atomically over the destination.
+        // 5. Verify the temporary file round-trips before replacing
+        // the destination, so a failed verification leaves the
+        // original file intact.
+        let Ok(verified) = Self::load(&temp_path) else {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::VerificationFailed,
+            });
+        };
+        if *self != verified {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::VerificationFailed,
+            });
+        }
+
+        // 6. Rename atomically over the destination.
         fs::rename(&temp_path, path).map_err(|e| {
             let _ = fs::remove_file(&temp_path);
             ConfigError::AtomicWrite {
@@ -279,15 +297,6 @@ impl Config {
                 source: AtomicWriteError::Io(e),
             }
         })?;
-
-        // 6. Reopen and re-parse as verification.
-        let verified = Self::load(path)?;
-        if *self != verified {
-            return Err(ConfigError::AtomicWrite {
-                path: path.to_path_buf(),
-                source: AtomicWriteError::VerificationFailed,
-            });
-        }
 
         Ok(())
     }

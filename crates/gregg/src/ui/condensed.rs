@@ -290,7 +290,15 @@ pub(crate) fn compute_condensed_table_layout(
             Tier::Wide => Tier::Medium,
             Tier::Medium => Tier::Narrow,
             Tier::Narrow => Tier::Minimal,
-            Tier::Minimal => return build_layout(current_tier, widths, total),
+            Tier::Minimal => {
+                // Last resort at the narrowest tier: force the HOST
+                // column down to whatever budget remains (at least one
+                // cell) so the returned layout does not exceed the
+                // terminal when a long name drove the overflow.
+                widths[0] = widths[0].min(host_budget.max(1));
+                let total = total_layout_width(current_tier, &widths);
+                return build_layout(current_tier, widths, total);
+            }
         };
     }
 }
@@ -511,6 +519,17 @@ mod tests {
             .tier
             .columns()
             .contains(&Column::Disk));
+    }
+
+    #[test]
+    fn minimal_tier_fallback_never_exceeds_available_width() {
+        // A long name at an extremely narrow width used to return a
+        // Minimal-tier layout whose total exceeded the terminal.
+        let systems = vec![system("an-extremely-long-system-name-that-cannot-fit")];
+        let layout = compute_condensed_table_layout(&systems, 12);
+        assert_eq!(layout.tier(), Tier::Minimal);
+        assert!(layout.total_width <= 12, "got {}", layout.total_width);
+        assert!(layout.host_width >= 1);
     }
 
     #[test]
