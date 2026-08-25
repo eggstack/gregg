@@ -137,7 +137,7 @@ integration tests.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root re-exporting all modules below |
-| `run` | `src/run.rs` | Supervision loop wiring collector, sampler, server, signals, and the local control socket; `RunOutcome`, `run_with_shutdown()` core with 10s graceful deadline |
+| `run` | `src/run.rs` | Supervision loop wiring collector, sampler, server, signals, and the local control socket; `RunOutcome`; entry points `run()`, `run_with_control_path()` (Unix), `run_with_control_path_or_default()` all delegate into the shared `run_with_shutdown()` core with a 10s graceful deadline |
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing listens), `configprint` (read-only bind address), `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigError`, `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`); config identity via FNV-1a digest of canonicalized path; restrictive permissions, conservative stale-socket cleanup; `ControlSocketGuard` cleanup on every exit path |
@@ -459,7 +459,7 @@ separate `system.hostname`.
   `crates/greggd/tests/linux_collector.rs`,
   `crates/greggd/tests/windows_smoke.rs`
 - **JSON fixtures:** `crates/gregg-protocol/tests/fixtures/` for v1/v2
-  cross-platform payloads; ~46 text fixtures under
+  cross-platform payloads; 46 text fixtures under
   `crates/greggd/src/collector/test_fixtures/` for `/proc` and OS files
 - **TUI buffer tests** cover width degradation, mixed fleets, and resize
 - **Sustained workload driver** (`#[ignore]`) exercises the full polling loop
