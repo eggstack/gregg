@@ -210,7 +210,8 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 - **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
-- **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by external runner scripts
+- **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
+- **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
 
 ## CI
 
