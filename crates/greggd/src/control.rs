@@ -281,10 +281,11 @@ fn record_stop_error(slot: &mut Option<std::io::Error>, error: std::io::Error) {
 ///
 /// Tries the config-adjacent path first, then the deterministic fallback.
 /// A missing control socket on every candidate is treated as the daemon
-/// already being stopped (idempotent success). Any other I/O error or a
-/// malformed response is surfaced as a [`ControlError`]. A daemon that
-/// accepts the connection but closes or goes quiet without replying is
-/// reported as not running with a warning diagnostic rather than being
+/// already being stopped (idempotent success). A permission error or a
+/// malformed response is surfaced as a [`ControlError`]. Any other
+/// unexpected I/O condition — for example a daemon that accepts the
+/// connection but closes or goes quiet without replying — yields
+/// [`StopOutcome::Uncertain`] with a warning diagnostic rather than being
 /// silently conflated with "nothing was listening".
 ///
 /// The function does not invoke `systemctl`, `launchctl`, a shell, or any
@@ -379,9 +380,12 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
             Ok(StopOutcome::NotRunning)
         }
         Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(ControlError::Io(e)),
+        // An unexpected condition (silent close, timeout, shadowed path)
+        // must never claim "not running": a live-but-stuck daemon would be
+        // indistinguishable from an absent one.
         Some(e) => {
             tracing::warn!(error = ?e, "control socket stop attempt failed unexpectedly");
-            Ok(StopOutcome::NotRunning)
+            Ok(StopOutcome::Uncertain)
         }
         None => Ok(StopOutcome::NotRunning),
     }
@@ -399,6 +403,10 @@ pub enum StopOutcome {
     /// either already stopped, never started, or running with a different
     /// config identity.
     NotRunning,
+    /// An unexpected I/O condition prevented classifying the daemon state;
+    /// a live-but-unresponsive daemon cannot be distinguished from an
+    /// absent one. Callers must not treat this as a successful stop.
+    Uncertain,
 }
 
 /// Outcome of the async control listener accept loop.
@@ -421,9 +429,11 @@ pub enum ControlBind {
 ///
 /// Tries the config-adjacent path first; if that path cannot be bound or its
 /// permissions cannot be secured, falls back to the deterministic temp-dir
-/// path. The chosen socket file is created with restrictive permissions
-/// (`0600`) so unrelated local users cannot inject a stop command. A
-/// listener is only published if `0600` was applied successfully; if neither
+/// path. The chosen socket file is created inside a private `0700` staging
+/// directory and atomically renamed into its final location only after a
+/// restrictive `0600` mode has been applied and verified, so the socket
+/// inode never exists at a publicly reachable path with wider permissions.
+/// A listener is only published if `0600` was applied successfully; if neither
 /// candidate yields a secure listener the function returns
 /// [`ControlBind::NotBound`] so the caller can decide whether a
 /// permission-failure or no-secure-control-channel is the appropriate
@@ -477,48 +487,119 @@ pub fn stale_connect_error(kind: std::io::ErrorKind) -> bool {
 fn try_bind_secure(path: &Path) -> Option<ControlBind> {
     use std::os::unix::fs::PermissionsExt;
 
-    let listener = try_bind(path)?;
+    // Inspect the final path first. Only remove stale socket files; never
+    // touch regular files or directories, and never displace a live
+    // listener.
+    prepare_final_path(path)?;
 
-    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            warn!(
+                parent = %parent.display(),
+                error = %e,
+                "control socket parent directory creation failed"
+            );
+            return None;
+        }
+    }
+
+    // Bind inside a process-private staging directory with mode 0700 so
+    // the socket inode never exists at a publicly reachable path with
+    // umask-derived permissions. Once the staged inode is verified as
+    // `0600`, an atomic same-parent rename publishes it.
+    let stage_dir = private_staging_dir(path);
+    let _ = std::fs::remove_dir_all(&stage_dir);
+    if let Err(e) = std::fs::create_dir(&stage_dir)
+        .and_then(|()| std::fs::set_permissions(&stage_dir, std::fs::Permissions::from_mode(0o700)))
+    {
         warn!(
-            path = %path.display(),
+            dir = %stage_dir.display(),
             error = %e,
-            "control socket permission update failed; closing listener"
+            "control socket staging directory setup failed"
         );
-        // Drop the listener before removing the socket file so the path is
-        // not deleted out from under an active accept loop.
-        drop(listener);
-        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(&stage_dir);
         return None;
     }
 
-    // Verify the permission update actually landed. Some filesystems can
-    // report success while silently retaining wider permissions.
-    match std::fs::metadata(path) {
+    let staged_socket = stage_dir.join("s");
+    let listener = match tokio::net::UnixListener::bind(&staged_socket) {
+        Ok(listener) => listener,
+        Err(e) => {
+            warn!(
+                path = %staged_socket.display(),
+                error = %e,
+                "control socket bind failed"
+            );
+            let _ = std::fs::remove_dir_all(&stage_dir);
+            return None;
+        }
+    };
+
+    // Restrict and verify the staged inode before publishing. Some
+    // filesystems can report success while silently retaining wider
+    // permissions, so the metadata check is mandatory.
+    if let Err(e) = std::fs::set_permissions(&staged_socket, std::fs::Permissions::from_mode(0o600))
+    {
+        warn!(
+            path = %staged_socket.display(),
+            error = %e,
+            "control socket permission update failed; closing listener"
+        );
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+
+    match std::fs::metadata(&staged_socket) {
         Ok(meta) => {
             let mode = meta.permissions().mode() & 0o777;
             if mode != 0o600 {
                 warn!(
-                    path = %path.display(),
+                    path = %staged_socket.display(),
                     mode = format!("{mode:o}"),
                     "control socket permissions are not 0600 after chmod; closing listener"
                 );
                 drop(listener);
-                let _ = std::fs::remove_file(path);
+                let _ = std::fs::remove_dir_all(&stage_dir);
                 return None;
             }
         }
         Err(e) => {
             warn!(
-                path = %path.display(),
+                path = %staged_socket.display(),
                 error = %e,
                 "control socket metadata check failed; closing listener"
             );
             drop(listener);
-            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_dir_all(&stage_dir);
             return None;
         }
     }
+
+    // Publish only into a still-absent final path; if another process
+    // bound the path during setup, abandon this candidate rather than
+    // displacing it.
+    if path.exists() {
+        warn!(
+            path = %path.display(),
+            "control socket path appeared during secure setup; closing listener"
+        );
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+
+    if let Err(e) = std::fs::rename(&staged_socket, path) {
+        warn!(
+            path = %path.display(),
+            error = %e,
+            "control socket publish rename failed; closing listener"
+        );
+        drop(listener);
+        let _ = std::fs::remove_dir_all(&stage_dir);
+        return None;
+    }
+    let _ = std::fs::remove_dir(&stage_dir);
 
     Some(ControlBind::Bound {
         path: path.to_path_buf(),
@@ -526,11 +607,13 @@ fn try_bind_secure(path: &Path) -> Option<ControlBind> {
     })
 }
 
-fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
-    use tokio::net::UnixListener;
-
-    // Inspect the path first. Only remove stale socket files; never touch
-    // regular files or directories.
+/// Inspect the final control-socket path before a bind attempt.
+///
+/// Returns `Some(())` when the path is free for binding (possibly after
+/// removing a confirmed-stale socket file). Returns `None` when the path
+/// holds a live listener or a non-socket entry, or when inspection itself
+/// failed; in those cases the existing entry is always left in place.
+fn prepare_final_path(path: &Path) -> Option<()> {
     match std::fs::metadata(path) {
         Ok(meta) => {
             let ft = meta.file_type();
@@ -545,11 +628,12 @@ fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
             match std::os::unix::net::UnixStream::connect(path) {
                 Ok(_) => {
                     // Live listener; do not rebind.
-                    return None;
+                    None
                 }
                 Err(e) if stale_connect_error(e.kind()) => {
                     // Stale; safe to remove and rebind.
                     let _ = std::fs::remove_file(path);
+                    Some(())
                 }
                 Err(e) => {
                     warn!(
@@ -558,43 +642,33 @@ fn try_bind(path: &Path) -> Option<tokio::net::UnixListener> {
                         "control socket connect failed with non-stale classification; \
                          leaving existing entry in place"
                     );
-                    return None;
+                    None
                 }
             }
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(()),
         Err(e) => {
             warn!(
                 path = %path.display(),
                 error = %e,
                 "control socket metadata failed"
             );
-            return None;
-        }
-    }
-
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            warn!(
-                parent = %parent.display(),
-                error = %e,
-                "control socket parent directory creation failed"
-            );
-            return None;
-        }
-    }
-
-    match UnixListener::bind(path) {
-        Ok(listener) => Some(listener),
-        Err(e) => {
-            warn!(
-                path = %path.display(),
-                error = %e,
-                "control socket bind failed"
-            );
             None
         }
     }
+}
+
+/// Process-private staging directory for the socket that will be published
+/// at `path`.
+///
+/// It lives in the same parent as the final socket so the publish rename
+/// stays within one filesystem and is atomic, and it is named after this
+/// process so concurrent daemons never share one. The staging name plus the
+/// one-character socket filename are shorter than the final socket's own
+/// filename, so any parent short enough to pass the [`UNIX_PATH_MAX`]
+/// candidate check also fits the staged path.
+fn private_staging_dir(path: &Path) -> PathBuf {
+    path.with_file_name(format!(".gd-stage-{}", std::process::id()))
 }
 
 /// Run a dedicated control-stop task that owns the bound Unix listener.
@@ -1102,13 +1176,14 @@ mod tests {
     }
 
     #[test]
-    fn send_stop_treats_silent_close_as_not_running_with_diagnostic() {
+    fn send_stop_treats_silent_close_as_uncertain_with_diagnostic() {
         let dir = fresh_temp_dir("send-stop-silent");
         let cfg = make_config_file(&dir, "greggd.toml");
 
-        // A daemon that accepts STOP and closes without replying must not
-        // be reported as Stopped; it is classified as not running with a
-        // recorded diagnostic rather than a clean "no socket" result.
+        // A daemon that accepts STOP and closes without replying is live
+        // but stuck; it must not be reported as Stopped or as cleanly not
+        // running. It is classified as uncertain with a recorded
+        // diagnostic so scripts can distinguish it from "no socket".
         let primary = primary_control_path(&cfg).unwrap();
         let listener = std::os::unix::net::UnixListener::bind(&primary).unwrap();
 
@@ -1123,7 +1198,7 @@ mod tests {
         });
 
         let outcome = send_stop(&cfg);
-        assert_eq!(outcome.unwrap(), StopOutcome::NotRunning);
+        assert_eq!(outcome.unwrap(), StopOutcome::Uncertain);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

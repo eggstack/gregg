@@ -9,6 +9,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Control-socket startup permission window closed** (`greggd`): the Unix
+  control socket is bound inside a process-private `0700` staging directory
+  and atomically renamed into its final path only after the `0600` mode is
+  verified, so the inode never exists publicly with umask-derived
+  permissions.
+- **`greggd stop` distinguishes unexpected failures from "not running"**
+  (`greggd`): unexpected I/O conditions (for example a daemon that accepts
+  `STOP\n` but never replies) now report an uncertain outcome with a
+  warning and exit code `3` instead of silently printing "greggd not
+  running" with exit code `0`. Missing and refused sockets remain an
+  idempotent not-running success; permission errors still map to exit `4`.
 - **Sampler no longer blocks the daemon runtime** (`greggd`): each collection
   cycle now runs on tokio's blocking thread pool, so hosts with many mounts or
   slow network filesystems can stretch `statvfs()` without stalling
@@ -31,6 +42,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Drive detail rendering allocates less** (`gregg`): expanded drive rows
+  are built directly from drive references instead of cloning each
+  eligible drive every frame. Rendering behavior is unchanged.
 - **Shared percentage normalization** (`greggd`): v1/v2 swap percentages derive
   from one collector helper, preventing future v1/v2 divergence.
 - **Client render/poll allocation reductions** (`gregg`): display order is

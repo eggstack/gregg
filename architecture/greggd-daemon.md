@@ -186,7 +186,11 @@ continues to advertise `greggd stop` at the same path. The socket file lives at
 the canonical config-adjacent path when that directory is writable;
 otherwise a deterministic fallback under the standard temp directory is
 used. The chosen socket is created with restrictive `0600` permissions;
-a failed `chmod` causes the candidate to be discarded before the next
+the inode is bound inside a process-private `0700` staging directory in
+the same parent and renamed into its final location only after the mode
+is applied and verified, so the socket never exists at a publicly
+reachable path with umask-derived permissions. A failed `chmod` causes
+the candidate to be discarded before the next
 candidate is tried, and if neither candidate yields a secure listener the
 foreground entry point returns a clear runtime error rather than silently
 losing stop capability. The control socket is removed on orderly shutdown
@@ -198,7 +202,10 @@ task's cleanup path runs.
 `greggd stop` tries the config-adjacent path first, then the temp-dir
 fallback. It sends `STOP\n`, reads `OK\n`, and exits 0. Missing or
 unreachable sockets result in idempotent not-running output. Permission
-errors map to exit code 4. The HTTP API remains read-only and is unrelated
+errors map to exit code 4. Unexpected I/O conditions — for example a
+daemon that accepts `STOP\n` but never replies — are reported as an
+uncertain outcome with a warning and exit code 3 rather than being
+conflated with "not running". The HTTP API remains read-only and is unrelated
 to the control socket. Stale socket cleanup is conservative: only
 `ConnectionRefused` and `NotFound` connect failures, after metadata has
 confirmed the entry is a socket, authorize unlinking. `PermissionDenied`,

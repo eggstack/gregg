@@ -372,12 +372,11 @@ fn pad_left(value: &str, width: usize) -> String {
 /// Pre-formatted fields plus the shared table layout for the selected
 /// system's expanded drive view.
 pub(crate) fn render_drive_detail_lines(drives: &[NormalizedDrive], width: u16) -> Vec<String> {
-    let eligible: Vec<NormalizedDrive> = drives
+    let rows: Vec<DriveDetailRow> = drives
         .iter()
         .filter(|d| d.total_bytes > 0 && d.used_bytes <= d.total_bytes)
-        .cloned()
+        .map(build_drive_detail_row)
         .collect();
-    let rows: Vec<DriveDetailRow> = eligible.iter().map(build_drive_detail_row).collect();
     let layout = compute_drive_table_layout(&rows, width);
     rows.iter()
         .map(|row| render_drive_detail_row(row, &layout))

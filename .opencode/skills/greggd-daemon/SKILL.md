@@ -63,10 +63,16 @@ service lifecycle. For platform metric collection itself, use the
   fallback. Identity is never derived from the parent directory alone — two
   configs in one directory cannot cross-stop.
 - Sockets are created with `0600`; a failed `chmod` discards the candidate.
+  The inode is bound inside a process-private `0700` staging directory in
+  the same parent and renamed into place only after verification, so it is
+  never publicly reachable with umask-derived permissions.
 - Stale socket cleanup unlinks only when metadata confirms a socket **and**
   the connect error is `ConnectionRefused` or `NotFound`.
   `PermissionDenied` and unexpected errors never authorize unlinking.
 - Cleanup runs on every exit path, including signals and runtime errors.
+- `stop` treats missing/refused candidates as idempotent "not running";
+  unexpected I/O conditions yield `StopOutcome::Uncertain` (exit `3` at
+  the binary boundary), never a silent not-running success.
 
 ## Exit codes
 

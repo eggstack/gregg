@@ -109,7 +109,11 @@ files use their filesystem-canonical path for that identity, so relative,
 absolute, and symlink spellings of the same file converge; a missing implicit
 default config uses a deterministic lexical absolute path. Stop speaks to a
 local Unix-domain control socket owned by the daemon; on Windows it asks the
-Service Control Manager. The HTTP API is read-only and has no shutdown
+Service Control Manager. A missing or unreachable socket is an idempotent
+"not running" success; if the daemon cannot be confirmed stopped (for
+example it accepts the stop command but never replies), `greggd stop`
+warns and exits nonzero instead of claiming the daemon is not running.
+The HTTP API is read-only and has no shutdown
 endpoint.
 
 `greggd croncheck` is a watchdog for cron, Task Scheduler, and other
