@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 use serde::Deserialize;
 use url::Url;
 
+use crate::clock::{Clock, RealClock};
 use crate::config::EggpoolEntry;
 
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
@@ -378,6 +379,20 @@ pub fn spawn_worker(
     endpoint: EggpoolEntry,
     cancel: tokio_util::sync::CancellationToken,
 ) -> EggpoolWorker {
+    spawn_worker_with_clock(client, endpoint, cancel, RealClock)
+}
+
+/// [`spawn_worker`] with an injected clock so tests can pin result
+/// timestamps deterministically.
+pub fn spawn_worker_with_clock<C>(
+    client: EggpoolClient,
+    endpoint: EggpoolEntry,
+    cancel: tokio_util::sync::CancellationToken,
+    clock: C,
+) -> EggpoolWorker
+where
+    C: Clock + Clone + Send + 'static,
+{
     let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
     let (result_tx, result_rx) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
@@ -402,7 +417,7 @@ pub fn spawn_worker(
                         active = true;
                         period = requested;
                         generation = requested_generation;
-                        request = Some(start_request(&client, &endpoint, period, generation));
+                        request = Some(start_request(&client, &endpoint, period, generation, &clock));
                         next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                     }
                     Some(EggpoolCommand::Deactivate) => {
@@ -424,7 +439,8 @@ pub fn spawn_worker(
                             if let Some(old_request) = request.take() {
                                 old_request.abort();
                             }
-                            request = Some(start_request(&client, &endpoint, period, generation));
+                            request =
+                                Some(start_request(&client, &endpoint, period, generation, &clock));
                             next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                         }
                     }
@@ -438,7 +454,7 @@ pub fn spawn_worker(
                     tokio::time::sleep_until(deadline).await;
                     Some(())
                 }, if active && request.is_none() && next_refresh_at.is_some() => {
-                    request = Some(start_request(&client, &endpoint, period, generation));
+                    request = Some(start_request(&client, &endpoint, period, generation, &clock));
                     next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
                 }
                 completed = async {
@@ -459,11 +475,11 @@ pub fn spawn_worker(
                         Some(Err(_)) | None => (
                             generation,
                             period,
-                            Instant::now(),
+                            clock.now(),
                             EggpoolFetchOutcome::NetworkError,
                         ),
                     };
-                    let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: Instant::now(), outcome }).await;
+                    let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
                 }
             }
         }
@@ -474,16 +490,18 @@ pub fn spawn_worker(
     }
 }
 
-fn start_request(
+fn start_request<C: Clock + Clone + Send + 'static>(
     client: &EggpoolClient,
     endpoint: &EggpoolEntry,
     period: EggpoolPeriod,
     generation: u64,
+    clock: &C,
 ) -> tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)> {
     let client = client.clone();
     let endpoint = endpoint.clone();
+    let clock = clock.clone();
     tokio::spawn(async move {
-        let started_at = Instant::now();
+        let started_at = clock.now();
         let outcome = client.fetch(&endpoint, period).await;
         (generation, period, started_at, outcome)
     })
@@ -1009,6 +1027,45 @@ mod tests {
             .await
             .unwrap();
         cancel.cancel();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_result_timestamps_come_from_the_injected_clock() {
+        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let anchor = Instant::now();
+        let mut worker = spawn_worker_with_clock(
+            EggpoolClient::new(Duration::from_secs(10)),
+            endpoint(port, None),
+            cancel.clone(),
+            crate::clock::FakeClock::new(anchor),
+        );
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        let result = worker.results.recv().await.unwrap();
+        assert!(matches!(result.outcome, EggpoolFetchOutcome::Online(_)));
+        // The fake clock never advances, so both timestamps pin to its
+        // anchor instead of wall-clock instants.
+        assert_eq!(result.started_at, anchor);
+        assert_eq!(result.completed_at, anchor);
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
+        server_task.abort();
+        let _ = server_task.await;
     }
 
     #[test]

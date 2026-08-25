@@ -16,6 +16,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use gregg_protocol::v2::SCHEMA_VERSION_V2;
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
@@ -189,7 +190,7 @@ where
 {
     info!(
         version = env!("CARGO_PKG_VERSION"),
-        schema_version = SCHEMA_VERSION_V1,
+        schema_version = format!("v{SCHEMA_VERSION_V1}+v{SCHEMA_VERSION_V2}"),
         os = std::env::consts::OS,
         arch = std::env::consts::ARCH,
         "greggd starting"

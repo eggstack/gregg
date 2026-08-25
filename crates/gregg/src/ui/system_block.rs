@@ -667,6 +667,34 @@ mod tests {
     }
 
     #[test]
+    fn make_bar_string_covers_boundaries_directly() {
+        // Missing percentage renders an entirely empty bar.
+        assert_eq!(make_bar_string(None, 10), "          ");
+        assert_eq!(make_bar_string(None, 0), "");
+
+        // Zero width collapses to the empty string regardless of pct.
+        assert_eq!(make_bar_string(Some(50.0), 0), "");
+        assert_eq!(make_bar_string(Some(100.0), 0), "");
+
+        // Exact bounds fill nothing or everything.
+        assert_eq!(make_bar_string(Some(0.0), 8), "        ");
+        assert_eq!(make_bar_string(Some(100.0), 8), "||||||||");
+
+        // Out-of-range values clamp into the closed interval.
+        assert_eq!(make_bar_string(Some(-5.0), 4), "    ");
+        assert_eq!(make_bar_string(Some(150.0), 4), "||||");
+
+        // Non-finite input cannot panic or fabricate a partial bar:
+        // infinity clamps to the full bar and NaN falls back to zero
+        // filled cells.
+        assert_eq!(make_bar_string(Some(f32::NAN), 6), "      ");
+        assert_eq!(make_bar_string(Some(f32::INFINITY), 6), "||||||");
+
+        // Fractional percentages truncate toward fewer filled cells.
+        assert_eq!(make_bar_string(Some(49.9), 10), "||||      ");
+    }
+
+    #[test]
     fn closing_brackets_align_when_details_fit() {
         let rows = [
             row("CPU", 25.2, Some("8 cores")),

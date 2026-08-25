@@ -55,7 +55,15 @@ pub(crate) fn clamped_usage_pct(used_bytes: u64, total_bytes: u64) -> f32 {
         0.0
     } else {
         let pct = (used_bytes as f64) * 100.0 / (total_bytes as f64);
-        (pct as f32).clamp(0.0, 100.0)
+        // Re-check finiteness after the narrowing cast so a non-finite
+        // intermediate can never reach the wire, mirroring the CPU
+        // percentage finalizers in `collector/linux/cpu.rs`.
+        let value = pct as f32;
+        if value.is_finite() {
+            value.clamp(0.0, 100.0)
+        } else {
+            0.0
+        }
     }
 }
 

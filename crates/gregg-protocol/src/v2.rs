@@ -128,16 +128,12 @@ impl StatusSnapshotV2 {
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricCapabilitiesV2 {
     /// Whether aggregate CPU I/O wait is reported.
-    #[serde(default)]
     pub cpu_iowait: bool,
     /// Whether one-/five-/fifteen-minute load averages are reported.
-    #[serde(default)]
     pub load_average: bool,
     /// Whether swap utilization is reported.
-    #[serde(default)]
     pub swap: bool,
     /// Whether memory commit charge is reported.
-    #[serde(default)]
     pub memory_commit: bool,
 }
 

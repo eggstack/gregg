@@ -32,7 +32,7 @@ fn linux_fixture_round_trips() {
     let value: serde_json::Value = serde_json::from_slice(&bytes).expect("fixture is JSON");
     let encoded_value: serde_json::Value =
         serde_json::from_slice(&encoded).expect("encoded is JSON");
-    assert_eq!(value, encoded_value, "round-trip must be byte-stable");
+    assert_eq!(value, encoded_value, "round-trip must be value-stable");
 }
 
 #[test]
@@ -586,6 +586,13 @@ fn validation_rejects_sample_interval_above_protocol_limit() {
                 ViolationKind::SampleIntervalOutOfRange { .. }
             )
     }));
+}
+
+#[test]
+fn validation_accepts_sample_interval_at_protocol_limit() {
+    let mut snap = valid_v1_snapshot();
+    snap.sample_interval_ms = MAX_SAMPLE_INTERVAL_MS;
+    snap.validate().expect("exactly the 24 h maximum is valid");
 }
 
 #[test]
@@ -1251,7 +1258,7 @@ fn v2_linux_fixture_round_trips() {
     let value: serde_json::Value = serde_json::from_slice(&bytes).expect("fixture is JSON");
     let encoded_value: serde_json::Value =
         serde_json::from_slice(&encoded).expect("encoded is JSON");
-    assert_eq!(value, encoded_value, "v2 round-trip must be byte-stable");
+    assert_eq!(value, encoded_value, "v2 round-trip must be value-stable");
 }
 
 #[test]

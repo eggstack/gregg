@@ -591,6 +591,42 @@ mod tests {
     }
 
     #[test]
+    fn drive_boundaries_at_the_exact_limits_are_valid() {
+        // Name length exactly at the bound.
+        let max_name = valid_payload(Some(vec![DriveMetrics {
+            name: "x".repeat(MAX_DRIVE_NAME_BYTES),
+            used_bytes: 0,
+            total_bytes: 1,
+            available_bytes: None,
+        }]));
+        max_name.validate().expect("512-byte name is valid");
+
+        // Exactly the maximum number of drives.
+        let max_entries = valid_payload(Some(
+            (0..MAX_DRIVE_ENTRIES)
+                .map(|index| DriveMetrics {
+                    name: format!("/{index}"),
+                    used_bytes: 0,
+                    total_bytes: 1,
+                    available_bytes: None,
+                })
+                .collect(),
+        ));
+        max_entries.validate().expect("32 drives are valid");
+
+        // `available_bytes` exactly equal to `total_bytes`.
+        let available_eq_total = valid_payload(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 0,
+            total_bytes: 10,
+            available_bytes: Some(10),
+        }]));
+        available_eq_total
+            .validate()
+            .expect("available == total is valid");
+    }
+
+    #[test]
     fn excess_drives_beyond_the_limit_are_still_individually_validated() {
         // The last entry (index 32, one past the bound) has an empty name and
         // inverted byte counts. Both must surface as indexed violations even

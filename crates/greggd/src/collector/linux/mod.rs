@@ -17,6 +17,11 @@ mod identity;
 mod memory;
 mod source;
 
+/// Sane upper bound on the reported core count. Far above any real or
+/// planned Linux machine, so a bogus sysinfo read cannot surface a
+/// sentinel-scale value to clients.
+const MAX_LOGICAL_CORES: usize = 8192;
+
 #[cfg(test)]
 mod tests;
 
@@ -115,13 +120,13 @@ impl SystemCollector for LinuxCollector {
 
         // Re-read the core count on every sample so CPU hotplug events are
         // reflected instead of freezing the count from construction time.
-        let logical_cores = self
-            .source
-            .logical_core_count()
-            .unwrap_or(1)
-            .max(1)
-            .try_into()
-            .unwrap_or(u32::MAX);
+        let logical_cores = u32::try_from(
+            self.source
+                .logical_core_count()
+                .unwrap_or(1)
+                .clamp(1, MAX_LOGICAL_CORES),
+        )
+        .unwrap_or(1);
 
         Ok(CollectedMetrics {
             logical_cores,

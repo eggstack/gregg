@@ -379,15 +379,22 @@ impl AppState {
                     SystemViewMode::Condensed => SystemViewMode::Normal,
                 };
             }
+            // These arms change nothing that affects selection visibility,
+            // so skip the viewport fix-up below.
             Action::PageDown
             | Action::PageUp
             | Action::SelectFirst
             | Action::SelectLast
             | Action::RefreshNow
-            | Action::Quit => {}
+            | Action::Quit => return,
+            // Note: `ToggleSystemView` on the Systems pane deliberately
+            // falls through because view mode changes entry heights.
             Action::ToggleSystemView | Action::ToggleDrives
-                if self.active_pane == Pane::Eggpool => {}
-            Action::ToggleSystemView => {}
+                if self.active_pane == Pane::Eggpool =>
+            {
+                return
+            }
+            Action::ToggleSystemView => return,
             Action::ToggleDrives => {
                 self.drives_expanded = !self.drives_expanded;
             }
@@ -402,18 +409,24 @@ impl AppState {
     /// order), then offline/pending systems (in configured order).
     #[must_use]
     pub fn display_order(&self) -> Vec<usize> {
-        let mut online = Vec::new();
-        let mut offline = Vec::new();
-
+        // One allocation: online indices are appended first, then a second
+        // pass appends the offline/pending indices, preserving configured
+        // order within each group.
+        let mut order = Vec::with_capacity(self.systems.len());
         for (i, system) in self.systems.iter().enumerate() {
-            match system.reachability {
-                Reachability::Online => online.push(i),
-                Reachability::Offline | Reachability::Pending => offline.push(i),
+            if matches!(system.reachability, Reachability::Online) {
+                order.push(i);
             }
         }
-
-        online.extend(offline);
-        online
+        for (i, system) in self.systems.iter().enumerate() {
+            if matches!(
+                system.reachability,
+                Reachability::Offline | Reachability::Pending
+            ) {
+                order.push(i);
+            }
+        }
+        order
     }
 
     /// Apply one `EggPool` result if it belongs to the current request and period.
