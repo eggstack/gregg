@@ -1,31 +1,35 @@
 # Architecture overview
 
-This document is the bird's-eye view of the entire `gregg` codebase: what each
-piece does, who owns it, how they connect, and where to go for details. It also
-serves as an index to the deep-dive documents in this directory.
+This document is the bird's-eye view of the `gregg` codebase: what each piece
+does, who owns it, how the pieces connect, and where to go for details. It is
+also the index for the deep-dive documents in this directory — every component
+section below ends with a link to its deep dive.
 
 ## Reading this document
 
 If you are new to the codebase, read this overview first, then follow the deep
 dive links in the order that matches your task:
 
-1. **[workspace.md](workspace.md)** — crate boundaries, dependency rules, MSRV,
-   lint policy, and release profiles. Read this before changing any crate
+1. **[workspace.md](workspace.md)** — crate boundaries, dependency rules,
+   MSRV, lint policy, and release profiles. Read before changing any crate
    structure.
-2. **[gregg-protocol.md](gregg-protocol.md)** — the wire contract. Read this
-   before touching any shared types or adding fields.
-3. **[greggd-daemon.md](greggd-daemon.md)** — the daemon internals. Read this
-   before modifying collectors, the sampler, HTTP server, or service management.
-4. **[gregg-client.md](gregg-client.md)** — the client internals. Read this
-   before modifying the TUI, polling, state engine, or EggPool.
+2. **[gregg-protocol.md](gregg-protocol.md)** — the wire contract. Read before
+   touching shared types or adding fields.
+3. **[greggd-daemon.md](greggd-daemon.md)** — daemon internals. Read before
+   modifying collectors, the sampler, HTTP server, or service management.
+4. **[gregg-client.md](gregg-client.md)** — client internals. Read before
+   modifying the TUI, polling, state engine, or EggPool.
 5. **[collectors.md](collectors.md)** — platform-specific metric collection.
-   Read this before modifying Linux, macOS, or Windows collector code.
-6. **[protocol.md](protocol.md)** — wire format specification, schema versions,
-   capabilities, and compatibility policy. Read this before changing validation
-   rules or adding schema versions.
+   Read before modifying Linux, macOS, or Windows collector code.
+6. **[protocol.md](protocol.md)** — wire format specification, schema
+   versions, capabilities, and compatibility policy. Read before changing
+   validation rules or adding schema versions.
 7. **[error-conventions.md](error-conventions.md)** — error boundary design
-   and wire response constraints. Read this before adding new error types or
-   changing what appears on the wire.
+   and wire response constraints. Read before adding new error types.
+8. **[scripts-and-packaging.md](scripts-and-packaging.md)** — scripts,
+   installers, service definitions, CI. Read before touching packaging.
+9. **[macos-collector-notes.md](macos-collector-notes.md)** — expected
+   differences between the macOS collector and Activity Monitor / `top`.
 
 ---
 
@@ -52,7 +56,7 @@ composed of three Rust crates in a single Cargo workspace.
                             ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                   gregg-protocol (library)                          │
-│  Shared wire types, schema versions, validation, health responses  │
+│  Shared wire types, schema versions, validation, health responses   │
 │  No runtime, HTTP, terminal, or platform dependencies               │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -76,7 +80,7 @@ workspace Cargo manifests and must not be violated.
 |-------|------|------|------|-----------|
 | `gregg-protocol` | `crates/gregg-protocol/` | Library | Wire contract between daemon and client | [gregg-protocol.md](gregg-protocol.md) |
 | `greggd` | `crates/greggd/` | Bin + lib | Metrics daemon, collector, HTTP server, service manager | [greggd-daemon.md](greggd-daemon.md) |
-| `gregg` | `crates/gregg/` | Binary | Client TUI, endpoint CLI, polling, EggPool | [gregg-client.md](gregg-client.md) |
+| `gregg` | `crates/gregg/` | Bin + lib | Client TUI, endpoint CLI, polling, EggPool | [gregg-client.md](gregg-client.md) |
 
 ---
 
@@ -93,23 +97,27 @@ or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, schema version constant (`SCHEMA_VERSION_V1`), `MAX_SAMPLE_INTERVAL_MS` |
-| `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
-| `validate` | `src/validate.rs` | V1 validation: `validate()` returns `Result<(), Vec<ValidationViolation>>` with 9 violation kinds |
+| `lib` | `src/lib.rs` | Root, re-exports, schema version constant (`SCHEMA_VERSION_V1 = 1`), `MAX_SAMPLE_INTERVAL_MS` |
+| `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities`; `validate()` |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2 = 2`, `MAX_DRIVE_ENTRIES = 32`, `MAX_DRIVE_NAME_BYTES = 512` |
+| `validate` | `src/validate.rs` | V1 validation: returns `Result<(), Vec<ValidationViolation>>` with 9 violation kinds |
 | `validate_v2` | `src/validate_v2.rs` | V2 validation: `validate_v2()` and `validate_payload_v2()` with 16 violation kinds, capability/value consistency |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
-| `test_support` | `src/test_support.rs` | Feature-gated builder fixtures: `LinuxSnapshotBuilder`, `MacosSnapshotBuilder`, `LinuxSnapshotV2Builder`, `WindowsSnapshotV2Builder`, `IdentityFixture` |
+| `test_support` | `src/test_support.rs` | Feature-gated (`test_support`) builder fixtures: `LinuxSnapshotBuilder`, `MacosSnapshotBuilder`, `LinuxSnapshotV2Builder`, `WindowsSnapshotV2Builder`, `IdentityFixture` |
 
 ### Key concepts
 
-- **Schema v1** — original Linux/macOS format with required load/swap
-- **Schema v2** — extended with capability flags for load, swap, commit; drives array
+- **Schema v1** — original Linux/macOS format with required load/swap.
+  Windows cannot produce it (`/v1/status` returns 503).
+- **Schema v2** — extended with capability flags for load, swap, commit; an
+  optional drives array with caller-available capacity. `/v2/status` is the
+  universal cross-platform endpoint.
 - **Capability flags** — each platform declares what metrics it supports; the
-  client uses these to decide what to render
-- **Validation** — separate from serde; `validate()` returns structured violation lists
+  client uses these to decide what to render.
+- **Validation** — separate from serde; `validate()` methods return structured
+  violation lists, not serde failures.
 - **Health responses** — three states (`Ready`, `Warming`, `Failed`) with coarse
-  categories for the wire; internal error chains never leak
+  categories for the wire; internal error chains never leak.
 
 **Deep dive:** [gregg-protocol.md](gregg-protocol.md)
 
@@ -119,8 +127,8 @@ or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
 
 **Purpose:** Runs on the monitored host. Collects system metrics using native OS
 interfaces, samples them at a configurable interval, serves them over HTTP, and
-manages its own OS service lifecycle. Both a binary (`src/main.rs`) and a
-library (`src/lib.rs`) target; the lib surface exposes the collector for
+manages its own OS service lifecycle on Windows. Both a binary (`src/main.rs`)
+and a library (`src/lib.rs`) target; the lib surface exposes the collector for
 integration tests.
 
 ### Modules
@@ -128,37 +136,40 @@ integration tests.
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
-| `lib` | `src/lib.rs` | Library root, re-exports all modules: `cli`, `collector`, `config`, `control` (Unix), `run`, `sampler`, `server`, `service` (Windows) |
-| `run` | `src/run.rs` | Supervision loop: wires collector, sampler, server, signals, local Unix control socket; `RunOutcome` enum, `run_with_shutdown_on_ready()` callback seam, 10s graceful shutdown deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing is listening), `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy (0-4) |
-| `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
-| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`), clock abstraction; `SamplerError`, `SyntheticClock` |
-| `server/mod` | `src/server/mod.rs` | Axum HTTP server, five endpoints, staleness detection; `ServerState`, `PublishedState`, `ServerConfig` |
+| `lib` | `src/lib.rs` | Library root re-exporting all modules below |
+| `run` | `src/run.rs` | Supervision loop wiring collector, sampler, server, signals, and the local control socket; `RunOutcome`, `run_with_shutdown()` core with 10s graceful deadline |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing listens), `configprint` (read-only bind address), `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy |
+| `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigError`, `ConfigViolation`, `AtomicWriteError` |
+| `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`); config identity via FNV-1a digest of canonicalized path; restrictive permissions, conservative stale-socket cleanup; `ControlSocketGuard` cleanup on every exit path |
+| `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
+| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle (`Warming` → `Ready`/`Failed`); `SamplerError`, clock abstraction with `RealClock`/synthetic variants |
+| `server/mod` | `src/server/mod.rs` | Axum HTTP server, five routes (`/`, `/v1/status`, `/v2/status`, `/healthz`, `/v2/healthz`), staleness detection; `ServerState`, `PublishedState` |
 | `server/error` | `src/server/error.rs` | Server error types |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics` normalization to v1 and v2 wire formats |
+| `server/tests` | `src/server/tests.rs` | In-module HTTP handler tests |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait (`identity()`, `sample()`, `capabilities()`, `capabilities_v2()`, `supports_v1_snapshot()`); `CollectedMetrics` normalization to v1/v2 wire formats |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
-| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
-| `collector/linux/` | `src/collector/linux/` | Linux collector: `LinuxCollector`, `FileSource` trait, `ProcSource` (prod), `MemorySource` (test) |
-| `collector/macos/` | `src/collector/macos/` | macOS collector: `MacOsCollector`, `MacNativeQueries` trait, `FfiNativeQueries` (prod), `MockNativeQueries` (test) |
-| `collector/windows/` | `src/collector/windows/` | Windows collector: `WindowsCollector`, `WindowsSource` trait, `NativeWindowsSource` (prod), `MockWindowsSource` (test) |
+| `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: candidates, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
+| `collector/linux/` | `src/collector/linux/` | Linux collector: cpu, memory, drives, identity; `FileSource` trait (`ProcSource` prod reads `/proc`, `MemorySource` test) plus statvfs FFI in `source.rs` |
+| `collector/macos/` | `src/collector/macos/` | macOS collector: cpu, memory, swap, identity, normalize; Mach/sysctl FFI seam in `ffi.rs` (`MacNativeQueries` trait, `FfiNativeQueries` prod, mock for tests) |
+| `collector/windows/` | `src/collector/windows/` | Windows collector: cpu, memory, commit, identity; `WindowsSource` trait (`NativeWindowsSource` prod, mock for tests) |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait (Windows-only) |
-| `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service` crate; `ScmAdapter` trait for testability |
+| `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service`; native dispatcher entry owned by the binary, one current-thread Tokio runtime per service worker |
 
 ### Key concepts
 
-- **Collector** — platform-specific metric collection. No external commands.
-  Implements `SystemCollector` trait: `identity()`, `sample()`, `capabilities()`,
-  `capabilities_v2()`, `supports_v1_snapshot()`.
-- **Sampler** — owns the clock and cadence; calls the collector periodically,
-  stamps timestamps, produces immutable cached snapshots. First sample returns
-  `Warming` (CPU percentages require two readings).
-- **HTTP server** — serves cached snapshots (never triggers collection); staleness
-  detection; v1 + v2 endpoints. Five routes: `/`, `/v1/status`, `/v2/status`,
-  `/healthz`, `/v2/healthz`.
-- **Supervision** — `tokio::select!` on shutdown signal, server task, and sampler
-  task. Graceful shutdown with 10-second deadline.
-- **Service manager** — Windows SCM only; Unix supervisors remain external packaging.
+- **Collector** — platform-specific metric collection. No external commands;
+  kernel interfaces only (`/proc`, Mach APIs, Win32 APIs). The first sample
+  after construction is `Warming` because CPU percentages need two readings.
+- **Sampler** — owns the clock and cadence; calls the collector periodically
+  and produces immutable cached snapshots. The server never triggers collection.
+- **HTTP server** — read-only. Five routes; serves cached snapshots with
+  staleness detection; `/v1/status` is unavailable where unsupported.
+- **Supervision** — `tokio::select!` over shutdown signal, server task, and
+  sampler task; graceful shutdown with a 10-second deadline. SIGTERM/SIGINT,
+  SCM Stop/Shutdown, and `STOP\n` on the local control socket all feed the
+  same shutdown path.
+- **Service manager** — Windows SCM only (dispatcher started synchronously
+  before any Tokio runtime exists). Unix supervisors stay external packaging.
 - **Exit codes** — `0` success, `1` configuration, `2` service management,
   `3` runtime, `4` permission denied.
 - **Binary/library split** — reusable runtime code returns errors without
@@ -175,80 +186,99 @@ integration tests.
 endpoints via CLI, polls them over HTTP, and renders a Ratatui-based TUI with
 normal and condensed fleet views. Optionally displays EggPool summary data.
 
+### Binaries
+
+| Binary | File | Purpose |
+|--------|------|---------|
+| `gregg` | `src/main.rs` | The client itself: CLI dispatch plus the async TUI event loop |
+| `lock_helper` | `src/bin/lock_helper.rs` | Cross-process config-lock test helper; only built behind the `test-helper` feature |
+| `probe_top` | `src/bin/probe_top.rs` | Standalone TCP-connectivity probe helper (Tokio + std connect checks against `PROBE_HOST`/`PROBE_PORT`); auto-discovered by Cargo from `src/bin/` and always built |
+
 ### Modules
 
 #### Core
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased), TUI wiring, `run_tui()` async function |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool`; `add` also accepts HTTP URL input; `ExitCode` taxonomy |
-| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking; `ConfigStore` with `load_or_default`, `load_existing`, `write`, `mutate` |
-| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, pane/view-mode state; 1572 lines |
-| `action` | `src/action.rs` | `Action` enum (13 variants: `MoveDown`, `MoveUp`, `PageDown`, `PageUp`, `SelectFirst`, `SelectLast`, `PreviousPane`, `NextPane`, `ToggleSystemView`, `ToggleDrives`, `RefreshNow`, `Resize`, `Quit`) |
+| `main` | `src/main.rs` | Entry point, biased `tokio::select!` event loop, TUI lifecycle, subcommand dispatch |
+| `cli` | `src/cli.rs` | Clap CLI: `version`, `add`, `list`, `remove`, `refresh`, `edit`, `eggpool add/list/remove`; strict port-required endpoint parsing for `add`; `ExitCode` taxonomy |
+| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking; `ConfigStore` with `load_or_default`, `load_existing`, `write`, `mutate`; editor resolution for `edit` |
+| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, pane/view-mode state, selection-highlight deadline |
+| `action` | `src/action.rs` | `Action` enum (14 variants: `MoveDown`, `MoveUp`, `PageDown`, `PageUp`, `SelectFirst`, `SelectLast`, `PreviousPane`, `NextPane`, `ToggleSystemView`, `ToggleDrives`, `RefreshNow`, `Resize`, `ClearSelectionHighlight`, `Quit`) |
 
 #### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, `PollOutcome` classification (12 variants: 2 success, 10 failure); `PollBatch` with generation counter; 64 KiB body cap |
-| `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, generation-based concurrency; `SchedulerCommand` enum (`Refresh`, `ReplaceEndpoints`); semaphore-bounded per-endpoint tasks |
-| `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6 (bracketed/bare), DNS/mDNS; HTTP URL convenience adapter for `add` |
-| `clock` | `src/clock.rs` | Clock trait for deterministic testing; `RealClock` and `FakeClock` implementations |
-| `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption; `NormalizedSnapshot` with capability flags; `aggregate_drives()` with checked arithmetic |
+| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback (fallback only on HTTP 404), `PollBatch` with generation counter, 64 KiB body cap |
+| `scheduler` | `src/scheduler.rs` | Periodic poll scheduler; `SchedulerCommand` (`Refresh`, `ReplaceEndpoints`); semaphore-bounded per-endpoint tasks; one ordered result per endpoint per generation; offline endpoints keep polling every cadence |
+| `endpoint` | `src/endpoint.rs` | Endpoint parsing: `host:port`, `[ipv6]:port`, HTTP URL convenience form, `nickname@host:port`; explicit port always required for `add`; HTTPS never accepted/downgraded |
+| `clock` | `src/clock.rs` | Clock trait for deterministic testing; real and fake implementations |
+| `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption with capability flags; drive aggregation with checked arithmetic |
 
 #### Input
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `event` | `src/event.rs` | Key-to-action translation (Vim-style); 18 test cases |
-| `input` | `src/input.rs` | Crossterm event stream adapter; dedicated thread, bounded channel |
+| `event` | `src/event.rs` | Input event model: key events, signals (hangup/window-change/terminate), poll batches, config-change notifications; Vim-style key-to-action translation |
+| `input` | `src/input.rs` | Crossterm event-stream adapter on a dedicated task feeding the event loop |
 | `terminal` | `src/terminal.rs` | Terminal lifecycle (raw mode, alt screen, cursor hiding, panic hook) |
 
 #### UI
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `ui/mod` | `src/ui/mod.rs` | Render dispatcher; 1486 lines; dispatches on `active_pane` and `system_view_mode` |
+| `ui/mod` | `src/ui/mod.rs` | Render entry point; dispatches on active pane and view mode; guards empty-config and too-small terminals |
 | `ui/layout` | `src/ui/layout.rs` | Viewport computation (which systems are visible, rect positions) |
-| `ui/system_block` | `src/ui/system_block.rs` | Normal-view system rendering (5-row blocks: header + CPU/MEM/SWP-or-COMMIT/DISK bars) |
-| `ui/condensed` | `src/ui/condensed.rs` | Condensed one-row fleet view (Wide ≥ 64, Medium 48-63, Narrow 30-47, Minimal < 30 cols) |
+| `ui/system_block` | `src/ui/system_block.rs` | Normal-view system rendering; authoritative fleet-wide metric-row geometry (`MetricRow`, `build_metric_rows`, `compute_fleet_metric_layout`) so `[`/`]` columns align across the fleet |
+| `ui/condensed` | `src/ui/condensed.rs` | Condensed one-row fleet view (Wide ≥ 64, Medium 48–63, Narrow 30–47, Minimal < 30 cols) |
 | `ui/bar` | `src/ui/bar.rs` | Reusable ASCII usage bar widget with width-safe arithmetic |
-| `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages, load averages, priority-aware header composition) |
+| `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages, load averages), priority-aware header composition, drive detail rows/tables |
 | `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config and terminal-too-small messages |
-| `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering; pending/success/stale/error states |
+| `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering across pending/success/stale/error states |
 
 #### EggPool
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `eggpool` | `src/eggpool.rs` | EggPool summary client (`EggpoolClient`) and background worker (`spawn_worker`); 900 lines; 60s passive refresh cadence |
+| `eggpool` | `src/eggpool.rs` | EggPool summary client and background worker; separate bounded command channel with generation checks; 60-second passive refresh when the pane is active; Hour/Day/Week/Month period cycling |
 | `eggpool_endpoint` | `src/eggpool_endpoint.rs` | EggPool-specific endpoint parsing; defaults to HTTP port 11300 |
 
 #### Test modules
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `mixed_fleet_evidence` | `src/mixed_fleet_evidence.rs` | Integration test with Python fixture servers; 9 fixture modes + refused endpoint |
-| `sustained_workload` | `src/sustained_workload.rs` | Long-running regression test (`#[ignore]`); validates generation invariants, bounded concurrency |
+| `mixed_fleet_evidence` | `src/mixed_fleet_evidence.rs` | `#[cfg(test)]` integration driver with Python fixture servers; fixture modes + refused endpoint |
+| `sustained_workload` | `src/sustained_workload.rs` | `#[cfg(test)]` long-running regression driver (`#[ignore]`); validates generation invariants and bounded concurrency; invoked by `scripts/run-mixed-fleet-sustained.py` |
 
 ### Key concepts
 
-- **Poll scheduler** — generation-based concurrency; v2-first/v1-fallback protocol.
-  One isolated poll task per endpoint; semaphore bounds active polls; task panic
-  is converted to `Cancelled`.
-- **State reducer** — action/Reducer pattern; all state changes through `Action`
-  enum. `AppState::apply_action()` and `apply_batch()` are pure, deterministic
-  functions.
-- **Normalized snapshots** — v1 and v2 wire formats normalized to a single
-  internal type; eliminates version-branching in the UI.
-- **EggPool** — optional summary pane for EggPool API metrics (separate from
-  greggd polling). Own client, worker, authentication (Bearer token from env var),
-  and rendering. 60-second passive refresh cadence.
+- **Poll scheduler** — generation-based concurrency; v2-first/v1-fallback
+  protocol. One isolated poll task per endpoint; a semaphore bounds active
+  polls; task panic converts to `Cancelled`. One ordered result per endpoint
+  per generation, every cadence — offline endpoints are retried without
+  backoff.
+- **State reducer** — action/reducer pattern; all state changes flow through
+  the `Action` enum. `AppState::apply_action()` and `apply_batch()` are pure
+  and deterministic; the first accepted batch snaps selection to the first
+  system, later batches preserve user selection.
+- **Selection model** — logical selection (`selected_id`) is persistent;
+  the reverse-video highlight is transient with a ten-second reset deadline
+  owned by the event loop.
+- **Config reload** — `Ctrl-R` reloads the resolved `ConfigStore`, reconciles
+  stable system IDs, and delivers replacement endpoints through the bounded
+  scheduler channel; invalid reloads preserve last-known-good state.
+- **Normalized snapshots** — v1 and v2 wire formats normalize to one internal
+  type, eliminating version-branching in the UI.
+- **EggPool** — optional summary pane, deliberately separate from greggd
+  polling: its own client, worker, authentication (API key name stored; key
+  value stays in the named env var), and rendering.
 - **Cross-process config locking** — `flock(2)` / `LockFileEx` prevents
   concurrent corruption of the TOML config file.
 - **Width degradation** — header line drops lower-priority segments as width
-  decreases (< 32: no load, < 50: no OS, < 80: no arch).
+  decreases (< 32: no load, < 50: no OS, < 80: no arch); compact-mode metric
+  suffixes are suppressed fleet-wide when they exceed a quarter of terminal
+  width.
 
 **Deep dive:** [gregg-client.md](gregg-client.md)
 
@@ -260,36 +290,35 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  greggd on monitored host                                           │
+│  greggd on monitored host                                            │
 │                                                                      │
-│  ┌──────────┐    ┌─────────┐    ┌──────────────┐    ┌────────────┐ │
-│  │ Collector │───▶│ Sampler │───▶│ Cached Snap. │◀───│ HTTP Server│ │
-│  │ (native)  │    │ (clock) │    │ (v1 + v2)    │    │ (axum)     │ │
-│  └──────────┘    └─────────┘    └──────────────┘    └─────┬──────┘ │
-│                                                            │        │
-└────────────────────────────────────────────────────────────┼────────┘
-                                                              │ JSON
-                                                              ▼
+│  ┌───────────┐    ┌─────────┐    ┌────────────┐    ┌─────────────┐  │
+│  │ Collector │───▶│ Sampler │───▶│ Cached     │◀───│ HTTP Server │  │
+│  │ (native)  │    │ (clock) │    │ Snap v1+v2 │    │ (axum)      │  │
+│  └───────────┘    └─────────┘    └────────────┘    └─────────────┘  │
+│                                          ▲               │          │
+└──────────────────────────────────────────┼───────────────┼──────────┘
+                                           │ cached        │ JSON
+                                           ▼               ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│  gregg on user's terminal                                           │
+│  gregg on user's terminal                                            │
 │                                                                      │
-│  ┌──────────┐    ┌───────────┐    ┌──────────┐    ┌──────────────┐ │
-│  │ Scheduler │───▶│ PollBatch │───▶│ AppState │───▶│     TUI      │ │
-│  │ (timer)   │    │ channel   │    │ reducer  │    │  (ratatui)   │ │
-│  └──────────┘    └───────────┘    └──────────┘    └──────────────┘ │
-│                                                                      │
+│  ┌───────────┐    ┌───────────┐    ┌──────────┐    ┌─────────────┐  │
+│  │ Scheduler │───▶│ PollBatch │───▶│ AppState │───▶│ TUI         │  │
+│  │ (timer)   │    │ channel   │    │ reducer  │    │ (ratatui)   │  │
+│  └───────────┘    └───────────┘    └──────────┘    └─────────────┘  │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
 1. The **collector** reads native OS interfaces (procfs, Mach, Win32 API)
 2. The **sampler** calls the collector on a timer, stamps timestamps, produces
    immutable v1 and v2 status snapshots
-3. The **HTTP server** caches snapshots and serves them on request
-4. The **client scheduler** polls each endpoint on a configurable interval
-5. **PollBatches** arrive on a channel with a generation counter
+3. The **HTTP server** serves the cached snapshots on request
+4. The **client scheduler** polls each endpoint on the configured interval
+5. **PollBatches** arrive on a channel tagged with a generation counter
 6. The **state reducer** applies batches, rejects stale generations, updates
    reachability and selection
-7. The **TUI** reads `AppState` projections and renders without I/O
+7. The **TUI** renders `AppState` projections without doing I/O
 
 ### Optional: EggPool
 
@@ -302,15 +331,15 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
          ▼
 ┌──────────────────┐
 │    AppState      │
-│    (eggpool pane)│
+│ (eggpool pane)   │
 └──────────────────┘
 ```
 
 The EggPool path is deliberately separate from greggd polling. It has its own
-client, worker, authentication (Bearer token from env var), and rendering.
-The worker runs a 60-second passive refresh cadence when the EggPool pane is
-active, uses generation-based staleness, and aborts in-flight requests on
-superseding commands. Period cycling (Hour/Day/Week/Month) is pane-local.
+client, worker, authentication, and rendering. The worker runs a 60-second
+passive refresh cadence while the pane is active, uses generation-based
+staleness, aborts in-flight requests on superseding commands, and keeps
+period cycling (Hour/Day/Week/Month) pane-local.
 
 ---
 
@@ -320,92 +349,99 @@ superseding commands. Period cycling (Hour/Day/Week/Month) is pane-local.
 
 Each platform collector implements the `SystemCollector` trait and reads only
 native kernel interfaces. CPU percentages require two samples (delta-based).
-macOS has no I/O-wait equivalent. Windows cannot produce v1 snapshots (no
-load/swap). No external commands are executed for metric collection.
+No external commands are executed for metric collection.
 
-| Platform | Source | Key interfaces | FFI seam |
-|----------|--------|----------------|----------|
-| Linux | `collector/linux/` | `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` | `FileSource` trait (`ProcSource` prod, `MemorySource` test) |
-| macOS | `collector/macos/` | Mach `host_statistics`, `sysctl`, `getloadavg`, `getmntinfo` | `MacNativeQueries` trait (`FfiNativeQueries` prod, `MockNativeQueries` test) |
-| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` | `WindowsSource` trait (`NativeWindowsSource` prod, `MockWindowsSource` test) |
+| Platform | Source | Key interfaces | Test seam |
+|----------|--------|----------------|-----------|
+| Linux | `collector/linux/` | `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` | `FileSource` trait (`ProcSource` prod, in-memory test source) |
+| macOS | `collector/macos/` | Mach `host_statistics`, `sysctl`, `getloadavg`, `getmntinfo` | `MacNativeQueries` trait (`FfiNativeQueries` prod, mock in tests) |
+| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` | `WindowsSource` trait (`NativeWindowsSource` prod, mock in tests) |
 
-**Deep dive:** [collectors.md](collectors.md)
+Platform gaps are reported honestly: macOS has no I/O-wait equivalent
+(`iowait_pct` is `null`); Windows cannot produce load average, swap, or
+I/O-wait and reports `commit` instead, so it serves no v1 snapshot. Values are
+never fabricated.
+
+**Deep dives:** [collectors.md](collectors.md),
+[macos-collector-notes.md](macos-collector-notes.md)
 
 ### Wire protocol and validation
 
-The protocol supports two schema versions. V2 is preferred; the client falls
-back to v1 on 404. Capability flags control which optional fields must be
-present. Validation is structured and separate from deserialization.
+Two schema versions. V2 is preferred; the client falls back to v1 only on an
+HTTP 404 from `/v2/status`. Capability flags control which optional fields
+must be present. Validation is structured and separate from deserialization.
 
 | Concept | Details |
 |---------|---------|
 | Schema v1 | Original Linux/macOS format; required load/swap; 9 validation violation kinds |
-| Schema v2 | Extended with capability flags; optional load/swap/commit; drives array; 16 validation violation kinds |
+| Schema v2 | Capability flags; optional load/swap/commit; drives array; 16 validation violation kinds |
 | Validation | Structured violation lists (`Vec<ValidationViolation>`), not serde errors |
-| Compatibility | Additive within schema; breaking changes require new major |
+| Compatibility | Additive within a schema version; breaking changes require a new major version |
+| Identity | `system.name` is the validated configured daemon name; `system.hostname` is the native platform hostname |
 | Health responses | Three states (`Ready`, `Warming`, `Failed`) with coarse categories |
 
 **Deep dive:** [protocol.md](protocol.md)
 
 ### Error boundaries
 
-Each binary crate has crate-local typed errors via `thiserror`. Wire responses
-carry only safe, structured info (category + message). Collector errors never
-appear on the wire.
+Each application crate uses crate-local typed errors via `thiserror`. Wire
+responses carry only safe, structured info (category + message). Collector
+errors never appear on the wire.
 
 | Boundary | Pattern |
 |----------|---------|
-| Daemon runtime | Returns typed errors; binary boundary formats diagnostics; exit codes: 0=success, 1=config, 2=service, 3=runtime, 4=permission |
+| Daemon runtime | Typed errors; binary boundary formats diagnostics; exit codes 0=success, 1=config, 2=service, 3=runtime, 4=permission |
 | Wire responses | `HealthCategory` + short message; no paths or error chains |
 | Collector | 6 `CollectErrorKind` variants (`Warming`, `SourceUnavailable`, `Parse`, `CounterReset`, `Numeric`, `IdentityFallback`); crate-local, never on wire |
-| Client | `PollOutcome` with 12 outcome classifications (2 success: `Online`/`OnlineV2`, 10 failure) |
+| Client polling | `PollOutcome`: 12 classifications (2 success: `Online`/`OnlineV2`, 10 failure incl. `Cancelled`) |
 
 **Deep dive:** [error-conventions.md](error-conventions.md)
 
 ### Scripts and packaging
 
-Installer scripts for all three platforms, a local validation script
-(`check-local.sh`), loopback smoke tests, and systemd/launchd/SCM service
-definitions.
+Installer scripts for all three platforms, the routine validation script,
+loopback smoke tests, and systemd/launchd/SCM service definitions.
 
 | Artifact | Purpose |
 |----------|---------|
-| `check-local.sh` / `check-local.ps1` | Primary local validation (fmt + test; `--release` adds clippy/docs/smoke) |
-| `verify-installed-daemon.sh` | Bounded loopback smoke: isolated port, temp config, health poll, SIGTERM |
-| `smoke-windows.ps1` | Full Windows SCM lifecycle: install → start → health → stop → restart → cleanup |
-| `install-linux.sh` | Systemd service, `greggd` user, `/usr/local/bin`, `/etc/gregg/` |
-| `install-macos.sh` | Launchd plist, `/usr/local/bin`, `/Library/Application Support/gregg/` |
-| `install-windows.ps1` | SCM service, `%ProgramFiles%\Gregg\%`, `LocalService` account |
-| `systemd/greggd.service` | Hardened systemd unit (NoNewPrivileges, ProtectSystem, etc.) |
-| `launchd/com.eggstack.greggd.plist` | KeepAlive on crash, RunAtLoad, 1024 fd limit |
+| `scripts/check-local.sh` / `.ps1` | Primary local validation: fmt check + workspace tests; `--release` adds Clippy, docs, smoke, protocol dry-run |
+| `scripts/verify-installed-daemon.sh` | Bounded loopback smoke: isolated port, temp config, health poll, SIGTERM |
+| `scripts/test-verify-installed-daemon.sh` | Self-test wrapper for the verify script |
+| `scripts/smoke-windows.ps1` | Bounded Administrator SCM lifecycle smoke: install → start → health → stop → restart → cleanup |
+| `packaging/install-linux.sh` | Systemd service, dedicated user, hardened unit |
+| `packaging/install-macos.sh` | Launchd plist installation |
+| `packaging/install-windows.ps1` / `uninstall-windows.ps1` | SCM service install/remove |
+| `packaging/systemd/greggd.service` | Hardened unit (NoNewPrivileges, ProtectSystem, …) |
+| `packaging/launchd/com.eggstack.greggd.plist` | KeepAlive on crash, RunAtLoad, fd limit |
+
+CI (GitHub Actions) runs fmt/clippy/tests on Linux, native macOS and Windows
+jobs including the SCM smoke, and a Rust 1.75 MSRV compile check. CI never
+publishes or uploads evidence; releases are manual per `RELEASING.md`.
 
 **Deep dive:** [scripts-and-packaging.md](scripts-and-packaging.md)
 
-### macOS collector differences
+### Workspace rules
 
-The macOS collector uses availability-oriented memory accounting (matching
-Linux `free` semantics) which reports **less** used memory than Activity
-Monitor. I/O-wait is `null` (no aggregate equivalent). Compressed pages
-are counted as swap. Detailed comparison with Activity Monitor, `top`, and
-`vm_stat` is documented separately.
+Three crates, strict one-way dependency direction, shared version from
+`[workspace.package]`, MSRV Rust 1.75 pinned via `rust-toolchain.toml`,
+clippy pedantic warnings, unsafe restricted to named FFI files with mandatory
+safety comments, and publication order `gregg-protocol` → `greggd` → `gregg`.
 
-**Deep dive:** [macos-collector-notes.md](macos-collector-notes.md)
+**Deep dive:** [workspace.md](workspace.md)
 
 ---
 
 ## Configuration
 
 | Component | Format | Default path (Linux) | Default path (macOS) | Default path (Windows) |
-|-----------|--------|---------------------|---------------------|----------------------|
+|-----------|--------|----------------------|----------------------|------------------------|
 | greggd | TOML | `/etc/gregg/greggd.toml` | `/Library/Application Support/gregg/greggd.toml` | `%ProgramData%\gregg\greggd.toml` |
 | gregg | TOML | `$XDG_CONFIG_HOME/gregg/gregg.toml` | `~/Library/Application Support/gregg/gregg.toml` | `%APPDATA%\gregg\gregg.toml` |
 
-Both use atomic writes (write-flush-rename-verify) and structured validation.
-The daemon config has 5 fields; the client config stores system endpoints,
-refresh intervals, and optional EggPool settings.
-
-The daemon's configured `name` is published as `system.name`; each native
-collector supplies the separate `system.hostname` field.
+Both use atomic writes (temp file → flush → rename → validate) and structured
+validation returning typed violations. The daemon's configured `name` is
+published as `system.name` on the wire; each native collector supplies the
+separate `system.hostname`.
 
 ### Cross-process config locking
 
@@ -417,28 +453,43 @@ collector supplies the separate `system.hostname` field.
 
 ## Testing strategy
 
-- **Unit tests** in every module with deterministic fixtures and mock collectors
-- **Integration tests** in `tests/` directories for live smoke tests
+- **Unit tests** in every module with deterministic fixtures and mock
+  collector sources
+- **Integration tests:** `crates/gregg-protocol/tests/integration.rs`,
+  `crates/greggd/tests/linux_collector.rs`,
+  `crates/greggd/tests/windows_smoke.rs`
+- **JSON fixtures:** `crates/gregg-protocol/tests/fixtures/` for v1/v2
+  cross-platform payloads; ~46 text fixtures under
+  `crates/greggd/src/collector/test_fixtures/` for `/proc` and OS files
 - **TUI buffer tests** cover width degradation, mixed fleets, and resize
-- **Sustained workload test** (`#[ignore]`) exercises the full polling loop
-- **Platform-native collector tests** run only on the target OS
-- **40+ JSON/text fixture files** in `src/collector/test_fixtures/`
-- **Mock seams:** `MemorySource` (Linux), `MockNativeQueries` (macOS), `MockWindowsSource` (Windows)
-- **Cross-process lock contention** covered by `lock_helper` binary behind `test-helper` feature
-- **Protocol test support:** `test_support` feature flag exposes builder fixtures (`LinuxSnapshotBuilder`, `MacosSnapshotBuilder`, `LinuxSnapshotV2Builder`, `WindowsSnapshotV2Builder`) that validate on build
+- **Sustained workload driver** (`#[ignore]`) exercises the full polling loop
+  via `scripts/run-mixed-fleet-sustained.py` with its pytest suite in
+  `scripts/tests/`
+- **Platform-native collector tests** run only on their target OS
+- **Mock seams:** in-memory `FileSource` (Linux), `MockNativeQueries` (macOS),
+  mock `WindowsSource` (Windows)
+- **Protocol builders:** `test_support` feature exposes snapshot builders that
+  validate on build
+- **Lock contention:** `lock_helper` binary behind the `test-helper` feature;
+  the cross-process lock test silently skips when the binary is absent
 
-Run the short routine check with:
+Routine verification:
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
-The manual `--release` / `-Release` preflight adds Clippy, documentation,
-package/version checks, installation smoke, and the protocol dry-run. Ordinary
-CI keeps Linux generic checks, native macOS/Windows coverage, and one
-compile-only Rust 1.75 check; it does not build docs, publish, or upload
-evidence.
+The manual `--release` preflight adds Clippy, documentation, package/version
+checks, installation smoke, and the protocol dry-run.
+
+Platform-native collector tests:
+
+```bash
+cargo test -p greggd --all-features -- collector::linux     # Linux
+cargo test -p greggd --all-features -- collector::macos     # macOS
+cargo test -p greggd --all-targets -- collector::windows    # Windows
+```
 
 ---
 
@@ -462,7 +513,6 @@ evidence.
 | [workspace.md](workspace.md) | Cargo workspace layout, crate boundaries, dependency direction, module structure |
 | [protocol.md](protocol.md) | Wire format specification, schema versions, capabilities, validation, compatibility |
 | [error-conventions.md](error-conventions.md) | Error boundary design, wire response constraints |
-| [scripts-and-packaging.md](scripts-and-packaging.md) | Scripts, installers, service definitions, CI |
 | [macos-collector-notes.md](macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / `top` / `vm_stat` |
 
 ### Supporting files
