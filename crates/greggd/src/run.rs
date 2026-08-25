@@ -19,7 +19,7 @@ use std::time::Duration;
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::collector::SystemCollector;
 use crate::config::Config;
@@ -385,12 +385,12 @@ pub(crate) async fn join_remaining_tasks_with_deadline(
             result = &mut handle => {
                 match result {
                     Ok(Ok(())) => info!("HTTP server shut down cleanly"),
-                    Ok(Err(e)) => eprintln!("HTTP server error during shutdown: {e}"),
-                    Err(e) => eprintln!("HTTP server task panicked during shutdown: {e}"),
+                    Ok(Err(e)) => warn!("HTTP server error during shutdown: {e}"),
+                    Err(e) => warn!("HTTP server task panicked during shutdown: {e}"),
                 }
             }
             () = tokio::time::sleep_until(deadline_instant) => {
-                eprintln!("HTTP server did not shut down within deadline; aborting");
+                warn!("HTTP server did not shut down within deadline; aborting");
                 handle.abort();
                 let _ = handle.await;
             }
@@ -402,11 +402,11 @@ pub(crate) async fn join_remaining_tasks_with_deadline(
             result = &mut handle => {
                 match result {
                     Ok(()) => info!("sampler shut down cleanly"),
-                    Err(e) => eprintln!("sampler error during shutdown: {e}"),
+                    Err(e) => warn!("sampler error during shutdown: {e}"),
                 }
             }
             () = tokio::time::sleep_until(deadline_instant) => {
-                eprintln!("sampler did not shut down within deadline; aborting");
+                warn!("sampler did not shut down within deadline; aborting");
                 handle.abort();
                 let _ = handle.await;
             }

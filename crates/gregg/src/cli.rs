@@ -520,7 +520,7 @@ fn parse_add_target(input: &str) -> Result<AddTarget, EndpointError> {
     if let Some((nick, rest)) = trimmed.split_once('@') {
         if rest.contains('@') {
             // `a@b@c` style is ambiguous: refuse rather than guess.
-            return Err(EndpointError::MalformedBrackets {
+            return Err(EndpointError::MultipleAtSeparators {
                 input: trimmed.to_string(),
             });
         }
@@ -1552,6 +1552,15 @@ mod tests {
         assert!(
             matches!(result, Err(EndpointError::InvalidName { .. })),
             "empty nickname must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn parse_add_target_reports_multiple_at_signs_without_bracket_error() {
+        let result = parse_add_target("a@b@c");
+        assert!(
+            matches!(result, Err(EndpointError::MultipleAtSeparators { .. })),
+            "multiple '@' separators must not be reported as bracket errors, got {result:?}"
         );
     }
 

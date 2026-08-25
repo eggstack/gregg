@@ -134,6 +134,9 @@ pub enum EndpointError {
     ExplicitPortRequired,
     /// `gregg add` was given a nickname in addition to `--name`.
     AmbiguousName { input: String },
+    /// Input contained more than one `@`, leaving the nickname
+    /// separator ambiguous.
+    MultipleAtSeparators { input: String },
 }
 
 impl fmt::Display for EndpointError {
@@ -177,6 +180,12 @@ impl fmt::Display for EndpointError {
                     "gregg add received both an inline nickname and --name; pick one: {input}"
                 )
             }
+            Self::MultipleAtSeparators { input } => {
+                write!(
+                    f,
+                    "endpoint contains multiple '@' separators; use at most one 'nickname@' prefix: {input}"
+                )
+            }
         }
     }
 }
@@ -203,11 +212,6 @@ impl EndpointSpec {
             return Err(EndpointError::EmptyInput);
         }
 
-        // Reject whitespace-only after trim.
-        if trimmed != input.trim_end() || trimmed != input.trim_start() {
-            // Allow leading/trailing whitespace that was trimmed — that's fine.
-            // But reject inputs that are only whitespace.
-        }
         let input_str = trimmed;
 
         // Reject URL schemes.

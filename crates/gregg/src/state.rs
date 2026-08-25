@@ -518,6 +518,10 @@ impl AppState {
 
     /// Compute the page size (number of systems to skip) based on
     /// terminal height and the current viewport.
+    ///
+    /// Returns zero when the viewport cannot render even one full
+    /// entry, so page movement never lands selection on entries that
+    /// cannot be displayed.
     fn page_size(&self) -> isize {
         let height = self
             .terminal_size
@@ -535,7 +539,10 @@ impl AppState {
         let mut count = 0_isize;
         for &idx in order.iter().skip(top_pos) {
             let h = entry_height(self, idx);
-            if rows + h > height && count > 0 {
+            if rows + h > height {
+                if count == 0 {
+                    return 0;
+                }
                 break;
             }
             rows += h;
@@ -1283,6 +1290,19 @@ mod tests {
         // Should move back toward the beginning.
         let after_page_up = state.selected_id.clone();
         assert_eq!(after_page_up.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn page_movement_is_noop_when_no_entry_fits() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::from_config(&config);
+        state.terminal_size = Some((80, 0));
+
+        state.apply_action(Action::PageDown);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+
+        state.apply_action(Action::PageUp);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
     }
 
     #[test]

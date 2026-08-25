@@ -38,7 +38,13 @@ pub fn format_bytes(bytes: u64) -> String {
 }
 
 /// Format a percentage value.
+///
+/// Non-finite input renders as the unavailable marker `—` rather than
+/// a numeric string.
 pub fn format_pct(pct: f32) -> String {
+    if pct.is_nan() {
+        return "\u{2014}".to_string();
+    }
     let clamped = pct.clamp(0.0, 100.0);
     if clamped >= 100.0 {
         "100%".to_string()
@@ -391,6 +397,17 @@ pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
 mod tests {
     use super::*;
     use crate::normalized::NormalizedSnapshot;
+
+    #[test]
+    fn format_pct_renders_unavailable_marker_for_nan() {
+        assert_eq!(format_pct(f32::NAN), "\u{2014}");
+    }
+
+    #[test]
+    fn format_pct_clamps_out_of_range_values() {
+        assert_eq!(format_pct(-1.0), "0.0%");
+        assert_eq!(format_pct(150.0), "100%");
+    }
 
     fn drive(name: &str, used: u64, total: u64, available: Option<u64>) -> NormalizedDrive {
         NormalizedDrive {
