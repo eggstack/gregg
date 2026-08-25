@@ -283,8 +283,7 @@ impl ServerState {
         if !self.max_snapshot_age.is_zero() {
             if let Some(observed_at_unix_ms) = state.last_observed_at_unix_ms {
                 let age_ms = now_unix_ms.saturating_sub(observed_at_unix_ms);
-                #[allow(clippy::cast_possible_truncation)]
-                if age_ms >= self.max_snapshot_age.as_millis() as u64 {
+                if u128::from(age_ms) >= self.max_snapshot_age.as_millis() {
                     return true;
                 }
             }

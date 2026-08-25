@@ -1,7 +1,9 @@
 use super::*;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use gregg_protocol::test_support::{LinuxSnapshotBuilder, LinuxSnapshotV2Builder};
+use gregg_protocol::test_support::{
+    LinuxSnapshotBuilder, LinuxSnapshotV2Builder, WindowsSnapshotV2Builder,
+};
 use gregg_protocol::v2::DriveMetrics;
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
 use http_body_util::BodyExt;
@@ -599,14 +601,32 @@ async fn warming_state_serves_503_regardless_of_stale_policy() {
 #[tokio::test]
 async fn v2_only_snapshot_ages_out_on_status_and_health() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
-    let mut payload = LinuxSnapshotV2Builder::default().build_payload();
-    payload.snapshot.observed_at_unix_ms = 1;
+    let payload = LinuxSnapshotV2Builder::default()
+        .observed_at_unix_ms(1)
+        .build_payload();
     state.update_snapshot_v2_only(payload).await;
     let app = build_test_router(state);
     let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let response = app.oneshot(get("/v2/healthz")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[test]
+fn v2_builders_override_sample_interval_and_observed_at() {
+    let snap = LinuxSnapshotV2Builder::default()
+        .sample_interval_ms(2000)
+        .observed_at_unix_ms(1_234_567_890_123)
+        .build();
+    assert_eq!(snap.sample_interval_ms, 2000);
+    assert_eq!(snap.observed_at_unix_ms, 1_234_567_890_123);
+
+    let payload = WindowsSnapshotV2Builder::default()
+        .sample_interval_ms(3000)
+        .observed_at_unix_ms(1_234_567_890_456)
+        .build_payload();
+    assert_eq!(payload.snapshot.sample_interval_ms, 3000);
+    assert_eq!(payload.snapshot.observed_at_unix_ms, 1_234_567_890_456);
 }
 
 #[tokio::test]

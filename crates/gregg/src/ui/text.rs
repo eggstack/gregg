@@ -384,6 +384,12 @@ pub(crate) fn render_drive_detail_lines(drives: &[NormalizedDrive], width: u16) 
         .collect()
 }
 
+/// Truncate `s` to at most `max_width` terminal cells.
+///
+/// Glyphs are never split across cells: when the leading glyph alone is
+/// wider than the whole budget (e.g. a wide CJK character with
+/// `max_width == 1`), nothing of it is emitted and the result collapses to
+/// the ellipsis placeholder rather than a partial glyph.
 pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();

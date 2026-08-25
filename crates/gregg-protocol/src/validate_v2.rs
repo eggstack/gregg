@@ -192,6 +192,10 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         }
         for (index, drive) in drives.iter().take(MAX_DRIVE_ENTRIES).enumerate() {
             let prefix = format!("drives[{index}]");
+            // Drive names are deliberately exempt from the NUL rejection
+            // applied to identity fields: that guard targets the Windows
+            // hostname NUL-padding regression class, while drive names are
+            // display-only labels bounded by `MAX_DRIVE_NAME_BYTES`.
             if drive.name.is_empty() {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::EmptyDriveName,
@@ -279,10 +283,8 @@ fn validate_cpu_v2(
             }
         }
         Some(value) => {
-            if cpu_iowait {
-                check_percentage_v2(value, "cpu.iowait_pct", out);
-            } else {
-                check_percentage_v2(value, "cpu.iowait_pct", out);
+            check_percentage_v2(value, "cpu.iowait_pct", out);
+            if !cpu_iowait {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::IowaitCapabilityMismatch,
                     "cpu.iowait_pct",
@@ -307,14 +309,10 @@ fn validate_load_v2(
             }
         }
         Some(l) => {
-            if load_average_capable {
-                check_load_v2(l.one, "load.one", out);
-                check_load_v2(l.five, "load.five", out);
-                check_load_v2(l.fifteen, "load.fifteen", out);
-            } else {
-                check_load_v2(l.one, "load.one", out);
-                check_load_v2(l.five, "load.five", out);
-                check_load_v2(l.fifteen, "load.fifteen", out);
+            check_load_v2(l.one, "load.one", out);
+            check_load_v2(l.five, "load.five", out);
+            check_load_v2(l.fifteen, "load.fifteen", out);
+            if !load_average_capable {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::LoadCapabilityMismatch,
                     "load",
@@ -375,44 +373,25 @@ fn validate_swap_v2(
             let before = out.len();
             check_percentage_v2(s.usage_pct, "swap.usage_pct", out);
             let pct_flagged = out.len() > before;
-            if swap_capable {
-                if s.used_bytes > s.total_bytes {
+            if s.used_bytes > s.total_bytes {
+                out.push(ValidationViolationV2::new(
+                    ViolationKindV2::UsedExceedsTotal,
+                    "swap.used_bytes",
+                ));
+            }
+            if s.total_bytes == 0 && s.usage_pct != 0.0 {
+                out.push(ValidationViolationV2::new(
+                    ViolationKindV2::ZeroNotAllowed,
+                    "swap.total_bytes",
+                ));
+                if !pct_flagged {
                     out.push(ValidationViolationV2::new(
-                        ViolationKindV2::UsedExceedsTotal,
-                        "swap.used_bytes",
+                        ViolationKindV2::PercentageOutOfRange,
+                        "swap.usage_pct",
                     ));
                 }
-                if s.total_bytes == 0 && s.usage_pct != 0.0 {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::ZeroNotAllowed,
-                        "swap.total_bytes",
-                    ));
-                    if !pct_flagged {
-                        out.push(ValidationViolationV2::new(
-                            ViolationKindV2::PercentageOutOfRange,
-                            "swap.usage_pct",
-                        ));
-                    }
-                }
-            } else {
-                if s.used_bytes > s.total_bytes {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::UsedExceedsTotal,
-                        "swap.used_bytes",
-                    ));
-                }
-                if s.total_bytes == 0 && s.usage_pct != 0.0 {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::ZeroNotAllowed,
-                        "swap.total_bytes",
-                    ));
-                    if !pct_flagged {
-                        out.push(ValidationViolationV2::new(
-                            ViolationKindV2::PercentageOutOfRange,
-                            "swap.usage_pct",
-                        ));
-                    }
-                }
+            }
+            if !swap_capable {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::SwapCapabilityMismatch,
                     "swap",
@@ -440,44 +419,25 @@ fn validate_commit_v2(
             let before = out.len();
             check_percentage_v2(c.usage_pct, "commit.usage_pct", out);
             let pct_flagged = out.len() > before;
-            if commit_capable {
-                if c.used_bytes > c.limit_bytes {
+            if c.used_bytes > c.limit_bytes {
+                out.push(ValidationViolationV2::new(
+                    ViolationKindV2::UsedExceedsTotal,
+                    "commit.used_bytes",
+                ));
+            }
+            if c.limit_bytes == 0 && c.usage_pct != 0.0 {
+                out.push(ValidationViolationV2::new(
+                    ViolationKindV2::ZeroNotAllowed,
+                    "commit.limit_bytes",
+                ));
+                if !pct_flagged {
                     out.push(ValidationViolationV2::new(
-                        ViolationKindV2::UsedExceedsTotal,
-                        "commit.used_bytes",
+                        ViolationKindV2::PercentageOutOfRange,
+                        "commit.usage_pct",
                     ));
                 }
-                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::ZeroNotAllowed,
-                        "commit.limit_bytes",
-                    ));
-                    if !pct_flagged {
-                        out.push(ValidationViolationV2::new(
-                            ViolationKindV2::PercentageOutOfRange,
-                            "commit.usage_pct",
-                        ));
-                    }
-                }
-            } else {
-                if c.used_bytes > c.limit_bytes {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::UsedExceedsTotal,
-                        "commit.used_bytes",
-                    ));
-                }
-                if c.limit_bytes == 0 && c.usage_pct != 0.0 {
-                    out.push(ValidationViolationV2::new(
-                        ViolationKindV2::ZeroNotAllowed,
-                        "commit.limit_bytes",
-                    ));
-                    if !pct_flagged {
-                        out.push(ValidationViolationV2::new(
-                            ViolationKindV2::PercentageOutOfRange,
-                            "commit.usage_pct",
-                        ));
-                    }
-                }
+            }
+            if !commit_capable {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::CommitCapabilityMismatch,
                     "commit",
@@ -1135,5 +1095,73 @@ mod tests {
         snap.cpu.logical_cores = 0;
         let err = validate_v2(&snap).unwrap_err();
         assert!(err.len() >= 3);
+    }
+
+    #[test]
+    fn rejects_zero_total_drive_bytes() {
+        let payload = valid_payload(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 0,
+            total_bytes: 0,
+            available_bytes: None,
+        }]));
+        let err = payload.validate().unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "drives[0].total_bytes"
+                && violation.kind == ViolationKindV2::ZeroNotAllowed
+        }));
+    }
+
+    #[test]
+    fn rejects_negative_memory_swap_and_commit_percentages() {
+        let mut snap = valid_linux_v2();
+        snap.memory.usage_pct = -0.1;
+        snap.swap.as_mut().unwrap().usage_pct = -0.1;
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "memory.usage_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
+        assert!(err.iter().any(|violation| {
+            violation.field == "swap.usage_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
+
+        let snap = StatusSnapshotV2 {
+            capabilities: MetricCapabilitiesV2 {
+                memory_commit: true,
+                ..valid_linux_v2().capabilities
+            },
+            commit: Some(CommitMetrics {
+                used_bytes: 0,
+                limit_bytes: 4_000_000_000,
+                usage_pct: -0.1,
+            }),
+            ..valid_linux_v2()
+        };
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "commit.usage_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
+    }
+
+    #[test]
+    fn rejects_negative_iowait() {
+        let mut snap = valid_linux_v2();
+        snap.cpu.iowait_pct = Some(-0.5);
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|v| v.field == "cpu.iowait_pct"));
+
+        snap.capabilities.cpu_iowait = false;
+        snap.cpu.iowait_pct = Some(-0.5);
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "cpu.iowait_pct"
+                && violation.kind == ViolationKindV2::PercentageOutOfRange
+        }));
+        assert!(err
+            .iter()
+            .any(|v| matches!(v.kind, ViolationKindV2::IowaitCapabilityMismatch)));
     }
 }

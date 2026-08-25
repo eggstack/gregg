@@ -308,12 +308,10 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
         {
             return EggpoolFetchOutcome::ConnectionRefused;
         }
-        if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
-            matches!(
-                io.kind(),
-                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::NotFound
-            )
-        }) {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+        {
             return EggpoolFetchOutcome::DnsFailure;
         }
         current = error.source();
@@ -324,7 +322,11 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
         if message.contains("connection refused") {
             return EggpoolFetchOutcome::ConnectionRefused;
         }
-        if message.contains("dns") || message.contains("resolve") || message.contains("name") {
+        if message.contains("dns")
+            || message.contains("resolve")
+            || message.contains("name")
+            || message.contains("failed to lookup address information")
+        {
             return EggpoolFetchOutcome::DnsFailure;
         }
         current = error.source();

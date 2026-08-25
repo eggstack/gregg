@@ -429,6 +429,20 @@ impl LinuxSnapshotV2Builder {
         self
     }
 
+    /// Override the sampling interval.
+    #[must_use]
+    pub const fn sample_interval_ms(mut self, ms: u64) -> Self {
+        self.sample_interval_ms = ms;
+        self
+    }
+
+    /// Override the observation timestamp.
+    #[must_use]
+    pub const fn observed_at_unix_ms(mut self, ms: u64) -> Self {
+        self.observed_at_unix_ms = ms;
+        self
+    }
+
     #[must_use]
     pub fn drives(mut self, drives: Option<Vec<DriveMetrics>>) -> Self {
         self.drives = drives;
@@ -436,8 +450,8 @@ impl LinuxSnapshotV2Builder {
     }
 
     #[must_use]
-    pub fn build_payload(self) -> StatusPayloadV2 {
-        let drives = self.drives.clone();
+    pub fn build_payload(mut self) -> StatusPayloadV2 {
+        let drives = self.drives.take();
         let snapshot = self.build();
         let payload = StatusPayloadV2 { snapshot, drives };
         payload.validate().expect("linux v2 payload validates");
@@ -539,6 +553,20 @@ impl WindowsSnapshotV2Builder {
         self
     }
 
+    /// Override the sampling interval.
+    #[must_use]
+    pub const fn sample_interval_ms(mut self, ms: u64) -> Self {
+        self.sample_interval_ms = ms;
+        self
+    }
+
+    /// Override the observation timestamp.
+    #[must_use]
+    pub const fn observed_at_unix_ms(mut self, ms: u64) -> Self {
+        self.observed_at_unix_ms = ms;
+        self
+    }
+
     #[must_use]
     pub fn drives(mut self, drives: Option<Vec<DriveMetrics>>) -> Self {
         self.drives = drives;
@@ -546,8 +574,8 @@ impl WindowsSnapshotV2Builder {
     }
 
     #[must_use]
-    pub fn build_payload(self) -> StatusPayloadV2 {
-        let drives = self.drives.clone();
+    pub fn build_payload(mut self) -> StatusPayloadV2 {
+        let drives = self.drives.take();
         let snapshot = self.build();
         let payload = StatusPayloadV2 { snapshot, drives };
         payload.validate().expect("windows v2 payload validates");

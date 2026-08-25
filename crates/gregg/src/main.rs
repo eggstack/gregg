@@ -393,7 +393,10 @@ async fn refresh_systems(
     store: Option<&config::ConfigStore>,
 ) -> Result<(), SchedulerUnavailable> {
     let Some(store) = store else {
-        let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
+        scheduler_tx
+            .send(scheduler::SchedulerCommand::Refresh)
+            .await
+            .map_err(|_| SchedulerUnavailable)?;
         return Ok(());
     };
 
@@ -413,7 +416,10 @@ async fn refresh_systems(
         Err(_) => {
             // Keep the last-known-good state when an external edit is
             // temporarily missing, malformed, or invalid.
-            let _ = scheduler_tx.try_send(scheduler::SchedulerCommand::Refresh);
+            scheduler_tx
+                .send(scheduler::SchedulerCommand::Refresh)
+                .await
+                .map_err(|_| SchedulerUnavailable)?;
         }
     }
 

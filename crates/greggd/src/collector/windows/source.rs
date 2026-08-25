@@ -480,7 +480,12 @@ mod ffi {
 ///
 /// # Safety
 ///
-/// Caller must ensure `ft` was initialized by a Windows API call.
+/// This is a plain bit-pattern read: the two `u32` halves of `ft` are
+/// recombined into a single `u64`, so every bit pattern yields a valid
+/// value and no memory unsafety can occur for any input. The result is
+/// only a meaningful filetime when `ft` was populated by a Windows API
+/// call; an arbitrary or uninitialized value produces an arbitrary
+/// timestamp, not undefined behavior.
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 unsafe fn filetime_to_u64(ft: ffi::FileTime) -> u64 {

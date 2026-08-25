@@ -359,5 +359,11 @@ mod tests {
         assert!(err
             .iter()
             .any(|v| v.field == "cpu.iowait_pct" && v.kind == ViolationKind::PercentageOutOfRange));
+
+        snap.cpu.iowait_pct = Some(-0.5);
+        let err = validate(&snap).unwrap_err();
+        assert!(err
+            .iter()
+            .any(|v| v.field == "cpu.iowait_pct" && v.kind == ViolationKind::PercentageOutOfRange));
     }
 }

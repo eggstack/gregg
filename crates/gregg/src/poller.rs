@@ -395,15 +395,17 @@ fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
 }
 
 /// Walk the error source chain looking for DNS-related errors.
+///
+/// `AddrNotAvailable` is deliberately excluded: it surfaces from
+/// `connect()` when no usable local interface or route exists, which is an
+/// unreachable-network condition rather than name resolution.
 fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(error) = current {
-        if error.downcast_ref::<std::io::Error>().is_some_and(|io| {
-            matches!(
-                io.kind(),
-                std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::NotFound
-            )
-        }) {
+        if error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+        {
             return true;
         }
         current = error.source();
@@ -412,7 +414,10 @@ fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(error) = current {
         let message = error.to_string().to_ascii_lowercase();
-        if message.contains("dns") || message.contains("resolve") {
+        if message.contains("dns")
+            || message.contains("resolve")
+            || message.contains("failed to lookup address information")
+        {
             return true;
         }
         current = error.source();
@@ -842,8 +847,13 @@ mod tests {
 
     #[test]
     fn is_dns_failure_matches_typed_and_resolver_errors() {
-        let typed = io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
-        assert!(is_dns_failure(&typed));
+        // AddrNotAvailable comes from connect(), not name resolution.
+        let unreachable_network =
+            io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
+        assert!(!is_dns_failure(&unreachable_network));
+        let gai =
+            io::Error::other("failed to lookup address information: Name or service not known");
+        assert!(is_dns_failure(&gai));
         let resolver = io::Error::other("hickory resolver: DNS query failed");
         assert!(is_dns_failure(&resolver));
     }
