@@ -24,7 +24,7 @@ renders a Ratatui-based terminal UI.
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | AppState reducer, viewport logic |
-| `action` | `src/action.rs` | Action enum (13 state transition triggers) |
+| `action` | `src/action.rs` | Action enum (14 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
 
 ### Polling
 

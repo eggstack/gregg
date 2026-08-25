@@ -221,7 +221,7 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 | Module | File | Purpose |
 |--------|------|---------|
 | `event` | `src/event.rs` | Input event model: key events, signals (hangup/window-change/terminate), poll batches, config-change notifications; Vim-style key-to-action translation |
-| `input` | `src/input.rs` | Crossterm event-stream adapter on a dedicated task feeding the event loop |
+| `input` | `src/input.rs` | Crossterm event-stream adapter on a dedicated thread feeding the event loop through a bounded channel |
 | `terminal` | `src/terminal.rs` | Terminal lifecycle (raw mode, alt screen, cursor hiding, panic hook) |
 
 #### UI

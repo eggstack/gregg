@@ -88,8 +88,9 @@ FFI seam: `MacNativeQueries` trait. Production: `FfiNativeQueries`. Test: `MockN
 - Memory: `GlobalMemoryStatusEx`
 - Commit: `GetPerformanceInfo` — commit charge (distinct from swap)
 - Identity: `GetComputerNameExW`, `RtlGetVersion`
-- Drives: `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW` — fixed drives
-  only; retain caller-available and total-free outputs separately
+- Drives: `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW` — fixed and
+  removable drives (`DRIVE_FIXED`, `DRIVE_REMOVABLE`) with positive capacity;
+  retain caller-available and total-free outputs separately
 
 Capabilities: `cpu_iowait: false`, `load_average: false`, `swap: false`, `memory_commit: true`
 

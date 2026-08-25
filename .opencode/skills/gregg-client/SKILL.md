@@ -18,7 +18,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `eggpool` |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight |
 | `action` | `src/action.rs` | `Action` enum (14 variants including Plan 087's `ClearSelectionHighlight`) |
@@ -37,7 +37,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `event` | `src/event.rs` | Key-to-action translation (Vim-style); 18 test cases |
+| `event` | `src/event.rs` | Key-to-action translation (Vim-style); 20+ test cases |
 | `input` | `src/input.rs` | Crossterm event stream adapter; dedicated thread, bounded channel |
 | `terminal` | `src/terminal.rs` | Terminal lifecycle (raw mode, alt screen, cursor hiding, panic hook) |
 
@@ -232,9 +232,9 @@ collapse to anonymous status text.
 
 ```toml
 config_version = 1
-refresh_seconds = 2
-request_timeout_ms = 5000
-max_concurrent_requests = 64
+refresh_seconds = 5
+request_timeout_ms = 1500
+max_concurrent_requests = 16
 # Retained for configuration compatibility; `gregg add` requires an explicit port.
 default_port = 11310
 
@@ -270,7 +270,7 @@ The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives th
 
 ## Tests
 
-- Unit tests in every module (130+ total)
+- Unit tests in every module (400+ `#[test]`/`#[tokio::test]`)
 - `mixed_fleet_evidence.rs` — integration test with Python fixture servers
 - `sustained_workload.rs` — `#[ignore]`, exercises full polling loop
 - `FakeClock` for deterministic testing

@@ -212,6 +212,7 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
 - **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
 - **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
+- **`probe_top` dev bin:** `gregg` always builds `src/bin/probe_top.rs` (auto-discovered from `src/bin/`, no required features). It is a standalone TCP-connectivity probe driven by `PROBE_HOST`/`PROBE_PORT` env vars, not part of the product CLI — don't mistake it for shipped functionality
 
 ## CI
 
@@ -283,6 +284,7 @@ Reusable agent instructions live in `.opencode/skills/`:
 | `architecture-docs` | Read and update architecture documentation |
 | `protocol-wire` | Wire types, schema versions, validation |
 | `platform-collectors` | Platform-specific metric collectors |
+| `greggd-daemon` | Daemon crate: runtime wiring, control socket, croncheck/configprint/stop, SCM service |
 | `gregg-client` | Client crate: TUI, polling, state engine, CLI |
 | `release-process` | Manual release procedure |
 | `eggpool` | EggPool summary pane implementation |

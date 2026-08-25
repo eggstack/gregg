@@ -96,6 +96,10 @@ gregg eggpool remove <host>
 ## Tests
 
 - Unit tests in every module
-- `mixed_fleet_evidence.rs` — integration test with fixture servers
-- `sustained_workload.rs` — `#[ignore]`, exercises full polling loop
-- Worker regression tests in `src/sustained_workload.rs` for generation, cadence, pressure, deactivation, cancellation
+- Worker regression tests in `src/eggpool.rs`: generation retention across
+  passive refresh, request-relative deadlines tied to activation triggers,
+  bounded command delivery, inactive gating, in-flight cancellation, and
+  panic-in-fetch recovery
+- Full polling-loop drivers (`mixed_fleet_evidence.rs`,
+  `sustained_workload.rs`) exercise greggd systems polling; they are not
+  EggPool-specific

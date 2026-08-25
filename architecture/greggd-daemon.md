@@ -24,6 +24,7 @@ available through the Windows-only service path.
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; `RunOutcome`, `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
+| `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
 | `server/error` | `src/server/error.rs` | Server error types |

@@ -24,7 +24,6 @@ Use this when implementing features that change crate boundaries, module structu
 | [`workspace.md`](../../architecture/workspace.md) | Cargo workspace layout, member responsibilities, dependency direction, crate-boundary rules |
 | [`protocol.md`](../../architecture/protocol.md) | Schema-version wire contract, capabilities, validation, compatibility policy |
 | [`error-conventions.md`](../../architecture/error-conventions.md) | Typed error boundaries, command-level diagnostics, wire response constraints |
-| [`scripts-and-packaging.md`](../../architecture/scripts-and-packaging.md) | Scripts, installers, service definitions, CI |
 | [`macos-collector-notes.md`](../../architecture/macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / top / vm_stat |
 
 ## When to update architecture docs
