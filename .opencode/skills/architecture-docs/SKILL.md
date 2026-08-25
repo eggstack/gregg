@@ -26,6 +26,22 @@ Use this when implementing features that change crate boundaries, module structu
 | [`error-conventions.md`](../../architecture/error-conventions.md) | Typed error boundaries, command-level diagnostics, wire response constraints |
 | [`macos-collector-notes.md`](../../architecture/macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / top / vm_stat |
 
+## Supporting documentation surfaces
+
+Architecture docs are one layer of the repository's documentation. When a
+change alters user-visible behavior, update every affected surface in the
+same pass:
+
+| Surface | When to update |
+|---------|----------------|
+| `README.md` | User-facing behavior: CLI forms, TUI keys, rendering, API, platform notes |
+| `crates/gregg/README.md`, `crates/greggd/README.md`, `crates/gregg-protocol/README.md` | Per-crate usage, install, configuration |
+| `CHANGELOG.md` | Every release; keep `[Unreleased]` accurate as changes land |
+| `packaging/README.md` | Installer/service behavior |
+| `CONTRIBUTING.md` / `RELEASING.md` / `SECURITY.md` | Process, scope, or policy changes |
+| `plans/README.md` | Plan registration and closure — see the `plans-workflow` skill |
+| `.opencode/skills/*/SKILL.md` | Anything an agent would follow that changed |
+
 ## When to update architecture docs
 
 Update architecture docs when:
@@ -45,6 +61,9 @@ Update architecture docs when:
 4. Update the data flow diagram if component interactions changed
 5. Keep the document index in `overview.md` accurate
 
-## Relationship to plans
+## Relationship to plans and skills
 
-Phase plans under `plans/` are the source of truth for sequencing and acceptance criteria. Architecture documents capture decisions that multiple phases must respect together.
+Phase plans under `plans/` are the source of truth for sequencing and
+acceptance criteria; architecture documents capture decisions that multiple
+phases must respect together. Use the `plans-workflow` skill for plan
+registration, closure records, and index maintenance.

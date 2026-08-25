@@ -7,8 +7,59 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **IPv6 zone-ID endpoints** (`gregg`): `status_url`/`v2_status_url` now bracket
+  any colon-containing host per RFC 2732, so IPv6 zone IDs such as
+  `fe80::1%eth0` produce valid request URLs.
+- **Protocol validation hardening** (`gregg-protocol`): correctness pass over
+  v1/v2 violation checks, health constructors, and test-support builders from a
+  workspace bug audit.
+- **Client and daemon hardening** (`gregg`, `greggd`): workspace audit
+  corrections across poller outcome handling, endpoint parsing, state/UI text,
+  the EggPool client, daemon configuration validation, control-socket stale
+  entry handling, sampler accounting, and collector sources.
+
+## [1.0.11] - 2026-08-19
+
 ### Changed
 
+- Bumped all crate versions to 1.0.11.
+
+### Added
+
+- **Dynamic compact metric suffix** (`gregg`): when the longest natural metric
+  suffix across the entire online fleet exceeds one quarter of the terminal
+  width, every normal-view metric row renders bar-only fleet-wide until the
+  terminal widens again; resizing wider restores suffixes dynamically
+  (Plan 087).
+- **Transient selection highlight** (`gregg`): the reverse-video highlight arms
+  on Systems navigation and clears roughly ten seconds later via
+  `Action::ClearSelectionHighlight`; persistent logical selection (`selected_id`)
+  and `e` drive expansion are unaffected (Plan 087).
+- **Header I/O-wait omission** (`gregg`): the normal-header `IO` token is
+  omitted entirely when CPU I/O-wait is unsupported or has no real value,
+  instead of rendering a placeholder (Plan 087).
+
+### Fixed
+
+- **Fleet-wide metric-row geometry** (`gregg`): one fleet-wide layout keeps the
+  opening `[` and closing `]` columns aligned across every online system,
+  including while scrolling; the DISK aggregate suffix became
+  `<used bytes> / <total bytes>` so the slash denominator matches the
+  percentage; expanded drive details share one selected-system table layout and
+  condensed headings/values share one column layout (Plan 085).
+- **Renderer boundary corrections** (`gregg`): condensed offline/pending rows
+  keep their configured nickname or endpoint identity; expanded-drive fit math
+  shares structural width constants with the renderer and degrades Compact via
+  truncated names before Minimal; mixed `SWP`/`COMMIT` fleets budget suffixes
+  against the same structural prefix width (Plan 086).
+
+## [1.0.10] - 2026-08-18
+
+### Changed
+
+- Bumped all crate versions to 1.0.10.
 - **`greggd croncheck` is now a watchdog** (`greggd`): the subcommand no
   longer performs a read-only HTTP probe of `/v2/healthz`. It opens a
   bounded TCP connect to the configured local bind address (with wildcards
@@ -23,6 +74,36 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - **`greggd croncheck --target HOST:PORT` removed** (`greggd`): the new
   watchdog operates only on the configured local bind. There is no remote
   probe mode; existing callers must drop the flag.
+- **`greggd configprint` wildcard resolution** (`greggd`): a wildcard bind host
+  resolves to the host's primary local IP (transient UDP `connect()` route
+  lookup only) so the printed address is dialable; the wildcard is preserved
+  verbatim if resolution fails.
+- Crate metadata polish and docs.rs build fixes.
+
+### Fixed
+
+- **Compact TUI geometry and endpoint ergonomics** (`gregg`): shared
+  normal-view metric-row geometry with aligned brackets, concise disk aggregate
+  text, fresh-launch viewport snap on the first accepted poll batch only,
+  explicit-port `gregg add` accepting `nickname@host:port` and HTTP URL forms,
+  named versus unnamed offline rendering, and regression tests locking in
+  offline-endpoint polling across generations (Plan 083), plus corrective
+  closure of `--name` validation parity, renderer-level geometry proof,
+  Unicode-aware offline padding, and `default_port` documentation (Plan 084).
+- Workspace bug-audit findings across protocol validation, collectors, and
+  client code.
+
+## [1.0.9] - 2026-08-17
+
+### Added
+
+- **`probe_top` helper binary** (`gregg`): standalone TCP-connectivity probe
+  driven by `PROBE_HOST`/`PROBE_PORT` environment variables; a development
+  diagnostic, not part of the product CLI.
+
+### Fixed
+
+- Poller live-probe test coverage against a local fixture server.
 
 ## [1.0.8] - 2026-08-15
 

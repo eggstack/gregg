@@ -391,7 +391,7 @@ Every module has inline `#[cfg(test)]` tests:
 | `cli.rs` | 30+ tests | CLI parsing, add/remove/replace, port resolution |
 | `config.rs` | 60+ tests | Validation, atomic writes, cross-process locking |
 | `state.rs` | 35+ tests | Batch application, selection, viewport, config rebuild |
-| `event.rs` | 18 tests | All key mappings, modifier handling |
+| `event.rs` | ~21 tests | All key mappings, modifier handling |
 | `poller.rs` | 30+ tests | Mock servers for all failure modes |
 | `scheduler.rs` | 20+ tests | Generation monotonicity, concurrency bounds |
 | `ui/mod.rs` | 40+ tests | Buffer tests for all view modes and widths |

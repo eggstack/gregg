@@ -3,6 +3,13 @@
 Compact instructions for AI coding agents working in this repository.
 Every line answers: "Would an agent likely miss this without help?"
 
+Deep design detail lives in `architecture/` (index: `architecture/overview.md`);
+phase sequencing and acceptance criteria live in `plans/` (index:
+`plans/README.md`). This file stays compact: constraints plus pointers. When a
+change alters user-visible behavior, update `README.md`, the affected crate
+README, the matching architecture deep dive, the relevant skill, and add a
+`CHANGELOG.md` entry in the same pass.
+
 ## Project structure
 
 Three Rust crates in a workspace, strict one-way dependency direction:
@@ -17,6 +24,7 @@ gregg-protocol  ◄── gregg       (client, TUI, polling)
 - `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`. UI modules under `src/ui/`
 
 `greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on either application crate.
+→ Details and boundary rules: `architecture/workspace.md`
 
 ## Build and verify
 
@@ -62,143 +70,132 @@ passes locally, the distinction is the cause.
 
 ## Key constraints
 
+### Workspace-wide (`architecture/workspace.md`)
+
 - **MSRV: Rust 1.75.** Toolchain pinned in `rust-toolchain.toml` (stable channel). All member crates inherit `rust-version = "1.75"` from workspace.
 - **Clippy pedantic** is a warning, not an error. Don't suppress new warnings unless fixing pre-existing ones.
 - **Unsafe is heavily restricted.** Only allowed in: `crates/greggd/src/collector/linux/source.rs` (statvfs), `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI), `crates/gregg/src/` (Unix flock + Windows file lock), `crates/greggd/src/collector/windows/source.rs`. Every unsafe block must have a safety comment.
 - **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
+- **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
+
+### Client polling and state (`architecture/gregg-client.md`)
+
 - Client polling is intentionally bounded and isolated: preserve one ordered
-  result per endpoint, the semaphore limit, panic-to-`Cancelled` conversion,
-  fixed periodic cadence, and cancellation behavior. EggPool commands remain
-  on a separate bounded channel with generation checks; do not replace either
-  state machine merely to reduce line count without a smaller behaviorally
-  equivalent design.
-- `gregg` `Ctrl-R` on the Systems pane is the explicit config reload boundary:
-  reload the already-resolved client `ConfigStore`, reconcile stable system IDs,
-  reliably deliver the replacement through the existing bounded scheduler
-  command channel, and poll immediately. A full channel applies backpressure;
-  a closed scheduler receiver is returned through the TUI error boundary rather
-  than silently diverging state from the scheduler. Invalid reloads preserve
-  the last-known-good state; there is no filesystem watcher. EggPool refresh
-  behavior remains pane-local.
-- `gregg add` requires an explicit port on every accepted form. Accepted:
-  `host:port`, `[ipv6]:port`, `http://host:port/`, and `nickname@host:port`.
-  Rejected: host-only (`host`, `192.168.182.146`, `::1`), HTTP URL
-  without a port, `nickname@host` without a port, `nickname@`, and the
-  ambiguous combination of inline `nickname@` with `--name`. HTTPS is
-  never accepted and is not downgraded to HTTP. `gregg remove` still
-  accepts host-only input. Persisted fields remain normalized `host`
-  and `port`; the inline `nickname@` form just populates the existing
-  `SystemEntry.name` field. `default_port` remains in the configuration
-  schema for compatibility but is not used by `gregg add`. Do not introduce
-  implicit-port `gregg add` examples anywhere in the repo.
-- The shared normal-view metric-row geometry in `crates/gregg/src/ui/system_block.rs`
-  (via `MetricRow`, `build_metric_rows`, `compute_fleet_metric_layout`,
-  `resolve_system_suffixes`, and `render_metric_row`) is the
-  authoritative path for the four CPU/MEM/SWP-or-COMMIT/DISK rows. The
-  layout is computed once per render via `compute_fleet_metric_layout`
-  from every online system with a current normalized snapshot so the
-  opening `[` and closing `]` columns align across the fleet at every
-  supported terminal width. Scrolling the viewport does not change
-  bracket columns because the layout population is the whole fleet,
-  not just the visible entries. Metric rows are indented by exactly
-  four spaces. The DISK aggregate suffix is `<used bytes> / <total bytes>`
-  so the slash denominator matches the percentage calculation; explicit
-caller-available capacity (`available_bytes`) is preserved by the
-  normalized model and surfaced through the expanded drive detail
-  rows. Unavailable rows render `—` instead of fabricating a `0.0%`.
-  Offline endpoints render as `name@host:port offline` or
-  `host:port offline`; the host is never duplicated when a name is set.
-  Plan 087 adds two compact-mode behaviors: the entire normal-view
-  metric suffix region (percentage, core counts, byte counts) is
-  suppressed fleet-wide when the longest natural suffix exceeds one
-  quarter of the terminal width, and the normal-header `IO` token is
-  omitted entirely when the snapshot is unsupported or has no real
-  I/O-wait value, instead of rendering a placeholder. The decision is
-  per render from `MetricFleetLayout::show_suffix` / the conditional
-  `IO` branch in `text::header_line`; resize reacts immediately.
-- Logical selection and visual selection are separate: `selected_id`
-  is persistent and drives `e` (drive expansion) and viewport
-  behavior. `selection_highlight_active` is the transient
-  reverse-video flag. Startup leaves the highlight `false`, so the
-  TUI never opens with a reversed row. Selection-changing Systems
-  actions (`j`/`k`, page movement, `g`/`G`) set the flag and arm a
-  resettable ten-second deadline owned by the event loop. Expiry
-  dispatches `Action::ClearSelectionHighlight` (or pane changes away
-  from Systems) without touching `selected_id`, so `e` still works
-  after the highlight fades. Do not add a periodic frame ticker or
-  per-keypress background task.
-- `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to
-  `display_order()[0]` only on the **first** accepted poll batch (when
-  `last_applied_generation == 0` before applying). Subsequent batches
-  preserve ordinary selection/viewport semantics. `Ctrl-R` does not
-  re-snap. Do not add a new scroll state machine for this.
+  result per endpoint per generation, the semaphore limit, panic-to-`Cancelled`
+  conversion, fixed periodic cadence, and cancellation behavior. EggPool commands remain on a separate bounded channel with generation checks; do not replace either state machine merely to reduce line count without a smaller behaviorally equivalent design.
 - Offline endpoints continue to be polled on every configured cadence
-  (no backoff/retry queue). The scheduler always returns one ordered
-  result per endpoint per generation; the new
-  `offline_endpoint_is_retried_and_recovers_on_next_generation` and
+  (no backoff/retry queue); they are never pruned or suppressed by reachability.
+  The `offline_endpoint_is_retried_and_recovers_on_next_generation` and
   `offline_endpoint_remains_in_scheduler_across_generations` tests in
   `crates/gregg/src/scheduler.rs` lock that invariant in.
+- Systems-pane `Ctrl-R` is the explicit config reload boundary: reload the
+  resolved client `ConfigStore`, reconcile stable system IDs, reliably deliver
+  the replacement through the bounded scheduler command channel, and poll
+  immediately. A full channel applies backpressure; a closed receiver returns
+  through the TUI error boundary; invalid reloads preserve last-known-good
+  state. There is no filesystem watcher. EggPool refresh remains pane-local.
+- `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to
+  `display_order()[0]` only on the **first** accepted poll batch
+  (`last_applied_generation == 0` before applying). Later batches preserve
+  ordinary selection/viewport semantics; `Ctrl-R` does not re-snap. Do not add
+  a second scroll state machine for this.
+
+### TUI rendering (`architecture/gregg-client.md`)
+
+- The shared normal-view metric-row geometry in
+  `crates/gregg/src/ui/system_block.rs` (`MetricRow`, `build_metric_rows`,
+  `compute_fleet_metric_layout`, `resolve_system_suffixes`, `render_metric_row`)
+  is authoritative for the four CPU/MEM/SWP-or-COMMIT/DISK rows. One fleet-wide
+  layout per render keeps `[`/`]` columns aligned across every online system,
+  including while scrolling; rows are indented exactly four spaces.
+- The DISK aggregate suffix is `<used bytes> / <total bytes>` so the slash
+  denominator matches the percentage; explicit caller-available capacity
+  (`available_bytes`) is preserved in the normalized model and surfaced only
+  through expanded drive detail rows. Unavailable rows render `—`, never a
+  fabricated `0.0%`.
+- Compact-mode policy (per render, no persisted state): when the longest natural
+  suffix across the online fleet exceeds one quarter of terminal width, the whole
+  suffix region disappears fleet-wide (`MetricFleetLayout::show_suffix = false`);
+  the normal-header `IO` token is omitted entirely when I/O-wait is unsupported
+  or has no real value — never a placeholder.
+- Logical vs visual selection are separate: `selected_id` persists and drives
+  `e` and viewport behavior; `selection_highlight_active` is transient reverse
+  video. Startup leaves the highlight `false`; selection-changing Systems
+  actions arm a resettable ten-second event-loop deadline that dispatches
+  `Action::ClearSelectionHighlight` without touching `selected_id`. Do not add
+  a periodic frame ticker or per-keypress background task.
+- Offline rows render `name@host:port offline` or `host:port offline`; the host
+  is never duplicated when a name is set.
+
+### CLI contracts (`architecture/gregg-client.md`, `architecture/greggd-daemon.md`)
+
+- `gregg add` requires an explicit port on every accepted form. Accepted:
+  `host:port`, `[ipv6]:port`, `http://host:port/`, and `nickname@host:port`.
+  Rejected: host-only (`host`, `192.168.182.146`, `::1`), HTTP URL without a
+  port, `nickname@host` without a port, `nickname@`, and the ambiguous
+  combination of inline `nickname@` with `--name`. HTTPS is never accepted and
+  is not downgraded to HTTP. `gregg remove` still accepts host-only input.
+  Persisted fields remain normalized `host` and `port`; the inline `nickname@`
+  form just populates the existing `SystemEntry.name` field. `default_port`
+  remains in the configuration schema for compatibility but is not used by
+  `gregg add`. Do not introduce implicit-port `gregg add` examples anywhere in
+  the repo.
 - `greggd configprint` is read-only and prints only the configured canonical
   bind `host:port`; it must not probe, bind, mutate config, or manage services.
-- Reusable `greggd` library/runtime code must return errors without printing or
+- `greggd croncheck` is a watchdog for non-systemd supervisors: bounded TCP
+  connect to the configured local bind (wildcards normalized to loopback);
+  silent exit `0` when something listens, otherwise spawn `<current_exe> run`
+  as a detached child (stdio closed; Unix: new process group). It must not
+  invoke service managers, shells, `pkill`/`killall`, or PID-file management;
+  the HTTP API is not consulted. `host`/`port` subcommands only persist config.
+- `greggd stop` (Linux/macOS) targets only the local instance matching the
+  resolved config identity via one tiny Unix-domain control socket
+  (`STOP\n` → `OK\n`). Identity is an FNV-1a digest of the normalized config
+  path (canonicalized for existing files, lexical absolute fallback for a
+  missing implicit default) — never the parent directory alone, so two configs
+  in one directory cannot cross-stop. Sockets are created `0600`; stale-socket
+  cleanup unlinks only after metadata confirms a socket and connect fails with
+  `ConnectionRefused` or `NotFound`. No service managers, shells, process-name
+  scanning, or PID files; the HTTP API stays read-only. Windows delegates to
+  SCM.
+- Reusable `greggd` library/runtime code returns errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
-  diagnostics, and exit-code classification.
-- `greggd croncheck` is a watchdog for non-systemd supervisors (cron,
-  Task Scheduler, etc.). It opens a bounded TCP connect to the configured
-  local bind address (`127.0.0.1:port`, with wildcards normalized to
-  loopback). If a listener accepts the connection, it exits silently with
-  status `0`. If nothing is listening, it spawns `<current_exe> run`
-  (passing `--config PATH` when an explicit path was given) as a detached
-  child with stdio closed to `/dev/null` and, on Unix, in a new process
-  group so signals sent to croncheck's group do not reach the daemon. It
-  must not invoke `systemctl`, `launchctl`, `pkill`, `killall`, shell
-  commands, or PID-file management. The HTTP API is not consulted.
-  `host` and `port` only persist config.
-- `greggd stop` on Linux/macOS targets only the local foreground `greggd`
-  instance associated with the resolved config identity via a single tiny
-  Unix-domain control socket (`STOP\n` -> `OK\n`). The control identity is
-  derived from a deterministic FNV-1a digest of the normalized config path:
-  existing files use filesystem canonicalization so relative, absolute, and
-  symlink spellings converge; a missing implicit default uses a lexical
-  absolute fallback. It is never derived from the config parent directory
-  alone, so two configs in the same directory cannot cross-stop. The control socket is created with
-  restrictive `0600` permissions; a failed `chmod` discards the candidate
-  and tries the next legitimate one. Stale socket cleanup unlinks only
-  after metadata confirms a socket and the connect result classifies as
-  `ConnectionRefused` or `NotFound`; `PermissionDenied` and unexpected
-  connect errors never authorize unlinking. It must not invoke
-  `systemctl`, `launchctl`, `pkill`, `killall`, shell commands, PID-file
-  management, or process-name scanning. The HTTP API remains read-only.
-  Windows `greggd stop` continues to delegate to the native SCM manager.
-- `greggd` dispatches synchronously before entering Tokio: foreground `run` and
-  Windows SCM `service` first enters `service_dispatcher::start`; the generated
-  `ServiceMain` worker then owns exactly one current-thread runtime. Its
-  selected config path comes from one process-local launch context, and it
-  publishes `RUNNING` only after the shared daemon has bound its listener.
-  SCM Stop and Shutdown callbacks only send a nonblocking one-shot signal into
-  the shared `run_with_shutdown()` core. The same shutdown path is reused on
-  Unix for SIGTERM/SIGINT and a successful `STOP\n` over the local control
-  socket; the control socket is cleaned up on every exit path including
-  SIGINT/SIGTERM and the runtime-error cleanup.
-- **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
+  diagnostics, and exit-code classification (`0` success · `1` configuration ·
+  `2` service management · `3` runtime · `4` permission denied).
+
+### Daemon runtime ownership (`architecture/greggd-daemon.md`)
+
+- `greggd` dispatches synchronously before entering Tokio: Windows SCM
+  `service` enters `service_dispatcher::start` first; the generated
+  `ServiceMain` worker owns exactly one current-thread runtime and publishes
+  `RUNNING` only after the shared daemon binds its listener. SCM Stop/Shutdown
+  send a nonblocking one-shot signal into the shared `run_with_shutdown()`
+  core, which is also reused for Unix SIGTERM/SIGINT and a successful `STOP\n`;
+  control-socket cleanup runs on every exit path.
 
 ## Schema protocol
 
-Wire types in `gregg-protocol`. Schema version is explicit (`SCHEMA_VERSION_V1 = 1`, `SCHEMA_VERSION_V2 = 2`). The client requests v2 first, accepts only the schema matching each endpoint, and falls back to v1 only on an HTTP 404 from /v2/status. `/v2/status` is the universal cross-platform endpoint. `/v1/status` is Linux/macOS only (Windows returns 503).
+Wire types live in `gregg-protocol`. Full contract: `architecture/protocol.md`
+and `architecture/gregg-protocol.md`.
 
-Platform-specific rules:
-- macOS: `iowait_pct` is `null` (unsupported). Never fabricate `0.0`.
-- Windows: load average, swap, iowait are all `null`/unsupported. Windows reports `commit` instead.
-- Identity: `system.name` is the validated configured daemon name, while
-  `system.hostname` remains the native platform hostname. Windows hostname
-  collection must not retain NUL padding from `GetComputerNameExW`.
-- Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
-  v2 `available_bytes` is optional caller-available capacity and may not
-  complement used bytes because of reservations or quotas.
-
-Validation uses `validate()` methods returning structured violations, not serde failures. V1 has 9 violation kinds; V2 has 16 (9 from V1 + 7 additional).
+- Schema version is explicit (`SCHEMA_VERSION_V1 = 1`, `SCHEMA_VERSION_V2 = 2`).
+  The client requests v2 first, accepts only the schema matching each endpoint,
+  and falls back to v1 only on an HTTP 404 from `/v2/status`. `/v2/status` is
+  the universal cross-platform endpoint; `/v1/status` is Linux/macOS only
+  (Windows returns 503).
+- Platform truth rules (never fabricate values):
+  - macOS: `iowait_pct` is `null` (unsupported).
+  - Windows: load average, swap, iowait are `null`/unsupported; commit is reported instead.
+  - Identity: `system.name` is the validated configured daemon name;
+    `system.hostname` remains the native platform hostname (no NUL padding from
+    `GetComputerNameExW` on Windows).
+  - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
+    v2 `available_bytes` is optional caller-available capacity and may not
+    complement used bytes because of reservations or quotas.
+- Validation uses `validate()` methods returning structured violations, not
+  serde failures. V1 has 9 violation kinds; V2 has 16 (9 from V1 + 7 additional).
 
 ## Crate versions and publishing
 
@@ -207,10 +204,10 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 ## Testing patterns
 
 - **Integration tests:** `crates/gregg-protocol/tests/integration.rs`, `crates/greggd/tests/linux_collector.rs`, `crates/greggd/tests/windows_smoke.rs`
-- **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads
+- **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads; ~46 text fixtures under `crates/greggd/src/collector/test_fixtures/`
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
-- **Sustained workload tests:** `mixed_fleet_evidence` and `sustained_workload` modules in `gregg` crate are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
+- **Sustained workload tests:** the `mixed_fleet_evidence` and `sustained_workload` modules are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
 - **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
 - **`probe_top` dev bin:** `gregg` always builds `src/bin/probe_top.rs` (auto-discovered from `src/bin/`, no required features). It is a standalone TCP-connectivity probe driven by `PROBE_HOST`/`PROBE_PORT` env vars, not part of the product CLI — don't mistake it for shipped functionality
 
@@ -232,6 +229,7 @@ coverage, and one Rust 1.75 compile check. The Windows SCM smoke is the
 authoritative operational proof for dispatcher startup, post-bind readiness,
 service lifecycle, custom configuration paths, bind-failure recovery, and
 cleanup. CI does not build documentation, publish, or upload evidence.
+→ Details: `architecture/scripts-and-packaging.md`
 
 ## What not to do
 
@@ -244,11 +242,19 @@ cleanup. CI does not build documentation, publish, or upload evidence.
   the binary boundary uses fallible initialization.
 - Don't fabricate metric values for unsupported platform capabilities
 
+## Plans workflow
+
+Implementation work is plan-driven under `plans/`. Register new plans in
+`plans/README.md`, close them truthfully against their acceptance criteria,
+and never rewrite a closed plan's history (append corrections instead).
+→ See the `plans-workflow` skill and `plans/README.md` (completion rule,
+verification model, per-plan status table).
+
 ## Files to read before implementing
 
 1. `README.md` — public scope and command behavior
 2. `architecture/overview.md` — bird's-eye view, data flow, module map, and index of all architecture documents
-3. `plans/000-roadmap-v1.md` — sequencing and release gates
+3. `plans/README.md` — plan index, roadmap status, completion rule
 4. Active phase plan in `plans/` for current requirements
 5. `architecture/protocol.md` — wire format details
 
@@ -282,6 +288,7 @@ Reusable agent instructions live in `.opencode/skills/`:
 |-------|---------|
 | `rust-workspace` | Build, test, verify the workspace |
 | `architecture-docs` | Read and update architecture documentation |
+| `plans-workflow` | Create, register, and close phase plans under `plans/` |
 | `protocol-wire` | Wire types, schema versions, validation |
 | `platform-collectors` | Platform-specific metric collectors |
 | `greggd-daemon` | Daemon crate: runtime wiring, control socket, croncheck/configprint/stop, SCM service |
