@@ -70,7 +70,7 @@ returns `StatusSnapshot` directly. The v2 status endpoint returns
 |------|-------|-------|---------|
 | `cpu_iowait` | `true` | `false` | `false` |
 | `load_average` | `true` | `true` | `false` |
-| `swap` | `true` | `false` | `false` |
+| `swap` | `true` | `true` | `false` |
 | `memory_commit` | `false` | `false` | `true` |
 
 A `false` capability means the corresponding field must be `None`/`null`.

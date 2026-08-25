@@ -312,9 +312,9 @@ omitted entirely.
 
 ```toml
 config_version = 1
-refresh_seconds = 2
-request_timeout_ms = 5000
-max_concurrent_requests = 64
+refresh_seconds = 5
+request_timeout_ms = 1500
+max_concurrent_requests = 16
 # Retained for configuration compatibility; `gregg add` requires an explicit port.
 default_port = 11310
 
@@ -390,7 +390,7 @@ Every module has inline `#[cfg(test)]` tests:
 |--------|--------|----------|
 | `cli.rs` | 30+ tests | CLI parsing, add/remove/replace, port resolution |
 | `config.rs` | 60+ tests | Validation, atomic writes, cross-process locking |
-| `state.rs` | 45+ tests | Batch application, selection, viewport, config rebuild |
+| `state.rs` | 35+ tests | Batch application, selection, viewport, config rebuild |
 | `event.rs` | 18 tests | All key mappings, modifier handling |
 | `poller.rs` | 30+ tests | Mock servers for all failure modes |
 | `scheduler.rs` | 20+ tests | Generation monotonicity, concurrency bounds |

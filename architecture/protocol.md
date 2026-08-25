@@ -185,8 +185,9 @@ Canonical fixtures live at:
 These fixtures deserialise into the corresponding types, validate cleanly,
 and re-serialise byte-stable. The v2 Windows fixture demonstrates the
 `memory_commit: true` / `commit: Some(...)` pattern with no load or swap.
-The v2 macOS fixture demonstrates `load_average: true` and `swap: false`,
-with load populated and swap absent per the native collector capabilities.
+The v2 macOS fixture demonstrates `load_average: true` and `swap: true`,
+with load and swap populated (from `getloadavg` and `vm.swapusage`) and
+iowait absent per the native collector capabilities.
 
 ## Collector contract
 

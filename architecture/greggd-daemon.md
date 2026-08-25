@@ -26,7 +26,7 @@ available through the Windows-only service path.
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
-| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, `ServerConfig` |
+| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, module-local `Config` (with `ServerConfigError`) |
 | `server/error` | `src/server/error.rs` | Server error types |
 | `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()` |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
@@ -263,17 +263,17 @@ See [collectors.md](collectors.md) for detailed platform-specific analysis.
 
 Every module has inline `#[cfg(test)]` tests:
 
-| Module | ~Lines | Coverage |
+| Module | ~Test lines | Coverage |
 |--------|--------|----------|
-| `cli.rs` | 137 | CLI parsing, config resolution, exit codes, mutations |
-| `run.rs` | 399 | Supervision select, task joining, non-cooperative abort |
-| `config.rs` | 410 | Validation, atomic writes, TOML round-trips |
-| `sampler.rs` | 550 | Interval validation, readiness lifecycle, counter reset |
-| `server/tests.rs` | 1016 | All handlers, staleness, concurrency (50 parallel) |
-| `service/windows.rs` | 421 | MockScmAdapter for all states |
-| `collector/linux/tests.rs` | 952 | 40+ tests with fixture-driven invariants |
-| `collector/macos/tests.rs` | 600 | Mock-based + native smoke tests |
-| `collector/windows/mod.rs` | 298 | Topology guards, structural invariants |
+| `cli.rs` | ~280 | CLI parsing, config resolution, exit codes, mutations |
+| `run.rs` | 400 | Supervision select, task joining, non-cooperative abort |
+| `config.rs` | ~430 | Validation, atomic writes, TOML round-trips |
+| `sampler.rs` | ~550 | Interval validation, readiness lifecycle, counter reset |
+| `server/tests.rs` | ~1050 | All handlers, staleness, concurrency (50 parallel) |
+| `service/windows.rs` | ~480 | MockScmAdapter for all states |
+| `collector/linux/tests.rs` | ~970 | 40+ tests with fixture-driven invariants |
+| `collector/macos/tests.rs` | ~620 | Mock-based + native smoke tests |
+| `collector/windows/mod.rs` | ~300 | Topology guards, structural invariants |
 
 ### Integration tests
 

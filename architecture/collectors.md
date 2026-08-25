@@ -108,7 +108,8 @@ Swap uses same formula with `SwapTotal` and `SwapFree`.
 - Parses `/proc/self/mountinfo`
 - Excludes 29 filesystem types (proc, sysfs, devpts, tmpfs, etc.)
 - Prefers `/` mount point for root
-- Uses `statvfs` (the only `unsafe` in this file) for capacity
+- Uses `statvfs` for capacity (the contained `unsafe` FFI lives in
+  `source.rs`, with a documented safety comment)
 - Handles octal escapes in mount paths
 
 ### Capabilities
@@ -208,8 +209,12 @@ APFS container free space is shared, not unique per volume.
 
 ```rust
 MetricCapabilities { cpu_iowait: false }
-MetricCapabilitiesV2 { cpu_iowait: false, load_average: true, swap: false, memory_commit: false }
+MetricCapabilitiesV2 { cpu_iowait: false, load_average: true, swap: true, memory_commit: false }
 ```
+
+Swap comes from `vm.swapusage`, so the default v2 derivation reports
+`swap: true` (meaningful native swap accounting); only Windows overrides
+`capabilities_v2()`.
 
 ### Tests
 

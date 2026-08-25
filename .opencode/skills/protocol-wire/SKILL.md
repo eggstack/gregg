@@ -38,7 +38,7 @@ The client requests v2 first, accepts only the schema matching each endpoint, an
 |------|-------|-------|---------|
 | `cpu_iowait` | `true` | `false` | `false` |
 | `load_average` | `true` | `true` | `false` |
-| `swap` | `true` | `false` | `false` |
+| `swap` | `true` | `true` | `false` |
 | `memory_commit` | `false` | `false` | `true` |
 
 A `false` capability means the corresponding field must be `None`/`null`. Validation rejects capability/value contradictions.
