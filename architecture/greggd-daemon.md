@@ -118,6 +118,11 @@ The sampler owns the clock and cadence. Key behaviors:
 - Manages readiness lifecycle: `Warming` → `Ready` (on first delta) or `Failed`
   (on collector error)
 - `Clock` trait for deterministic testing with `SyntheticClock`
+- The runtime loop runs each collection cycle on tokio's blocking thread pool
+  (`spawn_blocking`), so slow native reads (procfs, one `statvfs()` per mount)
+  cannot stall the HTTP server sharing the single current-thread runtime.
+  A collection task panic loses the collector for the process lifetime and is
+  reported as a recurring source failure rather than a silent stall
 
 ### Configuration
 

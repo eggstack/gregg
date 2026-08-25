@@ -86,7 +86,9 @@ pub enum SamplerError {
 /// The sampler drives the collection loop, publishes immutable snapshots, and
 /// tracks daemon readiness through the warming, ready, and failed lifecycle.
 pub struct Sampler<C: SystemCollector, Clk: Clock> {
-    collector: C,
+    /// Present except during the transient window in which the collector is
+    /// moved onto the blocking thread pool inside [`Self::run`].
+    collector: Option<C>,
     clock: Clk,
     interval_ms: u64,
     readiness: ReadinessState,
@@ -103,7 +105,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     #[must_use]
     pub fn new(collector: C, clock: Clk) -> Self {
         Self {
-            collector,
+            collector: Some(collector),
             clock,
             interval_ms: DEFAULT_INTERVAL_MS,
             readiness: ReadinessState::Warming,
@@ -122,7 +124,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     pub fn with_interval(collector: C, clock: Clk, interval_ms: u64) -> Result<Self, SamplerError> {
         Self::validate_interval(interval_ms)?;
         Ok(Self {
-            collector,
+            collector: Some(collector),
             clock,
             interval_ms,
             readiness: ReadinessState::Warming,
@@ -182,6 +184,11 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// The loop sleeps for the configured interval between samples. The first
     /// sample is taken immediately on entry.
     ///
+    /// Each collection cycle runs on tokio's blocking thread pool so slow
+    /// native reads (procfs, statvfs on many mounts) cannot stall other tasks
+    /// sharing this runtime — notably the HTTP server on the daemon's
+    /// current-thread runtime.
+    ///
     /// The `on_sample` callback is invoked after each collection cycle with
     /// the sampler's current readiness state and, when available, the
     /// latest snapshots. The callback returns a future that is **awaited
@@ -191,9 +198,11 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     where
         F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>, Option<Arc<StatusPayloadV2>>) -> Fut,
         Fut: std::future::Future<Output = ()>,
+        C: Send + 'static,
     {
         loop {
-            self.sample_once();
+            let result = self.sample_on_blocking_pool().await;
+            self.apply_sample_result(result);
             on_sample(
                 self.readiness,
                 self.snapshot.clone(),
@@ -211,9 +220,58 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         }
     }
 
-    /// Perform a single collection cycle.
+    /// Perform a single collection cycle synchronously.
+    ///
+    /// Direct sampling used outside the runtime loop; [`Self::run`] samples
+    /// through [`Self::sample_on_blocking_pool`] instead.
     pub fn sample_once(&mut self) {
-        match self.collector.sample() {
+        let result = match self.collector.as_mut() {
+            Some(collector) => collector.sample(),
+            // Unreachable outside the transient take window in `run`.
+            None => return,
+        };
+        self.apply_sample_result(result);
+    }
+
+    /// Run one collection cycle on tokio's blocking thread pool.
+    ///
+    /// The collector is temporarily moved into the blocking task and returned
+    /// before the result is applied. If the collection task panics, its
+    /// ownership is lost; subsequent cycles then report a source failure each
+    /// tick until shutdown instead of silently stalling readiness.
+    async fn sample_on_blocking_pool(&mut self) -> Result<CollectedMetrics, CollectError>
+    where
+        C: Send + 'static,
+    {
+        let mut collector = self.collector.take();
+        let joined = tokio::task::spawn_blocking(move || {
+            let result = collector.as_mut().map(SystemCollector::sample);
+            (collector, result)
+        })
+        .await;
+        match joined {
+            Ok((collector, Some(result))) => {
+                self.collector = collector;
+                result
+            }
+            Ok((_, None)) => Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "collector unavailable for sampling",
+            )),
+            Err(join_error) => {
+                tracing::warn!(%join_error, "sampler collection task panicked");
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "collection task failed",
+                ))
+            }
+        }
+    }
+
+    /// Apply one collected sample or collection failure to readiness and
+    /// snapshot publication state.
+    fn apply_sample_result(&mut self, result: Result<CollectedMetrics, CollectError>) {
+        match result {
             Ok(metrics) => {
                 if metrics.cpu_usage_pct.is_none() {
                     tracing::debug!(
@@ -286,8 +344,9 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// collector cannot supply one.
     fn identity_or_blank(&self) -> gregg_protocol::SystemIdentity {
         self.collector
-            .identity()
-            .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
+            .as_ref()
+            .and_then(|collector| collector.identity().ok())
+            .unwrap_or_else(|| gregg_protocol::SystemIdentity {
                 name: String::new(),
                 hostname: String::new(),
                 os_name: String::new(),
@@ -309,18 +368,25 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         now_ms: u64,
         identity: gregg_protocol::SystemIdentity,
     ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
-        if self.collector.supports_v1_snapshot() {
+        let Some(collector) = self.collector.as_ref() else {
+            // Unreachable outside the transient take window in `run`.
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "collector unavailable for conversion",
+            ));
+        };
+        if collector.supports_v1_snapshot() {
             let v1 = metrics.clone().into_snapshot(
                 SCHEMA_VERSION_V1,
                 now_ms,
                 self.interval_ms,
-                self.collector.capabilities(),
+                collector.capabilities(),
                 identity.clone(),
             );
             let v2 = metrics.into_status_payload_v2(
                 now_ms,
                 self.interval_ms,
-                self.collector.capabilities_v2(),
+                collector.capabilities_v2(),
                 identity,
             );
             match (v1, v2) {
@@ -332,7 +398,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 .into_status_payload_v2(
                     now_ms,
                     self.interval_ms,
-                    self.collector.capabilities_v2(),
+                    collector.capabilities_v2(),
                     identity,
                 )
                 .map(|v2| (None, v2))

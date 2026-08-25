@@ -408,6 +408,13 @@ pub fn spawn_worker(
                     Some(EggpoolCommand::Deactivate) => {
                         active = false;
                         next_refresh_at = None;
+                        // Promptly release the in-flight fetch. Its result
+                        // would be discarded as stale after reactivation
+                        // anyway, so there is no reason to keep the task
+                        // (and its connection) running to completion.
+                        if let Some(old_request) = request.take() {
+                            old_request.abort();
+                        }
                     }
                     Some(EggpoolCommand::SetPeriod { period: requested, generation: requested_generation }
                         | EggpoolCommand::Refresh { period: requested, generation: requested_generation }) => {
@@ -923,6 +930,53 @@ mod tests {
         );
         cancel.cancel();
         assert!(worker.results.recv().await.is_none());
+        let _ = release.send(());
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_deactivation_aborts_an_in_flight_request() {
+        let (port, mut requests, release, server_task) = server_many(true).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(
+            EggpoolClient::new(Duration::from_secs(600)),
+            endpoint(port, None),
+            cancel.clone(),
+        );
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+        worker
+            .commands
+            .send(EggpoolCommand::Deactivate)
+            .await
+            .unwrap();
+        // The aborted fetch must not deliver a result.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(worker.results.try_recv().is_err());
+        // Periodic refresh stays disabled while deactivated.
+        tokio::time::advance(REFRESH_INTERVAL * 2).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+        assert!(worker.results.try_recv().is_err());
+
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
         let _ = release.send(());
         server_task.abort();
         let _ = server_task.await;

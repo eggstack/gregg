@@ -8,9 +8,15 @@ pub mod layout;
 pub mod system_block;
 pub mod text;
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use ratatui::Frame;
 
-use crate::state::{AppState, Pane, SystemViewMode};
+use crate::normalized::NormalizedSnapshot;
+use crate::state::{AppState, Pane, Reachability, SystemViewMode};
+
+use system_block::MetricRow;
 
 /// Render the full TUI into the current frame.
 pub fn render(f: &mut Frame, state: &AppState) {
@@ -26,13 +32,14 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
+    let display_order = state.display_order();
+
     let minimum_height = match state.system_view_mode {
         SystemViewMode::Normal => {
-            let first_is_online = state
-                .display_order()
+            let first_is_online = display_order
                 .first()
                 .and_then(|&index| state.systems.get(index))
-                .is_some_and(|system| system.reachability == crate::state::Reachability::Online);
+                .is_some_and(|system| system.reachability == Reachability::Online);
             if first_is_online {
                 5
             } else {
@@ -59,33 +66,24 @@ pub fn render(f: &mut Frame, state: &AppState) {
         condensed::render_header(f, area, &condensed_layout);
     }
 
-    let entries = layout::compute_viewport(state, area);
-
-    // Compute how many rows the entries consume.
-    let entries_bottom = entries.last().map_or(area.y, |e| e.rect.y + e.rect.height);
-    let extra_rows = area
-        .y
-        .saturating_add(area.height)
-        .saturating_sub(entries_bottom);
+    let entries = layout::compute_viewport(state, area, &display_order);
 
     // Compute the fleet-wide metric geometry once per render, from every
     // online system with a current normalized snapshot, so the opening
     // and closing brackets line up across all online systems. The
     // population includes systems outside the viewport so scrolling
-    // does not cause horizontal reflow.
-    let fleet_layout = if state.system_view_mode == SystemViewMode::Normal {
-        let mut system_rows: Vec<[system_block::MetricRow; 4]> = Vec::new();
-        for system in &state.systems {
-            if system.reachability != crate::state::Reachability::Online {
-                continue;
-            }
-            if let Some(snap) = system.latest.as_ref() {
-                system_rows.push(system_block::build_metric_rows(snap));
-            }
-        }
-        system_block::compute_fleet_metric_layout(system_rows.iter(), area.width)
+    // does not cause horizontal reflow. Rows come from a per-system memo:
+    // identical snapshots produce identical rows, so each system's rows are
+    // rebuilt only when its snapshot content or membership changed.
+    let (online_rows, fleet_layout) = if state.system_view_mode == SystemViewMode::Normal {
+        let online_rows: Vec<(usize, Rc<[MetricRow; 4]>)> = metric_rows_for_fleet(state);
+        let fleet_layout = system_block::compute_fleet_metric_layout(
+            online_rows.iter().map(|(_, rows)| &**rows),
+            area.width,
+        );
+        (online_rows, fleet_layout)
     } else {
-        system_block::MetricFleetLayout::empty()
+        (Vec::new(), system_block::MetricFleetLayout::empty())
     };
 
     for entry in &entries {
@@ -103,27 +101,94 @@ pub fn render(f: &mut Frame, state: &AppState) {
             continue;
         }
         match system.reachability {
-            crate::state::Reachability::Online => {
+            Reachability::Online => {
+                let rows = online_rows
+                    .iter()
+                    .find(|(index, _)| *index == entry.index)
+                    .map(|(_, rows)| &**rows);
                 system_block::render_online(
                     f,
                     entry.rect,
                     system,
+                    rows,
                     &fleet_layout,
                     entry.is_visually_selected,
                     entry.is_selected,
                     entry.drive_rows_visible,
                 );
             }
-            crate::state::Reachability::Offline | crate::state::Reachability::Pending => {
+            Reachability::Offline | Reachability::Pending => {
                 system_block::render_offline(f, entry.rect, system, entry.is_visually_selected);
             }
         }
     }
 
     // Show a key hint only when there is at least one extra row below entries.
+    let entries_bottom = entries.last().map_or(area.y, |e| e.rect.y + e.rect.height);
+    let extra_rows = area
+        .y
+        .saturating_add(area.height)
+        .saturating_sub(entries_bottom);
     if extra_rows >= 1 {
         diagnostics::render_key_hint(f, area, state);
     }
+}
+
+/// Per-system memo of formatted normal-view metric rows.
+struct CachedMetricRows {
+    system_id: String,
+    snapshot: NormalizedSnapshot,
+    rows: Rc<[MetricRow; 4]>,
+}
+
+thread_local! {
+    static METRIC_ROWS_CACHE: RefCell<Vec<CachedMetricRows>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Build (or reuse) the metric rows of every online system with a snapshot.
+///
+/// Iterating all online systems per render is required by the fleet-wide
+/// layout invariant, but identical snapshots produce identical rows, so each
+/// system's formatted rows are rebuilt only when its snapshot content
+/// (compared by full value, immune to any mutation path) or membership
+/// changed. Returns `(system index, rows)` pairs in configured order.
+fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<[MetricRow; 4]>)> {
+    let mut online_rows = Vec::new();
+    METRIC_ROWS_CACHE.with_borrow_mut(|cache| {
+        for (index, system) in state.systems.iter().enumerate() {
+            if system.reachability != Reachability::Online {
+                continue;
+            }
+            let Some(snapshot) = system.latest.as_ref() else {
+                continue;
+            };
+            let rows = match cache.iter_mut().find(|entry| entry.system_id == system.id) {
+                Some(entry) if entry.snapshot == *snapshot => Rc::clone(&entry.rows),
+                Some(entry) => {
+                    entry.snapshot = snapshot.clone();
+                    entry.rows = Rc::new(system_block::build_metric_rows(snapshot));
+                    Rc::clone(&entry.rows)
+                }
+                None => {
+                    let rows: Rc<[MetricRow; 4]> =
+                        Rc::new(system_block::build_metric_rows(snapshot));
+                    cache.push(CachedMetricRows {
+                        system_id: system.id.clone(),
+                        snapshot: snapshot.clone(),
+                        rows: Rc::clone(&rows),
+                    });
+                    rows
+                }
+            };
+            online_rows.push((index, rows));
+        }
+        // Amortized prune of ids that left the configured fleet so the
+        // linear lookup stays bounded across config reload churn.
+        if cache.len() > state.systems.len() * 4 + 16 {
+            cache.retain(|entry| state.systems.iter().any(|s| s.id == entry.system_id));
+        }
+    });
+    online_rows
 }
 
 #[cfg(test)]

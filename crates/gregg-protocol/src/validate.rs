@@ -3,6 +3,13 @@
 //! Validation is deliberately separate from serde deserialization so that
 //! forward-compatible additive changes do not silently change how strict the
 //! crate is about individual fields.
+//!
+//! Accepted risk: percentage values and their byte-count counterparts are
+//! validated independently (`usage_pct` in `0.0..=100.0`; `used_bytes <=
+//! total_bytes`). A payload with internally contradictory but individually
+//! valid values passes validation by design: the daemon is the source of
+//! truth and no cross-check between derived and raw values exists on the
+//! wire contract level.
 
 use std::fmt;
 

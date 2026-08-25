@@ -55,6 +55,11 @@ pub struct HealthResponse {
     pub snapshot: Option<crate::StatusSnapshot>,
 }
 
+/// Deserialization checks envelope invariants (schema version, snapshot
+/// presence per readiness state) but deliberately does **not** validate the
+/// embedded snapshot. Callers must invoke
+/// [`StatusSnapshot::validate`](crate::StatusSnapshot::validate) on the
+/// received snapshot themselves.
 impl<'de> Deserialize<'de> for HealthResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

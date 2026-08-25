@@ -441,7 +441,10 @@ async fn sync_sampler_state(
                     server_state.update_snapshot_v1_only((*snap).clone()).await;
                 }
                 (None, None) => {
-                    // Both absent — should not happen in Ready state.
+                    // Unreachable by construction: `convert_sample` always
+                    // produces a v2 payload for a Ready sampler, so this arm
+                    // exists only for exhaustiveness.
+                    debug_assert!(false, "Ready sampler reported no v1 and no v2 snapshot");
                 }
             }
         }

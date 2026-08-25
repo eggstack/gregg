@@ -3,6 +3,10 @@
 //! Validation is deliberately separate from serde deserialization so that
 //! forward-compatible additive changes do not silently change how strict the
 //! crate is about individual fields.
+//!
+//! Accepted risk: as in v1, percentage values are validated independently of
+//! their byte-count counterparts; no cross-check exists between a derived
+//! `usage_pct` and its `used_bytes`/`total_bytes` inputs.
 
 use std::fmt;
 
@@ -190,7 +194,11 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                 "drives",
             ));
         }
-        for (index, drive) in drives.iter().take(MAX_DRIVE_ENTRIES).enumerate() {
+        // Validate every entry even when the payload exceeds the protocol
+        // bound: `TooManyDrives` rejects the payload as a whole, while the
+        // per-entry violations give diagnostics visibility into problems in
+        // the excess entries.
+        for (index, drive) in drives.iter().enumerate() {
             let prefix = format!("drives[{index}]");
             // Drive names are deliberately exempt from the NUL rejection
             // applied to identity fields: that guard targets the Windows
@@ -580,6 +588,39 @@ mod tests {
             .unwrap_err()
             .iter()
             .any(|v| v.field == "drives"));
+    }
+
+    #[test]
+    fn excess_drives_beyond_the_limit_are_still_individually_validated() {
+        // The last entry (index 32, one past the bound) has an empty name and
+        // inverted byte counts. Both must surface as indexed violations even
+        // though `TooManyDrives` already rejects the payload.
+        let mut drives: Vec<DriveMetrics> = (0..MAX_DRIVE_ENTRIES)
+            .map(|index| DriveMetrics {
+                name: format!("/{index}"),
+                used_bytes: 0,
+                total_bytes: 1,
+                available_bytes: None,
+            })
+            .collect();
+        drives.push(DriveMetrics {
+            name: String::new(),
+            used_bytes: 5,
+            total_bytes: 1,
+            available_bytes: None,
+        });
+        let err = valid_payload(Some(drives)).validate().unwrap_err();
+        assert!(err.iter().any(
+            |v| v.field == "drives" && matches!(v.kind, ViolationKindV2::TooManyDrives { .. })
+        ));
+        assert!(err
+            .iter()
+            .any(|v| v.field == format!("drives[{MAX_DRIVE_ENTRIES}].name")
+                && v.kind == ViolationKindV2::EmptyDriveName));
+        assert!(err.iter().any(
+            |v| v.field == format!("drives[{MAX_DRIVE_ENTRIES}].used_bytes")
+                && v.kind == ViolationKindV2::UsedExceedsTotal
+        ));
     }
 
     #[test]

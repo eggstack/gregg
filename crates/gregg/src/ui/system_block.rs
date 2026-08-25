@@ -60,11 +60,20 @@ fn metric_compact_prefix_width(label_width: u16) -> u16 {
 
 /// Render a normal-view online system block using the precomputed
 /// fleet-wide metric geometry.
-#[allow(clippy::too_many_lines, clippy::trivially_copy_pass_by_ref)]
+///
+/// `rows` supplies this system's four metric rows when the caller has
+/// them from a shared per-render memo; identical snapshots produce
+/// identical rows, so `None` only triggers a local rebuild fallback.
+#[allow(
+    clippy::too_many_lines,
+    clippy::too_many_arguments,
+    clippy::trivially_copy_pass_by_ref
+)]
 pub(crate) fn render_online(
     f: &mut Frame,
     area: Rect,
     system: &SystemState,
+    rows: Option<&[MetricRow; 4]>,
     fleet_layout: &MetricFleetLayout,
     is_visually_selected: bool,
     is_logically_selected: bool,
@@ -93,8 +102,14 @@ pub(crate) fn render_online(
     // Resolve per-system suffix strings against the shared fleet
     // geometry so the opening/closing brackets line up with every other
     // online system in the same render.
-    let rows = build_metric_rows(snap);
-    let suffixes = resolve_system_suffixes(&rows, area.width, *fleet_layout);
+    let rebuilt;
+    let rows: &[MetricRow; 4] = if let Some(rows) = rows {
+        rows
+    } else {
+        rebuilt = build_metric_rows(snap);
+        &rebuilt
+    };
+    let suffixes = resolve_system_suffixes(rows, area.width, *fleet_layout);
 
     let row_areas = [
         Rect {

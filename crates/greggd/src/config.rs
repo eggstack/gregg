@@ -242,7 +242,17 @@ impl Config {
         #[cfg(unix)]
         if !dir_existed {
             use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+            // Best-effort hardening: on filesystems where the mode change
+            // fails (for example ACL-restricted mounts), keep going with the
+            // umask-derived permissions rather than failing the write, but
+            // surface the gap through diagnostics.
+            if let Err(error) = fs::set_permissions(dir, fs::Permissions::from_mode(0o700)) {
+                tracing::warn!(
+                    dir = %dir.display(),
+                    %error,
+                    "could not restrict new configuration directory to mode 0700"
+                );
+            }
         }
 
         // 2. Serialize the complete config.

@@ -236,9 +236,18 @@ pub fn stop_candidates(config_path: &Path) -> Vec<PathBuf> {
 /// Best-effort removal of a control socket path that the daemon created
 /// at startup. Only unlinks regular files and Unix-domain sockets. Any
 /// other entry type (directory, symlink to a directory) is left alone.
+///
+/// A `NotFound` from the unlink itself is treated as success: another
+/// process may have removed the confirmed socket between the metadata
+/// check and the unlink, and the goal — no stale socket at the path — is
+/// already satisfied in that case.
 pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
     match std::fs::metadata(path) {
-        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(path),
+        Ok(meta) if meta.file_type().is_socket() => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        },
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),

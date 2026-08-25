@@ -19,9 +19,15 @@ pub struct ViewportEntry {
 }
 
 /// Compute which systems are visible and their rect positions.
-pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
-    let display_order = state.display_order();
-
+///
+/// `display_order` must be the state's current display order; passing a
+/// precomputed order lets one render reuse a single allocation across the
+/// layout and its callers.
+pub fn compute_viewport(
+    state: &AppState,
+    area: Rect,
+    display_order: &[usize],
+) -> Vec<ViewportEntry> {
     let top_pos = state
         .viewport_top_id
         .as_ref()
@@ -38,7 +44,7 @@ pub fn compute_viewport(state: &AppState, area: Rect) -> Vec<ViewportEntry> {
         height: area.height.saturating_sub(header_height),
         ..area
     };
-    let visible = visible_range(&display_order, state, top_pos, content_area.height);
+    let visible = visible_range(display_order, state, top_pos, content_area.height);
 
     let mut entries = Vec::new();
     let mut y = content_area.y;

@@ -43,6 +43,22 @@ pub mod error;
 
 use error::{CollectError, CollectErrorKind};
 
+/// Shared clamped percentage normalization for byte ratios.
+///
+/// Zero total yields `0.0` rather than a division by zero; the result is
+/// clamped to the closed `0.0..=100.0` interval. Every collector path that
+/// derives a percentage from used/total bytes must go through this helper so
+/// v1 and v2 snapshots can never diverge.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
+pub(crate) fn clamped_usage_pct(used_bytes: u64, total_bytes: u64) -> f32 {
+    if total_bytes == 0 {
+        0.0
+    } else {
+        let pct = (used_bytes as f64) * 100.0 / (total_bytes as f64);
+        (pct as f32).clamp(0.0, 100.0)
+    }
+}
+
 /// Normalized metric sample produced by a [`SystemCollector`].
 ///
 /// The struct is daemon-internal: it carries fields that do not appear on the
@@ -175,17 +191,10 @@ impl CollectedMetrics {
         };
 
         let swap = if capabilities.swap {
-            #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-            let usage_pct = if self.swap.total_bytes == 0 {
-                0.0
-            } else {
-                let pct = (self.swap.used_bytes as f64) * 100.0 / (self.swap.total_bytes as f64);
-                (pct as f32).clamp(0.0, 100.0)
-            };
             Some(SwapMetricsV2 {
                 used_bytes: self.swap.used_bytes,
                 total_bytes: self.swap.total_bytes,
-                usage_pct,
+                usage_pct: clamped_usage_pct(self.swap.used_bytes, self.swap.total_bytes),
             })
         } else {
             None

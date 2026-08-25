@@ -283,6 +283,8 @@ impl AppState {
 
         self.last_applied_generation = batch.generation;
 
+        let order = self.display_order();
+
         // The first accepted poll batch establishes the
         // reachability-sorted display order for a fresh TUI. Pinning
         // selection and viewport top to that order prevents an offline
@@ -290,8 +292,8 @@ impl AppState {
         // online entries that came back first. Later batches must
         // preserve ordinary selection/scroll semantics.
         if was_initialized {
-            if let Some(first_index) = self.display_order().first() {
-                if let Some(first_system) = self.systems.get(*first_index) {
+            if let Some(&first_index) = order.first() {
+                if let Some(first_system) = self.systems.get(first_index) {
                     let id = first_system.id.clone();
                     self.selected_id = Some(id.clone());
                     self.viewport_top_id = Some(id);
@@ -299,7 +301,7 @@ impl AppState {
             }
         }
 
-        ensure_selected_visible(self);
+        ensure_selected_visible_with_order(self, &order);
     }
 
     /// Apply a user action.
@@ -309,32 +311,40 @@ impl AppState {
             Action::MoveDown => {
                 if self.active_pane == Pane::Eggpool {
                     self.move_eggpool_period(true);
+                } else {
+                    let order = self.display_order();
+                    self.move_selection(&order, 1);
+                    self.selection_highlight_active = true;
+                    ensure_selected_visible_with_order(self, &order);
                     return;
                 }
-                let order = self.display_order();
-                self.move_selection(&order, 1);
-                self.selection_highlight_active = true;
             }
             Action::MoveUp => {
                 if self.active_pane == Pane::Eggpool {
                     self.move_eggpool_period(false);
+                } else {
+                    let order = self.display_order();
+                    self.move_selection(&order, -1_isize);
+                    self.selection_highlight_active = true;
+                    ensure_selected_visible_with_order(self, &order);
                     return;
                 }
-                let order = self.display_order();
-                self.move_selection(&order, -1_isize);
-                self.selection_highlight_active = true;
             }
             Action::PageDown if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
-                let page = self.page_size();
+                let page = self.page_size(&order);
                 self.move_selection(&order, page);
                 self.selection_highlight_active = true;
+                ensure_selected_visible_with_order(self, &order);
+                return;
             }
             Action::PageUp if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
-                let page = self.page_size();
+                let page = self.page_size(&order);
                 self.move_selection(&order, -page);
                 self.selection_highlight_active = true;
+                ensure_selected_visible_with_order(self, &order);
+                return;
             }
             Action::SelectFirst if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
@@ -343,6 +353,8 @@ impl AppState {
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
                 self.selection_highlight_active = true;
+                ensure_selected_visible_with_order(self, &order);
+                return;
             }
             Action::SelectLast if self.active_pane == Pane::Systems => {
                 let order = self.display_order();
@@ -351,6 +363,8 @@ impl AppState {
                     .and_then(|&i| self.systems.get(i).map(|s| &s.id))
                     .cloned();
                 self.selection_highlight_active = true;
+                ensure_selected_visible_with_order(self, &order);
+                return;
             }
             Action::PreviousPane => self.cycle_pane(false),
             Action::NextPane => self.cycle_pane(true),
@@ -377,7 +391,6 @@ impl AppState {
             }
             Action::Resize { width, height } => {
                 self.terminal_size = Some((width, height));
-                ensure_selected_visible(self);
             }
         }
         ensure_selected_visible(self);
@@ -410,7 +423,6 @@ impl AppState {
             return;
         }
         if !matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
-            eggpool.request_generation = result.generation;
             eggpool.status = EggpoolStatus::Idle;
             eggpool.last_attempt_at = Some(result.completed_at);
             match &result.outcome {
@@ -522,13 +534,12 @@ impl AppState {
     /// Returns zero when the viewport cannot render even one full
     /// entry, so page movement never lands selection on entries that
     /// cannot be displayed.
-    fn page_size(&self) -> isize {
+    fn page_size(&self, order: &[usize]) -> isize {
         let height = self
             .terminal_size
             .map_or(24, |(_, h)| h)
             .saturating_sub(view_header_height(self.system_view_mode));
 
-        let order = self.display_order();
         let top_pos = self
             .viewport_top_id
             .as_ref()
@@ -658,6 +669,12 @@ fn minimum_render_height(state: &AppState, system_index: usize) -> u16 {
 /// Adjust `viewport_top_id` so the selected system is visible.
 pub fn ensure_selected_visible(state: &mut AppState) {
     let order = state.display_order();
+    ensure_selected_visible_with_order(state, &order);
+}
+
+/// [`ensure_selected_visible`] with a precomputed display order, so
+/// callers already holding one avoid rebuilding it.
+fn ensure_selected_visible_with_order(state: &mut AppState, order: &[usize]) {
     if order.is_empty() {
         return;
     }
@@ -683,7 +700,7 @@ pub fn ensure_selected_visible(state: &mut AppState) {
     let usable_height = height.saturating_sub(view_header_height(state.system_view_mode));
 
     // Find which systems fit from top_pos downward.
-    let visible = visible_range(&order, state, top_pos, usable_height);
+    let visible = visible_range(order, state, top_pos, usable_height);
 
     if visible.contains(&selected_pos) {
         // Already visible, nothing to do.
@@ -701,7 +718,7 @@ pub fn ensure_selected_visible(state: &mut AppState) {
         let mut candidate = selected_pos;
         while candidate > top_pos {
             let previous = candidate - 1;
-            let range = visible_range(&order, state, previous, usable_height);
+            let range = visible_range(order, state, previous, usable_height);
             if range.contains(&selected_pos) {
                 candidate = previous;
             } else {
@@ -1526,11 +1543,17 @@ mod tests {
         assert_eq!(visible_range(&order, &state, 0, 6), 0..1);
         assert_eq!(entry_height(&state, 0), 8);
 
-        let viewport =
-            crate::ui::layout::compute_viewport(&state, ratatui::layout::Rect::new(0, 0, 80, 5));
+        let viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 80, 5),
+            &order,
+        );
         assert_eq!(viewport[0].drive_rows_visible, 0);
-        let viewport =
-            crate::ui::layout::compute_viewport(&state, ratatui::layout::Rect::new(0, 0, 80, 6));
+        let viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 80, 6),
+            &order,
+        );
         assert_eq!(viewport[0].drive_rows_visible, 1);
     }
 

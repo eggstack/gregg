@@ -111,6 +111,17 @@ impl StatusSnapshotV2 {
 /// A `false` flag means the metric is **unsupported on this platform**.
 /// Servers must report `None` for the corresponding value rather than
 /// fabricating a zero or placeholder.
+///
+/// # Absent keys versus explicit `false`
+///
+/// The struct-level serde default means an omitted capability key
+/// deserializes as `false`, which is indistinguishable from an intentional
+/// `false`. Receivers therefore cannot detect a truncated capabilities
+/// object from deserialization alone. Validation narrows the gap by
+/// rejecting payloads where a flag disagrees with the presence of its
+/// corresponding value, so only simultaneous omission of *both* the flag
+/// and the value stays silent. Every greggd version serializes all four
+/// flags; only third-party or future daemons could produce the silent case.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[serde(default)]
@@ -196,6 +207,11 @@ pub struct HealthResponseV2 {
     pub snapshot: Option<StatusSnapshotV2>,
 }
 
+/// Deserialization checks envelope invariants (schema version, snapshot
+/// presence per readiness state) but deliberately does **not** validate the
+/// embedded snapshot. Callers must invoke
+/// [`StatusSnapshotV2::validate`](crate::StatusSnapshotV2::validate) on the
+/// received snapshot themselves.
 impl<'de> Deserialize<'de> for HealthResponseV2 {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

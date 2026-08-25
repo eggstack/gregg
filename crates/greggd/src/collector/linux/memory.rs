@@ -31,11 +31,10 @@ impl MemorySample {
     /// closed `0.0..=100.0` interval.
     #[must_use]
     pub fn into_metrics(self) -> MemoryMetrics {
-        let usage_pct = percent(self.used_bytes, self.total_bytes);
         MemoryMetrics {
+            usage_pct: crate::collector::clamped_usage_pct(self.used_bytes, self.total_bytes),
             used_bytes: self.used_bytes,
             total_bytes: self.total_bytes,
-            usage_pct,
         }
     }
 }
@@ -52,11 +51,10 @@ impl SwapSample {
     /// returning `usage_pct == 0.0` rather than dividing by zero.
     #[must_use]
     pub fn into_metrics(self) -> SwapMetrics {
-        let usage_pct = percent(self.used_bytes, self.total_bytes);
         SwapMetrics {
+            usage_pct: crate::collector::clamped_usage_pct(self.used_bytes, self.total_bytes),
             used_bytes: self.used_bytes,
             total_bytes: self.total_bytes,
-            usage_pct,
         }
     }
 }
@@ -168,14 +166,4 @@ fn kb_to_bytes(kb: u64) -> Result<u64, CollectError> {
             "kilobyte-to-byte conversion overflowed u64",
         )
     })
-}
-
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-fn percent(used: u64, total: u64) -> f32 {
-    if total == 0 {
-        0.0
-    } else {
-        let pct = (used as f64) * 100.0 / (total as f64);
-        (pct as f32).clamp(0.0, 100.0)
-    }
 }

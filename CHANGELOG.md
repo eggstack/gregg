@@ -9,6 +9,38 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Sampler no longer blocks the daemon runtime** (`greggd`): each collection
+  cycle now runs on tokio's blocking thread pool, so hosts with many mounts or
+  slow network filesystems can stretch `statvfs()` without stalling
+  `/v1/status`, `/v2/status`, or `/healthz`.
+- **Drive validation covers excess entries** (`gregg-protocol`): payloads above
+  `MAX_DRIVE_ENTRIES` still report `TooManyDrives`, but individual violations
+  in entries beyond the bound are now also reported for diagnostics.
+- **Control-socket cleanup race narrowed** (`greggd`): stale-socket removal
+  treats a concurrent unlink between the metadata check and the delete as
+  success instead of surfacing a spurious error.
+- **Config directory permission failures are logged** (`greggd`): a failed
+  `0700` chmod on a freshly created config directory warns instead of being
+  silently ignored.
+- **EggPool deactivation aborts in-flight fetches** (`gregg`): leaving the pane
+  promptly releases the pending request task instead of letting it run to a
+  result that would be discarded anyway.
+- **Dead EggPool generation assignment removed** (`gregg`):
+  `apply_eggpool_result` no longer rewrites a generation that the guard just
+  proved equal.
+
+### Changed
+
+- **Shared percentage normalization** (`greggd`): v1/v2 swap percentages derive
+  from one collector helper, preventing future v1/v2 divergence.
+- **Client render/poll allocation reductions** (`gregg`): display order is
+  computed once per action and render; normal-view metric rows are memoized
+  per system and rebuilt only when a snapshot's content or fleet membership
+  changes. Rendering behavior is unchanged.
+- **Protocol docs** (`gregg-protocol`): documented the capability-flag
+  absence-vs-`false` ambiguity, the accepted absence of a `usage_pct`
+  vs byte-count cross-check, and the validate-after-decode requirement for
+  health-response snapshots.
 - **IPv6 zone-ID endpoints** (`gregg`): `status_url`/`v2_status_url` now bracket
   any colon-containing host per RFC 2732, so IPv6 zone IDs such as
   `fe80::1%eth0` produce valid request URLs.
