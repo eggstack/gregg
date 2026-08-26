@@ -31,6 +31,8 @@ Plan 085 corrects four narrow client-rendering defects that survived the Plan 08
 
 Plan 087 is a bounded client polish pass that keeps Plans 085/086 geometry and storage corrections intact while adding two compact-pane behaviors and one transient-selection polish. It introduces a strict integer-safe compact suffix policy: when the longest natural metric suffix across the entire online fleet exceeds one quarter of the terminal width, the entire suffix region disappears fleet-wide and the metric rows render as bar-only until the terminal widens again. It separates persistent logical selection from the transient reverse-video highlight: startup leaves the highlight `false`, Systems navigation activates it, and a resettable ten-second event-loop deadline dispatches `Action::ClearSelectionHighlight` while leaving `selected_id` (and `e` drive expansion) untouched. It omits the normal-header `IO` token entirely on unsupported or missing I/O-wait data instead of rendering a placeholder. No daemon, protocol, collector, normalized-capacity, scheduler, endpoint, configuration, dependency, CI, or release behavior changes.
 
+Plan 088 is complete at implementation `58b332b51021e3950fa14d8888a46ed6d069a687`. It closes the three confirmed low-priority findings in the 2026-08-26 workspace bug audit; informational observations and accepted optimizations remain out of scope.
+
 Plan 088 is a narrow corrective pass for the three confirmed low-priority findings in the 2026-08-26 workspace bug audit: route macOS byte percentages through the shared normalization helper, return non-Unix Ctrl-C listener failures through the reusable daemon runtime error boundary, and report duplicate EggPool configuration with a dedicated violation kind. The audit's informational observations and accepted optimizations remain out of scope.
 
 | Plan | Purpose | Status |
@@ -57,7 +59,7 @@ Plan 088 is a narrow corrective pass for the three confirmed low-priority findin
 | [`085-fleet-wide-tui-column-and-storage-display-correction.md`](085-fleet-wide-tui-column-and-storage-display-correction.md) | Fleet-wide normal-view metric geometry, `<used>/<total>` DISK slash denominator, shared expanded drive-detail table layout, shared condensed-view column layout | complete; closed through Plan 086 |
 | [`086-plan085-renderer-boundary-corrective-pass.md`](086-plan085-renderer-boundary-corrective-pass.md) | Condensed offline/pending identity preservation, expanded-drive structural width constants and Compact-before-Minimal degradation, fleet-wide suffix budget | complete |
 | [`087-dynamic-compact-metric-suffix-and-transient-selection-polish.md`](087-dynamic-compact-metric-suffix-and-transient-selection-polish.md) | Fleet-wide compact metric suffix when longest natural suffix exceeds terminal-width quarter; logical-vs-visual selection separation with resettable ten-second event-loop deadline; normal-header I/O-wait omission | complete |
-| [`088-bugs-audit-corrective-pass.md`](088-bugs-audit-corrective-pass.md) | Correct shared macOS percentage normalization, non-Unix shutdown error propagation, and EggPool duplicate violation semantics | in progress |
+| [`088-bugs-audit-corrective-pass.md`](088-bugs-audit-corrective-pass.md) | Correct shared macOS percentage normalization, non-Unix shutdown error propagation, and EggPool duplicate violation semantics | complete; implementation `58b332b` |
 
 Dependency order:
 
