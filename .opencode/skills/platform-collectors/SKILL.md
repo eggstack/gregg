@@ -27,6 +27,10 @@ pub trait SystemCollector {
 
 One call to `sample()` produces `CollectedMetrics` which converts to both v1 and v2 wire formats without duplicate collection.
 
+Byte-ratio percentages must use the shared `collector::clamped_usage_pct`
+helper so all platform collectors share the same zero, clamp, and non-finite
+behavior.
+
 The daemon serves v2 status on every platform. Windows cannot produce a
 truthful v1 snapshot, so `/`, `/v1/status`, and `/healthz` return HTTP 503 with
 a v1 `NotServing` health response; `/v2/status` and `/v2/healthz` become ready

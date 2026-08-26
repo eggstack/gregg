@@ -4,14 +4,8 @@
 ///
 /// Returns `0.0` when `total` is zero to avoid division by zero. The result
 /// is clamped to the closed interval `0.0..=100.0`.
-#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub(crate) fn percent(used: u64, total: u64) -> f32 {
-    if total == 0 {
-        0.0
-    } else {
-        let pct = (used as f64) * 100.0 / (total as f64);
-        (pct as f32).clamp(0.0, 100.0)
-    }
+    crate::collector::clamped_usage_pct(used, total)
 }
 
 /// Clip an identifier string to `max_len` bytes on a valid UTF-8 boundary.

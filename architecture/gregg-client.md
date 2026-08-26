@@ -352,7 +352,7 @@ Platform defaults:
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
-| `eggpool add/list/remove` | Manage EggPool endpoint |
+| `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 
 ## EggPool
 
@@ -373,6 +373,10 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
   momentarily full queue drops the command and surfaces `EggpoolStatus::Busy`
   ("worker busy") in the pane; a closed channel still marks the worker
   unavailable
+
+The CLI permits one configured EggPool endpoint. A second `eggpool add`
+without `--replace` returns the dedicated `EggpoolAlreadyConfigured`
+configuration violation; `--replace` updates the existing entry.
 
 Plan 070 also evaluated replacing the command channel with a latest-state
 `watch` channel. It was rejected because refresh nonces, generation ownership,

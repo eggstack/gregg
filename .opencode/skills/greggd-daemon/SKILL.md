@@ -81,6 +81,8 @@ service lifecycle. For platform metric collection itself, use the
 
 Reusable library/runtime code returns typed errors without printing or calling
 `std::process::exit()`; the binary boundary owns logging and exit codes.
+Failures while awaiting the non-Unix Ctrl-C shutdown source follow the same
+runtime error path rather than panicking.
 
 ## Tests
 

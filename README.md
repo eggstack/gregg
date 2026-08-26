@@ -146,7 +146,11 @@ gregg remove 192.168.1.10      # host-only remove is still supported
 gregg refresh 30               # set polling interval (seconds)
 gregg edit                     # open config in $EDITOR
 gregg version                  # print the client version
+gregg eggpool add pool.local:11300
 ```
+
+Only one EggPool endpoint is supported; use `--replace` to change an existing
+one. Without it, the command reports an already-configured endpoint conflict.
 
 ### TUI navigation
 

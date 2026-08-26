@@ -247,6 +247,10 @@ name = "Web Server 01"
 
 Cross-process locking: `flock(2)` (Unix) / `LockFileEx` (Windows) on `<config>.lock`.
 
+Only one EggPool endpoint may be configured. `eggpool add` without
+`--replace` reports the dedicated `EggpoolAlreadyConfigured` configuration
+violation when one already exists.
+
 ## Ctrl-R config reload
 
 The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates backpressure; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state.

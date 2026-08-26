@@ -87,6 +87,10 @@ stopping the daemon, duplicate stop controls are harmless, and dispatcher
 errors return to the executable while callback/worker errors are logged once
 by `ServiceMain`.
 
+If the platform shutdown source itself fails while being awaited, the shared
+runtime returns that error through the ordinary runtime failure boundary; it
+does not panic inside reusable daemon code.
+
 ### HTTP endpoints
 
 | Route | Handler | Response |

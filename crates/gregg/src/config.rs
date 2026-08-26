@@ -1052,6 +1052,8 @@ pub enum ConfigViolation {
     InvalidEggpoolPort { port: u16 },
     /// `EggPool` display name is invalid.
     InvalidEggpoolName { reason: String },
+    /// An `EggPool` endpoint is already configured and replacement was not requested.
+    EggpoolAlreadyConfigured,
     /// `EggPool` API-key environment-variable name is invalid.
     InvalidEggpoolApiKeyEnv { value: String, reason: String },
 }
@@ -1120,6 +1122,9 @@ impl fmt::Display for ConfigViolation {
                 )
             }
             Self::InvalidEggpoolName { reason } => write!(f, "invalid EggPool name: {reason}"),
+            Self::EggpoolAlreadyConfigured => {
+                write!(f, "EggPool endpoint is already configured; use --replace")
+            }
             Self::InvalidEggpoolApiKeyEnv { value, reason } => {
                 write!(
                     f,

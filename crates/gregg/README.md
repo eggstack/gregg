@@ -101,6 +101,8 @@ The optional `gregg eggpool add HOST` command configures one EggPool source,
 using HTTP port `11300` by default. Use `--https`, `--name`,
 `--api-key-env ENV_NAME`, and `--replace` as needed. Only the environment
 variable name is persisted; the secret is never read by these commands.
+Adding a second source without `--replace` reports a configuration conflict,
+not a name-validation error.
 The TUI consumes only `/api/stats/summary` and requires EggPool's dashboard/
 statistics routes to be enabled. It displays accounted tokens, provider
 cache-read share, output tokens per second, and average TTFT for `1h`, `24h`,

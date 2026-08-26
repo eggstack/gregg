@@ -23,6 +23,9 @@ pub trait SystemCollector {
 
 Daemon-internal normalized sample. Converts to both v1 `StatusSnapshot` and
 v2 `StatusPayloadV2` with one call to `sample()`. No duplicate collection.
+All collector byte-ratio percentages use the shared
+`collector::clamped_usage_pct` helper so v1 and v2 platform paths have the
+same zero, clamp, and non-finite behavior.
 
 ### CollectError taxonomy
 

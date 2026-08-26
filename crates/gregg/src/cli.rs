@@ -326,9 +326,7 @@ fn cmd_eggpool_add(
     store.mutate(|config| {
         if config.eggpool.is_some() && !replace {
             return Err(ConfigError::Validation(vec![
-                crate::config::ConfigViolation::InvalidEggpoolName {
-                    reason: "an EggPool endpoint is already configured; use --replace".to_string(),
-                },
+                crate::config::ConfigViolation::EggpoolAlreadyConfigured,
             ]));
         }
         config.eggpool = Some(entry);
@@ -951,6 +949,27 @@ mod tests {
     fn cli_parses_config_flag() {
         let cli = Cli::try_parse_from(["gregg", "--config", "/tmp/test.toml", "list"]).unwrap();
         assert_eq!(cli.config, Some(PathBuf::from("/tmp/test.toml")));
+    }
+
+    #[test]
+    fn eggpool_add_reports_duplicate_as_configuration_conflict() {
+        let dir = tmp_dir("eggpool_duplicate");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_eggpool_add(&store, "pool.local:11300", None, false, None, false).unwrap();
+        let error = cmd_eggpool_add(&store, "other.local:11300", None, false, None, false)
+            .unwrap_err()
+            .downcast::<ConfigError>()
+            .unwrap();
+
+        assert!(matches!(
+            *error,
+            ConfigError::Validation(violations)
+                if violations == vec![crate::config::ConfigViolation::EggpoolAlreadyConfigured]
+        ));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // --- Add command ---

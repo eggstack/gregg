@@ -46,6 +46,8 @@ pub(crate) enum RunOutcome {
     // shutdown classification does not inspect it.
     #[allow(dead_code)]
     Signal(&'static str),
+    /// The shutdown source failed while waiting for a signal.
+    ShutdownError(std::io::Error),
     /// The HTTP server task completed (or panicked).
     Server(Result<Result<(), ServerError>, tokio::task::JoinError>),
     /// The sampler task completed (or panicked).
@@ -65,6 +67,7 @@ impl RunOutcome {
     fn into_result(self) -> Result<(), Box<dyn std::error::Error>> {
         match self {
             Self::Signal(_) => Ok(()),
+            Self::ShutdownError(e) => Err(Box::new(e)),
             Self::Server(Ok(Ok(()))) => Err("HTTP server exited unexpectedly".into()),
             Self::Server(Ok(Err(e))) => Err(Box::new(e)),
             Self::Server(Err(e)) => Err(Box::new(e)),
@@ -91,7 +94,25 @@ pub async fn run<C: SystemCollector + 'static>(
     config: Config,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = wait_for_shutdown_signal()?;
-    run_with_shutdown(collector, config, shutdown).await
+    run_with_shutdown_on_ready(collector, config, shutdown, || Ok(())).await
+}
+
+/// Convert supported shutdown-future outputs into a common supervision result
+/// while keeping injected test and service shutdown futures simple.
+pub(crate) trait ShutdownResult {
+    fn into_result(self) -> Result<&'static str, std::io::Error>;
+}
+
+impl ShutdownResult for &'static str {
+    fn into_result(self) -> Result<&'static str, std::io::Error> {
+        Ok(self)
+    }
+}
+
+impl ShutdownResult for Result<&'static str, std::io::Error> {
+    fn into_result(self) -> Result<&'static str, std::io::Error> {
+        self
+    }
 }
 
 /// Run the daemon and treat `config_path` as authoritative for the local
@@ -185,7 +206,8 @@ pub(crate) async fn run_with_shutdown_on_ready<C, S, F>(
 ) -> Result<(), Box<dyn std::error::Error>>
 where
     C: SystemCollector + 'static,
-    S: std::future::Future<Output = &'static str>,
+    S: std::future::Future,
+    S::Output: ShutdownResult,
     F: FnOnce() -> Result<(), Box<dyn std::error::Error>>,
 {
     info!(
@@ -297,7 +319,8 @@ pub(crate) async fn supervise<S>(
     shutdown: S,
 ) -> RunOutcome
 where
-    S: std::future::Future<Output = &'static str>,
+    S: std::future::Future,
+    S::Output: ShutdownResult,
 {
     // Borrow the handles without taking them so that a non-selected branch
     // does not consume its handle. The selected handle is taken after the
@@ -312,8 +335,13 @@ where
 
         tokio::select! {
             signal_result = shutdown => {
-                info!(reason = %signal_result, "shutdown signal received");
-                RunOutcome::Signal(signal_result)
+                match signal_result.into_result() {
+                    Ok(reason) => {
+                        info!(reason = %reason, "shutdown signal received");
+                        RunOutcome::Signal(reason)
+                    }
+                    Err(error) => RunOutcome::ShutdownError(error),
+                }
             }
             result = &mut server_fut => {
                 match result {
@@ -352,7 +380,7 @@ where
         RunOutcome::Sampler(_) => {
             let _ = sampler_handle.take();
         }
-        RunOutcome::Signal(_) | RunOutcome::Fatal(_) => {}
+        RunOutcome::Signal(_) | RunOutcome::Fatal(_) | RunOutcome::ShutdownError(_) => {}
     }
 
     outcome
@@ -461,27 +489,23 @@ async fn sync_sampler_state(
 
 /// Wait for a platform-appropriate shutdown signal.
 fn wait_for_shutdown_signal(
-) -> Result<impl std::future::Future<Output = &'static str>, std::io::Error> {
+) -> Result<impl std::future::Future<Output = Result<&'static str, std::io::Error>>, std::io::Error>
+{
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigterm = signal(SignalKind::terminate())?;
         let mut sigint = signal(SignalKind::interrupt())?;
         Ok(async move {
-            tokio::select! {
+            Ok(tokio::select! {
                 _ = sigterm.recv() => "SIGTERM",
                 _ = sigint.recv() => "SIGINT",
-            }
+            })
         })
     }
     #[cfg(not(unix))]
     {
-        Ok(async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for Ctrl-C");
-            "Ctrl-C"
-        })
+        Ok(async { tokio::signal::ctrl_c().await.map(|()| "Ctrl-C") })
     }
 }
 
@@ -653,7 +677,12 @@ mod tests {
         )))));
         let mut sampler = Some(spawn_sampler_slow());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         // Server should have been taken (consumed).
         assert!(server.is_none());
@@ -675,7 +704,12 @@ mod tests {
         let mut server = Some(spawn_server_panic());
         let mut sampler = Some(spawn_sampler_slow());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         assert!(server.is_none());
         assert!(sampler.is_some());
@@ -693,7 +727,12 @@ mod tests {
         let mut server = Some(spawn_server(Ok(())));
         let mut sampler = Some(spawn_sampler_slow());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         assert!(server.is_none());
         assert!(sampler.is_some());
@@ -714,7 +753,12 @@ mod tests {
         let mut server = Some(spawn_server_slow(Ok(())));
         let mut sampler = Some(spawn_sampler_panic());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         assert!(sampler.is_none());
         assert!(server.is_some());
@@ -732,7 +776,12 @@ mod tests {
         let mut server = Some(spawn_server_slow(Ok(())));
         let mut sampler = Some(spawn_sampler_ok());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         assert!(sampler.is_none());
         assert!(server.is_some());
@@ -806,7 +855,12 @@ mod tests {
         let mut server = Some(spawn_server(Err(server_error)));
         let mut sampler = Some(spawn_sampler_slow());
 
-        let outcome = supervise(&mut server, &mut sampler, std::future::pending()).await;
+        let outcome = supervise(
+            &mut server,
+            &mut sampler,
+            std::future::pending::<&'static str>(),
+        )
+        .await;
 
         // The outcome should be the original server error.
         let result = outcome.into_result();
@@ -898,6 +952,13 @@ mod tests {
     fn run_outcome_signal_is_success() {
         let outcome = RunOutcome::Signal("SIGTERM");
         assert!(outcome.into_result().is_ok());
+    }
+
+    #[test]
+    fn run_outcome_shutdown_error_is_failure() {
+        let outcome = RunOutcome::ShutdownError(std::io::Error::other("ctrl-c setup failed"));
+        let error = outcome.into_result().unwrap_err();
+        assert_eq!(error.to_string(), "ctrl-c setup failed");
     }
 
     #[test]

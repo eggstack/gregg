@@ -9,6 +9,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Audit corrections** (`gregg`, `greggd`): macOS byte percentages now use
+  the shared collector normalization helper, non-Unix Ctrl-C listener errors
+  return through the runtime error boundary instead of panicking, and a
+  duplicate EggPool endpoint reports a dedicated configuration conflict.
 - **Stale-snapshot 503 bodies no longer claim `ready`** (`greggd`): when a
   cached snapshot ages past `max_snapshot_age` (or the failure threshold is
   met) while the stored health state still says `ready`, the status and
