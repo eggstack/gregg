@@ -35,7 +35,7 @@ Plan 088 is complete at implementation `58b332b51021e3950fa14d8888a46ed6d069a687
 
 Plan 088 is a narrow corrective pass for the three confirmed low-priority findings in the 2026-08-26 workspace bug audit: route macOS byte percentages through the shared normalization helper, return non-Unix Ctrl-C listener failures through the reusable daemon runtime error boundary, and report duplicate EggPool configuration with a dedicated violation kind. The audit's informational observations and accepted optimizations remain out of scope.
 
-Plan 089 is the follow-up corrective pass for the remaining actionable audit
+Plan 089 is the completed follow-up corrective pass for the remaining actionable audit
 findings: blank sampler identities, IPv6 zone parsing diagnostics, rejected
 Systems reload feedback, pre-epoch staleness, large byte-ratio arithmetic,
 daemon-name control characters, and CI-blocking clippy diagnostics.
@@ -65,7 +65,7 @@ daemon-name control characters, and CI-blocking clippy diagnostics.
 | [`086-plan085-renderer-boundary-corrective-pass.md`](086-plan085-renderer-boundary-corrective-pass.md) | Condensed offline/pending identity preservation, expanded-drive structural width constants and Compact-before-Minimal degradation, fleet-wide suffix budget | complete |
 | [`087-dynamic-compact-metric-suffix-and-transient-selection-polish.md`](087-dynamic-compact-metric-suffix-and-transient-selection-polish.md) | Fleet-wide compact metric suffix when longest natural suffix exceeds terminal-width quarter; logical-vs-visual selection separation with resettable ten-second event-loop deadline; normal-header I/O-wait omission | complete |
 | [`088-bugs-audit-corrective-pass.md`](088-bugs-audit-corrective-pass.md) | Correct shared macOS percentage normalization, non-Unix shutdown error propagation, and EggPool duplicate violation semantics | complete; implementation `58b332b` |
-| [`089-bugs-audit-corrective-pass.md`](089-bugs-audit-corrective-pass.md) | Correct remaining actionable audit findings and CI-blocking clippy diagnostics | in progress |
+| [`089-bugs-audit-corrective-pass.md`](089-bugs-audit-corrective-pass.md) | Correct remaining actionable audit findings and CI-blocking clippy diagnostics | complete; implementation `7f245cc` |
 
 Dependency order:
 

@@ -1,6 +1,6 @@
 # Plan 089: Bugs audit corrective pass
 
-Status: in progress.
+Status: complete. Closing record below.
 
 Depends on: completed Plan 088 and the confirmed findings recorded in the
 2026-08-26 `bugs.md` audit.
@@ -39,3 +39,29 @@ preserved as out of scope because they are not correctness defects.
 - No scheduler, protocol, collector architecture, TUI redesign, dependency
   upgrade, workflow, release, or service-management changes.
 - No implementation of the audit's accepted performance-only observations.
+
+## Closure record
+
+Implementation landed in commit `7f245cc`.
+
+Completed:
+
+- identity failures now preserve the last valid snapshot and never publish a
+  blank identity;
+- IPv6 zone-ID parsing handles explicit ports intentionally and rejects empty
+  or malformed zones;
+- rejected Systems config reloads preserve the active configuration and show
+  an actionable diagnostic until a later reload succeeds;
+- pre-epoch staleness checks no longer reject cached snapshots solely because
+  the clock returned zero;
+- large byte ratios use widened integer scaling;
+- daemon names reject control characters;
+- all audit clippy diagnostics are fixed.
+
+Verification passed:
+
+- `./scripts/check-local.sh`;
+- `cargo test --workspace --all-targets --all-features` — 839 passed, 2 ignored;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`;
+- focused regression tests for sampler identity, server staleness, endpoint
+  parsing, daemon config, normalized ratios, and Systems reload diagnostics.
