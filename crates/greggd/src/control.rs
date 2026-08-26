@@ -1031,7 +1031,10 @@ mod tests {
     fn fresh_temp_dir(name: &str) -> PathBuf {
         // Use a short prefix so the resulting control socket path stays
         // inside the OS-level `sun_path` limit (`UNIX_PATH_MAX = 108`).
-        let dir = std::env::temp_dir().join(format!("gd{name}-{}", std::process::id()));
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT_TEMP_DIR: AtomicUsize = AtomicUsize::new(0);
+        let id = NEXT_TEMP_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("gd{name}-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir

@@ -64,7 +64,10 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             clock,
             client,
             refresh_interval,
-            max_concurrent,
+            // A zero-sized semaphore would park every poll forever. Config
+            // validation rejects zero for normal callers, but this public
+            // constructor also needs to remain safe for direct users.
+            max_concurrent: max_concurrent.max(1),
         }
     }
 
@@ -133,9 +136,9 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         // First generation is immediate when there are endpoints. An empty
         // config keeps the scheduler alive so Ctrl-R can add systems.
         if !endpoints.is_empty() {
-            generation = generation.saturating_add(1);
+            advance_generation(&mut generation);
             let batch = self
-                .poll_generation(&endpoints, &semaphore, generation)
+                .poll_generation(&endpoints, &semaphore, generation, &cancel)
                 .await;
             if tokio::select! {
                 result = tx.send(batch) => result.is_err(),
@@ -166,9 +169,9 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                             if endpoints.is_empty() {
                                 continue;
                             }
-                            generation = generation.saturating_add(1);
+                            advance_generation(&mut generation);
                             let batch = self
-                                .poll_generation(&endpoints, &semaphore, generation)
+                                .poll_generation(&endpoints, &semaphore, generation, &cancel)
                                 .await;
                             if tokio::select! {
                                 result = tx.send(batch) => result.is_err(),
@@ -187,9 +190,9 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                 // Periodic tick at the fixed cadence.
                 _ = interval.tick() => {
                     if !endpoints.is_empty() {
-                        generation = generation.saturating_add(1);
+                        advance_generation(&mut generation);
                         let batch = self
-                            .poll_generation(&endpoints, &semaphore, generation)
+                            .poll_generation(&endpoints, &semaphore, generation, &cancel)
                             .await;
                         if tokio::select! {
                             result = tx.send(batch) => result.is_err(),
@@ -214,6 +217,7 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         endpoints: &[Endpoint],
         semaphore: &Arc<Semaphore>,
         generation: u64,
+        cancel: &CancellationToken,
     ) -> PollBatch {
         let started_at = self.clock.now();
         let mut handles: Vec<(Endpoint, tokio::task::JoinHandle<PollResult>)> =
@@ -224,10 +228,17 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             let sem = Arc::clone(semaphore);
             let ep = endpoint.clone();
             let clock = self.clock.clone();
+            let cancel = cancel.clone();
 
             let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore should not be closed");
-                client.poll(&ep, &clock).await
+                let _permit = tokio::select! {
+                    () = cancel.cancelled() => return cancelled_result(&ep),
+                    permit = sem.acquire_owned() => permit.expect("semaphore should not be closed"),
+                };
+                tokio::select! {
+                    () = cancel.cancelled() => cancelled_result(&ep),
+                    result = client.poll(&ep, &clock) => result,
+                }
             });
 
             handles.push((endpoint.clone(), handle));
@@ -256,6 +267,22 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             completed_at: self.clock.now(),
             results,
         }
+    }
+}
+
+fn advance_generation(generation: &mut u64) {
+    // Generation zero is reserved for the uninitialized state. Wrapping to
+    // one after MAX keeps the scheduler live; AppState accepts this one
+    // explicit wrap when it follows MAX.
+    *generation = generation.checked_add(1).unwrap_or(1);
+}
+
+fn cancelled_result(endpoint: &Endpoint) -> PollResult {
+    PollResult {
+        system_id: endpoint.id.clone(),
+        endpoint: endpoint.clone(),
+        outcome: PollOutcome::Cancelled,
+        latency: Duration::ZERO,
     }
 }
 
@@ -363,6 +390,24 @@ mod tests {
         assert_eq!(batch2.generation, 2);
 
         cancel.cancel();
+    }
+
+    #[test]
+    fn zero_concurrency_is_clamped_to_one_permit() {
+        let scheduler = PollScheduler::new(
+            FakeClock::new(std::time::Instant::now()),
+            HttpClient::new(Duration::from_secs(1)),
+            Duration::from_secs(1),
+            0,
+        );
+        assert_eq!(scheduler.max_concurrent, 1);
+    }
+
+    #[test]
+    fn generation_wraps_to_one_instead_of_sticking_at_max() {
+        let mut generation = u64::MAX;
+        advance_generation(&mut generation);
+        assert_eq!(generation, 1);
     }
 
     #[tokio::test]
@@ -498,6 +543,39 @@ mod tests {
 
         // The channel may or may not have closed yet, but the scheduler
         // should stop producing new batches.
+    }
+
+    #[tokio::test]
+    async fn cancellation_aborts_in_flight_generation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let endpoint = Endpoint {
+            id: "slow".into(),
+            host: "127.0.0.1".into(),
+            port,
+            name: None,
+        };
+        let scheduler = PollScheduler::new(
+            FakeClock::new(std::time::Instant::now()),
+            HttpClient::new(Duration::from_secs(30)),
+            Duration::from_secs(60),
+            1,
+        );
+        let cancel = CancellationToken::new();
+        let (_refresh_tx, refresh_rx) = refresh_channel();
+        let handle = scheduler.run_observed(vec![endpoint], cancel.clone(), refresh_rx);
+        tokio::task::yield_now().await;
+        cancel.cancel();
+        tokio::time::timeout(Duration::from_secs(1), handle.task)
+            .await
+            .expect("cancelled generation should not wait for request timeout")
+            .unwrap()
+            .unwrap();
+        server.abort();
     }
 
     #[tokio::test]

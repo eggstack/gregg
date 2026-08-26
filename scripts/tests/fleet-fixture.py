@@ -25,6 +25,11 @@ class FixtureHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
         path, _, query = self.path.partition("?")
+        if path == "/ready":
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         path_mode = path.strip("/")
         mode = self.default_mode if path_mode in {"", "v1/status", "v2/status"} else path_mode
         if query:

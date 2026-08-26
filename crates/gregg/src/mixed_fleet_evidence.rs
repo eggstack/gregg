@@ -1,6 +1,7 @@
 //! Deterministic mixed-fleet product validation using the production poller and reducer.
 
 use std::collections::HashMap;
+use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command};
@@ -64,8 +65,22 @@ fn read_port(child: &mut Child, mode: &str) -> u16 {
 fn wait_for_ready(fixture: &mut FixtureProcess, mode: &str, port: u16) {
     let address = SocketAddr::from(([127, 0, 0, 1], port));
     for _ in 0..200 {
-        if TcpStream::connect_timeout(&address, Duration::from_millis(10)).is_ok() {
-            return;
+        if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(10)) {
+            stream
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .ok();
+            if stream
+                .write_all(b"GET /ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                .is_ok()
+            {
+                let mut response = [0_u8; 32];
+                if stream.read(&mut response).is_ok_and(|count| {
+                    response[..count].starts_with(b"HTTP/1.0 200")
+                        || response[..count].starts_with(b"HTTP/1.1 200")
+                }) {
+                    return;
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(10));
         if let Ok(Some(status)) = fixture.child.try_wait() {

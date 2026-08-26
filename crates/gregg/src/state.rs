@@ -237,10 +237,12 @@ impl AppState {
     /// Apply a poll batch to the state.
     ///
     /// Rejects batches whose generation is less than or equal to the
-    /// most recently applied generation. For each result: updates
-    /// reachability, latest snapshot, timestamps, latency, and error.
+    /// most recently applied generation, except for the scheduler's single
+    /// `u64::MAX` to `1` wrap. For each result: updates reachability, latest
+    /// snapshot, timestamps, latency, and error.
     pub fn apply_batch(&mut self, batch: &PollBatch) {
-        if batch.generation <= self.last_applied_generation {
+        let wrapped_generation = self.last_applied_generation == u64::MAX && batch.generation == 1;
+        if batch.generation <= self.last_applied_generation && !wrapped_generation {
             return;
         }
 
@@ -969,6 +971,20 @@ mod tests {
         assert_eq!(state.systems[0].endpoint.host, "new.local");
         assert_eq!(state.systems[0].reachability, Reachability::Pending);
         assert!(state.systems[0].latest.is_none());
+    }
+
+    #[test]
+    fn apply_batch_accepts_the_single_generation_wrap_after_max() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.last_applied_generation = u64::MAX;
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: Vec::new(),
+        });
+        assert_eq!(state.last_applied_generation, 1);
     }
 
     #[test]

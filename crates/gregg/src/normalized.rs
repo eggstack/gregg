@@ -174,17 +174,20 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     let mut available_bytes: u64 = 0;
     for drive in drives {
         if drive.total_bytes == 0 || drive.used_bytes > drive.total_bytes {
-            return None;
+            continue;
         }
         let available = drive
             .available_bytes
             .unwrap_or(drive.total_bytes - drive.used_bytes);
         if available > drive.total_bytes {
-            return None;
+            continue;
         }
         used_bytes = used_bytes.checked_add(drive.used_bytes)?;
         total_bytes = total_bytes.checked_add(drive.total_bytes)?;
         available_bytes = available_bytes.checked_add(available)?;
+    }
+    if total_bytes == 0 {
+        return None;
     }
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
     let usage_pct = ((used_bytes as f64) * 100.0 / (total_bytes as f64)) as f32;
@@ -340,5 +343,22 @@ mod tests {
         assert!(
             aggregate_drives(&[drive("/", u64::MAX, u64::MAX), drive("/home", 0, 1),]).is_none()
         );
+    }
+
+    #[test]
+    fn aggregate_drives_skips_invalid_entries() {
+        let aggregate = aggregate_drives(&[
+            drive("/", 2, 10),
+            drive("/invalid", 2, 1),
+            NormalizedDrive {
+                name: "/also-invalid".into(),
+                used_bytes: 1,
+                total_bytes: 10,
+                available_bytes: Some(11),
+            },
+        ])
+        .unwrap();
+        assert_eq!(aggregate.used_bytes, 2);
+        assert_eq!(aggregate.total_bytes, 10);
     }
 }

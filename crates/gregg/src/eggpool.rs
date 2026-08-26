@@ -417,7 +417,7 @@ where
                         period = requested;
                         generation = requested_generation;
                         request = Some(start_request(&client, &endpoint, period, generation, &clock));
-                        next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                        next_refresh_at = None;
                     }
                     Some(EggpoolCommand::Deactivate) => {
                         active = false;
@@ -440,7 +440,7 @@ where
                             }
                             request =
                                 Some(start_request(&client, &endpoint, period, generation, &clock));
-                            next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                            next_refresh_at = None;
                         }
                     }
                     Some(EggpoolCommand::Shutdown) | None => {
@@ -454,7 +454,7 @@ where
                     Some(())
                 }, if active && request.is_none() && next_refresh_at.is_some() => {
                     request = Some(start_request(&client, &endpoint, period, generation, &clock));
-                    next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                    next_refresh_at = None;
                 }
                 completed = async {
                     match request.as_mut() {
@@ -479,6 +479,9 @@ where
                         ),
                     };
                     let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
+                    if active {
+                        next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                    }
                 }
             }
         }
@@ -516,6 +519,7 @@ mod tests {
 
     async fn server_many(
         hold: bool,
+        delay: Duration,
     ) -> (
         u16,
         mpsc::Receiver<String>,
@@ -559,6 +563,7 @@ mod tests {
                     let _ = release_rx.await;
                     return;
                 }
+                tokio::time::sleep(delay).await;
                 let period = path.split("period=").nth(1).unwrap_or("1h");
                 let body = format!("{{\"period\":\"{period}\",\"accounted_tokens\":{},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}", ordinal + 1);
                 let response = format!(
@@ -755,7 +760,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn worker_passive_refresh_keeps_generation_and_updates_state() {
-        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
             EggpoolClient::new(Duration::from_secs(10)),
@@ -822,7 +827,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn worker_deadlines_are_relative_to_activation_triggers_and_deactivation() {
-        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
             EggpoolClient::new(Duration::from_secs(10)),
@@ -925,8 +930,58 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn worker_passive_refresh_interval_starts_after_completion() {
+        let (port, mut requests, _release, server_task) =
+            server_many(false, Duration::from_secs(5)).await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = spawn_worker(
+            EggpoolClient::new(Duration::from_secs(30)),
+            endpoint(port, None),
+            cancel.clone(),
+        );
+        worker
+            .commands
+            .send(EggpoolCommand::Activate {
+                period: EggpoolPeriod::Hour,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(5)).await;
+        let _ = worker.results.recv().await;
+        tokio::time::advance(Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            requests.recv().await.unwrap(),
+            "/api/stats/summary?period=1h"
+        );
+
+        worker
+            .commands
+            .send(EggpoolCommand::Shutdown)
+            .await
+            .unwrap();
+        cancel.cancel();
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn worker_cancellation_aborts_an_in_flight_request() {
-        let (port, mut requests, release, server_task) = server_many(true).await;
+        let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
             EggpoolClient::new(Duration::from_secs(600)),
@@ -954,7 +1009,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn worker_deactivation_aborts_an_in_flight_request() {
-        let (port, mut requests, release, server_task) = server_many(true).await;
+        let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
             EggpoolClient::new(Duration::from_secs(600)),
@@ -1030,7 +1085,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn worker_result_timestamps_come_from_the_injected_clock() {
-        let (port, mut requests, _release, server_task) = server_many(false).await;
+        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let anchor = Instant::now();
         let mut worker = spawn_worker_with_clock(

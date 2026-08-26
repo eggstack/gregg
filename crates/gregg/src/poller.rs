@@ -134,7 +134,7 @@ pub enum PollOutcome {
 /// A completed batch of poll results for a single generation.
 #[derive(Debug)]
 pub struct PollBatch {
-    /// Monotonically increasing generation counter.
+    /// Increasing generation counter; it wraps from `u64::MAX` to `1`.
     pub generation: u64,
     /// When the batch was started.
     #[allow(dead_code)] // Retained for latency diagnostics and generation tracing.

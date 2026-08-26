@@ -251,18 +251,46 @@ impl Config {
             source: AtomicWriteError::Io(e),
         })?;
         #[cfg(unix)]
-        if !dir_existed {
+        {
             use std::os::unix::fs::PermissionsExt;
-            // Best-effort hardening: on filesystems where the mode change
-            // fails (for example ACL-restricted mounts), keep going with the
-            // umask-derived permissions rather than failing the write, but
-            // surface the gap through diagnostics.
-            if let Err(error) = fs::set_permissions(dir, fs::Permissions::from_mode(0o700)) {
-                tracing::warn!(
-                    dir = %dir.display(),
-                    %error,
-                    "could not restrict new configuration directory to mode 0700"
-                );
+            // Do not turn an already read-only directory into a writable one
+            // as a side effect of a config write. Otherwise enforce private
+            // directory permissions for both new and existing parents.
+            if dir_existed
+                && fs::metadata(dir)
+                    .map(|metadata| metadata.permissions().mode() & 0o222 == 0)
+                    .unwrap_or(false)
+            {
+                return Err(ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "configuration directory is not writable",
+                    )),
+                });
+            }
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+            let mode = fs::metadata(dir)
+                .map_err(|e| ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                })?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode != 0o700 {
+                return Err(ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "configuration directory permissions are not 0700",
+                    )),
+                });
             }
         }
 
@@ -678,6 +706,27 @@ unknown_field = "oops"
         let loaded = Config::load(&path).unwrap();
         assert_eq!(config, loaded);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_restricts_existing_config_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("greggd_test_existing_dir_perms");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        Config::default()
+            .write_atomic(&dir.join("config.toml"))
+            .unwrap();
+
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

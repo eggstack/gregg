@@ -500,6 +500,27 @@ impl Config {
             })?;
         }
 
+        // Verify the bytes that were actually written before exposing the
+        // replacement. This catches truncated or otherwise corrupt temp
+        // files before the atomic rename can replace a valid config.
+        let verified = match Config::load(&temp_path) {
+            Ok(config) => config,
+            Err(_) => {
+                let _ = fs::remove_file(&temp_path);
+                return Err(ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::VerificationFailed,
+                });
+            }
+        };
+        if verified != *self {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::VerificationFailed,
+            });
+        }
+
         fs::rename(&temp_path, path).map_err(|e| {
             let _ = fs::remove_file(&temp_path);
             ConfigError::AtomicWrite {
@@ -995,6 +1016,8 @@ pub enum AtomicWriteError {
     NoParentDirectory,
     /// An I/O error occurred.
     Io(std::io::Error),
+    /// The file was written but verification re-parse failed.
+    VerificationFailed,
 }
 
 impl fmt::Display for AtomicWriteError {
@@ -1002,6 +1025,7 @@ impl fmt::Display for AtomicWriteError {
         match self {
             Self::NoParentDirectory => write!(f, "path has no parent directory"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::VerificationFailed => write!(f, "verification re-parse failed"),
         }
     }
 }
@@ -1011,6 +1035,7 @@ impl std::error::Error for AtomicWriteError {
         match self {
             Self::NoParentDirectory => None,
             Self::Io(e) => Some(e),
+            Self::VerificationFailed => None,
         }
     }
 }
@@ -1564,6 +1589,21 @@ default_port = 11310\n";
 
         let loaded = Config::load(&path).unwrap();
         assert_eq!(loaded.refresh_seconds, 10);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_atomic_round_trip_verifies_written_config() {
+        let dir = tmp_dir("atomic_verify");
+        let path = dir.join("config.toml");
+        let config = Config {
+            refresh_seconds: 42,
+            ..Config::default()
+        };
+
+        config.write_atomic(&path).unwrap();
+        assert_eq!(Config::load(&path).unwrap(), config);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -99,33 +99,31 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
     let kernel_str = format!("{} {}", snap.system.kernel_name, snap.system.kernel_release);
     let arch_str = &snap.system.architecture;
 
-    // Plan 087: when the IO token is present, prepend it to the
-    // remaining header components with a leading separator. The token
-    // is omitted entirely (no separator artifact) when the platform
-    // cannot supply a real value, so we use `Option`-aware formatting
-    // rather than an unconditional placeholder.
-    let io_suffix = io_str
-        .as_deref()
-        .map(|io| format!("  {io}"))
-        .unwrap_or_default();
+    let mut components = vec![name.to_string()];
+    if let Some(io) = io_str {
+        components.push(io);
+    }
+    if width >= 32 {
+        components.push(load_str);
+        components.push(cores_str);
+    }
+    if width >= 50 {
+        components.push(os_str);
+    }
+    if width >= 80 {
+        components.push(kernel_str);
+        components.push(arch_str.to_string());
+    }
 
-    // Bound the assembled header to the terminal width so a long
-    // configured name or OS/kernel string cannot overflow the row;
-    // ratatui would otherwise clip silently mid-token.
-    truncate_width(
-        &if width >= 80 {
-            format!(
-                "{name}{io_suffix}  {load_str}  {cores_str}  {os_str}  {kernel_str}  {arch_str}"
-            )
-        } else if width >= 50 {
-            format!("{name}{io_suffix}  {load_str}  {cores_str}  {os_str}")
-        } else if width >= 32 {
-            format!("{name}{io_suffix}  {load_str}  {cores_str}")
-        } else {
-            format!("{name}{io_suffix}")
-        },
-        usize::from(width),
-    )
+    // Remove whole trailing components until the selected priority tier fits;
+    // only the highest-priority name may be truncated. This prevents a long
+    // name from leaving a dangling `IO` or other partial token.
+    while components.len() > 1
+        && UnicodeWidthStr::width(components.join("  ").as_str()) > usize::from(width)
+    {
+        components.pop();
+    }
+    truncate_width(&components.join("  "), usize::from(width))
 }
 
 /// Return the display name for a system.
@@ -504,24 +502,45 @@ mod tests {
 
     #[test]
     fn header_line_remains_bounded_when_io_omitted() {
-        // Plan 087 documents that the existing priority-aware width
-        // behavior is preserved unchanged at the tier thresholds.
-        // Verify that omitting the IO token never causes a regression
-        // compared to the supported path: the unsupported header must
-        // be at least as short as the supported one.
+        // Omitting IO may make room for the next complete priority field,
+        // so compare each result with its terminal budget rather than with
+        // the supported form's length.
         let supported = system_with_io(true, Some(1.2));
         let unsupported = system_with_io(false, None);
         for width in [32u16, 50, 80, 120, 200] {
             let supported_line = header_line(&supported, width);
             let unsupported_line = header_line(&unsupported, width);
             assert!(
-                UnicodeWidthStr::width(unsupported_line.as_str())
-                    <= UnicodeWidthStr::width(supported_line.as_str()),
-                "omitting IO must not make the header longer than the supported \
-                 path at width {width}: supported={supported_line:?}, \
-                 unsupported={unsupported_line:?}"
+                UnicodeWidthStr::width(unsupported_line.as_str()) <= usize::from(width),
+                "unsupported header must fit at width {width}: {unsupported_line:?}"
             );
+            assert!(
+                UnicodeWidthStr::width(supported_line.as_str()) <= usize::from(width),
+                "supported header must fit at width {width}: {supported_line:?}"
+            );
+            assert!(!unsupported_line.contains("IO "));
         }
+    }
+
+    #[test]
+    fn header_line_drops_whole_tokens_for_long_names() {
+        let system = system_with_io(true, Some(1.2));
+        let line = header_line(
+            &crate::state::SystemState {
+                configured_name: Some("a".repeat(100)),
+                ..system
+            },
+            80,
+        );
+        assert_eq!(UnicodeWidthStr::width(line.as_str()), 80);
+        assert!(
+            !line.contains("IO"),
+            "long names must not leave partial IO: {line:?}"
+        );
+        assert!(
+            !line.ends_with("0."),
+            "header must not end in a partial token: {line:?}"
+        );
     }
 
     #[test]

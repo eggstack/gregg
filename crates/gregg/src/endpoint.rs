@@ -270,7 +270,7 @@ impl EndpointSpec {
                 // Check for host:port form with IPv6 (e.g., `::1:8080` is ambiguous).
                 // Strategy: if it parses as a valid IPv6 address, treat as host-only.
                 // If not, try splitting on last colon as host:port.
-                if input_str.parse::<IpAddr>().is_ok() {
+                if input_str.parse::<IpAddr>().is_ok() || is_ipv6_with_zone_id(input_str) {
                     // Valid IPv6 literal — use default port.
                     Ok(Self {
                         host: normalize_host(input_str)?,
@@ -446,6 +446,13 @@ fn normalize_host(host: &str) -> Result<String, EndpointError> {
     Ok(trimmed.to_string())
 }
 
+fn is_ipv6_with_zone_id(host: &str) -> bool {
+    let Some((address, zone)) = host.split_once('%') else {
+        return false;
+    };
+    !zone.is_empty() && address.parse::<std::net::Ipv6Addr>().is_ok()
+}
+
 fn parse_port(port_str: &str, full_input: &str) -> Result<u16, EndpointError> {
     let trimmed = port_str.trim();
     if trimmed.is_empty() {
@@ -602,6 +609,16 @@ mod tests {
         assert_eq!(spec.host, "::1");
         assert_eq!(spec.port, DEFAULT_PORT);
         assert!(!spec.port_was_explicit);
+    }
+
+    #[test]
+    fn bare_ipv6_zone_id_with_default_port() {
+        for input in ["fe80::1%eth0", "fe80::1%25eth0"] {
+            let spec = EndpointSpec::parse(input).unwrap();
+            assert_eq!(spec.host, input);
+            assert_eq!(spec.port, DEFAULT_PORT);
+            assert!(!spec.port_was_explicit);
+        }
     }
 
     // --- Rejection tests ---

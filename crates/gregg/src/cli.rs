@@ -693,8 +693,8 @@ pub fn resolve_editor() -> Option<String> {
 
 /// Check whether an executable is available in `PATH`.
 ///
-/// On Unix, this uses the `which` command. On Windows, this searches
-/// `PATH` entries directly and honours `PATHEXT` for extension resolution.
+/// On both Unix and Windows, this searches `PATH` entries directly. Windows
+/// also honours `PATHEXT` for extension resolution.
 fn executable_exists(cmd: &str) -> bool {
     #[cfg(windows)]
     {
@@ -702,13 +702,33 @@ fn executable_exists(cmd: &str) -> bool {
     }
     #[cfg(not(windows))]
     {
-        std::process::Command::new("which")
-            .arg(cmd)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
+        executable_exists_unix(cmd)
     }
+}
+
+#[cfg(unix)]
+fn executable_exists_unix(cmd: &str) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_executable = |path: &std::path::Path| {
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+
+    let command_path = std::path::Path::new(cmd);
+    if command_path.is_absolute() || cmd.contains('/') {
+        return is_executable(command_path);
+    }
+
+    let Ok(path_var) = std::env::var("PATH") else {
+        return false;
+    };
+    path_var
+        .split(':')
+        .map(|dir| if dir.is_empty() { "." } else { dir })
+        .map(std::path::Path::new)
+        .map(|dir| dir.join(cmd))
+        .any(|path| is_executable(&path))
 }
 
 /// Windows-specific executable lookup using `PATH` and `PATHEXT`.
@@ -1709,6 +1729,22 @@ mod tests {
         let config = store.load_existing().unwrap();
         assert!(config.systems.is_empty());
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn executable_lookup_checks_path_without_spawning_which() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tmp_dir("executable_lookup");
+        let executable = dir.join("editor");
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(executable_exists_unix(executable.to_str().unwrap()));
+
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!executable_exists_unix(executable.to_str().unwrap()));
         let _ = fs::remove_dir_all(&dir);
     }
 }

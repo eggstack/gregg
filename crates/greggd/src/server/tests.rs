@@ -680,6 +680,19 @@ async fn fresh_snapshot_returns_200() {
 }
 
 #[tokio::test]
+async fn future_snapshot_is_stale() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+    let snap = LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(u64::MAX)
+        .build();
+    update_both(&state, snap).await;
+
+    let app = build_test_router(state);
+    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn recovery_after_stale_by_age_returns_200() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
 
