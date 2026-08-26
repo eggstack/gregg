@@ -45,7 +45,7 @@ after a valid sample.
 | `Parse` | Content present but unparseable |
 | `CounterReset` | Kernel counter decreased (wrap or reset) |
 | `Numeric` | Arithmetic error (division by zero, overflow) |
-| `IdentityFallback` | Identity field unreadable, fallback used |
+| `IdentityFallback` | Identity field unreadable; sampling fails without publishing a fabricated identity |
 
 ### Common patterns
 

@@ -90,7 +90,8 @@ sample_interval_ms = 1000
 stale_after_ms = 10000
 ```
 
-Edit the config file to change the display name (`name` field).
+Edit the config file to change the display name (`name` field). The name must
+be non-empty, at most 128 bytes, and contain no control characters.
 
 Change the bind address or port:
 
@@ -159,6 +160,10 @@ one. Without it, the command reports an already-configured endpoint conflict.
 - `v`: toggle normal/condensed layout
 - `e`: expand/collapse drives for the selected system
 - `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint replacement, and poll it immediately; on EggPool, refresh that pane
+
+If a Systems config reload is missing, malformed, or invalid, the last-known-good
+configuration remains active and the error is shown in the diagnostic line until
+a later reload succeeds.
 
 The selected system keeps its logical selection (`e` still toggles its
 drive details), but the reverse-video highlight is transient — it

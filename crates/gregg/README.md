@@ -55,6 +55,10 @@ gregg edit
 | `e` | Expand or collapse selected-system drives |
 | `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 
+If a Systems config reload is missing, malformed, or invalid, the last-known-good
+configuration remains active and the error is shown in the diagnostic line until
+a later reload succeeds.
+
 `selected_id` is the persistent logical selection that drives `e`
 (drive expansion) and viewport behavior. The reverse-video highlight
 on the selected device is transient: it activates when you navigate,

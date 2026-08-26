@@ -26,7 +26,7 @@ service lifecycle. For platform metric collection itself, use the
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
-| `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`); `SyntheticClock` |
+| `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
 | `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
 
@@ -83,6 +83,11 @@ Reusable library/runtime code returns typed errors without printing or calling
 `std::process::exit()`; the binary boundary owns logging and exit codes.
 Failures while awaiting the non-Unix Ctrl-C shutdown source follow the same
 runtime error path rather than panicking.
+
+Sampler identity failures follow the ordinary warming/failed lifecycle and
+preserve any previous valid snapshot; they never publish a fabricated blank
+identity. Daemon display names are non-empty, at most 128 bytes, and may not
+contain control characters.
 
 ## Tests
 

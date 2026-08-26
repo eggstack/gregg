@@ -33,27 +33,33 @@ pub fn render_key_hint(f: &mut Frame, area: Rect, state: &AppState) {
         height: 1,
         ..area
     };
-    let both = !state.systems.is_empty() && state.eggpool.is_some();
-    let hint = if state.active_pane == Pane::Eggpool {
-        if both {
-            "h/l:pane  j/k:window  Ctrl-R:refresh  q:quit"
-        } else {
-            "j/k:window  Ctrl-R:refresh  q:quit"
-        }
-    } else if area.width < 60 {
-        if both {
-            "j/k select  h/l pane  v view  e drives  q quit"
-        } else {
-            "j/k select  v view  e drives  q quit"
-        }
+    let hint = if let Some(error) = state.config_reload_error.as_deref() {
+        error
     } else {
-        if both {
+        let both = !state.systems.is_empty() && state.eggpool.is_some();
+        if state.active_pane == Pane::Eggpool {
+            if both {
+                "h/l:pane  j/k:window  Ctrl-R:refresh  q:quit"
+            } else {
+                "j/k:window  Ctrl-R:refresh  q:quit"
+            }
+        } else if area.width < 60 {
+            if both {
+                "j/k select  h/l pane  v view  e drives  q quit"
+            } else {
+                "j/k select  v view  e drives  q quit"
+            }
+        } else if both {
             "j/k:select  h/l:pane  v:view  e:drives  Ctrl-R:refresh  q:quit"
         } else {
             "j/k:select  v:view  e:drives  Ctrl-R:refresh  q:quit"
         }
     };
-    let paragraph =
-        Paragraph::new(Line::from(Span::raw(hint))).style(Style::default().fg(Color::DarkGray));
+    let color = if state.config_reload_error.is_some() {
+        Color::Red
+    } else {
+        Color::DarkGray
+    };
+    let paragraph = Paragraph::new(Line::from(Span::raw(hint))).style(Style::default().fg(color));
     f.render_widget(paragraph, hint_area);
 }

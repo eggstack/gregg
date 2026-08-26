@@ -302,7 +302,7 @@ impl ServerState {
         if !self.max_snapshot_age.is_zero() {
             if let Some(observed_at_unix_ms) = state.last_observed_at_unix_ms {
                 let age_ms = now_unix_ms.checked_sub(observed_at_unix_ms);
-                if age_ms.map_or(true, |age| {
+                if age_ms.map_or(now_unix_ms != 0, |age| {
                     u128::from(age) >= self.max_snapshot_age.as_millis()
                 }) {
                     return true;

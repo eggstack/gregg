@@ -279,8 +279,17 @@ impl EndpointSpec {
                         name: None,
                     })
                 } else {
-                    // Not a valid IP. Try splitting last colon.
+                    // A zone-ID IPv6 address with an explicit port is not
+                    // accepted by `IpAddr`, so recognize the host portion
+                    // explicitly before using the general fallback. This
+                    // keeps malformed zone IDs from being treated as DNS
+                    // names by accident.
                     let (host_part, port_part) = rsplit_once_colon(input_str);
+                    if input_str.contains('%') && !is_ipv6_with_zone_id(host_part) {
+                        return Err(EndpointError::MalformedBrackets {
+                            input: input_str.to_string(),
+                        });
+                    }
                     let port = parse_port(port_part, input_str)?;
                     Ok(Self {
                         host: normalize_host(host_part)?,
@@ -450,7 +459,7 @@ fn is_ipv6_with_zone_id(host: &str) -> bool {
     let Some((address, zone)) = host.split_once('%') else {
         return false;
     };
-    !zone.is_empty() && address.parse::<std::net::Ipv6Addr>().is_ok()
+    !zone.is_empty() && !zone.contains(':') && address.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
 fn parse_port(port_str: &str, full_input: &str) -> Result<u16, EndpointError> {
@@ -621,6 +630,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn unbracketed_ipv6_zone_id_with_port_is_parsed_explicitly() {
+        let spec = EndpointSpec::parse("fe80::1%eth0:8080").unwrap();
+        assert_eq!(spec.host, "fe80::1%eth0");
+        assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
+    }
+
     // --- Rejection tests ---
 
     #[test]
@@ -731,6 +748,14 @@ mod tests {
     fn empty_port_after_bracket_rejected() {
         assert!(matches!(
             EndpointSpec::parse("[::1]:"),
+            Err(EndpointError::MalformedBrackets { .. })
+        ));
+    }
+
+    #[test]
+    fn empty_ipv6_zone_id_is_rejected() {
+        assert!(matches!(
+            EndpointSpec::parse("fe80::1%"),
             Err(EndpointError::MalformedBrackets { .. })
         ));
     }

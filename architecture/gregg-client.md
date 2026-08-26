@@ -137,7 +137,8 @@ the replacement endpoint vector, and awaits delivery through the bounded
 scheduler command channel before reconciling `AppState`. A full channel creates
 backpressure rather than dropping a replacement; a closed receiver returns
 through the TUI's normal error boundary. Failed config loads retain the
-last-known-good state and may issue an ordinary best-effort refresh.
+last-known-good state, issue an ordinary best-effort refresh, and display the
+reload error in the existing diagnostic line until a later reload succeeds.
 
 Plan 070 evaluated replacing the per-endpoint tasks and semaphore with a
 buffered future stream. That candidate was rejected because it would remove

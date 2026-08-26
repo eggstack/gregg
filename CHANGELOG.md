@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining audit findings** (`gregg`, `greggd`): identity failures no longer
+  publish blank snapshots, malformed IPv6 zone IDs are rejected consistently,
+  failed Systems config reloads remain last-known-good while showing a TUI
+  diagnostic, pre-epoch clocks do not falsely stale cached snapshots, large
+  byte ratios use widened arithmetic, daemon names reject control characters,
+  and CI-blocking clippy diagnostics are resolved.
+
 - **Audit corrections** (`gregg`, `greggd`): macOS byte percentages now use
   the shared collector normalization helper, non-Unix Ctrl-C listener errors
   return through the runtime error boundary instead of panicking, and a

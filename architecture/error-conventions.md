@@ -58,8 +58,9 @@ The collector module (`crates/greggd/src/collector/error.rs`) defines
   sample, invalidating the delta.
 - **Numeric** — an arithmetic error (e.g. division by zero) during
   normalisation.
-- **IdentityFallback** — a system-identity field could not be read and a
-  fallback value was used.
+- **IdentityFallback** — a system-identity field could not be read. If this
+  reaches the sampler, the cycle fails rather than publishing a blank or
+  fabricated identity.
 
 These are crate-local typed errors that never appear on the wire. Wire
 responses carry the coarse `HealthCategory` (`Warming`,

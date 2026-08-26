@@ -54,7 +54,8 @@ pub(crate) fn clamped_usage_pct(used_bytes: u64, total_bytes: u64) -> f32 {
     if total_bytes == 0 {
         0.0
     } else {
-        let pct = (used_bytes as f64) * 100.0 / (total_bytes as f64);
+        let scaled_used = u128::from(used_bytes) * 100;
+        let pct = (scaled_used as f64) / (total_bytes as f64);
         // Re-check finiteness after the narrowing cast so a non-finite
         // intermediate can never reach the wire, mirroring the CPU
         // percentage finalizers in `collector/linux/cpu.rs`.
@@ -299,5 +300,17 @@ pub trait SystemCollector: Send {
     /// return 404.
     fn supports_v1_snapshot(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamped_usage_pct;
+
+    #[test]
+    fn large_byte_ratios_remain_finite_and_clamped() {
+        assert!((clamped_usage_pct(0, u64::MAX) - 0.0).abs() < f32::EPSILON);
+        assert!((clamped_usage_pct(u64::MAX, u64::MAX) - 100.0).abs() < f32::EPSILON);
+        assert!((clamped_usage_pct(u64::MAX, u64::MAX - 1) - 100.0).abs() < f32::EPSILON);
     }
 }

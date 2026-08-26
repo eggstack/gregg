@@ -693,6 +693,18 @@ async fn future_snapshot_is_stale() {
 }
 
 #[tokio::test]
+async fn pre_epoch_clock_does_not_mark_cached_snapshot_stale() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+    let snap = LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(1_000)
+        .build();
+    update_both(&state, snap).await;
+
+    let published = state.published.read().await;
+    assert!(!state.is_stale(&published, 0));
+}
+
+#[tokio::test]
 async fn recovery_after_stale_by_age_returns_200() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
 

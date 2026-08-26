@@ -111,6 +111,8 @@ impl Config {
         let trimmed = self.name.trim();
         if trimmed.is_empty() {
             violations.push(ConfigViolation::EmptyName);
+        } else if trimmed.chars().any(char::is_control) {
+            violations.push(ConfigViolation::NameContainsControlCharacters);
         } else if trimmed.len() > MAX_NAME_LEN {
             violations.push(ConfigViolation::NameTooLong {
                 length: trimmed.len(),
@@ -258,8 +260,7 @@ impl Config {
             // directory permissions for both new and existing parents.
             if dir_existed
                 && fs::metadata(dir)
-                    .map(|metadata| metadata.permissions().mode() & 0o222 == 0)
-                    .unwrap_or(false)
+                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o222 == 0)
             {
                 return Err(ConfigError::AtomicWrite {
                     path: path.to_path_buf(),
@@ -494,6 +495,8 @@ impl std::error::Error for AtomicWriteError {
 pub enum ConfigViolation {
     /// Display name is empty after trimming.
     EmptyName,
+    /// Display name contains a control character.
+    NameContainsControlCharacters,
     /// Display name exceeds the maximum length.
     NameTooLong { length: usize, max: usize },
     /// Port is outside the valid range.
@@ -511,6 +514,9 @@ impl fmt::Display for ConfigViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyName => write!(f, "name is empty after trimming"),
+            Self::NameContainsControlCharacters => {
+                write!(f, "name contains control characters")
+            }
             Self::NameTooLong { length, max } => {
                 write!(f, "name is {length} characters, exceeds maximum of {max}")
             }
@@ -573,6 +579,16 @@ mod tests {
         };
         let violations = config.validate();
         assert!(violations.contains(&ConfigViolation::EmptyName));
+    }
+
+    #[test]
+    fn control_characters_in_name_fail_validation() {
+        let config = Config {
+            name: "greggd\nserver".into(),
+            ..Config::default()
+        };
+        let violations = config.validate();
+        assert!(violations.contains(&ConfigViolation::NameContainsControlCharacters));
     }
 
     #[test]

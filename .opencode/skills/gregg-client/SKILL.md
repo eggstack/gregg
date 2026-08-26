@@ -253,7 +253,7 @@ violation when one already exists.
 
 ## Ctrl-R config reload
 
-The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates backpressure; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state.
+The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates backpressure; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state, issue an ordinary refresh, and display the reload error in the diagnostic line until a later reload succeeds.
 
 ## Key constraints
 

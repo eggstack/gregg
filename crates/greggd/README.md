@@ -79,6 +79,11 @@ means successful enumeration with no eligible volumes. Collection is
 best-effort and does not model physical disks or storage topology. Linux and
 macOS retain `/v1/status`; Windows is v2-only for status semantics.
 
+The configured daemon display name must be non-empty, at most 128 bytes, and
+contain no control characters. If identity collection fails, the daemon does
+not publish a blank identity; it remains warming or failed and preserves any
+previous valid snapshot.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>

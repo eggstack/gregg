@@ -503,15 +503,12 @@ impl Config {
         // Verify the bytes that were actually written before exposing the
         // replacement. This catches truncated or otherwise corrupt temp
         // files before the atomic rename can replace a valid config.
-        let verified = match Config::load(&temp_path) {
-            Ok(config) => config,
-            Err(_) => {
-                let _ = fs::remove_file(&temp_path);
-                return Err(ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::VerificationFailed,
-                });
-            }
+        let Ok(verified) = Config::load(&temp_path) else {
+            let _ = fs::remove_file(&temp_path);
+            return Err(ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::VerificationFailed,
+            });
         };
         if verified != *self {
             let _ = fs::remove_file(&temp_path);
@@ -1033,9 +1030,8 @@ impl fmt::Display for AtomicWriteError {
 impl std::error::Error for AtomicWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NoParentDirectory => None,
+            Self::NoParentDirectory | Self::VerificationFailed => None,
             Self::Io(e) => Some(e),
-            Self::VerificationFailed => None,
         }
     }
 }

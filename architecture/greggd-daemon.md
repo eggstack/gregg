@@ -120,7 +120,8 @@ The sampler owns the clock and cadence. Key behaviors:
 - Subsequent samples return `Ok(CollectedMetrics)` with delta-based percentages
 - Produces both v1 `StatusSnapshot` and v2 `StatusPayloadV2` from one collection
 - Manages readiness lifecycle: `Warming` → `Ready` (on first delta) or `Failed`
-  (on collector error)
+  (on collector or identity error); identity failures preserve any previously
+  published snapshot and never publish a blank identity
 - `Clock` trait for deterministic testing with `SyntheticClock`
 - The runtime loop runs each collection cycle on tokio's blocking thread pool
   (`spawn_blocking`), so slow native reads (procfs, one `statvfs()` per mount)
@@ -139,7 +140,8 @@ sample_interval_ms = 1000 # 250-60000
 stale_after_ms = 10000    # 0 = disabled, else > sample_interval_ms
 ```
 
-`name` is the human-readable `system.name` in published snapshots. Foreground
+`name` is the human-readable `system.name` in published snapshots. It must be
+non-empty, at most 128 bytes, and contain no control characters. Foreground
 startup and the Windows SCM worker load and validate the config before creating
 their native collector, then pass that name as the collector display-name
 override. `system.hostname` is collected independently from the native host
@@ -260,7 +262,7 @@ converts to both v1 and v2 wire formats without duplicate collection.
 | `Parse` | Metric file present but unparseable |
 | `CounterReset` | Kernel counter wrapped or decreased |
 | `Numeric` | Arithmetic error during normalization |
-| `IdentityFallback` | Identity field unreadable, fallback used |
+| `IdentityFallback` | Identity field unreadable; sampling fails without publishing a fabricated identity |
 
 These are crate-local typed errors. Wire responses carry only `HealthCategory`.
 

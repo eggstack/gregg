@@ -112,7 +112,7 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
     }
     if width >= 80 {
         components.push(kernel_str);
-        components.push(arch_str.to_string());
+        components.push(arch_str.clone());
     }
 
     // Remove whole trailing components until the selected priority tier fits;

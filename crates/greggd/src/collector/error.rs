@@ -25,9 +25,8 @@ pub enum CollectErrorKind {
     /// Normalized numeric output is not representable as a finite percentage.
     /// Indicates a deeper arithmetic bug rather than a transient condition.
     Numeric,
-    /// Identity could not be fully determined. The collector may still be
-    /// able to produce samples; the daemon should report a degraded identity
-    /// in the snapshot and continue.
+    /// Identity could not be fully determined. The sampler treats this as a
+    /// collection failure and does not publish a fabricated identity.
     IdentityFallback,
 }
 

@@ -407,10 +407,12 @@ async fn refresh_systems(
                 .await
                 .map_err(|_| SchedulerUnavailable)?;
             app_state.reconcile_systems(&config);
+            app_state.clear_config_reload_error();
         }
-        Err(_) => {
+        Err(error) => {
             // Keep the last-known-good state when an external edit is
             // temporarily missing, malformed, or invalid.
+            app_state.set_config_reload_error(format!("config reload failed: {error}"));
             scheduler_tx
                 .send(scheduler::SchedulerCommand::Refresh)
                 .await
@@ -600,9 +602,26 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(app.systems[0].endpoint.host, "192.168.183.143");
+        assert!(app.config_reload_error.is_some());
         assert!(matches!(
             received.recv().await,
             Some(scheduler::SchedulerCommand::Refresh)
+        ));
+
+        new_config.write_atomic(&path).unwrap();
+        dispatch_action_with_store(
+            &mut app,
+            action::Action::RefreshNow,
+            &commands,
+            Some(&store),
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(app.config_reload_error.is_none());
+        assert!(matches!(
+            received.recv().await,
+            Some(scheduler::SchedulerCommand::ReplaceEndpoints(_))
         ));
 
         let _ = fs::remove_dir_all(&dir);

@@ -1747,6 +1747,17 @@ mod tests {
     }
 
     #[test]
+    fn config_reload_error_is_rendered_in_the_diagnostic_line() {
+        let config = test_config(&["s1"]);
+        let mut state = AppState::from_config(&config);
+        state.config_reload_error = Some("config reload failed: invalid TOML".into());
+
+        let output = render_state(&state, 80, 7);
+
+        assert!(output.contains("config reload failed: invalid TOML"));
+    }
+
+    #[test]
     fn render_online_system_without_snapshot_does_not_crash() {
         // System is Online but latest is None (edge case).
         let config = test_config(&["s"]);

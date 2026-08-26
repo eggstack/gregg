@@ -130,6 +130,8 @@ pub struct AppState {
     pub last_applied_generation: u64,
     /// Current refresh status.
     pub refresh_status: RefreshStatus,
+    /// Diagnostic from the most recent rejected Systems config reload.
+    pub config_reload_error: Option<String>,
     /// Terminal dimensions (width, height), if known.
     pub terminal_size: Option<(u16, u16)>,
     /// Currently active top-level pane.
@@ -177,6 +179,7 @@ impl AppState {
             viewport_top_id,
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
+            config_reload_error: None,
             terminal_size: None,
             active_pane: if config.systems.is_empty() && eggpool.is_some() {
                 Pane::Eggpool
@@ -232,6 +235,16 @@ impl AppState {
             self.selected_id = None;
             self.viewport_top_id = None;
         }
+    }
+
+    /// Record a rejected Systems config reload for the renderer.
+    pub fn set_config_reload_error(&mut self, error: String) {
+        self.config_reload_error = Some(error);
+    }
+
+    /// Clear the rejected Systems config reload diagnostic after a success.
+    pub fn clear_config_reload_error(&mut self) {
+        self.config_reload_error = None;
     }
 
     /// Apply a poll batch to the state.
@@ -1499,6 +1512,7 @@ mod tests {
             viewport_top_id: Some("test".into()),
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
+            config_reload_error: None,
             terminal_size: None,
             active_pane: Pane::Systems,
             system_view_mode: SystemViewMode::Normal,

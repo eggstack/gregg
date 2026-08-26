@@ -189,8 +189,9 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     if total_bytes == 0 {
         return None;
     }
+    let scaled_used = u128::from(used_bytes) * 100;
     #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let usage_pct = ((used_bytes as f64) * 100.0 / (total_bytes as f64)) as f32;
+    let usage_pct = (scaled_used as f64 / total_bytes as f64) as f32;
     Some(DriveAggregate {
         used_bytes,
         total_bytes,
@@ -360,5 +361,14 @@ mod tests {
         .unwrap();
         assert_eq!(aggregate.used_bytes, 2);
         assert_eq!(aggregate.total_bytes, 10);
+    }
+
+    #[test]
+    fn aggregate_drives_handles_maximum_byte_counts() {
+        let aggregate = aggregate_drives(&[drive("/", u64::MAX - 1, u64::MAX)]).unwrap();
+
+        assert_eq!(aggregate.used_bytes, u64::MAX - 1);
+        assert_eq!(aggregate.total_bytes, u64::MAX);
+        assert!((aggregate.usage_pct - 100.0).abs() < f32::EPSILON);
     }
 }

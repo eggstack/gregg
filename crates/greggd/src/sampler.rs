@@ -289,7 +289,14 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
 
                 let now_ms = self.clock.now_unix_ms();
-                let identity = self.identity_or_blank();
+                let identity_result = { self.lock_collector().identity() };
+                let identity = match identity_result {
+                    Ok(identity) => identity,
+                    Err(err) => {
+                        self.apply_sample_result(Err(err));
+                        return;
+                    }
+                };
                 let converted = self.convert_sample(metrics, now_ms, identity);
 
                 let (v1, payload_v2) = match converted {
@@ -345,22 +352,6 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
             },
         }
-    }
-
-    /// Collector identity, falling back to a blank identity when the
-    /// collector cannot supply one.
-    fn identity_or_blank(&self) -> gregg_protocol::SystemIdentity {
-        self.lock_collector()
-            .identity()
-            .unwrap_or_else(|_| gregg_protocol::SystemIdentity {
-                name: String::new(),
-                hostname: String::new(),
-                os_name: String::new(),
-                os_version: String::new(),
-                kernel_name: String::new(),
-                kernel_release: String::new(),
-                architecture: String::new(),
-            })
     }
 
     /// Convert one collected sample into the publishable snapshot pair.
@@ -471,12 +462,24 @@ mod tests {
     /// A controllable collector that returns scripted results.
     struct SyntheticCollector {
         results: Mutex<VecDeque<Result<CollectedMetrics, CollectError>>>,
+        identity_results: Mutex<VecDeque<Result<SystemIdentity, CollectError>>>,
     }
 
     impl SyntheticCollector {
         fn from_results(results: Vec<Result<CollectedMetrics, CollectError>>) -> Self {
             Self {
                 results: Mutex::new(VecDeque::from(results)),
+                identity_results: Mutex::new(VecDeque::new()),
+            }
+        }
+
+        fn with_identity_results(
+            results: Vec<Result<CollectedMetrics, CollectError>>,
+            identity_results: Vec<Result<SystemIdentity, CollectError>>,
+        ) -> Self {
+            Self {
+                results: Mutex::new(VecDeque::from(results)),
+                identity_results: Mutex::new(VecDeque::from(identity_results)),
             }
         }
 
@@ -573,7 +576,11 @@ mod tests {
 
     impl SystemCollector for SyntheticCollector {
         fn identity(&self) -> Result<SystemIdentity, CollectError> {
-            Ok(test_identity())
+            self.identity_results
+                .lock()
+                .expect("identity lock poisoned")
+                .pop_front()
+                .unwrap_or_else(|| Ok(test_identity()))
         }
 
         fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
@@ -749,6 +756,37 @@ mod tests {
         let snap = sampler.snapshot().expect("snapshot must be present");
         assert!((snap.cpu.usage_pct - 25.0).abs() < f32::EPSILON);
         assert_eq!(snap.cpu.logical_cores, 4);
+    }
+
+    #[test]
+    fn identity_failure_preserves_last_snapshot() {
+        let clock = SyntheticClock::new(1000);
+        let collector = SyntheticCollector::with_identity_results(
+            vec![
+                Err(CollectError::warming("baseline")),
+                Ok(successful_metrics()),
+                Ok(successful_metrics()),
+            ],
+            vec![
+                Ok(test_identity()),
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "identity unavailable",
+                )),
+                Ok(test_identity()),
+            ],
+        );
+        let mut sampler = Sampler::new(collector, clock);
+
+        sampler.sample_once();
+        sampler.sample_once();
+        let published = sampler.snapshot().expect("snapshot must be present");
+
+        sampler.sample_once();
+
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.snapshot().as_deref(), Some(published.as_ref()));
+        assert_eq!(published.system, test_identity());
     }
 
     #[test]
