@@ -56,6 +56,9 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 
 ## Architecture
 
+Client configuration bounds `request_timeout_ms` to 100..=60,000 milliseconds
+so a malformed timeout cannot hold bounded polling permits indefinitely.
+
 ### Event loop
 
 The main event loop uses `tokio::select!` biased to process:

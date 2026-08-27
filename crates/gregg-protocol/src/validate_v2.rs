@@ -16,7 +16,9 @@ use crate::v2::{
     CommitMetrics, StatusPayloadV2, StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES,
     MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
 };
-use crate::{LoadAverage, MemoryMetrics, SystemIdentity, MAX_SAMPLE_INTERVAL_MS};
+use crate::{
+    LoadAverage, MemoryMetrics, SystemIdentity, MAX_IDENTITY_FIELD_BYTES, MAX_SAMPLE_INTERVAL_MS,
+};
 
 /// A single protocol-invariant violation for v2 snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -260,7 +262,7 @@ fn validate_identity_v2(system: &SystemIdentity, out: &mut Vec<ValidationViolati
         ("system.architecture", &system.architecture),
     ];
     for (field, value) in fields {
-        if value.is_empty() || value.contains('\0') {
+        if value.is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::InvalidIdentityField,
                 field,
@@ -1119,6 +1121,16 @@ mod tests {
         assert!(err.iter().any(
             |v| v.field == "system.hostname" && v.kind == ViolationKindV2::InvalidIdentityField
         ));
+    }
+
+    #[test]
+    fn rejects_identity_fields_that_are_too_long() {
+        let mut snap = valid_linux_v2();
+        snap.system.hostname = "x".repeat(MAX_IDENTITY_FIELD_BYTES + 1);
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|v| {
+            v.field == "system.hostname" && v.kind == ViolationKindV2::InvalidIdentityField
+        }));
     }
 
     #[test]

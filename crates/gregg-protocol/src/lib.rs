@@ -39,7 +39,7 @@
 //! Within each schema version:
 //!
 //! - Unknown additive JSON fields are ignored by default.
-//! - Required version-1 fields remain required unless explicitly changed to
+//! - Required fields remain required unless explicitly changed to
 //!   optional under an additive compatibility decision.
 //! - Capability flags control interpretation of optional metrics. A `None`
 //!   value paired with a `false` capability is expected; a `None` value
@@ -150,3 +150,6 @@ pub const SCHEMA_VERSION_V1: u16 = 1;
 
 /// Maximum sampling cadence accepted by the wire validation rules.
 pub const MAX_SAMPLE_INTERVAL_MS: u64 = 86_400_000;
+
+/// Maximum UTF-8 byte length accepted for any system identity field.
+pub const MAX_IDENTITY_FIELD_BYTES: usize = 512;

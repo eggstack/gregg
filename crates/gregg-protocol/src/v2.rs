@@ -112,19 +112,11 @@ impl StatusSnapshotV2 {
 /// Servers must report `None` for the corresponding value rather than
 /// fabricating a zero or placeholder.
 ///
-/// # Absent keys versus explicit `false`
-///
-/// The struct-level serde default means an omitted capability key
-/// deserializes as `false`, which is indistinguishable from an intentional
-/// `false`. Receivers therefore cannot detect a truncated capabilities
-/// object from deserialization alone. Validation narrows the gap by
-/// rejecting payloads where a flag disagrees with the presence of its
-/// corresponding value, so only simultaneous omission of *both* the flag
-/// and the value stays silent. Every greggd version serializes all four
-/// flags; only third-party or future daemons could produce the silent case.
+/// All four capability keys are required when deserializing a v2 payload.
+/// An explicit `false` is meaningful and must not be confused with a missing
+/// key in a truncated capabilities object.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[serde(default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricCapabilitiesV2 {
     /// Whether aggregate CPU I/O wait is reported.

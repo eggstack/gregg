@@ -886,7 +886,7 @@ fn empty_json_body_is_rejected() {
 }
 
 #[test]
-fn oversized_valid_json_parses() {
+fn oversized_identity_is_rejected_by_validation() {
     let long_name = "x".repeat(10_000);
     let json = format!(
         r#"{{
@@ -905,8 +905,7 @@ fn oversized_valid_json_parses() {
         }}"#,
     );
     let snap: StatusSnapshot = serde_json::from_str(&json).expect("large but valid JSON parses");
-    snap.validate()
-        .expect("oversized valid snapshot with long name validates");
+    assert!(snap.validate().is_err());
 }
 
 #[test]
@@ -1262,6 +1261,17 @@ fn v2_linux_fixture_round_trips() {
 }
 
 #[test]
+fn v2_capability_keys_are_required() {
+    let mut value: serde_json::Value = serde_json::from_slice(&fixture("linux-v2.json")).unwrap();
+    value["capabilities"]
+        .as_object_mut()
+        .unwrap()
+        .remove("swap");
+    let bytes = serde_json::to_vec(&value).unwrap();
+    assert!(serde_json::from_slice::<StatusPayloadV2>(&bytes).is_err());
+}
+
+#[test]
 fn v2_drive_availability_is_additive_and_independent() {
     let mut value: serde_json::Value = serde_json::from_slice(&fixture("linux-v2.json")).unwrap();
     value["drives"][0]["available_bytes"] = serde_json::json!(1_500_000_000);
@@ -1419,14 +1429,10 @@ fn v2_fixture_paths_exist() {
 #[test]
 fn v1_fixture_not_accidentally_parsed_as_v2() {
     let bytes = fixture("linux-v1.json");
-    // V2 capability defaults make this additive shape parseable, but the
-    // explicit schema version still rejects it as a v2 snapshot.
+    // V2 requires its complete capability object, so the older shape is
+    // rejected before the explicit schema version can be checked.
     let result = serde_json::from_slice::<StatusSnapshotV2>(&bytes);
-    let parsed = result.expect("v1 and v2 have an additive JSON shape");
-    assert!(
-        parsed.validate().is_err(),
-        "v1 schema must not validate as v2"
-    );
+    assert!(result.is_err(), "v1 schema must not parse as v2");
 }
 
 #[test]

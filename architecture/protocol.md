@@ -47,7 +47,8 @@ Every snapshot carries:
   validation accepts values from 1 ms through 24 hours.
 - `capabilities` — per-metric support flags. A `false` flag means the metric
   is unsupported on this platform; servers must report `None` (null) for
-  unsupported values rather than zero.
+  unsupported values rather than zero. V2 payloads must include all four
+  capability keys; omitted keys are not treated as explicit `false`.
 - `system: SystemIdentity` — name, hostname, OS name and version, kernel
   name and release, architecture. Fields are transported separately so the
   TUI can degrade by width priority.
@@ -126,7 +127,8 @@ are:
 - `LoadValueOutOfRange`
 - `UsedExceedsTotal` (memory or swap)
 - `IowaitCapabilityMismatch`
-- `InvalidIdentityField` — identity string is empty or contains NUL
+- `InvalidIdentityField` — identity string is empty, contains NUL, or exceeds
+  512 UTF-8 bytes
 
 ### V2 validation
 

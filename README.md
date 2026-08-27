@@ -133,6 +133,9 @@ The client stores its config at:
 - macOS: `~/Library/Application Support/gregg/gregg.toml`
 - Windows: `%APPDATA%\gregg\gregg.toml`
 
+Client `request_timeout_ms` values must be between 100 and 60,000 milliseconds;
+invalid values are rejected before polling starts.
+
 ## Client commands
 
 ```bash

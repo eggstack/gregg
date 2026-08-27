@@ -19,7 +19,7 @@ depends on nothing from either.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `#![forbid(unsafe_code)]` |
+| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `MAX_IDENTITY_FIELD_BYTES = 512`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
 | `validate` | `src/validate.rs` | V1 validation: 9 violation kinds; re-exports `validate()` |
@@ -74,7 +74,9 @@ returns `StatusSnapshot` directly. The v2 status endpoint returns
 | `memory_commit` | `false` | `false` | `true` |
 
 A `false` capability means the corresponding field must be `None`/`null`.
-Validation rejects capability/value contradictions.
+All four v2 capability keys are required when decoding; validation also
+rejects capability/value contradictions. Every system identity field is
+limited to 512 UTF-8 bytes in addition to the empty/NUL checks.
 
 ## Validation
 
@@ -94,7 +96,7 @@ additive JSON changes from silently loosening invariants.
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
-| `InvalidIdentityField` | Identity string empty or NUL-padded |
+| `InvalidIdentityField` | Identity string empty, NUL-padded, or over 512 UTF-8 bytes |
 
 ### V2 additional violation kinds
 

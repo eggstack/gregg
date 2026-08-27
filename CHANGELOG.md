@@ -9,6 +9,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining 2026-08-27 audit findings** (`gregg-protocol`, `gregg`,
+  `greggd`): configuration metadata errors are no longer treated as missing,
+  client request timeouts are bounded to 100–60,000 ms, v2 capability objects
+  require all four explicit flags, identity fields are bounded to 512 UTF-8
+  bytes, failed v1 health responses require a category, DNS classification no
+  longer relies on display strings, EggPool deadlines honor its clock seam,
+  endpoint deduplication uses ASCII case folding, and existing daemon config
+  directory permissions are preserved.
+
 - **Remaining audit findings** (`gregg`, `greggd`): identity failures no longer
   publish blank snapshots, malformed IPv6 zone IDs are rejected consistently,
   failed Systems config reloads remain last-known-good while showing a TUI

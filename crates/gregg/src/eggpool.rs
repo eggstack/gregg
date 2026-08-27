@@ -319,20 +319,6 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
         }
         current = error.source();
     }
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(error) = current {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("connection refused") {
-            return EggpoolFetchOutcome::ConnectionRefused;
-        }
-        if message.contains("dns")
-            || message.contains("resolve")
-            || message.contains("failed to lookup address information")
-        {
-            return EggpoolFetchOutcome::DnsFailure;
-        }
-        current = error.source();
-    }
     EggpoolFetchOutcome::NetworkError
 }
 
@@ -482,7 +468,7 @@ where
                     };
                     let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
                     if active {
-                        next_refresh_at = Some(tokio::time::Instant::now() + REFRESH_INTERVAL);
+                        next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
                     }
                 }
             }

@@ -97,7 +97,7 @@ or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, schema version constant (`SCHEMA_VERSION_V1 = 1`), `MAX_SAMPLE_INTERVAL_MS` |
+| `lib` | `src/lib.rs` | Root, re-exports, schema version constant (`SCHEMA_VERSION_V1 = 1`), `MAX_SAMPLE_INTERVAL_MS`, and `MAX_IDENTITY_FIELD_BYTES = 512` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities`; `validate()` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2 = 2`, `MAX_DRIVE_ENTRIES = 32`, `MAX_DRIVE_NAME_BYTES = 512` |
 | `validate` | `src/validate.rs` | V1 validation: returns `Result<(), Vec<ValidationViolation>>` with 9 violation kinds |

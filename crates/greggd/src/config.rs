@@ -255,9 +255,8 @@ impl Config {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            // Do not turn an already read-only directory into a writable one
-            // as a side effect of a config write. Otherwise enforce private
-            // directory permissions for both new and existing parents.
+            // Preserve permissions on operator-managed directories. Enforce
+            // private permissions only when this write creates the directory.
             if dir_existed
                 && fs::metadata(dir)
                     .is_ok_and(|metadata| metadata.permissions().mode() & 0o222 == 0)
@@ -270,28 +269,13 @@ impl Config {
                     )),
                 });
             }
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
-                ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(e),
-                }
-            })?;
-            let mode = fs::metadata(dir)
-                .map_err(|e| ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(e),
-                })?
-                .permissions()
-                .mode()
-                & 0o777;
-            if mode != 0o700 {
-                return Err(ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "configuration directory permissions are not 0700",
-                    )),
-                });
+            if !dir_existed {
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
+                    ConfigError::AtomicWrite {
+                        path: path.to_path_buf(),
+                        source: AtomicWriteError::Io(e),
+                    }
+                })?;
             }
         }
 
@@ -727,7 +711,7 @@ unknown_field = "oops"
 
     #[test]
     #[cfg(unix)]
-    fn write_atomic_restricts_existing_config_directory() {
+    fn write_atomic_preserves_existing_config_directory_permissions() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = std::env::temp_dir().join("greggd_test_existing_dir_perms");
@@ -741,7 +725,7 @@ unknown_field = "oops"
 
         assert_eq!(
             fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-            0o700
+            0o755
         );
         let _ = fs::remove_dir_all(&dir);
     }

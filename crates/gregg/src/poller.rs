@@ -411,17 +411,6 @@ fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
         current = error.source();
     }
 
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(error) = current {
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("dns")
-            || message.contains("resolve")
-            || message.contains("failed to lookup address information")
-        {
-            return true;
-        }
-        current = error.source();
-    }
     false
 }
 
@@ -846,16 +835,18 @@ mod tests {
     }
 
     #[test]
-    fn is_dns_failure_matches_typed_and_resolver_errors() {
+    fn is_dns_failure_matches_typed_errors_only() {
         // AddrNotAvailable comes from connect(), not name resolution.
         let unreachable_network =
             io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
         assert!(!is_dns_failure(&unreachable_network));
         let gai =
             io::Error::other("failed to lookup address information: Name or service not known");
-        assert!(is_dns_failure(&gai));
-        let resolver = io::Error::other("hickory resolver: DNS query failed");
-        assert!(is_dns_failure(&resolver));
+        assert!(!is_dns_failure(&gai));
+        let misleading = io::Error::other("failed to resolve proxy");
+        assert!(!is_dns_failure(&misleading));
+        let not_found = io::Error::new(io::ErrorKind::NotFound, "name not found");
+        assert!(is_dns_failure(&not_found));
     }
 
     #[tokio::test]
@@ -926,7 +917,9 @@ mod tests {
 
     #[tokio::test]
     async fn wrong_content_type_with_valid_json() {
-        let body = valid_snapshot_json();
+        let mut json = serde_json::to_value(LinuxSnapshotV2Builder::default().build()).unwrap();
+        json["schema_version"] = serde_json::json!(1);
+        let body = serde_json::to_string(&json).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -967,10 +960,10 @@ mod tests {
 
     #[tokio::test]
     async fn large_valid_json_under_64k() {
-        let long_name = "x".repeat(60_000);
+        let long_unknown_field = "x".repeat(60_000);
         let snap = LinuxSnapshotBuilder::default().build();
         let mut json = serde_json::to_value(&snap).unwrap();
-        json["system"]["name"] = serde_json::json!(long_name);
+        json["future_field"] = serde_json::json!(long_unknown_field);
         let body = serde_json::to_string(&json).unwrap();
         assert!(body.len() < 64 * 1024);
         let url = mock_server(body.into_bytes(), "200 OK").await;

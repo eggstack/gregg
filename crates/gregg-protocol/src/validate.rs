@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use crate::{
     snapshot::{CpuMetrics, LoadAverage, MemoryMetrics, StatusSnapshot, SwapMetrics},
-    SystemIdentity, MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
+    SystemIdentity, MAX_IDENTITY_FIELD_BYTES, MAX_SAMPLE_INTERVAL_MS, SCHEMA_VERSION_V1,
 };
 
 /// A single protocol-invariant violation.
@@ -149,7 +149,7 @@ fn validate_identity(system: &SystemIdentity, out: &mut Vec<ValidationViolation>
         ("system.architecture", &system.architecture),
     ];
     for (field, value) in fields {
-        if value.is_empty() || value.contains('\0') {
+        if value.is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES {
             out.push(ValidationViolation::new(
                 ViolationKind::InvalidIdentityField,
                 field,
@@ -328,6 +328,16 @@ mod tests {
                 .any(|v| v.field == "system.hostname"
                     && v.kind == ViolationKind::InvalidIdentityField)
         );
+    }
+
+    #[test]
+    fn rejects_identity_fields_that_are_too_long() {
+        let mut snap = valid_snapshot();
+        snap.system.hostname = "x".repeat(MAX_IDENTITY_FIELD_BYTES + 1);
+        let err = validate(&snap).unwrap_err();
+        assert!(err.iter().any(|v| {
+            v.field == "system.hostname" && v.kind == ViolationKind::InvalidIdentityField
+        }));
     }
 
     #[test]

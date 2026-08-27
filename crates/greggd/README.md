@@ -84,6 +84,11 @@ contain no control characters. If identity collection fails, the daemon does
 not publish a blank identity; it remains warming or failed and preserves any
 previous valid snapshot.
 
+When writing configuration, a newly created parent directory is restricted to
+mode `0700`; an existing operator-managed directory keeps its current
+permissions. Metadata errors while loading a default config are reported
+instead of silently falling back to defaults.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>

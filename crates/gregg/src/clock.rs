@@ -14,6 +14,14 @@ use std::time::Instant;
 pub trait Clock {
     /// Return the current instant.
     fn now(&self) -> Instant;
+
+    /// Return the current Tokio timer instant.
+    ///
+    /// Production code overrides this so paused Tokio timers remain aligned
+    /// with the timer runtime; injected clocks use their standard instant.
+    fn tokio_now(&self) -> tokio::time::Instant {
+        tokio::time::Instant::from_std(self.now())
+    }
 }
 
 /// The real system clock backed by [`Instant::now`].
@@ -23,6 +31,10 @@ pub struct RealClock;
 impl Clock for RealClock {
     fn now(&self) -> Instant {
         Instant::now()
+    }
+
+    fn tokio_now(&self) -> tokio::time::Instant {
+        tokio::time::Instant::now()
     }
 }
 

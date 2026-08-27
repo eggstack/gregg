@@ -196,6 +196,8 @@ and `architecture/gregg-protocol.md`.
     complement used bytes because of reservations or quotas.
 - Validation uses `validate()` methods returning structured violations, not
   serde failures. V1 has 9 violation kinds; V2 has 16 (9 from V1 + 7 additional).
+  V2 capability objects require all four explicit capability fields, and every
+  system identity field is limited to 512 UTF-8 bytes.
 
 ## Crate versions and publishing
 

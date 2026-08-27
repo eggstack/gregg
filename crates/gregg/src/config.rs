@@ -90,6 +90,9 @@ pub const MAX_REFRESH_SECONDS: u64 = 3600;
 /// Minimum request timeout in milliseconds.
 pub const MIN_REQUEST_TIMEOUT_MS: u64 = 100;
 
+/// Maximum request timeout in milliseconds.
+pub const MAX_REQUEST_TIMEOUT_MS: u64 = 60_000;
+
 /// Maximum concurrent polling requests.
 pub const MAX_CONCURRENT_REQUESTS: u32 = 64;
 
@@ -257,7 +260,9 @@ impl Config {
         }
 
         // Request timeout.
-        if self.request_timeout_ms < MIN_REQUEST_TIMEOUT_MS {
+        if self.request_timeout_ms < MIN_REQUEST_TIMEOUT_MS
+            || self.request_timeout_ms > MAX_REQUEST_TIMEOUT_MS
+        {
             violations.push(ConfigViolation::InvalidRequestTimeout(
                 self.request_timeout_ms,
             ));
@@ -290,7 +295,7 @@ impl Config {
             }
 
             // Unique normalized address.
-            let normalized = format!("{}:{}", system.host.to_lowercase(), system.port);
+            let normalized = format!("{}:{}", system.host.to_ascii_lowercase(), system.port);
             if !seen_addresses.insert(normalized.clone()) {
                 violations.push(ConfigViolation::DuplicateAddress {
                     address: normalized,
@@ -1057,7 +1062,7 @@ pub enum ConfigViolation {
     UnsupportedConfigVersion(u32),
     /// Refresh seconds is outside the valid range.
     InvalidRefreshSeconds(u64),
-    /// Request timeout is too low.
+    /// Request timeout is outside the valid range.
     InvalidRequestTimeout(u64),
     /// Max concurrent requests is outside the valid range.
     InvalidMaxConcurrentRequests(u32),
@@ -1108,7 +1113,7 @@ impl fmt::Display for ConfigViolation {
             Self::InvalidRequestTimeout(ms) => {
                 write!(
                     f,
-                    "request_timeout_ms {ms} is below minimum {MIN_REQUEST_TIMEOUT_MS}"
+                    "request_timeout_ms {ms} is outside valid range {MIN_REQUEST_TIMEOUT_MS}..={MAX_REQUEST_TIMEOUT_MS}"
                 )
             }
             Self::InvalidMaxConcurrentRequests(n) => {
@@ -1424,6 +1429,32 @@ default_port = 11310\n";
     }
 
     #[test]
+    fn request_timeout_too_high_fails() {
+        let config = Config {
+            request_timeout_ms: MAX_REQUEST_TIMEOUT_MS + 1,
+            ..Config::default()
+        };
+        let violations = config.validate();
+        assert!(violations.contains(&ConfigViolation::InvalidRequestTimeout(
+            MAX_REQUEST_TIMEOUT_MS + 1
+        )));
+    }
+
+    #[test]
+    fn request_timeout_boundaries_are_valid() {
+        for request_timeout_ms in [MIN_REQUEST_TIMEOUT_MS, MAX_REQUEST_TIMEOUT_MS] {
+            let config = Config {
+                request_timeout_ms,
+                ..Config::default()
+            };
+            assert!(
+                config.is_valid(),
+                "timeout {request_timeout_ms} should be valid"
+            );
+        }
+    }
+
+    #[test]
     fn max_concurrent_zero_fails() {
         let config = Config {
             max_concurrent_requests: 0,
@@ -1488,6 +1519,27 @@ default_port = 11310\n";
         });
         let violations = config.validate();
         assert!(violations
+            .iter()
+            .any(|v| matches!(v, ConfigViolation::DuplicateAddress { .. })));
+    }
+
+    #[test]
+    fn non_ascii_hosts_are_not_unicode_case_folded_for_deduplication() {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "id1".into(),
+            host: "İ".into(),
+            port: 80,
+            name: None,
+        });
+        config.systems.push(SystemEntry {
+            id: "id2".into(),
+            host: "i\u{307}".into(),
+            port: 80,
+            name: None,
+        });
+        assert!(!config
+            .validate()
             .iter()
             .any(|v| matches!(v, ConfigViolation::DuplicateAddress { .. })));
     }

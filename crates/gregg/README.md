@@ -43,6 +43,9 @@ gregg edit
 `default_port` setting is configuration-compatible but is not used by
 `gregg add`.
 
+The client configuration accepts `request_timeout_ms` from 100 through 60,000
+milliseconds. Values outside that range are rejected during config validation.
+
 ## Navigation
 
 | Key | Action |

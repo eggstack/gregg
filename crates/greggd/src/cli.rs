@@ -141,19 +141,23 @@ pub fn resolve_config_path(explicit: Option<&PathBuf>) -> PathBuf {
 /// and no explicit path was given, use defaults. If an explicit path was
 /// given but the file is missing, return an error.
 pub fn load_config(path: &std::path::Path, explicit: bool) -> Result<Config, ConfigError> {
-    if path.exists() {
-        Config::load(path)
-    } else if explicit {
-        Err(ConfigError::Io {
+    match std::fs::metadata(path) {
+        Ok(_) => Config::load(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if explicit {
+                Err(ConfigError::Io {
+                    path: path.to_path_buf(),
+                    source: error,
+                })
+            } else {
+                // No explicit path and file doesn't exist — use defaults.
+                Ok(Config::default())
+            }
+        }
+        Err(source) => Err(ConfigError::Io {
             path: path.to_path_buf(),
-            source: std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("configuration file not found: {}", path.display()),
-            ),
-        })
-    } else {
-        // No explicit path and file doesn't exist — use defaults.
-        Ok(Config::default())
+            source,
+        }),
     }
 }
 
@@ -316,7 +320,11 @@ pub fn dispatch(
     command: &Command,
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    dispatch_with_config_intent(command, config_path, config_path.exists())
+    let explicit = !matches!(
+        std::fs::metadata(config_path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    );
+    dispatch_with_config_intent(command, config_path, explicit)
 }
 
 /// Dispatch a command while preserving whether the config path was explicit.
@@ -552,6 +560,24 @@ mod native_tests {
         ));
         let _ = std::fs::remove_file(&path);
         assert!(dispatch_with_config_intent(&Command::Configprint, &path, true).is_err());
+    }
+
+    #[test]
+    fn load_config_propagates_non_not_found_metadata_errors() {
+        let dir = std::env::temp_dir().join(format!("greggd-config-error-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        let path = blocker.join("config.toml");
+
+        let result = load_config(&path, false);
+        assert!(matches!(
+            result,
+            Err(ConfigError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotADirectory
+        ));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

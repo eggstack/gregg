@@ -41,7 +41,10 @@ The client requests v2 first, accepts only the schema matching each endpoint, an
 | `swap` | `true` | `true` | `false` |
 | `memory_commit` | `false` | `false` | `true` |
 
-A `false` capability means the corresponding field must be `None`/`null`. Validation rejects capability/value contradictions.
+A `false` capability means the corresponding field must be `None`/`null`. All
+four v2 capability keys are required when decoding; omitted keys are not
+treated as explicit `false`. Validation rejects capability/value
+contradictions. System identity fields are limited to 512 UTF-8 bytes.
 
 ## Platform-specific rules
 
@@ -67,7 +70,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
-| `InvalidIdentityField` | Identity string empty or NUL-padded |
+| `InvalidIdentityField` | Identity string empty, NUL-padded, or over 512 UTF-8 bytes |
 
 ### V2 additional violation kinds
 
