@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 //! Application state model for the polling engine and TUI.
 //!
 //! [`AppState`] owns the list of monitored systems, the selection, and the
@@ -552,10 +550,11 @@ impl AppState {
             .unwrap_or(0);
 
         let len = order.len();
+        let magnitude = offset.unsigned_abs();
         let new_pos = if offset >= 0 {
-            current_pos.saturating_add(usize::try_from(offset).unwrap_or(len))
+            current_pos.saturating_add(magnitude)
         } else {
-            current_pos.saturating_sub(usize::try_from(-offset).unwrap_or(current_pos))
+            current_pos.saturating_sub(magnitude)
         }
         .min(len - 1);
 
@@ -1371,6 +1370,21 @@ mod tests {
 
         state.apply_action(Action::PageUp);
         assert_eq!(state.selected_id.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn move_selection_tolerates_isize_min_offset() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::from_config(&config);
+        let order = state.display_order();
+
+        // Negating `isize::MIN` would overflow; the helper must clamp
+        // rather than panic.
+        state.move_selection(&order, isize::MIN);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+
+        state.move_selection(&order, isize::MAX);
+        assert_eq!(state.selected_id.as_deref(), Some("c"));
     }
 
     #[test]

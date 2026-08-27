@@ -289,11 +289,19 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 }
 
                 let now_ms = self.clock.now_unix_ms();
-                let identity_result = { self.lock_collector().identity() };
-                let identity = match identity_result {
+                let identity = {
+                    let guard = self.lock_collector();
+                    guard.identity()
+                };
+                let identity = match identity {
                     Ok(identity) => identity,
                     Err(err) => {
-                        self.apply_sample_result(Err(err));
+                        // Identity acquisition failed after metrics
+                        // collection succeeded. Treat as a failed sample
+                        // cycle without recursing — the next tick will
+                        // retry both identity and metrics.
+                        self.transition_to_failed("identity unavailable");
+                        tracing::debug!(kind = ?err.kind, "identity unavailable");
                         return;
                     }
                 };

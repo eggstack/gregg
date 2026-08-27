@@ -451,7 +451,10 @@ fn normalize_host(host: &str) -> Result<String, EndpointError> {
         return Ok(ip.to_string());
     }
 
-    // DNS name: preserve case (don't normalize) but reject obviously invalid chars.
+    // DNS name: preserve case as configured. Matching is case-insensitive
+    // (RFC 1035) in [`Endpoint::matches_host`], [`Config::validate`], and
+    // the `cmd_add`/`cmd_remove` duplicate checks — see those sites for
+    // the canonicalization rules.
     Ok(trimmed.to_string())
 }
 

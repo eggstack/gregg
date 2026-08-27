@@ -125,6 +125,11 @@ fn normalize_host(host: &str) -> Result<String, EggpoolEndpointError> {
     if host.is_empty() {
         return Err(EggpoolEndpointError::EmptyHost);
     }
+    // DNS names are lowercased at parse time because EggPool is a single
+    // hosted service and case is irrelevant to routing. IP literals are
+    // normalized through the standard library. The systems endpoint keeps
+    // the original case and relies on case-insensitive comparison at match
+    // sites instead — see `endpoint::normalize_host` for the rationale.
     Ok(host
         .parse::<IpAddr>()
         .map_or_else(|_| host.to_ascii_lowercase(), |ip| ip.to_string()))

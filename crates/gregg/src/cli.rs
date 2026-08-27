@@ -359,7 +359,8 @@ fn cmd_eggpool_remove(
     let spec = EggpoolEndpointSpec::parse(endpoint_str)?;
     let removed = store.mutate_with_result(|config| {
         let matches = config.eggpool.as_ref().is_some_and(|entry| {
-            entry.host == spec.host && (!spec.port_was_explicit || entry.port == spec.port)
+            entry.host.eq_ignore_ascii_case(&spec.host)
+                && (!spec.port_was_explicit || entry.port == spec.port)
         });
         if matches {
             config.eggpool = None;
@@ -450,11 +451,12 @@ fn cmd_add(
         let host = target.endpoint.host.clone();
         let port = target.endpoint.port;
 
-        // Check for exact duplicate.
+        // Check for exact duplicate. DNS comparison is case-insensitive
+        // (RFC 1035), matching `Config::validate` and `Endpoint::matches_host`.
         let existing_idx = config
             .systems
             .iter()
-            .position(|s| s.host == host && s.port == port);
+            .position(|s| s.port == port && s.host.eq_ignore_ascii_case(&host));
 
         if let Some(idx) = existing_idx {
             if replace {
@@ -586,13 +588,16 @@ fn cmd_remove(store: &ConfigStore, endpoint_str: &str) -> Result<(), Box<dyn std
         let original_len = config.systems.len();
 
         if let Some(port) = exact_port {
-            // Exact endpoint removal.
+            // Exact endpoint removal. DNS comparison is case-insensitive
+            // (RFC 1035), matching `Config::validate` and `Endpoint::matches_host`.
             config
                 .systems
-                .retain(|s| !(s.host == spec.host && s.port == port));
+                .retain(|s| !(s.host.eq_ignore_ascii_case(&spec.host) && s.port == port));
         } else {
-            // Host-wide removal.
-            config.systems.retain(|s| s.host != spec.host);
+            // Host-wide removal. DNS comparison is case-insensitive.
+            config
+                .systems
+                .retain(|s| !s.host.eq_ignore_ascii_case(&spec.host));
         }
 
         let removed = original_len - config.systems.len();
@@ -759,10 +764,14 @@ fn executable_exists_windows(cmd: &str) -> bool {
         }
         let base = PathBuf::from(dir).join(cmd);
 
-        // Check with each PATHEXT extension.
+        // Check with each PATHEXT extension. Build the candidate path via
+        // `OsString` push so non-UTF-8 directory or command components are
+        // preserved (the prior `format!("{}{}", base.display(), ext)` was
+        // lossy).
         for ext in &extensions {
-            let candidate = format!("{}{}", base.display(), ext);
-            if std::path::Path::new(&candidate).exists() {
+            let mut candidate_os = base.clone().into_os_string();
+            candidate_os.push(ext);
+            if std::path::Path::new(&candidate_os).exists() {
                 return true;
             }
         }
@@ -1306,6 +1315,38 @@ mod tests {
         // Adding the same host:port without --replace is a duplicate.
         let exact = cmd_add(&store, "192.168.1.1:12000", None, false);
         assert!(exact.is_err(), "duplicate should be rejected");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_detection_is_case_insensitive_for_dns() {
+        let dir = tmp_dir("dup_case_insensitive");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "Server.Local:11310", None, false).unwrap();
+
+        // Same DNS host with different case is treated as a duplicate.
+        let dup = cmd_add(&store, "server.local:11310", None, false);
+        assert!(dup.is_err(), "case-insensitive duplicate must be rejected");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn remove_matches_dns_host_case_insensitively() {
+        let dir = tmp_dir("remove_case_insensitive");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "Server.Local:11310", None, false).unwrap();
+
+        // Removing with a different case must still find the entry.
+        cmd_remove(&store, "SERVER.local:11310").unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert!(config.systems.is_empty());
 
         let _ = fs::remove_dir_all(&dir);
     }

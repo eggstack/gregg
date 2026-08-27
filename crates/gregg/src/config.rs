@@ -5,8 +5,6 @@
 //! load and before every mutation. Atomic writes ensure a partially written
 //! file can never corrupt the client state.
 
-#![allow(unsafe_code)] // Required for libc::flock in FileLockGuard on unix.
-
 // The cross-process configuration lock relies on platform file-locking
 // primitives (flock on unix, LockFileEx on windows). Fail the build loudly on
 // any other target rather than silently degrading to in-process-only locking,
@@ -352,42 +350,52 @@ impl Config {
     }
 
     /// Return the platform-specific default config path.
+    ///
+    /// When no user-scoped config directory is available (missing `HOME`,
+    /// `XDG_CONFIG_HOME`, `APPDATA`, or `USERPROFILE`, or an unrecognized
+    /// target OS), falls back to a bare `gregg.toml` filename. The bare
+    /// fallback relies on [`Self::write_atomic`] treating an empty parent
+    /// path as the current working directory.
     #[must_use]
     pub fn default_path() -> PathBuf {
         #[cfg(target_os = "linux")]
         {
             if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-                PathBuf::from(xdg).join("gregg").join("gregg.toml")
-            } else {
-                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+                return PathBuf::from(xdg).join("gregg").join("gregg.toml");
+            }
+            match std::env::var("HOME") {
+                Ok(home) => PathBuf::from(home)
                     .join(".config")
                     .join("gregg")
-                    .join("gregg.toml")
+                    .join("gregg.toml"),
+                Err(_) => PathBuf::from("gregg.toml"),
             }
         }
         #[cfg(target_os = "macos")]
         {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
-                .join("Library")
-                .join("Application Support")
-                .join("gregg")
-                .join("gregg.toml")
+            match std::env::var("HOME") {
+                Ok(home) => PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join("gregg")
+                    .join("gregg.toml"),
+                Err(_) => PathBuf::from("gregg.toml"),
+            }
         }
         #[cfg(target_os = "windows")]
         {
             if let Ok(appdata) = std::env::var("APPDATA") {
-                PathBuf::from(appdata).join("gregg").join("gregg.toml")
-            } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
-                PathBuf::from(userprofile)
+                return PathBuf::from(appdata).join("gregg").join("gregg.toml");
+            }
+            if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                return PathBuf::from(userprofile)
                     .join("AppData")
                     .join("Roaming")
                     .join("gregg")
-                    .join("gregg.toml")
-            } else {
-                // No user-scoped directory available — return a clear
-                // error path rather than silently falling back to cwd.
-                PathBuf::from("gregg.toml")
+                    .join("gregg.toml");
             }
+            // No user-scoped directory available; bare fallback.
+            PathBuf::from("gregg.toml")
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
@@ -453,10 +461,15 @@ impl Config {
             path: path.to_path_buf(),
             source: AtomicWriteError::NoParentDirectory,
         })?;
-        fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
-            path: path.to_path_buf(),
-            source: AtomicWriteError::Io(e),
-        })?;
+        // An empty parent path (e.g. a bare `gregg.toml` fallback from
+        // `default_path`) means the current working directory; skip
+        // `create_dir_all` because the empty string is not a valid path.
+        if !dir.as_os_str().is_empty() {
+            fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
+                path: path.to_path_buf(),
+                source: AtomicWriteError::Io(e),
+            })?;
+        }
 
         let content = self.to_toml();
         let temp_name = format!(
@@ -628,6 +641,7 @@ impl ConfigStore {
     ///
     /// Returns [`ConfigError::LockTimeout`] if the lock cannot be acquired
     /// within `LOCK_TIMEOUT_MS`.
+    #[allow(unsafe_code)] // Uses libc::flock (unix) and LockFileEx (windows).
     fn acquire_lock(&self) -> Result<FileLockGuard, ConfigError> {
         let lock_path = self.lock_path();
 

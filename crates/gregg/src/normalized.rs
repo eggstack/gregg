@@ -4,8 +4,6 @@
 //! version throughout the codebase, we normalize both v1 and v2 snapshots
 //! into a single internal type that the state reducer and UI consume.
 
-#![allow(dead_code)]
-
 use gregg_protocol::{LoadAverage, MemoryMetrics, SystemIdentity};
 
 /// Client-owned drive record independent of wire schema version.
@@ -165,6 +163,10 @@ impl NormalizedSnapshot {
 }
 
 /// Aggregate normalized drives without allowing integer sums to wrap.
+///
+/// Individual drives that would overflow the running totals are skipped
+/// rather than poisoning the whole-fleet aggregate, so a single corrupt
+/// entry cannot blank the displayed totals.
 pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     if drives.is_empty() {
         return None;
@@ -172,6 +174,7 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     let mut used_bytes: u64 = 0;
     let mut total_bytes: u64 = 0;
     let mut available_bytes: u64 = 0;
+    let mut accumulated = false;
     for drive in drives {
         if drive.total_bytes == 0 || drive.used_bytes > drive.total_bytes {
             continue;
@@ -182,11 +185,21 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
         if available > drive.total_bytes {
             continue;
         }
-        used_bytes = used_bytes.checked_add(drive.used_bytes)?;
-        total_bytes = total_bytes.checked_add(drive.total_bytes)?;
-        available_bytes = available_bytes.checked_add(available)?;
+        let (Some(new_used), Some(new_total), Some(new_available)) = (
+            used_bytes.checked_add(drive.used_bytes),
+            total_bytes.checked_add(drive.total_bytes),
+            available_bytes.checked_add(available),
+        ) else {
+            // Adding this drive would overflow; skip it and continue
+            // accumulating the remaining drives.
+            continue;
+        };
+        used_bytes = new_used;
+        total_bytes = new_total;
+        available_bytes = new_available;
+        accumulated = true;
     }
-    if total_bytes == 0 {
+    if total_bytes == 0 || !accumulated {
         return None;
     }
     let scaled_used = u128::from(used_bytes) * 100;
@@ -337,13 +350,22 @@ mod tests {
     }
 
     #[test]
-    fn aggregate_drives_rejects_empty_invalid_and_overflowing_input() {
+    fn aggregate_drives_rejects_empty_and_invalid_input() {
         assert!(aggregate_drives(&[]).is_none());
         assert!(aggregate_drives(&[drive("/", 0, 0)]).is_none());
         assert!(aggregate_drives(&[drive("/", 2, 1)]).is_none());
-        assert!(
-            aggregate_drives(&[drive("/", u64::MAX, u64::MAX), drive("/home", 0, 1),]).is_none()
-        );
+    }
+
+    #[test]
+    fn aggregate_drives_skips_overflowing_entry_and_keeps_valid_drives() {
+        // First drive is valid and is accumulated; second drive would
+        // overflow every running total, so it is skipped instead of
+        // poisoning the aggregate.
+        let aggregate =
+            aggregate_drives(&[drive("/", 1, 10), drive("/home", u64::MAX, u64::MAX)]).unwrap();
+        assert_eq!(aggregate.used_bytes, 1);
+        assert_eq!(aggregate.total_bytes, 10);
+        assert_eq!(aggregate.available_bytes, 9);
     }
 
     #[test]

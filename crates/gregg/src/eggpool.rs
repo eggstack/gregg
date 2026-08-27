@@ -198,9 +198,11 @@ impl EggpoolClient {
         if let Some(value) = auth {
             let Ok(mut header) = reqwest::header::HeaderValue::from_str(&format!("Bearer {value}"))
             else {
-                return EggpoolFetchOutcome::MissingApiKeyEnv {
-                    name: endpoint.api_key_env.clone().unwrap_or_default(),
-                };
+                // The configured secret is present but contains characters
+                // that cannot be encoded into a valid `Authorization` header
+                // value; surface it as an invalid summary rather than a
+                // missing-key misclassification.
+                return EggpoolFetchOutcome::InvalidSummary;
             };
             header.set_sensitive(true);
             request = request.header(reqwest::header::AUTHORIZATION, header);
@@ -710,6 +712,20 @@ mod tests {
                 .await,
             EggpoolFetchOutcome::MissingApiKeyEnv { name: "KEY".into() }
         );
+    }
+
+    #[tokio::test]
+    async fn header_with_control_chars_is_invalid_summary_not_missing_key() {
+        // A present-but-unencodable secret must surface as InvalidSummary
+        // rather than being misreported as a missing API key.
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(2),
+            Arc::new(|_| Some(OsString::from("bad\nvalue"))),
+        );
+        let result = client
+            .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(result, EggpoolFetchOutcome::InvalidSummary);
     }
 
     #[tokio::test]
