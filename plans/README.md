@@ -40,11 +40,12 @@ findings: blank sampler identities, IPv6 zone parsing diagnostics, rejected
 Systems reload feedback, pre-epoch staleness, large byte-ratio arithmetic,
 daemon-name control characters, and CI-blocking clippy diagnostics.
 
-Plan 090 is the in-progress follow-up for the remaining 2026-08-27 audit
+Plan 090 is the completed follow-up for the remaining 2026-08-27 audit
 findings: configuration metadata errors, bounded client timeouts, complete v2
 capability objects, bounded protocol identities, failed-health categories,
 typed DNS classification, injected EggPool deadlines, endpoint normalization,
-and preservation of existing daemon config-directory permissions.
+and preservation of existing daemon config-directory permissions. It closed
+in implementation `8193643`.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -72,7 +73,7 @@ and preservation of existing daemon config-directory permissions.
 | [`087-dynamic-compact-metric-suffix-and-transient-selection-polish.md`](087-dynamic-compact-metric-suffix-and-transient-selection-polish.md) | Fleet-wide compact metric suffix when longest natural suffix exceeds terminal-width quarter; logical-vs-visual selection separation with resettable ten-second event-loop deadline; normal-header I/O-wait omission | complete |
 | [`088-bugs-audit-corrective-pass.md`](088-bugs-audit-corrective-pass.md) | Correct shared macOS percentage normalization, non-Unix shutdown error propagation, and EggPool duplicate violation semantics | complete; implementation `58b332b` |
 | [`089-bugs-audit-corrective-pass.md`](089-bugs-audit-corrective-pass.md) | Correct remaining actionable audit findings and CI-blocking clippy diagnostics | complete; implementation `7f245cc` |
-| [`090-bugs-audit-corrective-pass.md`](090-bugs-audit-corrective-pass.md) | Correct remaining 2026-08-27 audit findings with minimal bounded changes | in progress |
+| [`090-bugs-audit-corrective-pass.md`](090-bugs-audit-corrective-pass.md) | Correct remaining 2026-08-27 audit findings with minimal bounded changes | complete; implementation `8193643` |
 
 Dependency order:
 
