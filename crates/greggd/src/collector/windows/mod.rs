@@ -14,7 +14,7 @@ use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
 use crate::collector::windows::source::{RawCpuTimes, WindowsSource};
-use crate::collector::{CollectedMetrics, SystemCollector};
+use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
 
 pub mod commit;
 pub mod cpu;
@@ -22,14 +22,10 @@ pub mod identity;
 pub mod memory;
 pub mod source;
 
-fn collect_drives<S: WindowsSource>(source: &S) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
-    let raw = match source.logical_drives() {
-        Ok(raw) => raw,
-        Err(error) => {
-            tracing::debug!(kind = ?error.kind, "Windows drive collection unavailable");
-            return None;
-        }
-    };
+fn collect_drives<S: WindowsSource>(
+    source: &S,
+) -> Result<Vec<gregg_protocol::v2::DriveMetrics>, CollectError> {
+    let raw = source.logical_drives()?;
     let candidates = raw
         .into_iter()
         .filter(|drive| {
@@ -44,7 +40,7 @@ fn collect_drives<S: WindowsSource>(source: &S) -> Option<Vec<gregg_protocol::v2
             available_bytes: drive.available_bytes,
         })
         .collect();
-    Some(crate::collector::drives::normalize(candidates))
+    Ok(crate::collector::drives::normalize(candidates))
 }
 
 /// A Windows native collector.
@@ -60,6 +56,7 @@ pub struct WindowsCollector<S: WindowsSource = source::NativeWindowsSource> {
     capabilities_v2: MetricCapabilitiesV2,
     previous_cpu: Option<RawCpuTimes>,
     logical_cores: u32,
+    drive_refresh: Option<DriveRefreshCache>,
 }
 
 impl WindowsCollector<source::NativeWindowsSource> {
@@ -76,7 +73,7 @@ impl WindowsCollector<source::NativeWindowsSource> {
     }
 }
 
-impl<S: WindowsSource> WindowsCollector<S> {
+impl<S: WindowsSource + Clone> WindowsCollector<S> {
     /// Create a collector with an injected source. Intended for tests so
     /// synthetic values can be exercised without touching the host.
     ///
@@ -122,6 +119,7 @@ impl<S: WindowsSource> WindowsCollector<S> {
             },
             previous_cpu: None,
             logical_cores,
+            drive_refresh: None,
         })
     }
 
@@ -133,7 +131,21 @@ impl<S: WindowsSource> WindowsCollector<S> {
     }
 }
 
-impl<S: WindowsSource> SystemCollector for WindowsCollector<S> {
+impl<S: WindowsSource + Clone + 'static> WindowsCollector<S> {
+    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
+        if self.drive_refresh.is_none() {
+            self.drive_refresh = Some(DriveRefreshCache::new(
+                self.source.clone(),
+                collect_drives::<S>,
+            ));
+        }
+        self.drive_refresh
+            .as_mut()
+            .and_then(DriveRefreshCache::poll)
+    }
+}
+
+impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S> {
     fn identity(&self) -> Result<SystemIdentity, CollectError> {
         Ok(self.identity.clone())
     }
@@ -192,7 +204,7 @@ impl<S: WindowsSource> SystemCollector for WindowsCollector<S> {
                 usage_pct: 0.0,
             },
             commit: Some(commit_sample.into_metrics()),
-            drives: collect_drives(&self.source),
+            drives: self.refresh_drives(),
         })
     }
 
@@ -235,6 +247,19 @@ mod tests {
         };
         m.auto_increment_cpu = true;
         m
+    }
+
+    fn sample_until_drives(
+        collector: &mut WindowsCollector<MockWindowsSource>,
+    ) -> crate::collector::CollectedMetrics {
+        for _ in 0..100 {
+            let metrics = collector.sample().expect("core sample succeeds");
+            if metrics.drives.is_some() {
+                return metrics;
+            }
+            std::thread::yield_now();
+        }
+        panic!("drive refresh did not complete");
     }
 
     // --- Topology guard tests (Workstream C) ---
@@ -365,7 +390,7 @@ mod tests {
     fn drive_capacity_preserves_total_free_and_caller_available() {
         let mut collector = WindowsCollector::with_source(mock_source(), None).expect("collector");
         let _ = collector.sample();
-        let metrics = collector.sample().expect("second sample");
+        let metrics = sample_until_drives(&mut collector);
         let drive = &metrics.drives.expect("drives")[0];
 
         assert_eq!(drive.used_bytes, 75);
@@ -503,7 +528,7 @@ mod tests {
         mock.drives.clear();
         let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
         let _ = collector.sample().expect_err("warming");
-        let metrics = collector.sample().expect("sample succeeds");
+        let metrics = sample_until_drives(&mut collector);
 
         assert_eq!(metrics.drives, Some(Vec::new()));
     }

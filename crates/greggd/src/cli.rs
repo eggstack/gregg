@@ -4,6 +4,7 @@
 //! subcommand has a stable help message and returns a meaningful exit code.
 
 use std::fmt;
+use std::io::{Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
@@ -55,8 +56,8 @@ pub enum Command {
     /// Restart the greggd Windows service.
     #[cfg(target_os = "windows")]
     Restart,
-    /// Ensure greggd is running. Probes the configured local TCP port and,
-    /// if nothing is listening, spawns `greggd run` as a detached child.
+    /// Ensure greggd is running. Probes the configured local health endpoint and,
+    /// if the endpoint is definitely refused, spawns `greggd run` as a detached child.
     /// Intended for cron, Task Scheduler, and other operator-managed
     /// supervisors that have no built-in readiness monitoring.
     Croncheck,
@@ -273,9 +274,87 @@ pub fn display_address_from(
 /// Returns `true` if a listener accepts the connection within the
 /// timeout, `false` otherwise. A refusal, timeout, or unreachable host
 /// all mean the daemon is not accepting traffic on this address.
-fn is_listening(target: SocketAddr) -> bool {
-    const TIMEOUT: Duration = Duration::from_millis(750);
-    TcpStream::connect_timeout(&target, TIMEOUT).is_ok()
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CroncheckProbe {
+    Running,
+    Absent,
+    Ambiguous,
+}
+
+const CRONCHECK_TIMEOUT: Duration = Duration::from_millis(750);
+const MAX_CRONCHECK_RESPONSE_BYTES: usize = 256 * 1024;
+
+fn parse_greggd_health(response: &[u8]) -> bool {
+    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = &response[..header_end];
+    let body = &response[header_end + 4..];
+    let Some(status_line) = headers.split(|byte| *byte == 10).next() else {
+        return false;
+    };
+    let mut status_parts = status_line.split(|byte| *byte == 32 || *byte == 13);
+    let Some(version) = status_parts.next() else {
+        return false;
+    };
+    let Some(status) = status_parts
+        .next()
+        .and_then(|value| std::str::from_utf8(value).ok())
+        .and_then(|value| value.parse::<u16>().ok())
+    else {
+        return false;
+    };
+    if version != b"HTTP/1.0" && version != b"HTTP/1.1" {
+        return false;
+    }
+    let Ok(health) = serde_json::from_slice::<gregg_protocol::v2::HealthResponseV2>(body) else {
+        return false;
+    };
+    matches!(
+        (status, health.state),
+        (200, gregg_protocol::ReadinessState::Ready)
+            | (
+                503,
+                gregg_protocol::ReadinessState::Warming | gregg_protocol::ReadinessState::Failed
+            )
+    )
+}
+
+fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
+    let mut stream = match TcpStream::connect_timeout(&target, CRONCHECK_TIMEOUT) {
+        Ok(stream) => stream,
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            return CroncheckProbe::Absent
+        }
+        Err(_) => return CroncheckProbe::Ambiguous,
+    };
+    let _ = stream.set_read_timeout(Some(CRONCHECK_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(CRONCHECK_TIMEOUT));
+    if stream
+        .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return CroncheckProbe::Ambiguous;
+    }
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                response.extend_from_slice(&chunk[..read]);
+                if response.len() > MAX_CRONCHECK_RESPONSE_BYTES {
+                    return CroncheckProbe::Ambiguous;
+                }
+            }
+            Err(_) => return CroncheckProbe::Ambiguous,
+        }
+    }
+    if parse_greggd_health(&response) {
+        CroncheckProbe::Running
+    } else {
+        CroncheckProbe::Ambiguous
+    }
 }
 
 /// Build the [`Command`] used by `croncheck` to spawn `greggd run` as a
@@ -355,18 +434,16 @@ pub fn dispatch_with_config_intent(
         Command::Croncheck => {
             let config = load_config(config_path, explicit)?;
             let target = croncheck_target(&config);
-            if is_listening(target) {
-                // Daemon is already accepting traffic on the configured
-                // bind. Nothing to do.
-                return Ok(());
+            match probe_greggd(target) {
+                CroncheckProbe::Running => Ok(()),
+                CroncheckProbe::Absent => {
+                    build_daemon_command(config_path, explicit)?.spawn()?;
+                    Ok(())
+                }
+                CroncheckProbe::Ambiguous => Err(Box::new(std::io::Error::other(
+                    "croncheck could not prove greggd is absent or healthy",
+                ))),
             }
-            // Nothing is listening: spawn `greggd run` as a detached
-            // watchdog child. The kernel's bind semantics prevent a
-            // second concurrent start once the first child binds its
-            // listener; any spawn that loses the race surfaces as a
-            // nonzero exit and the next cron tick will retry.
-            build_daemon_command(config_path, explicit)?.spawn()?;
-            Ok(())
         }
         Command::Configprint => {
             let config = load_config(config_path, explicit)?;
@@ -599,13 +676,31 @@ mod native_tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    fn bind_loopback() -> SocketAddr {
+    fn http_fixture(status: u16, body: &str) -> SocketAddr {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let target = listener.local_addr().unwrap();
-        // Hold the listener for the duration of the test by leaking it;
-        // both `is_listening` paths own nothing and tests close over the
-        // target only.
-        std::mem::forget(listener);
+        let body = body.to_string();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                let response = format!("HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        target
+    }
+
+    fn silent_fixture() -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
         target
     }
 
@@ -615,24 +710,55 @@ mod native_tests {
     }
 
     #[test]
-    fn is_listening_accepts_a_bound_port() {
-        let target = bind_loopback();
-        assert!(is_listening(target));
+    fn croncheck_accepts_a_warming_health_response() {
+        let target = http_fixture(
+            503,
+            r#"{"schema_version":2,"state":"warming","category":"warming","message":"warming"}"#,
+        );
+        assert_eq!(probe_greggd(target), CroncheckProbe::Running);
     }
 
     #[test]
-    fn is_listening_rejects_a_closed_port() {
+    fn croncheck_refuses_a_closed_port() {
         let target = unbound_loopback();
-        assert!(!is_listening(target));
+        assert_eq!(probe_greggd(target), CroncheckProbe::Absent);
     }
 
     #[test]
-    fn croncheck_dispatch_exits_when_listener_up_without_spawning() {
-        // With a listener up on the configured port, `croncheck` must
-        // return Ok and never invoke the spawn path. The only observable
-        // side effect would be a backgrounded child, which we cannot
-        // inspect here; the assertion is the Ok result.
-        let target = bind_loopback();
+    fn croncheck_accepts_a_failed_health_response() {
+        let target = http_fixture(
+            503,
+            r#"{"schema_version":2,"state":"failed","category":"collector_failure","message":"failed"}"#,
+        );
+        assert_eq!(probe_greggd(target), CroncheckProbe::Running);
+    }
+
+    #[test]
+    fn croncheck_rejects_unrelated_http() {
+        let target = http_fixture(200, r#"{"ok":true}"#);
+        assert_eq!(probe_greggd(target), CroncheckProbe::Ambiguous);
+    }
+
+    #[test]
+    fn croncheck_rejects_malformed_health() {
+        let target = http_fixture(200, "not-json");
+        assert_eq!(probe_greggd(target), CroncheckProbe::Ambiguous);
+    }
+
+    #[test]
+    fn croncheck_rejects_silent_peer_within_bound() {
+        let target = silent_fixture();
+        assert_eq!(probe_greggd(target), CroncheckProbe::Ambiguous);
+    }
+
+    #[test]
+    fn croncheck_dispatch_exits_when_greggd_is_running_without_spawning() {
+        // A valid non-ready Gregg health response still proves the daemon
+        // exists; croncheck must not start a second copy.
+        let target = http_fixture(
+            503,
+            r#"{"schema_version":2,"state":"failed","category":"collector_failure","message":"failed"}"#,
+        );
         let dir = std::env::temp_dir().join("greggd_croncheck_listener_up_test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();

@@ -48,6 +48,13 @@ const EXCLUDED_FILESYSTEMS: &[&str] = &[
     "afs",
 ];
 
+fn excluded_filesystem(filesystem_type: &str) -> bool {
+    EXCLUDED_FILESYSTEMS.contains(&filesystem_type)
+        || filesystem_type == "autofs"
+        || filesystem_type == "fuse"
+        || filesystem_type.starts_with("fuse.")
+}
+
 fn decode_mountinfo(value: &str) -> Option<String> {
     let mut result = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -109,7 +116,7 @@ fn parse_mountinfo_line(line: &str) -> Option<MountRecord> {
 }
 
 fn eligible(record: &MountRecord) -> bool {
-    !EXCLUDED_FILESYSTEMS.contains(&record.filesystem_type.as_str())
+    !excluded_filesystem(record.filesystem_type.as_str())
         && !record.mount_point.is_empty()
         && !record.mount_point.starts_with("/proc/")
 }

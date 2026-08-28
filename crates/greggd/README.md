@@ -32,10 +32,13 @@ greggd restart
 ```
 
 Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
-Scheduler, and other supervisors without built-in readiness monitoring: it
-probes the configured local TCP port and, if nothing is listening, spawns
-`greggd run` as a detached child. The HTTP API is not consulted and no
-service manager is invoked.
+Scheduler, and other supervisors without built-in readiness monitoring. It
+probes `/v2/healthz` with bounded raw HTTP on the configured local endpoint,
+normalizing wildcard binds to loopback. Valid Gregg Ready, Warming, and Failed
+responses all mean the daemon is running. Only a refused connection proves the
+endpoint absent and permits spawning `greggd run` as a detached child; unrelated,
+malformed, silent, or ambiguous peers return nonzero without spawning. No service
+manager is invoked.
 
 ```sh
 greggd croncheck

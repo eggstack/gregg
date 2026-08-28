@@ -20,7 +20,7 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (TCP-connect watchdog that spawns `run` if nothing is listening), `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `host`, `port`, `version`; Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
@@ -123,9 +123,11 @@ The sampler owns the clock and cadence. Key behaviors:
   (on collector or identity error); identity failures preserve any previously
   published snapshot and never publish a blank identity
 - `Clock` trait for deterministic testing with `SyntheticClock`
-- The runtime loop runs each collection cycle on tokio's blocking thread pool
-  (`spawn_blocking`), so slow native reads (procfs, one `statvfs()` per mount)
-  cannot stall the HTTP server sharing the single current-thread runtime.
+- The runtime loop runs each core collection cycle on Tokio.s blocking thread pool
+  (`spawn_blocking`). Optional drive capacity runs in one collector-owned
+  standard thread with a bounded result channel and a 30-second cadence, so a
+  slow native filesystem call cannot stall fresh CPU/memory/load snapshots or
+  Tokio runtime shutdown.
   The collector is shared with the blocking task behind a mutex; a panicked
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.
@@ -165,7 +167,7 @@ configuration error and is neither written nor followed by process management.
 |---------|---------|
 | `run` | Start foreground daemon |
 | `stop` | Stop a running daemon via local Unix-domain control socket (Linux/macOS) or Windows SCM; idempotent when already stopped |
-| `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded TCP connect to the configured local bind (wildcards normalized to loopback); exits `0` on a listener, otherwise spawns `<current_exe> run` as a detached child (stdin/stdout/stderr closed, Unix-only new process group); no service manager, shell, or PID-file management |
+| `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured local bind (wildcards normalized to loopback); valid Gregg Ready/Warming/Failed means running, refusal alone permits a detached `<current_exe> run` spawn, and unrelated/malformed/silent/ambiguous peers return nonzero without spawning |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; bind wildcards (`0.0.0.0`, `::`) are resolved to the host's primary local IP so the output is a usable address, and the original wildcard is preserved if the local IP cannot be resolved; no network I/O beyond a local route lookup, no listener bind, no service, no config mutation |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
@@ -177,6 +179,16 @@ runtime and CLI library functions return errors and never call
 prints one diagnostic for failures, and applies the exit-code taxonomy: `0`
 success, `1` configuration, `2` service management, `3` runtime, and `4`
 permission denied.
+
+### Optional drive refresh
+
+Drive capacity is deliberately outside the critical sampler path. Each native
+collector creates at most one private standard-thread worker after core sampling
+starts; its first request is immediate and later requests use a 30-second cadence.
+The sampler polls a capacity-one result channel without waiting, retains the most
+recent successful drive list through failures, and publishes `drives: null` until
+a first result exists. Dropping the collector does not join a worker that may be
+inside an uninterruptible filesystem syscall.
 
 ### Unix control socket
 

@@ -8,7 +8,7 @@
 use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::{CollectedMetrics, SystemCollector};
+use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
 
 mod cpu;
 mod drives;
@@ -44,6 +44,7 @@ pub struct LinuxCollector {
     identity: SystemIdentity,
     capabilities: MetricCapabilities,
     previous_cpu: Option<cpu::CpuCounters>,
+    drive_refresh: Option<DriveRefreshCache>,
 }
 
 impl LinuxCollector {
@@ -68,6 +69,7 @@ impl LinuxCollector {
             identity,
             capabilities: MetricCapabilities { cpu_iowait: true },
             previous_cpu: None,
+            drive_refresh: None,
         })
     }
 
@@ -76,6 +78,17 @@ impl LinuxCollector {
     #[must_use]
     pub fn source_mut(&mut self) -> &mut ProcSource {
         &mut self.source
+    }
+}
+
+impl LinuxCollector {
+    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
+        if self.drive_refresh.is_none() {
+            self.drive_refresh = Some(DriveRefreshCache::new(self.source.clone(), drives::collect));
+        }
+        self.drive_refresh
+            .as_mut()
+            .and_then(DriveRefreshCache::poll)
     }
 }
 
@@ -136,13 +149,7 @@ impl SystemCollector for LinuxCollector {
             memory: memory_sample.into_metrics(),
             swap: swap_sample.into_metrics(),
             commit: None,
-            drives: match drives::collect(&self.source) {
-                Ok(drives) => Some(drives),
-                Err(error) => {
-                    tracing::debug!(kind = ?error.kind, "Linux drive collection unavailable");
-                    None
-                }
-            },
+            drives: self.refresh_drives(),
         })
     }
 

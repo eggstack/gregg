@@ -144,12 +144,13 @@ passes locally, the distinction is the cause.
   the repo.
 - `greggd configprint` is read-only and prints only the configured canonical
   bind `host:port`; it must not probe, bind, mutate config, or manage services.
-- `greggd croncheck` is a watchdog for non-systemd supervisors: bounded TCP
-  connect to the configured local bind (wildcards normalized to loopback);
-  silent exit `0` when something listens, otherwise spawn `<current_exe> run`
-  as a detached child (stdio closed; Unix: new process group). It must not
-  invoke service managers, shells, `pkill`/`killall`, or PID-file management;
-  the HTTP API is not consulted. `host`/`port` subcommands only persist config.
+- `greggd croncheck` is a watchdog for non-systemd supervisors: it probes the
+  configured local `/v2/healthz` endpoint with bounded raw HTTP (wildcards become
+  loopback). Valid Gregg Ready/Warming/Failed responses mean running; refusal
+  alone permits spawning detached `<current_exe> run`. Unrelated, malformed,
+  silent, or ambiguous peers return nonzero without spawning. It must not invoke
+  service managers, shells, `pkill`/`killall`, or PID-file management; `host`/`port`
+  subcommands only persist config.
 - `greggd stop` (Linux/macOS) targets only the local instance matching the
   resolved config identity via one tiny Unix-domain control socket
   (`STOP\n` → `OK\n`). Identity is an FNV-1a digest of the normalized config

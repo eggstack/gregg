@@ -16,6 +16,19 @@ use super::{parse_loadavgs, MacOsCollector};
 use crate::collector::error::CollectErrorKind;
 use crate::collector::SystemCollector;
 
+fn sample_until_drives(
+    collector: &mut MacOsCollector<MockNativeQueries>,
+) -> crate::collector::CollectedMetrics {
+    for _ in 0..100 {
+        let metrics = collector.sample().expect("core sample succeeds");
+        if metrics.drives.is_some() {
+            return metrics;
+        }
+        std::thread::yield_now();
+    }
+    panic!("drive refresh did not complete");
+}
+
 #[test]
 fn first_sample_is_warming() {
     let mock = MockNativeQueries::success();
@@ -426,7 +439,7 @@ fn successful_empty_drive_enumeration_is_preserved() {
     mock.mounted.clear();
     let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
     let _ = collector.sample().expect_err("warming");
-    let metrics = collector.sample().expect("sample succeeds");
+    let metrics = sample_until_drives(&mut collector);
 
     assert_eq!(metrics.drives, Some(Vec::new()));
 }
@@ -437,7 +450,7 @@ fn drive_capacity_preserves_total_free_and_caller_available() {
     mock.auto_increment_cpu = true;
     let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
     let _ = collector.sample().expect_err("warming");
-    let metrics = collector.sample().expect("sample succeeds");
+    let metrics = sample_until_drives(&mut collector);
     let drive = &metrics.drives.expect("drives")[0];
 
     assert_eq!(drive.used_bytes, 75 * 4096);

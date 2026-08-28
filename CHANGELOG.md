@@ -9,6 +9,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Long-running daemon stability** (`greggd`): Unix control-client requests are
+  bounded, transient listener errors retry with backoff, and control-channel
+  degradation no longer becomes a successful daemon shutdown. Optional drive
+  capacity refresh now runs in one bounded collector-owned worker at a slower
+  cadence, retaining last-known-good data without blocking core snapshots or
+  runtime shutdown. Linux excludes `autofs` and generic FUSE filesystems from
+  drive probing.
+- **Conservative `croncheck` identity** (`greggd`): the watchdog now validates a
+  bounded `/v2/healthz` response, treats Ready/Warming/Failed Gregg health as
+  running, starts only after connection refusal, and reports ambiguous occupied
+  endpoints without spawning a competing daemon.
+
+### Fixed
+
 - **Remaining 2026-08-27 audit findings** (`gregg-protocol`, `gregg`,
   `greggd`): configuration metadata errors are no longer treated as missing,
   client request timeouts are bounded to 100–60,000 ms, v2 capability objects

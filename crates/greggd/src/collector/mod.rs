@@ -43,6 +43,67 @@ pub mod error;
 
 use error::{CollectError, CollectErrorKind};
 
+const DRIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Debug)]
+pub(crate) struct DriveRefreshCache {
+    request_tx: Option<std::sync::mpsc::SyncSender<()>>,
+    result_rx: std::sync::mpsc::Receiver<Result<Vec<DriveMetrics>, CollectError>>,
+    latest: Option<Vec<DriveMetrics>>,
+}
+
+impl DriveRefreshCache {
+    pub(crate) fn new<S, F>(source: S, collect: F) -> Self
+    where
+        S: Send + 'static,
+        F: Fn(&S) -> Result<Vec<DriveMetrics>, CollectError> + Send + 'static,
+    {
+        let (request_tx, request_rx) = std::sync::mpsc::sync_channel(1);
+        let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || loop {
+            let request = request_rx.recv_timeout(DRIVE_REFRESH_INTERVAL);
+            if matches!(
+                request,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+            ) {
+                break;
+            }
+            let result = collect(&source);
+            let _ = result_tx.try_send(result);
+        });
+        drop(worker);
+        let _ = request_tx.try_send(());
+        Self {
+            request_tx: Some(request_tx),
+            result_rx,
+            latest: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn request(&self) {
+        if let Some(sender) = &self.request_tx {
+            let _ = sender.try_send(());
+        }
+    }
+
+    pub(crate) fn poll(&mut self) -> Option<Vec<DriveMetrics>> {
+        while let Ok(result) = self.result_rx.try_recv() {
+            match result {
+                Ok(drives) => self.latest = Some(drives),
+                Err(error) => tracing::debug!(kind = ?error.kind),
+            }
+        }
+        self.latest.clone()
+    }
+}
+
+impl Drop for DriveRefreshCache {
+    fn drop(&mut self) {
+        let _ = self.request_tx.take();
+    }
+}
+
 /// Shared clamped percentage normalization for byte ratios.
 ///
 /// Zero total yields `0.0` rather than a division by zero; the result is
@@ -305,12 +366,84 @@ pub trait SystemCollector: Send {
 
 #[cfg(test)]
 mod tests {
-    use super::clamped_usage_pct;
+    use super::error::{CollectError, CollectErrorKind};
+    use super::{clamped_usage_pct, DriveRefreshCache};
+    use gregg_protocol::v2::DriveMetrics;
 
     #[test]
     fn large_byte_ratios_remain_finite_and_clamped() {
         assert!((clamped_usage_pct(0, u64::MAX) - 0.0).abs() < f32::EPSILON);
         assert!((clamped_usage_pct(u64::MAX, u64::MAX) - 100.0).abs() < f32::EPSILON);
         assert!((clamped_usage_pct(u64::MAX, u64::MAX - 1) - 100.0).abs() < f32::EPSILON);
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        for _ in 0..10_000 {
+            if condition() {
+                return;
+            }
+            std::thread::yield_now();
+        }
+        assert!(condition(), "worker did not reach expected state");
+    }
+
+    #[test]
+    fn blocked_drive_refresh_does_not_block_cache_drop() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let started_for_worker = Arc::clone(&started);
+        let release_for_worker = Arc::clone(&release);
+        let mut cache = DriveRefreshCache::new((), move |()| {
+            started_for_worker.store(true, Ordering::Release);
+            while !release_for_worker.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            Ok(Vec::new())
+        });
+
+        wait_until(|| started.load(Ordering::Acquire));
+        assert_eq!(cache.poll(), None);
+        let before = std::time::Instant::now();
+        drop(cache);
+        assert!(before.elapsed() < std::time::Duration::from_millis(100));
+        release.store(true, Ordering::Release);
+    }
+
+    #[test]
+    fn drive_refresh_retains_last_success_after_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_worker = Arc::clone(&calls);
+        let mut cache = DriveRefreshCache::new((), move |()| {
+            let call = calls_for_worker.fetch_add(1, Ordering::AcqRel);
+            if call == 0 {
+                Ok(vec![DriveMetrics {
+                    name: "root".to_string(),
+                    used_bytes: 1,
+                    total_bytes: 2,
+                    available_bytes: Some(1),
+                }])
+            } else {
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "refresh failed",
+                ))
+            }
+        });
+
+        wait_until(|| cache.poll().is_some());
+        let first = cache.poll().expect("first drive result");
+        assert_eq!(first[0].name, "root");
+        cache.request();
+        wait_until(|| calls.load(Ordering::Acquire) >= 2);
+        assert_eq!(
+            cache.poll().expect("last good drive result")[0].used_bytes,
+            1
+        );
     }
 }

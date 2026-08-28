@@ -1,6 +1,6 @@
 # Plan 091: greggd long-running stability and croncheck hardening
 
-Status: ready for implementation.
+Status: implementation in progress; extended soak evidence remains before closure.
 
 Depends on: completed Plans 080-090 and the 2026-08-28 `greggd` long-running stability review.
 

@@ -49,7 +49,7 @@ service lifecycle. For platform metric collection itself, use the
 |---------|----------|
 | `run` | Foreground daemon; on Unix also binds the local control socket |
 | `stop` | Unix: single tiny control socket targeting only the local instance matching the resolved config identity. Windows: delegates to SCM. Idempotent when already stopped |
-| `croncheck` | Watchdog for non-systemd supervisors: bounded TCP connect to the configured **local** bind (wildcards normalized to loopback). Listener accepts → silent exit `0`. Nothing listening → spawns `<current_exe> run` as a detached child (stdio closed; Unix: new process group) |
+| `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
 | `host` / `port` | Atomic persisted mutation; applies on next start |
 | `version` | Compile-time version string |
@@ -70,6 +70,7 @@ service lifecycle. For platform metric collection itself, use the
   the connect error is `ConnectionRefused` or `NotFound`.
   `PermissionDenied` and unexpected errors never authorize unlinking.
 - Cleanup runs on every exit path, including signals and runtime errors.
+- Client reads and responses have a one-second deadline; malformed/partial clients are dropped, transient accept errors back off, and control-task failure cannot request daemon shutdown.
 - `stop` treats missing/refused candidates as idempotent "not running";
   unexpected I/O conditions yield `StopOutcome::Uncertain` (exit `3` at
   the binary boundary), never a silent not-running success.

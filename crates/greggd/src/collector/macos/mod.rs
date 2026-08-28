@@ -8,7 +8,7 @@
 use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::{CollectedMetrics, SystemCollector};
+use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
 
 pub mod cpu;
 pub mod ffi;
@@ -19,14 +19,8 @@ pub mod swap;
 
 fn collect_drives<S: ffi::MacNativeQueries>(
     source: &S,
-) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
-    let mounted = match source.mounted_filesystems() {
-        Ok(mounted) => mounted,
-        Err(error) => {
-            tracing::debug!(kind = ?error.kind, "macOS drive collection unavailable");
-            return None;
-        }
-    };
+) -> Result<Vec<gregg_protocol::v2::DriveMetrics>, CollectError> {
+    let mounted = source.mounted_filesystems()?;
     let candidates = mounted
         .into_iter()
         .filter(|record| {
@@ -52,7 +46,7 @@ fn collect_drives<S: ffi::MacNativeQueries>(
             )
         })
         .collect();
-    Some(crate::collector::drives::normalize(candidates))
+    Ok(crate::collector::drives::normalize(candidates))
 }
 
 #[cfg(test)]
@@ -70,6 +64,7 @@ pub struct MacOsCollector<S: ffi::MacNativeQueries = ffi::FfiNativeQueries> {
     previous_cpu: Option<ffi::RawCpuTicks>,
     logical_cores: u32,
     physical_memory_bytes: u64,
+    drive_refresh: Option<DriveRefreshCache>,
 }
 
 impl MacOsCollector<ffi::FfiNativeQueries> {
@@ -82,7 +77,7 @@ impl MacOsCollector<ffi::FfiNativeQueries> {
     }
 }
 
-impl<S: ffi::MacNativeQueries> MacOsCollector<S> {
+impl<S: ffi::MacNativeQueries + Clone> MacOsCollector<S> {
     /// Create a collector with an injected source. Intended for tests so
     /// synthetic values can be exercised without touching the host.
     pub fn with_source(source: S, display_name: Option<&str>) -> Result<Self, CollectError> {
@@ -99,6 +94,7 @@ impl<S: ffi::MacNativeQueries> MacOsCollector<S> {
             previous_cpu: None,
             logical_cores,
             physical_memory_bytes,
+            drive_refresh: None,
         })
     }
 
@@ -110,7 +106,21 @@ impl<S: ffi::MacNativeQueries> MacOsCollector<S> {
     }
 }
 
-impl<S: ffi::MacNativeQueries> SystemCollector for MacOsCollector<S> {
+impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
+    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
+        if self.drive_refresh.is_none() {
+            self.drive_refresh = Some(DriveRefreshCache::new(
+                self.source.clone(),
+                collect_drives::<S>,
+            ));
+        }
+        self.drive_refresh
+            .as_mut()
+            .and_then(DriveRefreshCache::poll)
+    }
+}
+
+impl<S: ffi::MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollector<S> {
     fn identity(&self) -> Result<SystemIdentity, CollectError> {
         Ok(self.identity.clone())
     }
@@ -163,7 +173,7 @@ impl<S: ffi::MacNativeQueries> SystemCollector for MacOsCollector<S> {
             memory: memory.into_metrics(),
             swap: swap.into_metrics(),
             commit: None,
-            drives: collect_drives(&self.source),
+            drives: self.refresh_drives(),
         })
     }
 

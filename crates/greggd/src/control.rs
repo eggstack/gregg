@@ -69,6 +69,9 @@ const UNIX_PATH_MAX: usize = 108;
 /// bound so malformed clients cannot hold the connection open.
 pub(crate) const MAX_CONTROL_REQUEST_BYTES: usize = 32;
 
+/// Maximum time allowed for one client request and response.
+pub(crate) const CONTROL_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Maximum bytes written in a single control response. `OK\n` is 3 bytes.
 const MAX_CONTROL_RESPONSE_BYTES: usize = 16;
 
@@ -719,42 +722,69 @@ impl Drop for ControlSocketGuard {
 async fn stop_loop(listener: tokio::net::UnixListener) -> std::io::Result<&'static str> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    let mut accept_backoff = std::time::Duration::from_millis(20);
     loop {
         let (mut stream, _) = match listener.accept().await {
-            Ok(pair) => pair,
-            Err(e) => return Err(e),
+            Ok(pair) => {
+                accept_backoff = std::time::Duration::from_millis(20);
+                pair
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::Interrupted
+                        | std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::ConnectionAborted
+                        | std::io::ErrorKind::ConnectionReset
+                        | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                warn!(%error, "transient control listener error; retrying");
+                tokio::time::sleep(accept_backoff).await;
+                accept_backoff = accept_backoff
+                    .saturating_mul(2)
+                    .min(std::time::Duration::from_secs(1));
+                continue;
+            }
+            Err(error) => {
+                warn!(%error, "control listener became unavailable; disabling local stop control");
+                return Err(error);
+            }
         };
 
-        let mut buf = [0_u8; MAX_CONTROL_REQUEST_BYTES];
-        let mut length = 0;
-        let mut received: Option<Vec<u8>> = None;
-        // Read until we see a newline, run out of buffer, or get EOF.
-        while length < buf.len() && received.is_none() {
-            match stream.read(&mut buf[length..]).await {
-                Ok(0) => break,
-                Err(error) => {
-                    warn!(
-                        error = %error,
-                        "control socket client read failed; dropping connection"
-                    );
-                    break;
-                }
-                Ok(read) => {
-                    length += read;
-                    if let Some(end) = buf[..length].iter().position(|b| *b == b'\n') {
-                        received = Some(buf[..=end].to_vec());
+        let received = tokio::time::timeout(CONTROL_CLIENT_TIMEOUT, async {
+            let mut buf = [0_u8; MAX_CONTROL_REQUEST_BYTES];
+            let mut length = 0;
+            let mut received: Option<Vec<u8>> = None;
+            while length < buf.len() && received.is_none() {
+                match stream.read(&mut buf[length..]).await {
+                    Ok(0) => break,
+                    Err(error) => {
+                        warn!(error = %error, "control socket client read failed; dropping connection");
+                        break;
+                    }
+                    Ok(read) => {
+                        length += read;
+                        if let Some(end) = buf[..length].iter().position(|b| *b == 10) {
+                            received = Some(buf[..=end].to_vec());
+                        }
                     }
                 }
             }
-        }
+            received
+        })
+        .await
+        .ok()
+        .flatten();
 
-        if let Some(bytes) = received {
-            if bytes.as_slice() == STOP_COMMAND {
+        if received.as_deref() == Some(STOP_COMMAND) {
+            let _ = tokio::time::timeout(CONTROL_CLIENT_TIMEOUT, async {
                 let _ = stream.write_all(OK_RESPONSE).await;
                 let _ = stream.flush().await;
                 let _ = stream.shutdown().await;
-                return Ok("control-stop");
-            }
+            })
+            .await;
+            return Ok("control-stop");
         }
         let _ = stream.shutdown().await;
     }
@@ -1246,6 +1276,33 @@ mod tests {
         assert!(matches!(outcome, Ok(StopOutcome::Stopped { .. })));
         assert!(reason.is_ok());
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn timed_out_control_client_does_not_block_later_stop() {
+        let dir = fresh_temp_dir("control-timeout");
+        let cfg = make_config_file(&dir, "greggd.toml");
+        let bound = bind_listener(&cfg);
+        let (path, listener) = match bound {
+            ControlBind::Bound { path, listener } => (path, listener),
+            ControlBind::NotBound => panic!("expected bound listener"),
+        };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let _task = spawn_stop_task(listener, path.clone(), tx);
+
+        let silent = tokio::net::UnixStream::connect(&path)
+            .await
+            .expect("silent client connects");
+        tokio::time::sleep(CONTROL_CLIENT_TIMEOUT + std::time::Duration::from_millis(50)).await;
+        drop(silent);
+
+        let cfg_for_stop = cfg.clone();
+        let client = tokio::task::spawn_blocking(move || send_stop(&cfg_for_stop));
+        let outcome = client.await.expect("stop client task completes");
+        let reason = rx.await.expect("control task signals later valid stop");
+        assert!(matches!(outcome, Ok(StopOutcome::Stopped { .. })));
+        assert_eq!(reason.expect("valid stop succeeds"), "control-stop");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

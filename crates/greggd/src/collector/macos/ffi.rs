@@ -127,7 +127,7 @@ pub trait MacNativeQueries: Send + Sync + std::fmt::Debug {
 // ---------------------------------------------------------------------------
 
 /// Production implementation backed by Mach and sysctl FFI.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct FfiNativeQueries;
 
 impl MacNativeQueries for FfiNativeQueries {

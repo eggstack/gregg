@@ -98,7 +98,7 @@ Change the bind address or port:
 ```bash
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
 greggd port 11311                  # change the listen port
-greggd croncheck                   # ensure the daemon is running; start it if not (cron watchdog)
+greggd croncheck                   # ensure the daemon is running; starts only when the health endpoint is refused (cron watchdog)
 greggd stop                        # stop a running foreground greggd via the local control socket (Unix) or SCM (Windows)
 greggd configprint                 # print the configured bind address with wildcards resolved to the local IP, e.g. 192.168.182.143:11310
 greggd version                     # print the daemon version
@@ -118,14 +118,15 @@ The HTTP API is read-only and has no shutdown
 endpoint.
 
 `greggd croncheck` is a watchdog for cron, Task Scheduler, and other
-supervisors without built-in readiness monitoring. It opens a bounded TCP
-connect to the configured local bind address (with wildcards normalized to
-loopback). If a listener accepts the connection, it exits silently with
-status `0`. If nothing is listening, it spawns `greggd run` as a detached
-child with stdio closed; on Unix the child runs in a new process group so
-signals sent to croncheck's group do not reach the daemon. Run it on a
-schedule and the daemon is kept running without `systemd`, `launchd`, or
-PID-file management.
+supervisors without built-in readiness monitoring. It sends a bounded raw HTTP
+probe to `/v2/healthz` on the configured local bind address, with wildcards
+normalized to loopback. A valid Gregg Ready, Warming, or Failed response means
+the daemon is running and exits silently with status `0`. A refused connection
+proves the endpoint is absent, so it spawns `greggd run` as a detached child
+with stdio closed; on Unix the child runs in a new process group. An unrelated,
+malformed, silent, or otherwise ambiguous peer returns nonzero and never starts
+a second daemon. Run it on a schedule without `systemd`, `launchd`, or PID-file
+management.
 
 The client stores its config at:
 

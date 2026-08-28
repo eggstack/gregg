@@ -552,7 +552,14 @@ fn shutdown_with_control(
         if let Some(rx) = stop_rx {
             let stop_fut = control::wait_for_stop_task(rx);
             tokio::select! {
-                reason = stop_fut => reason.unwrap_or("control-error"),
+                reason = stop_fut => if let Some(reason) = reason {
+                    reason
+                } else {
+                    tokio::select! {
+                        _ = sigterm.recv() => "SIGTERM",
+                        _ = sigint.recv() => "SIGINT",
+                    }
+                },
                 _ = sigterm.recv() => "SIGTERM",
                 _ = sigint.recv() => "SIGINT",
             }

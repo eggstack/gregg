@@ -63,8 +63,10 @@ after a valid sample.
 - Swap: `/proc/meminfo` — `SwapTotal` and `SwapFree`
 - Load: `/proc/loadavg`
 - Identity: `gethostname()`, `/proc/sys/kernel/osrelease`, `/etc/os-release`
-- Drives: `/proc/self/mountinfo` + `statvfs` (the only unsafe in this module);
-  retain both total-free (`f_bfree`) and caller-available (`f_bavail`) bytes
+- Drives: `/proc/self/mountinfo` + `statvfs` on the optional refresh worker
+  (the only unsafe in this module); retain both total-free (`f_bfree`) and
+  caller-available (`f_bavail`) bytes; skip `autofs`, generic `fuse`, and
+  `fuse.*` filesystems
 
 Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_commit: false`
 

@@ -302,7 +302,7 @@ impl WindowsSource for MockWindowsSource {
 /// - Check return values and `GetLastError()` before reading output buffers.
 /// - Copy owned data out of temporary buffers before returning.
 /// - Never expose raw pointers or borrowed foreign memory across the boundary.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct NativeWindowsSource;
 
 impl WindowsSource for NativeWindowsSource {

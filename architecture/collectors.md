@@ -45,6 +45,15 @@ same zero, clamp, and non-finite behavior.
 3. **Subsequent `sample()` returns `Ok(CollectedMetrics)`** — unless counter reset
 4. **One native sample → both v1 and v2 wire representations**
 
+### Drive normalization and refresh isolation
+
+Drive enumeration is optional and never runs in the core `sample()` call. Each
+platform collector owns at most one standard-thread refresh worker with an
+immediate first request and a 30-second cadence. Core samples poll completed
+results without waiting, retain the last successful list through failures, and
+use `None` until the first result. A worker is detached during drop so a native
+filesystem call cannot extend critical daemon shutdown.
+
 ### Drive normalization
 
 `collector/drives.rs` provides shared normalization:
@@ -108,8 +117,8 @@ Swap uses same formula with `SwapTotal` and `SwapFree`.
 
 ### Drives
 
-- Parses `/proc/self/mountinfo`
-- Excludes 29 filesystem types (proc, sysfs, devpts, tmpfs, etc.)
+- Parses `/proc/self/mountinfo` on the optional refresh worker
+- Excludes pseudo, network, `autofs`, and generic FUSE filesystem types
 - Prefers `/` mount point for root
 - Uses `statvfs` for capacity (the contained `unsafe` FFI lives in
   `source.rs`, with a documented safety comment)
