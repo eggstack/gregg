@@ -233,6 +233,10 @@ collapse to anonymous status text.
 
 ## Configuration
 
+Endpoint parsing canonicalizes IPv6 link-local zone identifiers to the
+URL-safe `%25` separator before persistence, accepting both `%eth0` and
+`%25eth0` input spellings.
+
 ```toml
 config_version = 1
 refresh_seconds = 5

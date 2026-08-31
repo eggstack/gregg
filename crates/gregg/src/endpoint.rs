@@ -446,6 +446,17 @@ fn normalize_host(host: &str) -> Result<String, EndpointError> {
         return Err(EndpointError::EmptyHost);
     }
 
+    // URL authorities encode the zone separator as `%25`. Accept the
+    // operator-friendly bare `%zone` spelling, but persist the URL-safe form
+    // so the poller can construct a valid request URL.
+    if let Some((address, zone)) = trimmed.split_once('%') {
+        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.is_empty() && !zone.contains(':')
+        {
+            let zone = zone.strip_prefix("25").unwrap_or(zone);
+            return Ok(format!("{address}%25{zone}"));
+        }
+    }
+
     // If it parses as an IP address, normalize through the standard library.
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
         return Ok(ip.to_string());
@@ -489,6 +500,7 @@ fn parse_port(port_str: &str, full_input: &str) -> Result<u16, EndpointError> {
 
 fn rsplit_once_colon(s: &str) -> (&str, &str) {
     // Safety: caller guarantees at least one colon.
+    debug_assert!(s.contains(':'));
     let idx = s.rfind(':').unwrap();
     (&s[..idx], &s[idx + 1..])
 }
@@ -627,7 +639,7 @@ mod tests {
     fn bare_ipv6_zone_id_with_default_port() {
         for input in ["fe80::1%eth0", "fe80::1%25eth0"] {
             let spec = EndpointSpec::parse(input).unwrap();
-            assert_eq!(spec.host, input);
+            assert_eq!(spec.host, "fe80::1%25eth0");
             assert_eq!(spec.port, DEFAULT_PORT);
             assert!(!spec.port_was_explicit);
         }
@@ -636,7 +648,7 @@ mod tests {
     #[test]
     fn unbracketed_ipv6_zone_id_with_port_is_parsed_explicitly() {
         let spec = EndpointSpec::parse("fe80::1%eth0:8080").unwrap();
-        assert_eq!(spec.host, "fe80::1%eth0");
+        assert_eq!(spec.host, "fe80::1%25eth0");
         assert_eq!(spec.port, 8080);
         assert!(spec.port_was_explicit);
     }

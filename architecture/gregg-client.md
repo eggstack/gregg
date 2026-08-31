@@ -311,6 +311,10 @@ omitted entirely.
 
 ## Configuration
 
+Endpoint parsing accepts IPv6 link-local zone identifiers in either bare
+`fe80::1%eth0` or URL-escaped `%25eth0` spelling. Persisted endpoint hosts use
+the URL-safe `%25` separator so the poller can construct valid HTTP URLs.
+
 ```toml
 config_version = 1
 refresh_seconds = 5

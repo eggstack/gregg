@@ -92,6 +92,9 @@ mode `0700`; an existing operator-managed directory keeps its current
 permissions. Metadata errors while loading a default config are reported
 instead of silently falling back to defaults.
 
+If the system clock moves backward, a future-dated cached snapshot is not
+treated as stale solely because its timestamp is ahead of the current clock.
+
 ## Links
 
 - Repository: <https://github.com/eggstack/gregg>

@@ -121,7 +121,7 @@ impl Config {
         }
 
         // Port validation. u16 cannot exceed 65535, so only check for zero.
-        if self.port < MIN_PORT {
+        if self.port == 0 {
             violations.push(ConfigViolation::InvalidPort(self.port));
         }
 

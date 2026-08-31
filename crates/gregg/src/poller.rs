@@ -399,12 +399,21 @@ fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
 /// `AddrNotAvailable` is deliberately excluded: it surfaces from
 /// `connect()` when no usable local interface or route exists, which is an
 /// unreachable-network condition rather than name resolution.
-fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
+pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(error) = current {
         if error
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+        {
+            return true;
+        }
+        let message = error.to_string().to_ascii_lowercase();
+        if message.contains("failed to lookup address")
+            || message.contains("name or service not known")
+            || message.contains("nodename nor servname")
+            || message.contains("temporary failure in name resolution")
+            || message.contains("no such host")
         {
             return true;
         }
@@ -419,10 +428,21 @@ fn bracketed_host(host: &str) -> String {
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(host);
+    let host = if let Some((address, zone)) = host.split_once('%') {
+        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.is_empty() && !zone.contains(':')
+        {
+            let zone = zone.strip_prefix("25").unwrap_or(zone);
+            format!("{address}%25{zone}")
+        } else {
+            host.to_string()
+        }
+    } else {
+        host.to_string()
+    };
     if host.contains(':') {
         format!("[{host}]")
     } else {
-        host.to_string()
+        host
     }
 }
 
@@ -771,6 +791,10 @@ mod tests {
     #[test]
     fn url_construction_ipv6_zone_id() {
         assert_eq!(
+            status_url("fe80::1%eth0", 8080),
+            "http://[fe80::1%25eth0]:8080/v1/status"
+        );
+        assert_eq!(
             status_url("fe80::1%25eth0", 8080),
             "http://[fe80::1%25eth0]:8080/v1/status"
         );
@@ -835,14 +859,20 @@ mod tests {
     }
 
     #[test]
-    fn is_dns_failure_matches_typed_errors_only() {
+    fn is_dns_failure_matches_resolver_errors() {
         // AddrNotAvailable comes from connect(), not name resolution.
         let unreachable_network =
             io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
         assert!(!is_dns_failure(&unreachable_network));
         let gai =
             io::Error::other("failed to lookup address information: Name or service not known");
-        assert!(!is_dns_failure(&gai));
+        assert!(is_dns_failure(&gai));
+        assert!(is_dns_failure(&io::Error::other(
+            "nodename nor servname provided"
+        )));
+        assert!(is_dns_failure(&io::Error::other(
+            "temporary failure in name resolution",
+        )));
         let misleading = io::Error::other("failed to resolve proxy");
         assert!(!is_dns_failure(&misleading));
         let not_found = io::Error::new(io::ErrorKind::NotFound, "name not found");

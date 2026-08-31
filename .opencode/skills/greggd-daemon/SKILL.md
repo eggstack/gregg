@@ -89,6 +89,8 @@ Sampler identity failures follow the ordinary warming/failed lifecycle and
 preserve any previous valid snapshot; they never publish a fabricated blank
 identity. Daemon display names are non-empty, at most 128 bytes, and may not
 contain control characters.
+Backward wall-clock movement does not make a future-dated cached snapshot stale;
+age-based staleness applies only to a non-negative elapsed age.
 Configuration metadata errors are propagated instead of treated as a missing
 default file. Atomic writes restrict newly created parent directories to
 `0700` while preserving permissions on existing operator-managed directories.

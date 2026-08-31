@@ -303,6 +303,9 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
     if error.is_timeout() {
         return EggpoolFetchOutcome::Timeout;
     }
+    if crate::poller::is_dns_failure(error) {
+        return EggpoolFetchOutcome::DnsFailure;
+    }
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
     while let Some(error) = current {
         if error
@@ -310,12 +313,6 @@ fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
             .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
         {
             return EggpoolFetchOutcome::ConnectionRefused;
-        }
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-        {
-            return EggpoolFetchOutcome::DnsFailure;
         }
         current = error.source();
     }

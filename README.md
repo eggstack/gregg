@@ -70,6 +70,9 @@ as `host:port`, as an HTTP URL (`http://host:port/`), or through
 configuration compatibility but is not used by `gregg add`. Use
 `gregg remove HOST` if you want host-only matching for removal.
 
+IPv6 link-local zone identifiers are accepted in either `fe80::1%eth0` or
+`[fe80::1%25eth0]:11310` form and are stored in URL-safe `%25` form for polling.
+
 ## Configuration
 
 The daemon configuration file locations:
@@ -240,6 +243,10 @@ GET /v2/healthz # v2 health
 ```
 
 Clients request `/v2/status` first and fall back to `/v1/status` only on 404.
+
+If the system clock moves backward, a snapshot timestamp that is temporarily
+in the future is treated as fresh rather than stale; age-based staleness resumes
+once the clock catches up.
 
 ## Platform notes
 

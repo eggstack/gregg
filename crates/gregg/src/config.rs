@@ -278,7 +278,7 @@ impl Config {
         }
 
         // Default port.
-        if self.default_port < MIN_PORT {
+        if self.default_port == 0 {
             violations.push(ConfigViolation::InvalidPort(self.default_port));
         }
 
@@ -316,7 +316,7 @@ impl Config {
             }
 
             // Port validation.
-            if system.port < MIN_PORT {
+            if system.port == 0 {
                 violations.push(ConfigViolation::InvalidEndpointPort {
                     id: system.id.clone(),
                     port: system.port,
@@ -1190,7 +1190,7 @@ fn validate_eggpool(violations: &mut Vec<ConfigViolation>, entry: &EggpoolEntry)
             host: entry.host.clone(),
         });
     }
-    if entry.port < MIN_PORT {
+    if entry.port == 0 {
         violations.push(ConfigViolation::InvalidEggpoolPort { port: entry.port });
     }
     if let Some(name) = &entry.name {

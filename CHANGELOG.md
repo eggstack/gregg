@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining 2026-08-31 audit findings** (`gregg`, `greggd`): IPv6 zone IDs
+  are persisted in URL-safe form, resolver lookup errors are classified as DNS
+  failures in both client request paths, zero-port validation reflects the
+  actual unsigned boundary, and backward clock movement no longer makes a
+  future-dated snapshot stale.
+
 - **Long-running daemon stability** (`greggd`): Unix control-client requests are
   bounded, transient listener errors retry with backoff, and control-channel
   degradation no longer becomes a successful daemon shutdown. Optional drive
