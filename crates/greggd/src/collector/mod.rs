@@ -69,7 +69,13 @@ impl DriveRefreshCache {
                 break;
             }
             let result = collect(&source);
-            let _ = result_tx.try_send(result);
+            // Do not discard a completed refresh merely because the sampler
+            // has not drained the previous result yet. A bounded send keeps
+            // the worker from racing ahead while still allowing cache drop
+            // to disconnect it without blocking the owner.
+            if result_tx.send(result).is_err() {
+                break;
+            }
         });
         drop(worker);
         let _ = request_tx.try_send(());
@@ -114,9 +120,10 @@ impl Drop for DriveRefreshCache {
 pub(crate) fn clamped_usage_pct(used_bytes: u64, total_bytes: u64) -> f32 {
     if total_bytes == 0 {
         0.0
+    } else if used_bytes >= total_bytes {
+        100.0
     } else {
-        let scaled_used = u128::from(used_bytes) * 100;
-        let pct = (scaled_used as f64) / (total_bytes as f64);
+        let pct = (used_bytes as f64 / total_bytes as f64) * 100.0;
         // Re-check finiteness after the narrowing cast so a non-finite
         // intermediate can never reach the wire, mirroring the CPU
         // percentage finalizers in `collector/linux/cpu.rs`.
@@ -445,5 +452,32 @@ mod tests {
             cache.poll().expect("last good drive result")[0].used_bytes,
             1
         );
+    }
+
+    #[test]
+    fn drive_refresh_does_not_drop_a_new_result_while_previous_is_queued() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_worker = Arc::clone(&calls);
+        let mut cache = DriveRefreshCache::new((), move |()| {
+            let call = calls_for_worker.fetch_add(1, Ordering::AcqRel);
+            Ok(vec![DriveMetrics {
+                name: format!("drive-{call}"),
+                used_bytes: call as u64,
+                total_bytes: 10,
+                available_bytes: Some(10 - call as u64),
+            }])
+        });
+
+        wait_until(|| calls.load(Ordering::Acquire) >= 1);
+        cache.request();
+        wait_until(|| calls.load(Ordering::Acquire) >= 2);
+        wait_until(|| {
+            cache
+                .poll()
+                .is_some_and(|drives| drives[0].name == "drive-1")
+        });
     }
 }

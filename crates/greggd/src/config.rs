@@ -332,6 +332,11 @@ impl Config {
             }
         })?;
 
+        sync_parent_directory(dir).map_err(|e| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(e),
+        })?;
+
         Ok(())
     }
 
@@ -358,6 +363,25 @@ impl Config {
     pub fn stale_after_ms(&self) -> u64 {
         self.stale_after_ms
     }
+}
+
+fn sync_parent_directory(dir: &Path) -> std::io::Result<()> {
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Windows requires this flag to open a directory as a file handle.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options.open(dir)?.sync_all()
 }
 
 /// Create a new temporary config file with restrictive permissions.

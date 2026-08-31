@@ -210,7 +210,9 @@ impl AppState {
                 };
 
                 let endpoint = entry.to_endpoint();
-                if old.endpoint.host == endpoint.host && old.endpoint.port == endpoint.port {
+                if old.endpoint.host.eq_ignore_ascii_case(&endpoint.host)
+                    && old.endpoint.port == endpoint.port
+                {
                     old.endpoint = endpoint;
                     old.configured_name.clone_from(&entry.name);
                     old
@@ -957,6 +959,44 @@ mod tests {
         assert_eq!(state.viewport_top_id.as_deref(), Some("changed"));
         assert_eq!(state.systems[2].id, "added");
         assert_eq!(state.systems[2].reachability, Reachability::Pending);
+    }
+
+    #[test]
+    fn reconcile_systems_preserves_state_when_dns_host_case_changes() {
+        let config = Config {
+            systems: vec![SystemEntry {
+                id: "same".into(),
+                host: "Server.Local".into(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        };
+        let mut state = AppState::from_config(&config);
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "same".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(10),
+            }],
+        });
+
+        state.reconcile_systems(&Config {
+            systems: vec![SystemEntry {
+                id: "same".into(),
+                host: "server.local".into(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        });
+
+        assert_eq!(state.systems[0].reachability, Reachability::Online);
+        assert!(state.systems[0].latest.is_some());
     }
 
     #[test]

@@ -167,6 +167,7 @@ impl NormalizedSnapshot {
 /// Individual drives that would overflow the running totals are skipped
 /// rather than poisoning the whole-fleet aggregate, so a single corrupt
 /// entry cannot blank the displayed totals.
+#[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     if drives.is_empty() {
         return None;
@@ -202,9 +203,11 @@ pub fn aggregate_drives(drives: &[NormalizedDrive]) -> Option<DriveAggregate> {
     if total_bytes == 0 || !accumulated {
         return None;
     }
-    let scaled_used = u128::from(used_bytes) * 100;
-    #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
-    let usage_pct = (scaled_used as f64 / total_bytes as f64) as f32;
+    let usage_pct = if used_bytes >= total_bytes {
+        100.0
+    } else {
+        (used_bytes as f64 / total_bytes as f64 * 100.0) as f32
+    };
     Some(DriveAggregate {
         used_bytes,
         total_bytes,

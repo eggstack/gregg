@@ -402,11 +402,10 @@ fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
 pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
     while let Some(error) = current {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-        {
-            return true;
+        if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            if io.kind() == std::io::ErrorKind::NotFound || is_resolver_os_error(io) {
+                return true;
+            }
         }
         let message = error.to_string().to_ascii_lowercase();
         if message.contains("failed to lookup address")
@@ -414,6 +413,7 @@ pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
             || message.contains("nodename nor servname")
             || message.contains("temporary failure in name resolution")
             || message.contains("no such host")
+            || message.contains("name does not resolve")
         {
             return true;
         }
@@ -423,22 +423,18 @@ pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+#[cfg(windows)]
+fn is_resolver_os_error(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(11001..=11004))
+}
+
+#[cfg(not(windows))]
+fn is_resolver_os_error(_error: &std::io::Error) -> bool {
+    false
+}
+
 fn bracketed_host(host: &str) -> String {
-    let host = host
-        .strip_prefix('[')
-        .and_then(|value| value.strip_suffix(']'))
-        .unwrap_or(host);
-    let host = if let Some((address, zone)) = host.split_once('%') {
-        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.is_empty() && !zone.contains(':')
-        {
-            let zone = zone.strip_prefix("25").unwrap_or(zone);
-            format!("{address}%25{zone}")
-        } else {
-            host.to_string()
-        }
-    } else {
-        host.to_string()
-    };
+    let host = crate::endpoint::bracketed_host(host);
     if host.contains(':') {
         format!("[{host}]")
     } else {
@@ -806,6 +802,10 @@ mod tests {
             status_url("[fe80::1%25eth0]", 8080),
             "http://[fe80::1%25eth0]:8080/v1/status"
         );
+        assert_eq!(
+            status_url("fe80::1%2525thfloor", 8080),
+            "http://[fe80::1%2525thfloor]:8080/v1/status"
+        );
     }
 
     #[tokio::test]
@@ -875,6 +875,7 @@ mod tests {
         )));
         let misleading = io::Error::other("failed to resolve proxy");
         assert!(!is_dns_failure(&misleading));
+        assert!(is_dns_failure(&io::Error::other("Name does not resolve")));
         let not_found = io::Error::new(io::ErrorKind::NotFound, "name not found");
         assert!(is_dns_failure(&not_found));
     }

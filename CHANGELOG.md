@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining 2026-08-31 audit findings** (`gregg`, `greggd`): direct polling
+  intervals and drive refresh delivery are bounded, endpoint/config host
+  normalization and DNS diagnostics are consistent, malformed warm samples
+  fail safely, config renames sync their parent directory on Windows, and
+  large byte values format without unit-boundary rounding artifacts.
+
 - **Remaining 2026-08-31 audit findings** (`gregg`, `greggd`): IPv6 zone IDs
   are persisted in URL-safe form, resolver lookup errors are classified as DNS
   failures in both client request paths, zero-port validation reflects the

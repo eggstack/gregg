@@ -18,23 +18,34 @@ const DRIVE_GAP_CELLS: usize = 2;
 const DRIVE_SLASH_CELLS: usize = 3; // " / "
 
 /// Format a byte count as a human-readable string using binary units.
-#[allow(clippy::cast_precision_loss)]
 pub fn format_bytes(bytes: u64) -> String {
     if bytes == 0 {
         return "0 B".to_string();
     }
 
-    if bytes >= TIB {
-        format!("{:.1} TiB", bytes as f64 / TIB as f64)
+    let (unit, label, next) = if bytes >= TIB {
+        (TIB, "TiB", None)
     } else if bytes >= GIB {
-        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+        (GIB, "GiB", Some((TIB, "TiB")))
     } else if bytes >= MIB {
-        format!("{:.1} MiB", bytes as f64 / MIB as f64)
+        (MIB, "MiB", Some((GIB, "GiB")))
     } else if bytes >= KIB {
-        format!("{:.1} KiB", bytes as f64 / KIB as f64)
+        (KIB, "KiB", Some((MIB, "MiB")))
     } else {
-        format!("{bytes} B")
+        return format!("{bytes} B");
+    };
+
+    let tenths = (u128::from(bytes) * 10 + u128::from(unit) / 2) / u128::from(unit);
+    if let Some((next_unit, next_label)) = next.filter(|_| tenths >= 10_240) {
+        let next_tenths =
+            (u128::from(bytes) * 10 + u128::from(next_unit) / 2) / u128::from(next_unit);
+        return format!(
+            "{}.{fraction} {next_label}",
+            next_tenths / 10,
+            fraction = next_tenths % 10
+        );
     }
+    format!("{}.{fraction} {label}", tenths / 10, fraction = tenths % 10)
 }
 
 /// Format a percentage value.
@@ -424,6 +435,12 @@ mod tests {
     fn format_pct_clamps_out_of_range_values() {
         assert_eq!(format_pct(-1.0), "0.0%");
         assert_eq!(format_pct(150.0), "100%");
+    }
+
+    #[test]
+    fn format_bytes_carries_rounding_into_the_next_unit() {
+        assert_eq!(format_bytes(TIB - 1), "1.0 TiB");
+        assert_eq!(format_bytes(GIB - 1), "1.0 GiB");
     }
 
     fn drive(name: &str, used: u64, total: u64, available: Option<u64>) -> NormalizedDrive {

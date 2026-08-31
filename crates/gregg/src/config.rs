@@ -295,7 +295,9 @@ impl Config {
             }
 
             // Unique normalized address.
-            let normalized = format!("{}:{}", system.host.to_ascii_lowercase(), system.port);
+            let normalized_host = crate::endpoint::normalize_host(&system.host)
+                .unwrap_or_else(|_| system.host.trim().to_string());
+            let normalized = format!("{}:{}", normalized_host.to_ascii_lowercase(), system.port);
             if !seen_addresses.insert(normalized.clone()) {
                 violations.push(ConfigViolation::DuplicateAddress {
                     address: normalized,
@@ -308,7 +310,12 @@ impl Config {
                 violations.push(ConfigViolation::EmptyHost {
                     id: system.id.clone(),
                 });
-            } else if host.contains("://") || host.contains('/') || host.contains('?') {
+            } else if host.contains("://")
+                || host.contains('/')
+                || host.contains('?')
+                || host.contains('[')
+                || host.contains(']')
+            {
                 violations.push(ConfigViolation::InvalidHost {
                     id: system.id.clone(),
                     host: host.to_string(),
@@ -366,38 +373,44 @@ impl Config {
         #[cfg(target_os = "linux")]
         {
             if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-                return PathBuf::from(xdg).join("gregg").join("gregg.toml");
+                if !xdg.trim().is_empty() {
+                    return PathBuf::from(xdg).join("gregg").join("gregg.toml");
+                }
             }
             match std::env::var("HOME") {
-                Ok(home) => PathBuf::from(home)
+                Ok(home) if !home.trim().is_empty() => PathBuf::from(home)
                     .join(".config")
                     .join("gregg")
                     .join("gregg.toml"),
-                Err(_) => PathBuf::from("gregg.toml"),
+                _ => PathBuf::from("gregg.toml"),
             }
         }
         #[cfg(target_os = "macos")]
         {
             match std::env::var("HOME") {
-                Ok(home) => PathBuf::from(home)
+                Ok(home) if !home.trim().is_empty() => PathBuf::from(home)
                     .join("Library")
                     .join("Application Support")
                     .join("gregg")
                     .join("gregg.toml"),
-                Err(_) => PathBuf::from("gregg.toml"),
+                _ => PathBuf::from("gregg.toml"),
             }
         }
         #[cfg(target_os = "windows")]
         {
             if let Ok(appdata) = std::env::var("APPDATA") {
-                return PathBuf::from(appdata).join("gregg").join("gregg.toml");
+                if !appdata.trim().is_empty() {
+                    return PathBuf::from(appdata).join("gregg").join("gregg.toml");
+                }
             }
             if let Ok(userprofile) = std::env::var("USERPROFILE") {
-                return PathBuf::from(userprofile)
-                    .join("AppData")
-                    .join("Roaming")
-                    .join("gregg")
-                    .join("gregg.toml");
+                if !userprofile.trim().is_empty() {
+                    return PathBuf::from(userprofile)
+                        .join("AppData")
+                        .join("Roaming")
+                        .join("gregg")
+                        .join("gregg.toml");
+                }
             }
             // No user-scoped directory available; bare fallback.
             PathBuf::from("gregg.toml")
@@ -429,10 +442,19 @@ impl Config {
     /// Returns [`ConfigError`] if the content is not valid TOML,
     /// contains unknown fields, or fails validation.
     pub fn parse(content: &str, path: Option<&Path>) -> Result<Self, ConfigError> {
-        let config: Self = toml::from_str(content).map_err(|e| ConfigError::Parse {
+        let mut config: Self = toml::from_str(content).map_err(|e| ConfigError::Parse {
             path: path.map(PathBuf::from),
             source: e,
         })?;
+
+        // Config files are a public input boundary. Canonicalize recognized
+        // IP literals and IPv6 zone identifiers before validation so a
+        // hand-edited spelling cannot create a second logical endpoint.
+        for system in &mut config.systems {
+            if let Ok(host) = crate::endpoint::normalize_host(&system.host) {
+                system.host = host;
+            }
+        }
 
         let violations = config.validate();
         if violations.is_empty() {
@@ -544,23 +566,32 @@ impl Config {
             }
         })?;
 
-        // fsync the parent directory to ensure the rename is durable.
-        #[cfg(unix)]
-        {
-            let dir_file = fs::OpenOptions::new().read(true).open(dir).map_err(|e| {
-                ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(e),
-                }
-            })?;
-            dir_file.sync_all().map_err(|e| ConfigError::AtomicWrite {
-                path: path.to_path_buf(),
-                source: AtomicWriteError::Io(e),
-            })?;
-        }
+        sync_parent_directory(dir).map_err(|e| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(e),
+        })?;
 
         Ok(())
     }
+}
+
+fn sync_parent_directory(dir: &Path) -> io::Result<()> {
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        // Windows requires this flag to open a directory as a file handle.
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
+    }
+    options.open(dir)?.sync_all()
 }
 
 /// Default lock acquisition timeout in milliseconds.
@@ -1590,6 +1621,37 @@ default_port = 11310\n";
         assert!(violations
             .iter()
             .any(|v| matches!(v, ConfigViolation::InvalidHost { .. })));
+    }
+
+    #[test]
+    fn bracketed_system_host_fails_validation() {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "id1".into(),
+            host: "[192.168.1.1]".into(),
+            port: 80,
+            name: None,
+        });
+        assert!(config
+            .validate()
+            .iter()
+            .any(|v| matches!(v, ConfigViolation::InvalidHost { .. })));
+    }
+
+    #[test]
+    fn parse_canonicalizes_recognized_ip_host_spellings() {
+        let content = "\
+config_version = 1\n\
+refresh_seconds = 5\n\
+request_timeout_ms = 1500\n\
+max_concurrent_requests = 16\n\
+default_port = 11310\n\
+[[systems]]\n\
+id = \"id1\"\n\
+host = \"2001:0db8:0:0:0:0:0:1\"\n\
+port = 11310\n";
+        let config = Config::parse(content, None).expect("config should parse");
+        assert_eq!(config.systems[0].host, "2001:db8::1");
     }
 
     #[test]

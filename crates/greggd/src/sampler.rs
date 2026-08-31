@@ -281,10 +281,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         match result {
             Ok(metrics) => {
                 if metrics.cpu_usage_pct.is_none() {
-                    tracing::debug!(
-                        kind = "warming",
-                        "sample returned no CPU percentage; staying in warming state"
-                    );
+                    self.transition_to_failed("sample returned no CPU percentage");
+                    tracing::debug!(kind = "numeric", "sample returned no CPU percentage");
                     return;
                 }
 
@@ -764,6 +762,23 @@ mod tests {
         let snap = sampler.snapshot().expect("snapshot must be present");
         assert!((snap.cpu.usage_pct - 25.0).abs() < f32::EPSILON);
         assert_eq!(snap.cpu.logical_cores, 4);
+    }
+
+    #[test]
+    fn missing_cpu_percentage_after_ready_transitions_to_failed() {
+        let clock = SyntheticClock::new(1000);
+        let mut missing = successful_metrics();
+        missing.cpu_usage_pct = None;
+        let collector =
+            SyntheticCollector::from_results(vec![Ok(successful_metrics()), Ok(missing)]);
+        let mut sampler = Sampler::new(collector, clock);
+
+        sampler.sample_once();
+        assert_eq!(sampler.readiness(), ReadinessState::Ready);
+        sampler.sample_once();
+
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert_eq!(sampler.consecutive_failures, 1);
     }
 
     #[test]

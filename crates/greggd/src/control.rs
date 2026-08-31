@@ -525,6 +525,7 @@ fn try_bind_secure(path: &Path) -> Option<ControlBind> {
     }
 
     let staged_socket = stage_dir.join("s");
+    debug_assert!(staged_socket_path_fits(&staged_socket));
     let listener = match tokio::net::UnixListener::bind(&staged_socket) {
         Ok(listener) => listener,
         Err(e) => {
@@ -672,6 +673,10 @@ fn prepare_final_path(path: &Path) -> Option<()> {
 /// candidate check also fits the staged path.
 fn private_staging_dir(path: &Path) -> PathBuf {
     path.with_file_name(format!(".gd-stage-{}", std::process::id()))
+}
+
+fn staged_socket_path_fits(path: &Path) -> bool {
+    path.as_os_str().len() <= UNIX_PATH_MAX
 }
 
 /// Run a dedicated control-stop task that owns the bound Unix listener.

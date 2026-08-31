@@ -63,7 +63,10 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         Self {
             clock,
             client,
-            refresh_interval,
+            // Tokio rejects a zero interval because it would be ready
+            // forever; direct users of this public constructor should be
+            // protected even when they bypass Config validation.
+            refresh_interval: refresh_interval.max(Duration::from_millis(1)),
             // A zero-sized semaphore would park every poll forever. Config
             // validation rejects zero for normal callers, but this public
             // constructor also needs to remain safe for direct users.
@@ -401,6 +404,17 @@ mod tests {
             0,
         );
         assert_eq!(scheduler.max_concurrent, 1);
+    }
+
+    #[test]
+    fn zero_refresh_interval_is_clamped_to_one_millisecond() {
+        let scheduler = PollScheduler::new(
+            FakeClock::new(std::time::Instant::now()),
+            HttpClient::new(Duration::from_secs(1)),
+            Duration::ZERO,
+            1,
+        );
+        assert_eq!(scheduler.refresh_interval, Duration::from_millis(1));
     }
 
     #[test]

@@ -43,11 +43,7 @@ impl Endpoint {
     /// IPv6 addresses are bracketed: `[::1]:8080`.
     #[must_use]
     pub fn display_address(&self) -> String {
-        if self.host.contains(':') {
-            format!("[{}]:{}", self.host, self.port)
-        } else {
-            format!("{}:{}", self.host, self.port)
-        }
+        display_address(&self.host, self.port)
     }
 
     /// Return `true` if this endpoint matches the given host string.
@@ -336,26 +332,26 @@ impl EndpointSpec {
             });
         }
 
-        let host = url
-            .host_str()
-            .ok_or(EndpointError::EmptyHost)?
-            .trim_matches(['[', ']']);
+        let parsed_host = url.host_str().ok_or(EndpointError::EmptyHost)?;
+        // Use the raw authority for IPv6 zone identifiers so a literal zone
+        // beginning with "25" is not mistaken for an already-decoded `%25`
+        // separator by the URL parser.
+        let host = raw_authority_host(authority)
+            .filter(|host| host.contains('%'))
+            .unwrap_or(parsed_host);
+        let host = unbracketed_host(host);
         let authority_host = if host.contains(':') {
             format!("[{host}]")
         } else {
             host.to_string()
         };
-        let explicit_port = if authority.starts_with('[') {
-            authority
-                .find(']')
-                .and_then(|close| authority.get(close + 1..))
-                .and_then(|rest| rest.strip_prefix(':'))
-        } else {
-            authority
-                .rsplit_once(':')
-                .filter(|(host, _)| !host.contains(':'))
-                .map(|(_, port)| port)
-        };
+        // `Url::port()` omits an explicitly written default port. Preserve
+        // that distinction from the raw authority while still letting the
+        // URL parser validate the complete input.
+        let explicit_port = url
+            .port()
+            .map(|port| port.to_string())
+            .or_else(|| raw_authority_port(authority).map(std::string::ToString::to_string));
         let canonical = match explicit_port {
             Some(port) => format!("{authority_host}:{port}"),
             None => authority_host,
@@ -440,7 +436,7 @@ pub fn validate_name(name: &str) -> Result<(), EndpointError> {
     Ok(())
 }
 
-fn normalize_host(host: &str) -> Result<String, EndpointError> {
+pub(crate) fn normalize_host(host: &str) -> Result<String, EndpointError> {
     let trimmed = host.trim();
     if trimmed.is_empty() {
         return Err(EndpointError::EmptyHost);
@@ -467,6 +463,28 @@ fn normalize_host(host: &str) -> Result<String, EndpointError> {
     // the `cmd_add`/`cmd_remove` duplicate checks — see those sites for
     // the canonicalization rules.
     Ok(trimmed.to_string())
+}
+
+fn raw_authority_host(authority: &str) -> Option<&str> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        return rest.split_once(']').map(|(host, _)| host);
+    }
+    match authority.rsplit_once(':') {
+        Some((host, _)) if !host.contains(':') => Some(host),
+        _ => Some(authority),
+    }
+}
+
+fn raw_authority_port(authority: &str) -> Option<&str> {
+    if let Some(close) = authority.find(']') {
+        return authority
+            .get(close + 1..)
+            .and_then(|rest| rest.strip_prefix(':'));
+    }
+    authority
+        .rsplit_once(':')
+        .filter(|(host, _)| !host.contains(':'))
+        .map(|(_, port)| port)
 }
 
 fn is_ipv6_with_zone_id(host: &str) -> bool {
@@ -508,11 +526,24 @@ fn rsplit_once_colon(s: &str) -> (&str, &str) {
 /// Canonical display address for a host and port.
 #[must_use]
 pub fn display_address(host: &str, port: u16) -> String {
+    let host = bracketed_host(host);
     if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
         format!("{host}:{port}")
     }
+}
+
+/// Normalize and bracket a host for an authority or display address.
+pub(crate) fn bracketed_host(host: &str) -> String {
+    let host = unbracketed_host(host);
+    normalize_host(host).unwrap_or_else(|_| host.to_string())
+}
+
+fn unbracketed_host(host: &str) -> &str {
+    host.strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host)
 }
 
 #[cfg(test)]
@@ -607,6 +638,13 @@ mod tests {
             EndpointSpec::parse_add_input("http://user:password@host:11310/"),
             Err(EndpointError::HasCredentials { .. })
         ));
+    }
+
+    #[test]
+    fn add_input_preserves_a_zone_name_starting_with_25() {
+        let spec = EndpointSpec::parse("[fe80::1%2525thfloor]:11310")
+            .expect("endpoint with an encoded zone should parse");
+        assert_eq!(spec.host, "fe80::1%2525thfloor");
     }
 
     // --- Valid IPv6 parsing ---
@@ -801,6 +839,14 @@ mod tests {
     fn ipv6_display() {
         let ep = Endpoint::new("::1".into(), 8080, None);
         assert_eq!(ep.display_address(), "[::1]:8080");
+    }
+
+    #[test]
+    fn display_address_normalizes_bare_ipv6_zone_ids() {
+        assert_eq!(
+            display_address("fe80::1%eth0", 8080),
+            "[fe80::1%25eth0]:8080"
+        );
     }
 
     #[test]
