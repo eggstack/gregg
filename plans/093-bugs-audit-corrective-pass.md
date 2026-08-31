@@ -43,7 +43,7 @@ behavior-preserving changes:
 
 ## Closure record
 
-Implementation landed in commit `01c9c53`.
+Implementation landed in commit `ede60b8`.
 
 Completed:
 
