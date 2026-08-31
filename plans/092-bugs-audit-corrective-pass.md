@@ -1,6 +1,6 @@
 # Plan 092: Bugs audit corrective pass
 
-Status: implementation in progress.
+Status: complete. Closing record below.
 
 Depends on: Plan 091 and the confirmed findings recorded in the 2026-08-31
 `bugs.md` audit.
@@ -37,3 +37,25 @@ behavior-preserving changes:
 - No changes to accepted `gregg add` forms beyond canonicalizing an already
   accepted IPv6 zone identifier for HTTP transport.
 
+## Closure record
+
+Implementation landed in commit `6efa52cc272e6d250eded684b5a662e69407313f`.
+
+Completed:
+
+- IPv6 zone identifiers are canonicalized to URL-safe `%25` form at endpoint
+  parsing and URL construction boundaries;
+- common resolver lookup messages are classified as DNS failures by both the
+  Systems poller and EggPool path, while unrelated network errors remain so;
+- client and daemon zero-port checks explicitly compare against `0`;
+- future-dated snapshots remain serviceable when the wall clock moves
+  backward;
+- focused regressions, required documentation, and the low-risk endpoint
+  precondition assertion were added, and `bugs.md` was deleted.
+
+Verification passed:
+
+- `./scripts/check-local.sh`;
+- `cargo test --workspace --all-targets --all-features` — 859 passed, 2 ignored;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`;
+- focused endpoint, poller, EggPool, config, and daemon server tests.

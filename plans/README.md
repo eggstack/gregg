@@ -53,10 +53,10 @@ health endpoint before deciding whether to spawn. Deterministic regressions and
 local lifecycle evidence are required before closure; the extended soak remains
 manual evidence rather than CI infrastructure.
 
-Plan 092 is in implementation: it closes the actionable findings from the
+Plan 092 is complete: it closed the actionable findings from the
 2026-08-31 bugs audit around IPv6 zone-ID URL normalization, DNS error
-classification, zero-port validation clarity, and backward-clock snapshot
-staleness, with one low-risk endpoint precondition assertion.
+ classification, zero-port validation clarity, and backward-clock snapshot
+ staleness, with one low-risk endpoint precondition assertion.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -86,7 +86,7 @@ staleness, with one low-risk endpoint precondition assertion.
 | [`089-bugs-audit-corrective-pass.md`](089-bugs-audit-corrective-pass.md) | Correct remaining actionable audit findings and CI-blocking clippy diagnostics | complete; implementation `7f245cc` |
 | [`090-bugs-audit-corrective-pass.md`](090-bugs-audit-corrective-pass.md) | Correct remaining 2026-08-27 audit findings with minimal bounded changes | complete; implementation `8193643` |
 | [`091-greggd-long-running-stability-and-croncheck-hardening.md`](091-greggd-long-running-stability-and-croncheck-hardening.md) | Harden long-running daemon control, optional drive refresh, and croncheck identity | implementation in progress |
-| [`092-bugs-audit-corrective-pass.md`](092-bugs-audit-corrective-pass.md) | Correct IPv6 zone-ID transport, DNS classification, zero-port validation clarity, and future-snapshot staleness | implementation in progress |
+| [`092-bugs-audit-corrective-pass.md`](092-bugs-audit-corrective-pass.md) | Correct IPv6 zone-ID transport, DNS classification, zero-port validation clarity, and future-snapshot staleness | complete; implementation `6efa52c` |
 
 Dependency order:
 
