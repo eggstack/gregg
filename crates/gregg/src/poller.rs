@@ -228,9 +228,8 @@ impl HttpClient {
             let Ok(v1_url) = status_url(&endpoint.host, endpoint.port) else {
                 return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
             };
-            let v1_start = clock.now();
             return self
-                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, v1_start, clock)
+                .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, start, clock)
                 .await;
         }
 
@@ -411,17 +410,16 @@ pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
                 return true;
             }
         }
-        if error.downcast_ref::<reqwest::Error>().is_none() {
-            let message = error.to_string().to_ascii_lowercase();
-            if message.contains("failed to lookup address")
+        let message = error.to_string().to_ascii_lowercase();
+        if !message.contains("proxy")
+            && (message.contains("failed to lookup address")
                 || message.contains("name or service not known")
                 || message.contains("nodename nor servname")
                 || message.contains("temporary failure in name resolution")
                 || message.contains("no such host")
-                || message.contains("name does not resolve")
-            {
-                return true;
-            }
+                || message.contains("name does not resolve"))
+        {
+            return true;
         }
         current = error.source();
     }
@@ -438,7 +436,10 @@ fn is_resolver_os_error(error: &std::io::Error) -> bool {
 fn is_resolver_os_error(error: &std::io::Error) -> bool {
     #[cfg(unix)]
     {
-        error.raw_os_error() == Some(libc::EAI_NONAME)
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EAI_NONAME | libc::EAI_AGAIN)
+        )
     }
     #[cfg(not(unix))]
     {
@@ -583,6 +584,28 @@ mod tests {
     fn valid_snapshot_json() -> String {
         let snap = LinuxSnapshotBuilder::default().build();
         serde_json::to_string(&snap).unwrap()
+    }
+
+    #[derive(Clone)]
+    struct SteppedClock {
+        anchor: Instant,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl SteppedClock {
+        fn new() -> Self {
+            Self {
+                anchor: Instant::now(),
+                calls: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+    }
+
+    impl Clock for SteppedClock {
+        fn now(&self) -> Instant {
+            let step = self.calls.fetch_add(1, Ordering::Relaxed);
+            self.anchor + Duration::from_millis((step as u64) * 100)
+        }
     }
 
     #[tokio::test]
@@ -909,6 +932,10 @@ mod tests {
         #[cfg(unix)]
         assert!(is_dns_failure(&io::Error::from_raw_os_error(
             libc::EAI_NONAME
+        )));
+        #[cfg(unix)]
+        assert!(is_dns_failure(&io::Error::from_raw_os_error(
+            libc::EAI_AGAIN
         )));
     }
 
@@ -1287,6 +1314,21 @@ mod tests {
             "v2 404 should fall back to v1 Online, got {:?}",
             result.outcome
         );
+    }
+
+    #[tokio::test]
+    async fn v2_fallback_latency_includes_both_requests() {
+        let v1_snap = LinuxSnapshotBuilder::default().build();
+        let v1_body = serde_json::to_string(&v1_snap).unwrap();
+        let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
+        let ep = endpoint_for(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = SteppedClock::new();
+
+        let result = client.poll(&ep, &clock).await;
+
+        assert!(matches!(result.outcome, PollOutcome::Online(_)));
+        assert_eq!(result.latency, Duration::from_millis(200));
     }
 
     #[tokio::test]

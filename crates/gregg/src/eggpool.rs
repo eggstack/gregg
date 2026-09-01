@@ -129,6 +129,8 @@ pub enum EggpoolFetchOutcome {
     /// The request was superseded or the worker was shut down.
     #[allow(dead_code)] // Distinguishes cancellation from transport failures.
     Cancelled,
+    /// The configured endpoint cannot be represented as a valid request URL.
+    InvalidEndpoint,
 }
 
 /// One completed or superseded worker request.
@@ -192,7 +194,7 @@ impl EggpoolClient {
         };
 
         let Ok(url) = summary_url(endpoint, period) else {
-            return EggpoolFetchOutcome::NetworkError;
+            return EggpoolFetchOutcome::InvalidEndpoint;
         };
         let mut request = self.client.get(url);
         if let Some(value) = auth {
@@ -260,10 +262,11 @@ fn summary_url(endpoint: &EggpoolEntry, period: EggpoolPeriod) -> Result<Url, ()
         .strip_prefix('[')
         .and_then(|value| value.strip_suffix(']'))
         .unwrap_or(&endpoint.host);
+    let host = crate::endpoint::bracketed_host(host).map_err(|_| ())?;
     let host = if host.contains(':') {
         format!("[{host}]")
     } else {
-        host.to_string()
+        host.clone()
     };
     let mut url = Url::parse(&format!(
         "{}://{}:{}/api/stats/summary",
@@ -390,7 +393,7 @@ where
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
-                    if let Some(request) = request { request.abort(); }
+                    if let Some(request) = request.take() { request.abort(); }
                     break;
                 }
                 command = command_rx.recv() => match command {
@@ -1146,5 +1149,29 @@ mod tests {
             url.as_str(),
             "http://[2001:db8::1]:8080/api/stats/summary?period=1h"
         );
+    }
+
+    #[test]
+    fn summary_host_normalizes_ipv6_zone_identifier() {
+        let endpoint = EggpoolEntry {
+            host: "fe80::1%eth0".into(),
+            port: 11300,
+            ..endpoint(11300, None)
+        };
+        let host = crate::endpoint::bracketed_host(&endpoint.host).unwrap();
+        assert_eq!(host, "fe80::1%25eth0");
+    }
+
+    #[tokio::test]
+    async fn fetch_reports_invalid_ipv6_zone_url() {
+        let endpoint = EggpoolEntry {
+            host: "fe80::1%eth0".into(),
+            port: 11300,
+            ..endpoint(11300, None)
+        };
+        let outcome = EggpoolClient::new(Duration::from_secs(1))
+            .fetch(&endpoint, EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(outcome, EggpoolFetchOutcome::InvalidEndpoint);
     }
 }

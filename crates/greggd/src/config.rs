@@ -31,6 +31,29 @@ pub const MAX_PORT: u16 = 65535;
 /// Maximum length for the display name after trimming.
 pub const MAX_NAME_LEN: usize = 128;
 
+#[cfg(unix)]
+fn ensure_config_directory(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut current = PathBuf::new();
+    for component in dir.components() {
+        current.push(component.as_os_str());
+        match fs::create_dir(&current) {
+            Ok(()) => fs::set_permissions(&current, fs::Permissions::from_mode(0o700))?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                // An existing operator-managed directory keeps its mode. The
+                // subsequent temp-file create/rename reports real access
+                // failures instead of guessing from mode bits.
+                if !current.is_dir() {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// Daemon configuration.
 ///
 /// All fields are serialized to TOML. Unknown fields are rejected during
@@ -247,37 +270,15 @@ impl Config {
             source: AtomicWriteError::NoParentDirectory,
         })?;
         #[cfg(unix)]
-        let dir_existed = dir.is_dir();
+        ensure_config_directory(dir).map_err(|e| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(e),
+        })?;
+        #[cfg(not(unix))]
         fs::create_dir_all(dir).map_err(|e| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
             source: AtomicWriteError::Io(e),
         })?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Preserve permissions on operator-managed directories. Enforce
-            // private permissions only when this write creates the directory.
-            if dir_existed
-                && fs::metadata(dir)
-                    .is_ok_and(|metadata| metadata.permissions().mode() & 0o222 == 0)
-            {
-                return Err(ConfigError::AtomicWrite {
-                    path: path.to_path_buf(),
-                    source: AtomicWriteError::Io(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        "configuration directory is not writable",
-                    )),
-                });
-            }
-            if !dir_existed {
-                fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).map_err(|e| {
-                    ConfigError::AtomicWrite {
-                        path: path.to_path_buf(),
-                        source: AtomicWriteError::Io(e),
-                    }
-                })?;
-            }
-        }
 
         // 2. Serialize the complete config.
         let content = self.to_toml();

@@ -206,6 +206,7 @@ fn outcome_text(outcome: &EggpoolFetchOutcome) -> String {
         EggpoolFetchOutcome::DecodeError => "invalid JSON response".into(),
         EggpoolFetchOutcome::InvalidSummary => "invalid summary response".into(),
         EggpoolFetchOutcome::Cancelled => "refresh cancelled".into(),
+        EggpoolFetchOutcome::InvalidEndpoint => "invalid endpoint".into(),
         EggpoolFetchOutcome::Online(_) => String::new(),
     }
 }

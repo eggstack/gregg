@@ -712,12 +712,21 @@ fn executable_exists(cmd: &str) -> bool {
 }
 
 #[cfg(unix)]
+#[allow(unsafe_code)]
 fn executable_exists_unix(cmd: &str) -> bool {
-    use std::os::unix::fs::PermissionsExt;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
 
     let is_executable = |path: &std::path::Path| {
-        path.metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+        if !path.metadata().is_ok_and(|metadata| metadata.is_file()) {
+            return false;
+        }
+        let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // The path is a valid NUL-free C string and access only reads the
+        // kernel's execute permission result; it does not execute the file.
+        unsafe { libc::access(path.as_ptr(), libc::X_OK) == 0 }
     };
 
     let command_path = std::path::Path::new(cmd);

@@ -270,21 +270,32 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         C: Send + 'static,
     {
         let collector = Arc::clone(&self.collector);
-        tokio::task::spawn_blocking(move || {
+        let join_result = tokio::task::spawn_blocking(move || {
             let mut guard = match collector.lock() {
                 Ok(guard) => guard,
                 Err(poisoned) => poisoned.into_inner(),
             };
             guard.sample()
         })
-        .await
-        .unwrap_or_else(|join_error| {
-            tracing::warn!(%join_error, "sampler collection task panicked");
-            Err(CollectError::new(
-                CollectErrorKind::SourceUnavailable,
-                "collection task panicked",
-            ))
-        })
+        .await;
+        match join_result {
+            Ok(result) => result,
+            Err(join_error) => {
+                if join_error.is_cancelled() {
+                    tracing::debug!(%join_error, "sampler collection task cancelled");
+                } else {
+                    tracing::warn!(%join_error, "sampler collection task panicked");
+                }
+                Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    if join_error.is_cancelled() {
+                        "collection task cancelled"
+                    } else {
+                        "collection task panicked"
+                    },
+                ))
+            }
+        }
     }
 
     /// Lock the shared collector, recovering from poisoning caused by a

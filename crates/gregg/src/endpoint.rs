@@ -394,8 +394,11 @@ impl EndpointSpec {
             });
         }
 
+        let host = normalize_host(addr_part).map_err(|_| EndpointError::MalformedBrackets {
+            input: input.to_string(),
+        })?;
         Ok(Self {
-            host: normalize_host(addr_part)?,
+            host,
             port,
             port_was_explicit: true,
             name: None,
@@ -572,6 +575,12 @@ mod tests {
             Err(EndpointError::MalformedBrackets { .. })
         ));
         assert!(normalize_host("fe80::1%25").is_err());
+    }
+
+    #[test]
+    fn bracketed_ipv6_zone_is_normalized_once_for_persistence() {
+        let spec = EndpointSpec::parse("[fe80::1%2525thfloor]:8080").unwrap();
+        assert_eq!(spec.host, "fe80::1%2525thfloor");
     }
 
     #[test]

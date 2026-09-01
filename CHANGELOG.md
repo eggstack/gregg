@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Supplied bugs audit corrections** (`gregg`, `greggd`): daemon config
+  directory creation is race-safe and preserves existing modes, drive refresh
+  panics retry with bounded backoff, endpoint equivalence and fallback latency
+  are canonical and complete, temporary resolver failures and EggPool URL
+  errors are classified accurately, and Unix editor discovery honors the
+  effective execute check.
+
 - **Remaining supplied bugs audit findings** (`gregg-protocol`, `gregg`,
   `greggd`): non-ready health envelopes require categories in both schema
   versions, whitespace-only identities and empty IPv6 zones are rejected,
@@ -87,9 +94,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   escape cut off at end of input now contributes its raw characters instead
   of silently dropping the whole drive, and a statvfs result with zero block
   size or overflowing capacity logs a diagnostic before the drive is skipped.
-- **Pre-epoch clocks are logged loudly** (`greggd`): a system clock behind
-  the Unix epoch warns in the sampler and HTTP server instead of silently
-  producing zero timestamps that would defeat staleness detection.
+- **Pre-epoch clocks pause publication** (`greggd`): a system clock behind
+  the Unix epoch pauses snapshot publication; age-based status checks remain
+  conservative without warning on every polling request.
 - **Client config writes fsync on every platform** (`gregg`): the temp-file
   `sync_all()` durability barrier is no longer Unix-only; builds on targets
   without a cross-process lock implementation (neither unix nor windows)

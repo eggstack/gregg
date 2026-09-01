@@ -194,7 +194,8 @@ collector creates at most one private standard-thread worker after core sampling
 starts; its first request is immediate and later requests use a 30-second cadence.
 The sampler polls a capacity-one result channel without waiting, retains the most
 recent successful drive list through failures, and publishes `drives: null` until
-a first result exists. Dropping the collector does not join a worker that may be
+a first result exists. A contained collection panic is reported and retried
+with bounded backoff. Dropping the collector does not join a worker that may be
 inside an uninterruptible filesystem syscall.
 
 ### Unix control socket

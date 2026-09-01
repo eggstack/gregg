@@ -926,7 +926,6 @@ impl ConfigStore {
                 }
             })?;
 
-            #[cfg(unix)]
             file.sync_all().map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
                 ConfigError::AtomicWrite {

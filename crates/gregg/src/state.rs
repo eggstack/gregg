@@ -210,7 +210,7 @@ impl AppState {
                 };
 
                 let endpoint = entry.to_endpoint();
-                if old.endpoint.host.eq_ignore_ascii_case(&endpoint.host)
+                if equivalent_endpoint_host(&old.endpoint.host, &endpoint.host)
                     && old.endpoint.port == endpoint.port
                 {
                     old.endpoint = endpoint;
@@ -268,7 +268,7 @@ impl AppState {
                 // A stable ID may be retained while its configured target
                 // changes. Results from the superseded target are stale even
                 // when their scheduler generation is otherwise current.
-                if system.endpoint.host != result.endpoint.host
+                if !equivalent_endpoint_host(&system.endpoint.host, &result.endpoint.host)
                     || system.endpoint.port != result.endpoint.port
                 {
                     continue;
@@ -615,6 +615,16 @@ fn system_from_entry(entry: &crate::config::SystemEntry) -> SystemState {
         last_attempt_at: None,
         latency: None,
         last_error: None,
+    }
+}
+
+fn equivalent_endpoint_host(left: &str, right: &str) -> bool {
+    match (
+        crate::endpoint::normalize_host(left),
+        crate::endpoint::normalize_host(right),
+    ) {
+        (Ok(left), Ok(right)) => left.eq_ignore_ascii_case(&right),
+        _ => left.eq_ignore_ascii_case(right),
     }
 }
 
@@ -995,6 +1005,72 @@ mod tests {
                 name: None,
             }],
             ..Config::default()
+        });
+
+        assert_eq!(state.systems[0].reachability, Reachability::Online);
+        assert!(state.systems[0].latest.is_some());
+    }
+
+    #[test]
+    fn reconcile_systems_preserves_state_when_ipv6_spellings_change() {
+        let old_config = Config {
+            systems: vec![SystemEntry {
+                id: "same".into(),
+                host: "fd00::1".into(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        };
+        let mut state = AppState::from_config(&old_config);
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "same".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(10),
+            }],
+        });
+
+        state.reconcile_systems(&Config {
+            systems: vec![SystemEntry {
+                id: "same".into(),
+                host: "fd00:0000:0000:0000:0000:0000:0000:0001".into(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        });
+
+        assert_eq!(state.systems[0].reachability, Reachability::Online);
+        assert!(state.systems[0].latest.is_some());
+    }
+
+    #[test]
+    fn apply_batch_accepts_case_only_endpoint_changes() {
+        let config = Config {
+            systems: vec![SystemEntry {
+                id: "same".into(),
+                host: "server.local".into(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        };
+        let mut state = AppState::from_config(&config);
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "same".into(),
+                endpoint: Endpoint::new("SERVER.LOCAL".into(), 11310, None),
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(10),
+            }],
         });
 
         assert_eq!(state.systems[0].reachability, Reachability::Online);

@@ -36,6 +36,10 @@ pub fn format_bytes(bytes: u64) -> String {
     };
 
     let tenths = (u128::from(bytes) * 10 + u128::from(unit) / 2) / u128::from(unit);
+    // Promotion is based on the rounded tenth in the current unit, but the
+    // displayed value is recomputed directly in the next unit. This makes
+    // the 1024.0 boundary explicit and avoids carrying a double-rounded
+    // intermediate into the next-unit output.
     if let Some((next_unit, next_label)) = next.filter(|_| tenths >= 10_240) {
         let next_tenths =
             (u128::from(bytes) * 10 + u128::from(next_unit) / 2) / u128::from(next_unit);

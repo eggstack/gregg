@@ -376,6 +376,8 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - Sends `/api/stats/summary?period=...`
 - 16 KiB body cap
 - Bearer token from environment variable (never stored in outcomes)
+- Host normalization errors, including URL forms unsupported by the pinned URL
+  parser, are reported as `InvalidEndpoint` rather than transport failures.
 
 **Worker** (`spawn_worker`):
 - Background task with bounded command and result channels

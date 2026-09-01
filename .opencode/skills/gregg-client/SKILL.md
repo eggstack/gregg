@@ -265,6 +265,8 @@ starting Tokio, and async callers must use a blocking thread.
 Only one EggPool endpoint may be configured. `eggpool add` without
 `--replace` reports the dedicated `EggpoolAlreadyConfigured` configuration
 violation when one already exists.
+EggPool URL-normalization and URL-representation failures are reported as
+`InvalidEndpoint`, not generic transport failures.
 
 ## Ctrl-R config reload
 

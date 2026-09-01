@@ -40,9 +40,9 @@ fn now_unix_ms() -> Option<u64> {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => Some(duration.as_millis() as u64),
         Err(error) => {
-            tracing::warn!(
+            tracing::debug!(
                 %error,
-                "system clock precedes the Unix epoch; cached snapshots are stale until corrected"
+                "system clock precedes the Unix epoch; cached snapshots remain age-uncheckable until corrected"
             );
             None
         }
