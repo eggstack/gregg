@@ -173,6 +173,9 @@ one. Without it, the command reports an already-configured endpoint conflict.
 If a Systems config reload is missing, malformed, or invalid, the last-known-good
 configuration remains active and the error is shown in the diagnostic line until
 a later reload succeeds.
+When the bounded scheduler command channel is full, replacement delivery waits
+in the event loop's pending-command branch so input and poll results remain
+responsive; the replacement is still applied only after delivery.
 
 The selected system keeps its logical selection (`e` still toggles its
 drive details), but the reverse-video highlight is transient — it

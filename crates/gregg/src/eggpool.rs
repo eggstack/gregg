@@ -161,18 +161,17 @@ pub struct EggpoolClient {
 impl EggpoolClient {
     /// Build a client with redirects disabled and a bounded idle pool.
     #[must_use]
-    pub fn new(timeout: Duration) -> Self {
+    pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
         Self::with_env_lookup(timeout, Arc::new(|name| env::var_os(name)))
     }
 
-    fn with_env_lookup(timeout: Duration, env_lookup: EnvLookup) -> Self {
+    fn with_env_lookup(timeout: Duration, env_lookup: EnvLookup) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(2)
-            .build()
-            .expect("reqwest client builder should not fail");
-        Self { client, env_lookup }
+            .build()?;
+        Ok(Self { client, env_lookup })
     }
 
     /// Fetch one validated summary. No automatic retry or alternate endpoint
@@ -642,6 +641,7 @@ mod tests {
         );
         let (port, task) = server(response).await;
         let result = EggpoolClient::new(Duration::from_secs(2))
+            .expect("test HTTP client construction")
             .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
             .await;
         assert!(
@@ -663,7 +663,8 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::from("secret-value"))),
-        );
+        )
+        .unwrap();
         let result = client
             .fetch(&endpoint(port, Some("KEY")), EggpoolPeriod::Day)
             .await;
@@ -680,7 +681,8 @@ mod tests {
 
     #[tokio::test]
     async fn missing_or_empty_key_does_not_send_request() {
-        let client = EggpoolClient::with_env_lookup(Duration::from_secs(2), Arc::new(|_| None));
+        let client =
+            EggpoolClient::with_env_lookup(Duration::from_secs(2), Arc::new(|_| None)).unwrap();
         let result = client
             .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
             .await;
@@ -691,7 +693,8 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::new())),
-        );
+        )
+        .unwrap();
         assert_eq!(
             client
                 .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
@@ -707,7 +710,8 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::from("bad\nvalue"))),
-        );
+        )
+        .unwrap();
         let result = client
             .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
             .await;
@@ -726,6 +730,7 @@ mod tests {
             let (port, _) = server(response).await;
             assert_eq!(
                 EggpoolClient::new(Duration::from_secs(2))
+                    .expect("test HTTP client construction")
                     .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                     .await,
                 expected
@@ -735,6 +740,7 @@ mod tests {
         let (port, _) = server(response).await;
         assert_eq!(
             EggpoolClient::new(Duration::from_secs(2))
+                .expect("test HTTP client construction")
                 .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                 .await,
             EggpoolFetchOutcome::DecodeError
@@ -747,6 +753,7 @@ mod tests {
         let (port, _) = server(response).await;
         assert_eq!(
             EggpoolClient::new(Duration::from_secs(2))
+                .expect("test HTTP client construction")
                 .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                 .await,
             EggpoolFetchOutcome::BodyTooLarge
@@ -765,7 +772,7 @@ mod tests {
         let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)),
+            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -832,7 +839,7 @@ mod tests {
         let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)),
+            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -937,7 +944,7 @@ mod tests {
             server_many(false, Duration::from_secs(5)).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(30)),
+            EggpoolClient::new(Duration::from_secs(30)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -986,7 +993,7 @@ mod tests {
         let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)),
+            EggpoolClient::new(Duration::from_secs(600)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -1014,7 +1021,7 @@ mod tests {
         let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)),
+            EggpoolClient::new(Duration::from_secs(600)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -1063,7 +1070,8 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(10),
             Arc::new(|_name: &str| -> Option<OsString> { panic!("injected fetch panic") }),
-        );
+        )
+        .unwrap();
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(client, endpoint(1, Some("KEY")), cancel.clone());
         worker
@@ -1091,7 +1099,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let anchor = Instant::now();
         let mut worker = spawn_worker_with_clock(
-            EggpoolClient::new(Duration::from_secs(10)),
+            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
             endpoint(port, None),
             cancel.clone(),
             crate::clock::FakeClock::new(anchor),
@@ -1170,6 +1178,7 @@ mod tests {
             ..endpoint(11300, None)
         };
         let outcome = EggpoolClient::new(Duration::from_secs(1))
+            .expect("test HTTP client construction")
             .fetch(&endpoint, EggpoolPeriod::Hour)
             .await;
         assert_eq!(outcome, EggpoolFetchOutcome::InvalidEndpoint);

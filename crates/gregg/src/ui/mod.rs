@@ -95,7 +95,6 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 system,
                 &condensed_layout,
                 entry.is_visually_selected,
-                entry.is_selected,
                 entry.drive_rows_visible,
             );
             continue;
@@ -113,7 +112,6 @@ pub fn render(f: &mut Frame, state: &AppState) {
                     rows,
                     &fleet_layout,
                     entry.is_visually_selected,
-                    entry.is_selected,
                     entry.drive_rows_visible,
                 );
             }

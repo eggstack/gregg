@@ -50,6 +50,11 @@
 //!
 //! The daemon never mutates the HTTP API or TOML configuration through this
 //! socket.
+//!
+//! The temp-directory fallback is best effort. Production installations should
+//! keep the config-adjacent primary path usable by the daemon account; a
+//! pre-existing entry in a shared temp directory can prevent the fallback
+//! from being published without being overwritten.
 
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileTypeExt;
@@ -257,14 +262,23 @@ pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Severity rank for candidate I/O errors: missing/refused means "not
-/// running"; other failures are real diagnostics; a permission denial
-/// must never be masked by a later lower-severity candidate.
-fn stop_error_severity(error: &std::io::Error) -> u8 {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum StopErrorSeverity {
+    NotRunning,
+    Other,
+    PermissionDenied,
+}
+
+/// Severity for candidate I/O errors: missing/refused means "not running";
+/// other failures are real diagnostics; permission denial must never be
+/// masked by a later lower-severity candidate.
+fn stop_error_severity(error: &std::io::Error) -> StopErrorSeverity {
     match error.kind() {
-        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => 0,
-        std::io::ErrorKind::PermissionDenied => 2,
-        _ => 1,
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
+            StopErrorSeverity::NotRunning
+        }
+        std::io::ErrorKind::PermissionDenied => StopErrorSeverity::PermissionDenied,
+        _ => StopErrorSeverity::Other,
     }
 }
 
@@ -432,10 +446,9 @@ pub enum ControlBind {
 ///
 /// Tries the config-adjacent path first; if that path cannot be bound or its
 /// permissions cannot be secured, falls back to the deterministic temp-dir
-/// path. The chosen socket file is created inside a private `0700` staging
-/// directory and atomically renamed into its final location only after a
-/// restrictive `0600` mode has been applied and verified, so the socket
-/// inode never exists at a publicly reachable path with wider permissions.
+/// path. The kernel's `bind` operation reserves the final path without
+/// replacing an existing entry; the inode is then restricted to `0600` and
+/// verified before the listener is returned.
 /// A listener is only published if `0600` was applied successfully; if neither
 /// candidate yields a secure listener the function returns
 /// [`ControlBind::NotBound`] so the caller can decide whether a
@@ -506,104 +519,60 @@ fn try_bind_secure(path: &Path) -> Option<ControlBind> {
         }
     }
 
-    // Bind inside a process-private staging directory with mode 0700 so
-    // the socket inode never exists at a publicly reachable path with
-    // umask-derived permissions. Once the staged inode is verified as
-    // `0600`, an atomic same-parent rename publishes it.
-    let stage_dir = private_staging_dir(path);
-    let _ = std::fs::remove_dir_all(&stage_dir);
-    if let Err(e) = std::fs::create_dir(&stage_dir)
-        .and_then(|()| std::fs::set_permissions(&stage_dir, std::fs::Permissions::from_mode(0o700)))
-    {
-        warn!(
-            dir = %stage_dir.display(),
-            error = %e,
-            "control socket staging directory setup failed"
-        );
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
-    }
-
-    let staged_socket = stage_dir.join("s");
-    debug_assert!(staged_socket_path_fits(&staged_socket));
-    let listener = match tokio::net::UnixListener::bind(&staged_socket) {
+    // `bind` reserves the final pathname atomically. Unlike an existence
+    // check followed by rename, a concurrent creator can only make this
+    // bind fail; it can never be displaced by a successful publish here.
+    let listener = match tokio::net::UnixListener::bind(path) {
         Ok(listener) => listener,
         Err(e) => {
             warn!(
-                path = %staged_socket.display(),
+                path = %path.display(),
                 error = %e,
                 "control socket bind failed"
             );
-            let _ = std::fs::remove_dir_all(&stage_dir);
             return None;
         }
     };
 
-    // Restrict and verify the staged inode before publishing. Some
-    // filesystems can report success while silently retaining wider
-    // permissions, so the metadata check is mandatory.
-    if let Err(e) = std::fs::set_permissions(&staged_socket, std::fs::Permissions::from_mode(0o600))
-    {
+    // Restrict and verify the bound inode immediately. Some filesystems can
+    // report success while silently retaining wider permissions, so the
+    // metadata check remains mandatory.
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
         warn!(
-            path = %staged_socket.display(),
+            path = %path.display(),
             error = %e,
             "control socket permission update failed; closing listener"
         );
         drop(listener);
-        let _ = std::fs::remove_dir_all(&stage_dir);
+        let _ = remove_control_socket(path);
         return None;
     }
 
-    match std::fs::metadata(&staged_socket) {
+    match std::fs::metadata(path) {
         Ok(meta) => {
             let mode = meta.permissions().mode() & 0o777;
             if mode != 0o600 {
                 warn!(
-                    path = %staged_socket.display(),
+                    path = %path.display(),
                     mode = format!("{mode:o}"),
                     "control socket permissions are not 0600 after chmod; closing listener"
                 );
                 drop(listener);
-                let _ = std::fs::remove_dir_all(&stage_dir);
+                let _ = remove_control_socket(path);
                 return None;
             }
         }
         Err(e) => {
             warn!(
-                path = %staged_socket.display(),
+                path = %path.display(),
                 error = %e,
                 "control socket metadata check failed; closing listener"
             );
             drop(listener);
-            let _ = std::fs::remove_dir_all(&stage_dir);
+            let _ = remove_control_socket(path);
             return None;
         }
     }
-
-    // Publish only into a still-absent final path; if another process
-    // bound the path during setup, abandon this candidate rather than
-    // displacing it.
-    if path.exists() {
-        warn!(
-            path = %path.display(),
-            "control socket path appeared during secure setup; closing listener"
-        );
-        drop(listener);
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
-    }
-
-    if let Err(e) = std::fs::rename(&staged_socket, path) {
-        warn!(
-            path = %path.display(),
-            error = %e,
-            "control socket publish rename failed; closing listener"
-        );
-        drop(listener);
-        let _ = std::fs::remove_dir_all(&stage_dir);
-        return None;
-    }
-    let _ = std::fs::remove_dir(&stage_dir);
 
     Some(ControlBind::Bound {
         path: path.to_path_buf(),
@@ -660,23 +629,6 @@ fn prepare_final_path(path: &Path) -> Option<()> {
             None
         }
     }
-}
-
-/// Process-private staging directory for the socket that will be published
-/// at `path`.
-///
-/// It lives in the same parent as the final socket so the publish rename
-/// stays within one filesystem and is atomic, and it is named after this
-/// process so concurrent daemons never share one. The staging name plus the
-/// one-character socket filename are shorter than the final socket's own
-/// filename, so any parent short enough to pass the [`UNIX_PATH_MAX`]
-/// candidate check also fits the staged path.
-fn private_staging_dir(path: &Path) -> PathBuf {
-    path.with_file_name(format!(".gd-stage-{}", std::process::id()))
-}
-
-fn staged_socket_path_fits(path: &Path) -> bool {
-    path.as_os_str().len() <= UNIX_PATH_MAX
 }
 
 /// Run a dedicated control-stop task that owns the bound Unix listener.

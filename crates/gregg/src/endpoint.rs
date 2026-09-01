@@ -432,7 +432,7 @@ pub fn validate_name(name: &str) -> Result<(), EndpointError> {
     if trimmed.len() > MAX_ENDPOINT_NAME_LEN {
         return Err(EndpointError::InvalidName {
             reason: format!(
-                "name is {} characters, exceeds maximum of {MAX_ENDPOINT_NAME_LEN}",
+                "name is {} bytes, exceeds maximum of {MAX_ENDPOINT_NAME_LEN}",
                 trimmed.len()
             ),
         });

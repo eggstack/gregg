@@ -3,6 +3,7 @@
 //! Reads crossterm events in a dedicated thread and sends them as
 //! typed [`Event`]s through a bounded channel.
 
+use std::io;
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -21,16 +22,24 @@ pub struct EventStream {
 impl EventStream {
     /// Create a new event stream. Returns the handle and a receiving half
     /// of a bounded channel (capacity 32).
-    pub fn new() -> (Self, mpsc::Receiver<Event>) {
+    pub fn new() -> io::Result<(Self, mpsc::Receiver<Event>)> {
         let (tx, rx) = mpsc::channel(32);
         let shutdown = Arc::new(Notify::new());
         let shutdown_clone = shutdown.clone();
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
 
         let handle = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("failed to create tokio runtime");
+            {
+                Ok(rt) => rt,
+                Err(error) => {
+                    let _ = ready_tx.send(Err(error));
+                    return;
+                }
+            };
+            let _ = ready_tx.send(Ok(()));
             rt.block_on(async {
                 let mut stream = crossterm::event::EventStream::new();
                 loop {
@@ -54,13 +63,17 @@ impl EventStream {
             });
         });
 
-        (
+        ready_rx
+            .recv()
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "event thread exited"))??;
+
+        Ok((
             Self {
                 shutdown,
                 _handle: handle,
             },
             rx,
-        )
+        ))
     }
 
     /// Signal the background thread to stop. Dropping the `EventStream`

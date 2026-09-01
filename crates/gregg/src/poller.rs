@@ -160,23 +160,21 @@ pub struct HttpClient {
 impl HttpClient {
     /// Create a new HTTP client with the given request timeout.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if the `reqwest::Client` builder fails. This should never
-    /// happen in practice.
-    #[must_use]
-    pub fn new(timeout: Duration) -> Self {
+    /// Returns the builder error when the HTTP client cannot initialize its
+    /// TLS or connection backend.
+    pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(4)
-            .build()
-            .expect("reqwest client builder should not fail");
-        Self {
+            .build()?;
+        Ok(Self {
             client,
             #[cfg(test)]
             observer: None,
-        }
+        })
     }
 
     /// Create a test-only HTTP client with a concurrency observer.
@@ -187,17 +185,19 @@ impl HttpClient {
     /// around the production poll path.
     #[cfg(test)]
     #[must_use]
-    pub fn new_with_observer(timeout: Duration, observer: PollActivityObserver) -> Self {
+    pub fn new_with_observer(
+        timeout: Duration,
+        observer: PollActivityObserver,
+    ) -> Result<Self, reqwest::Error> {
         let client = reqwest::Client::builder()
             .timeout(timeout)
             .redirect(reqwest::redirect::Policy::none())
             .pool_max_idle_per_host(4)
-            .build()
-            .expect("reqwest client builder should not fail");
-        Self {
+            .build()?;
+        Ok(Self {
             client,
             observer: Some(observer),
-        }
+        })
     }
 
     /// Poll a single endpoint and return a [`PollResult`].
@@ -613,7 +613,8 @@ mod tests {
         let body = valid_snapshot_json();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -627,7 +628,8 @@ mod tests {
         let body = valid_snapshot_json();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::FakeClock::new(
             Instant::now()
                 .checked_sub(Duration::from_secs(3600))
@@ -644,7 +646,8 @@ mod tests {
         let body = serde_json::to_string(&snap).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -679,7 +682,8 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client = HttpClient::new(Duration::from_millis(50));
+        let client =
+            HttpClient::new(Duration::from_millis(50)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -690,7 +694,8 @@ mod tests {
     async fn connection_refused() {
         let url = mock_server_closed_port().await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -711,7 +716,8 @@ mod tests {
     async fn non_2xx_status() {
         let url = mock_server(b"not ready".to_vec(), "503 Service Unavailable").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -724,7 +730,8 @@ mod tests {
         let body = vec![b'x'; 65 * 1024];
         let url = mock_server(body, "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -765,7 +772,8 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -776,7 +784,8 @@ mod tests {
     async fn malformed_json() {
         let url = mock_server(b"not json at all".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -791,7 +800,8 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -808,7 +818,8 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -869,7 +880,8 @@ mod tests {
     async fn network_error_on_dropped_connection() {
         let url = mock_server_drop().await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -943,7 +955,8 @@ mod tests {
     async fn redirect_response_301() {
         let url = mock_server(b"redirect".to_vec(), "301 Moved Permanently").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -976,7 +989,8 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -994,7 +1008,8 @@ mod tests {
     async fn empty_body_with_200() {
         let url = mock_server(Vec::new(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1037,7 +1052,8 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1058,7 +1074,8 @@ mod tests {
         assert!(body.len() < 64 * 1024);
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1077,7 +1094,8 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1092,7 +1110,8 @@ mod tests {
     async fn nested_invalid_json() {
         let url = mock_server(b"{\"nested\": {\"invalid\": true}}".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1111,7 +1130,8 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1126,7 +1146,8 @@ mod tests {
     async fn null_json() {
         let url = mock_server(b"null".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1146,7 +1167,8 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1168,7 +1190,8 @@ mod tests {
 
         let ep1 = endpoint_for(&url1);
         let ep2 = endpoint_for(&url2);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         // First poll on ep1.
@@ -1214,7 +1237,8 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         // Start a poll and cancel it quickly.
@@ -1228,7 +1252,8 @@ mod tests {
     #[tokio::test]
     async fn multiple_rapid_polls_same_result() {
         let body = valid_snapshot_json();
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let mut outcomes = Vec::new();
@@ -1305,7 +1330,8 @@ mod tests {
         let v1_body = serde_json::to_string(&v1_snap).unwrap();
         let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1322,7 +1348,8 @@ mod tests {
         let v1_body = serde_json::to_string(&v1_snap).unwrap();
         let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = SteppedClock::new();
 
         let result = client.poll(&ep, &clock).await;
@@ -1339,7 +1366,8 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1370,7 +1398,8 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
 
         let result = client.poll(&ep, &crate::clock::RealClock).await;
         assert!(matches!(result.outcome, PollOutcome::InvalidSnapshot));
@@ -1410,7 +1439,8 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1431,7 +1461,8 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1457,7 +1488,8 @@ mod tests {
             port,
             name: None,
         };
-        let client = HttpClient::new(Duration::from_millis(1500));
+        let client =
+            HttpClient::new(Duration::from_millis(1500)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         eprintln!("--- before poll ---");

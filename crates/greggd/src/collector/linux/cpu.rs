@@ -175,29 +175,8 @@ pub fn compute_percentages(
     #[allow(clippy::cast_precision_loss)]
     let iowait_pct = (delta_iowait as f64) * 100.0 / (delta_total as f64);
 
-    let finalize = |value: f64| -> Result<f32, CollectError> {
-        if !value.is_finite() {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "CPU percentage is not finite",
-            ));
-        }
-        // Clamp tiny overshoot from rounding; tolerate `1e-9` to keep the
-        // result within `0.0..=100.0` after `f64 -> f32` conversion.
-        let clamped = value.clamp(0.0, 100.0);
-        #[allow(clippy::cast_possible_truncation)]
-        let as_f32 = clamped as f32;
-        if !as_f32.is_finite() || !(0.0..=100.0).contains(&as_f32) {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "CPU percentage outside closed 0..=100 interval after conversion",
-            ));
-        }
-        Ok(as_f32)
-    };
-
     Ok(CpuSample {
-        usage_pct: finalize(usage_pct)?,
-        iowait_pct: finalize(iowait_pct)?,
+        usage_pct: crate::collector::finalize_percentage(usage_pct)?,
+        iowait_pct: crate::collector::finalize_percentage(iowait_pct)?,
     })
 }

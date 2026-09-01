@@ -212,11 +212,10 @@ different control paths (`greggd-<id>.control.sock`). Editing `host` or
 continues to advertise `greggd stop` at the same path. The socket file lives at
 the canonical config-adjacent path when that directory is writable;
 otherwise a deterministic fallback under the standard temp directory is
-used. The chosen socket is created with restrictive `0600` permissions;
-the inode is bound inside a process-private `0700` staging directory in
-the same parent and renamed into its final location only after the mode
-is applied and verified, so the socket never exists at a publicly
-reachable path with umask-derived permissions. A failed `chmod` causes
+used. The chosen socket is reserved by the kernel's exclusive `bind`
+operation, then restricted to `0600` and verified before the listener is
+returned, so a concurrent creator can make the candidate fail but cannot be
+displaced by a rename. A failed `chmod` causes
 the candidate to be discarded before the next
 candidate is tried, and if neither candidate yields a secure listener the
 foreground entry point returns a clear runtime error rather than silently

@@ -258,6 +258,7 @@ impl AppState {
         // do not accept a skipped-generation wrap as a fresh batch.
         let wrapped_generation = self.last_applied_generation == u64::MAX && batch.generation == 1;
         if batch.generation <= self.last_applied_generation && !wrapped_generation {
+            debug_assert!(batch.generation <= self.last_applied_generation);
             return;
         }
 
@@ -571,9 +572,8 @@ impl AppState {
     /// Compute the page size (number of systems to skip) based on
     /// terminal height and the current viewport.
     ///
-    /// Returns zero when the viewport cannot render even one full
-    /// entry, so page movement never lands selection on entries that
-    /// cannot be displayed.
+    /// Returns at least one when entries exist, so page movement remains
+    /// usable even when the viewport cannot render one full entry.
     fn page_size(&self, order: &[usize]) -> isize {
         let height = self
             .terminal_size
@@ -632,7 +632,7 @@ fn equivalent_endpoint_host(left: &str, right: &str) -> bool {
 #[must_use]
 pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
     let Some(system) = state.systems.get(system_index) else {
-        return 0;
+        return 1;
     };
     match (state.system_view_mode, system.reachability) {
         (SystemViewMode::Condensed, _) => {

@@ -188,7 +188,8 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
     let (refresh_tx, refresh_rx) = mpsc::channel(2);
     let scheduler = PollScheduler::new(
         RealClock,
-        crate::poller::HttpClient::new(Duration::from_secs(1)),
+        crate::poller::HttpClient::new(Duration::from_secs(1))
+            .expect("test HTTP client construction"),
         Duration::from_secs(60),
         4,
     );

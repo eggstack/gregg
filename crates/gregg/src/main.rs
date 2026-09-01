@@ -47,10 +47,15 @@ fn spawn_eggpool_worker(
     config: &config::Config,
     timeout: Duration,
     cancel: tokio_util::sync::CancellationToken,
-) -> Option<eggpool::EggpoolWorker> {
-    config.eggpool.clone().map(|endpoint| {
-        eggpool::spawn_worker(eggpool::EggpoolClient::new(timeout), endpoint, cancel)
-    })
+) -> Result<Option<eggpool::EggpoolWorker>, reqwest::Error> {
+    config
+        .eggpool
+        .clone()
+        .map(|endpoint| {
+            eggpool::EggpoolClient::new(timeout)
+                .map(|client| eggpool::spawn_worker(client, endpoint, cancel))
+        })
+        .transpose()
 }
 
 use clap::Parser;
@@ -104,7 +109,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let mut app_state = state::AppState::from_config(&config);
 
     let timeout = Duration::from_millis(config.request_timeout_ms);
-    let client = poller::HttpClient::new(timeout);
+    let client = poller::HttpClient::new(timeout)?;
     let clock = clock::RealClock;
     let refresh = Duration::from_secs(config.refresh_seconds);
     let max_concurrent = config.max_concurrent_requests as usize;
@@ -128,7 +133,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
     let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), scheduler_rx));
 
-    let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone());
+    let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone())?;
     if app_state.active_pane == state::Pane::Eggpool {
         if let (Some((period, generation)), Some(worker)) =
             (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
@@ -147,7 +152,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let mut eggpool_results = eggpool_worker.map(|worker| worker.results);
 
     let mut terminal = terminal::Terminal::init()?;
-    let (event_stream, mut event_rx) = input::EventStream::new();
+    let (event_stream, mut event_rx) = input::EventStream::new()?;
 
     // Set initial terminal size in state.
     if let Ok((w, h)) = terminal::Terminal::size() {
@@ -192,6 +197,7 @@ async fn run_event_loop(
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
     eggpool_results: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let mut pending_system_refresh: Option<PendingSystemRefresh> = None;
     // Plan 087: highlight deadline bookkeeping. The dormant sleep
     // sits far in the future so the highlight arm never fires while
     // no selection highlight is active.
@@ -246,13 +252,25 @@ async fn run_event_loop(
                             let before_highlight = app_state.selection_highlight_active;
                             let resets_highlight =
                                 selection_changing_systems_action(action, before_pane);
-                            dispatch_action_with_store(
-                                app_state,
-                                action,
-                                scheduler_tx,
-                                Some(store),
-                                eggpool_commands,
-                            ).await?;
+                            if matches!(action, action::Action::RefreshNow)
+                                && before_pane == state::Pane::Systems
+                            {
+                                app_state.apply_action(action);
+                                begin_system_refresh(
+                                    app_state,
+                                    scheduler_tx,
+                                    store,
+                                    &mut pending_system_refresh,
+                                )?;
+                            } else {
+                                dispatch_action_with_store(
+                                    app_state,
+                                    action,
+                                    scheduler_tx,
+                                    Some(store),
+                                    eggpool_commands,
+                                ).await?;
+                            }
                             // Plan 087: a successful Systems selection-
                             // changing action always arms/reset the
                             // highlight timer; leaving Systems or
@@ -284,6 +302,21 @@ async fn run_event_loop(
                     .as_mut()
                     .reset(tokio::time::Instant::now() + HIGHLIGHT_DORMANT_DEADLINE);
                 app_state.apply_action(action::Action::ClearSelectionHighlight);
+            }
+
+            result = async {
+                let pending = pending_system_refresh.as_mut()?;
+                Some(pending.send.as_mut().await)
+            }, if pending_system_refresh.is_some() => {
+                if let Some(pending) = pending_system_refresh.take() {
+                    if let Some(result) = result {
+                        result?;
+                        if let Some(config) = pending.replacement {
+                            app_state.reconcile_systems(&config);
+                            app_state.clear_config_reload_error();
+                        }
+                    }
+                }
             }
         }
 
@@ -390,6 +423,62 @@ async fn dispatch_action_with_store(
 #[derive(Debug, thiserror::Error)]
 #[error("poll scheduler command channel closed")]
 struct SchedulerUnavailable;
+
+struct PendingSystemRefresh {
+    send: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), SchedulerUnavailable>> + Send>,
+    >,
+    replacement: Option<config::Config>,
+}
+
+fn begin_system_refresh(
+    app_state: &mut state::AppState,
+    scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
+    store: &config::ConfigStore,
+    pending: &mut Option<PendingSystemRefresh>,
+) -> Result<(), SchedulerUnavailable> {
+    let (command, replacement) = match store.load_existing() {
+        Ok(config) => {
+            let endpoints = config
+                .systems
+                .iter()
+                .map(config::SystemEntry::to_endpoint)
+                .collect();
+            (
+                scheduler::SchedulerCommand::ReplaceEndpoints(endpoints),
+                Some(config),
+            )
+        }
+        Err(error) => {
+            // Keep the last-known-good state when an external edit is
+            // temporarily missing, malformed, or invalid.
+            app_state.set_config_reload_error(format!("config reload failed: {error}"));
+            (scheduler::SchedulerCommand::Refresh, None)
+        }
+    };
+
+    match scheduler_tx.try_send(command) {
+        Ok(()) => {
+            if let Some(config) = replacement {
+                app_state.reconcile_systems(&config);
+                app_state.clear_config_reload_error();
+            }
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Full(command)) => {
+            let sender = scheduler_tx.clone();
+            *pending = Some(PendingSystemRefresh {
+                send: Box::pin(async move {
+                    sender.send(command).await.map_err(|_| SchedulerUnavailable)
+                }),
+                replacement,
+            });
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            return Err(SchedulerUnavailable);
+        }
+    }
+    Ok(())
+}
 
 async fn refresh_systems(
     app_state: &mut state::AppState,
@@ -846,7 +935,11 @@ mod tests {
     fn default_config_creates_no_eggpool_worker() {
         let config = Config::default();
         let cancel = tokio_util::sync::CancellationToken::new();
-        assert!(spawn_eggpool_worker(&config, Duration::from_secs(1), cancel).is_none());
+        assert!(
+            spawn_eggpool_worker(&config, Duration::from_secs(1), cancel)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

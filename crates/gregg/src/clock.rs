@@ -17,8 +17,9 @@ pub trait Clock {
 
     /// Return the current Tokio timer instant.
     ///
-    /// Production code overrides this so paused Tokio timers remain aligned
-    /// with the timer runtime; injected clocks use their standard instant.
+    /// Production code overrides this so Tokio timers remain aligned with the
+    /// timer runtime. Injected clocks use that same runtime clock for timer
+    /// deadlines; their wall-clock value remains independently controllable.
     fn tokio_now(&self) -> tokio::time::Instant {
         tokio::time::Instant::from_std(self.now())
     }
@@ -68,6 +69,12 @@ impl FakeClock {
 impl Clock for FakeClock {
     fn now(&self) -> Instant {
         self.current
+    }
+
+    fn tokio_now(&self) -> tokio::time::Instant {
+        // Tokio's paused clock is advanced by `tokio::time::advance`, not by
+        // the fake wall clock. Keep sleep deadlines in the runtime clock.
+        tokio::time::Instant::now()
     }
 }
 

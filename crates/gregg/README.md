@@ -47,6 +47,9 @@ IPv6 link-local zone identifiers are accepted in bare `%eth0` or URL-escaped
 `%25eth0` form and are stored in URL-safe `%25` form for polling.
 Bracketed endpoint syntax is reserved for IPv6 literals; values such as
 `[server.local]:11310` are rejected.
+The optional EggPool client reports `InvalidEndpoint` for zone-ID authorities
+because the pinned URL representation cannot safely encode that authority;
+the systems poller remains the supported zone-ID transport.
 
 The client configuration accepts `request_timeout_ms` from 100 through 60,000
 milliseconds. Values outside that range are rejected during config validation.
@@ -66,6 +69,8 @@ milliseconds. Values outside that range are rejected during config validation.
 If a Systems config reload is missing, malformed, or invalid, the last-known-good
 configuration remains active and the error is shown in the diagnostic line until
 a later reload succeeds.
+If the bounded scheduler channel is full, delivery remains ordered while the
+event loop continues processing input and poll results.
 
 `selected_id` is the persistent logical selection that drives `e`
 (drive expansion) and viewport behavior. The reverse-video highlight

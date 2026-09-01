@@ -162,13 +162,28 @@ pub(crate) fn clamped_usage_pct(used_bytes: u64, total_bytes: u64) -> f32 {
         // Re-check finiteness after the narrowing cast so a non-finite
         // intermediate can never reach the wire, mirroring the CPU
         // percentage finalizers in `collector/linux/cpu.rs`.
-        let value = pct as f32;
-        if value.is_finite() {
-            value.clamp(0.0, 100.0)
-        } else {
-            0.0
-        }
+        finalize_percentage(pct).unwrap_or(0.0)
     }
+}
+
+/// Validate, narrow, and clamp a computed percentage once at the collector
+/// boundary so platform implementations do not drift in their arithmetic.
+pub(crate) fn finalize_percentage(value: f64) -> Result<f32, CollectError> {
+    if !value.is_finite() {
+        return Err(CollectError::new(
+            CollectErrorKind::Numeric,
+            "percentage is not finite",
+        ));
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let as_f32 = value.clamp(0.0, 100.0) as f32;
+    if !as_f32.is_finite() || !(0.0..=100.0).contains(&as_f32) {
+        return Err(CollectError::new(
+            CollectErrorKind::Numeric,
+            "percentage outside closed 0..=100 interval after conversion",
+        ));
+    }
+    Ok(as_f32)
 }
 
 /// Normalized metric sample produced by a [`SystemCollector`].

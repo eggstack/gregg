@@ -270,7 +270,7 @@ EggPool URL-normalization and URL-representation failures are reported as
 
 ## Ctrl-R config reload
 
-The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates backpressure; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state, issue an ordinary refresh, and display the reload error in the diagnostic line until a later reload succeeds.
+The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates ordered pending backpressure without blocking input, rendering, or poll-batch processing; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state, issue an ordinary refresh, and display the reload error in the diagnostic line until a later reload succeeds.
 
 ## Key constraints
 

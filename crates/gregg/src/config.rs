@@ -44,10 +44,20 @@ fn create_secure_temp_file(path: &Path) -> io::Result<fs::File> {
     {
         use std::os::unix::fs::OpenOptionsExt;
 
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
 
     let file = options.open(path)?;
+
+    #[cfg(unix)]
+    if !file.metadata()?.file_type().is_file() {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "temporary config path is not a regular file",
+        ));
+    }
 
     #[cfg(unix)]
     if let Err(error) = set_secure_permissions(&file) {
@@ -74,6 +84,26 @@ fn set_secure_permissions(file: &fs::File) -> io::Result<()> {
     }
 
     file.set_permissions(fs::Permissions::from_mode(0o600))
+}
+
+/// Remove temporary config files left by an interrupted atomic write.
+fn cleanup_stale_temps(dir: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with(".gregg-") && name.ends_with(".toml.tmp"))
+            && entry.file_type()?.is_file()
+        {
+            match fs::remove_file(entry.path()) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(all(test, unix))]
@@ -463,9 +493,12 @@ impl Config {
         // IP literals and IPv6 zone identifiers before validation so a
         // hand-edited spelling cannot create a second logical endpoint.
         for system in &mut config.systems {
-            if let Ok(host) = crate::endpoint::normalize_host(&system.host) {
-                system.host = host;
-            }
+            system.host = crate::endpoint::normalize_host(&system.host).map_err(|_error| {
+                ConfigError::Validation(vec![ConfigViolation::InvalidHost {
+                    id: system.id.clone(),
+                    host: system.host.clone(),
+                }])
+            })?;
         }
 
         let violations = config.validate();
@@ -477,9 +510,13 @@ impl Config {
     }
 
     /// Serialize this configuration to canonical TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns the TOML serializer error if serialization fails.
     #[must_use]
-    pub fn to_toml(&self) -> String {
-        toml::to_string_pretty(self).expect("Config serializes to TOML")
+    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
     }
 
     /// Atomically write this configuration to the given path.
@@ -510,7 +547,20 @@ impl Config {
             })?;
         }
 
-        let content = self.to_toml();
+        cleanup_stale_temps(if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        })
+        .map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(source),
+        })?;
+
+        let content = self.to_toml().map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Serialization(source),
+        })?;
         let temp_name = format!(
             ".gregg-{}-{}.toml.tmp",
             std::process::id(),
@@ -650,6 +700,7 @@ impl ConfigStore {
     /// invalid.
     #[allow(dead_code)]
     pub fn load_existing(&self) -> Result<Config, ConfigError> {
+        self.cleanup_stale_temps()?;
         Config::load(&self.path)
     }
 
@@ -660,12 +711,32 @@ impl ConfigStore {
     /// Returns [`ConfigError`] if the file exists but cannot be read or
     /// parsed.
     pub fn load_or_default(&self) -> Result<Config, ConfigError> {
+        self.cleanup_stale_temps()?;
         match Config::load(&self.path) {
             Ok(config) => Ok(config),
             Err(error) if matches!(&error, ConfigError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound) => {
                 Ok(Config::default())
             }
             Err(error) => Err(error),
+        }
+    }
+
+    fn cleanup_stale_temps(&self) -> Result<(), ConfigError> {
+        let Some(dir) = self.path.parent() else {
+            return Ok(());
+        };
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        match cleanup_stale_temps(dir) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(source) => Err(ConfigError::Io {
+                path: dir.to_path_buf(),
+                source,
+            }),
         }
     }
 
@@ -910,7 +981,12 @@ impl ConfigStore {
                     path: self.path.clone(),
                     source: AtomicWriteError::Io(e),
                 })?;
-            let content = config.to_toml();
+            let content = config
+                .to_toml()
+                .map_err(|source| ConfigError::AtomicWrite {
+                    path: self.path.clone(),
+                    source: AtomicWriteError::Serialization(source),
+                })?;
             file.write_all(content.as_bytes()).map_err(|e| {
                 let _ = fs::remove_file(&temp_path);
                 ConfigError::AtomicWrite {
@@ -1084,6 +1160,8 @@ pub enum AtomicWriteError {
     NoParentDirectory,
     /// An I/O error occurred.
     Io(std::io::Error),
+    /// TOML serialization failed.
+    Serialization(toml::ser::Error),
     /// The file was written but verification re-parse failed.
     VerificationFailed,
 }
@@ -1093,6 +1171,7 @@ impl fmt::Display for AtomicWriteError {
         match self {
             Self::NoParentDirectory => write!(f, "path has no parent directory"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Serialization(e) => write!(f, "TOML serialization error: {e}"),
             Self::VerificationFailed => write!(f, "verification re-parse failed"),
         }
     }
@@ -1103,6 +1182,7 @@ impl std::error::Error for AtomicWriteError {
         match self {
             Self::NoParentDirectory | Self::VerificationFailed => None,
             Self::Io(e) => Some(e),
+            Self::Serialization(e) => Some(e),
         }
     }
 }
@@ -1366,7 +1446,7 @@ mod tests {
             port: 11310,
             name: Some("Test".into()),
         });
-        let toml = config.to_toml();
+        let toml = config.to_toml().unwrap();
         let parsed = Config::parse(&toml, None).unwrap();
         assert_eq!(config, parsed);
     }
@@ -1381,7 +1461,7 @@ max_concurrent_requests = 16\n\
 default_port = 11310\n";
         let config = Config::parse(content, None).unwrap();
         assert!(config.eggpool.is_none());
-        assert!(!config.to_toml().contains("[eggpool]"));
+        assert!(!config.to_toml().unwrap().contains("[eggpool]"));
     }
 
     #[test]
@@ -1397,7 +1477,7 @@ default_port = 11310\n";
             }),
             ..Config::default()
         };
-        let toml = config.to_toml();
+        let toml = config.to_toml().unwrap();
         assert!(!toml.contains("secret-value"));
         assert_eq!(Config::parse(&toml, None).unwrap(), config);
     }
@@ -2443,7 +2523,7 @@ unknown_field = "oops"
             .edit_transaction(|temp_path| {
                 let mut config = Config::load(temp_path)?;
                 config.refresh_seconds = 30;
-                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| ConfigError::Io {
                     path: temp_path.to_path_buf(),
                     source: e,
                 })?;
@@ -2521,7 +2601,7 @@ unknown_field = "oops"
         let result = store.edit_transaction(|temp_path| {
             let mut config = Config::load(temp_path)?;
             config.refresh_seconds = 0; // Invalid: below minimum
-            fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+            fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| ConfigError::Io {
                 path: temp_path.to_path_buf(),
                 source: e,
             })?;
@@ -2628,7 +2708,7 @@ unknown_field = "oops"
                 // Verify the temp file started from defaults.
                 assert_eq!(config, Config::default());
                 // Write it back unchanged.
-                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| ConfigError::Io {
                     path: temp_path.to_path_buf(),
                     source: e,
                 })?;
@@ -2657,9 +2737,11 @@ unknown_field = "oops"
         // Success path.
         store
             .edit_transaction(|temp_path| {
-                fs::write(temp_path, Config::default().to_toml()).map_err(|e| ConfigError::Io {
-                    path: temp_path.to_path_buf(),
-                    source: e,
+                fs::write(temp_path, Config::default().to_toml().unwrap()).map_err(|e| {
+                    ConfigError::Io {
+                        path: temp_path.to_path_buf(),
+                        source: e,
+                    }
                 })?;
                 Ok(())
             })
@@ -2720,9 +2802,11 @@ unknown_field = "oops"
                     std::thread::sleep(std::time::Duration::from_millis(200));
                     let mut config = Config::load(temp_path)?;
                     config.refresh_seconds = 20;
-                    fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
-                        path: temp_path.to_path_buf(),
-                        source: e,
+                    fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| {
+                        ConfigError::Io {
+                            path: temp_path.to_path_buf(),
+                            source: e,
+                        }
                     })?;
                     Ok(())
                 })
@@ -2769,9 +2853,9 @@ unknown_field = "oops"
         // Editor writes TOML with an unknown field.
         let result = store.edit_transaction(|temp_path| {
             let config = Config::load(temp_path)?;
-            let toml = config.to_toml();
+            let toml = config.to_toml().unwrap();
             // Append an unknown field.
-            let modified = format!("{toml}\nunknown_field = \"oops\"\n");
+            let modified = format!("{}\nunknown_field = \"oops\"\n", toml);
             fs::write(temp_path, modified).map_err(|e| ConfigError::Io {
                 path: temp_path.to_path_buf(),
                 source: e,
@@ -2879,7 +2963,7 @@ unknown_field = "oops"
             .edit_transaction(|temp_path| {
                 let mut config = Config::load(temp_path)?;
                 config.refresh_seconds = 30;
-                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| ConfigError::Io {
                     path: temp_path.to_path_buf(),
                     source: e,
                 })?;
@@ -3123,7 +3207,7 @@ unknown_field = "oops"
             .edit_transaction(|temp_path| {
                 let mut config = Config::load(temp_path)?;
                 config.refresh_seconds = 25;
-                fs::write(temp_path, config.to_toml()).map_err(|e| ConfigError::Io {
+                fs::write(temp_path, config.to_toml().unwrap()).map_err(|e| ConfigError::Io {
                     path: temp_path.to_path_buf(),
                     source: e,
                 })?;

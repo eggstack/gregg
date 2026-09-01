@@ -12,7 +12,6 @@
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::Frame;
-use unicode_width::UnicodeWidthChar;
 
 /// Truncate a string to at most `max_width` display cells.
 ///
@@ -23,31 +22,7 @@ use unicode_width::UnicodeWidthChar;
 /// the caller can rely on `width(truncate_to_cells(s, n)) <= n`.
 #[must_use]
 pub fn truncate_to_cells(s: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut width = 0usize;
-    let mut end = 0usize;
-    for (i, ch) in s.char_indices() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + w > max_width {
-            break;
-        }
-        width += w;
-        end = i + ch.len_utf8();
-    }
-    if end >= s.len() {
-        // The source already fits exactly.
-        s.to_string()
-    } else if width < max_width {
-        // Room for the ellipsis after the last kept character.
-        format!("{}…", &s[..end])
-    } else if end > 0 {
-        // Even an ellipsis would overflow; return what fits.
-        s[..end].to_string()
-    } else {
-        String::new()
-    }
+    super::text::truncate_width(s, max_width)
 }
 
 /// Render one pre-built text line into a single-row area.

@@ -135,8 +135,9 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
 The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives
 the replacement endpoint vector, and awaits delivery through the bounded
 scheduler command channel before reconciling `AppState`. A full channel creates
-backpressure rather than dropping a replacement; a closed receiver returns
-through the TUI's normal error boundary. Failed config loads retain the
+backpressure in a pending event-loop branch rather than blocking input,
+rendering, or poll-batch processing; a closed receiver returns through the
+TUI's normal error boundary. Failed config loads retain the
 last-known-good state, issue an ordinary best-effort refresh, and display the
 reload error in the existing diagnostic line until a later reload succeeds.
 

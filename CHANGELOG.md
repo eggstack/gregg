@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Supplied bugs audit corrections** (`gregg`, `greggd`): production client,
+  input, and TOML setup failures now propagate as errors; Unix temporary config
+  files reject symlinks; stale temporary files are reaped and reported;
+  scheduler reload delivery no longer blocks the TUI event loop; endpoint,
+  state, display truncation, and collector percentage handling are consistent;
+  and control-socket publication cannot replace a concurrent path.
+
 - **Supplied bugs audit corrections** (`gregg`, `greggd`): daemon config
   directory creation is race-safe and preserves existing modes, drive refresh
   panics retry with bounded backoff, endpoint equivalence and fallback latency

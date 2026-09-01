@@ -62,10 +62,9 @@ service lifecycle. For platform metric collection itself, use the
   spellings converge; a missing implicit default uses a lexical absolute
   fallback. Identity is never derived from the parent directory alone — two
   configs in one directory cannot cross-stop.
-- Sockets are created with `0600`; a failed `chmod` discards the candidate.
-  The inode is bound inside a process-private `0700` staging directory in
-  the same parent and renamed into place only after verification, so it is
-  never publicly reachable with umask-derived permissions.
+- Sockets are bound at their final path with the kernel's exclusive `bind`,
+  then set to `0600` and verified; a concurrent creator can make the candidate
+  fail but cannot be displaced by a rename. A failed `chmod` discards it.
 - Stale socket cleanup unlinks only when metadata confirms a socket **and**
   the connect error is `ConnectionRefused` or `NotFound`.
   `PermissionDenied` and unexpected errors never authorize unlinking.

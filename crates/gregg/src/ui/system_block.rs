@@ -76,7 +76,6 @@ pub(crate) fn render_online(
     rows: Option<&[MetricRow; 4]>,
     fleet_layout: &MetricFleetLayout,
     is_visually_selected: bool,
-    is_logically_selected: bool,
     drive_rows_visible: usize,
 ) {
     if area.height < 5 || area.width == 0 {
@@ -138,9 +137,8 @@ pub(crate) fn render_online(
         render_metric_row(f, row_areas[idx], row, fleet_layout, &suffixes[idx]);
     }
 
-    // Drive-detail visibility is governed by logical selection so the
-    // expanded drive list survives highlight timeout.
-    let _ = is_logically_selected;
+    // Drive-detail visibility is governed by the precomputed viewport entry,
+    // whose visibility is based on logical selection.
     render_drive_details(f, area, snap, drive_rows_visible);
 }
 

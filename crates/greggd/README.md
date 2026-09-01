@@ -92,6 +92,11 @@ mode `0700`; an existing operator-managed directory keeps its current
 permissions. Metadata errors while loading a default config are reported
 instead of silently falling back to defaults.
 
+On Unix, `greggd stop` uses the config-specific local control socket. The
+socket path is reserved by the kernel before its restrictive permissions are
+verified, so a concurrent path occupant is never replaced; the temp-directory
+fallback remains best effort when the config-adjacent directory is unavailable.
+
 If the system clock moves backward, a future-dated cached snapshot is not
 treated as stale solely because its timestamp is ahead of the current clock.
 

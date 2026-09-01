@@ -193,7 +193,8 @@ async fn mixed_fleet_sustained_workload() {
 
     let scheduler = PollScheduler::new(
         RealClock,
-        HttpClient::new_with_observer(Duration::from_secs(2), observer.clone()),
+        HttpClient::new_with_observer(Duration::from_secs(2), observer.clone())
+            .expect("test HTTP client construction"),
         Duration::from_millis(200),
         4,
     );

@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 use serde::{Deserialize, Serialize};
-use tracing::debug;
 
 /// Minimum allowed sample interval in milliseconds.
 pub const MIN_SAMPLE_INTERVAL_MS: u64 = 250;
@@ -89,7 +88,8 @@ impl Default for Config {
 /// Remove stale `.greggd-*.toml.tmp` files left by prior crashes.
 fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
     let entries = fs::read_dir(dir)?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry?;
         let name = entry.file_name();
         if let Some(name_str) = name.to_str() {
             if name_str.starts_with(".greggd-") && name_str.ends_with(".toml.tmp") {
@@ -107,7 +107,7 @@ fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
                         // the directory listing was taken.
                         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                         Err(error) => {
-                            debug!(
+                            tracing::warn!(
                                 path = %entry.path().display(),
                                 error = %error,
                                 "failed to remove stale config temp file"
@@ -246,9 +246,13 @@ impl Config {
     }
 
     /// Serialize this configuration to canonical TOML.
+    ///
+    /// # Errors
+    ///
+    /// Returns the TOML serializer error if serialization fails.
     #[must_use]
-    pub fn to_toml(&self) -> String {
-        toml::to_string_pretty(self).expect("Config serializes to TOML")
+    pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
+        toml::to_string_pretty(self)
     }
 
     /// Atomically write this configuration to the given path.
@@ -281,10 +285,16 @@ impl Config {
         })?;
 
         // 2. Serialize the complete config.
-        let content = self.to_toml();
+        let content = self.to_toml().map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Serialization(source),
+        })?;
 
         // 2b. Clean up stale temp files from prior crashes.
-        let _ = cleanup_stale_temps(dir);
+        cleanup_stale_temps(dir).map_err(|source| ConfigError::AtomicWrite {
+            path: path.to_path_buf(),
+            source: AtomicWriteError::Io(source),
+        })?;
 
         // 3. Write to a uniquely named temporary file.
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -393,8 +403,16 @@ fn create_secure_temp_file(path: &Path) -> std::io::Result<fs::File> {
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
         let file = options.open(path)?;
+        if !file.metadata()?.file_type().is_file() {
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "temporary config path is not a regular file",
+            ));
+        }
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
         let mode = fs::metadata(path)?.permissions().mode() & 0o777;
         if mode != 0o600 {
@@ -476,6 +494,8 @@ pub enum AtomicWriteError {
     NoParentDirectory,
     /// An I/O error occurred.
     Io(std::io::Error),
+    /// TOML serialization failed.
+    Serialization(toml::ser::Error),
     /// The file was written but verification re-parse failed.
     VerificationFailed,
 }
@@ -485,6 +505,7 @@ impl fmt::Display for AtomicWriteError {
         match self {
             Self::NoParentDirectory => write!(f, "path has no parent directory"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
+            Self::Serialization(e) => write!(f, "TOML serialization error: {e}"),
             Self::VerificationFailed => write!(f, "verification re-parse failed"),
         }
     }
@@ -494,6 +515,7 @@ impl std::error::Error for AtomicWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(e) => Some(e),
+            Self::Serialization(e) => Some(e),
             _ => None,
         }
     }
@@ -565,7 +587,7 @@ mod tests {
     #[test]
     fn config_round_trips_through_toml() {
         let config = Config::default();
-        let toml = config.to_toml();
+        let toml = config.to_toml().unwrap();
         let parsed = Config::parse(&toml, None).unwrap();
         assert_eq!(config, parsed);
     }

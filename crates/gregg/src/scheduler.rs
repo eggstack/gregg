@@ -371,7 +371,8 @@ mod tests {
     async fn scheduler_produces_batches_with_increasing_generations() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -402,7 +403,7 @@ mod tests {
     fn zero_concurrency_is_clamped_to_one_permit() {
         let scheduler = PollScheduler::new(
             FakeClock::new(std::time::Instant::now()),
-            HttpClient::new(Duration::from_secs(1)),
+            HttpClient::new(Duration::from_secs(1)).expect("test HTTP client construction"),
             Duration::from_secs(1),
             0,
         );
@@ -413,7 +414,7 @@ mod tests {
     fn zero_refresh_interval_is_clamped_to_one_millisecond() {
         let scheduler = PollScheduler::new(
             FakeClock::new(std::time::Instant::now()),
-            HttpClient::new(Duration::from_secs(1)),
+            HttpClient::new(Duration::from_secs(1)).expect("test HTTP client construction"),
             Duration::ZERO,
             1,
         );
@@ -435,7 +436,7 @@ mod tests {
 
         let scheduler = PollScheduler::new(
             FakeClock::new(std::time::Instant::now()),
-            HttpClient::new(Duration::from_secs(5)),
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction"),
             Duration::from_secs(60),
             1,
         );
@@ -511,7 +512,8 @@ mod tests {
             });
         }
 
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -536,7 +538,8 @@ mod tests {
     async fn cancellation_stops_scheduler() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -578,7 +581,7 @@ mod tests {
         };
         let scheduler = PollScheduler::new(
             FakeClock::new(std::time::Instant::now()),
-            HttpClient::new(Duration::from_secs(30)),
+            HttpClient::new(Duration::from_secs(30)).expect("test HTTP client construction"),
             Duration::from_secs(60),
             1,
         );
@@ -599,7 +602,8 @@ mod tests {
     async fn empty_endpoint_list() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -628,7 +632,8 @@ mod tests {
     async fn single_endpoint_polls_repeatedly() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -684,7 +689,8 @@ mod tests {
             name: None,
         };
 
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -734,7 +740,8 @@ mod tests {
         let ep1 = endpoint_for_url(&url1);
         let ep2 = endpoint_for_url(&url2);
 
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -778,7 +785,8 @@ mod tests {
             endpoints.push(endpoint_for_url(&url));
         }
 
-        let client = HttpClient::new(Duration::from_secs(30));
+        let client =
+            HttpClient::new(Duration::from_secs(30)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -851,7 +859,8 @@ mod tests {
             });
         }
 
-        let client = HttpClient::new(Duration::from_secs(30));
+        let client =
+            HttpClient::new(Duration::from_secs(30)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -926,7 +935,8 @@ mod tests {
     async fn alternating_online_offline_endpoint() {
         let url = alternating_mock_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let clock = crate::clock::RealClock;
 
         let mut online_count = 0;
@@ -948,7 +958,8 @@ mod tests {
     async fn clock_backward_adjustment_does_not_corrupt_scheduler() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -995,7 +1006,8 @@ mod tests {
     async fn scheduler_handles_alternating_endpoint() {
         let url = alternating_mock_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -1036,7 +1048,8 @@ mod tests {
     async fn first_poll_happens_immediately_without_delay() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1061,7 +1074,8 @@ mod tests {
     async fn refresh_now_triggers_generation() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1138,7 +1152,8 @@ mod tests {
     async fn one_refresh_signal_produces_one_generation() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1182,7 +1197,8 @@ mod tests {
     async fn closed_refresh_channel_does_not_busy_loop() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1236,7 +1252,8 @@ mod tests {
     async fn manual_refresh_does_not_reset_periodic_cadence() {
         let url = valid_snapshot_server().await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1308,7 +1325,8 @@ mod tests {
         let ep = endpoint_for_url(&url);
         // Use a short client timeout so failed polls (after the mock server
         // handles its one connection) don't stall the test.
-        let client = HttpClient::new(Duration::from_millis(100));
+        let client =
+            HttpClient::new(Duration::from_millis(100)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let clock = FakeClock::new(anchor);
 
@@ -1403,7 +1421,8 @@ mod tests {
     async fn offline_endpoint_is_retried_and_recovers_on_next_generation() {
         let url = flaky_then_valid_server(/* failure_count */ 1).await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
@@ -1462,7 +1481,8 @@ mod tests {
     async fn offline_endpoint_remains_in_scheduler_across_generations() {
         let url = flaky_then_valid_server(/* failure_count */ 99).await;
         let ep = endpoint_for_url(&url);
-        let client = HttpClient::new(Duration::from_secs(5));
+        let client =
+            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
         let anchor = std::time::Instant::now();
         let mut clock = FakeClock::new(anchor);
 
