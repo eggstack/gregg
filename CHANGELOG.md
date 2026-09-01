@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining supplied bugs audit findings** (`gregg`, `greggd`): listener and
+  lock-directory failures propagate through library boundaries, bracketed
+  endpoint hosts are validated as IPv6, URL construction no longer masks host
+  normalization errors, DNS classification uses typed connection evidence,
+  drive-refresh panics are contained, and synchronous CLI config mutations run
+  outside the Tokio runtime.
+
 - **Remaining 2026-08-31 audit findings** (`gregg`, `greggd`): direct polling
   intervals and drive refresh delivery are bounded, endpoint/config host
   normalization and DNS diagnostics are consistent, malformed warm samples

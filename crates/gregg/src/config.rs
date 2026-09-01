@@ -683,7 +683,10 @@ impl ConfigStore {
 
         // Ensure the parent directory exists.
         if let Some(parent) = lock_path.parent() {
-            let _ = fs::create_dir_all(parent);
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
         }
 
         // Open without truncating — the lock file may persist as an inode
@@ -791,6 +794,10 @@ impl ConfigStore {
     /// config is loaded. If the mutation or validation fails, the config
     /// is not written.
     ///
+    /// This is a synchronous, potentially blocking operation. Callers from
+    /// an async task must run it on a blocking thread; the CLI invokes it
+    /// before starting its Tokio runtime.
+    ///
     /// # Errors
     ///
     /// Returns [`ConfigError`] on lock timeout, load, mutation, validation,
@@ -816,6 +823,9 @@ impl ConfigStore {
     /// # Errors
     ///
     /// Returns [`ConfigError`] on any failure.
+    ///
+    /// This is a synchronous, potentially blocking operation. Callers from
+    /// an async task must run it on a blocking thread.
     pub fn mutate_with_result<T>(
         &self,
         f: impl FnOnce(&mut Config) -> Result<T, ConfigError>,
@@ -1773,6 +1783,23 @@ port = 11310\n";
         let store = ConfigStore::new(path);
 
         assert!(store.load_existing().is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_store_reports_lock_parent_creation_errors() {
+        let dir = tmp_dir("store_lock_parent_error");
+        let parent = dir.join("not-a-directory");
+        fs::write(&parent, "file").unwrap();
+        let path = parent.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        let result = store.mutate(|_| Ok(()));
+        match result {
+            Err(ConfigError::Io { path, .. }) => assert_eq!(path, parent),
+            other => panic!("expected lock parent I/O error, got {other:?}"),
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }

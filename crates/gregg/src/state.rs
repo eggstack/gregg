@@ -254,6 +254,8 @@ impl AppState {
     /// `u64::MAX` to `1` wrap. For each result: updates reachability, latest
     /// snapshot, timestamps, latency, and error.
     pub fn apply_batch(&mut self, batch: &PollBatch) {
+        // The scheduler advances by exactly one and wraps only MAX -> 1;
+        // do not accept a skipped-generation wrap as a fresh batch.
         let wrapped_generation = self.last_applied_generation == u64::MAX && batch.generation == 1;
         if batch.generation <= self.last_applied_generation && !wrapped_generation {
             return;
@@ -1037,6 +1039,20 @@ mod tests {
             results: Vec::new(),
         });
         assert_eq!(state.last_applied_generation, 1);
+    }
+
+    #[test]
+    fn apply_batch_rejects_a_skipped_generation_wrap() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.last_applied_generation = u64::MAX - 1;
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: Vec::new(),
+        });
+        assert_eq!(state.last_applied_generation, u64::MAX - 1);
     }
 
     #[test]

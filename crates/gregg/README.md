@@ -45,6 +45,8 @@ gregg edit
 
 IPv6 link-local zone identifiers are accepted in bare `%eth0` or URL-escaped
 `%25eth0` form and are stored in URL-safe `%25` form for polling.
+Bracketed endpoint syntax is reserved for IPv6 literals; values such as
+`[server.local]:11310` are rejected.
 
 The client configuration accepts `request_timeout_ms` from 100 through 60,000
 milliseconds. Values outside that range are rejected during config validation.

@@ -345,7 +345,7 @@ pub async fn serve(
     state: ServerState,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), ServerError> {
-    let addr = listener.local_addr().expect("listener has local addr");
+    let addr = listener.local_addr().map_err(ServerError::Runtime)?;
 
     let app = Router::new()
         .route("/", get(status_handler))

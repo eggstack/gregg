@@ -72,6 +72,8 @@ configuration compatibility but is not used by `gregg add`. Use
 
 IPv6 link-local zone identifiers are accepted in either `fe80::1%eth0` or
 `[fe80::1%25eth0]:11310` form and are stored in URL-safe `%25` form for polling.
+Bracketed endpoint syntax is reserved for IPv6 literals; values such as
+`[server.local]:11310` are rejected.
 
 ## Configuration
 

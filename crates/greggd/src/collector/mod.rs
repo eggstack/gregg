@@ -68,7 +68,12 @@ impl DriveRefreshCache {
             ) {
                 break;
             }
-            let result = collect(&source);
+            let Ok(result) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| collect(&source)))
+            else {
+                tracing::warn!("drive refresh worker collector panicked; continuing");
+                continue;
+            };
             // Do not discard a completed refresh merely because the sampler
             // has not drained the previous result yet. A bounded send keeps
             // the worker from racing ahead while still allowing cache drop
@@ -479,5 +484,28 @@ mod tests {
                 .poll()
                 .is_some_and(|drives| drives[0].name == "drive-1")
         });
+    }
+
+    #[test]
+    fn drive_refresh_recovers_after_collector_panic() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_worker = Arc::clone(&calls);
+        let mut cache = DriveRefreshCache::new((), move |()| {
+            assert_ne!(
+                calls_for_worker.fetch_add(1, Ordering::AcqRel),
+                0,
+                "injected drive refresh panic"
+            );
+            Ok(Vec::new())
+        });
+
+        wait_until(|| calls.load(Ordering::Acquire) >= 1);
+        cache.request();
+        wait_until(|| calls.load(Ordering::Acquire) >= 2);
+        wait_until(|| cache.poll().is_some());
+        assert_eq!(cache.poll(), Some(Vec::new()));
     }
 }

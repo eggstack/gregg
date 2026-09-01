@@ -55,8 +55,7 @@ fn spawn_eggpool_worker(
 
 use clap::Parser;
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() {
+fn main() {
     let cli = cli::Cli::parse();
 
     let config_path = cli::resolve_config_path(cli.config.as_ref());
@@ -64,7 +63,17 @@ async fn main() {
 
     match &cli.command {
         None => {
-            if let Err(e) = run_tui(store).await {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(e) => {
+                    eprintln!("error: failed to start runtime: {e}");
+                    std::process::exit(3);
+                }
+            };
+            if let Err(e) = runtime.block_on(run_tui(store)) {
                 eprintln!("error: {e}");
                 std::process::exit(3);
             }

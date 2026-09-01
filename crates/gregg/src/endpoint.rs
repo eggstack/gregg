@@ -388,10 +388,11 @@ impl EndpointSpec {
         let port_str = &rest[1..];
         let port = parse_port(port_str, input)?;
 
-        // Validate it's not empty and looks like an address (not arbitrary text).
-        // Note: strict IpAddr validation is skipped here because zone IDs
-        // (e.g., %25eth0 for URL-encoded %eth0) are not supported by the
-        // standard library's IpAddr parser.
+        if addr_part.parse::<std::net::Ipv6Addr>().is_err() && !is_ipv6_with_zone_id(addr_part) {
+            return Err(EndpointError::MalformedBrackets {
+                input: input.to_string(),
+            });
+        }
 
         Ok(Self {
             host: normalize_host(addr_part)?,
@@ -526,7 +527,7 @@ fn rsplit_once_colon(s: &str) -> (&str, &str) {
 /// Canonical display address for a host and port.
 #[must_use]
 pub fn display_address(host: &str, port: u16) -> String {
-    let host = bracketed_host(host);
+    let host = bracketed_host(host).unwrap_or_else(|_| unbracketed_host(host).to_string());
     if host.contains(':') {
         format!("[{host}]:{port}")
     } else {
@@ -535,9 +536,9 @@ pub fn display_address(host: &str, port: u16) -> String {
 }
 
 /// Normalize and bracket a host for an authority or display address.
-pub(crate) fn bracketed_host(host: &str) -> String {
+pub(crate) fn bracketed_host(host: &str) -> Result<String, EndpointError> {
     let host = unbracketed_host(host);
-    normalize_host(host).unwrap_or_else(|_| host.to_string())
+    normalize_host(host)
 }
 
 fn unbracketed_host(host: &str) -> &str {
@@ -663,6 +664,14 @@ mod tests {
         assert_eq!(spec.host, "fe80::1%25eth0");
         assert_eq!(spec.port, 8080);
         assert!(spec.port_was_explicit);
+    }
+
+    #[test]
+    fn bracketed_non_ipv6_literal_is_rejected() {
+        assert!(matches!(
+            EndpointSpec::parse("[not-an-ip]:8080"),
+            Err(EndpointError::MalformedBrackets { .. })
+        ));
     }
 
     #[test]

@@ -314,6 +314,8 @@ omitted entirely.
 Endpoint parsing accepts IPv6 link-local zone identifiers in either bare
 `fe80::1%eth0` or URL-escaped `%25eth0` spelling. Persisted endpoint hosts use
 the URL-safe `%25` separator so the poller can construct valid HTTP URLs.
+Bracketed endpoint syntax is reserved for IPv6 literals; URL construction
+returns normalization errors instead of falling back to raw host text.
 
 ```toml
 config_version = 1
@@ -346,6 +348,10 @@ Platform defaults:
 - Unix: `flock(2)` advisory lock on `<config>.lock`
 - Windows: `LockFileEx` exclusive lock on `<config>.lock`
 - Timeout: 5 seconds
+
+Config mutations are synchronous because they use bounded OS-lock polling and
+filesystem I/O. The CLI performs them before creating its Tokio runtime;
+library callers from async tasks must move the mutation to a blocking thread.
 
 ### CLI subcommands
 

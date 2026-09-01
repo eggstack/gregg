@@ -236,6 +236,8 @@ collapse to anonymous status text.
 Endpoint parsing canonicalizes IPv6 link-local zone identifiers to the
 URL-safe `%25` separator before persistence, accepting both `%eth0` and
 `%25eth0` input spellings.
+Bracketed endpoint syntax is reserved for IPv6 literals. URL helpers propagate
+host-normalization errors rather than constructing URLs from raw invalid text.
 
 ```toml
 config_version = 1
@@ -253,6 +255,8 @@ name = "Web Server 01"
 ```
 
 Cross-process locking: `flock(2)` (Unix) / `LockFileEx` (Windows) on `<config>.lock`.
+Config mutation is synchronous and potentially blocking; the CLI runs it before
+starting Tokio, and async callers must use a blocking thread.
 
 Only one EggPool endpoint may be configured. `eggpool add` without
 `--replace` reports the dedicated `EggpoolAlreadyConfigured` configuration

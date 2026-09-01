@@ -17,7 +17,7 @@ use gregg_protocol::v2::{StatusPayloadV2, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
 use crate::clock::Clock;
-use crate::endpoint::Endpoint;
+use crate::endpoint::{Endpoint, EndpointError};
 
 #[derive(Clone, Copy)]
 enum ExpectedSchema {
@@ -216,14 +216,18 @@ impl HttpClient {
         let start = clock.now();
 
         // Try v2 first.
-        let v2_url = v2_status_url(&endpoint.host, endpoint.port);
+        let Ok(v2_url) = v2_status_url(&endpoint.host, endpoint.port) else {
+            return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
+        };
         let v2_result = self
             .poll_single_url(&v2_url, endpoint, ExpectedSchema::V2, start, clock)
             .await;
 
         if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
             // v2 returned 404 - fall back to v1.
-            let v1_url = status_url(&endpoint.host, endpoint.port);
+            let Ok(v1_url) = status_url(&endpoint.host, endpoint.port) else {
+                return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
+            };
             let v1_start = clock.now();
             return self
                 .poll_single_url(&v1_url, endpoint, ExpectedSchema::V1, v1_start, clock)
@@ -372,7 +376,7 @@ fn classify_reqwest_error(e: &reqwest::Error) -> PollOutcome {
     }
 
     // Check for DNS resolution failure.
-    if is_dns_failure(e) {
+    if e.is_connect() && is_dns_failure(e) {
         return PollOutcome::DnsFailure;
     }
 
@@ -407,15 +411,17 @@ pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
                 return true;
             }
         }
-        let message = error.to_string().to_ascii_lowercase();
-        if message.contains("failed to lookup address")
-            || message.contains("name or service not known")
-            || message.contains("nodename nor servname")
-            || message.contains("temporary failure in name resolution")
-            || message.contains("no such host")
-            || message.contains("name does not resolve")
-        {
-            return true;
+        if error.downcast_ref::<reqwest::Error>().is_none() {
+            let message = error.to_string().to_ascii_lowercase();
+            if message.contains("failed to lookup address")
+                || message.contains("name or service not known")
+                || message.contains("nodename nor servname")
+                || message.contains("temporary failure in name resolution")
+                || message.contains("no such host")
+                || message.contains("name does not resolve")
+            {
+                return true;
+            }
         }
         current = error.source();
     }
@@ -429,33 +435,47 @@ fn is_resolver_os_error(error: &std::io::Error) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_resolver_os_error(_error: &std::io::Error) -> bool {
-    false
+fn is_resolver_os_error(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::EAI_NONAME)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
 }
 
-fn bracketed_host(host: &str) -> String {
-    let host = crate::endpoint::bracketed_host(host);
+fn bracketed_host(host: &str) -> Result<String, EndpointError> {
+    let host = crate::endpoint::bracketed_host(host)?;
     if host.contains(':') {
-        format!("[{host}]")
+        Ok(format!("[{host}]"))
     } else {
-        host
+        Ok(host)
     }
 }
 
 /// Construct the status URL for an endpoint (v1).
 ///
 /// IPv6 hosts are bracketed per RFC 2732.
-#[must_use]
-pub fn status_url(host: &str, port: u16) -> String {
-    format!("http://{}:{port}/v1/status", bracketed_host(host))
+///
+/// # Errors
+///
+/// Returns [`EndpointError`] when `host` cannot be normalized.
+pub fn status_url(host: &str, port: u16) -> Result<String, EndpointError> {
+    Ok(format!("http://{}:{port}/v1/status", bracketed_host(host)?))
 }
 
 /// Construct the status URL for an endpoint (v2).
 ///
 /// IPv6 hosts are bracketed per RFC 2732.
-#[must_use]
-pub fn v2_status_url(host: &str, port: u16) -> String {
-    format!("http://{}:{port}/v2/status", bracketed_host(host))
+///
+/// # Errors
+///
+/// Returns [`EndpointError`] when `host` cannot be normalized.
+pub fn v2_status_url(host: &str, port: u16) -> Result<String, EndpointError> {
+    Ok(format!("http://{}:{port}/v2/status", bracketed_host(host)?))
 }
 
 #[cfg(test)]
@@ -774,44 +794,52 @@ mod tests {
 
     #[tokio::test]
     async fn url_construction_ipv4() {
-        let url = status_url("192.168.1.1", 11310);
+        let url = status_url("192.168.1.1", 11310).unwrap();
         assert_eq!(url, "http://192.168.1.1:11310/v1/status");
     }
 
     #[tokio::test]
     async fn url_construction_ipv6() {
-        let url = status_url("::1", 8080);
+        let url = status_url("::1", 8080).unwrap();
         assert_eq!(url, "http://[::1]:8080/v1/status");
     }
 
     #[test]
     fn url_construction_ipv6_zone_id() {
         assert_eq!(
-            status_url("fe80::1%eth0", 8080),
+            status_url("fe80::1%eth0", 8080).unwrap(),
             "http://[fe80::1%25eth0]:8080/v1/status"
         );
         assert_eq!(
-            status_url("fe80::1%25eth0", 8080),
+            status_url("fe80::1%25eth0", 8080).unwrap(),
             "http://[fe80::1%25eth0]:8080/v1/status"
         );
         assert_eq!(
-            v2_status_url("fe80::1%25eth0", 8080),
+            v2_status_url("fe80::1%25eth0", 8080).unwrap(),
             "http://[fe80::1%25eth0]:8080/v2/status"
         );
         assert_eq!(
-            status_url("[fe80::1%25eth0]", 8080),
+            status_url("[fe80::1%25eth0]", 8080).unwrap(),
             "http://[fe80::1%25eth0]:8080/v1/status"
         );
         assert_eq!(
-            status_url("fe80::1%2525thfloor", 8080),
+            status_url("fe80::1%2525thfloor", 8080).unwrap(),
             "http://[fe80::1%2525thfloor]:8080/v1/status"
         );
     }
 
     #[tokio::test]
     async fn url_construction_dns() {
-        let url = status_url("server.local", 11310);
+        let url = status_url("server.local", 11310).unwrap();
         assert_eq!(url, "http://server.local:11310/v1/status");
+    }
+
+    #[test]
+    fn url_construction_rejects_invalid_host() {
+        assert!(matches!(
+            status_url("", 11310),
+            Err(EndpointError::EmptyHost)
+        ));
     }
 
     #[tokio::test]
@@ -878,6 +906,10 @@ mod tests {
         assert!(is_dns_failure(&io::Error::other("Name does not resolve")));
         let not_found = io::Error::new(io::ErrorKind::NotFound, "name not found");
         assert!(is_dns_failure(&not_found));
+        #[cfg(unix)]
+        assert!(is_dns_failure(&io::Error::from_raw_os_error(
+            libc::EAI_NONAME
+        )));
     }
 
     #[tokio::test]
