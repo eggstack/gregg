@@ -1,6 +1,6 @@
 # Plan 094: Bugs audit corrective pass
 
-Status: implementation in progress.
+Status: complete. Closing record below.
 
 Depends on: Plan 093 and the actionable findings recorded in `bugs.md`.
 
@@ -39,4 +39,23 @@ behavior-preserving changes:
 
 ## Closure record
 
-Pending verification and implementation commit.
+Implementation landed in commit `4930377`.
+
+Completed:
+
+- reusable listener and lock-parent errors now return through typed boundaries;
+- bracketed endpoints require IPv6 literals, URL construction propagates host
+  normalization failures, and DNS classification uses typed connect/resolver
+  evidence with narrow compatibility fallbacks;
+- drive collector panics are contained and logged so the refresh worker
+  continues; synchronous config mutation remains outside the Tokio runtime;
+- the generation wrap contract is documented and its skipped-wrap rejection
+  is covered by a regression test; and
+- `bugs.md` was deleted after all eight actionable findings were addressed.
+
+Verification passed:
+
+- `./scripts/check-local.sh`;
+- `cargo test --workspace --all-targets --all-features` — 873 passed, 2 ignored;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`; and
+- `cargo test -p greggd --all-features -- collector::linux` — 43 passed.

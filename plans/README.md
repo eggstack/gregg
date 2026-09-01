@@ -63,7 +63,7 @@ audit with bounded scheduler, state, drive-cache, endpoint/config, durability,
 sampler, and byte-format corrections. Performance-only notes and the two
 explicitly non-correctness observations remain excluded.
 
-Plan 094 is in implementation: it closes the actionable findings in the
+Plan 094 is complete: it closes the actionable findings in the
 supplied `bugs.md` audit around reusable error propagation, bracketed endpoint
 validation, DNS classification, drive-worker panic handling, synchronous
 configuration locking, and generation-wrap documentation.
@@ -98,7 +98,7 @@ configuration locking, and generation-wrap documentation.
 | [`091-greggd-long-running-stability-and-croncheck-hardening.md`](091-greggd-long-running-stability-and-croncheck-hardening.md) | Harden long-running daemon control, optional drive refresh, and croncheck identity | implementation in progress |
 | [`092-bugs-audit-corrective-pass.md`](092-bugs-audit-corrective-pass.md) | Correct IPv6 zone-ID transport, DNS classification, zero-port validation clarity, and future-snapshot staleness | complete; implementation `6efa52c` |
 | [`093-bugs-audit-corrective-pass.md`](093-bugs-audit-corrective-pass.md) | Correct remaining actionable findings from the 2026-08-31 bugs audit with bounded behavior-preserving changes | complete; implementation `ede60b8` |
-| [`094-bugs-audit-corrective-pass.md`](094-bugs-audit-corrective-pass.md) | Correct actionable findings from the supplied bugs audit with bounded behavior-preserving changes | implementation in progress |
+| [`094-bugs-audit-corrective-pass.md`](094-bugs-audit-corrective-pass.md) | Correct actionable findings from the supplied bugs audit with bounded behavior-preserving changes | complete; implementation `4930377` |
 
 Dependency order:
 
