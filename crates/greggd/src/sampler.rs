@@ -40,6 +40,15 @@ pub trait Clock: Send + Sync {
     /// Current time as milliseconds since the Unix epoch.
     fn now_unix_ms(&self) -> u64;
 
+    /// Current Unix time when it is representable as a non-negative value.
+    ///
+    /// The default preserves the original clock seam for injected clocks;
+    /// [`RealClock`] overrides it to distinguish a pre-epoch clock from the
+    /// invalid zero timestamp.
+    fn checked_now_unix_ms(&self) -> Option<u64> {
+        Some(self.now_unix_ms())
+    }
+
     /// Return a future that resolves after `dur` has elapsed.
     fn sleep(&self, dur: Duration) -> SleepFuture;
 }
@@ -55,13 +64,25 @@ impl Clock for RealClock {
         match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
             Ok(duration) => duration.as_millis() as u64,
             Err(error) => {
-                // A clock behind the epoch would stamp snapshots with `0`,
-                // which validation rejects and staleness math cannot use.
                 tracing::warn!(
                     %error,
                     "system clock precedes the Unix epoch; reporting 0 until corrected"
                 );
                 0
+            }
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn checked_now_unix_ms(&self) -> Option<u64> {
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => Some(duration.as_millis() as u64),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "system clock precedes the Unix epoch; snapshot publication is paused until corrected"
+                );
+                None
             }
         }
     }
@@ -286,24 +307,12 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                     return;
                 }
 
-                let now_ms = self.clock.now_unix_ms();
-                let identity = {
-                    let guard = self.lock_collector();
-                    guard.identity()
+                let Some(now_ms) = self.clock.checked_now_unix_ms() else {
+                    self.transition_to_failed("system clock precedes unix epoch");
+                    tracing::debug!("system clock precedes unix epoch; snapshot not published");
+                    return;
                 };
-                let identity = match identity {
-                    Ok(identity) => identity,
-                    Err(err) => {
-                        // Identity acquisition failed after metrics
-                        // collection succeeded. Treat as a failed sample
-                        // cycle without recursing — the next tick will
-                        // retry both identity and metrics.
-                        self.transition_to_failed("identity unavailable");
-                        tracing::debug!(kind = ?err.kind, "identity unavailable");
-                        return;
-                    }
-                };
-                let converted = self.convert_sample(metrics, now_ms, identity);
+                let converted = self.convert_sample(metrics, now_ms);
 
                 let (v1, payload_v2) = match converted {
                     Ok(converted) => converted,
@@ -369,9 +378,9 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         &self,
         metrics: CollectedMetrics,
         now_ms: u64,
-        identity: gregg_protocol::SystemIdentity,
     ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
         let collector = self.lock_collector();
+        let identity = collector.identity()?;
         if collector.supports_v1_snapshot() {
             let v1 = metrics.clone().into_snapshot(
                 SCHEMA_VERSION_V1,
@@ -459,6 +468,24 @@ mod tests {
         fn sleep(&self, dur: Duration) -> SleepFuture {
             #[allow(clippy::cast_possible_truncation)]
             self.advance(dur.as_millis() as u64);
+            Box::pin(async move {
+                tokio::time::sleep(dur).await;
+            })
+        }
+    }
+
+    struct PreEpochClock;
+
+    impl Clock for PreEpochClock {
+        fn now_unix_ms(&self) -> u64 {
+            0
+        }
+
+        fn checked_now_unix_ms(&self) -> Option<u64> {
+            None
+        }
+
+        fn sleep(&self, dur: Duration) -> SleepFuture {
             Box::pin(async move {
                 tokio::time::sleep(dur).await;
             })
@@ -779,6 +806,17 @@ mod tests {
 
         assert_eq!(sampler.readiness(), ReadinessState::Failed);
         assert_eq!(sampler.consecutive_failures, 1);
+    }
+
+    #[test]
+    fn pre_epoch_clock_does_not_publish_zero_timestamp() {
+        let collector = SyntheticCollector::from_results(vec![Ok(successful_metrics())]);
+        let mut sampler = Sampler::new(collector, PreEpochClock);
+
+        sampler.sample_once();
+
+        assert_eq!(sampler.readiness(), ReadinessState::Failed);
+        assert!(sampler.snapshot().is_none());
     }
 
     #[test]

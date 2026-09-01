@@ -447,9 +447,11 @@ pub(crate) fn normalize_host(host: &str) -> Result<String, EndpointError> {
     // operator-friendly bare `%zone` spelling, but persist the URL-safe form
     // so the poller can construct a valid request URL.
     if let Some((address, zone)) = trimmed.split_once('%') {
-        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.is_empty() && !zone.contains(':')
-        {
+        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.contains(':') {
             let zone = zone.strip_prefix("25").unwrap_or(zone);
+            if zone.is_empty() {
+                return Err(EndpointError::EmptyHost);
+            }
             return Ok(format!("{address}%25{zone}"));
         }
     }
@@ -492,6 +494,7 @@ fn is_ipv6_with_zone_id(host: &str) -> bool {
     let Some((address, zone)) = host.split_once('%') else {
         return false;
     };
+    let zone = zone.strip_prefix("25").unwrap_or(zone);
     !zone.is_empty() && !zone.contains(':') && address.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
@@ -560,6 +563,15 @@ mod tests {
         assert_eq!(spec.port, DEFAULT_PORT);
         assert!(!spec.port_was_explicit);
         assert!(spec.name.is_none());
+    }
+
+    #[test]
+    fn ipv6_with_empty_encoded_zone_is_rejected() {
+        assert!(matches!(
+            EndpointSpec::parse("[fe80::1%25]:8080"),
+            Err(EndpointError::MalformedBrackets { .. })
+        ));
+        assert!(normalize_host("fe80::1%25").is_err());
     }
 
     #[test]

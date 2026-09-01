@@ -62,7 +62,7 @@ pub struct MetricCapabilities {
 /// Stable identity fields. Each field is transported separately so the TUI
 /// can degrade by width priority without parsing a combined string.
 ///
-/// Validation rejects every empty value (and any value containing NUL),
+/// Validation rejects every empty or whitespace-only value (and any value containing NUL),
 /// including for optional fields such as `name`; a source that cannot
 /// provide a value must substitute a non-empty placeholder instead.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

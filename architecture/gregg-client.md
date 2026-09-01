@@ -315,7 +315,9 @@ Endpoint parsing accepts IPv6 link-local zone identifiers in either bare
 `fe80::1%eth0` or URL-escaped `%25eth0` spelling. Persisted endpoint hosts use
 the URL-safe `%25` separator so the poller can construct valid HTTP URLs.
 Bracketed endpoint syntax is reserved for IPv6 literals; URL construction
-returns normalization errors instead of falling back to raw host text.
+returns normalization errors instead of falling back to raw host text. An
+encoded `%25` separator without a zone name is rejected rather than persisted
+as a malformed host.
 
 ```toml
 config_version = 1

@@ -233,10 +233,27 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
                     ));
                 }
             }
-            _ => {
+            crate::ReadinessState::Failed => {
                 if raw.snapshot.is_some() {
                     return Err(serde::de::Error::custom(
                         "non-ready health response must not include a snapshot",
+                    ));
+                }
+                if raw.category.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "failed health response must include a category",
+                    ));
+                }
+            }
+            crate::ReadinessState::Warming => {
+                if raw.snapshot.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "non-ready health response must not include a snapshot",
+                    ));
+                }
+                if raw.category.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "warming health response must include a category",
                     ));
                 }
             }
@@ -480,6 +497,18 @@ mod tests {
         // Any snapshot body is enough to trip the invariant; it is rejected
         // before the snapshot itself is inspected.
         let json = r#"{"schema_version":2,"state":"warming","snapshot":{"schema_version":2,"observed_at_unix_ms":0,"sample_interval_ms":0,"capabilities":{"cpu_iowait":false,"load_average":false,"swap":false,"memory_commit":false},"system":{"name":"","hostname":"","os_name":"","os_version":"","kernel_name":"","kernel_release":"","architecture":""},"cpu":{"logical_cores":0,"usage_pct":0.0,"iowait_pct":null},"load":null,"memory":{"used_bytes":0,"total_bytes":0,"usage_pct":0.0},"swap":null,"commit":null}}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_failed_health_requires_category() {
+        let json = r#"{"schema_version":2,"state":"failed","message":"collector failed"}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_warming_health_requires_category() {
+        let json = r#"{"schema_version":2,"state":"warming","message":"warming"}"#;
         assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
     }
 

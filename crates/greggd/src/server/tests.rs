@@ -544,6 +544,15 @@ async fn stale_snapshot_rejected_when_max_failures_exceeded() {
 }
 
 #[tokio::test]
+async fn pre_epoch_clock_is_stale_when_age_policy_is_enabled() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+    let snap = fresh_snapshot();
+    update_both(&state, snap).await;
+    let published = state.published.read().await;
+    assert!(state.is_stale(&published, None));
+}
+
+#[tokio::test]
 async fn healthz_reflects_stale_snapshot() {
     let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
     let snap = fresh_snapshot();
@@ -701,7 +710,7 @@ async fn pre_epoch_clock_does_not_mark_cached_snapshot_stale() {
     update_both(&state, snap).await;
 
     let published = state.published.read().await;
-    assert!(!state.is_stale(&published, 0));
+    assert!(!state.is_stale(&published, Some(0)));
 }
 
 #[tokio::test]

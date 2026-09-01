@@ -294,22 +294,13 @@ impl Config {
                 });
             }
 
-            // Unique normalized address.
-            let normalized_host = crate::endpoint::normalize_host(&system.host)
-                .unwrap_or_else(|_| system.host.trim().to_string());
-            let normalized = format!("{}:{}", normalized_host.to_ascii_lowercase(), system.port);
-            if !seen_addresses.insert(normalized.clone()) {
-                violations.push(ConfigViolation::DuplicateAddress {
-                    address: normalized,
-                });
-            }
-
             // Host validation.
             let host = system.host.trim();
-            if host.is_empty() {
+            let normalized_host = if host.is_empty() {
                 violations.push(ConfigViolation::EmptyHost {
                     id: system.id.clone(),
                 });
+                None
             } else if host.contains("://")
                 || host.contains('/')
                 || host.contains('?')
@@ -320,6 +311,27 @@ impl Config {
                     id: system.id.clone(),
                     host: host.to_string(),
                 });
+                None
+            } else if let Ok(normalized_host) = crate::endpoint::normalize_host(host) {
+                Some(normalized_host)
+            } else {
+                violations.push(ConfigViolation::InvalidHost {
+                    id: system.id.clone(),
+                    host: host.to_string(),
+                });
+                None
+            };
+
+            // Unique normalized address. Invalid hosts are already reported
+            // above and must not also create misleading duplicate diagnostics.
+            if let Some(normalized_host) = normalized_host {
+                let normalized =
+                    format!("{}:{}", normalized_host.to_ascii_lowercase(), system.port);
+                if !seen_addresses.insert(normalized.clone()) {
+                    violations.push(ConfigViolation::DuplicateAddress {
+                        address: normalized,
+                    });
+                }
             }
 
             // Port validation.
@@ -1646,6 +1658,24 @@ default_port = 11310\n";
             .validate()
             .iter()
             .any(|v| matches!(v, ConfigViolation::InvalidHost { .. })));
+    }
+
+    #[test]
+    fn malformed_host_is_not_inserted_into_duplicate_address_index() {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "bad".into(),
+            host: "fe80::1%25".into(),
+            port: 8080,
+            name: None,
+        });
+        let violations = config.validate();
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, ConfigViolation::InvalidHost { .. })));
+        assert!(!violations
+            .iter()
+            .any(|v| matches!(v, ConfigViolation::DuplicateAddress { .. })));
     }
 
     #[test]

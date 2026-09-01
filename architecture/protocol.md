@@ -112,6 +112,13 @@ fields that serde does not know about must not change the strictness of
 validation for fields that serde does know about, so callers can use
 `serde_json::from_slice` and then call `validate()` explicitly.
 
+Serde deserialization necessarily allocates owned identity and drive-name
+strings before semantic validation can reject oversized values. The protocol
+crate therefore does not promise a serde-level per-string allocation limit;
+callers deserializing untrusted bytes directly must bound the input first.
+The shipped HTTP client enforces its response-body limit before invoking
+serde.
+
 ### V1 validation
 
 `StatusSnapshot::validate()` returns `Ok(())` or `Err(Vec<ValidationViolation>)`.
@@ -127,8 +134,8 @@ are:
 - `LoadValueOutOfRange`
 - `UsedExceedsTotal` (memory or swap)
 - `IowaitCapabilityMismatch`
-- `InvalidIdentityField` — identity string is empty, contains NUL, or exceeds
-  512 UTF-8 bytes
+- `InvalidIdentityField` — identity string is empty or whitespace-only,
+  contains NUL, or exceeds 512 UTF-8 bytes
 
 ### V2 validation
 

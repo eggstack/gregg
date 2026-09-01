@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Remaining supplied bugs audit findings** (`gregg-protocol`, `gregg`,
+  `greggd`): non-ready health envelopes require categories in both schema
+  versions, whitespace-only identities and empty IPv6 zones are rejected,
+  invalid hosts no longer create duplicate diagnostics, scheduler and sampler
+  failure paths remain typed, and pre-epoch clocks cannot publish invalid
+  timestamps or serve age-uncheckable cached data as fresh. The flaky drive
+  refresh regression test now waits with a bounded wall-clock deadline.
+
 - **Remaining supplied bugs audit findings** (`gregg`, `greggd`): listener and
   lock-directory failures propagate through library boundaries, bracketed
   endpoint hosts are validated as IPv6, URL construction no longer masks host

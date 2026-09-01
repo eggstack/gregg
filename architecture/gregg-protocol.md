@@ -119,6 +119,9 @@ Three states:
 - **Warming** — daemon alive but first counter delta not yet available
 - **Failed** — collector error; carries category + message (no paths/chains)
 
+Non-ready health responses must include their machine-readable category in both
+v1 and v2; ready responses omit the category and include the snapshot.
+
 Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
 v2 status and health remain independently ready after a valid sample.
 

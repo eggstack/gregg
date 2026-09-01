@@ -262,7 +262,8 @@ fn validate_identity_v2(system: &SystemIdentity, out: &mut Vec<ValidationViolati
         ("system.architecture", &system.architecture),
     ];
     for (field, value) in fields {
-        if value.is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES {
+        if value.trim().is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES
+        {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::InvalidIdentityField,
                 field,
@@ -917,6 +918,16 @@ mod tests {
         snap.cpu.logical_cores = 0;
         let err = validate_v2(&snap).unwrap_err();
         assert!(err.iter().any(|v| v.field == "cpu.logical_cores"));
+    }
+
+    #[test]
+    fn rejects_whitespace_only_identity_fields() {
+        let mut snap = valid_linux_v2();
+        snap.system.name = "   ".into();
+        snap.system.hostname = "\t\n".into();
+        let err = validate_v2(&snap).unwrap_err();
+        assert!(err.iter().any(|v| v.field == "system.name"));
+        assert!(err.iter().any(|v| v.field == "system.hostname"));
     }
 
     #[test]

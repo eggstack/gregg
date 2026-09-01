@@ -236,7 +236,10 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             let handle = tokio::spawn(async move {
                 let _permit = tokio::select! {
                     () = cancel.cancelled() => return cancelled_result(&ep),
-                    permit = sem.acquire_owned() => permit.expect("semaphore should not be closed"),
+                    permit = sem.acquire_owned() => match permit {
+                        Ok(permit) => permit,
+                        Err(_) => return cancelled_result(&ep),
+                    },
                 };
                 tokio::select! {
                     () = cancel.cancelled() => cancelled_result(&ep),

@@ -149,7 +149,8 @@ fn validate_identity(system: &SystemIdentity, out: &mut Vec<ValidationViolation>
         ("system.architecture", &system.architecture),
     ];
     for (field, value) in fields {
-        if value.is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES {
+        if value.trim().is_empty() || value.contains('\0') || value.len() > MAX_IDENTITY_FIELD_BYTES
+        {
             out.push(ValidationViolation::new(
                 ViolationKind::InvalidIdentityField,
                 field,
@@ -328,6 +329,16 @@ mod tests {
                 .any(|v| v.field == "system.hostname"
                     && v.kind == ViolationKind::InvalidIdentityField)
         );
+    }
+
+    #[test]
+    fn rejects_identity_fields_that_are_whitespace_only() {
+        let mut snap = valid_snapshot();
+        snap.system.name = "   ".into();
+        snap.system.hostname = "\t\n".into();
+        let err = validate(&snap).unwrap_err();
+        assert!(err.iter().any(|v| v.field == "system.name"));
+        assert!(err.iter().any(|v| v.field == "system.hostname"));
     }
 
     #[test]

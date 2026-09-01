@@ -112,6 +112,11 @@ impl<'de> Deserialize<'de> for HealthResponse {
                         "non-ready health response must not include a snapshot",
                     ));
                 }
+                if raw.category.is_none() {
+                    return Err(serde::de::Error::custom(
+                        "warming health response must include a category",
+                    ));
+                }
             }
         }
         Ok(Self {
@@ -195,6 +200,12 @@ mod tests {
     #[test]
     fn failed_health_requires_category() {
         let json = r#"{"schema_version":1,"state":"failed","message":"collector failed"}"#;
+        assert!(serde_json::from_str::<HealthResponse>(json).is_err());
+    }
+
+    #[test]
+    fn warming_health_requires_category() {
+        let json = r#"{"schema_version":1,"state":"warming","message":"warming"}"#;
         assert!(serde_json::from_str::<HealthResponse>(json).is_err());
     }
 }

@@ -390,11 +390,12 @@ mod tests {
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
-        for _ in 0..10_000 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
             if condition() {
                 return;
             }
-            std::thread::yield_now();
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         assert!(condition(), "worker did not reach expected state");
     }

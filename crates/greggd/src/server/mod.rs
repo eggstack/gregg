@@ -33,18 +33,18 @@ const V1_UNAVAILABLE_MESSAGE: &str = "schema v1 status is unavailable on this pl
 
 /// Current time as milliseconds since the Unix epoch.
 ///
-/// A clock behind the epoch would collapse every timestamp to `0` and defeat
-/// age-based staleness detection, so that condition is logged loudly.
+/// A clock behind the epoch cannot provide a meaningful non-negative age, so
+/// callers treat age-based staleness as true until the clock is corrected.
 #[allow(clippy::cast_possible_truncation)]
-fn now_unix_ms() -> u64 {
+fn now_unix_ms() -> Option<u64> {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
+        Ok(duration) => Some(duration.as_millis() as u64),
         Err(error) => {
             tracing::warn!(
                 %error,
-                "system clock precedes the Unix epoch; staleness checks will be inaccurate until corrected"
+                "system clock precedes the Unix epoch; cached snapshots are stale until corrected"
             );
-            0
+            None
         }
     }
 }
@@ -260,7 +260,7 @@ impl ServerState {
 
     async fn v1_status_data(
         &self,
-        now_unix_ms: u64,
+        now_unix_ms: Option<u64>,
     ) -> (Option<Arc<StatusSnapshot>>, HealthResponse, bool) {
         let state = self.published.read().await;
         let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
@@ -278,7 +278,7 @@ impl ServerState {
 
     async fn v2_status_data(
         &self,
-        now_unix_ms: u64,
+        now_unix_ms: Option<u64>,
     ) -> (Option<Arc<StatusPayloadV2>>, HealthResponseV2, bool) {
         let state = self.published.read().await;
         let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
@@ -292,7 +292,7 @@ impl ServerState {
         (state.snapshot_v2.clone(), health_v2, snapshot_is_stale)
     }
 
-    fn is_stale(&self, state: &PublishedState, now_unix_ms: u64) -> bool {
+    fn is_stale(&self, state: &PublishedState, now_unix_ms: Option<u64>) -> bool {
         if self.max_consecutive_failures > 0 {
             let failures = state.consecutive_failures;
             if failures >= self.max_consecutive_failures {
@@ -300,6 +300,9 @@ impl ServerState {
             }
         }
         if !self.max_snapshot_age.is_zero() {
+            let Some(now_unix_ms) = now_unix_ms else {
+                return true;
+            };
             if let Some(observed_at_unix_ms) = state.last_observed_at_unix_ms {
                 let age_ms = now_unix_ms.checked_sub(observed_at_unix_ms);
                 if age_ms.is_some_and(|age| u128::from(age) >= self.max_snapshot_age.as_millis()) {

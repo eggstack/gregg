@@ -70,7 +70,7 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
-| `InvalidIdentityField` | Identity string empty, NUL-padded, or over 512 UTF-8 bytes |
+| `InvalidIdentityField` | Identity string empty/whitespace-only, NUL-padded, or over 512 UTF-8 bytes |
 
 ### V2 additional violation kinds
 

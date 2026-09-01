@@ -91,6 +91,10 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
   `offline_endpoint_remains_in_scheduler_across_generations` tests in
   `scheduler.rs` lock in one ordered result per endpoint per generation.
 
+Endpoint normalization rejects an IPv6 `%25` zone separator with no zone
+name, and invalid hosts are excluded from duplicate-address indexing so one
+malformed entry does not produce a misleading duplicate diagnostic.
+
 **Poller** (`poller.rs`):
 - v2-first, v1 fallback only on 404
 - 64 KiB body cap, no redirects

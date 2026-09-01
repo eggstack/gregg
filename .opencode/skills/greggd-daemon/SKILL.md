@@ -91,6 +91,9 @@ identity. Daemon display names are non-empty, at most 128 bytes, and may not
 contain control characters.
 Backward wall-clock movement does not make a future-dated cached snapshot stale;
 age-based staleness applies only to a non-negative elapsed age.
+If the clock is before the Unix epoch, the sampler does not publish timestamp
+`0`; with age-based staleness enabled, the server treats cached data as stale
+until the clock is corrected.
 Configuration metadata errors are propagated instead of treated as a missing
 default file. Atomic writes restrict newly created parent directories to
 `0700` while preserving permissions on existing operator-managed directories.

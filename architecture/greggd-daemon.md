@@ -114,7 +114,10 @@ returns 503, including for v2-only Windows publication. The snapshot is preserve
 
 When the wall clock moves backward and a cached observation timestamp is in the
 future, the age check treats that snapshot as fresh; it does not classify a
-negative age as stale.
+negative age as stale. If the clock is before the Unix epoch, the sampler
+pauses publication rather than emitting timestamp `0`, and an enabled
+age-based server policy treats any cached snapshot as stale until the clock is
+corrected.
 
 ### Sampler
 
