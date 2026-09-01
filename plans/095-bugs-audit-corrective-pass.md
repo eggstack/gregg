@@ -1,6 +1,6 @@
 # Plan 095: Bugs audit corrective pass
 
-Status: implementation in progress.
+Status: complete. Closing record below.
 
 Depends on: Plan 094 and the actionable findings recorded in the supplied
 `bugs.md` audit.
@@ -42,3 +42,32 @@ the input before deserializing.
   capability foot-gun remain unchanged for source compatibility.
 - Allocation/performance-only suggestions and non-reproducible display
   fallback observations remain out of scope.
+
+## Closure record
+
+Implementation landed in commit `cfc1c84`.
+
+Completed:
+
+- bounded the drive-refresh regression wait so worker scheduling contention no
+  longer creates a false failure;
+- required categories for non-ready v1/v2 health responses and rejected
+  whitespace-only protocol identities;
+- rejected empty URL-escaped IPv6 zones and kept malformed hosts out of
+  duplicate-address indexing;
+- converted closed scheduler semaphores to typed cancellation, consolidated
+  sampler collector access, and handled pre-epoch clocks without publishing
+  zero timestamps or serving age-uncheckable cached data as fresh; and
+- documented the protocol's deserialize-before-validate allocation boundary.
+
+Verification passed:
+
+- `./scripts/check-local.sh`;
+- `cargo test --workspace --all-targets --all-features` — 882 passed, 2 ignored;
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`; and
+- `cargo test -p greggd --all-features -- collector::linux` — 43 passed.
+
+The supplied `bugs.md` was deleted after the actionable findings were
+addressed. DNS classification retained the existing typed resolver evidence
+and narrow compatibility fallbacks; no logging dependency was added to the
+client.
