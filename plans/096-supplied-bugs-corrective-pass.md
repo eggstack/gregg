@@ -1,6 +1,6 @@
 # Plan 096: Supplied bugs corrective pass
 
-Status: implementation in progress.
+Status: complete. Closing record below.
 
 Depends on: Plan 095 and the supplied `bugs.md` audit.
 
@@ -40,3 +40,36 @@ behavior-preserving fixes:
 - The existing byte-format output and protocol validation boundaries remain
   unchanged; BUG-11 and BUG-12 receive code-level rationale rather than
   speculative behavior changes, and BUG-15 is not a product defect.
+
+## Closure record
+
+Implementation landed in commit `de7ef0d`.
+
+Completed:
+
+- replaced the daemon's racy mode-bit pre-check with component-wise private
+  directory creation that leaves existing operator-managed modes untouched;
+- contained drive-refresh panics, returned a typed failure, and retried with
+  bounded exponential backoff;
+- made editor temp-file syncing cross-platform and distinguished cancelled
+  sampler tasks from panics in diagnostics;
+- canonicalized endpoint comparisons, included both legs in v2-to-v1 latency,
+  classified `EAI_AGAIN` and proxy errors correctly, and normalized EggPool
+  host authorities with a typed invalid-endpoint result when the pinned URL
+  parser cannot represent a zone literal;
+- made bracketed IPv6 diagnostics consistent, cleaned cancellation request
+  ownership, used `access(X_OK)` for Unix editor discovery, and documented the
+  byte-format boundary rationale; and
+- deleted the supplied `bugs.md` audit after addressing its actionable items.
+
+Verification passed:
+
+- `rtk ./scripts/check-local.sh` — formatting and workspace tests passed;
+- `rtk cargo test --workspace --all-targets --all-features` — 888 passed,
+  2 ignored;
+- `RUSTFLAGS="-D warnings" rtk cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` — clean; and
+- `rtk cargo test -p greggd --all-features -- collector::linux` — 43 passed.
+
+BUG-11, BUG-12, BUG-15, optimization-only notes, and coverage-only gaps were
+not product defects and remain explicitly out of scope.

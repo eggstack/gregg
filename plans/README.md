@@ -72,7 +72,7 @@ Plan 095 is in implementation: it closes the supplied audit's remaining
 protocol-envelope, identity, endpoint, scheduler, sampler, clock, test
 reliability, and aggregate-overflow findings without changing product scope.
 
-Plan 096 is in implementation: it closes the supplied audit's remaining
+Plan 096 is complete at implementation `de7ef0d`: it closes the supplied audit's remaining
 current-code findings around atomic directory creation, drive refresh retry,
 cross-platform durability, endpoint equivalence, fallback timing, DNS and
 EggPool URL classification, worker cleanup, and Unix editor discovery without
@@ -110,7 +110,7 @@ adding product scope.
 | [`093-bugs-audit-corrective-pass.md`](093-bugs-audit-corrective-pass.md) | Correct remaining actionable findings from the 2026-08-31 bugs audit with bounded behavior-preserving changes | complete; implementation `ede60b8` |
 | [`094-bugs-audit-corrective-pass.md`](094-bugs-audit-corrective-pass.md) | Correct actionable findings from the supplied bugs audit with bounded behavior-preserving changes | complete; implementation `4930377` |
 | [`095-bugs-audit-corrective-pass.md`](095-bugs-audit-corrective-pass.md) | Correct remaining actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `cfc1c84` |
-| [`096-supplied-bugs-corrective-pass.md`](096-supplied-bugs-corrective-pass.md) | Correct remaining current-code findings from the supplied audit with bounded behavior-preserving changes | implementation in progress |
+| [`096-supplied-bugs-corrective-pass.md`](096-supplied-bugs-corrective-pass.md) | Correct remaining current-code findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `de7ef0d` |
 
 Dependency order:
 
