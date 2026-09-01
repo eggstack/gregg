@@ -2,6 +2,8 @@
 
 Status: complete. Closing record below.
 
+Implementation landed in commit `2601fb5`.
+
 Depends on: Plan 096 and the supplied `bugs.md` audit.
 
 ## Objective

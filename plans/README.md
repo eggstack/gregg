@@ -78,10 +78,11 @@ cross-platform durability, endpoint equivalence, fallback timing, DNS and
 EggPool URL classification, worker cleanup, and Unix editor discovery without
 adding product scope.
 
-Plan 097 is in implementation: it addresses the actionable findings in the
-supplied `bugs.md` audit with bounded control-socket, panic-boundary, config
-durability, TUI responsiveness, endpoint, state, rendering, and collector
-corrections. Optimization-only suggestions remain excluded.
+Plan 097 is complete at implementation `2601fb5`: it addresses the actionable
+findings in the supplied `bugs.md` audit with bounded control-socket,
+panic-boundary, config durability, TUI responsiveness, endpoint, state,
+rendering, and collector corrections. Optimization-only suggestions remain
+excluded.
 
 | Plan | Purpose | Status |
 | --- | --- | --- |
@@ -116,7 +117,7 @@ corrections. Optimization-only suggestions remain excluded.
 | [`094-bugs-audit-corrective-pass.md`](094-bugs-audit-corrective-pass.md) | Correct actionable findings from the supplied bugs audit with bounded behavior-preserving changes | complete; implementation `4930377` |
 | [`095-bugs-audit-corrective-pass.md`](095-bugs-audit-corrective-pass.md) | Correct remaining actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `cfc1c84` |
 | [`096-supplied-bugs-corrective-pass.md`](096-supplied-bugs-corrective-pass.md) | Correct remaining current-code findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `de7ef0d` |
-| [`097-supplied-bugs-corrective-pass.md`](097-supplied-bugs-corrective-pass.md) | Correct actionable findings from the supplied audit with bounded behavior-preserving changes | implementation in progress |
+| [`097-supplied-bugs-corrective-pass.md`](097-supplied-bugs-corrective-pass.md) | Correct actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `2601fb5` |
 
 Dependency order:
 
