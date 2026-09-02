@@ -138,7 +138,7 @@ integration tests.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root re-exporting all modules below |
 | `run` | `src/run.rs` | Supervision loop wiring collector, sampler, server, signals, and the local control socket; `RunOutcome`; entry points `run()`, `run_with_control_path()` (Unix), `run_with_control_path_or_default()` all delegate into the shared `run_with_shutdown()` core with a 10s graceful deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded /v2/healthz watchdog that spawns `run` only on refusal), `configprint` (read-only bind address), `host`, `port`, `version`; Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog), `configprint` (read-only bind address), `host`, `port`, `version`, `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigError`, `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`); config identity via FNV-1a digest of canonicalized path; restrictive permissions, conservative stale-socket cleanup; `ControlSocketGuard` cleanup on every exit path |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
@@ -152,6 +152,7 @@ integration tests.
 | `collector/linux/` | `src/collector/linux/` | Linux collector: cpu, memory, drives, identity; `FileSource` trait (`ProcSource` prod reads `/proc`, `MemorySource` test) plus statvfs FFI in `source.rs` |
 | `collector/macos/` | `src/collector/macos/` | macOS collector: cpu, memory, swap, identity, normalize; Mach/sysctl FFI seam in `ffi.rs` (`MacNativeQueries` trait, `FfiNativeQueries` prod, mock for tests) |
 | `collector/windows/` | `src/collector/windows/` | Windows collector: cpu, memory, commit, identity; `WindowsSource` trait (`NativeWindowsSource` prod, mock for tests) |
+| `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, systemd/launchd/cron install, cron quoting/merging, `startup_state()` for `restart`/`update`, atomic unit/plist write, `PermissionDenied` without silent fallback |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait (Windows-only) |
 | `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service`; native dispatcher entry owned by the binary, one current-thread Tokio runtime per service worker |
 
@@ -168,8 +169,7 @@ integration tests.
   sampler task; graceful shutdown with a 10-second deadline. SIGTERM/SIGINT,
   SCM Stop/Shutdown, and `STOP\n` on the local control socket all feed the
   same shutdown path.
-- **Service manager** — Windows SCM only (dispatcher started synchronously
-  before any Tokio runtime exists). Unix supervisors stay external packaging.
+- **Service manager** — Windows SCM (dispatcher started synchronously before any Tokio runtime exists). Unix startup is via explicit `startup install`/`restart` commands in `startup.rs` (systemd/launchd/cron) that the bootstrap installer delegates to after placing the binary; `run` itself stays foreground and supervisor-agnostic.
 - **Exit codes** — `0` success, `1` configuration, `2` service management,
   `3` runtime, `4` permission denied.
 - **Binary/library split** — reusable runtime code returns errors without

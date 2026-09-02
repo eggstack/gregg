@@ -377,27 +377,37 @@ install_program() {
   # Destination advice
   check_path_advice
 
-  # Daemon privilege note (Plan 099/100 boundary): user-local daemon install on a systemd/launchd
-  # machine cannot produce the final system deployment; print exact privileged completion instead
-  # of silently registering an alternate supervisor.
-  if [[ "$program" == "greggd" && $EUID -ne 0 ]]; then
-    local has_systemd=false
-    local has_launchd=false
-    if [[ -d /run/systemd/system ]]; then
-      has_systemd=true
-    fi
-    if [[ "$OS" == "Darwin" ]]; then
-      has_launchd=true
-    fi
-    if [[ "$has_systemd" == "true" || "$has_launchd" == "true" ]]; then
-      echo "note: greggd installed to ${DEST_DIR}/greggd (user-local)." >&2
-      echo "For a system service, rerun with privilege:" >&2
-      if [[ -n "$TAG" ]]; then
-        echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo sh -s -- greggd" >&2
-      else
-        echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo sh -s -- greggd" >&2
+  # Daemon startup delegation (Plan 100): privileged install delegates to
+  # `greggd startup install` (auto) so systemd/launchd/cron logic lives in the
+  # binary, not duplicated in the shell. Unprivileged installs attempt the same
+  # auto registration; on systemd/launchd hosts this will fail with an exact
+  # elevated command and will not silently create a cron duplicate.
+  if [[ "$program" == "greggd" ]]; then
+    if [[ $EUID -eq 0 ]]; then
+      echo "Registering startup via ${DEST_DIR}/greggd startup install (auto)..." >&2
+      if ! "${DEST_DIR}/greggd" startup install; then
+        echo "warning: startup registration failed; rerun manually:" >&2
+        echo "  sudo ${DEST_DIR}/greggd startup install" >&2
       fi
-      echo "No service was registered; Plan 100 will refine startup registration." >&2
+    else
+      # Unprivileged: attempt auto install. On systemd/launchd hosts this will
+      # print the exact `sudo ... startup install` needed and exit non-zero
+      # without creating a cron entry. On cron hosts it will install the
+      # user-local crontab without elevation.
+      if ! "${DEST_DIR}/greggd" startup install 2>&1; then
+        echo "note: greggd installed to ${DEST_DIR}/greggd (user-local)." >&2
+        if [[ "${DEST_DIR}" != "/usr/local/bin" ]]; then
+          echo "note: system service expects /usr/local/bin/greggd; for a system service, install system-wide:" >&2
+          if [[ -n "$TAG" ]]; then
+            echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo sh -s -- greggd" >&2
+          else
+            echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo sh -s -- greggd" >&2
+          fi
+        fi
+        # The CLI already printed the exact elevated command when relevant.
+      else
+        echo "Startup configured (cron) for ${DEST_DIR}/greggd." >&2
+      fi
     fi
   fi
 }

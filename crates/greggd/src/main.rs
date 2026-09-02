@@ -119,6 +119,9 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
         let _ = error;
         return greggd::cli::ExitCode::ConfigError;
     }
+    if let Some(error) = error.downcast_ref::<greggd::startup::InstallError>() {
+        return greggd::cli::ExitCode::from(error);
+    }
     #[cfg(target_os = "windows")]
     if let Some(error) = error.downcast_ref::<greggd::service::ServiceError>() {
         return greggd::cli::ExitCode::from(error);
@@ -134,6 +137,11 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
     if let Some(greggd::server::error::ServerError::Bind(source)) =
         error.downcast_ref::<greggd::server::error::ServerError>()
     {
+        if source.kind() == std::io::ErrorKind::PermissionDenied {
+            return greggd::cli::ExitCode::PermissionDenied;
+        }
+    }
+    if let Some(source) = error.downcast_ref::<std::io::Error>() {
         if source.kind() == std::io::ErrorKind::PermissionDenied {
             return greggd::cli::ExitCode::PermissionDenied;
         }

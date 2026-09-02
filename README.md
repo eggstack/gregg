@@ -173,6 +173,18 @@ greggd configprint                 # print the configured bind address with wild
 greggd version                     # print the daemon version
 ```
 
+Automatic startup and restart:
+
+```bash
+greggd startup install                        # auto: systemd on Linux (if running), launchd on macOS, cron elsewhere
+greggd startup install --method systemd       # explicit: systemd, launchd, or cron
+greggd startup instructions                   # read-only: prints exact commands/paths for the detected method
+greggd startup instructions --method cron     # read-only for a specific method
+greggd restart                                # manager-aware: systemd / launchd / SCM / direct (stop + detached run)
+```
+
+`greggd startup install` is `auto` by default: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, otherwise cron. Standard systemd paths are `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` on systemd runs `systemctl restart greggd`; on launchd `launchctl kickstart -k`; on Windows via SCM; otherwise via local `stop` + detached `run`. Privilege failures print the exact elevated `systemctl`/`launchctl` command and return `PermissionDenied` without competing fallback; `restart` is factored for `update` reuse.
+
 `greggd stop` only targets the local `greggd` instance associated with the
 same resolved config identity as `greggd run`. On Linux/macOS, existing config
 files use their filesystem-canonical path for that identity, so relative,

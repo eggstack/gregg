@@ -161,6 +161,9 @@ passes locally, the distinction is the cause.
   `ConnectionRefused` or `NotFound`. No service managers, shells, process-name
   scanning, or PID files; the HTTP API stays read-only. Windows delegates to
   SCM.
+- `greggd startup install` (`auto` default; `--method systemd|launchd|cron` explicit) installs automatic startup: systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron` directly, prints manual lines if `crontab` missing). Auto picks Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. An identified systemd/launchd host never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied`. No internal `sudo`.
+- `greggd startup instructions` (`--method` optional) is read-only and prints exact commands/paths for the selected method without mutating state.
+- `greggd restart` is manager-aware and reusable by `update`: Windows via SCM, systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, otherwise via control `stop` + detached `run` (same primitive as `croncheck`); privilege failures print exact elevated `systemctl`/`launchctl` command and return `PermissionDenied` without competing fallback.
 - Reusable `greggd` library/runtime code returns errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification (`0` success · `1` configuration ·

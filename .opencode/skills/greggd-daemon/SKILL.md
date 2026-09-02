@@ -7,7 +7,8 @@ description: Work with the greggd daemon crate (collectors wiring, sampler, HTTP
 
 Guide agents through the `greggd` daemon crate: runtime wiring, the sampler and
 HTTP server, the Unix control socket behind `greggd stop`, the `croncheck`
-watchdog, `configprint`, and Windows SCM service management.
+watchdog, `configprint`, `startup install`/`instructions` and manager-aware
+`restart`, and Windows SCM service management.
 
 ## When to use me
 
@@ -28,6 +29,7 @@ service lifecycle. For platform metric collection itself, use the
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
+| `startup` | `src/startup.rs` | Startup install/instructions/restart: auto systemd/launchd/cron/Windows SCM detection, atomic unit/plist write, cron quoting/merging, `startup_state()` for `restart`/`update`, `PermissionDenied` without silent fallback |
 | `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
 
 ## Runtime ownership
@@ -51,9 +53,12 @@ service lifecycle. For platform metric collection itself, use the
 | `stop` | Unix: single tiny control socket targeting only the local instance matching the resolved config identity. Windows: delegates to SCM. Idempotent when already stopped |
 | `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
+| `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
+| `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
+| `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise `stop` + detached `run`); permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse |
 | `host` / `port` | Atomic persisted mutation; applies on next start |
 | `version` | Compile-time version string |
-| `start` / `restart` / `service` | Windows SCM only (`start`/`restart` are lifecycle managers; `service` is the internal SCM entry point) |
+| `start` / `service` | Windows SCM only (`start` is lifecycle manager; `service` is the internal SCM entry point) |
 
 ## Unix control socket invariants
 

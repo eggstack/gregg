@@ -23,3 +23,5 @@ pub mod server;
 /// Windows Service Control Manager integration.
 #[cfg(target_os = "windows")]
 pub mod service;
+/// Startup installation and restart helpers.
+pub mod startup;

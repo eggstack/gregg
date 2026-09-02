@@ -10,11 +10,12 @@ use std::path::PathBuf;
 use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::{Config, ConfigError};
 #[cfg(target_os = "windows")]
 use crate::service::ServiceError;
+use crate::startup::StartupMethodArg;
 
 /// Lightweight metrics daemon for the gregg monitoring system.
 #[derive(Parser)]
@@ -53,9 +54,14 @@ pub enum Command {
     /// Start the greggd Windows service.
     #[cfg(target_os = "windows")]
     Start,
-    /// Restart the greggd Windows service.
-    #[cfg(target_os = "windows")]
+    /// Restart the daemon through its detected startup manager.
+    #[allow(clippy::doc_markdown)]
     Restart,
+    /// Manage automatic startup (systemd, launchd, or cron).
+    Startup {
+        #[command(subcommand)]
+        command: StartupCommand,
+    },
     /// Ensure greggd is running. Probes the configured local health endpoint and,
     /// if the endpoint is definitely refused, spawns `greggd run` as a detached child.
     /// Intended for cron, Task Scheduler, and other operator-managed
@@ -79,6 +85,38 @@ pub enum Command {
     #[cfg(target_os = "windows")]
     #[command(hide = true)]
     Service,
+}
+
+/// Startup subcommands for automatic startup management.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum StartupCommand {
+    /// Install and enable automatic startup for the detected or specified manager.
+    Install {
+        /// Startup manager to install. `auto` detects the platform default.
+        #[arg(long, value_enum, default_value_t = StartupMethodArg::Auto, value_name = "METHOD")]
+        method: StartupMethodArg,
+    },
+    /// Print instructions for enabling automatic startup without mutating state.
+    Instructions {
+        /// Startup manager to describe. `auto` detects the platform default.
+        #[arg(long, value_enum, default_value_t = StartupMethodArg::Auto, value_name = "METHOD")]
+        method: StartupMethodArg,
+    },
+}
+
+impl ValueEnum for StartupMethodArg {
+    fn value_variants<'a>() -> &'a [Self] {
+        &[Self::Auto, Self::Systemd, Self::Launchd, Self::Cron]
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(match self {
+            Self::Auto => clap::builder::PossibleValue::new("auto"),
+            Self::Systemd => clap::builder::PossibleValue::new("systemd"),
+            Self::Launchd => clap::builder::PossibleValue::new("launchd"),
+            Self::Cron => clap::builder::PossibleValue::new("cron"),
+        })
+    }
 }
 
 /// Exit codes returned by greggd commands.
@@ -127,6 +165,22 @@ impl From<&ServiceError> for ExitCode {
             | ServiceError::StateQueryFailed { .. }
             | ServiceError::Timeout { .. } => Self::ServiceError,
             ServiceError::AccessDenied => Self::PermissionDenied,
+        }
+    }
+}
+
+impl From<&crate::startup::InstallError> for ExitCode {
+    fn from(e: &crate::startup::InstallError) -> Self {
+        match e {
+            crate::startup::InstallError::Permission { .. } => Self::PermissionDenied,
+            crate::startup::InstallError::Io { source, .. }
+                if source.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                Self::PermissionDenied
+            }
+            crate::startup::InstallError::BinaryMissing { .. }
+            | crate::startup::InstallError::UnsupportedMethod { .. } => Self::ConfigError,
+            _ => Self::ServiceError,
         }
     }
 }
@@ -460,8 +514,37 @@ pub fn dispatch_with_config_intent(
             println!("{}", version_string());
             Ok(())
         }
+        Command::Restart => {
+            #[cfg(target_os = "windows")]
+            {
+                unreachable!("Windows service commands are dispatched at the binary boundary")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let exe = std::env::current_exe()?;
+                crate::startup::restart_daemon(&exe, config_path, explicit)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                Ok(())
+            }
+        }
+        Command::Startup { command } => match command {
+            StartupCommand::Install { method } => {
+                let exe = std::env::current_exe()?;
+                crate::startup::install_startup(&exe, config_path, explicit, *method)
+                    .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+                Ok(())
+            }
+            StartupCommand::Instructions { method } => {
+                let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("greggd"));
+                let resolved = crate::startup::resolve_startup_method(*method);
+                let text =
+                    crate::startup::render_instructions(resolved, &exe, config_path, explicit);
+                println!("{text}");
+                Ok(())
+            }
+        },
         #[cfg(target_os = "windows")]
-        Command::Start | Command::Restart => {
+        Command::Start => {
             unreachable!("Windows service commands are dispatched at the binary boundary")
         }
         #[cfg(target_os = "windows")]
@@ -479,7 +562,14 @@ mod native_tests {
 
     #[test]
     fn parser_accepts_run_stop_croncheck_mutations_and_version_but_not_windows_lifecycle() {
-        for args in ["run", "stop", "croncheck", "configprint", "version"] {
+        for args in [
+            "run",
+            "stop",
+            "croncheck",
+            "configprint",
+            "version",
+            "restart",
+        ] {
             let argv = if args == "host" {
                 vec!["greggd", "host", "127.0.0.1"]
             } else if args == "port" {
@@ -491,13 +581,24 @@ mod native_tests {
         }
         assert!(Cli::try_parse_from(["greggd", "host", "127.0.0.1"]).is_ok());
         assert!(Cli::try_parse_from(["greggd", "port", "11310"]).is_ok());
+        assert!(Cli::try_parse_from(["greggd", "startup", "install"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["greggd", "startup", "install", "--method", "systemd"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["greggd", "startup", "install", "--method", "cron"]).is_ok());
+        assert!(Cli::try_parse_from(["greggd", "startup", "instructions"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["greggd", "startup", "instructions", "--method", "launchd"])
+                .is_ok()
+        );
         // `croncheck` no longer takes a `--target` flag: it operates on
         // the configured local bind only.
         assert!(
             Cli::try_parse_from(["greggd", "croncheck", "--target", "192.168.182.143:11310"])
                 .is_err()
         );
-        for command in ["start", "restart"] {
+        {
+            let command = "start";
             assert!(Cli::try_parse_from(["greggd", command]).is_err());
         }
     }

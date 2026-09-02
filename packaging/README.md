@@ -81,9 +81,7 @@ The script:
   and tries `cargo install --locked` (with `--version "=X.Y.Z"` when pinned and
   `--root` derived from the destination) if Cargo exists;
 - treats a checksum or version mismatch as a hard error (no Cargo fallback);
-- when a non-root `greggd` install lands on a systemd/launchd host, prints the
-  exact privileged rerun command rather than silently registering a cron-managed
-  duplicate — Plan 100 will refine startup registration.
+- after a verified `greggd` install, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary, not duplicated in shell: when privileged it runs `sudo greggd startup install` (systemd: `daemon-reload` + `enable` + `start`/`restart`; launchd: `bootstrap` + `kickstart -k`; cron: idempotent `# greggd managed watchdog` block). When unprivileged on a systemd/launchd host it prints the exact elevated `sudo <exe> startup install --method <...>` and does **not** silently fall back to cron; on a cron host it installs the user-local crontab without elevation. The client `gregg` has no startup behavior.
 
 No-argument behaviour: attached to an interactive terminal, a tiny selector is
 shown; piped/noninteractive without a component prints concise usage and exits
@@ -104,17 +102,16 @@ candidate `version` check, install to `%ProgramFiles%\Gregg` when Administrator
 (preserving `%ProgramData%\gregg\greggd.toml`, registering the SCM service as
 `NT AUTHORITY\LocalService` with `auto` start and failure-restart) or
 `%LOCALAPPDATA%\Gregg` otherwise, with Cargo fallback for `ARM64`/unknown
-hosts. `install-windows.ps1` remains a compatible local-build wrapper and will
-be reconciled with `install.ps1` as one canonical Windows installer in Plan
-100.
+hosts. `install-windows.ps1` remains a compatible local-build wrapper; `install.ps1` is now the single canonical bootstrap PowerShell installer and `startup install` on Windows is state-reporting only (SCM registration stays in the installer).
+
+## Startup integration (Plan 100)
+
+Unix startup registration is owned by `greggd startup install` (and `startup instructions` for manual operators). The binary embeds the canonical systemd unit and launchd plist via `include_str!` so `cargo install` works without a checkout; `packaging/systemd/greggd.service` and `packaging/launchd/com.eggstack.greggd.plist` remain the human-readable source and are kept synchronized by build. `cron` uses `croncheck` as the sole health/start primitive (`@reboot` + `* * * * *`), shell-quoted, idempotent, preserving unrelated crontab entries, never editing `/var/spool/cron` directly. `restart` is manager-aware (`systemctl restart greggd` / `launchctl kickstart -k` / SCM / direct stop+detached run) and factored for `update` reuse. No PID files, no process-name scanning, no public shutdown route, no competing supervisor fallback.
 
 ## Legacy local-build helpers (developer / packaging path)
 
 These scripts remain for operator-managed local builds and do not duplicate the
-bootstrap download/verify logic. They will be kept as small wrappers or clearly
-marked helpers rather than a second full copy of install logic; `packaging/`
-systemd/launchd assets are preserved until Plan 100 decides their canonical
-ownership.
+bootstrap download/verify logic. The systemd/launchd assets are the canonical templates for both the helpers and the embedded binary; they are not a second independent copy.
 
 
 
@@ -126,11 +123,14 @@ ownership.
 # Build the release binary
 cargo build --release -p greggd
 
-# Install (requires root)
+# Install (requires root) — legacy helper
 sudo ./packaging/install-linux.sh target/release/greggd
 
-# Enable and start
-sudo systemctl enable --now greggd
+# Or: install binary then use the CLI (preferred, no checkout needed after cargo install)
+sudo install -m 755 target/release/greggd /usr/local/bin/greggd
+sudo greggd startup install                          # auto: systemd on this host
+sudo greggd startup install --method systemd         # explicit
+greggd startup instructions --method systemd         # read-only preview
 
 # Check status
 sudo systemctl status greggd
@@ -142,8 +142,13 @@ sudo systemctl status greggd
 # Build the release binary
 cargo build --release -p greggd
 
-# Install (requires root)
+# Install (requires root) — legacy helper
 sudo ./packaging/install-macos.sh target/release/greggd
+
+# Or: CLI-owned install (preferred after binary is at /usr/local/bin/greggd)
+sudo install -m 755 target/release/greggd /usr/local/bin/greggd
+sudo greggd startup install --method launchd
+greggd startup instructions --method launchd
 ```
 
 ### Windows (PowerShell)
@@ -190,8 +195,8 @@ Use `greggd host 127.0.0.1` to restrict to localhost only (recommended for SSH-t
 ## Optional Service Management
 
 `greggd run` is the normal foreground daemon command. Unix service lifecycle is
-owned by the operator and these packaging assets; the binary does not invoke
-systemd or launchd. `greggd croncheck` is a watchdog for cron and other
+owned by the operator and `greggd startup` commands; the foreground `greggd run`
+remains unaware of its supervisor. `greggd croncheck` is a watchdog for cron and other
 non-systemd supervisors: it probes the configured local TCP port and, if
 nothing is listening, spawns `greggd run` as a detached child.
 

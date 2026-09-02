@@ -54,6 +54,18 @@ greggd stop
 greggd restart
 ```
 
+Automatic startup and restart (cross-platform `restart`, Unix `startup`):
+
+```sh
+greggd startup install                        # auto: systemd / launchd / cron / Windows SCM
+greggd startup install --method systemd       # explicit method
+greggd startup instructions                   # read-only, prints exact commands/paths
+greggd startup instructions --method cron
+greggd restart                                # manager-aware restart (systemd / launchd / SCM / direct)
+```
+
+`startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and factored for `update` reuse (systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, Windows via SCM, otherwise `stop` + detached `run`).
+
 Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
 Scheduler, and other supervisors without built-in readiness monitoring. It
 probes `/v2/healthz` with bounded raw HTTP on the configured local endpoint,
@@ -69,7 +81,7 @@ greggd configprint
 greggd version
 ```
 
-On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`.
+On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`. For startup, the PowerShell installer remains the canonical SCM registration; `startup install` on Windows reports service state and `startup instructions` prints SCM commands.
 
 ## Configuration
 

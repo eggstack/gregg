@@ -91,7 +91,7 @@ Diagnostic tool for sustained mixed-fleet workloads:
 - downloads into a fresh `mktemp -d` with `trap` cleanup, fetches `<asset>.sha256`, verifies via `sha256sum` (Linux) or `shasum -a 256` (macOS) before any `chmod +x` or execution, runs `<candidate> version` and requires the expected program name and exact version when pinned, never installs a partial download, never falls back to Cargo on checksum/version mismatch;
 - destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`, warns when the dest is not on `PATH`, never edits shell rc files, never silently invokes `sudo`;
 - unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned and `--root` derived from the destination;
-- on a user-local `greggd` install that detects systemd (`/run/systemd/system`) or launchd (`Darwin`), prints the exact privileged rerun (`... | sudo sh -s -- greggd`) rather than silently registering cron.
+- after a verified `greggd` install, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary: privileged runs `daemon-reload`/`enable`/`start`/`restart` or `bootstrap`/`kickstart -k` or idempotent crontab; unprivileged on systemd/launchd prints exact `sudo <exe> startup install --method <...>` without silent cron fallback; on cron hosts installs user-local crontab without elevation.
 
 **`install.ps1` contract (Windows):**
 
@@ -99,7 +99,7 @@ Diagnostic tool for sustained mixed-fleet workloads:
 - detects `PROCESSOR_ARCHITECTURE`/`Is64BitOperatingSystem` (`AMD64` → `x86_64-pc-windows-msvc`; `ARM64`/unknown → source-only fallback);
 - constructs the same `latest/download` / `download/vX.Y.Z` URLs for `gregg-<target>.exe` / `greggd-<target>.exe` and `.sha256`;
 - `Invoke-WebRequest` to a private temp dir, `Get-FileHash -Algorithm SHA256` verification, candidate `version` check;
-- installs `gregg` user-local where appropriate and `greggd` to `%ProgramFiles%\Gregg` when Administrator (preserving `%ProgramData%\gregg\greggd.toml`), reuses the existing SCM registration (`LocalService`, `auto` start, failure restart) until Plan 100 reconciles startup ownership; non-admin `greggd` prints the privileged rerun.
+- installs `gregg` user-local where appropriate and `greggd` to `%ProgramFiles%\Gregg` when Administrator (preserving `%ProgramData%\gregg\greggd.toml`), with SCM registration (`LocalService`, `auto` start, failure restart) owned by the installer; `startup install` on Windows is state-reporting only (`startup instructions` prints SCM commands) and there is a single canonical SCM implementation.
 
 Raw executables are published, not per-target tarballs/zip files; Windows `.exe` is already directly executable.
 
@@ -111,7 +111,7 @@ Raw executables are published, not per-target tarballs/zip files; Windows `.exe`
 | `install-macos.sh` | macOS | root, launchd |
 | `install-windows.ps1` | Windows | Administrator, SCM |
 
-These helpers remain for operator-managed local builds and do not duplicate the bootstrap download/verify logic. They will be kept as small compatibility wrappers or clearly marked helpers rather than a second full copy of install logic; systemd/launchd assets are preserved until Plan 100 owns startup.
+These helpers remain for operator-managed local builds and do not duplicate the bootstrap download/verify logic. The embedded systemd unit (`startup::systemd_unit_content` via `include_str!`) and launchd plist are the canonical templates for both helpers and the binary; the packaging assets are kept synchronized and are not a second independent copy.
 
 All install scripts (bootstrap and legacy):
 - Are idempotent (preserve existing config)
