@@ -1809,7 +1809,7 @@ mod tests {
         let packaging =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../packaging/systemd/greggd.service");
         if let Ok(file) = std::fs::read_to_string(&packaging) {
-            let mut file_norm = file;
+            let mut file_norm = file.replace("\r\n", "\n");
             if !file_norm.ends_with('\n') {
                 file_norm.push('\n');
             }
@@ -1826,7 +1826,7 @@ mod tests {
         let packaging = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../packaging/launchd/com.eggstack.greggd.plist");
         if let Ok(file) = std::fs::read_to_string(&packaging) {
-            let mut file_norm = file;
+            let mut file_norm = file.replace("\r\n", "\n");
             if !file_norm.ends_with('\n') {
                 file_norm.push('\n');
             }
