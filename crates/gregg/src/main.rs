@@ -185,7 +185,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     result
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 async fn run_event_loop(
     terminal: &mut terminal::Terminal,
     app_state: &mut state::AppState,

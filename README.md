@@ -11,17 +11,55 @@ A lightweight daemon (`greggd`) runs on each machine you want to monitor and exp
 
 ## Supported targets
 
-| Platform | Architecture | Status |
-| --- | --- | --- |
-| Linux | x86-64, ARM64 | Supported |
-| macOS | Intel (x86-64), Apple Silicon (arm64) | Supported |
-| Windows | x86-64 | Supported |
+Prebuilt release binaries are published for the common platforms below. The
+GitHub release tag (`vX.Y.Z`) already carries the version, so asset names are
+stable within a release (e.g., `gregg-x86_64-unknown-linux-gnu`). `SHA-256`
+files sit alongside each executable. Linux GNU assets use a conservative
+glibc 2.17 floor so they run on long-lived Debian/Ubuntu/Armbian SBC images.
+
+| Platform | Architecture | Rust target | Asset suffix | Status |
+| --- | --- | --- | --- | --- |
+| Linux | x86-64 | `x86_64-unknown-linux-gnu` | `x86_64-unknown-linux-gnu` | Supported (glibc 2.17) |
+| Linux | ARM64 (64-bit Raspberry Pi / Le Potato / other AArch64 SBCs) | `aarch64-unknown-linux-gnu` | `aarch64-unknown-linux-gnu` | Supported (glibc 2.17) |
+| macOS | Intel (x86-64) | `x86_64-apple-darwin` | `x86_64-apple-darwin` | Supported (unsigned) |
+| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` | `aarch64-apple-darwin` | Supported (unsigned) |
+| Windows | x86-64 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc.exe` | Supported |
+
+macOS binaries are unsigned; Gatekeeper may quarantine them until the operator
+approves via System Settings or `xattr -d com.apple.quarantine`. Linux ARMv7
+(`armv7-unknown-linux-gnueabihf`) is source-build only in this phase and is
+not a published prebuilt target — the installer falls back to Cargo when
+available.
 
 ## Quick start
 
 ### 1. Install the daemon on each machine
 
-**Linux (direct foreground or optional systemd):**
+**Linux / macOS — prebuilt binary (recommended):**
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+# hardened variant:
+# curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+```
+
+For a pinned version, pass `--version`:
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sudo sh -s -- greggd --version 1.0.11
+```
+
+Or download directly without the bootstrap:
+
+```bash
+curl -fsSL -o greggd-x86_64-unknown-linux-gnu https://github.com/eggstack/gregg/releases/latest/download/greggd-x86_64-unknown-linux-gnu
+curl -fsSL -o greggd-x86_64-unknown-linux-gnu.sha256 https://github.com/eggstack/gregg/releases/latest/download/greggd-x86_64-unknown-linux-gnu.sha256
+sha256sum -c greggd-x86_64-unknown-linux-gnu.sha256 && chmod +x greggd-x86_64-unknown-linux-gnu && sudo install -m 755 greggd-x86_64-unknown-linux-gnu /usr/local/bin/greggd
+```
+
+**Linux — local build / systemd (developer path):**
 
 ```bash
 cargo build --release -p greggd
@@ -30,7 +68,7 @@ greggd run
 # Optional operator-managed service: sudo systemctl enable --now greggd
 ```
 
-**macOS (launchd):**
+**macOS — local build / launchd (developer path):**
 
 ```bash
 cargo build --release -p greggd
@@ -38,7 +76,16 @@ sudo ./packaging/install-macos.sh target/release/greggd
 # Optional operator-managed service: sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
 ```
 
-**Windows (PowerShell, as Administrator):**
+**Windows — prebuilt binary (PowerShell, as Administrator for daemon):**
+
+```powershell
+irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+# Or with explicit component:
+.\packaging\install.ps1 -Component Greggd
+.\packaging\install.ps1 -Component Both -Version 1.0.11
+```
+
+**Windows — local build (developer path):**
 
 ```powershell
 cargo build --release -p greggd
@@ -46,7 +93,24 @@ cargo build --release -p greggd
 greggd run
 ```
 
+The bootstrap installers are binary-first: they detect `uname -s`/`uname -m`,
+download the matching `gregg-<target>`/`greggd-<target>` asset and its
+`.sha256`, verify checksum and candidate `version`, then install to
+`/usr/local/bin` when privileged or `$HOME/.local/bin` otherwise
+(`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg` on Windows). When no
+matching asset exists (e.g., `armv7l` or an unknown OS/arch), they fall back
+to `cargo install --locked` if Cargo is available. No installer silently
+invokes `sudo`.
+
 ### 2. Install the client on your workstation
+
+**Prebuilt binary (recommended):**
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+```
+
+**From crates.io / source (fallback):**
 
 ```bash
 cargo install gregg

@@ -1,8 +1,8 @@
 # Releasing gregg
 
 Releases are performed manually by a maintainer. GitHub Actions verifies
-source changes and never publishes crates, pushes tags, or creates GitHub
-Releases.
+source changes; the release workflow builds prebuilt binaries but never
+publishes crates, bumps versions, creates tags, or publishes a GitHub Release.
 
 ## Prerequisites
 
@@ -229,40 +229,105 @@ Confirm the tag points to the exact release commit, the commit contains the
 matching versions and changelog, and no additional source changes occurred
 after publication.
 
-## 9. Create GitHub Release
+## 9. Release workflow builds binaries into a draft GitHub Release
+
+Pushing the annotated tag triggers `.github/workflows/release-binaries.yml`.
+That release-only workflow (triggered only by `v*` tags or manual dispatch)
+runs a mandatory preflight (workspace/tag version equality, clean checkout,
+tag points at HEAD, and crates.io visibility for `gregg`/`greggd`), then
+builds both `gregg` and `greggd` for the five required targets, verifies each
+executable's `version`/`--help` and a loopback `greggd` health smoke, hashes
+the staged binaries into `<asset>.sha256`, and assembles a draft release.
+
+Linux GNU targets use a conservative glibc 2.17 floor via `cargo-zigbuild`
++ Zig targeting `x86_64-unknown-linux-gnu.2.17` /
+`aarch64-unknown-linux-gnu.2.17`; the public asset suffix remains the
+ordinary Rust target (e.g., `gregg-x86_64-unknown-linux-gnu`). The workflow
+creates a new draft `Gregg X.Y.Z` when no release exists for the tag,
+updates an existing draft idempotently with `--clobber`, and **never**
+auto-publishes or silently replaces a published release. It uploads:
+
+```text
+gregg-x86_64-unknown-linux-gnu + .sha256
+greggd-x86_64-unknown-linux-gnu + .sha256
+gregg-aarch64-unknown-linux-gnu + .sha256
+greggd-aarch64-unknown-linux-gnu + .sha256
+gregg-x86_64-apple-darwin + .sha256
+greggd-x86_64-apple-darwin + .sha256
+gregg-aarch64-apple-darwin + .sha256
+greggd-aarch64-apple-darwin + .sha256
+gregg-x86_64-pc-windows-msvc.exe + .sha256
+greggd-x86_64-pc-windows-msvc.exe + .sha256
+install.sh
+install.ps1
+```
+
+No binary is modified after hashing (the release profile already uses LTO,
+single codegen unit, stripped symbols, and aborting panics). A rerun while
+the release is still a draft is safe; a published release causes a hard
+failure that requires a new patch version. The workflow never calls
+`cargo publish`, `git tag`, or pushes source commits.
+
+## 10. Publish the GitHub Release
+
+The draft release contains the prebuilt binaries. Review it, then publish:
 
 ### Via GitHub UI
 
 1. Open the repository Releases page.
-2. Draft a new release.
-3. Select the existing annotated tag.
-4. Use `Gregg $VERSION` as the title.
-5. Paste concise release notes derived from the changelog.
-6. Mark prerelease only when intentionally publishing a prerelease.
-7. Publish the release.
+2. Open the draft for `vX.Y.Z`.
+3. Use `Gregg $VERSION` as the title (the workflow already sets it).
+4. Paste concise release notes derived from the changelog — include whether
+   binaries are available for the five targets, the glibc floor, and that
+   macOS binaries are unsigned.
+5. Mark prerelease only when intentionally publishing a prerelease.
+6. Publish the release.
 
 ### Via GitHub CLI
 
 ```bash
+gh release edit "$TAG" --draft=false
+# or, if creating without the workflow:
 gh release create "$TAG" \
   --title "Gregg $VERSION" \
   --notes-file /path/to/release-notes.md \
   --verify-tag
 ```
 
-The CLI is an operator command, not a checked-in script. No binary artifacts
-are required; crates.io remains the installation channel.
-
 Release notes must include at minimum:
 
 - concise summary;
 - user-visible changes;
-- supported-platform changes;
+- supported-platform changes (including the initial prebuilt matrix);
 - important fixes;
-- known limitations or compatibility notes;
-- crates.io installation commands.
+- known limitations or compatibility notes (macOS unsigned quarantine, ARMv7 source-only);
+- binary installation commands (`install.sh`/`install.ps1` one-liners plus direct asset download);
+- crates.io installation commands as fallback.
 
 Do not include internal evidence IDs, CI-run metadata, or evidence artifacts.
+
+### Installation after publication
+
+Preferred (binary-first):
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+```
+
+Fallback (Cargo):
+
+```bash
+cargo install gregg --locked
+cargo install greggd --locked
+```
 
 ## Partial failure handling
 
@@ -303,8 +368,11 @@ visible.
 
 - Publication order is mandatory: `gregg-protocol`, `greggd`, `gregg`.
 - A published crates.io version is immutable.
-- No repository automation performs publication, tagging, or GitHub Release
-  creation.
-- Release evidence is the public crates.io records, Git tag, GitHub Release,
-  and normal local command output.
-- CI never publishes.
+- No repository automation performs crates.io publication, version bumping,
+  or tag creation.
+- The release workflow may create/update **only** a draft GitHub Release and
+  attach binaries; final publication remains a manual maintainer click.
+- Release evidence is the public crates.io records, Git tag, GitHub Release
+  (including published binary assets), and normal local command output.
+- Ordinary CI (`ci.yml`) never publishes or builds release binaries; only the
+  tagged release workflow does.

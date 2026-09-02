@@ -1,23 +1,124 @@
 # Gregg Daemon Packaging
 
-This directory contains installation assets for deploying `greggd` as a native system service.
+This directory contains bootstrap installers for prebuilt release binaries plus
+native service assets and developer helpers.
 
 ## Structure
 
 ```text
 packaging/
+├── install.sh                 # bootstrap installer (Linux/macOS) — binary-first, Cargo fallback
+├── install.ps1                # bootstrap installer (Windows) — binary-first, Cargo fallback
 ├── systemd/
-│   └── greggd.service          # systemd unit file (Linux)
+│   └── greggd.service         # systemd unit file (Linux)
 ├── launchd/
 │   └── com.eggstack.greggd.plist  # launchd plist (macOS)
-├── install-linux.sh            # Linux installer script
-├── install-macos.sh            # macOS installer script
-├── install-windows.ps1         # Windows installer script
-├── uninstall-windows.ps1       # Windows uninstaller script
-└── README.md                   # This file
+├── install-linux.sh           # legacy local-build helper (Linux) — uses a prebuilt binary path
+├── install-macos.sh           # legacy local-build helper (macOS)
+├── install-windows.ps1        # Windows service installer (local binary or bootstrap wrapper)
+├── uninstall-windows.ps1      # Windows uninstaller
+└── README.md                  # This file
 ```
 
-## Quick Install
+## Bootstrap installers (recommended)
+
+The `install.sh` (Unix) and `install.ps1` (Windows) scripts prefer prebuilt
+GitHub Release assets and fall back to Cargo only when no matching asset
+exists. Linux GNU assets are built with glibc 2.17 for portability across
+long-lived Debian/Ubuntu/Armbian SBC images. macOS binaries are unsigned
+(Gatekeeper may quarantine; allow via System Settings or
+`xattr -d com.apple.quarantine`).
+
+**Asset naming contract (stable within a release, no version in filename):**
+
+```text
+gregg-x86_64-unknown-linux-gnu         linux x86_64
+greggd-x86_64-unknown-linux-gnu
+gregg-aarch64-unknown-linux-gnu        linux aarch64 (64-bit Raspberry Pi, Le Potato, etc.)
+greggd-aarch64-unknown-linux-gnu
+gregg-x86_64-apple-darwin              macOS Intel
+greggd-x86_64-apple-darwin
+gregg-aarch64-apple-darwin             macOS Apple Silicon
+greggd-aarch64-apple-darwin
+gregg-x86_64-pc-windows-msvc.exe       windows x86_64
+greggd-x86_64-pc-windows-msvc.exe
+<asset>.sha256                         SHA-256 for each executable
+install.sh / install.ps1               bootstrap scripts themselves
+```
+
+No binary is modified after its SHA-256 is generated; the existing release
+profile already uses LTO, stripped symbols, and aborting panics. ARMv7 is
+source-build only in this phase; the Unix installer treats `armv7l` as Cargo
+fallback, and Windows ARM64 is likewise source-only.
+
+### Unix (Linux/macOS)
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+# pinned version
+curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sudo sh -s -- greggd --version 1.0.11
+# hardened:
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+```
+
+The script:
+
+- maps `uname -s`/`uname -m` to the Rust target above (e.g., `Linux+aarch64` →
+  `aarch64-unknown-linux-gnu`, `Darwin+arm64` → `aarch64-apple-darwin`);
+- constructs `https://github.com/eggstack/gregg/releases/latest/download/<asset>`
+  or `.../download/vX.Y.Z/<asset>` for a pinned version;
+- uses `curl -fsSL` to a fresh `mktemp -d`, fetches `<asset>.sha256` via the
+  same fixed `eggstack/gregg` prefix, verifies with `sha256sum` (Linux) or
+  `shasum -a 256` (macOS) before any execution, requires
+  `<candidate> version` to print the expected program name (and exact version
+  when pinned), `chmod +x`, then installs;
+- installs to `/usr/local/bin` when root, otherwise `$HOME/.local/bin`, warns
+  when the destination is not on `PATH` (never edits shell rc files), traps
+  temporary cleanup on success/failure, and never silently invokes `sudo`;
+- on an unsupported/unknown host (or `armv7l`) skips the 404-prone download
+  and tries `cargo install --locked` (with `--version "=X.Y.Z"` when pinned and
+  `--root` derived from the destination) if Cargo exists;
+- treats a checksum or version mismatch as a hard error (no Cargo fallback);
+- when a non-root `greggd` install lands on a systemd/launchd host, prints the
+  exact privileged rerun command rather than silently registering a cron-managed
+  duplicate — Plan 100 will refine startup registration.
+
+No-argument behaviour: attached to an interactive terminal, a tiny selector is
+shown; piped/noninteractive without a component prints concise usage and exits
+nonzero.
+
+### Windows (PowerShell)
+
+```powershell
+irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+.\packaging\install.ps1 -Component Gregg
+.\packaging\install.ps1 -Component Greggd
+.\packaging\install.ps1 -Component Both -Version 1.0.11
+```
+
+Equivalent mapping (`AMD64` → `x86_64-pc-windows-msvc`), `Invoke-WebRequest`
+download to a private temp dir, `Get-FileHash -Algorithm SHA256` verification,
+candidate `version` check, install to `%ProgramFiles%\Gregg` when Administrator
+(preserving `%ProgramData%\gregg\greggd.toml`, registering the SCM service as
+`NT AUTHORITY\LocalService` with `auto` start and failure-restart) or
+`%LOCALAPPDATA%\Gregg` otherwise, with Cargo fallback for `ARM64`/unknown
+hosts. `install-windows.ps1` remains a compatible local-build wrapper and will
+be reconciled with `install.ps1` as one canonical Windows installer in Plan
+100.
+
+## Legacy local-build helpers (developer / packaging path)
+
+These scripts remain for operator-managed local builds and do not duplicate the
+bootstrap download/verify logic. They will be kept as small wrappers or clearly
+marked helpers rather than a second full copy of install logic; `packaging/`
+systemd/launchd assets are preserved until Plan 100 decides their canonical
+ownership.
+
+
+
+## Quick Install (developer / local build)
 
 ### Linux (systemd)
 
@@ -60,6 +161,11 @@ greggd stop
 greggd start
 greggd restart
 ```
+
+For normal fleet deployment, prefer the bootstrap installers above; the
+`packaging/install-linux.sh` / `install-macos.sh` / `install-windows.ps1`
+paths are for local builds and operator-managed packaging where a checkout is
+present.
 
 ## Configuration
 

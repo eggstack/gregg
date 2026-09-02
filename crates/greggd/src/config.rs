@@ -250,7 +250,6 @@ impl Config {
     /// # Errors
     ///
     /// Returns the TOML serializer error if serialization fails.
-    #[must_use]
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }

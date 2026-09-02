@@ -75,16 +75,45 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 **Source:** `packaging/`
 
-### Install scripts
+### Bootstrap installers (binary-first, Plan 099)
+
+| Script | Platform | Mode |
+|--------|----------|------|
+| `install.sh` | Linux, macOS | bootstrap: download prebuilt `gregg-<target>`/`greggd-<target>` + `.sha256`, verify, install to `/usr/local/bin` (root) or `$HOME/.local/bin` (user); Cargo fallback for `armv7l`/unknown |
+| `install.ps1` | Windows | bootstrap: `Invoke-WebRequest` + `Get-FileHash` + candidate `version` check, `ProgramFiles\Gregg` (admin) vs `LOCALAPPDATA\Gregg` (user), SCM registration preserved, Cargo fallback for ARM64/unknown |
+
+**`install.sh` contract (Unix):**
+
+- `install.sh gregg` / `install.sh greggd` / `install.sh both` plus optional `--version X.Y.Z`;
+- no-arg on a TTY shows a tiny selector, piped noninteractive without component prints usage and exits nonzero;
+- maps `uname -s`/`uname -m` to `x86_64-unknown-linux-gnu` (Linux x86_64/amd64), `aarch64-unknown-linux-gnu` (Linux aarch64/arm64), `x86_64-apple-darwin` (Darwin x86_64), `aarch64-apple-darwin` (Darwin arm64), `armv7l` → `armv7-unknown-linux-gnueabihf` source-only;
+- constructs `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or `.../download/vX.Y.Z/<asset>` for pinned; requires fixed `eggstack/gregg` prefix and `curl -fsSL`;
+- downloads into a fresh `mktemp -d` with `trap` cleanup, fetches `<asset>.sha256`, verifies via `sha256sum` (Linux) or `shasum -a 256` (macOS) before any `chmod +x` or execution, runs `<candidate> version` and requires the expected program name and exact version when pinned, never installs a partial download, never falls back to Cargo on checksum/version mismatch;
+- destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`, warns when the dest is not on `PATH`, never edits shell rc files, never silently invokes `sudo`;
+- unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned and `--root` derived from the destination;
+- on a user-local `greggd` install that detects systemd (`/run/systemd/system`) or launchd (`Darwin`), prints the exact privileged rerun (`... | sudo sh -s -- greggd`) rather than silently registering cron.
+
+**`install.ps1` contract (Windows):**
+
+- `-Component Gregg|Greggd|Both` plus optional `-Version X.Y.Z`;
+- detects `PROCESSOR_ARCHITECTURE`/`Is64BitOperatingSystem` (`AMD64` → `x86_64-pc-windows-msvc`; `ARM64`/unknown → source-only fallback);
+- constructs the same `latest/download` / `download/vX.Y.Z` URLs for `gregg-<target>.exe` / `greggd-<target>.exe` and `.sha256`;
+- `Invoke-WebRequest` to a private temp dir, `Get-FileHash -Algorithm SHA256` verification, candidate `version` check;
+- installs `gregg` user-local where appropriate and `greggd` to `%ProgramFiles%\Gregg` when Administrator (preserving `%ProgramData%\gregg\greggd.toml`), reuses the existing SCM registration (`LocalService`, `auto` start, failure restart) until Plan 100 reconciles startup ownership; non-admin `greggd` prints the privileged rerun.
+
+Raw executables are published, not per-target tarballs/zip files; Windows `.exe` is already directly executable.
+
+### Legacy local-build helpers (developer path)
 
 | Script | Platform | Requirements |
 |--------|----------|-------------|
-| `install-linux.sh` | Linux | root, systemd |
+| `install-linux.sh` | Linux | root, systemd (local `target/release/greggd` path) |
 | `install-macos.sh` | macOS | root, launchd |
 | `install-windows.ps1` | Windows | Administrator, SCM |
 
-All install scripts:
-- Validate binary architecture matches host
+These helpers remain for operator-managed local builds and do not duplicate the bootstrap download/verify logic. They will be kept as small compatibility wrappers or clearly marked helpers rather than a second full copy of install logic; systemd/launchd assets are preserved until Plan 100 owns startup.
+
+All install scripts (bootstrap and legacy):
 - Are idempotent (preserve existing config)
 - Create platform-specific default config if absent
 
@@ -139,12 +168,19 @@ flag removes config directory.
 ### Packaging docs
 
 `packaging/README.md` covers:
+- Bootstrap install (`install.sh`/`install.ps1`) asset contract, glibc floor, unsigned macOS note, and Cargo fallback
+- Native service assets vs legacy local-build helpers
 - Install/uninstall for all platforms
 - Config file locations
 - Service management commands
 - Upgrade behavior (idempotent)
 - Privilege model and security notes
 - Development mode
+
+### Release configuration
+
+- `Cargo.toml` release profile already uses fat LTO, one codegen unit, stripped symbols, and aborting panics; no UPX/packer.
+- Linux GNU assets keep the ordinary `x86_64-unknown-linux-gnu`/`aarch64-unknown-linux-gnu` suffix without a `.2.17` qualifier; the `.2.17` is the `cargo zigbuild --target <target>.2.17` input qualifier for the glibc floor, not the public name.
 
 ## CI
 
@@ -157,10 +193,27 @@ pull requests:
   release `greggd` build, and the bounded SCM lifecycle smoke
 - **MSRV**: compilation check with Rust 1.75
 
+Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
+`v*` tags and manual dispatch:
+
+- mandatory preflight: workspace/tag version equality, tag points at HEAD, clean
+  checkout, crates.io visibility for `gregg`/`greggd`;
+- five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig,
+  macOS Intel/ARM64 native, Windows x86_64 native) each build both binaries,
+  run `version`/`--help`, a foreground `greggd` loopback smoke
+  (`/v2/healthz` + `/v2/status` schema 2), hash after verification, and upload
+  artifacts;
+- assemble job validates the ten executables + ten `.sha256` stable names, checks
+  `install.sh` syntax, and creates/updates a **draft** GitHub Release via `gh`
+  (`--clobber` on rerun, hard failure if already published), never calling
+  `cargo publish`, `git tag`, or auto-publishing.
+
 Local default verification is the short routine loop. Documentation and full
 Clippy are release-preflight work, not ordinary CI work. The Windows SCM smoke
 is the authoritative operational proof for the native dispatcher and service
-lifecycle. CI remains read-only, nonpublishing, and artifact-free.
+lifecycle. Ordinary CI remains read-only, nonpublishing, and artifact-free; the
+tagged release workflow is the one narrow exception that may create a draft
+release from prebuilt binaries.
 
 ## Build configuration
 

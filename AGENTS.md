@@ -176,6 +176,36 @@ passes locally, the distinction is the cause.
   core, which is also reused for Unix SIGTERM/SIGINT and a successful `STOP\n`;
   control-socket cleanup runs on every exit path.
 
+### Release binaries and bootstrap installers (`architecture/scripts-and-packaging.md`, `plans/099-*`)
+
+- Release binaries use a single public asset contract: `gregg-<target>` /
+  `greggd-<target>[.exe]` where `<target>` is exactly one of
+  `x86_64-unknown-linux-gnu` (glibc 2.17 via cargo-zigbuild), `aarch64-unknown-linux-gnu` (2.17,
+  covers 64-bit Raspberry Pi/Le Potato), `x86_64-apple-darwin`,
+  `aarch64-apple-darwin` (unsigned), `x86_64-pc-windows-msvc.exe`; every
+  executable has a `<asset>.sha256`. Installers must use the same suffixes.
+- The release-only workflow `.github/workflows/release-binaries.yml` triggers
+  only on `v*` tags and manual dispatch, verifies tag `vX.Y.Z` == workspace
+  version and tag points at HEAD, checks crates.io visibility for `gregg`/`greggd`,
+  builds the five targets (Linux with Zig 2.17 floor, macOS native, Windows
+  native), runs `version`/`--help` plus a loopback `greggd` smoke before
+  hashing, and assembles a **draft** GitHub Release via `gh` (`--clobber` on
+  rerun, hard failure if already published). It never calls `cargo publish`,
+  `git tag`, or pushes commits.
+- Bootstrap installers `packaging/install.sh` (Unix) and `packaging/install.ps1`
+  (Windows) are binary-first, Cargo second: map `uname -s`/`uname -m` (and
+  Windows `PROCESSOR_ARCHITECTURE`/Is64Bit) to the contract target, construct
+  `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or
+  `.../download/vX.Y.Z/<asset>` for `--version X.Y.Z`, `curl -fsSL` to a fresh
+  `mktemp -d`, fetch `<asset>.sha256`, verify (`sha256sum`/`shasum -a 256` or
+  `Get-FileHash`), `chmod +x` and `<candidate> version` must equal the expected
+  program/version, trap cleanup, install to `/usr/local/bin` (root) or
+  `$HOME/.local/bin` (`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg` on
+  Windows, preserving `%ProgramData%\gregg\greggd.toml`), warn when the dest
+  is not on `PATH`, never edit shell rc files, never silently invoke `sudo`,
+  never fallback on checksum/version mismatch, and only `armv7l`/unknown hosts
+  fall back to `cargo install --locked` (with `="X.Y.Z"` when pinned).
+
 ## Schema protocol
 
 Wire types live in `gregg-protocol`. Full contract: `architecture/protocol.md`
@@ -202,7 +232,7 @@ and `architecture/gregg-protocol.md`.
 
 ## Crate versions and publishing
 
-All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inter-crate dependency versions must match workspace version exactly. Publication order is mandatory: `gregg-protocol` → `greggd` → `gregg`. CI never publishes; publication is manual per `RELEASING.md`.
+All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inter-crate dependency versions must match workspace version exactly. Publication order is mandatory: `gregg-protocol` → `greggd` → `gregg`. Ordinary CI never publishes; the tagged `release-binaries` workflow may create/update a **draft** GitHub Release from prebuilt binaries after manual `cargo publish` + tag, but never publishes crates or auto-publishes the release. See `RELEASING.md`.
 
 ## Testing patterns
 
@@ -225,13 +255,19 @@ GitHub Actions CI runs on push to `main` and pull requests (`.github/workflows/c
   `scripts/smoke-windows.ps1`
 - **MSRV**: compilation check with Rust 1.75
 
+The release-only workflow `.github/workflows/release-binaries.yml` runs only
+on `v*` tags / manual dispatch and builds the five release targets
+(Linux x86_64/AArch64 glibc 2.17, macOS Intel/ARM64, Windows x86_64) into a
+draft release. See above and `architecture/scripts-and-packaging.md`.
+
 Local verification via the default `check-local.sh` is the source of truth for
 the routine loop; release preflight is manual and nonpublishing. Ordinary CI
 keeps one read-only workflow with generic Linux checks, native macOS/Windows
 coverage, and one Rust 1.75 compile check. The Windows SCM smoke is the
 authoritative operational proof for dispatcher startup, post-bind readiness,
 service lifecycle, custom configuration paths, bind-failure recovery, and
-cleanup. CI does not build documentation, publish, or upload evidence.
+cleanup. CI does not build documentation, publish crates, or upload evidence
+beyond the release draft assets.
 → Details: `architecture/scripts-and-packaging.md`
 
 ## What not to do
@@ -240,6 +276,9 @@ cleanup. CI does not build documentation, publish, or upload evidence.
 - Don't add dependencies without checking existing patterns and MSRV compatibility
 - Don't add `cargo publish` to any script or workflow
 - Don't add automated tagging, GitHub Release creation, or publication to CI
+  (the release workflow's draft creation from prebuilt binaries is the one
+  narrow exception and must never publish crates, auto-publish the draft, or
+  push tags/commits)
 - Don't add self-daemonization or PID-file management to the daemon
 - Don't initialize a global tracing subscriber from reusable daemon runtime code;
   the binary boundary uses fallible initialization.

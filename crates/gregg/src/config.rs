@@ -514,7 +514,6 @@ impl Config {
     /// # Errors
     ///
     /// Returns the TOML serializer error if serialization fails.
-    #[must_use]
     pub fn to_toml(&self) -> Result<String, toml::ser::Error> {
         toml::to_string_pretty(self)
     }
@@ -2855,7 +2854,7 @@ unknown_field = "oops"
             let config = Config::load(temp_path)?;
             let toml = config.to_toml().unwrap();
             // Append an unknown field.
-            let modified = format!("{}\nunknown_field = \"oops\"\n", toml);
+            let modified = format!("{toml}\nunknown_field = \"oops\"\n");
             fs::write(temp_path, modified).map_err(|e| ConfigError::Io {
                 path: temp_path.to_path_buf(),
                 source: e,

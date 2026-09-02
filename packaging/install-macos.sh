@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# install-macos.sh — Install greggd on macOS with launchd.
+# install-macos.sh — Install greggd on macOS with launchd (legacy local-build helper).
+# For prebuilt release binaries, prefer: curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+# This helper remains for operator-managed local builds where a checkout is present.
 #
 # Usage: sudo ./install-macos.sh [BINARY_PATH]
 #

@@ -1,0 +1,847 @@
+name: release-binaries
+
+# Release-only pipeline that builds, verifies, and attaches prebuilt gregg/greggd
+# executables for the supported OS/architecture matrix. Ordinary CI remains in
+# ci.yml and never builds release artifacts.
+#
+# Target / asset contract (Plan 099, Phase 1):
+#
+#   (os, arch)        Rust target                     Asset suffix                     Ext
+#   linux  x86_64      x86_64-unknown-linux-gnu        x86_64-unknown-linux-gnu        ""
+#   linux  aarch64     aarch64-unknown-linux-gnu       aarch64-unknown-linux-gnu       ""
+#   macos  x86_64      x86_64-apple-darwin             x86_64-apple-darwin             ""
+#   macos  arm64       aarch64-apple-darwin            aarch64-apple-darwin            ""
+#   windows x86_64     x86_64-pc-windows-msvc          x86_64-pc-windows-msvc         ".exe"
+#
+# The public asset name is `<program>-<target>[.exe]` without a version
+# qualifier; the GitHub release tag `vX.Y.Z` already provides the version
+# namespace. SHA-256 files are `<asset>.sha256`. Installers use exactly the
+# same suffixes.
+#
+# Linux portability floor: glibc 2.17 for both GNU targets. Release-only
+# builds use cargo-zigbuild + Zig targeting `<target>.2.17`; the public
+# suffix remains the ordinary Rust target.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g., v1.0.11). Required for manual dispatch.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    name: Preflight (version & tag)
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Derive tag and workspace version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Derive the triggering tag. For push events github.ref is refs/tags/vX.Y.Z;
+          # for dispatch we use the explicit input.
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ "$TAG" != v* ]]; then
+            echo "error: tag must start with 'v' (got '$TAG')" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Derived TAG=$TAG VERSION=$VERSION"
+
+          # Read workspace version from Cargo.toml [workspace.package].
+          WORKSPACE_VERSION="$(awk '
+            /^\[workspace\.package\][[:space:]]*$/ { in_package=1; next }
+            in_package && /^\[/ { exit }
+            in_package && /^[[:space:]]*version[[:space:]]*=/ {
+              if (match($0, /"[^"]+"/)) {
+                print substr($0, RSTART + 1, RLENGTH - 2)
+                exit
+              }
+            }
+          ' Cargo.toml)"
+          if [[ -z "$WORKSPACE_VERSION" ]]; then
+            echo "error: could not read [workspace.package].version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "Workspace version: $WORKSPACE_VERSION"
+          if [[ "$VERSION" != "$WORKSPACE_VERSION" ]]; then
+            echo "error: tag version v$VERSION does not match workspace version $WORKSPACE_VERSION" >&2
+            exit 1
+          fi
+
+          # Verify every member manifests inherit the workspace version.
+          for crate in crates/gregg-protocol crates/greggd crates/gregg; do
+            manifest="$crate/Cargo.toml"
+            if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$manifest"; then
+              echo "error: $manifest missing version.workspace = true" >&2
+              exit 1
+            fi
+          done
+
+          # Verify gregg-protocol dependency versions match workspace version.
+          for crate in crates/greggd crates/gregg; do
+            manifest="$crate/Cargo.toml"
+            dep_version="$(grep -E '^[[:space:]]*gregg-protocol[[:space:]]*=' "$manifest" | head -1 | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+            if [[ -z "$dep_version" ]]; then
+              echo "error: $manifest has no gregg-protocol version" >&2
+              exit 1
+            fi
+            dep_stripped="${dep_version#=}"
+            if [[ "$dep_stripped" != "$WORKSPACE_VERSION" ]]; then
+              echo "error: $manifest gregg-protocol dependency $dep_version != workspace $WORKSPACE_VERSION" >&2
+              exit 1
+            fi
+          done
+          echo "Version consistency OK: $VERSION"
+
+      - name: Verify tag points at checked-out commit and tree is clean
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.version.outputs.tag }}"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          TAG_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || echo "")"
+          if [[ -z "$TAG_SHA" ]]; then
+            echo "error: tag $TAG does not exist locally" >&2
+            exit 1
+          fi
+          if [[ "$HEAD_SHA" != "$TAG_SHA" ]]; then
+            echo "error: tag $TAG points at $TAG_SHA but HEAD is $HEAD_SHA" >&2
+            echo "The workflow must run on the exact tagged commit." >&2
+            exit 1
+          fi
+          echo "Tag $TAG correctly points at HEAD $HEAD_SHA"
+          if [[ -n "$(git status --porcelain)" ]]; then
+            echo "error: working tree is not clean after checkout of $TAG" >&2
+            git status --short
+            exit 1
+          fi
+          echo "Clean tree verified"
+
+      - name: Verify crates.io visibility (gregg, greggd)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          # The release sequence publishes crates before the tag. A rerun must
+          # remain safe. If the registry has not yet indexed the version, fail
+          # clearly so the maintainer can rerun after indexing.
+          for crate in gregg greggd; do
+            echo "Checking crates.io for $crate $VERSION..."
+            # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
+            HTTP_CODE="$(curl -s -o /tmp/crate.json -w "%{http_code}" \
+              -H "User-Agent: gregg-release-ci (eggstack/gregg)" \
+              "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)"
+            if [[ "$HTTP_CODE" == "200" ]]; then
+              echo "  $crate $VERSION is visible on crates.io"
+            elif [[ "$HTTP_CODE" == "404" ]]; then
+              echo "error: $crate $VERSION is not yet visible on crates.io (HTTP 404)" >&2
+              echo "The release workflow requires the workspace version to be" >&2
+              echo "published to crates.io before building GitHub binaries." >&2
+              echo "Wait for indexing, then rerun this workflow." >&2
+              cat /tmp/crate.json 2>/dev/null || true
+              exit 1
+            else
+              echo "warning: crates.io check for $crate returned HTTP $HTTP_CODE; treating as hard failure" >&2
+              cat /tmp/crate.json 2>/dev/null || true
+              exit 1
+            fi
+          done
+
+  build-linux-x86_64:
+    name: Linux x86_64 (glibc 2.17)
+    needs: preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install Zig and cargo-zigbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --quiet ziglang
+          cargo install cargo-zigbuild --locked
+          zig version
+          cargo zigbuild --version
+
+      - name: Build gregg and greggd (x86_64, glibc 2.17)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo zigbuild --release --locked -p gregg -p greggd --target x86_64-unknown-linux-gnu.2.17
+
+      - name: Stage assets with public names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-gnu/release/gregg dist/gregg-x86_64-unknown-linux-gnu
+          cp target/x86_64-unknown-linux-gnu/release/greggd dist/greggd-x86_64-unknown-linux-gnu
+          chmod +x dist/gregg-x86_64-unknown-linux-gnu dist/greggd-x86_64-unknown-linux-gnu
+          ls -lh dist/
+
+      - name: Smoke - version and help
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.preflight.outputs.version }}"
+          ./dist/gregg-x86_64-unknown-linux-gnu version
+          ./dist/gregg-x86_64-unknown-linux-gnu version | grep -q "gregg $VERSION"
+          ./dist/gregg-x86_64-unknown-linux-gnu --help
+          ./dist/greggd-x86_64-unknown-linux-gnu version
+          ./dist/greggd-x86_64-unknown-linux-gnu version | grep -q "greggd $VERSION"
+          ./dist/greggd-x86_64-unknown-linux-gnu --help
+
+      - name: Daemon loopback smoke (/v2/healthz + /v2/status)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Use the shared verifier when available; fall back to a minimal inline smoke
+          if [[ -x scripts/verify-installed-daemon.sh ]]; then
+            bash scripts/verify-installed-daemon.sh dist/greggd-x86_64-unknown-linux-gnu
+          else
+            TMPDIR="$(mktemp -d)"
+            CONFIG="$TMPDIR/greggd.toml"
+            PORT=11399
+            cat >"$CONFIG" <<EOF
+          name = "release-smoke"
+          host = "127.0.0.1"
+          port = $PORT
+          sample_interval_ms = 250
+          stale_after_ms = 10000
+          EOF
+            ./dist/greggd-x86_64-unknown-linux-gnu --config "$CONFIG" run &
+            PID=$!
+            trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$TMPDIR"' EXIT
+            # Poll until ready (max 15s)
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"state":"ready"'; then
+                break
+              fi
+              sleep 0.5
+            done
+            curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"schema_version":2'
+            curl -fsS "http://127.0.0.1:$PORT/v2/status" | grep -q '"schema_version":2'
+            kill $PID
+            wait $PID
+            rm -rf "$TMPDIR"
+            trap - EXIT
+          fi
+
+      - name: Generate SHA-256 checksums (post-version, pre-modification)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum gregg-x86_64-unknown-linux-gnu > gregg-x86_64-unknown-linux-gnu.sha256
+          sha256sum greggd-x86_64-unknown-linux-gnu > greggd-x86_64-unknown-linux-gnu.sha256
+          cat gregg-x86_64-unknown-linux-gnu.sha256
+          cat greggd-x86_64-unknown-linux-gnu.sha256
+          sha256sum -c gregg-x86_64-unknown-linux-gnu.sha256
+          sha256sum -c greggd-x86_64-unknown-linux-gnu.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  build-linux-aarch64:
+    name: Linux AArch64 (glibc 2.17)
+    needs: preflight
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install Zig and cargo-zigbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --quiet ziglang
+          cargo install cargo-zigbuild --locked
+          zig version
+          cargo zigbuild --version
+
+      - name: Build gregg and greggd (aarch64, glibc 2.17)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo zigbuild --release --locked -p gregg -p greggd --target aarch64-unknown-linux-gnu.2.17
+
+      - name: Stage assets with public names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/aarch64-unknown-linux-gnu/release/gregg dist/gregg-aarch64-unknown-linux-gnu
+          cp target/aarch64-unknown-linux-gnu/release/greggd dist/greggd-aarch64-unknown-linux-gnu
+          chmod +x dist/gregg-aarch64-unknown-linux-gnu dist/greggd-aarch64-unknown-linux-gnu
+          ls -lh dist/
+
+      - name: Smoke - version and help (native)
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.preflight.outputs.version }}"
+          ./dist/gregg-aarch64-unknown-linux-gnu version
+          ./dist/gregg-aarch64-unknown-linux-gnu version | grep -q "gregg $VERSION"
+          ./dist/gregg-aarch64-unknown-linux-gnu --help
+          ./dist/greggd-aarch64-unknown-linux-gnu version
+          ./dist/greggd-aarch64-unknown-linux-gnu version | grep -q "greggd $VERSION"
+          ./dist/greggd-aarch64-unknown-linux-gnu --help
+
+      - name: Daemon loopback smoke (native)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x scripts/verify-installed-daemon.sh ]]; then
+            bash scripts/verify-installed-daemon.sh dist/greggd-aarch64-unknown-linux-gnu
+          else
+            TMPDIR="$(mktemp -d)"
+            CONFIG="$TMPDIR/greggd.toml"
+            PORT=11399
+            cat >"$CONFIG" <<EOF
+          name = "release-smoke"
+          host = "127.0.0.1"
+          port = $PORT
+          sample_interval_ms = 250
+          stale_after_ms = 10000
+          EOF
+            ./dist/greggd-aarch64-unknown-linux-gnu --config "$CONFIG" run &
+            PID=$!
+            trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$TMPDIR"' EXIT
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"state":"ready"'; then
+                break
+              fi
+              sleep 0.5
+            done
+            curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"schema_version":2'
+            curl -fsS "http://127.0.0.1:$PORT/v2/status" | grep -q '"schema_version":2'
+            kill $PID
+            wait $PID
+            rm -rf "$TMPDIR"
+            trap - EXIT
+          fi
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum gregg-aarch64-unknown-linux-gnu > gregg-aarch64-unknown-linux-gnu.sha256
+          sha256sum greggd-aarch64-unknown-linux-gnu > greggd-aarch64-unknown-linux-gnu.sha256
+          cat gregg-aarch64-unknown-linux-gnu.sha256
+          cat greggd-aarch64-unknown-linux-gnu.sha256
+          sha256sum -c gregg-aarch64-unknown-linux-gnu.sha256
+          sha256sum -c greggd-aarch64-unknown-linux-gnu.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-aarch64
+          path: dist/*
+          if-no-files-found: error
+
+  build-macos-intel:
+    name: macOS Intel (x86_64)
+    needs: preflight
+    runs-on: macos-15-intel
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+
+      - name: Build gregg and greggd
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p gregg -p greggd
+
+      - name: Stage assets with public names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/gregg dist/gregg-x86_64-apple-darwin
+          cp target/release/greggd dist/greggd-x86_64-apple-darwin
+          chmod +x dist/gregg-x86_64-apple-darwin dist/greggd-x86_64-apple-darwin
+          ls -lh dist/
+
+      - name: Smoke - version and help
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.preflight.outputs.version }}"
+          ./dist/gregg-x86_64-apple-darwin version
+          ./dist/gregg-x86_64-apple-darwin version | grep -q "gregg $VERSION"
+          ./dist/gregg-x86_64-apple-darwin --help
+          ./dist/greggd-x86_64-apple-darwin version
+          ./dist/greggd-x86_64-apple-darwin version | grep -q "greggd $VERSION"
+          ./dist/greggd-x86_64-apple-darwin --help
+
+      - name: Daemon loopback smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x scripts/verify-installed-daemon.sh ]]; then
+            bash scripts/verify-installed-daemon.sh dist/greggd-x86_64-apple-darwin
+          else
+            TMPDIR="$(mktemp -d)"
+            CONFIG="$TMPDIR/greggd.toml"
+            PORT=11399
+            cat >"$CONFIG" <<EOF
+          name = "release-smoke"
+          host = "127.0.0.1"
+          port = $PORT
+          sample_interval_ms = 250
+          stale_after_ms = 10000
+          EOF
+            ./dist/greggd-x86_64-apple-darwin --config "$CONFIG" run &
+            PID=$!
+            trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$TMPDIR"' EXIT
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"state":"ready"'; then
+                break
+              fi
+              sleep 0.5
+            done
+            curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"schema_version":2'
+            curl -fsS "http://127.0.0.1:$PORT/v2/status" | grep -q '"schema_version":2'
+            kill $PID
+            wait $PID
+            rm -rf "$TMPDIR"
+            trap - EXIT
+          fi
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 gregg-x86_64-apple-darwin > gregg-x86_64-apple-darwin.sha256
+          shasum -a 256 greggd-x86_64-apple-darwin > greggd-x86_64-apple-darwin.sha256
+          cat gregg-x86_64-apple-darwin.sha256
+          cat greggd-x86_64-apple-darwin.sha256
+          shasum -a 256 -c gregg-x86_64-apple-darwin.sha256
+          shasum -a 256 -c greggd-x86_64-apple-darwin.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  build-macos-arm:
+    name: macOS Apple Silicon (aarch64)
+    needs: preflight
+    runs-on: macos-15
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build gregg and greggd
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked -p gregg -p greggd
+
+      - name: Stage assets with public names
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/gregg dist/gregg-aarch64-apple-darwin
+          cp target/release/greggd dist/greggd-aarch64-apple-darwin
+          chmod +x dist/gregg-aarch64-apple-darwin dist/greggd-aarch64-apple-darwin
+          ls -lh dist/
+
+      - name: Smoke - version and help
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.preflight.outputs.version }}"
+          ./dist/gregg-aarch64-apple-darwin version
+          ./dist/gregg-aarch64-apple-darwin version | grep -q "gregg $VERSION"
+          ./dist/gregg-aarch64-apple-darwin --help
+          ./dist/greggd-aarch64-apple-darwin version
+          ./dist/greggd-aarch64-apple-darwin version | grep -q "greggd $VERSION"
+          ./dist/greggd-aarch64-apple-darwin --help
+
+      - name: Daemon loopback smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x scripts/verify-installed-daemon.sh ]]; then
+            bash scripts/verify-installed-daemon.sh dist/greggd-aarch64-apple-darwin
+          else
+            TMPDIR="$(mktemp -d)"
+            CONFIG="$TMPDIR/greggd.toml"
+            PORT=11399
+            cat >"$CONFIG" <<EOF
+          name = "release-smoke"
+          host = "127.0.0.1"
+          port = $PORT
+          sample_interval_ms = 250
+          stale_after_ms = 10000
+          EOF
+            ./dist/greggd-aarch64-apple-darwin --config "$CONFIG" run &
+            PID=$!
+            trap 'kill $PID 2>/dev/null; wait $PID 2>/dev/null; rm -rf "$TMPDIR"' EXIT
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"state":"ready"'; then
+                break
+              fi
+              sleep 0.5
+            done
+            curl -fsS "http://127.0.0.1:$PORT/v2/healthz" | grep -q '"schema_version":2'
+            curl -fsS "http://127.0.0.1:$PORT/v2/status" | grep -q '"schema_version":2'
+            kill $PID
+            wait $PID
+            rm -rf "$TMPDIR"
+            trap - EXIT
+          fi
+
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          shasum -a 256 gregg-aarch64-apple-darwin > gregg-aarch64-apple-darwin.sha256
+          shasum -a 256 greggd-aarch64-apple-darwin > greggd-aarch64-apple-darwin.sha256
+          cat gregg-aarch64-apple-darwin.sha256
+          cat greggd-aarch64-apple-darwin.sha256
+          shasum -a 256 -c gregg-aarch64-apple-darwin.sha256
+          shasum -a 256 -c greggd-aarch64-apple-darwin.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Windows x86_64
+    needs: preflight
+    runs-on: windows-2022
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build gregg and greggd
+        shell: pwsh
+        run: cargo build --release --locked -p gregg -p greggd
+
+      - name: Stage assets with public names
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target/release/gregg.exe dist/gregg-x86_64-pc-windows-msvc.exe -Force
+          Copy-Item target/release/greggd.exe dist/greggd-x86_64-pc-windows-msvc.exe -Force
+          Get-ChildItem dist | Format-List Name,Length
+
+      - name: Smoke - version and help
+        shell: pwsh
+        run: |
+          $version = "${{ needs.preflight.outputs.version }}"
+          & ./dist/gregg-x86_64-pc-windows-msvc.exe version
+          if ($LASTEXITCODE -ne 0) { throw "gregg version failed" }
+          $out = & ./dist/gregg-x86_64-pc-windows-msvc.exe version
+          if ($out -notmatch "gregg $version") { throw "gregg version mismatch: $out vs $version" }
+          & ./dist/gregg-x86_64-pc-windows-msvc.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "gregg --help failed" }
+          & ./dist/greggd-x86_64-pc-windows-msvc.exe version
+          if ($LASTEXITCODE -ne 0) { throw "greggd version failed" }
+          $out2 = & ./dist/greggd-x86_64-pc-windows-msvc.exe version
+          if ($out2 -notmatch "greggd $version") { throw "greggd version mismatch: $out2 vs $version" }
+          & ./dist/greggd-x86_64-pc-windows-msvc.exe --help
+          if ($LASTEXITCODE -ne 0) { throw "greggd --help failed" }
+
+      - name: Daemon loopback smoke
+        shell: pwsh
+        run: |
+          $tmp = Join-Path $env:TEMP "greggd-smoke-$(Get-Random)"
+          $config = Join-Path $tmp "greggd.toml"
+          $port = 11399
+          New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+          @"
+          name = "release-smoke"
+          host = "127.0.0.1"
+          port = $port
+          sample_interval_ms = 250
+          stale_after_ms = 10000
+          "@ | Set-Content -LiteralPath $config
+          $proc = Start-Process -FilePath "$PWD/dist/greggd-x86_64-pc-windows-msvc.exe" -ArgumentList @('--config', "`"$config`"", 'run') -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            $deadline = (Get-Date).AddSeconds(15)
+            while ((Get-Date) -lt $deadline) {
+              if ($proc.HasExited) { throw "greggd exited during startup" }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/healthz" -TimeoutSec 2
+                if ($health.state -eq 'ready') { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Milliseconds 200
+            }
+            if (-not $ready) { throw "greggd did not become ready within 15s" }
+            $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/status" -TimeoutSec 2
+            if ($status.schema_version -ne 2) { throw "unexpected schema_version" }
+            Write-Host "Windows daemon smoke passed"
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue; $proc.WaitForExit(5000) }
+            Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          Set-Location dist
+          $greggHash = (Get-FileHash -Algorithm SHA256 -Path gregg-x86_64-pc-windows-msvc.exe).Hash.ToLower()
+          $gregdHash = (Get-FileHash -Algorithm SHA256 -Path greggd-x86_64-pc-windows-msvc.exe).Hash.ToLower()
+          "$greggHash  gregg-x86_64-pc-windows-msvc.exe" | Set-Content -NoNewline -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Encoding ASCII
+          Add-Content -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Value "" -NoNewline
+          # Rebuild with proper format (hash + two spaces + filename)
+          Set-Content -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Value "$greggHash  gregg-x86_64-pc-windows-msvc.exe" -NoNewline
+          Set-Content -Path greggd-x86_64-pc-windows-msvc.exe.sha256 -Value "$gregdHash  greggd-x86_64-pc-windows-msvc.exe" -NoNewline
+          Get-Content gregg-x86_64-pc-windows-msvc.exe.sha256
+          Get-Content greggd-x86_64-pc-windows-msvc.exe.sha256
+          # Verify
+          $check1 = (Get-FileHash -Algorithm SHA256 -Path gregg-x86_64-pc-windows-msvc.exe).Hash.ToLower()
+          $listed1 = (Get-Content gregg-x86_64-pc-windows-msvc.exe.sha256).Split()[0].ToLower()
+          if ($check1 -ne $listed1) { throw "gregg checksum mismatch" }
+          $check2 = (Get-FileHash -Algorithm SHA256 -Path greggd-x86_64-pc-windows-msvc.exe).Hash.ToLower()
+          $listed2 = (Get-Content greggd-x86_64-pc-windows-msvc.exe.sha256).Split()[0].ToLower()
+          if ($check2 -ne $listed2) { throw "greggd checksum mismatch" }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  assemble-release:
+    name: Assemble draft GitHub Release
+    needs:
+      - preflight
+      - build-linux-x86_64
+      - build-linux-aarch64
+      - build-macos-intel
+      - build-macos-arm
+      - build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List staged assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh dist/
+          echo "--- validating expected asset names ---"
+          # Expected stable names (no version in filename)
+          expected=(
+            gregg-x86_64-unknown-linux-gnu
+            greggd-x86_64-unknown-linux-gnu
+            gregg-x86_64-unknown-linux-gnu.sha256
+            greggd-x86_64-unknown-linux-gnu.sha256
+            gregg-aarch64-unknown-linux-gnu
+            greggd-aarch64-unknown-linux-gnu
+            gregg-aarch64-unknown-linux-gnu.sha256
+            greggd-aarch64-unknown-linux-gnu.sha256
+            gregg-x86_64-apple-darwin
+            greggd-x86_64-apple-darwin
+            gregg-x86_64-apple-darwin.sha256
+            greggd-x86_64-apple-darwin.sha256
+            gregg-aarch64-apple-darwin
+            greggd-aarch64-apple-darwin
+            gregg-aarch64-apple-darwin.sha256
+            greggd-aarch64-apple-darwin.sha256
+            gregg-x86_64-pc-windows-msvc.exe
+            greggd-x86_64-pc-windows-msvc.exe
+            gregg-x86_64-pc-windows-msvc.exe.sha256
+            greggd-x86_64-pc-windows-msvc.exe.sha256
+          )
+          missing=0
+          for f in "${expected[@]}"; do
+            if [[ ! -f "dist/$f" ]]; then
+              echo "MISSING: $f" >&2
+              missing=1
+            else
+              echo "OK: $f"
+              # Verify checksum files contain a hash and the expected filename
+              if [[ "$f" == *.sha256 ]]; then
+                if ! grep -qE '^[a-f0-9]{64}  ' "dist/$f"; then
+                  echo "  bad checksum format: $f" >&2
+                  missing=1
+                fi
+              fi
+            fi
+          done
+          if [[ $missing -ne 0 ]]; then
+            echo "error: one or more expected assets missing or malformed" >&2
+            exit 1
+          fi
+          echo "All expected assets present"
+
+      - name: Verify installers exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh packaging/install.sh packaging/install.ps1
+          bash -n packaging/install.sh
+          echo "install.sh syntax OK"
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck packaging/install.sh || echo "shellcheck warnings (non-fatal for CI)"
+          fi
+
+      - name: Assemble draft release (idempotent, never auto-publish)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.preflight.outputs.tag }}"
+          VERSION="${{ needs.preflight.outputs.version }}"
+          echo "Assembling draft release for $TAG (version $VERSION)"
+
+          # Ensure gh is available
+          gh --version
+
+          # Prepare file list: executables, checksums, installers
+          mapfile -t ASSETS < <(ls dist/*)
+          ASSETS+=("packaging/install.sh")
+          ASSETS+=("packaging/install.ps1")
+          echo "Assets to upload:"
+          printf '  %s\n' "${ASSETS[@]}"
+
+          # Check current release state
+          set +e
+          gh release view "$TAG" --json isDraft,isPrerelease,name,tagName 2>/tmp/gh_view.err
+          VIEW_STATUS=$?
+          set -e
+          if [[ $VIEW_STATUS -ne 0 ]]; then
+            if grep -q "release not found" /tmp/gh_view.err 2>/dev/null; then
+              echo "No release exists for $TAG; creating DRAFT release"
+              gh release create "$TAG" \
+                --draft \
+                --title "Gregg $VERSION" \
+                --notes "Prebuilt binaries for Gregg $VERSION.
+
+          Install (Linux/macOS):
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+
+          Install (Windows PowerShell):
+            irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+
+          Or download the matching asset for your platform from the assets below and verify its .sha256.
+          See packaging/README.md for details. Binaries are unsigned; macOS may gate them via quarantine." \
+                "${ASSETS[@]}"
+            else
+              echo "Failed to query release state for $TAG" >&2
+              cat /tmp/gh_view.err >&2
+              exit 1
+            fi
+          else
+            IS_DRAFT="$(gh release view "$TAG" --json isDraft -q .isDraft)"
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              echo "Draft release for $TAG already exists; uploading assets with --clobber"
+              gh release upload "$TAG" "${ASSETS[@]}" --clobber
+            else
+              echo "error: release $TAG already exists and is not a draft (published)" >&2
+              echo "Refusing to silently replace published binaries." >&2
+              echo "If a new patch is needed, bump the workspace version and create a new tag." >&2
+              exit 1
+            fi
+          fi
+          echo "Draft release assembled for $TAG"
+          gh release view "$TAG" --json tagName,name,isDraft,assets --jq '{tag: .tagName, title: .name, draft: .isDraft, assets: [.assets[].name]}'

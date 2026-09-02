@@ -55,8 +55,10 @@ documentation and tests with behavioral changes.
 ## Release process
 
 Maintainers publish manually to crates.io, create annotated Git tags, and
-create GitHub Releases. CI never publishes. See [RELEASING.md](RELEASING.md)
-for the operator runbook.
+publish GitHub Releases. The tagged `release-binaries` workflow may
+create/update a draft release from prebuilt binaries after the manual tag, but
+never publishes crates or auto-publishes; ordinary CI never publishes. See
+[RELEASING.md](RELEASING.md) for the operator runbook.
 
 ## License
 

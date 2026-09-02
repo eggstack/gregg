@@ -399,7 +399,7 @@ errors never appear on the wire.
 
 ### Scripts and packaging
 
-Installer scripts for all three platforms, the routine validation script,
+Bootstrap installers for prebuilt binaries, the routine validation script,
 loopback smoke tests, and systemd/launchd/SCM service definitions.
 
 | Artifact | Purpose |
@@ -408,15 +408,23 @@ loopback smoke tests, and systemd/launchd/SCM service definitions.
 | `scripts/verify-installed-daemon.sh` | Bounded loopback smoke: isolated port, temp config, health poll, SIGTERM |
 | `scripts/test-verify-installed-daemon.sh` | Self-test wrapper for the verify script |
 | `scripts/smoke-windows.ps1` | Bounded Administrator SCM lifecycle smoke: install → start → health → stop → restart → cleanup |
-| `packaging/install-linux.sh` | Systemd service, dedicated user, hardened unit |
-| `packaging/install-macos.sh` | Launchd plist installation |
-| `packaging/install-windows.ps1` / `uninstall-windows.ps1` | SCM service install/remove |
+| `packaging/install.sh` | Unix bootstrap installer (binary-first download+verify+install, Cargo fallback); glibc 2.17 Linux, unsigned macOS |
+| `packaging/install.ps1` | Windows bootstrap installer (binary-first, Cargo fallback for ARM64/unknown) |
+| `packaging/install-linux.sh` | Legacy local-build helper: systemd service, dedicated user, hardened unit |
+| `packaging/install-macos.sh` | Legacy local-build helper: launchd plist installation |
+| `packaging/install-windows.ps1` / `uninstall-windows.ps1` | SCM service install/remove (local-build path; will be reconciled with `install.ps1` in Plan 100) |
 | `packaging/systemd/greggd.service` | Hardened unit (NoNewPrivileges, ProtectSystem, …) |
 | `packaging/launchd/com.eggstack.greggd.plist` | KeepAlive on crash, RunAtLoad, fd limit |
 
-CI (GitHub Actions) runs fmt/clippy/tests on Linux, native macOS and Windows
-jobs including the SCM smoke, and a Rust 1.75 MSRV compile check. CI never
-publishes or uploads evidence; releases are manual per `RELEASING.md`.
+CI (GitHub Actions) keeps `ci.yml` (fmt/clippy/tests on Linux, native macOS
+and Windows including the SCM smoke, MSRV 1.75 compile check) and a
+release-only `release-binaries.yml` (triggered only by `v*` tags/manual
+dispatch) that builds the five release targets with a glibc 2.17 floor
+(cargo-zigbuild), checks `version`/`--help` and a loopback `greggd` smoke,
+hashes, and assembles a draft GitHub Release. Ordinary CI never publishes or
+uploads evidence; the tagged workflow is the one narrow exception that may
+create a draft from prebuilt binaries. See `RELEASING.md` and
+`architecture/scripts-and-packaging.md`.
 
 **Deep dive:** [scripts-and-packaging.md](scripts-and-packaging.md)
 

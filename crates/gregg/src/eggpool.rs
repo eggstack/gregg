@@ -160,7 +160,6 @@ pub struct EggpoolClient {
 
 impl EggpoolClient {
     /// Build a client with redirects disabled and a bounded idle pool.
-    #[must_use]
     pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
         Self::with_env_lookup(timeout, Arc::new(|name| env::var_os(name)))
     }

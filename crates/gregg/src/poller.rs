@@ -184,7 +184,6 @@ impl HttpClient {
     /// and cancellation. This allows measuring observed peak concurrency
     /// around the production poll path.
     #[cfg(test)]
-    #[must_use]
     pub fn new_with_observer(
         timeout: Duration,
         observer: PollActivityObserver,

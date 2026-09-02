@@ -13,7 +13,7 @@ Gregg remains a small local/LAN system monitor:
 - local-first verification and manual releases;
 - no generalized observability platform, public-internet service, release orchestration, or evidence system.
 
-Local tests remain the primary development path. The one existing GitHub Actions workflow provides Linux checks and native macOS/Windows truth. CI does not publish crates, create releases, upload artifacts, or enforce binary-size gates.
+Local tests remain the primary development path. The `ci.yml` workflow provides Linux checks and native macOS/Windows truth; the tagged `release-binaries.yml` workflow builds five prebuilt targets and assembles a draft GitHub Release from verified binaries. Ordinary CI does not publish crates or publish a release; the release workflow never publishes crates, bumps versions, or creates tags.
 
 ## Roadmap status
 
@@ -52,6 +52,20 @@ optional drive collection, and makes `croncheck` identify a responsive Gregg
 health endpoint before deciding whether to spawn. Deterministic regressions and
 local lifecycle evidence are required before closure; the extended soak remains
 manual evidence rather than CI infrastructure.
+
+Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
+it narrowly supersedes the former Plans 036-039 statement that GitHub releases
+never contain binary attachments and Actions never creates release artifacts,
+while preserving manual crates.io publication and tag creation.
+
+Plan 099 implements the release binary matrix and bootstrap installers:
+a dedicated release-only workflow builds the five required targets with a
+documented glibc 2.17 floor, verifies each executable, hashes with SHA-256,
+and assembles a draft release; Unix `install.sh` and Windows `install.ps1`
+are binary-first with Cargo fallback for `armv7l`/unknown hosts. A 64-bit
+Raspberry Pi/Le Potato uses the ordinary AArch64 Linux asset; ARMv7 remains
+source-build only. macOS binaries are unsigned. No `cargo publish`, tag
+creation, or auto-publication is added.
 
 Plan 092 is complete: it closed the actionable findings from the
 2026-08-31 bugs audit around IPv6 zone-ID URL normalization, DNS error
@@ -118,11 +132,19 @@ excluded.
 | [`095-bugs-audit-corrective-pass.md`](095-bugs-audit-corrective-pass.md) | Correct remaining actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `cfc1c84` |
 | [`096-supplied-bugs-corrective-pass.md`](096-supplied-bugs-corrective-pass.md) | Correct remaining current-code findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `de7ef0d` |
 | [`097-supplied-bugs-corrective-pass.md`](097-supplied-bugs-corrective-pass.md) | Correct actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `2601fb5` |
+| [`098-binary-distribution-install-update-roadmap.md`](098-binary-distribution-install-update-roadmap.md) | Binary distribution, bootstrap installation, and update roadmap for Plans 099-101 | planned; coordination roadmap |
+| [`099-release-binary-matrix-and-bootstrap-installers.md`](099-release-binary-matrix-and-bootstrap-installers.md) | Release binary matrix and bootstrap installers (five targets, glibc 2.17, bootstrap `install.sh`/`install.ps1`, draft release assembly) | complete; implementation `HEAD` (pending CI verification) |
+| [`100-greggd-startup-installation-and-restart.md`](100-greggd-startup-installation-and-restart.md) | greggd startup installation and restart (systemd/launchd/cron, `startup install`/`instructions`, `restart`) | planned |
+| [`101-binary-first-self-update-and-release-integration.md`](101-binary-first-self-update-and-release-integration.md) | Binary-first self-update and release integration (`gregg update`/`greggd update`, crates.io authority, exact-tag assets, Cargo fallback) | planned |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101
+066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
+099 may proceed independently of the remaining Plan 091 soak record;
+100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
+101 requires 099's asset contract and 100's restart contract.
 ```
 
 Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record.

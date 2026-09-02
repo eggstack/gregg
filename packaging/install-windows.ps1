@@ -1,11 +1,22 @@
 <#
 .SYNOPSIS
-    Installs greggd as a native Windows service.
+    Installs greggd as a native Windows service (local-build helper).
 
 .DESCRIPTION
     Installs the greggd metrics daemon as a Windows service managed by the
     Service Control Manager (SCM). The service runs under the LocalService
     account with minimal required privileges.
+
+    This is the legacy local-build helper that installs from a prebuilt binary
+    path. For prebuilt release binaries, prefer the bootstrap installer
+    `packaging/install.ps1` (binary-first, falls back to Cargo for ARM64):
+
+        irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+        .\packaging\install.ps1 -Component Greggd
+
+    The two Windows installers will be reconciled into one canonical
+    implementation in Plan 100; until then this helper remains a small
+    compatibility wrapper around the same SCM logic.
 
     This script must be run as Administrator.
 

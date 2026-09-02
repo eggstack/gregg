@@ -10,9 +10,29 @@ multiple machines.
 
 ## Installation
 
+Prebuilt binaries are published on GitHub Releases for common platforms; the
+installer is binary-first with Cargo fallback.
+
 ```sh
+# Prebuilt binary (recommended)
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+# or pinned version
+curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sh -s -- gregg --version 1.0.11
+# Windows
+# irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+#   .\packaging\install.ps1 -Component Gregg
+
+# From crates.io / source (fallback)
 cargo install gregg
 ```
+
+Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):
+
+- `gregg-x86_64-unknown-linux-gnu` · `gregg-aarch64-unknown-linux-gnu` (covers 64-bit Raspberry Pi/Le Potato)
+- `gregg-x86_64-apple-darwin` · `gregg-aarch64-apple-darwin`
+- `gregg-x86_64-pc-windows-msvc.exe`
+
+Linux ARMv7 (`armv7l`) is source-build only and uses `cargo install` when available.
 
 ## Usage
 
@@ -104,13 +124,16 @@ and expansion state are not persisted.
 
 ## Supported platforms
 
-| Platform | Architecture | Status |
-| --- | --- | --- |
-| Linux | x86-64 | Supported |
-| Linux | ARM64 | Supported |
-| macOS | Intel (x86-64) | Supported |
-| macOS | Apple Silicon (arm64) | Supported |
-| Windows | x86-64 | Supported |
+| Platform | Architecture | Rust target | Status |
+| --- | --- | --- | --- |
+| Linux | x86-64 | `x86_64-unknown-linux-gnu` | Supported (glibc 2.17) |
+| Linux | ARM64 (64-bit Pi/Le Potato) | `aarch64-unknown-linux-gnu` | Supported (glibc 2.17) |
+| macOS | Intel (x86-64) | `x86_64-apple-darwin` | Supported (unsigned) |
+| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` | Supported (unsigned) |
+| Windows | x86-64 | `x86_64-pc-windows-msvc` | Supported |
+
+macOS binaries are unsigned; Gatekeeper may require approval via System
+Settings or `xattr -d com.apple.quarantine`. Linux ARMv7 is source-only.
 
 On Windows, configuration is stored in `%APPDATA%\gregg\gregg.toml`.
 Cross-process config locking uses Windows-native `LockFileEx`.

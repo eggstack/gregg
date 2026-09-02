@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# install-linux.sh — Install greggd on Linux with systemd.
+# install-linux.sh — Install greggd on Linux with systemd (legacy local-build helper).
+# For prebuilt release binaries, prefer: curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+# This helper remains for operator-managed local builds where a checkout is present.
 #
 # Usage: sudo ./install-linux.sh [BINARY_PATH]
 #

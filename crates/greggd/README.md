@@ -9,9 +9,32 @@ Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ec
 
 ## Installation
 
+Prebuilt binaries are published on GitHub Releases for common platforms; the
+bootstrap installer is binary-first with Cargo fallback.
+
 ```sh
+# Prebuilt binary (recommended)
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+# or pinned version / both components:
+curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sudo sh -s -- greggd --version 1.0.11
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+# Windows (PowerShell, as Administrator)
+# irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
+#   .\packaging\install.ps1 -Component Greggd
+
+# From crates.io / source (fallback)
 cargo install greggd
 ```
+
+Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):
+
+- `greggd-x86_64-unknown-linux-gnu` · `greggd-aarch64-unknown-linux-gnu` (covers 64-bit Raspberry Pi/Le Potato)
+- `greggd-x86_64-apple-darwin` · `greggd-aarch64-apple-darwin`
+- `greggd-x86_64-pc-windows-msvc.exe`
+
+Linux ARMv7 (`armv7l`) is source-build only and uses `cargo install` when available.
+See `packaging/README.md` for the full bootstrap contract, checksum verification,
+and `install.sh`/`install.ps1` details.
 
 ## Usage
 

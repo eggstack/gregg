@@ -7,6 +7,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Prebuilt binaries and bootstrap installers** (`gregg`, `greggd`, packaging): release-only workflow builds both binaries for Linux x86_64/aarch64 (glibc 2.17 via `cargo-zigbuild` + Zig), macOS Intel/ARM64, and Windows x86_64, verifies `version`/`--help` and a loopback daemon smoke before hashing, and assembles a draft GitHub Release with stable `gregg-<target>`/`greggd-<target>[.exe]` assets plus `<asset>.sha256`, `install.sh`, and `install.ps1` (Plan 099). Unix `packaging/install.sh` and Windows `packaging/install.ps1` are binary-first with Cargo fallback for `armv7l`/unknown hosts, detect the current OS/arch, download the matching asset and checksum from `https://github.com/eggstack/gregg/releases/...`, verify SHA-256 and candidate version, install to `/usr/local/bin` (root) or `$HOME/.local/bin` (`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg`), warn when the destination is not on `PATH`, and never silently invoke `sudo`. Linux ARM64 explicitly covers ordinary 64-bit Raspberry Pi/Le Potato images; ARMv7 remains source-build only. macOS binaries are unsigned.
+
 ### Fixed
 
 - **Supplied bugs audit corrections** (`gregg`, `greggd`): production client,
