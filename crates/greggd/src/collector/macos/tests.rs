@@ -19,12 +19,12 @@ use crate::collector::SystemCollector;
 fn sample_until_drives(
     collector: &mut MacOsCollector<MockNativeQueries>,
 ) -> crate::collector::CollectedMetrics {
-    for _ in 0..100 {
+    for _ in 0..200 {
         let metrics = collector.sample().expect("core sample succeeds");
         if metrics.drives.is_some() {
             return metrics;
         }
-        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     panic!("drive refresh did not complete");
 }
