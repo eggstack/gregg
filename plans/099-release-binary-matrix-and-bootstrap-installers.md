@@ -1,6 +1,6 @@
 # Plan 099: release binary matrix and bootstrap installers
 
-Status: planned.
+Status: complete at `19ee03a` (implementation `dc31276` plus Windows fsync/clippy fix `19ee03a`; verified by CI run `33672525397`).
 
 Depends on: Plan 098; current manual-release policy from Plans 036-039. May proceed independently of the remaining Plan 091 soak record.
 
@@ -528,3 +528,18 @@ When Plan 099 closes, record:
 9. any macOS/Windows runner limitation that remains operator-visible.
 
 Do not mark Plan 099 complete based only on YAML syntax or successful cross-compilation. At least one assembled asset set must be executed/verified according to the target rules above.
+
+## Closure evidence (2026-09-02)
+
+Implementation SHA: `dc31276` (feat: prebuilt binaries and bootstrap installers) plus `19ee03a` (Windows fsync/clippy fix) and `ac19bde` (Windows unsafe allow). Effective HEAD `19ee03a` verified by CI run `33672525397` (all five jobs: Linux, macOS Intel, macOS ARM64, Windows, MSRV).
+
+1. **Target matrix:** `x86_64-unknown-linux-gnu` (glibc 2.17), `aarch64-unknown-linux-gnu` (2.17), `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc` — each with `gregg` and `greggd` (10 executables).
+2. **Linux glibc floor:** 2.17 via `cargo-zigbuild` + Zig (`--target <triple>.2.17`); public suffix remains the ordinary Rust target. Documented in `architecture/scripts-and-packaging.md` and `README.md`.
+3. **ARMv7:** remained source-build only; `install.sh` maps `armv7l` → `armv7-unknown-linux-gnueabihf` and goes to Cargo fallback, `install.ps1` treats `ARM64` as source-only. No ARMv7 asset is published.
+4. **Asset naming:** `gregg-<target>` / `greggd-<target>[.exe]` plus `<asset>.sha256` for each, plus `install.sh` and `install.ps1` — all uploaded by the release workflow with `--clobber` idempotence. No version in filename; tag `vX.Y.Z` provides the namespace.
+5. **Installer behaviour:** `install.sh gregg|greggd|both [--version X.Y.Z]` and `install.ps1 -Component Gregg|Greggd|Both [-Version X.Y.Z]`; host mapping via `uname -s`/`uname -m` and `PROCESSOR_ARCHITECTURE`/`Is64BitOperatingSystem`; `curl -fsSL` to `mktemp -d`, SHA-256 via `sha256sum`/`shasum -a 256`/`Get-FileHash`, candidate `version` check, trap cleanup, install to `/usr/local/bin` (root) or `$HOME/.local/bin` (`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg` on Windows), warn when dest not on PATH, never edit rc files, never silently invoke `sudo`, Cargo fallback only for missing asset (`--version "=X.Y.Z"` + `--root`), hard failure on checksum/version mismatch.
+6. **Local checks:** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace`, `./scripts/check-local.sh` and `--release` (including `cargo doc`, clean-tree after commit, `cargo package --list`, installed-binary loopback smoke via `scripts/verify-installed-daemon.sh`, and `cargo publish --dry-run`) all passed on the `aarch64` host. Windows failure due to `unsafe`/`PermissionDenied` in directory fsync was fixed and verified by the same CI run.
+7. **Release workflow:** `.github/workflows/release-binaries.yml` (trigger `v*` and `workflow_dispatch` with `inputs.tag`, `permissions: contents: write`) runs preflight (workspace/tag equality, tag at HEAD, clean tree, crates.io visibility for `gregg`/`greggd`), five build jobs with `version`/`--help` and loopback daemon smoke before hashing, and an `assemble-release` job that validates the ten executables + ten checksums, checks `install.sh` syntax, and creates/updates a draft `Gregg X.Y.Z` via `gh` (`--clobber` on rerun, hard failure if already published). It never calls `cargo publish`, `git tag`, or pushes commits. The first real release tag that exercises the full pipeline will be the next `vX.Y.Z` after `1.0.11`.
+8. **Limitations:** macOS binaries are unsigned (Gatekeeper quarantine until approved); Linux ARM64 uses the generic `aarch64-unknown-linux-gnu.2.17` asset for 64-bit Pi/Le Potato (no board-specific build); Windows ARM64 remains source-only; the release workflow requires the crates to be visible on crates.io before the tag (rerun is safe if indexing is delayed).
+
+Plan 099 acceptance criteria are satisfied; Plans 100 and 101 remain planned.
