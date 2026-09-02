@@ -11,10 +11,12 @@ A lightweight daemon (`greggd`) runs on each machine you want to monitor and exp
 
 ## Supported targets
 
-Prebuilt release binaries are published for the common platforms below. The
-GitHub release tag (`vX.Y.Z`) already carries the version, so asset names are
-stable within a release (e.g., `gregg-x86_64-unknown-linux-gnu`). `SHA-256`
-files sit alongside each executable. Linux GNU assets use a conservative
+The first binary-bearing release will publish prebuilt binaries for the common
+platforms below. The current published `v1.0.11` release is source-only, so
+Cargo is the working installation path until that release is available. Future
+GitHub release tags (`vX.Y.Z`) carry the version, so asset names are stable
+within a release (e.g., `gregg-x86_64-unknown-linux-gnu`). `SHA-256` files sit
+alongside each executable. Linux GNU assets use a conservative
 glibc 2.17 floor so they run on long-lived Debian/Ubuntu/Armbian SBC images.
 
 | Platform | Architecture | Rust target | Asset suffix | Status |
@@ -35,20 +37,19 @@ available.
 
 ### 1. Install the daemon on each machine
 
-**Linux / macOS — prebuilt binary (recommended):**
+**Linux / macOS — current working installation:**
+
+```bash
+cargo install gregg --locked
+cargo install greggd --locked
+```
+
+After a binary-bearing release is published, the bootstrap installer will be:
 
 ```bash
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
-# hardened variant:
-# curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-```
-
-For a pinned version, pass `--version`:
-
-```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sudo sh -s -- greggd --version 1.0.11
 ```
 
 Or download directly without the bootstrap:
@@ -76,14 +77,15 @@ sudo ./packaging/install-macos.sh target/release/greggd
 # Optional operator-managed service: sudo launchctl bootstrap system /Library/LaunchDaemons/com.eggstack.greggd.plist
 ```
 
-**Windows — prebuilt binary (PowerShell, as Administrator for daemon):**
+**Windows — current working installation (PowerShell):**
 
 ```powershell
-irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
-# Or with explicit component:
 .\packaging\install.ps1 -Component Greggd
-.\packaging\install.ps1 -Component Both -Version 1.0.11
+.\packaging\install.ps1 -Component Gregg
 ```
+
+The prebuilt PowerShell installer becomes available with the first
+binary-bearing release.
 
 **Windows — local build (developer path):**
 
@@ -104,13 +106,7 @@ invokes `sudo`.
 
 ### 2. Install the client on your workstation
 
-**Prebuilt binary (recommended):**
-
-```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-```
-
-**From crates.io / source (fallback):**
+**From crates.io / source (current working path):**
 
 ```bash
 cargo install gregg

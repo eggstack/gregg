@@ -31,8 +31,8 @@ available through the Windows-only service path.
 | `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()` |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
-| `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, systemd/launchd/cron install, cron block rendering/quoting, `startup_state()` for `restart`/`update`, atomic unit/plist write, `ExitCode::PermissionDenied` on privilege failure without silent fallback |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, staged temp, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` partial-success |
+| `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, systemd/launchd/cron install, bounded manager commands with captured stderr, cron block rendering/quoting, `startup_state()` for `restart`/`update`, atomic unit/plist write, `ExitCode::PermissionDenied` on privilege failure without silent fallback |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, exclusive `tempfile::TempDir` staging, real Cargo child kill/reap on timeout, Windows SCM stop only after complete preparation, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` partial-success |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait |
 | `service/windows` | `src/service/windows.rs` | Windows: SCM integration |
 

@@ -77,6 +77,12 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 ### Bootstrap installers (binary-first, Plan 099)
 
+The current `v1.0.11` release is source-only, so Cargo remains the working
+installation path until the first binary-bearing release publishes these
+assets. The `latest/download` and pinned-release installer URLs below are the
+forward-looking contract for those binary-bearing releases, not commands that
+claim to work against today's release.
+
 | Script | Platform | Mode |
 |--------|----------|------|
 | `install.sh` | Linux, macOS | bootstrap: download prebuilt `gregg-<target>`/`greggd-<target>` + `.sha256`, verify, install to `/usr/local/bin` (root) or `$HOME/.local/bin` (user); Cargo fallback for `armv7l`/unknown |
@@ -103,7 +109,7 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 Raw executables are published, not per-target tarballs/zip files; Windows `.exe` is already directly executable.
 
-### Self-update (`gregg update` / `greggd update`, Plan 101)
+### Self-update (`gregg update` / `greggd update`, Plans 101-102)
 
 Both binaries share the same binary-first contract (no fourth public crate; small duplication is intentional):
 
@@ -111,10 +117,11 @@ Both binaries share the same binary-first contract (no fourth public crate; smal
 - SemVer-safe `MAJOR.MINOR.PATCH` compare; equal version exits 0 without file mutation.
 - Host mapping `detect_target()` -> `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc[.exe]` (ARMv7/unknown -> Cargo fallback).
 - Exact URLs `https://github.com/eggstack/gregg/releases/download/vX.Y.Z/<program>-<target>[.exe]` and `.sha256`; only HTTP 404 permits `cargo install --locked --version "=X.Y.Z" --root <temp>` staged then verified; 5xx/transport/checksum/version mismatch are hard errors.
-- Bounded `curl -fsSL --max-time 90` download to a private `mktemp -d` / `TempDirGuard`, SHA-256 via `sha2` crate (not platform tools) before any `chmod +x` or execution, then `candidate version` must equal `"<program> X.Y.Z"` with exit 0.
+- Bounded `curl -fsSL --max-time 90` download to an exclusive owner-private `tempfile::TempDir`, SHA-256 via `sha2` crate (not platform tools) before any `chmod +x` or execution, then `candidate version` must equal `"<program> X.Y.Z"` with exit 0.
 - Staged before touching current exe; `current_exe()` derived destination (never assumed prefix); symlink policy: if `current_exe()` is a symlink, replace the resolved target and preserve the symlink; Unix same-filesystem atomic rename via `self-replace` 1.5.0 (Rust 1.63, small `tempfile`/`windows-sys` footprint, preserves `0600` -> `0755` etc.), Windows running-image via `self-replace`.
+- Cargo fallback owns its child process and kills/reaps it when the bounded build deadline expires. It does not leave a compiler running in the background or copy a verified candidate to a predictable shared-temp pathname.
 - Permission probe before any `greggd` shutdown; on `PermissionDenied` prints `sudo <exe> update` and returns 4 without stopping daemon; no internal `sudo`.
-- `greggd` preserves config/registration and restarts only when running/managed: `SystemdActive`, `LaunchdLoaded`, `WindowsServiceRunning`, or `UnmanagedOrCron` that is actually running (bounded `GET /v2/healthz` probe); `SystemdInstalledStopped`, `LaunchdInstalledUnloaded`, `WindowsServiceStopped`, and not-running remain stopped; successful replacement + failed restart is `UpdatedButRestartFailed` with installed version and exact `systemctl restart greggd` / `launchctl kickstart -k` / `greggd restart` command and nonzero exit.
+- `greggd` fully prepares and verifies the candidate before stopping a running Windows SCM service; stop failure is a hard pre-replacement error. It preserves config/registration and restarts only when running/managed: `SystemdActive`, `LaunchdLoaded`, `WindowsServiceRunning`, or `UnmanagedOrCron` that is actually running (bounded `GET /v2/healthz` probe); `SystemdInstalledStopped`, `LaunchdInstalledUnloaded`, `WindowsServiceStopped`, and not-running remain stopped; successful replacement + failed restart is `UpdatedButRestartFailed` with installed version and exact `systemctl restart greggd` / `launchctl kickstart -k` / `greggd restart` command and nonzero exit. Direct/cron restart proves endpoint absence before spawning and waits for valid Gregg health readiness before success.
 - Installer and updater share the `eggstack/gregg` prefix, target suffixes, tag `vX.Y.Z`, and `.sha256` contract; `gregg-protocol` remains free of updater concerns; no background checks, TUI notifications, or package-manager integration.
 
 ### Legacy local-build helpers (developer path)

@@ -136,6 +136,7 @@ excluded.
 | [`099-release-binary-matrix-and-bootstrap-installers.md`](099-release-binary-matrix-and-bootstrap-installers.md) | Release binary matrix and bootstrap installers (five targets, glibc 2.17, bootstrap `install.sh`/`install.ps1`, draft release assembly) | complete; implementation `19ee03a` (feat `dc31276` + fix `19ee03a`); CI `33672525397` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`100-greggd-startup-installation-and-restart.md`](100-greggd-startup-installation-and-restart.md) | greggd startup installation and restart (systemd/launchd/cron, `startup install`/`instructions`, `restart`) | complete; implementation `2271b9e` (feat `a73a6a3` + fix `2078924` + fix `2271b9e`); CI `33680301250` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`101-binary-first-self-update-and-release-integration.md`](101-binary-first-self-update-and-release-integration.md) | Binary-first self-update and release integration (`gregg update`/`greggd update`, crates.io authority, exact-tag assets, Cargo fallback) | complete; implementation `2eb0577` (feat) verified by CI `33683771778` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
+| [`102-update-restart-release-readiness-corrective-pass.md`](102-update-restart-release-readiness-corrective-pass.md) | Update/restart lifecycle corrections, bounded manager and Cargo processes, private staging, and truthful pre-binary-release installation docs | implementation in progress |
 
 Dependency order:
 
@@ -144,7 +145,8 @@ Dependency order:
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
-101 requires 099's asset contract and 100's restart contract.
+101 requires 099's asset contract and 100's restart contract;
+102 requires 098-101's implementation and corrects their release-readiness boundaries without rewriting their historical closure records.
 ```
 
 Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record.

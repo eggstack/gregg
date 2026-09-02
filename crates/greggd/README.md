@@ -9,21 +9,16 @@ Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ec
 
 ## Installation
 
-Prebuilt binaries are published on GitHub Releases for common platforms; the
-bootstrap installer is binary-first with Cargo fallback.
+The current published `v1.0.11` release is source-only. Cargo is the working
+installation path until the first binary-bearing release; the bootstrap
+installer is the intended path afterward.
 
 ```sh
-# Prebuilt binary (recommended)
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-# or pinned version / both components:
-curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sudo sh -s -- greggd --version 1.0.11
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
-# Windows (PowerShell, as Administrator)
-# irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
-#   .\packaging\install.ps1 -Component Greggd
+# Current working installation
+cargo install greggd --locked
 
-# From crates.io / source (fallback)
-cargo install greggd
+# After a binary-bearing release is published
+# curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
 ```
 
 Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):

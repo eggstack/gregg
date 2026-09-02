@@ -29,8 +29,8 @@ service lifecycle. For platform metric collection itself, use the
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
-| `startup` | `src/startup.rs` | Startup install/instructions/restart: auto systemd/launchd/cron/Windows SCM detection, atomic unit/plist write, cron quoting/merging, `startup_state()` for `restart`/`update`, `PermissionDenied` without silent fallback |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` |
+| `startup` | `src/startup.rs` | Startup install/instructions/restart: auto systemd/launchd/cron/Windows SCM detection, atomic unit/plist write, bounded manager commands with captured stderr, cron quoting/merging, `startup_state()` for `restart`/`update`, `PermissionDenied` without silent fallback |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, private `tempfile::TempDir` staging, real Cargo child kill/reap on timeout, Windows SCM stop only after complete preparation, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` |
 | `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
 
 ## Runtime ownership
@@ -56,7 +56,7 @@ service lifecycle. For platform metric collection itself, use the
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
 | `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
-| `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise `stop` + detached `run`); permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse |
+| `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise control `stop` + definitive endpoint-absence check + detached `run`); success requires a bounded valid Gregg health response, not merely process creation. Permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse |
 | `host` / `port` | Atomic persisted mutation; applies on next start |
 | `version` | Compile-time version string |
 | `start` / `service` | Windows SCM only (`start` is lifecycle manager; `service` is the internal SCM entry point) |

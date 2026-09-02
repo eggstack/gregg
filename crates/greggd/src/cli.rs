@@ -397,7 +397,7 @@ fn parse_greggd_health(response: &[u8]) -> bool {
     )
 }
 
-fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
+pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
     let mut stream = match TcpStream::connect_timeout(&target, CRONCHECK_TIMEOUT) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -442,11 +442,19 @@ fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
 ///
 /// Exposed crate-internally so tests can inspect `program()` and `get_args()`
 /// without actually forking. The caller is responsible for `.spawn()`.
-fn build_daemon_command(
+pub(crate) fn build_daemon_command(
     config_path: &std::path::Path,
     explicit: bool,
 ) -> std::io::Result<ProcessCommand> {
     let exe = std::env::current_exe()?;
+    Ok(build_daemon_command_for(&exe, config_path, explicit))
+}
+
+pub(crate) fn build_daemon_command_for(
+    exe: &std::path::Path,
+    config_path: &std::path::Path,
+    explicit: bool,
+) -> ProcessCommand {
     let mut cmd = ProcessCommand::new(exe);
     cmd.arg("run");
     if explicit {
@@ -462,7 +470,7 @@ fn build_daemon_command(
         cmd.process_group(0);
     }
 
-    Ok(cmd)
+    cmd
 }
 
 /// Dispatch a subcommand using the path's current existence as a compatibility

@@ -1,6 +1,6 @@
 # Plan 102: update, restart, and release-readiness corrective pass
 
-Status: planned.
+Status: implementation in progress.
 
 Depends on: Plans 098-101 as implemented through `2eb0577` and documentation closure `479ecbd`; existing CI run `33683771778` is green but does not close the defects below.
 

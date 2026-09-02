@@ -633,3 +633,9 @@ Implementation SHA: `2eb0577` (feat: binary-first self-update and release integr
 11. **First real release where `gregg update`/`greggd update` successfully consume the Plan 099 assets:** The next `vX.Y.Z` after `1.0.11` (e.g., `v1.0.12`) will be the first tag that exercises the complete `cargo publish` → `vX.Y.Z` tag → `release-binaries` draft (10 executables + 10 `.sha256` + `install.sh`/`install.ps1`) → `gregg update`/`greggd update` on at least one Linux x86_64/aarch64 and one Windows host. Until then, `AlreadyCurrent` is the truthful local proof; the `cargo fallback` path is proved via the `armv7l` source-only host and the `--version "=X.Y.Z"` staging test.
 
 Plan 101 closes the Plan 098 roadmap only after the complete release -> installer -> installed updater path is demonstrated on at least one real release, with native Windows replacement truth recorded separately if the local host is Unix.
+
+Correction note (Plan 102): the implementation and CI run recorded above remain
+historically accurate, but post-closure review found lifecycle/staging and
+current-installation-documentation defects. Plan 102 is the narrow corrective
+pass required before the first binary-bearing release; no earlier SHA or CI run
+is being reclassified as failed.

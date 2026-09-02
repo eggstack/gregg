@@ -1,7 +1,3 @@
-#![allow(clippy::all)]
-#![allow(clippy::pedantic)]
-#![allow(clippy::nursery)]
-
 //! Binary-first self-update for `gregg`.
 //!
 //! Implements Plan 101's update contract: crates.io is the version authority,
@@ -14,13 +10,16 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tempfile::{Builder, TempDir};
 
 // ── Public outcome / error ──────────────────────────────────────────────────
 
@@ -138,7 +137,7 @@ pub fn compare_versions(a: &str, b: &str) -> Option<Ordering> {
 
 /// Detect the current host's Rust target suffix using `std::env::consts`.
 /// Returns `Some(target)` for the five supported prebuilt targets, `None`
-/// for source-only/unknown hosts (ARMv7, FreeBSD, etc.) which should use
+/// for source-only/unknown hosts (`ARMv7`, FreeBSD, etc.) which should use
 /// Cargo fallback.
 pub fn detect_target() -> Option<String> {
     let os = std::env::consts::OS;
@@ -370,7 +369,11 @@ fn compute_sha256(path: &Path) -> Result<String, UpdateError> {
         hasher.update(&buf[..n]);
     }
     let result = hasher.finalize();
-    Ok(result.iter().map(|b| format!("{b:02x}")).collect())
+    let mut hex = String::with_capacity(result.len() * 2);
+    for byte in result {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    Ok(hex)
 }
 
 fn verify_checksum(file: &Path, sha_file: &Path) -> Result<(), UpdateError> {
@@ -432,73 +435,89 @@ fn validate_candidate(
     Ok(())
 }
 
-fn run_command_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<std::process::Output, UpdateError> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| UpdateError::CandidateMismatch(format!("failed to spawn candidate: {e}")))?;
+fn run_child_with_timeout(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = cmd.spawn()?;
+    let stdout = pipe_reader(child.stdout.take());
+    let stderr = pipe_reader(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    loop {
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(UpdateError::CandidateMismatch(
-                "candidate 'version' timed out".to_string(),
-            ));
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout);
+                let _ = join_pipe(stderr);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child process timed out and was killed",
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
         }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                // Need to collect output; we spawned without piped? We used piped, so we need to read.
-                // `try_wait` doesn't give output. Use `wait_with_output` after? Instead, we already spawned with piped,
-                // we need to wait and then read. Simpler: use `output` with timeout via `wait`?
-                // For now, wait for completion and then collect stdout/stderr via `wait_with_output` alternative:
-                // We lost the output. Use `child.wait()` then try to read? Instead, we should have used `cmd.output()` with timeout via thread.
-                // Fallback: kill and error if we can't get output cleanly.
-                // For simplicity, if we reached here via try_wait, we can call `wait_with_output` logic by converting?
-                // We need a different approach: use `cmd.output()` in a thread and join with timeout.
-                // For now, handle status check and then try to get output via `child.wait()` which doesn't return output if piped.
-                // We'll work around by not using try_wait for piped output; instead use a thread.
-                // This path is unlikely to be hit with fast version command.
-                // Attempt to get output by waiting and reading manually:
-                let output = child.wait_with_output().map_err(|e| {
-                    UpdateError::CandidateMismatch(format!("failed to wait for candidate: {e}"))
-                })?;
-                // Reconstruct status from output.status, but we already have status
-                let _ = status;
-                return Ok(output);
-            }
-            Ok(None) => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Err(UpdateError::CandidateMismatch(format!(
-                    "failed to wait for candidate: {e}"
-                )));
-            }
-        }
+    };
+    Ok(Output {
+        status,
+        stdout: join_pipe(stdout)?,
+        stderr: join_pipe(stderr)?,
+    })
+}
+
+fn pipe_reader<R: Read + Send + 'static>(
+    reader: Option<R>,
+) -> Option<thread::JoinHandle<io::Result<Vec<u8>>>> {
+    reader.map(|mut reader| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+    })
+}
+
+fn join_pipe(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| io::Error::other("child output reader panicked"))?,
+        None => Ok(Vec::new()),
     }
+}
+
+fn run_command_with_timeout(cmd: Command, timeout: Duration) -> Result<Output, UpdateError> {
+    run_child_with_timeout(cmd, timeout).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            UpdateError::CandidateMismatch("candidate 'version' timed out".to_string())
+        } else {
+            UpdateError::CandidateMismatch(format!("candidate process failed: {error}"))
+        }
+    })
 }
 
 // ── Temp dir helpers ────────────────────────────────────────────────────────
 
-fn create_temp_dir(prefix: &str) -> Result<PathBuf, UpdateError> {
-    let base = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = base.join(format!("{prefix}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir)
-        .map_err(|e| UpdateError::Io(format!("failed to create temp dir: {e}")))?;
-    Ok(dir)
+fn create_temp_dir(prefix: &str) -> Result<TempDir, UpdateError> {
+    let temp_dir = Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|e| UpdateError::Io(format!("failed to create private temp dir: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700))
+            .map_err(|e| UpdateError::Io(format!("failed to secure private temp dir: {e}")))?;
+    }
+    Ok(temp_dir)
 }
 
-struct TempDirGuard(PathBuf);
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+struct StagedCandidate {
+    _temp_dir: TempDir,
+    path: PathBuf,
+}
+
+impl StagedCandidate {
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -509,25 +528,21 @@ fn current_exe_path() -> Result<PathBuf, UpdateError> {
         .map_err(|e| UpdateError::CurrentExe(format!("current_exe failed: {e}")))?;
     // On Unix, current_exe may be via /proc/self/exe which is already canonical.
     // Try canonicalize for symlink handling; fallback to original if fails.
-    match exe.canonicalize() {
-        Ok(canonical) => Ok(canonical),
-        Err(_) => {
-            // Fallback: check symlink one level like self-replace does
-            if fs::symlink_metadata(&exe)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false)
-            {
-                if let Ok(target) = fs::read_link(&exe) {
-                    if target.is_relative() {
-                        if let Some(parent) = exe.parent() {
-                            return Ok(parent.join(target));
-                        }
+    if let Ok(canonical) = exe.canonicalize() {
+        Ok(canonical)
+    } else {
+        // Fallback: check symlink one level like self-replace does.
+        if fs::symlink_metadata(&exe).is_ok_and(|m| m.file_type().is_symlink()) {
+            if let Ok(target) = fs::read_link(&exe) {
+                if target.is_relative() {
+                    if let Some(parent) = exe.parent() {
+                        return Ok(parent.join(target));
                     }
-                    return Ok(target);
                 }
+                return Ok(target);
             }
-            Ok(exe)
         }
+        Ok(exe)
     }
 }
 
@@ -543,8 +558,7 @@ fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<(), Up
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     match fs::OpenOptions::new()
         .write(true)
@@ -578,8 +592,7 @@ fn replace_current_exe(candidate: &Path) -> Result<(), UpdateError> {
                 elevated: format!(
                     "sudo {} update",
                     std::env::current_exe()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "gregg".to_string())
+                        .map_or_else(|_| "gregg".to_string(), |p| p.display().to_string())
                 ),
             }
         } else {
@@ -590,13 +603,10 @@ fn replace_current_exe(candidate: &Path) -> Result<(), UpdateError> {
 
 // ── Cargo fallback ──────────────────────────────────────────────────────────
 
-fn cargo_fallback(program: &str, version: &str) -> Result<PathBuf, UpdateError> {
+fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, UpdateError> {
     let cargo_bin = find_cargo()?;
     let temp_root = create_temp_dir(&format!("gregg-cargo-{program}"))?;
-    let _guard = TempDirGuard(temp_root.clone());
-    // Keep temp_root alive for copy after install; we need to persist beyond guard for verification?
-    // Instead, create separate temp dir that we keep.
-    let cargo_root = temp_root.join("cargo-root");
+    let cargo_root = temp_root.path().join("cargo-root");
     fs::create_dir_all(&cargo_root)
         .map_err(|e| UpdateError::Io(format!("failed to create cargo root: {e}")))?;
     let cargo_root_str = cargo_root.to_string_lossy().to_string();
@@ -633,47 +643,23 @@ fn cargo_fallback(program: &str, version: &str) -> Result<PathBuf, UpdateError> 
         )));
     }
     validate_candidate(&staged, program, version)?;
-    // Need to keep staged file after temp dir guard? We'll copy to a persistent temp file outside cargo root?
-    // The staged path is inside temp_root which will be removed when _guard drops. We need to copy it to a separate durable temp location.
-    // Create a durable temp file in system temp.
-    let durable = std::env::temp_dir().join(format!(
-        "gregg-candidate-{}-{}-{}",
-        program,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::copy(&staged, &durable)
-        .map_err(|e| UpdateError::Io(format!("failed to stage cargo binary: {e}")))?;
-    // Now temp_root can be cleaned (guard will drop). Return durable path.
-    // Leak guard's removal? We'll manually remove cargo root and keep durable.
-    let _ = fs::remove_dir_all(&temp_root);
-    std::mem::forget(_guard);
-    Ok(durable)
+    Ok(StagedCandidate {
+        _temp_dir: temp_root,
+        path: staged,
+    })
 }
 
 fn run_command_with_timeout_for_cargo(
-    mut cmd: Command,
+    cmd: Command,
     timeout: Duration,
-) -> Result<std::process::Output, UpdateError> {
-    // Use thread with channel for long cargo timeout
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let out = cmd.output();
-        let _ = tx.send(out);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(UpdateError::CargoFallback(format!(
-            "cargo spawn failed: {e}"
-        ))),
-        Err(_) => Err(UpdateError::CargoFallback(
-            "cargo install timed out after 600s".to_string(),
-        )),
-    }
+) -> Result<Output, UpdateError> {
+    run_child_with_timeout(cmd, timeout).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            UpdateError::CargoFallback("cargo install timed out after 600s".to_string())
+        } else {
+            UpdateError::CargoFallback(format!("cargo process failed: {error}"))
+        }
+    })
 }
 
 // ── Main entry ──────────────────────────────────────────────────────────────
@@ -720,11 +706,10 @@ pub fn run_update() -> Result<UpdateOutcome, UpdateError> {
 
     let curl = find_curl()?;
     let temp_dir = create_temp_dir("gregg-update")?;
-    let _guard = TempDirGuard(temp_dir.clone());
 
     let asset_name_str = asset_name(PROGRAM, &target);
-    let asset_path = temp_dir.join(&asset_name_str);
-    let sha_path = temp_dir.join(format!("{asset_name_str}.sha256"));
+    let asset_path = temp_dir.path().join(&asset_name_str);
+    let sha_path = temp_dir.path().join(format!("{asset_name_str}.sha256"));
 
     match download_file(&curl, &asset_url, &asset_path) {
         DownloadOutcome::Success => {
@@ -759,20 +744,12 @@ pub fn run_update() -> Result<UpdateOutcome, UpdateError> {
 
 fn cargo_update_path(from: &str, to: &str) -> Result<UpdateOutcome, UpdateError> {
     let staged = cargo_fallback(PROGRAM, to)?;
-    let _staged_guard = TempFileGuard(staged.clone());
-    replace_current_exe(&staged)?;
+    replace_current_exe(staged.path())?;
     eprintln!("Updated {PROGRAM} {from} -> {to} via Cargo");
     Ok(UpdateOutcome::UpdatedFromCargo {
         from: from.to_string(),
         to: to.to_string(),
     })
-}
-
-struct TempFileGuard(PathBuf);
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -943,5 +920,52 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("sudo /usr/local/bin/gregg update"));
+    }
+
+    #[test]
+    fn private_staging_is_exclusive_and_cleans_up() {
+        let first = create_temp_dir("gregg-test-stage").unwrap();
+        let second = create_temp_dir("gregg-test-stage").unwrap();
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(first.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let path = first.path().join("candidate");
+        fs::write(&path, b"candidate").unwrap();
+        let first_path = first.path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
+        drop(second);
+    }
+
+    #[test]
+    fn timeout_child() {
+        if let Ok(marker) = std::env::var("GREGG_TIMEOUT_MARKER") {
+            thread::sleep(Duration::from_millis(250));
+            fs::write(marker, b"late").unwrap();
+        }
+    }
+
+    #[test]
+    fn cargo_timeout_kills_and_reaps_child() {
+        let temp = create_temp_dir("gregg-test-timeout").unwrap();
+        let marker = temp.path().join("late");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "update::tests::timeout_child", "--nocapture"])
+            .env("GREGG_TIMEOUT_MARKER", &marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = run_command_with_timeout_for_cargo(command, Duration::from_millis(40))
+            .expect_err("slow child must time out");
+        assert!(error.to_string().contains("timed out"));
+        thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "timed-out child continued after return");
     }
 }

@@ -17,6 +17,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Update/restart release-readiness corrections** (`gregg`, `greggd`): updater
+  candidates now use exclusive private staging and real child-process timeout
+  cleanup; `greggd` prepares and verifies candidates before stopping a running
+  Windows service, direct/cron restart proves endpoint absence and health
+  readiness, and systemd/launchd commands are bounded with preserved stderr.
+  Installation docs now identify Cargo as the working path until the first
+  binary-bearing release (Plan 102).
+
 - **Supplied bugs audit corrections** (`gregg`, `greggd`): production client,
   input, and TOML setup failures now propagate as errors; Unix temporary config
   files reject symlinks; stale temporary files are reaped and reported;

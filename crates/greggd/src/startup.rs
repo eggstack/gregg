@@ -8,11 +8,65 @@
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
+
+const MANAGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const DIRECT_RESTART_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn run_bounded_command(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take().map(read_pipe);
+    let stderr = child.stderr.take().map(read_pipe);
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout);
+                let _ = join_pipe(stderr);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("{program} timed out after {}s", timeout.as_secs()),
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    Ok(Output {
+        status,
+        stdout: join_pipe(stdout)?,
+        stderr: join_pipe(stderr)?,
+    })
+}
+
+fn read_pipe<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| io::Error::other("child output reader panicked"))?,
+        None => Ok(Vec::new()),
+    }
+}
 
 // ── Startup method ──────────────────────────────────────────────────────────
 
@@ -259,31 +313,12 @@ fn read_proc1_comm() -> Option<String> {
 }
 
 fn systemctl_probe_is_running() -> bool {
-    // Bound the probe to ~500ms via `timeout` if available, otherwise just try
-    // a direct invocation with a short wait using `Command` and a manual
-    // sleep/poll. Keep it small and non-blocking for the caller.
-    let mut cmd = Command::new("systemctl");
-    cmd.arg("is-system-running");
-    cmd.arg("--quiet");
-    // Do not inherit stdio; we only care about exit code.
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    match cmd.status() {
-        Ok(status) => {
-            // `is-system-running --quiet` exits 0 when running, non-zero
-            // otherwise. Both indicate systemctl is present and host has some
-            // systemd state; we treat any successful invocation that did not
-            // fail to execute as "systemd present" when /run/systemd/system
-            // already exists. Distinguish only "command not found".
-            // If systemctl exists at all, consider systemd environment true.
-            // The exit code itself is not crucial; the directory already proved
-            // systemd ownership. So return true if we could execute systemctl.
-            let _ = status;
-            true
-        }
-        Err(e) if e.kind() == io::ErrorKind::NotFound => false,
-        Err(_) => false,
-    }
+    run_bounded_command(
+        "systemctl",
+        &["is-system-running", "--quiet"],
+        MANAGER_COMMAND_TIMEOUT,
+    )
+    .is_ok()
 }
 
 // ── Auto detection ────────────────────────────────────────────────────────
@@ -710,13 +745,14 @@ fn systemd_unit_exists() -> bool {
 
 #[allow(dead_code)]
 fn systemd_is_active() -> bool {
-    let mut cmd = Command::new("systemctl");
-    cmd.arg("is-active");
-    cmd.arg("--quiet");
-    cmd.arg("greggd");
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    matches!(cmd.status(), Ok(status) if status.success())
+    matches!(
+        run_bounded_command(
+            "systemctl",
+            &["is-active", "--quiet", "greggd"],
+            MANAGER_COMMAND_TIMEOUT,
+        ),
+        Ok(output) if output.status.success()
+    )
 }
 
 #[allow(dead_code)]
@@ -728,20 +764,18 @@ fn launchd_plist_exists() -> bool {
 fn launchd_is_loaded() -> bool {
     // `launchctl print system/com.eggstack.greggd` exits 0 when loaded on
     // modern macOS; fall back to `launchctl list | grep`.
-    let mut cmd = Command::new("launchctl");
-    cmd.arg("print");
-    cmd.arg(format!("system/{}", launchd_label()));
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    if let Ok(status) = cmd.status() {
-        if status.success() {
-            return true;
-        }
+    if matches!(
+        run_bounded_command(
+            "launchctl",
+            &["print", &format!("system/{}", launchd_label())],
+            MANAGER_COMMAND_TIMEOUT,
+        ),
+        Ok(output) if output.status.success()
+    ) {
+        return true;
     }
     // Fallback: `launchctl list` contains label
-    let mut cmd2 = Command::new("launchctl");
-    cmd2.arg("list");
-    if let Ok(output) = cmd2.output() {
+    if let Ok(output) = run_bounded_command("launchctl", &["list"], MANAGER_COMMAND_TIMEOUT) {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if stdout.contains(launchd_label()) {
@@ -1013,16 +1047,43 @@ fn set_config_ownership() -> io::Result<()> {
 }
 
 fn run_systemctl(args: &[&str]) -> io::Result<()> {
-    let mut cmd = Command::new("systemctl");
-    cmd.args(args);
-    let status = cmd.status()?;
-    if status.success() {
+    let output = run_bounded_command("systemctl", args, MANAGER_COMMAND_TIMEOUT)?;
+    if output.status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "systemctl {} failed with status {status}",
-            args.join(" ")
+            "systemctl {} failed with status {:?}: {}",
+            args.join(" "),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
         )))
+    }
+}
+
+fn manager_error_is_permission(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("permission")
+        || message.contains("access denied")
+        || message.contains("not authorized")
+        || message.contains("authentication")
+}
+
+fn systemd_manager_error(exe: &Path, args: &[&str], error: io::Error) -> InstallError {
+    if error.kind() == io::ErrorKind::PermissionDenied
+        || manager_error_is_permission(&error.to_string())
+    {
+        InstallError::Permission {
+            message: format!(
+                "systemctl {} was denied; rerun as root: {}",
+                args.join(" "),
+                elevated_command(exe, StartupMethodArg::Systemd)
+            ),
+        }
+    } else {
+        InstallError::Io {
+            path: PathBuf::from(format!("systemctl {}", args.join(" "))),
+            source: error,
+        }
     }
 }
 
@@ -1092,28 +1153,20 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
         let _ = fs::set_permissions(&unit_path, fs::Permissions::from_mode(0o644));
     }
     // daemon-reload, enable, start/restart
-    run_systemctl(&["daemon-reload"]).map_err(|e| InstallError::Io {
-        path: PathBuf::from("systemctl daemon-reload"),
-        source: e,
-    })?;
-    run_systemctl(&["enable", "greggd"]).map_err(|e| InstallError::Io {
-        path: PathBuf::from("systemctl enable greggd"),
-        source: e,
-    })?;
+    let daemon_reload = ["daemon-reload"];
+    run_systemctl(&daemon_reload).map_err(|e| systemd_manager_error(exe, &daemon_reload, e))?;
+    let enable = ["enable", "greggd"];
+    run_systemctl(&enable).map_err(|e| systemd_manager_error(exe, &enable, e))?;
     // Decide start vs restart: if active, restart; else start.
     if systemd_is_active() {
-        run_systemctl(&["restart", "greggd"]).map_err(|e| InstallError::Io {
-            path: PathBuf::from("systemctl restart greggd"),
-            source: e,
-        })?;
+        let restart = ["restart", "greggd"];
+        run_systemctl(&restart).map_err(|e| systemd_manager_error(exe, &restart, e))?;
     } else {
         // Try start; if it fails because already running, try restart.
         if let Err(e) = run_systemctl(&["start", "greggd"]) {
             eprintln!("systemctl start failed ({e}), trying restart...");
-            run_systemctl(&["restart", "greggd"]).map_err(|e2| InstallError::Io {
-                path: PathBuf::from("systemctl restart greggd"),
-                source: e2,
-            })?;
+            let restart = ["restart", "greggd"];
+            run_systemctl(&restart).map_err(|e2| systemd_manager_error(exe, &restart, e2))?;
         }
     }
     println!("greggd systemd service installed: {}", unit_path.display());
@@ -1202,40 +1255,69 @@ pub fn install_launchd(exe: &Path, _config_path: &Path) -> Result<(), InstallErr
     let label = launchd_label();
     let loaded = launchd_is_loaded();
     if loaded {
-        // Bootout existing job (best effort)
-        let mut cmd = Command::new("launchctl");
-        cmd.arg("bootout");
-        cmd.arg(format!("system/{label}"));
-        let _ = cmd.status();
-        // Also try bootout with plist path
-        let mut cmd2 = Command::new("launchctl");
-        cmd2.arg("bootout");
-        cmd2.arg("system");
-        cmd2.arg(&plist_path);
-        let _ = cmd2.status();
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        // Bootout existing job (best effort), but never allow a manager call
+        // to hang indefinitely.
+        let _ = run_bounded_command(
+            "launchctl",
+            &["bootout", &format!("system/{label}")],
+            MANAGER_COMMAND_TIMEOUT,
+        );
+        let _ = run_bounded_command(
+            "launchctl",
+            &["bootout", "system", &plist_path.to_string_lossy()],
+            MANAGER_COMMAND_TIMEOUT,
+        );
     }
     // Bootstrap
-    let mut bootstrap = Command::new("launchctl");
-    bootstrap.arg("bootstrap");
-    bootstrap.arg("system");
-    bootstrap.arg(&plist_path);
-    let status = bootstrap.status().map_err(|e| InstallError::Io {
-        path: PathBuf::from("launchctl bootstrap"),
-        source: e,
-    })?;
-    if !status.success() && !loaded {
+    let bootstrap_args = ["bootstrap", "system", &plist_path.to_string_lossy()];
+    let bootstrap = run_bounded_command("launchctl", &bootstrap_args, MANAGER_COMMAND_TIMEOUT)
+        .map_err(|source| InstallError::Io {
+            path: PathBuf::from("launchctl bootstrap"),
+            source,
+        })?;
+    if !bootstrap.status.success() && !loaded {
+        let detail = String::from_utf8_lossy(&bootstrap.stderr)
+            .trim()
+            .to_string();
+        if manager_error_is_permission(&detail) {
+            return Err(InstallError::Permission {
+                message: format!(
+                    "launchctl bootstrap failed: {detail}; rerun as root: {}",
+                    elevated_command(exe, StartupMethodArg::Launchd)
+                ),
+            });
+        }
         return Err(InstallError::Other(format!(
-            "launchctl bootstrap failed with status {status}"
+            "launchctl bootstrap failed with status {:?}: {detail}",
+            bootstrap.status.code()
         )));
     }
     // Kickstart if it was previously loaded (restart), otherwise bootstrap already started it (RunAtLoad).
     if loaded {
-        let mut kick = Command::new("launchctl");
-        kick.arg("kickstart");
-        kick.arg("-k");
-        kick.arg(format!("system/{label}"));
-        let _ = kick.status();
+        let kick = run_bounded_command(
+            "launchctl",
+            &["kickstart", "-k", &format!("system/{label}")],
+            MANAGER_COMMAND_TIMEOUT,
+        )
+        .map_err(|source| InstallError::Io {
+            path: PathBuf::from("launchctl kickstart"),
+            source,
+        })?;
+        if !kick.status.success() {
+            let detail = String::from_utf8_lossy(&kick.stderr).trim().to_string();
+            if manager_error_is_permission(&detail) {
+                return Err(InstallError::Permission {
+                    message: format!(
+                        "launchctl kickstart failed: {detail}; rerun as root: {}",
+                        elevated_command(exe, StartupMethodArg::Launchd)
+                    ),
+                });
+            }
+            return Err(InstallError::Other(format!(
+                "launchctl kickstart failed with status {:?}: {detail}",
+                kick.status.code()
+            )));
+        }
     }
     println!("greggd launchd service installed: {}", plist_path.display());
     println!("config: {}", cfg_path.display());
@@ -1405,11 +1487,13 @@ fn restart_systemd(exe: &Path) -> Result<(), InstallError> {
             ),
         }),
         Err(e) => {
-            // Check if error string indicates permission
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("permission") || msg.contains("access denied") || msg.contains("not authorized") {
+            let msg = e.to_string();
+            if manager_error_is_permission(&msg) {
                 Err(InstallError::Permission {
-                    message: format!("permission denied: rerun as root: sudo systemctl restart greggd (exe: {})", exe.display()),
+                    message: format!(
+                        "permission denied: rerun as root: sudo systemctl restart greggd (exe: {})",
+                        exe.display()
+                    ),
                 })
             } else {
                 Err(InstallError::Io {
@@ -1423,18 +1507,27 @@ fn restart_systemd(exe: &Path) -> Result<(), InstallError> {
 
 fn restart_launchd(exe: &Path) -> Result<(), InstallError> {
     let label = launchd_label();
-    let mut cmd = Command::new("launchctl");
-    cmd.arg("kickstart");
-    cmd.arg("-k");
-    cmd.arg(format!("system/{label}"));
-    match cmd.status() {
-        Ok(status) if status.success() => {
+    let args = ["kickstart", "-k", &format!("system/{label}")];
+    match run_bounded_command("launchctl", &args, MANAGER_COMMAND_TIMEOUT) {
+        Ok(output) if output.status.success() => {
             println!("greggd restarted via launchd (kickstart -k system/{label})");
             Ok(())
         }
-        Ok(status) => Err(InstallError::Io {
+        Ok(output) if manager_error_is_permission(&String::from_utf8_lossy(&output.stderr)) => {
+            Err(InstallError::Permission {
+                message: format!(
+                    "permission denied: rerun as root: sudo launchctl kickstart -k system/{label} (exe: {})",
+                    exe.display()
+                ),
+            })
+        }
+        Ok(output) => Err(InstallError::Io {
             path: PathBuf::from(format!("launchctl kickstart -k system/{label}")),
-            source: io::Error::other(format!("launchctl kickstart failed with status {status}")),
+            source: io::Error::other(format!(
+                "launchctl kickstart failed with status {:?}: {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr).trim()
+            )),
         }),
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Err(InstallError::Permission {
             message: format!(
@@ -1449,22 +1542,40 @@ fn restart_launchd(exe: &Path) -> Result<(), InstallError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartStopState {
+    Stopped,
+    NotRunning,
+    Uncertain,
+    ControlError,
+}
+
+fn restart_spawn_allowed(stop_state: RestartStopState, probe: &crate::cli::CroncheckProbe) -> bool {
+    !matches!(stop_state, RestartStopState::Uncertain)
+        && matches!(probe, crate::cli::CroncheckProbe::Absent)
+}
+
+#[allow(clippy::too_many_lines)]
 fn restart_cron_direct(exe: &Path, config_path: &Path, explicit: bool) -> Result<(), InstallError> {
     // Use existing control socket stop + detached start via croncheck primitive.
     // 1) try stop
     #[cfg(unix)]
     {
         let outcome = crate::control::send_stop(config_path);
-        match outcome {
+        let config = crate::cli::load_config(config_path, explicit).map_err(|error| {
+            InstallError::Other(format!("failed to load restart config: {error}"))
+        })?;
+        let target = crate::cli::croncheck_target(&config);
+        let stop_state = match outcome {
             Ok(crate::control::StopOutcome::Stopped { .. }) => {
                 println!("greggd stopped via control socket");
+                RestartStopState::Stopped
             }
             Ok(crate::control::StopOutcome::NotRunning) => {
                 println!("greggd not running (control socket)");
+                RestartStopState::NotRunning
             }
-            Ok(crate::control::StopOutcome::Uncertain) => {
-                eprintln!("warning: stop outcome uncertain; proceeding to start");
-            }
+            Ok(crate::control::StopOutcome::Uncertain) => RestartStopState::Uncertain,
             Err(e) => {
                 // If permission denied, surface it
                 if let crate::control::ControlError::Io(io_e) = &e {
@@ -1474,51 +1585,77 @@ fn restart_cron_direct(exe: &Path, config_path: &Path, explicit: bool) -> Result
                         });
                     }
                 }
-                eprintln!("warning: stop failed ({e}); attempting start anyway");
+                if !matches!(
+                    crate::cli::probe_greggd(target),
+                    crate::cli::CroncheckProbe::Absent
+                ) {
+                    return Err(InstallError::Other(format!(
+                        "restart refused after stop error: endpoint is not definitely absent ({e})"
+                    )));
+                }
+                RestartStopState::ControlError
             }
-        }
-        // Brief pause to let OS release port
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        // 2) start via detached run (same primitive as croncheck)
-        // Reuse cli::build_daemon_command if accessible; otherwise directly spawn.
-        // We implement similar logic here without importing private cli helper by replicating.
-        let current_exe = std::env::current_exe().map_err(|e| InstallError::Io {
-            path: PathBuf::from("current_exe"),
-            source: e,
-        })?;
-        // Prefer the exe passed in for consistency with cron block, but use current_exe if different?
-        let exe_to_spawn = if exe.exists() {
-            exe.to_path_buf()
-        } else {
-            current_exe
         };
-        let mut cmd = Command::new(exe_to_spawn);
-        cmd.arg("run");
-        if explicit {
-            cmd.arg("--config").arg(config_path);
+        if matches!(stop_state, RestartStopState::Uncertain) {
+            return Err(InstallError::Other(
+                "restart refused: stop outcome was uncertain; daemon may still be running".into(),
+            ));
         }
-        cmd.stdin(std::process::Stdio::null());
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
+        wait_for_endpoint_absence(target)?;
+        let probe = crate::cli::probe_greggd(target);
+        if !restart_spawn_allowed(stop_state, &probe) {
+            return Err(InstallError::Other(
+                "restart refused: endpoint is not definitely absent".into(),
+            ));
         }
-        match cmd.spawn() {
-            Ok(_) => {
-                println!("greggd started (direct/cron)");
-                Ok(())
-            }
+        let mut cmd = crate::cli::build_daemon_command_for(exe, config_path, explicit);
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                Err(InstallError::Permission {
+                return Err(InstallError::Permission {
                     message: format!("permission denied spawning greggd: {e}"),
-                })
+                });
             }
-            Err(e) => Err(InstallError::Io {
-                path: PathBuf::from("greggd run"),
-                source: e,
-            }),
+            Err(e) => {
+                return Err(InstallError::Io {
+                    path: PathBuf::from("greggd run"),
+                    source: e,
+                });
+            }
+        };
+        let deadline = Instant::now() + DIRECT_RESTART_TIMEOUT;
+        loop {
+            match crate::cli::probe_greggd(target) {
+                crate::cli::CroncheckProbe::Running => {
+                    println!("greggd restarted (direct/cron) and passed health check");
+                    return Ok(());
+                }
+                crate::cli::CroncheckProbe::Ambiguous if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(InstallError::Other(
+                        "greggd restart timed out with an ambiguous endpoint".into(),
+                    ));
+                }
+                _ if Instant::now() >= deadline => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(InstallError::Other(
+                        "greggd restart timed out before health readiness".into(),
+                    ));
+                }
+                _ => {
+                    if let Some(status) = child.try_wait().map_err(|source| InstallError::Io {
+                        path: PathBuf::from("greggd run"),
+                        source,
+                    })? {
+                        return Err(InstallError::Other(format!(
+                            "greggd restart child exited before readiness: {status}"
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            }
         }
     }
     #[cfg(not(unix))]
@@ -1527,6 +1664,27 @@ fn restart_cron_direct(exe: &Path, config_path: &Path, explicit: bool) -> Result
         Err(InstallError::Other(
             "direct restart not supported on this platform".into(),
         ))
+    }
+}
+
+#[cfg(unix)]
+fn wait_for_endpoint_absence(target: std::net::SocketAddr) -> Result<(), InstallError> {
+    let deadline = Instant::now() + DIRECT_RESTART_TIMEOUT;
+    loop {
+        match crate::cli::probe_greggd(target) {
+            crate::cli::CroncheckProbe::Absent => return Ok(()),
+            crate::cli::CroncheckProbe::Running if Instant::now() >= deadline => {
+                return Err(InstallError::Other(
+                    "restart refused: configured endpoint remained occupied".into(),
+                ));
+            }
+            crate::cli::CroncheckProbe::Ambiguous if Instant::now() >= deadline => {
+                return Err(InstallError::Other(
+                    "restart refused: could not prove configured endpoint is absent".into(),
+                ));
+            }
+            _ => thread::sleep(Duration::from_millis(50)),
+        }
     }
 }
 
@@ -1796,6 +1954,42 @@ mod tests {
     }
 
     #[test]
+    fn restart_spawn_decision_requires_definite_absence() {
+        use crate::cli::CroncheckProbe;
+
+        assert!(restart_spawn_allowed(
+            RestartStopState::Stopped,
+            &CroncheckProbe::Absent
+        ));
+        assert!(restart_spawn_allowed(
+            RestartStopState::NotRunning,
+            &CroncheckProbe::Absent
+        ));
+        assert!(restart_spawn_allowed(
+            RestartStopState::ControlError,
+            &CroncheckProbe::Absent
+        ));
+        assert!(!restart_spawn_allowed(
+            RestartStopState::Uncertain,
+            &CroncheckProbe::Absent
+        ));
+        assert!(!restart_spawn_allowed(
+            RestartStopState::Stopped,
+            &CroncheckProbe::Running
+        ));
+        assert!(!restart_spawn_allowed(
+            RestartStopState::NotRunning,
+            &CroncheckProbe::Ambiguous
+        ));
+
+        let mut spawn_count = 0;
+        if restart_spawn_allowed(RestartStopState::Stopped, &CroncheckProbe::Absent) {
+            spawn_count += 1;
+        }
+        assert_eq!(spawn_count, 1);
+    }
+
+    #[test]
     fn restart_with_state_systemd_calls_systemctl_when_mocked() {
         // This test only verifies the helper maps correctly; it doesn't run systemctl.
         // We test that an unmanaged state would go to cron/direct path without panicking in pure helper.
@@ -1836,5 +2030,32 @@ mod tests {
                 "embedded launchd plist must stay synchronized with packaging/launchd/com.eggstack.greggd.plist"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_manager_command_captures_stderr_and_kills_on_timeout() {
+        let output = run_bounded_command(
+            "sh",
+            &["-c", "printf stdout; printf denied >&2; exit 7"],
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"stdout");
+        assert_eq!(output.stderr, b"denied");
+
+        let error = run_bounded_command("sh", &["-c", "sleep 1"], Duration::from_millis(40))
+            .expect_err("slow manager command must time out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn manager_permission_text_is_classified() {
+        assert!(manager_error_is_permission(
+            "Interactive authentication required"
+        ));
+        assert!(manager_error_is_permission("Access denied"));
+        assert!(!manager_error_is_permission("unit failed"));
     }
 }

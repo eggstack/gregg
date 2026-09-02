@@ -73,6 +73,10 @@ features = ["std"]
 version = "1.5"
 default-features = true
 
+[dependencies.tempfile]
+version = "3.27"
+default-features = true
+
 [dev-dependencies]
 gregg-protocol = { version = "1.0.11", path = "../gregg-protocol", features = ["test_support"] }
 tokio = { version = "1", features = ["test-util"] }

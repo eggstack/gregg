@@ -317,7 +317,7 @@ Do not include internal evidence IDs, CI-run metadata, or evidence artifacts.
 
 ### Installation after publication
 
-Preferred (binary-first):
+After the first binary-bearing release is published, the binary-first path is:
 
 ```bash
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
@@ -337,6 +337,9 @@ Fallback (Cargo):
 cargo install gregg --locked
 cargo install greggd --locked
 ```
+
+Until that release exists, the Cargo commands above are the current working
+installation path; the `latest/download` URLs are intentionally future-facing.
 
 ## Partial failure handling
 

@@ -10,20 +10,16 @@ multiple machines.
 
 ## Installation
 
-Prebuilt binaries are published on GitHub Releases for common platforms; the
-installer is binary-first with Cargo fallback.
+The current published `v1.0.11` release is source-only. Cargo is the working
+installation path until the first binary-bearing release; the prebuilt
+installer is the intended path afterward.
 
 ```sh
-# Prebuilt binary (recommended)
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-# or pinned version
-curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.11/install.sh | sh -s -- gregg --version 1.0.11
-# Windows
-# irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
-#   .\packaging\install.ps1 -Component Gregg
+# Current working installation
+cargo install gregg --locked
 
-# From crates.io / source (fallback)
-cargo install gregg
+# After a binary-bearing release is published
+# curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
 ```
 
 Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):

@@ -289,3 +289,10 @@ Do not add generalized artifact evidence storage. The published/draft GitHub rel
 ## Closure record
 
 This roadmap is complete only when Plans 099-101 are each truthfully closed. Record their implementation SHAs and the first release tag that successfully exercises the complete binary asset + installer + updater contract. Do not rewrite Plans 036-039; update the active plan index to state that Plan 098 narrowly supersedes their former no-binary-asset/no-release-workflow policy while preserving manual publication.
+
+Correction note (Plan 102): Plans 099-101 remain historically implemented and
+CI-verified at their recorded SHAs/runs, but source review found release-
+readiness defects in update activation, restart safety, process timeouts, and
+installation documentation. The roadmap is not treated as release-ready until
+Plan 102 closes; the first binary-bearing release remains the live proof of
+installer and updater consumption.

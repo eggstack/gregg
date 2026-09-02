@@ -1,7 +1,3 @@
-#![allow(clippy::all)]
-#![allow(clippy::pedantic)]
-#![allow(clippy::nursery)]
-
 //! Binary-first self-update for `greggd`.
 //!
 //! Implements Plan 101's update contract for the daemon: crates.io is the
@@ -15,13 +11,16 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::fmt::Write as FmtWrite;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tempfile::{Builder, TempDir};
 
 use crate::startup::{startup_state, StartupState};
 
@@ -382,7 +381,11 @@ fn compute_sha256(path: &Path) -> Result<String, UpdateError> {
         hasher.update(&buf[..n]);
     }
     let result = hasher.finalize();
-    Ok(result.iter().map(|b| format!("{b:02x}")).collect())
+    let mut hex = String::with_capacity(result.len() * 2);
+    for byte in result {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    Ok(hex)
 }
 
 fn verify_checksum(file: &Path, sha_file: &Path) -> Result<(), UpdateError> {
@@ -444,66 +447,89 @@ fn validate_candidate(
     Ok(())
 }
 
-fn run_command_with_timeout(
-    mut cmd: Command,
-    timeout: Duration,
-) -> Result<std::process::Output, UpdateError> {
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| UpdateError::CandidateMismatch(format!("failed to spawn candidate: {e}")))?;
+fn run_child_with_timeout(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
+    let mut child = cmd.spawn()?;
+    let stdout = pipe_reader(child.stdout.take());
+    let stderr = pipe_reader(child.stderr.take());
     let deadline = Instant::now() + timeout;
-    loop {
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(UpdateError::CandidateMismatch(
-                "candidate 'version' timed out".to_string(),
-            ));
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout);
+                let _ = join_pipe(stderr);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child process timed out and was killed",
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
         }
-        match child.try_wait() {
-            Ok(Some(_status)) => {
-                let output = child.wait_with_output().map_err(|e| {
-                    UpdateError::CandidateMismatch(format!("failed to wait for candidate: {e}"))
-                })?;
-                return Ok(output);
-            }
-            Ok(None) => {
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => {
-                return Err(UpdateError::CandidateMismatch(format!(
-                    "failed to wait for candidate: {e}"
-                )));
-            }
-        }
+    };
+    Ok(Output {
+        status,
+        stdout: join_pipe(stdout)?,
+        stderr: join_pipe(stderr)?,
+    })
+}
+
+fn pipe_reader<R: Read + Send + 'static>(
+    reader: Option<R>,
+) -> Option<thread::JoinHandle<io::Result<Vec<u8>>>> {
+    reader.map(|mut reader| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+    })
+}
+
+fn join_pipe(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(reader) => reader
+            .join()
+            .map_err(|_| io::Error::other("child output reader panicked"))?,
+        None => Ok(Vec::new()),
     }
+}
+
+fn run_command_with_timeout(cmd: Command, timeout: Duration) -> Result<Output, UpdateError> {
+    run_child_with_timeout(cmd, timeout).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            UpdateError::CandidateMismatch("candidate 'version' timed out".to_string())
+        } else {
+            UpdateError::CandidateMismatch(format!("candidate process failed: {error}"))
+        }
+    })
 }
 
 // ── Temp dir helpers ────────────────────────────────────────────────────────
 
-fn create_temp_dir(prefix: &str) -> Result<PathBuf, UpdateError> {
-    let base = std::env::temp_dir();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let dir = base.join(format!("{prefix}-{}-{nanos}", std::process::id()));
-    fs::create_dir_all(&dir)
-        .map_err(|e| UpdateError::Io(format!("failed to create temp dir: {e}")))?;
-    Ok(dir)
-}
-
-struct TempDirGuard(PathBuf);
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+fn create_temp_dir(prefix: &str) -> Result<TempDir, UpdateError> {
+    let temp_dir = Builder::new()
+        .prefix(prefix)
+        .tempdir()
+        .map_err(|e| UpdateError::Io(format!("failed to create private temp dir: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp_dir.path(), fs::Permissions::from_mode(0o700))
+            .map_err(|e| UpdateError::Io(format!("failed to secure private temp dir: {e}")))?;
     }
+    Ok(temp_dir)
 }
 
-struct TempFileGuard(PathBuf);
-impl Drop for TempFileGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+struct StagedCandidate {
+    _temp_dir: TempDir,
+    path: PathBuf,
+}
+
+impl StagedCandidate {
+    fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -512,24 +538,20 @@ impl Drop for TempFileGuard {
 fn current_exe_path() -> Result<PathBuf, UpdateError> {
     let exe = std::env::current_exe()
         .map_err(|e| UpdateError::CurrentExe(format!("current_exe failed: {e}")))?;
-    match exe.canonicalize() {
-        Ok(canonical) => Ok(canonical),
-        Err(_) => {
-            if fs::symlink_metadata(&exe)
-                .map(|m| m.file_type().is_symlink())
-                .unwrap_or(false)
-            {
-                if let Ok(target) = fs::read_link(&exe) {
-                    if target.is_relative() {
-                        if let Some(parent) = exe.parent() {
-                            return Ok(parent.join(target));
-                        }
+    if let Ok(canonical) = exe.canonicalize() {
+        Ok(canonical)
+    } else {
+        if fs::symlink_metadata(&exe).is_ok_and(|m| m.file_type().is_symlink()) {
+            if let Ok(target) = fs::read_link(&exe) {
+                if target.is_relative() {
+                    if let Some(parent) = exe.parent() {
+                        return Ok(parent.join(target));
                     }
-                    return Ok(target);
                 }
+                return Ok(target);
             }
-            Ok(exe)
         }
+        Ok(exe)
     }
 }
 
@@ -545,8 +567,7 @@ fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<(), Up
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_nanos())
     ));
     match fs::OpenOptions::new()
         .write(true)
@@ -580,8 +601,7 @@ fn replace_current_exe(candidate: &Path) -> Result<(), UpdateError> {
                 elevated: format!(
                     "sudo {} update",
                     std::env::current_exe()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|_| "greggd".to_string())
+                        .map_or_else(|_| "greggd".to_string(), |p| p.display().to_string())
                 ),
             }
         } else {
@@ -592,11 +612,10 @@ fn replace_current_exe(candidate: &Path) -> Result<(), UpdateError> {
 
 // ── Cargo fallback ──────────────────────────────────────────────────────────
 
-fn cargo_fallback(program: &str, version: &str) -> Result<PathBuf, UpdateError> {
+fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, UpdateError> {
     let cargo_bin = find_cargo()?;
     let temp_root = create_temp_dir(&format!("greggd-cargo-{program}"))?;
-    // We will keep temp_root for the staged file copy; guard will clean cargo root but not durable file.
-    let cargo_root = temp_root.join("cargo-root");
+    let cargo_root = temp_root.path().join("cargo-root");
     fs::create_dir_all(&cargo_root)
         .map_err(|e| UpdateError::Io(format!("failed to create cargo root: {e}")))?;
     let cargo_root_str = cargo_root.to_string_lossy().to_string();
@@ -633,49 +652,30 @@ fn cargo_fallback(program: &str, version: &str) -> Result<PathBuf, UpdateError> 
         )));
     }
     validate_candidate(&staged, program, version)?;
-    let durable = std::env::temp_dir().join(format!(
-        "greggd-candidate-{}-{}-{}",
-        program,
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    fs::copy(&staged, &durable)
-        .map_err(|e| UpdateError::Io(format!("failed to stage cargo binary: {e}")))?;
-    let _ = fs::remove_dir_all(&temp_root);
-    // Prevent double cleanup via guard leak? We didn't use guard, so just return.
-    Ok(durable)
+    Ok(StagedCandidate {
+        _temp_dir: temp_root,
+        path: staged,
+    })
 }
 
 fn run_command_with_timeout_for_cargo(
-    mut cmd: Command,
+    cmd: Command,
     timeout: Duration,
-) -> Result<std::process::Output, UpdateError> {
-    use std::sync::mpsc;
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let out = cmd.output();
-        let _ = tx.send(out);
-    });
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => Err(UpdateError::CargoFallback(format!(
-            "cargo spawn failed: {e}"
-        ))),
-        Err(_) => Err(UpdateError::CargoFallback(
-            "cargo install timed out after 600s".to_string(),
-        )),
-    }
+) -> Result<Output, UpdateError> {
+    run_child_with_timeout(cmd, timeout).map_err(|error| {
+        if error.kind() == io::ErrorKind::TimedOut {
+            UpdateError::CargoFallback("cargo install timed out after 600s".to_string())
+        } else {
+            UpdateError::CargoFallback(format!("cargo process failed: {error}"))
+        }
+    })
 }
 
 // ── Daemon running probe for UnmanagedOrCron ────────────────────────────────
 
 fn is_unmanaged_daemon_running(config_path: &Path, explicit: bool) -> bool {
-    let config = match crate::cli::load_config(config_path, explicit) {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Ok(config) = crate::cli::load_config(config_path, explicit) else {
+        return false;
     };
     let target = crate::cli::croncheck_target(&config);
     probe_is_running(target)
@@ -797,6 +797,7 @@ fn restart_after_update(
 /// Run the full `greggd update` flow synchronously.
 /// `config_path` and `explicit` describe the resolved config location.
 /// Prints progress to stderr and returns an outcome or error.
+#[allow(clippy::too_many_lines)]
 pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, UpdateError> {
     let current = CURR_VERSION.to_string();
     let latest = fetch_latest_stable_version(CRATE_NAME)?;
@@ -816,26 +817,6 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
     // Capture startup state before replacement for restart decision.
     let pre_state = startup_state();
     eprintln!("Current greggd {current}, latest {latest}, pre-update state: {pre_state}");
-
-    // On Windows, if service is running, stop it before file mutation to release lock.
-    #[cfg(target_os = "windows")]
-    {
-        if matches!(pre_state, StartupState::WindowsServiceRunning) {
-            eprintln!("Stopping Windows service before replacement...");
-            if let Err(e) = crate::service::platform_service_manager().stop() {
-                let msg = e.to_string();
-                if msg.to_lowercase().contains("access denied")
-                    || msg.to_lowercase().contains("permission")
-                {
-                    return Err(UpdateError::PermissionDenied {
-                        message: format!("failed to stop service: {msg}"),
-                        elevated: "run as Administrator: greggd update".to_string(),
-                    });
-                }
-                eprintln!("warning: failed to stop service before update (continuing): {msg}");
-            }
-        }
-    }
 
     let target_opt = detect_target();
     let target_str = target_opt.clone();
@@ -866,20 +847,23 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
 
     let curl = find_curl()?;
     let temp_dir = create_temp_dir("greggd-update")?;
-    let _guard = TempDirGuard(temp_dir.clone());
 
     let asset_name_str = asset_name(PROGRAM, &target);
-    let asset_path = temp_dir.join(&asset_name_str);
-    let sha_path = temp_dir.join(format!("{asset_name_str}.sha256"));
+    let asset_path = temp_dir.path().join(&asset_name_str);
+    let sha_path = temp_dir.path().join(format!("{asset_name_str}.sha256"));
 
-    let outcome = match download_file(&curl, &asset_url, &asset_path) {
+    let prepared = match download_file(&curl, &asset_url, &asset_path) {
         DownloadOutcome::Success => match download_file(&curl, &sha_url, &sha_path) {
             DownloadOutcome::Success => {
                 verify_checksum(&asset_path, &sha_path)?;
                 validate_candidate(&asset_path, PROGRAM, &latest)?;
-                replace_current_exe(&asset_path)?;
-                eprintln!("Replaced {PROGRAM} binary {current} -> {latest} via GitHub binary");
-                Ok((false, latest.clone()))
+                Ok((
+                    false,
+                    StagedCandidate {
+                        _temp_dir: temp_dir,
+                        path: asset_path,
+                    },
+                ))
             }
             DownloadOutcome::NotFound => Err(UpdateError::ChecksumRetrieval(format!(
                 "checksum not found at {sha_url} (HTTP 404)"
@@ -889,11 +873,7 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
         DownloadOutcome::NotFound => {
             eprintln!("No prebuilt asset at {asset_url} (HTTP 404); falling back to Cargo...");
             let staged = cargo_fallback(PROGRAM, &latest)?;
-            let _staged_guard = TempFileGuard(staged.clone());
-            validate_candidate(&staged, PROGRAM, &latest)?;
-            replace_current_exe(&staged)?;
-            eprintln!("Replaced {PROGRAM} binary {current} -> {latest} via Cargo");
-            Ok((true, latest.clone()))
+            Ok((true, staged))
         }
         DownloadOutcome::Failed(reason) => Err(UpdateError::ReleaseDownloadFailed {
             url: asset_url,
@@ -901,13 +881,22 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
         }),
     };
 
-    let (from_cargo, new_version) = match outcome {
+    let (from_cargo, staged) = match prepared {
         Ok(v) => v,
         Err(e) => {
             // Check if we should try cargo fallback for NotFound? Already handled.
             return Err(e);
         }
     };
+
+    #[cfg(target_os = "windows")]
+    stop_windows_service_if_needed(pre_state)?;
+    replace_current_exe(staged.path())?;
+    eprintln!(
+        "Replaced {PROGRAM} binary {current} -> {latest} via {}",
+        if from_cargo { "Cargo" } else { "GitHub binary" }
+    );
+    let new_version = latest;
 
     // Now restart according to pre_state
     let restart_result = restart_after_update(pre_state, &original_exe, config_path, explicit);
@@ -954,8 +943,9 @@ fn cargo_update_path_with_restart(
     explicit: bool,
 ) -> Result<UpdateOutcome, UpdateError> {
     let staged = cargo_fallback(PROGRAM, to)?;
-    let _guard = TempFileGuard(staged.clone());
-    replace_current_exe(&staged)?;
+    #[cfg(target_os = "windows")]
+    stop_windows_service_if_needed(pre_state)?;
+    replace_current_exe(staged.path())?;
     eprintln!("Replaced {PROGRAM} binary {from} -> {to} via Cargo");
     let restart_result = restart_after_update(pre_state, exe, config_path, explicit);
     match restart_result {
@@ -969,6 +959,31 @@ fn cargo_update_path_with_restart(
             restart_error: e.to_string(),
         }),
     }
+}
+
+#[cfg(target_os = "windows")]
+fn stop_windows_service_if_needed(state: StartupState) -> Result<(), UpdateError> {
+    if matches!(state, StartupState::WindowsServiceRunning) {
+        eprintln!("Stopping Windows service after candidate verification...");
+        crate::service::platform_service_manager()
+            .stop()
+            .map_err(|error| {
+                let message = error.to_string();
+                if message.to_ascii_lowercase().contains("access denied")
+                    || message.to_ascii_lowercase().contains("permission")
+                {
+                    UpdateError::PermissionDenied {
+                        message: format!("failed to stop service: {message}"),
+                        elevated: "run as Administrator: greggd update".to_string(),
+                    }
+                } else {
+                    UpdateError::RestartFailed(format!(
+                        "failed to stop Windows service before replacement: {message}"
+                    ))
+                }
+            })?;
+    }
+    Ok(())
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -1078,5 +1093,51 @@ mod tests {
         // The actual restart function would not be called directly in unit test to avoid systemctl.
         // We just assert the enum distinction is correct.
         assert_ne!(state, StartupState::SystemdActive);
+    }
+
+    #[test]
+    fn private_staging_is_exclusive_and_cleans_up() {
+        let first = create_temp_dir("greggd-test-stage").unwrap();
+        let second = create_temp_dir("greggd-test-stage").unwrap();
+        assert_ne!(first.path(), second.path());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(first.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        let path = first.path().join("candidate");
+        fs::write(&path, b"candidate").unwrap();
+        let first_path = first.path().to_path_buf();
+        drop(first);
+        assert!(!first_path.exists());
+        drop(second);
+    }
+
+    #[test]
+    fn timeout_child() {
+        if let Ok(marker) = std::env::var("GREGGD_TIMEOUT_MARKER") {
+            thread::sleep(Duration::from_millis(250));
+            fs::write(marker, b"late").unwrap();
+        }
+    }
+
+    #[test]
+    fn cargo_timeout_kills_and_reaps_child() {
+        let temp = create_temp_dir("greggd-test-timeout").unwrap();
+        let marker = temp.path().join("late");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "update::tests::timeout_child", "--nocapture"])
+            .env("GREGGD_TIMEOUT_MARKER", &marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = run_command_with_timeout_for_cargo(command, Duration::from_millis(40))
+            .expect_err("slow child must time out");
+        assert!(error.to_string().contains("timed out"));
+        thread::sleep(Duration::from_millis(300));
+        assert!(!marker.exists(), "timed-out child continued after return");
     }
 }

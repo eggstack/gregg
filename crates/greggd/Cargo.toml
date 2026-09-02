@@ -50,6 +50,10 @@ features = ["std"]
 version = "1.5"
 default-features = true
 
+[dependencies.tempfile]
+version = "3.27"
+default-features = true
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
 tower = { version = "0.4", features = ["util"] }
