@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 
 const MANAGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(unix)]
 const DIRECT_RESTART_TIMEOUT: Duration = Duration::from_secs(10);
 
 fn run_bounded_command(program: &str, args: &[&str], timeout: Duration) -> io::Result<Output> {
@@ -1542,6 +1543,7 @@ fn restart_launchd(exe: &Path) -> Result<(), InstallError> {
     }
 }
 
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RestartStopState {
     Stopped,
@@ -1550,6 +1552,7 @@ enum RestartStopState {
     ControlError,
 }
 
+#[cfg(unix)]
 fn restart_spawn_allowed(stop_state: RestartStopState, probe: &crate::cli::CroncheckProbe) -> bool {
     !matches!(stop_state, RestartStopState::Uncertain)
         && matches!(probe, crate::cli::CroncheckProbe::Absent)
@@ -1953,6 +1956,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn restart_spawn_decision_requires_definite_absence() {
         use crate::cli::CroncheckProbe;
