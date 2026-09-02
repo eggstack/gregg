@@ -962,8 +962,13 @@ fn cargo_update_path_with_restart(
 }
 
 #[cfg(target_os = "windows")]
+fn should_quiesce_running_service(candidate_prepared: bool, state: StartupState) -> bool {
+    candidate_prepared && matches!(state, StartupState::WindowsServiceRunning)
+}
+
+#[cfg(target_os = "windows")]
 fn stop_windows_service_if_needed(state: StartupState) -> Result<(), UpdateError> {
-    if matches!(state, StartupState::WindowsServiceRunning) {
+    if should_quiesce_running_service(true, state) {
         eprintln!("Stopping Windows service after candidate verification...");
         crate::service::platform_service_manager()
             .stop()
@@ -1139,5 +1144,22 @@ mod tests {
         assert!(error.to_string().contains("timed out"));
         thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "timed-out child continued after return");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_service_quiescence_requires_prepared_candidate() {
+        assert!(!should_quiesce_running_service(
+            false,
+            StartupState::WindowsServiceRunning
+        ));
+        assert!(!should_quiesce_running_service(
+            true,
+            StartupState::WindowsServiceStopped
+        ));
+        assert!(should_quiesce_running_service(
+            true,
+            StartupState::WindowsServiceRunning
+        ));
     }
 }
