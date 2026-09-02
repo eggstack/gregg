@@ -1057,12 +1057,16 @@ pub struct FileLockGuard {
     handle: Option<isize>,
 }
 
+#[allow(unsafe_code)]
 impl Drop for FileLockGuard {
     fn drop(&mut self) {
         // Closing the file descriptor releases the flock on Unix. On
         // Windows, we must explicitly unlock before the handle closes.
         #[cfg(windows)]
         if let Some(handle) = self.handle {
+            // Safety: UnlockFileEx is called with a valid handle previously
+            // returned by LockFileEx and an OVERLAPPED zeroed on the stack.
+            // The handle remains open for the duration of this call.
             unsafe {
                 use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
                 use windows_sys::Win32::System::IO::OVERLAPPED;
