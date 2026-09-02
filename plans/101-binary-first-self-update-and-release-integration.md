@@ -1,6 +1,6 @@
 # Plan 101: binary-first self-update and release integration
 
-Status: complete at implementation pending push (see closure record).
+Status: complete at `2eb0577` (feat: binary-first self-update and release integration) plus docs closure `pending`; verified by CI run `33683771778` (all five jobs: Linux, macOS Intel, macOS ARM64, Windows, MSRV).
 
 Depends on: Plan 098, Plan 099's stable release asset contract, and Plan 100's manager-aware `greggd restart`/startup-state contract.
 
@@ -584,7 +584,7 @@ Run clippy with warnings denied if not already covered by the selected checks. R
 
 ## Closure record
 
-Implementation SHA: pending (this commit). Effective HEAD will be verified by CI.
+Implementation SHA: `2eb0577` (feat: binary-first self-update and release integration) verified by CI run `33683771778`. Closure docs at `HEAD` will be `pending` until next push.
 
 1. **crates.io metadata field/selection policy:** `GET https://crates.io/api/v1/crates/<crate>` with `User-Agent: gregg/<version> (https://github.com/eggstack/gregg)`; parse `crate.max_stable_version` as the authoritative latest stable (highest non-yanked, non-prerelease). Validated against live `gregg`/`greggd` 1.0.11 `max_stable_version` payloads. If the field is missing or not a stable `MAJOR.MINOR.PATCH`, the lookup fails rather than falling back to `latest` or `max_version`. No polling/retry storm; one bounded request with `--max-time 15`.
 
@@ -628,7 +628,7 @@ Implementation SHA: pending (this commit). Effective HEAD will be verified by CI
    - `startup_state_helpers` and `restart_decision_for_stopped_service_is_no_restart`
    Unix replacement smoke with a temporary installed copy (copy `gregg` to `mktemp -d` + `candidate` with correct `version`) verifies `self_replace` renames atomically and `candidate version` matches; checksum mismatch and wrong version leave current binary unchanged (verified via `verify_checksum` and `validate_candidate` hard errors). Cargo fallback staging verified via `cargo install --locked --version "=1.0.11" --root <temp>` in a disposable temp root, then `self_replace` copy. Permission-denied destination (0555 dir or 0600 socket parent) returns `PermissionDenied` before any `control::send_stop`.
 
-10. **Existing CI/release workflow run IDs used for native proof:** Release workflow `.github/workflows/release-binaries.yml` is unchanged (still builds 5 targets with glibc 2.17, `version`/`--help` + loopback smoke, draft via `gh --clobber`). The new code is verified by the ordinary `ci.yml` matrix: Linux fmt+clippy+test, macOS Intel/ARM64 native check, Windows `cargo test --workspace --all-targets --all-features` + `cargo build --release -p greggd` + `scripts/smoke-windows.ps1`, and MSRV 1.75 compile. Run IDs will be recorded after this commit's `main` push (expected all five jobs green, same as `33672525397` and `33680301250`). No second permanent update-specific CI matrix was added; the release workflow remains the authoritative binary proof.
+10. **Existing CI/release workflow run IDs used for native proof:** Release workflow `.github/workflows/release-binaries.yml` is unchanged (still builds 5 targets with glibc 2.17, `version`/`--help` + loopback smoke, draft via `gh --clobber`). The new code is verified by the ordinary `ci.yml` matrix: Linux fmt+clippy+test, macOS Intel/ARM64 native check, Windows `cargo test --workspace --all-targets --all-features` + `cargo build --release -p greggd` + `scripts/smoke-windows.ps1`, and MSRV 1.75 compile. CI run `33683771778` (Linux, macOS Intel, macOS ARM64, Windows, MSRV) is green for `2eb0577`. No second permanent update-specific CI matrix was added; the release workflow remains the authoritative binary proof. Previous releases `33672525397` (Plan 099) and `33680301250` (Plan 100) are also green.
 
 11. **First real release where `gregg update`/`greggd update` successfully consume the Plan 099 assets:** The next `vX.Y.Z` after `1.0.11` (e.g., `v1.0.12`) will be the first tag that exercises the complete `cargo publish` → `vX.Y.Z` tag → `release-binaries` draft (10 executables + 10 `.sha256` + `install.sh`/`install.ps1`) → `gregg update`/`greggd update` on at least one Linux x86_64/aarch64 and one Windows host. Until then, `AlreadyCurrent` is the truthful local proof; the `cargo fallback` path is proved via the `armv7l` source-only host and the `--version "=X.Y.Z"` staging test.
 
