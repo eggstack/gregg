@@ -1,6 +1,6 @@
 # Plan 102: update, restart, and release-readiness corrective pass
 
-Status: implementation in progress.
+Status: complete.
 
 Depends on: Plans 098-101 as implemented through `2eb0577` and documentation closure `479ecbd`; existing CI run `33683771778` is green but does not close the defects below.
 
@@ -623,29 +623,29 @@ Do not fabricate that evidence in the Plan 102 closure record.
 
 Plan 102 is complete only when all of the following are true:
 
-- [ ] `greggd update` fully downloads/builds and validates its candidate before stopping a running Windows SCM service.
-- [ ] Any candidate-preparation failure leaves a running Windows daemon running and leaves the installed executable unchanged.
-- [ ] SCM stop failure is a hard pre-replacement failure; replacement does not continue after an unconfirmed stop.
-- [ ] A service installed but stopped before update remains stopped afterward.
-- [ ] `UpdatedButRestartFailed` remains the truthful result when replacement succeeded but activation failed.
-- [ ] Direct/cron restart never blind-spawns after `StopOutcome::Uncertain` or an ambiguous control/probe result.
-- [ ] Direct/cron restart returns success only after a bounded valid Gregg health/readiness confirmation, not merely `spawn()` success.
-- [ ] Direct/cron restart cannot create a second competing daemon against an occupied/ambiguous endpoint in deterministic regression coverage.
-- [ ] Systemd/launchd manager operations used by startup/restart/update are bounded and preserve stderr for error classification.
-- [ ] Interactive-auth/permission-style manager failures produce the documented explicit elevated command and do not silently fall back to cron.
-- [ ] Cargo fallback timeout kills and reaps the Cargo child rather than returning while it continues in the background.
-- [ ] Both updaters use private/exclusive staging rather than predictable shared-temp top-level candidate names.
-- [ ] Release checksum and exact candidate-version verification remain mandatory before replacement.
-- [ ] Both updater modules participate in normal Clippy `-D warnings` without blanket `clippy::all`/`pedantic`/`nursery` suppression.
-- [ ] Active docs no longer present nonexistent `v1.0.11/install.sh` or current source-only `latest/download/install.sh` assets as working current installation paths.
-- [ ] Cargo remains documented as the current working fallback/install path until a binary-bearing release is actually published.
-- [ ] No new permanent CI workflow/job/matrix, package-manager integration, updater daemon, PID scan, or service-manager coupling in `run.rs` is introduced.
-- [ ] `cargo fmt`, workspace Clippy with warnings denied, workspace tests, workspace check, default local check, and release preflight all pass.
-- [ ] Ubuntu direct restart safety smoke passes.
-- [ ] Existing Windows SCM CI smoke remains green together with deterministic updater-ordering tests.
-- [ ] Existing macOS Intel/ARM64 and MSRV jobs remain green.
-- [ ] Planning records truthfully mark Plans 098-101 as implemented historically but corrected/release-ready only through Plan 102.
-- [ ] No live binary-release success is claimed until a real release with assets has actually been published and consumed.
+- [x] `greggd update` fully downloads/builds and validates its candidate before stopping a running Windows SCM service.
+- [x] Any candidate-preparation failure leaves a running Windows daemon running and leaves the installed executable unchanged.
+- [x] SCM stop failure is a hard pre-replacement failure; replacement does not continue after an unconfirmed stop.
+- [x] A service installed but stopped before update remains stopped afterward.
+- [x] `UpdatedButRestartFailed` remains the truthful result when replacement succeeded but activation failed.
+- [x] Direct/cron restart never blind-spawns after `StopOutcome::Uncertain` or an ambiguous control/probe result.
+- [x] Direct/cron restart returns success only after a bounded valid Gregg health/readiness confirmation, not merely `spawn()` success.
+- [x] Direct/cron restart cannot create a second competing daemon against an occupied/ambiguous endpoint in deterministic regression coverage.
+- [x] Systemd/launchd manager operations used by startup/restart/update are bounded and preserve stderr for error classification.
+- [x] Interactive-auth/permission-style manager failures produce the documented explicit elevated command and do not silently fall back to cron.
+- [x] Cargo fallback timeout kills and reaps the Cargo child rather than returning while it continues in the background.
+- [x] Both updaters use private/exclusive staging rather than predictable shared-temp top-level candidate names.
+- [x] Release checksum and exact candidate-version verification remain mandatory before replacement.
+- [x] Both updater modules participate in normal Clippy `-D warnings` without blanket `clippy::all`/`pedantic`/`nursery` suppression.
+- [x] Active docs no longer present nonexistent `v1.0.11/install.sh` or current source-only `latest/download/install.sh` assets as working current installation paths.
+- [x] Cargo remains documented as the current working fallback/install path until a binary-bearing release is actually published.
+- [x] No new permanent CI workflow/job/matrix, package-manager integration, updater daemon, PID scan, or service-manager coupling in `run.rs` is introduced.
+- [x] `cargo fmt`, workspace Clippy with warnings denied, workspace tests, workspace check, default local check, and release preflight all pass.
+- [x] Ubuntu direct restart safety smoke passes.
+- [x] Existing Windows SCM CI smoke remains green together with deterministic updater-ordering tests.
+- [x] Existing macOS Intel/ARM64 and MSRV jobs remain green.
+- [x] Planning records truthfully mark Plans 098-101 as implemented historically but corrected/release-ready only through Plan 102.
+- [x] No live binary-release success is claimed until a real release with assets has actually been published and consumed.
 
 ## Explicit non-goals
 
@@ -684,3 +684,23 @@ Do not start by refactoring the two updater modules into a shared crate. Correct
 The release workflow itself is not the problem found in review. Preserve its five-target, draft-only design unless execution reveals a directly related defect.
 
 The first binary-bearing release after `v1.0.11` should be cut only after this plan is closed.
+
+## Closure record
+
+Completed at implementation `008092c0ab044f4b6cca4cb8cb5173a6c5b67a45`. The corrective implementation landed in `eb806805c351b380952294f5d7a44c2907202e2c`; `911ca1a34e94c1a0c51f49c3bf219dc4a1a8d677` then scoped the direct-restart decision seam to Unix after the first Windows CI compile check, and `008092c0ab044f4b6cca4cb8cb5173a6c5b67a45` added the Windows-only updater activation-ordering regression test.
+
+Local evidence:
+
+- `./scripts/check-local.sh` passed.
+- `./scripts/check-local.sh --release` passed on the final implementation.
+- The Ubuntu direct lifecycle smoke passed for restart readiness, ambiguous endpoint refusal, and current-version update behavior.
+- Focused updater/startup tests, workspace format, Clippy with warnings denied, workspace tests, and workspace checks passed.
+
+Remote evidence:
+
+- Existing CI run [`33695133206`](https://github.com/eggstack/gregg/actions/runs/33695133206) passed all five jobs for the final implementation: Linux, macOS ARM64, macOS Intel, Windows including SCM lifecycle smoke, and Rust 1.75 MSRV.
+- The earlier corrective run `33694063628` exposed only Unix-only direct-restart symbols being compiled as dead code on Windows; that was corrected by `911ca1a`. Run `33694381473` passed before the final Windows-only test addition.
+
+Release truth:
+
+- `v1.0.11` remains source-only. No live binary-release success is claimed; the first binary-bearing release remains the separate operational proof described above.
