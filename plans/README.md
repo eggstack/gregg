@@ -134,7 +134,7 @@ excluded.
 | [`097-supplied-bugs-corrective-pass.md`](097-supplied-bugs-corrective-pass.md) | Correct actionable findings from the supplied audit with bounded behavior-preserving changes | complete; implementation `2601fb5` |
 | [`098-binary-distribution-install-update-roadmap.md`](098-binary-distribution-install-update-roadmap.md) | Binary distribution, bootstrap installation, and update roadmap for Plans 099-101 | planned; coordination roadmap |
 | [`099-release-binary-matrix-and-bootstrap-installers.md`](099-release-binary-matrix-and-bootstrap-installers.md) | Release binary matrix and bootstrap installers (five targets, glibc 2.17, bootstrap `install.sh`/`install.ps1`, draft release assembly) | complete; implementation `19ee03a` (feat `dc31276` + fix `19ee03a`); CI `33672525397` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
-| [`100-greggd-startup-installation-and-restart.md`](100-greggd-startup-installation-and-restart.md) | greggd startup installation and restart (systemd/launchd/cron, `startup install`/`instructions`, `restart`) | planned |
+| [`100-greggd-startup-installation-and-restart.md`](100-greggd-startup-installation-and-restart.md) | greggd startup installation and restart (systemd/launchd/cron, `startup install`/`instructions`, `restart`) | complete; implementation `2271b9e` (feat `a73a6a3` + fix `2078924` + fix `2271b9e`); CI `33680301250` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`101-binary-first-self-update-and-release-integration.md`](101-binary-first-self-update-and-release-integration.md) | Binary-first self-update and release integration (`gregg update`/`greggd update`, crates.io authority, exact-tag assets, Cargo fallback) | planned |
 
 Dependency order:

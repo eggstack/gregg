@@ -1,6 +1,6 @@
 # Plan 100: greggd startup installation and restart
 
-Status: planned.
+Status: complete at `2271b9e` (implementation `a73a6a3` plus CRLF fix `2078924` and drive-test flake fix `2271b9e`; verified by CI run `33680301250`).
 
 Depends on: Plan 098, Plan 099's installed-binary/bootstrap contract, completed Plans 076-082, and the final watchdog semantics from Plan 091 for the cron path.
 
@@ -511,17 +511,43 @@ Run clippy if not already included by the selected local check.
 
 ## Closure record
 
-Record when complete:
+1. **Implementation SHA:** `a73a6a3` (feat: startup installation and restart) plus `2078924` (CRLF-normalized embedded unit/plist sync test for Windows) and `2271b9e` (drive refresh test wait with sleep to avoid Windows flake). Effective HEAD `2271b9e` verified by CI run `33680301250` (all five jobs: Linux, macOS Intel, macOS ARM64, Windows, MSRV).
 
-1. implementation SHA;
-2. final startup-method detection rules;
-3. canonical systemd/plist source ownership;
-4. final cron block;
-5. `greggd restart` manager-state rules;
-6. installer delegation behavior;
-7. focused/local checks;
-8. Ubuntu systemd or instruction-level smoke depending available privilege;
-9. native Windows CI/SCM result;
-10. macOS limitations if a privileged launchd smoke was not available.
+2. **Final startup-method detection rules:** `StartupMethod::{Systemd,Launchd,Cron,WindowsScm,Direct}` with `StartupMethodArg::Auto` default. `auto_method_for(os, is_systemd)` maps `windows→SCM`, `macos|darwin→Launchd`, `linux` with `is_systemd_environment()→Systemd` else `Cron`, else `Cron`. `is_systemd_environment()` checks `/run/systemd/system` exists plus `/proc/1/comm == "systemd"` or bounded `systemctl is-system-running --quiet` probe when the directory exists but proc1 is unavailable. Explicit `--method` overrides auto; `resolve_startup_method` and `resolve_startup_method_with` preserve that invariant. No silent fallback from identified systemd/launchd to cron on permission failure.
 
-Do not close Plan 100 while Plan 091's croncheck behavior is still ambiguous relative to the cron supervisor contract used here.
+3. **Canonical systemd/plist source ownership:** `startup::systemd_unit_content()` and `startup::launchd_plist_content()` return in-crate constants (not `include_str!` outside crate) so `cargo install` works without checkout. Templates are kept synchronized with `packaging/systemd/greggd.service` and `packaging/launchd/com.eggstack.greggd.plist` via `embedded_*_matches_packaging_file_when_present` tests that normalize `\r\n`→`\n` and check trailing newline. Standard paths remain `binary /usr/local/bin/greggd`, `config /etc/gregg/greggd.toml` (preserved if exists, `greggd` user/group, `0700` dir), unit `/etc/systemd/system/greggd.service` (atomic write via temp+rename+fsync, `daemon-reload` + `enable` + `start`/`restart`), plist `/Library/LaunchDaemons/com.eggstack.greggd.plist` (`bootstrap system` + `kickstart -k` when loaded, log `/var/log/greggd.log`). Hardening directives (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `ReadOnlyPaths=/proc /sys`, `PrivateTmp`, `SystemCallFilter=@system-service`, etc.) preserved.
+
+4. **Final cron block:**
+```text
+# greggd managed watchdog
+@reboot '<exe>' --config '<config>' croncheck
+* * * * * '<exe>' --config '<config>' croncheck
+```
+Rendered by `cron_block`/`cron_block_with_config` with `shell_quote` (single-quote + `'\''` escape, rejects `\n`/`\r`/control). `remove_managed_cron_block` identifies the `CRON_MANAGED_MARKER` and following `croncheck` lines; `merge_crontab` is idempotent, preserves unrelated entries byte-for-byte, strips old managed block, appends exactly one canonical block, never edits `/var/spool/cron`, prints manual lines when `crontab` missing. `croncheck` contract is Plan 091 final: valid Gregg Ready/Warming/Failed→running (no spawn), connection refused→spawn detached `greggd run` (stdio closed, new process group on Unix), ambiguous/unrelated/malformed/silent→nonzero without spawning.
+
+5. **`greggd restart` manager-state rules:** `startup_state()` (small helper for both `restart` and Plan 101) maps `systemd_state_with(unit_exists, is_active)` and `launchd_state_with(plist_exists, is_loaded)` plus Windows SCM `is_active()` into `SystemdActive/SystemdInstalledStopped/LaunchdLoaded/LaunchdInstalledUnloaded/WindowsServiceRunning/WindowsServiceStopped/UnmanagedOrCron`. `restart_with_state` dispatches: `SystemdActive|InstalledStopped→systemctl restart greggd` (prints `sudo systemctl restart greggd` on permission), `LaunchdLoaded|InstalledUnloaded→launchctl kickstart -k system/com.eggstack.greggd`, `Windows*→SCM restart`, else `UnmanagedOrCron→control::send_stop` + detached `run` (same primitive as `croncheck`, 200ms post-stop sleep, race-safe via kernel bind). `restart_daemon` wraps `startup_state()` for CLI; factored for `update` reuse.
+
+6. **Installer delegation behavior:** Unix `packaging/install.sh` after verified `curl -fsSL` download + `.sha256` + candidate `version` check installs to `/usr/local/bin` (root) or `$HOME/.local/bin` (user) then delegates: if `EUID==0` runs `${DEST_DIR}/greggd startup install` (auto) and warns with `sudo ${DEST_DIR}/greggd startup install` on failure; if unprivileged runs `startup install` and on systemd/launchd prints exact elevated command without silent cron fallback, on cron hosts installs user-local crontab. `both` installs `gregg` then `greggd` and delegates once. Windows `install.ps1` remains single canonical SCM registration (installs to `%ProgramFiles%\Gregg` when Administrator, `%LOCALAPPDATA%\Gregg` otherwise, preserves `%ProgramData%\gregg\greggd.toml`, registers `LocalService` auto, failure restart); `startup install` on Windows is state-reporting only (`startup instructions` prints SCM commands) with one implementation.
+
+7. **Focused/local checks:**
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test -p greggd --all-features -- startup (25 tests: auto detection, explicit override, shell quoting, cron rendering/quoting, block removal/merging idempotence, instruction paths, hardening, sync tests, state helpers)
+cargo test --workspace --all-targets --all-features (248 tests)
+cargo doc --workspace --no-deps
+bash -n packaging/install.sh
+scripts/verify-installed-daemon.sh target/debug/greggd (loopback health ready, status schema 2)
+```
+
+8. **Ubuntu systemd or instruction-level smoke depending available privilege:** Host `rasp10` (aarch64, Ubuntu 24.04, `systemd` owning PID 1, `/run/systemd/system` present) `greggd startup instructions` correctly selects `systemd` and prints `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `/etc/systemd/system/greggd.service` plus `systemctl daemon-reload`/`enable`/`restart` steps. `startup instructions --method cron` prints canonical `# greggd managed watchdog` block with quoted `@reboot` + `* * * * *` lines and no PID-file note. `startup install --method cron` (user-local) is idempotent and preserves unrelated crontab; second `* * * * *` install replaces previous block (marker count =1). `restart` via direct (no systemd unit installed) does `stop` (NotRunning) + detached `run` and health becomes `ready` on loopback `127.0.0.1:11399`; subsequent `stop` succeeds and health fails as expected. Privileged systemd real install not executed (would require `sudo` and `/usr/local/bin/greggd` at standard path; returned actionable `BinaryMissing` error as designed).
+
+9. **Native Windows CI/SCM result:** CI run `33680301250` Windows job passed all 248 tests including `startup` suite and SCM lifecycle; embedded unit/plist sync tests now normalize CRLF so Windows checkout passes. Previous flake `filtered_drive_enumeration_is_successful_empty` (drive refresh worker race) fixed by `sample_until_drives` sleeping 5ms ×200 instead of `yield_now` ×100. No second cron/LaunchAgent fallback on permission failure.
+
+10. **macOS limitations if a privileged launchd smoke was not available:** No privileged macOS host was available in implementation environment. launchd install/bootstrap/kickstart verified via pure helper tests and native compile (`cargo check --workspace --all-targets --all-features` on `macos-15` and `macos-15-intel` both succeeded). Rendered plist matches packaging file; `startup instructions --method launchd` prints `/Library/LaunchDaemons/com.eggstack.greggd.plist` and `launchctl bootstrap/kickstart` commands. A manual privileged `sudo greggd startup install --method launchd` smoke remains operator evidence and is not required for CI.
+
+Do not close Plan 100 while Plan 091's croncheck behavior is still ambiguous relative to the cron supervisor contract used here — closed against Plan 091 final semantics (valid Gregg health = running, refusal = spawn, ambiguous = nonzero without spawn).
+
+## Closure evidence (2026-09-02)
+
+All Plan 100 acceptance criteria satisfied; `greggd run`/`sampler`/`collectors`/`HTTP` remain service-manager unaware; no PID files, process scanning, public shutdown route, supervisor framework, new privileged CI job, or package-manager scope added. Bootstrap installers delegate startup to CLI; Windows has one canonical SCM implementation.
