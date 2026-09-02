@@ -81,6 +81,20 @@ pub enum Command {
     },
     /// Print the binary version.
     Version,
+    /// Update the daemon binary to the latest stable crates.io version.
+    ///
+    /// The updater uses crates.io as the version authority and downloads the
+    /// exact tagged GitHub Release asset when available. Checksum and
+    /// candidate `version` are verified before any replacement. If no
+    /// prebuilt asset exists for the current host (HTTP 404), Cargo is used
+    /// as a fallback when available. A checksum or version mismatch is a
+    /// hard error and does not fall back to Cargo. After a successful
+    /// replacement, the daemon is restarted through its detected manager
+    /// when it was running (systemd, launchd, SCM, or direct cron); an
+    /// intentionally stopped service remains stopped. No `sudo` is invoked
+    /// internally; rerun with `sudo greggd update` when the install location
+    /// requires it.
+    Update,
     /// Internal: Windows SCM service entry point. Not for interactive use.
     #[cfg(target_os = "windows")]
     #[command(hide = true)]
@@ -181,6 +195,15 @@ impl From<&crate::startup::InstallError> for ExitCode {
             crate::startup::InstallError::BinaryMissing { .. }
             | crate::startup::InstallError::UnsupportedMethod { .. } => Self::ConfigError,
             _ => Self::ServiceError,
+        }
+    }
+}
+
+impl From<&crate::update::UpdateError> for ExitCode {
+    fn from(e: &crate::update::UpdateError) -> Self {
+        match e {
+            crate::update::UpdateError::PermissionDenied { .. } => Self::PermissionDenied,
+            _ => Self::RuntimeError,
         }
     }
 }
@@ -461,6 +484,7 @@ pub fn dispatch(
 }
 
 /// Dispatch a command while preserving whether the config path was explicit.
+#[allow(clippy::too_many_lines)]
 pub fn dispatch_with_config_intent(
     command: &Command,
     config_path: &std::path::Path,
@@ -513,6 +537,27 @@ pub fn dispatch_with_config_intent(
         Command::Version => {
             println!("{}", version_string());
             Ok(())
+        }
+        Command::Update => {
+            let outcome = crate::update::run_update(config_path, explicit)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+            match outcome {
+                crate::update::UpdateOutcome::AlreadyCurrent { .. }
+                | crate::update::UpdateOutcome::UpdatedBinary { .. }
+                | crate::update::UpdateOutcome::UpdatedFromCargo { .. } => {
+                    println!("{outcome}");
+                    Ok(())
+                }
+                crate::update::UpdateOutcome::UpdatedButRestartFailed { .. } => {
+                    // update.rs already printed the installed version and the
+                    // exact restart command needed; convert to a nonzero exit
+                    // so automation notices incomplete activation.
+                    eprintln!("{outcome}");
+                    Err(Box::new(crate::update::UpdateError::RestartFailed(
+                        outcome.to_string(),
+                    )) as Box<dyn std::error::Error>)
+                }
+            }
         }
         Command::Restart => {
             #[cfg(target_os = "windows")]

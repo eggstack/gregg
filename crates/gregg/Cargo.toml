@@ -64,6 +64,15 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_IO"] }
 
+[dependencies.sha2]
+version = "0.10"
+default-features = false
+features = ["std"]
+
+[dependencies.self-replace]
+version = "1.5"
+default-features = true
+
 [dev-dependencies]
 gregg-protocol = { version = "1.0.11", path = "../gregg-protocol", features = ["test_support"] }
 tokio = { version = "1", features = ["test-util"] }

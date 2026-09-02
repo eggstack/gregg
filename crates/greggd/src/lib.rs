@@ -25,3 +25,5 @@ pub mod server;
 pub mod service;
 /// Startup installation and restart helpers.
 pub mod startup;
+/// Binary-first self-update.
+pub mod update;

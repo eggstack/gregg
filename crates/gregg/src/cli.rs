@@ -150,6 +150,17 @@ pub enum Command {
     /// gregg --config /tmp/test.toml edit
     /// ```
     Edit,
+    /// Update the gregg binary to the latest stable crates.io version.
+    ///
+    /// The updater uses crates.io as the version authority and downloads the
+    /// exact tagged GitHub Release asset when available. Checksum and
+    /// candidate `version` are verified before any replacement. If no
+    /// prebuilt asset exists for the current host (HTTP 404), Cargo is used
+    /// as a fallback when available. A checksum or version mismatch is a
+    /// hard error and does not fall back to Cargo. No `sudo` is invoked
+    /// internally; rerun with `sudo gregg update` when the install location
+    /// requires it (e.g., `/usr/local/bin`).
+    Update,
     /// Manage the optional `EggPool` statistics endpoint.
     Eggpool {
         #[command(subcommand)]
@@ -262,6 +273,7 @@ pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn st
         Command::Remove { endpoint } => cmd_remove(store, endpoint),
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
+        Command::Update => cmd_update(),
         Command::Eggpool { command } => dispatch_eggpool(command, store),
     }
 }
@@ -655,6 +667,16 @@ fn cmd_edit(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("configuration validated successfully");
     Ok(())
+}
+
+fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
+    match crate::update::run_update() {
+        Ok(outcome) => {
+            println!("{outcome}");
+            Ok(())
+        }
+        Err(e) => Err(Box::new(e)),
+    }
 }
 
 /// Resolve the editor to use, checking $VISUAL, $EDITOR, then fallbacks.

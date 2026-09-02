@@ -41,6 +41,15 @@ windows-service = ">=0.6.0, <0.8"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[dependencies.sha2]
+version = "0.10"
+default-features = false
+features = ["std"]
+
+[dependencies.self-replace]
+version = "1.5"
+default-features = true
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
 tower = { version = "0.4", features = ["util"] }

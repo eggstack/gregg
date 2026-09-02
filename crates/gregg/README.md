@@ -54,6 +54,7 @@ gregg list
 gregg remove 192.168.1.10                     # host-only remove is still supported
 gregg refresh 30
 gregg edit
+gregg update                                 # binary-first self-update to latest stable crates.io version
 ```
 
 `gregg add` requires an explicit port. Host-only input such as
@@ -62,6 +63,17 @@ gregg edit
 `nickname@` form with `--name` is rejected as ambiguous. The retained
 `default_port` setting is configuration-compatible but is not used by
 `gregg add`.
+
+`gregg update` queries the latest stable `gregg` crate on crates.io
+(`max_stable_version`), compares with the compiled-in version, and if newer
+downloads the exact `vX.Y.Z` GitHub Release asset for the current host
+plus `.sha256`, verifies checksum and candidate `version` before any
+replacement, then atomically replaces the current executable (via
+`self-replace`, same-filesystem rename on Unix). Missing asset (404)
+falls back to `cargo install --locked --version "=X.Y.Z"` staged to a temp
+`--root`; checksum/version mismatch or transport failure never falls back.
+No background checks or `sudo` internally; permission failures print
+`sudo gregg update`.
 
 IPv6 link-local zone identifiers are accepted in bare `%eth0` or URL-escaped
 `%25eth0` form and are stored in URL-safe `%25` form for polling.

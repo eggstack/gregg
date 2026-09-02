@@ -22,7 +22,7 @@ service lifecycle. For platform metric collection itself, use the
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: logging init, diagnostics, exit-code classification |
-| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch; `ExitCode` taxonomy |
+| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update` is synchronous, binary-first); `ExitCode` taxonomy |
 | `run` | `src/run.rs` | Supervision loop; `RunOutcome`, public `run_with_shutdown()`, pub(crate) `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
@@ -30,6 +30,7 @@ service lifecycle. For platform metric collection itself, use the
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
 | `startup` | `src/startup.rs` | Startup install/instructions/restart: auto systemd/launchd/cron/Windows SCM detection, atomic unit/plist write, cron quoting/merging, `startup_state()` for `restart`/`update`, `PermissionDenied` without silent fallback |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` |
 | `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
 
 ## Runtime ownership

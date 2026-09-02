@@ -268,6 +268,15 @@ the release is still a draft is safe; a published release causes a hard
 failure that requires a new patch version. The workflow never calls
 `cargo publish`, `git tag`, or pushes source commits.
 
+The update contract assumes crate version, tag, and binary assets are
+synchronized: `gregg update`/`greggd update` query `max_stable_version`
+from crates.io and request the exact `vX.Y.Z` asset from the GitHub Release.
+The binary workflow is not considered complete if one of the required
+`gregg`/`greggd` assets is missing for a supported prebuilt target; the
+draft must contain all ten executables + ten checksums + both installers
+before publication, otherwise installed updaters would fall back to Cargo
+or fail.
+
 ## 10. Publish the GitHub Release
 
 The draft release contains the prebuilt binaries. Review it, then publish:

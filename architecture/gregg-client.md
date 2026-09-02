@@ -20,8 +20,8 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop, TUI wiring |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `eggpool` |
+| `main` | `src/main.rs` | Entry point, event loop, TUI wiring (update is synchronous, before Tokio) |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `eggpool` |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | AppState reducer, viewport logic |
 | `action` | `src/action.rs` | Action enum (14 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
@@ -366,6 +366,7 @@ library callers from async tasks must move the mutation to a blocking thread.
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
+| `update` | Binary-first self-update to latest stable crates.io version: exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` verification, candidate `version` check, staged temp, `self-replace` (same-filesystem atomic), Cargo `=X.Y.Z` fallback only on 404; no `sudo` |
 | `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 
 ## EggPool

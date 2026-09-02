@@ -62,9 +62,12 @@ greggd startup install --method systemd       # explicit method
 greggd startup instructions                   # read-only, prints exact commands/paths
 greggd startup instructions --method cron
 greggd restart                                # manager-aware restart (systemd / launchd / SCM / direct)
+greggd update                                 # binary-first update; restarts if running, leaves stopped services stopped
 ```
 
 `startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and factored for `update` reuse (systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, Windows via SCM, otherwise `stop` + detached `run`).
+
+`greggd update` queries the latest stable `greggd` crate on crates.io, downloads the exact `vX.Y.Z` GitHub asset plus `.sha256`, verifies checksum and candidate `version` before any replacement, then atomically replaces the current executable (same-filesystem rename on Unix, `self-replace` on Windows) and restarts only when the daemon was running/managed (systemd active, launchd loaded, SCM running, or direct/cron running); intentionally stopped services remain stopped and a successful replacement with failed restart reports `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and returns nonzero. No background checks or `sudo`.
 
 Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
 Scheduler, and other supervisors without built-in readiness monitoring. It

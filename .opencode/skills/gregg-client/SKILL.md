@@ -17,8 +17,9 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `eggpool` |
+| `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring (update is synchronous, before Tokio) |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `version`, `eggpool` |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, `self-replace` atomic/WINDOWS, Cargo fallback only on 404 |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight |
 | `action` | `src/action.rs` | `Action` enum (14 variants including Plan 087's `ClearSelectionHighlight`) |

@@ -20,7 +20,7 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `host`, `port`, `version`, `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart` |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `host`, `port`, `version`, `update` (binary-first self-update), `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart` |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
@@ -32,6 +32,7 @@ available through the Windows-only service path.
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
 | `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, systemd/launchd/cron install, cron block rendering/quoting, `startup_state()` for `restart`/`update`, atomic unit/plist write, `ExitCode::PermissionDenied` on privilege failure without silent fallback |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, staged temp, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` partial-success |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait |
 | `service/windows` | `src/service/windows.rs` | Windows: SCM integration |
 
@@ -180,6 +181,7 @@ configuration error and is neither written nor followed by process management.
 | `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise `stop` + detached `run`); permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse (`startup_state()`) |
+| `update` | Binary-first self-update to latest stable crates.io version: exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` verification, candidate `version` check, staged temp, `self-replace` (same-filesystem atomic on Unix, running-image on Windows), Cargo `=X.Y.Z` fallback only on 404; preserves config/registration and restarts only when running/managed, leaves stopped services stopped; `UpdatedButRestartFailed` partial-success with exact restart command and nonzero exit |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
 | `version` | Print compile-time daemon version |

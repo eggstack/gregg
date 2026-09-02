@@ -153,6 +153,7 @@ integration tests.
 | `collector/macos/` | `src/collector/macos/` | macOS collector: cpu, memory, swap, identity, normalize; Mach/sysctl FFI seam in `ffi.rs` (`MacNativeQueries` trait, `FfiNativeQueries` prod, mock for tests) |
 | `collector/windows/` | `src/collector/windows/` | Windows collector: cpu, memory, commit, identity; `WindowsSource` trait (`NativeWindowsSource` prod, mock for tests) |
 | `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, systemd/launchd/cron install, cron quoting/merging, `startup_state()` for `restart`/`update`, atomic unit/plist write, `PermissionDenied` without silent fallback |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, staged temp, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` partial-success |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait (Windows-only) |
 | `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service`; native dispatcher entry owned by the binary, one current-thread Tokio runtime per service worker |
 
@@ -200,8 +201,8 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, biased `tokio::select!` event loop, TUI lifecycle, subcommand dispatch |
-| `cli` | `src/cli.rs` | Clap CLI: `version`, `add`, `list`, `remove`, `refresh`, `edit`, `eggpool add/list/remove`; strict port-required endpoint parsing for `add`; `ExitCode` taxonomy |
+| `main` | `src/main.rs` | Entry point, biased `tokio::select!` event loop, TUI lifecycle, subcommand dispatch (update is synchronous, not Tokio) |
+| `cli` | `src/cli.rs` | Clap CLI: `version`, `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `eggpool add/list/remove`; strict port-required endpoint parsing for `add`; `ExitCode` taxonomy |
 | `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking; `ConfigStore` with `load_or_default`, `load_existing`, `write`, `mutate`; editor resolution for `edit` |
 | `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, pane/view-mode state, selection-highlight deadline |
 | `action` | `src/action.rs` | `Action` enum (14 variants: `MoveDown`, `MoveUp`, `PageDown`, `PageUp`, `SelectFirst`, `SelectLast`, `PreviousPane`, `NextPane`, `ToggleSystemView`, `ToggleDrives`, `RefreshNow`, `Resize`, `ClearSelectionHighlight`, `Quit`) |
@@ -243,6 +244,7 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 |--------|------|---------|
 | `eggpool` | `src/eggpool.rs` | EggPool summary client and background worker; separate bounded command channel with generation checks; 60-second passive refresh when the pane is active; Hour/Day/Week/Month period cycling |
 | `eggpool_endpoint` | `src/eggpool_endpoint.rs` | EggPool-specific endpoint parsing; defaults to HTTP port 11300 |
+| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, staged temp, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404 |
 
 #### Test modules
 

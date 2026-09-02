@@ -173,7 +173,7 @@ greggd configprint                 # print the configured bind address with wild
 greggd version                     # print the daemon version
 ```
 
-Automatic startup and restart:
+Automatic startup, restart, and update:
 
 ```bash
 greggd startup install                        # auto: systemd on Linux (if running), launchd on macOS, cron elsewhere
@@ -181,9 +181,12 @@ greggd startup install --method systemd       # explicit: systemd, launchd, or c
 greggd startup instructions                   # read-only: prints exact commands/paths for the detected method
 greggd startup instructions --method cron     # read-only for a specific method
 greggd restart                                # manager-aware: systemd / launchd / SCM / direct (stop + detached run)
+greggd update                                 # binary-first update to latest stable crates.io version; restarts if running
 ```
 
 `greggd startup install` is `auto` by default: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, otherwise cron. Standard systemd paths are `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` on systemd runs `systemctl restart greggd`; on launchd `launchctl kickstart -k`; on Windows via SCM; otherwise via local `stop` + detached `run`. Privilege failures print the exact elevated `systemctl`/`launchctl` command and return `PermissionDenied` without competing fallback; `restart` is factored for `update` reuse.
+
+`gregg update` and `greggd update` are binary-first: they query the latest stable `gregg`/`greggd` crate on crates.io (authoritative; `max_stable_version`), compare SemVer-safely with `env!("CARGO_PKG_VERSION")`, and if newer, download the exact `vX.Y.Z` GitHub Release asset for the current host (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`, `aarch64-apple-darwin`, `x86_64-pc-windows-msvc[.exe]`) plus its `.sha256`, verify SHA-256 and candidate `version` before any replacement, stage to a private temp dir, then atomically replace the current executable (`self-replace` on Windows for running-image semantics, same-filesystem rename on Unix). Missing exact asset (HTTP 404) permits `cargo install --locked --version "=X.Y.Z"` fallback staged to a temp `--root`; checksum/version mismatch, transport failure, or 5xx never falls back. Permission failures print `sudo <exe> update` and occur before any `greggd` shutdown. Symlinked installs replace the resolved target and preserve the symlink. `greggd update` preserves config and startup registration and restarts only when the daemon was running/managed (systemd active, launchd loaded, SCM running, or direct/cron running); intentionally stopped services remain stopped and a successful replacement with failed restart is reported as `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and nonzero exit. No background checks, TUI notifications, package-manager integration, or automatic `sudo`.
 
 `greggd stop` only targets the local `greggd` instance associated with the
 same resolved config identity as `greggd run`. On Linux/macOS, existing config
@@ -232,6 +235,7 @@ gregg remove 192.168.1.10      # host-only remove is still supported
 gregg refresh 30               # set polling interval (seconds)
 gregg edit                     # open config in $EDITOR
 gregg version                  # print the client version
+gregg update                   # update to latest stable crates.io version (binary-first, Cargo fallback)
 gregg eggpool add pool.local:11300
 ```
 
