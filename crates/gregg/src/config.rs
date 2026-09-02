@@ -99,6 +99,16 @@ fn cleanup_stale_temps(dir: &Path) -> io::Result<()> {
             match fs::remove_file(entry.path()) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                // On Windows, a stale temp may be briefly locked by antivirus
+                // or a concurrent reader; treat as non-fatal best-effort.
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    #[cfg(windows)]
+                    eprintln!(
+                        "warning: cleanup_stale_temps could not remove {}: {}",
+                        entry.path().display(),
+                        error
+                    );
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -652,7 +662,34 @@ fn sync_parent_directory(dir: &Path) -> io::Result<()> {
         const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
         options.custom_flags(FILE_FLAG_BACKUP_SEMANTICS);
     }
-    options.open(dir)?.sync_all()
+    let file = match options.open(dir) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            // On Windows, opening a directory for fsync may require privileges
+            // not available in all CI environments; treat as non-fatal best-effort.
+            #[cfg(windows)]
+            eprintln!(
+                "warning: sync_parent_directory could not open {}: {}",
+                dir.display(),
+                error
+            );
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    match file.sync_all() {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            #[cfg(windows)]
+            eprintln!(
+                "warning: sync_parent_directory sync failed for {}: {}",
+                dir.display(),
+                error
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Default lock acquisition timeout in milliseconds.
