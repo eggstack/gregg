@@ -10,7 +10,7 @@ multiple machines.
 
 ## Installation
 
-The current published `v1.0.11` release is source-only. Cargo is the working
+The current published `v1.0.12` release is source-only. Cargo is the working
 installation path until the first binary-bearing release; the prebuilt
 installer is the intended path afterward.
 

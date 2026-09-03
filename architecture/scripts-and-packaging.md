@@ -77,7 +77,7 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 ### Bootstrap installers (binary-first, Plan 099)
 
-The current `v1.0.11` release is source-only, so Cargo remains the working
+The current `v1.0.12` release is source-only, so Cargo remains the working
 installation path until the first binary-bearing release publishes these
 assets. The `latest/download` and pinned-release installer URLs below are the
 forward-looking contract for those binary-bearing releases, not commands that
@@ -240,7 +240,7 @@ release from prebuilt binaries.
 
 **`Cargo.toml`** (workspace root):
 - Three members: `gregg-protocol`, `greggd`, `gregg`
-- One shared version from `[workspace.package]` (currently `1.0.11`),
+- One shared version from `[workspace.package]` (currently `1.0.12`),
   edition 2021, MSRV 1.75
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 

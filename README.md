@@ -12,7 +12,7 @@ A lightweight daemon (`greggd`) runs on each machine you want to monitor and exp
 ## Supported targets
 
 The first binary-bearing release will publish prebuilt binaries for the common
-platforms below. The current published `v1.0.11` release is source-only, so
+platforms below. The current published `v1.0.12` release is source-only, so
 Cargo is the working installation path until that release is available. Future
 GitHub release tags (`vX.Y.Z`) carry the version, so asset names are stable
 within a release (e.g., `gregg-x86_64-unknown-linux-gnu`). `SHA-256` files sit
