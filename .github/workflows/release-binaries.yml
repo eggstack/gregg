@@ -196,9 +196,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pip install --quiet ziglang
-          cargo install cargo-zigbuild --locked
+          python3 -m pip install --quiet ziglang
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           zig version
+          cargo install cargo-zigbuild --locked
           cargo zigbuild --version
 
       - name: Build gregg and greggd (x86_64, glibc 2.17)
@@ -305,9 +307,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pip install --quiet ziglang
-          cargo install cargo-zigbuild --locked
+          python3 -m pip install --quiet ziglang
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           zig version
+          cargo install cargo-zigbuild --locked
           cargo zigbuild --version
 
       - name: Build gregg and greggd (aarch64, glibc 2.17)
