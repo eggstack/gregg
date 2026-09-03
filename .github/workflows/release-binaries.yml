@@ -842,9 +842,9 @@ jobs:
                 --notes "Prebuilt binaries for Gregg $VERSION.
 
           Install (Linux/macOS):
-            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+            curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- both
 
           Install (Windows PowerShell):
             irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex

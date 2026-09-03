@@ -7,6 +7,34 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bootstrap installer requires bash, docs use it everywhere** (`install.sh`,
+  packaging, workflows, docs): every documented pipe-to-shell installer
+  command used `sh -s --`, but `install.sh` is a bash script (`set -o
+  pipefail`, `[[ ]]`) and fails on Debian/Ubuntu where `sh` is dash (`set:
+  Illegal option -o pipefail`, verified end-to-end against the published
+  `v1.0.12` assets). All live commands now pipe to `bash -s --`
+  (`packaging/install.sh` header/usage output, the unprivileged-`greggd`
+  system-wide follow-up hint, `packaging/README.md`,
+  `packaging/install-linux.sh`, `packaging/install-macos.sh`,
+  `release-binaries.yml` draft-release notes, `RELEASING.md`, the
+  `release-process` skill, both crate READMEs, and the root README).
+  `install.sh` now fails fast with a clear rerun command when executed
+  without bash instead of a cryptic `set` error. The already-published
+  `v1.0.12` `install.sh` asset runs unchanged under `bash`, so the corrected
+  commands work against the current release.
+- **README is a quickstart again** (root `README.md`, `docs/`): removed
+  planning artifacts (forward-looking "source-only until a binary-bearing
+  release" wording now that `v1.0.12` ships all ten binaries plus both
+  installers, release-architecture internals, and scheduler/control-socket
+  implementation detail). The README now covers install → startup → add
+  endpoints → launch with the verified installer commands first and Cargo
+  as the documented fallback, keeps a compact supported-targets table, and
+  links new `docs/installation.md`, `docs/daemon.md`, `docs/client.md`,
+  `docs/display.md`, `docs/api.md`, and `docs/development.md` (local-build
+  and operator-managed paths moved there).
+
 ## [1.0.12] - 2026-09-03
 
 ### Added

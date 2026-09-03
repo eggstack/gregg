@@ -383,7 +383,7 @@ stale_after_ms = 10000
             } else {
                 Write-Host "  irm https://github.com/$Repo/releases/latest/download/install.ps1 | iex  # then -Component Greggd" -ForegroundColor Yellow
             }
-            Write-Host "No service was registered; Plan 100 will refine startup registration." -ForegroundColor Yellow
+            Write-Host "No service was registered; rerun as Administrator to register the greggd service." -ForegroundColor Yellow
         }
 
         if (-not (Test-OnPath $DestDir)) {

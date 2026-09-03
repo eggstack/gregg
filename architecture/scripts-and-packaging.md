@@ -77,11 +77,12 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 ### Bootstrap installers (binary-first, Plan 099)
 
-The current `v1.0.12` release is source-only, so Cargo remains the working
-installation path until the first binary-bearing release publishes these
-assets. The `latest/download` and pinned-release installer URLs below are the
-forward-looking contract for those binary-bearing releases, not commands that
-claim to work against today's release.
+The `v1.0.12` release publishes these assets, so the bootstrap installer is
+the default installation path and Cargo is the fallback for source-only
+hosts. The `latest/download` and pinned-release installer URLs below are the
+working contract. `install.sh` requires bash: pipe to `bash -s --`, not
+`sh -s --` (on Debian/Ubuntu `sh` is dash, which cannot run it; the script
+exits nonzero with a clear error when run under non-bash `sh`).
 
 | Script | Platform | Mode |
 |--------|----------|------|

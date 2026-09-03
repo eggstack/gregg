@@ -9,16 +9,15 @@ Lightweight Linux, macOS, and Windows metrics daemon for the gregg monitoring ec
 
 ## Installation
 
-The current published `v1.0.12` release is source-only. Cargo is the working
-installation path until the first binary-bearing release; the bootstrap
-installer is the intended path afterward.
+Prebuilt binaries are published on GitHub Releases; the bootstrap installer
+is the default path and Cargo is the fallback for source-only hosts.
 
 ```sh
-# Current working installation
-cargo install greggd --locked
+# Default installation (Linux/macOS)
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 
-# After a binary-bearing release is published
-# curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+# Source install / fallback
+cargo install greggd --locked
 ```
 
 Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):

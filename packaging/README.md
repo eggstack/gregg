@@ -53,19 +53,19 @@ fallback, and Windows ARM64 is likewise source-only.
 
 ### Unix (Linux/macOS)
 
-Current working installation before the first binary-bearing release:
+Use the bootstrap installer (binary-first, Cargo fallback for source-only hosts):
+
+```bash
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+```
+
+Cargo fallback (source-only hosts such as ARMv7, or when no matching asset exists):
 
 ```bash
 cargo install gregg --locked
 cargo install greggd --locked
-```
-
-After a binary-bearing release is published, use the bootstrap installer:
-
-```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
 ```
 
 The script:

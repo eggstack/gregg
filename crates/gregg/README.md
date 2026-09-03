@@ -10,16 +10,15 @@ multiple machines.
 
 ## Installation
 
-The current published `v1.0.12` release is source-only. Cargo is the working
-installation path until the first binary-bearing release; the prebuilt
-installer is the intended path afterward.
+Prebuilt binaries are published on GitHub Releases; the bootstrap installer
+is the default path and Cargo is the fallback for source-only hosts.
 
 ```sh
-# Current working installation
-cargo install gregg --locked
+# Default installation (Linux/macOS)
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
 
-# After a binary-bearing release is published
-# curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
+# Source install / fallback
+cargo install gregg --locked
 ```
 
 Prebuilt assets (glibc 2.17 on Linux, unsigned on macOS):

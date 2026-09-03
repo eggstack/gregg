@@ -317,12 +317,13 @@ Do not include internal evidence IDs, CI-run metadata, or evidence artifacts.
 
 ### Installation after publication
 
-After the first binary-bearing release is published, the binary-first path is:
+Binary-bearing releases (starting with `v1.0.12`) install binary-first
+(pipe to `bash`, never `sh`):
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- both
 ```
 
 Windows PowerShell:

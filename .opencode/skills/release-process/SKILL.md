@@ -105,16 +105,17 @@ gh release create "$TAG" \
   --verify-tag
 ```
 
-Binary installation after the first binary-bearing release is published:
+Binary installation (binary-bearing releases, starting with `v1.0.12`):
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 ```
 
-Until a binary-bearing release exists, Cargo is the current working install
-path. Do not present `latest/download` or a source-only release tag as an
-available installer asset.
+Pipe to `bash`, never `sh` (`install.sh` needs bash; `sh` is dash on
+Debian/Ubuntu). Do not present a source-only release tag as an available
+installer asset. Cargo remains the fallback for source-only hosts
+(`armv7l`/unknown).
 
 `install.sh`/`install.ps1` are binary-first: they map `uname -s`/`uname -m`
 (or Windows arch) to the contract target, download

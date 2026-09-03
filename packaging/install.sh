@@ -8,9 +8,9 @@
 # as ARMv7) and Cargo is available, falls back to `cargo install`.
 #
 # Usage:
-#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+#   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- both
 #   ./packaging/install.sh [--version X.Y.Z] gregg|greggd|both
 #
 # Component selection is required. When invoked without arguments through a
@@ -19,6 +19,16 @@
 # No installer code silently invokes sudo.
 #
 # Linux glibc floor for published GNU assets is 2.17 (cargo-zigbuild + Zig).
+
+# This script requires bash (arrays, [[ ]], pipefail). This guard is
+# intentionally POSIX-safe and runs before any bash-ism (including
+# `set -o pipefail), so piping to `sh` on Debian/Ubuntu (dash) prints a clear
+# error instead of `set: Illegal option -o pipefail`. Invoke with `bash -s --`.
+if [ -z "${BASH_VERSION:-}" ]; then
+  echo "error: install.sh requires bash; rerun with bash:" >&2
+  echo "  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg" >&2
+  exit 1
+fi
 
 set -euo pipefail
 
@@ -48,9 +58,9 @@ options:
   --help, -h       show this help
 
 examples:
-  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sh -s -- gregg
-  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- greggd
-  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo sh -s -- both
+  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
+  curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- both
   ./packaging/install.sh --version 1.0.11 gregg
 
 artifact naming (stable, no version in filename):
@@ -399,9 +409,9 @@ install_program() {
         if [[ "${DEST_DIR}" != "/usr/local/bin" ]]; then
           echo "note: system service expects /usr/local/bin/greggd; for a system service, install system-wide:" >&2
           if [[ -n "$TAG" ]]; then
-            echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo sh -s -- greggd" >&2
+            echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo bash -s -- greggd" >&2
           else
-            echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo sh -s -- greggd" >&2
+            echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo bash -s -- greggd" >&2
           fi
         fi
         # The CLI already printed the exact elevated command when relevant.
