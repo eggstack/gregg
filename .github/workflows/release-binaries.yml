@@ -54,126 +54,21 @@ jobs:
           fetch-tags: true
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Derive tag and workspace version
+      - name: Run release preflight (version, tag, registry)
         id: version
         shell: bash
+        env:
+          DISPATCH_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          # Derive the triggering tag. For push events github.ref is refs/tags/vX.Y.Z;
-          # for dispatch we use the explicit input.
-          if [[ -n "${{ inputs.tag }}" ]]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          if [[ "$TAG" != v* ]]; then
-            echo "error: tag must start with 'v' (got '$TAG')" >&2
-            exit 1
-          fi
-          VERSION="${TAG#v}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Derived TAG=$TAG VERSION=$VERSION"
-
-          # Read workspace version from Cargo.toml [workspace.package].
-          WORKSPACE_VERSION="$(awk '
-            /^\[workspace\.package\][[:space:]]*$/ { in_package=1; next }
-            in_package && /^\[/ { exit }
-            in_package && /^[[:space:]]*version[[:space:]]*=/ {
-              if (match($0, /"[^"]+"/)) {
-                print substr($0, RSTART + 1, RLENGTH - 2)
-                exit
-              }
-            }
-          ' Cargo.toml)"
-          if [[ -z "$WORKSPACE_VERSION" ]]; then
-            echo "error: could not read [workspace.package].version from Cargo.toml" >&2
-            exit 1
-          fi
-          echo "Workspace version: $WORKSPACE_VERSION"
-          if [[ "$VERSION" != "$WORKSPACE_VERSION" ]]; then
-            echo "error: tag version v$VERSION does not match workspace version $WORKSPACE_VERSION" >&2
-            exit 1
-          fi
-
-          # Verify every member manifests inherit the workspace version.
-          for crate in crates/gregg-protocol crates/greggd crates/gregg; do
-            manifest="$crate/Cargo.toml"
-            if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$manifest"; then
-              echo "error: $manifest missing version.workspace = true" >&2
-              exit 1
-            fi
-          done
-
-          # Verify gregg-protocol dependency versions match workspace version.
-          for crate in crates/greggd crates/gregg; do
-            manifest="$crate/Cargo.toml"
-            dep_version="$(grep -E '^[[:space:]]*gregg-protocol[[:space:]]*=' "$manifest" | head -1 | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
-            if [[ -z "$dep_version" ]]; then
-              echo "error: $manifest has no gregg-protocol version" >&2
-              exit 1
-            fi
-            dep_stripped="${dep_version#=}"
-            if [[ "$dep_stripped" != "$WORKSPACE_VERSION" ]]; then
-              echo "error: $manifest gregg-protocol dependency $dep_version != workspace $WORKSPACE_VERSION" >&2
-              exit 1
-            fi
-          done
-          echo "Version consistency OK: $VERSION"
-
-      - name: Verify tag points at checked-out commit and tree is clean
-        shell: bash
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.version.outputs.tag }}"
-          HEAD_SHA="$(git rev-parse HEAD)"
-          TAG_SHA="$(git rev-list -n 1 "$TAG" 2>/dev/null || echo "")"
-          if [[ -z "$TAG_SHA" ]]; then
-            echo "error: tag $TAG does not exist locally" >&2
-            exit 1
-          fi
-          if [[ "$HEAD_SHA" != "$TAG_SHA" ]]; then
-            echo "error: tag $TAG points at $TAG_SHA but HEAD is $HEAD_SHA" >&2
-            echo "The workflow must run on the exact tagged commit." >&2
-            exit 1
-          fi
-          echo "Tag $TAG correctly points at HEAD $HEAD_SHA"
-          if [[ -n "$(git status --porcelain)" ]]; then
-            echo "error: working tree is not clean after checkout of $TAG" >&2
-            git status --short
-            exit 1
-          fi
-          echo "Clean tree verified"
-
-      - name: Verify crates.io visibility (gregg, greggd)
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="${{ steps.version.outputs.version }}"
-          # The release sequence publishes crates before the tag. A rerun must
-          # remain safe. If the registry has not yet indexed the version, fail
-          # clearly so the maintainer can rerun after indexing.
-          for crate in gregg greggd; do
-            echo "Checking crates.io for $crate $VERSION..."
-            # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
-            HTTP_CODE="$(curl -s -o /tmp/crate.json -w "%{http_code}" \
-              -H "User-Agent: gregg-release-ci (eggstack/gregg)" \
-              "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)"
-            if [[ "$HTTP_CODE" == "200" ]]; then
-              echo "  $crate $VERSION is visible on crates.io"
-            elif [[ "$HTTP_CODE" == "404" ]]; then
-              echo "error: $crate $VERSION is not yet visible on crates.io (HTTP 404)" >&2
-              echo "The release workflow requires the workspace version to be" >&2
-              echo "published to crates.io before building GitHub binaries." >&2
-              echo "Wait for indexing, then rerun this workflow." >&2
-              cat /tmp/crate.json 2>/dev/null || true
-              exit 1
-            else
-              echo "warning: crates.io check for $crate returned HTTP $HTTP_CODE; treating as hard failure" >&2
-              cat /tmp/crate.json 2>/dev/null || true
-              exit 1
-            fi
-          done
+          # Tag derivation, workspace/member version consistency (including
+          # the gregg-update internal dependency), tag/HEAD/tree identity,
+          # and crates.io visibility live in scripts/release-preflight.sh so
+          # the same checks run locally and in CI from one implementation.
+          bash scripts/release-preflight.sh \
+            --github-ref "${GITHUB_REF}" \
+            --input-tag "${DISPATCH_TAG}" \
+            --check-registry
 
   build-linux-x86_64:
     name: Linux x86_64 (glibc 2.17)
@@ -198,21 +93,8 @@ jobs:
           set -euo pipefail
           # Official Zig tarball (pip-based ziglang does not reliably place
           # `zig` on PATH on GH-hosted runners). Pinned stable, both arches.
-          ZIG_VERSION="0.14.0"
-          case "$(uname -m)" in
-            x86_64) ZIG_ARCH="x86_64" ;;
-            aarch64|arm64) ZIG_ARCH="aarch64" ;;
-            *) echo "error: unsupported arch $(uname -m)" >&2; exit 1 ;;
-          esac
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
-          mkdir -p "$HOME/.local/zig"
-          tar -xf /tmp/zig.tar.xz -C "$HOME/.local/zig" --strip-components=1
-          rm -f /tmp/zig.tar.xz
-          echo "$HOME/.local/zig" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/zig:$PATH"
-          zig version
-          cargo install cargo-zigbuild --locked
-          cargo zigbuild --help
+          # Single implementation in scripts/release-install-zig.sh.
+          bash scripts/release-install-zig.sh
 
       - name: Build gregg and greggd (x86_64, glibc 2.17)
         shell: bash
@@ -320,21 +202,8 @@ jobs:
           set -euo pipefail
           # Official Zig tarball (pip-based ziglang does not reliably place
           # `zig` on PATH on GH-hosted runners). Pinned stable, both arches.
-          ZIG_VERSION="0.14.0"
-          case "$(uname -m)" in
-            x86_64) ZIG_ARCH="x86_64" ;;
-            aarch64|arm64) ZIG_ARCH="aarch64" ;;
-            *) echo "error: unsupported arch $(uname -m)" >&2; exit 1 ;;
-          esac
-          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
-          mkdir -p "$HOME/.local/zig"
-          tar -xf /tmp/zig.tar.xz -C "$HOME/.local/zig" --strip-components=1
-          rm -f /tmp/zig.tar.xz
-          echo "$HOME/.local/zig" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/zig:$PATH"
-          zig version
-          cargo install cargo-zigbuild --locked
-          cargo zigbuild --help
+          # Single implementation in scripts/release-install-zig.sh.
+          bash scripts/release-install-zig.sh
 
       - name: Build gregg and greggd (aarch64, glibc 2.17)
         shell: bash
@@ -752,50 +621,9 @@ jobs:
           set -euo pipefail
           ls -lh dist/
           echo "--- validating expected asset names ---"
-          # Expected stable names (no version in filename)
-          expected=(
-            gregg-x86_64-unknown-linux-gnu
-            greggd-x86_64-unknown-linux-gnu
-            gregg-x86_64-unknown-linux-gnu.sha256
-            greggd-x86_64-unknown-linux-gnu.sha256
-            gregg-aarch64-unknown-linux-gnu
-            greggd-aarch64-unknown-linux-gnu
-            gregg-aarch64-unknown-linux-gnu.sha256
-            greggd-aarch64-unknown-linux-gnu.sha256
-            gregg-x86_64-apple-darwin
-            greggd-x86_64-apple-darwin
-            gregg-x86_64-apple-darwin.sha256
-            greggd-x86_64-apple-darwin.sha256
-            gregg-aarch64-apple-darwin
-            greggd-aarch64-apple-darwin
-            gregg-aarch64-apple-darwin.sha256
-            greggd-aarch64-apple-darwin.sha256
-            gregg-x86_64-pc-windows-msvc.exe
-            greggd-x86_64-pc-windows-msvc.exe
-            gregg-x86_64-pc-windows-msvc.exe.sha256
-            greggd-x86_64-pc-windows-msvc.exe.sha256
-          )
-          missing=0
-          for f in "${expected[@]}"; do
-            if [[ ! -f "dist/$f" ]]; then
-              echo "MISSING: $f" >&2
-              missing=1
-            else
-              echo "OK: $f"
-              # Verify checksum files contain a hash and the expected filename
-              if [[ "$f" == *.sha256 ]]; then
-                if ! grep -qE '^[a-f0-9]{64}  ' "dist/$f"; then
-                  echo "  bad checksum format: $f" >&2
-                  missing=1
-                fi
-              fi
-            fi
-          done
-          if [[ $missing -ne 0 ]]; then
-            echo "error: one or more expected assets missing or malformed" >&2
-            exit 1
-          fi
-          echo "All expected assets present"
+          # Expected names derive from scripts/release-targets.txt so the
+          # workflow, installers, and Rust updater share one target table.
+          bash scripts/release-check-assets.sh dist
 
       - name: Verify installers exist
         shell: bash

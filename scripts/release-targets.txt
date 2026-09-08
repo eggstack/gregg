@@ -1,0 +1,21 @@
+# Gregg prebuilt release targets (Plan 099 contract, Plan 104 single source).
+#
+# One row per supported binary target: "<rust-target> [<exe-suffix>]".
+# The public asset name is "<program>-<target>[<exe-suffix>]" with checksum
+# "<asset>.sha256"; the GitHub release tag "vX.Y.Z" provides the version
+# namespace. Linux GNU artifacts carry a documented glibc 2.17 floor
+# (enforced by the cargo-zigbuild invocation, not by the suffix).
+#
+# Consumers that must stay in sync (verified by tests/checks, not by trust):
+#   - crates/gregg-update/src/target.rs SUPPORTED_TARGETS
+#     (unit test supported_targets_match_release_table)
+#   - scripts/release-check-assets.sh (derives expected asset names)
+#   - packaging/install.sh, packaging/install.ps1 (installer mapping)
+#   - .github/workflows/release-binaries.yml (build matrix)
+#
+# Add a target here AND in all consumers at once; never in one place alone.
+x86_64-unknown-linux-gnu
+aarch64-unknown-linux-gnu
+x86_64-apple-darwin
+aarch64-apple-darwin
+x86_64-pc-windows-msvc .exe

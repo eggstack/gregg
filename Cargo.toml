@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/gregg-protocol",
+    "crates/gregg-update",
     "crates/greggd",
     "crates/gregg",
 ]

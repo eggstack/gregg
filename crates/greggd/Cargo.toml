@@ -23,6 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 gregg-protocol = { version = "1.0.12", path = "../gregg-protocol" }
+gregg-update = { version = "1.0.12", path = "../gregg-update" }
 axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util"] }
 tracing = "0.1"
@@ -31,7 +32,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = { version = "1.0", default-features = false }
 clap = { version = ">=4.0, <4.5", features = ["derive"] }
-# Compatibility-only bound keeps fresh TOML resolution within Rust 1.75.
+# Compatibility-only bound keeps fresh TOML resolution within Rust 1.75
+# (Plan 105 audit in architecture/workspace.md: load-bearing, keep).
 indexmap = ">=2.0, <2.12"
 toml = "0.8"
 
@@ -40,19 +42,6 @@ windows-service = ">=0.6.0, <0.8"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[dependencies.sha2]
-version = "0.10"
-default-features = false
-features = ["std"]
-
-[dependencies.self-replace]
-version = "1.5"
-default-features = true
-
-[dependencies.tempfile]
-version = "3.27"
-default-features = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }

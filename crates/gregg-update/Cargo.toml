@@ -1,0 +1,37 @@
+[package]
+name = "gregg-update"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "Shared binary-first self-update mechanics for gregg and greggd (internal workspace infrastructure, not a user-facing product)."
+keywords = ["update", "release"]
+categories = ["command-line-utilities"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+
+[dependencies]
+serde_json = "1"
+thiserror = { version = "1.0", default-features = false }
+
+[dependencies.sha2]
+version = "0.10"
+default-features = false
+features = ["std"]
+
+[dependencies.self-replace]
+version = "1.5"
+default-features = true
+
+[dependencies.tempfile]
+version = "3.27"
+default-features = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true

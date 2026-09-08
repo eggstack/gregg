@@ -32,8 +32,11 @@ required-features = ["test-helper"]
 
 [dependencies]
 gregg-protocol = { version = "1.0.12", path = "../gregg-protocol" }
+gregg-update = { version = "1.0.12", path = "../gregg-update" }
 clap = { version = ">=4.0, <4.5", features = ["derive"] }
 # Compatibility-only bounds keep fresh transitive resolution within Rust 1.75.
+# Per-pin audit (Plan 105, see architecture/workspace.md): every bound below
+# is load-bearing or an explicit upper-bound guard; re-audit before removing.
 indexmap = ">=2.0, <2.12"
 instability = ">=0.3, <0.3.11"
 unicode-segmentation = ">=1.10, <1.13"
@@ -63,19 +66,6 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_IO"] }
-
-[dependencies.sha2]
-version = "0.10"
-default-features = false
-features = ["std"]
-
-[dependencies.self-replace]
-version = "1.5"
-default-features = true
-
-[dependencies.tempfile]
-version = "3.27"
-default-features = true
 
 [dev-dependencies]
 gregg-protocol = { version = "1.0.12", path = "../gregg-protocol", features = ["test_support"] }
