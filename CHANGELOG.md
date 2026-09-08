@@ -7,6 +7,57 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Read-only `greggd status`** (Plan 106): composes version, config path,
+  canonical bind `host:port`, the bounded `/v2/healthz` classification
+  (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe
+  authority as `croncheck`), and detected startup-manager state. Exit `0`
+  only when a valid Gregg endpoint answered; never starts, stops,
+  restarts, installs, mutates config, or invokes `sudo`.
+- **Client offline provenance** (Plan 106): accepted poll failures
+  normalize to `OfflineKind`/`OfflineReason` at the poller boundary, travel
+  into `AppState`, and render as a stable suffix (`offline (refused)`,
+  `offline (http) HTTP 503`) inside the existing row width; recovery
+  clears them in the same generation and stale generations never overwrite
+  newer state.
+- **Release-policy scripts** (Plan 104): `scripts/release-targets.txt`
+  (single target table), `scripts/release-preflight.sh` (version/tag/
+  registry checks, also runnable locally), `scripts/release-check-assets.sh`
+  (staged-asset validation), `scripts/release-install-zig.sh` (shared Zig
+  setup); the release workflow now calls them instead of embedding the
+  logic, and a unit test fails loudly if the Rust updater constants drift
+  from the target table.
+
+### Changed
+
+- **Shared updater crate** (Plan 104): new internal `gregg-update` member
+  owns version/target/asset/download/checksum/staging/replacement
+  mechanics for both `gregg update` and `greggd update`
+  (`UpdateSpec`-parameterized; no service-manager, TUI, EggPool, or
+  protocol concepts). Both application updaters are thin adapters;
+  `greggd` keeps activation/restart coordination and the
+  prepare-before-quiesce rule. All update/install/release user-visible
+  behavior is unchanged. Publication order is now
+  `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+- **Module decomposition** (Plan 105): `greggd` startup logic split into
+  `src/startup/` (`method`, `process`, `systemd`, `launchd`, `cron`,
+  `state`, `install`) and client config split into `src/config/`
+  (`model`, `store`, `validation`, `lock`), both behind façades that
+  preserve every `crate::startup::X` / `crate::config::X` path.
+  Behavior-preserving; no new abstractions.
+- **MSRV retained at Rust 1.75** (Plan 105): `cargo check --workspace
+  --all-features` passes under 1.75, and a relax experiment proved fresh
+  resolution without the compatibility bounds pulls rust-version 1.77–1.88.
+  Every compatibility-only pin now has a documented KEEP reason in
+  `architecture/workspace.md`.
+
+### Removed
+
+- **`probe_top` diagnostic binary** (Plan 105): the standalone
+  connectivity probe with a historical default LAN address is deleted; a
+  normal `gregg` build no longer emits it.
+
 ### Fixed
 
 - **Bootstrap installer requires bash, docs use it everywhere** (`install.sh`,

@@ -32,6 +32,7 @@ greggd run                                # foreground (normal command)
 greggd host 127.0.0.1                     # restrict to localhost (SSH tunnel only)
 greggd port 11311                         # change the listen port
 greggd configprint                        # print the configured bind address
+greggd status                             # read-only local diagnostics (version, bind, health, startup state)
 greggd croncheck                          # start only when the health endpoint is refused (cron watchdog)
 greggd stop                               # stop the local instance via control socket (Unix) or SCM (Windows)
 greggd version                            # print the daemon version
@@ -53,6 +54,15 @@ Details:
 - `configprint` is read-only: it prints the configured bind address with
   wildcards resolved to the local IP (for example `192.168.182.143:11310`).
   It does not probe, bind, mutate config, or manage services.
+- `status` is read-only local diagnostics. It prints the binary version,
+  resolved config path, canonical bind address, the bounded `/v2/healthz`
+  classification (`ready`, `warming`, `failed`, `unreachable`, or
+  `not-gregg` for a peer that answered but is not a valid Gregg endpoint),
+  and the detected startup-manager state. It reuses the same bounded probe
+  authority as `croncheck` and never infers process ownership from port
+  occupancy. Exit `0` only when a valid Gregg endpoint answered; otherwise
+  the report is still printed and a nonzero exit is returned. It never
+  starts, stops, restarts, installs, mutates config, or invokes `sudo`.
 - `startup install` is `auto` by default: Windows→SCM, macOS→launchd, Linux
   with running systemd→systemd, otherwise cron. Standard systemd paths are
   `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group,

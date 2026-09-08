@@ -107,6 +107,7 @@ greggd restart                     # manager-aware restart
 greggd update                      # update to the latest stable release
 greggd stop                        # stop the local daemon
 greggd configprint                 # print the configured bind address
+greggd status                      # read-only diagnostics: version, bind, health, startup state
 ```
 
 Client config: Linux `~/.config/gregg/gregg.toml` (honors `XDG_CONFIG_HOME`),

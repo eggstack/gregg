@@ -49,12 +49,28 @@ cargo publish -p gregg-protocol --locked
 
 Wait for crates.io availability before continuing.
 
+### 4b. Dry-run and publish gregg-update
+
+The shared updater is a publishable member so the path + version
+dependencies from `greggd`/`gregg` keep working on crates.io:
+
+```bash
+cargo publish -p gregg-update --dry-run --locked
+cargo publish -p gregg-update --locked
+```
+
+Wait for crates.io availability before continuing.
+
 ### 5. Dry-run dependent crates
 
 ```bash
+cargo publish -p gregg-update --dry-run --locked
 cargo publish -p greggd --dry-run --locked
 cargo publish -p gregg --dry-run --locked
 ```
+
+Publication order is mandatory: `gregg-protocol` → `gregg-update` →
+`greggd` → `gregg`.
 
 ### 6. Publish daemon and client
 

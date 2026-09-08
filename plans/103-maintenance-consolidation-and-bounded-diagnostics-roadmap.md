@@ -1,6 +1,7 @@
 # Plan 103: maintenance consolidation and bounded diagnostics roadmap
 
-Status: planned.
+Status: complete. Plans 104-106 closed with evidence in their own records;
+acceptance mapping is appended below rather than rewriting the roadmap.
 
 Depends on: current `main` after Plans 098-102 and the September 2026 repository review.
 
@@ -153,3 +154,37 @@ Plan 103 is complete only when all of the following are true:
 8. The client retains bounded polling and the optional EggPool pane without new integration categories.
 9. Diagnostic improvements remain read-only and do not introduce persistent telemetry, alerts, or remote control.
 10. Active architecture/documentation and the plan index reflect the final structure and status truthfully.
+
+## Roadmap closure (September 2026)
+
+Plans were implemented in the prescribed order (104 → 105 → 106) as
+independent commits (`27ec978`, `2e4c4a1`, `a243162`); no broad refactor
+was interleaved with user-visible diagnostic changes.
+
+1. Plans 104-106 are individually complete with closure records and
+   implementation SHAs; nothing was rejected.
+2. Shared updater/release policy has one authoritative implementation per
+   policy: `gregg-update` owns version/target/asset/download/checksum/
+   staging/replacement; `scripts/release-targets.txt` is the single
+   target table (Rust drift test + script derivation).
+3. `probe_top` is deleted; the normal package exposes only `gregg`
+   (+ feature-gated `lock_helper`).
+4. `greggd` startup and client config are split at ownership seams behind
+   path-preserving façades; no trait/object/framework layer was added.
+5. All 13 compatibility-only pins have documented KEEP reasons
+   (`architecture/workspace.md`, Plan 105 audit with relax evidence).
+6. MSRV 1.75 is deliberately retained: `cargo check --workspace
+   --all-features` passes under Rust 1.75 on the consolidated tree; the
+   decision and evidence are recorded in `architecture/workspace.md`.
+7. `greggd run`, `croncheck`, direct control-socket stop,
+   startup-manager behavior, installers, and self-update preserve their
+   accepted semantics (full suites green; Ubuntu run/healthz/stop,
+   status running/stopped/occupied, and updater lifecycle smokes pass;
+   scheduler/runtime/server/sampler/installers untouched).
+8. The client retains bounded polling and the optional EggPool pane
+   without new integration categories (both untouched by this roadmap).
+9. `greggd status` is strictly read-only (no start/stop/restart/install,
+   no `sudo`); offline provenance adds no history, alerts, or control.
+10. `README.md`, crate READMEs, `docs/`, `architecture/`, skills,
+    `AGENTS.md`, `CHANGELOG.md`, `RELEASING.md`, and `plans/README.md`
+    reflect the final structure and status truthfully.

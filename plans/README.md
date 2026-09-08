@@ -67,6 +67,21 @@ Raspberry Pi/Le Potato uses the ordinary AArch64 Linux asset; ARMv7 remains
 source-build only. macOS binaries are unsigned. No `cargo publish`, tag
 creation, or auto-publication is added.
 
+Plan 103 is the coordination roadmap for maintenance consolidation and
+bounded diagnostics (Plans 104-106) and is complete with them. Plan 104
+extracted the shared `gregg-update` mechanism (both application updaters
+are thin adapters; `greggd` keeps activation/restart coordination),
+moved reusable release checks into locally runnable scripts behind one
+target table with a drift test, and preserved the exact update/install/
+release contract. Plan 105 deleted `probe_top`, split `greggd` startup
+and client config modules at ownership seams behind path-preserving
+façades, audited all 13 compatibility pins (documented KEEP), and
+retained MSRV 1.75 with a passing 1.75 workspace check. Plan 106 added
+read-only `greggd status` (same probe authority as `croncheck`) and
+stable client offline provenance rendered inside the existing row width.
+Implementations `27ec978` / `2e4c4a1` / `a243162`; each verified by the
+full local checks plus Ubuntu direct-lifecycle smokes.
+
 Plan 092 is complete: it closed the actionable findings from the
 2026-08-31 bugs audit around IPv6 zone-ID URL normalization, DNS error
  classification, zero-port validation clarity, and backward-clock snapshot
@@ -82,7 +97,7 @@ supplied `bugs.md` audit around reusable error propagation, bracketed endpoint
 validation, DNS classification, drive-worker panic handling, synchronous
 configuration locking, and generation-wrap documentation.
 
-Plan 095 is in implementation: it closes the supplied audit's remaining
+Plan 095 is complete at implementation `cfc1c84`: it closed the supplied audit's remaining
 protocol-envelope, identity, endpoint, scheduler, sampler, clock, test
 reliability, and aggregate-overflow findings without changing product scope.
 
@@ -137,16 +152,21 @@ excluded.
 | [`100-greggd-startup-installation-and-restart.md`](100-greggd-startup-installation-and-restart.md) | greggd startup installation and restart (systemd/launchd/cron, `startup install`/`instructions`, `restart`) | complete; implementation `2271b9e` (feat `a73a6a3` + fix `2078924` + fix `2271b9e`); CI `33680301250` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`101-binary-first-self-update-and-release-integration.md`](101-binary-first-self-update-and-release-integration.md) | Binary-first self-update and release integration (`gregg update`/`greggd update`, crates.io authority, exact-tag assets, Cargo fallback) | complete; implementation `2eb0577` (feat) verified by CI `33683771778` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`102-update-restart-release-readiness-corrective-pass.md`](102-update-restart-release-readiness-corrective-pass.md) | Update/restart lifecycle corrections, bounded manager and Cargo processes, private staging, and truthful pre-binary-release installation docs | complete; implementation `008092c`; CI run `33695133206` green |
+| [`103-maintenance-consolidation-and-bounded-diagnostics-roadmap.md`](103-maintenance-consolidation-and-bounded-diagnostics-roadmap.md) | Maintenance consolidation and bounded diagnostics roadmap for Plans 104-106 | complete; see Plans 104-106 closures below |
+| [`104-shared-updater-and-release-policy-consolidation.md`](104-shared-updater-and-release-policy-consolidation.md) | One shared internal updater (`gregg-update`), thin application adapters, release-policy scripts, single target table with drift test | complete; implementation `27ec978` |
+| [`105-source-boundary-repository-hygiene-and-msrv-review.md`](105-source-boundary-repository-hygiene-and-msrv-review.md) | Remove `probe_top`, split startup/config modules, audit compatibility pins, retain MSRV 1.75 | complete; implementation `2e4c4a1` |
+| [`106-bounded-daemon-status-and-client-offline-provenance.md`](106-bounded-daemon-status-and-client-offline-provenance.md) | Read-only `greggd status` and client offline provenance | complete; implementation `a243162` |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101 -> 102 -> 103 -> 104 -> 105 -> 106
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
 101 requires 099's asset contract and 100's restart contract;
-102 requires 098-101's implementation and corrects their release-readiness boundaries without rewriting their historical closure records.
+102 requires 098-101's implementation and corrects their release-readiness boundaries without rewriting their historical closure records;
+103 coordinates 104-106 and completes with them; 104 removes duplicated updater/release policy first, 105 cleans module/repository/dependency boundaries on the settled ownership, 106 adds bounded diagnostics on the simplified structure.
 ```
 
 Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record.

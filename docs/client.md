@@ -37,7 +37,10 @@ as `[server.local]:11310` are rejected.
 
 Offline endpoints continue to be polled on every configured cadence (no
 backoff); they automatically recover and switch to the normal view as soon
-as the daemon becomes reachable again.
+as the daemon becomes reachable again. Each accepted failure stores a stable
+provenance category (`timeout`, `dns`, `refused`, `network`, `http`,
+`too-large`, `invalid`, `unsupported`) shown in the offline row
+(`offline (refused)`); recovery clears it in the same poll generation.
 
 The client stores its config at:
 

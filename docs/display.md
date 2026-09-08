@@ -42,5 +42,15 @@ Without a nickname the host is rendered once:
 192.168.1.10:11310 offline
 ```
 
+When the accepted poll failure carries provenance, the stable failure
+category is appended inside the existing width budget:
+
+```text
+deadpool@192.168.1.10:11310 offline (refused)
+192.168.1.10:11310 offline (http) HTTP 503
+```
+
+Pending systems (never polled) never carry a reason.
+
 Condensed view shows one comparison row per system with CPU, memory, disk,
 load, and I/O-wait columns.

@@ -1,6 +1,6 @@
 # Plan 105: source-boundary, repository-hygiene, and MSRV review
 
-Status: planned.
+Status: complete at implementation `2e4c4a1`.
 
 Depends on: Plan 103; preferably Plan 104 first so updater ownership is settled before module decomposition.
 
@@ -204,3 +204,36 @@ Plan 105 is complete only when:
 8. Package contents contain only intended binaries/files.
 9. Active architecture docs and `plans/README.md` reflect current module ownership/status without falsifying historical plan records.
 10. Full local verification and applicable existing native CI jobs pass.
+
+## Closure record
+
+Implemented in `2e4c4a1` (September 2026):
+
+- `probe_top` deleted (`crates/gregg/src/bin/probe_top.rs` removed with its
+  historical default LAN address). `cargo metadata` proves the normal
+  package exposes only `gregg` (+ feature-gated `lock_helper`);
+  `cargo package --list -p gregg` confirms no `probe_top` artifact.
+- `crates/greggd/src/startup.rs` → `src/startup/` (`method`, `process`,
+  `systemd`, `launchd`, `cron`, `state`, `install`) and
+  `crates/gregg/src/config.rs` → `src/config/` (`model`, `store`,
+  `validation`, `lock`), both behind façades preserving every public
+  path. Moves are byte-exact (tiling asserted during the split); tests
+  moved with their implementation (29 startup, 88 config + 3 shared
+  helpers in a single façade `test_helpers` module so the split adds no
+  copied helper bodies). No trait/object/framework layer added;
+  cross-module sharing is explicit `pub(crate)` imports.
+- Dependency/MSRV: all 13 compatibility-only pins audited with a live
+  relax + re-resolve experiment (fresh resolution pulls rust-version
+  1.77–1.88: `indexmap` 2.14.2/1.85, `instability` 0.3.13/1.88,
+  `unicode-segmentation` 1.13.3/1.85, `uuid` 1.26/1.85, `idna_adapter`
+  1.2.2/1.86 via `idna` 1.1.0, `hyper-rustls` 0.27.9/1.85, `quinn-proto`
+  0.11.17/1.85, `rustc-hash` 2.1.3/1.77, `zeroize` 1.9/1.85; `url` 2.5.8
+  unresolvable with the `idna` pin; `reqwest`/`thiserror-compat` retained
+  as explicit no-op-today upper-bound guards for fresh source builds,
+  which `Cargo.lock` does not protect). Decision: **retain MSRV 1.75**;
+  `cargo check --workspace --all-features` under Rust 1.75 passes on the
+  consolidated tree. Per-pin table recorded in
+  `architecture/workspace.md`; manifests point at it.
+- EggPool untouched; no new integrations. `check-local.sh` version/package
+  checks extended to the `gregg-update` member and dependency.
+- Full local verification green on the final tree.

@@ -18,17 +18,17 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring (update is synchronous, before Tokio) |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `version`, `eggpool` |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, `self-replace` atomic/WINDOWS, Cargo fallback only on 404 |
-| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
-| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `version`, `eggpool` |
+| `update` | `src/update.rs` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings) |
+| `config/*` | `src/config/*.rs` | Config ownership split (façade `src/config.rs` re-exports `crate::config::X`): model entries/limits/primitives, store coordination + atomic persistence + errors, violation kinds, cross-process locking |
+| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight; per-system `offline_reason` provenance set from accepted failures, cleared by accepted successes |
 | `action` | `src/action.rs` | `Action` enum (14 variants including Plan 087's `ClearSelectionHighlight`) |
 
 ### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, `PollOutcome` (12 variants) |
+| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, `PollOutcome` (12 variants); `OfflineKind`/`OfflineReason` stable failure provenance |
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, `SchedulerCommand` enum, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS; HTTP URL convenience adapter |
 | `clock` | `src/clock.rs` | Clock trait; `RealClock` and `FakeClock` for testing |
@@ -205,7 +205,13 @@ length of the longest natural suffix across the whole fleet.
 **Offline rendering** (`ui/system_block.rs::render_offline`):
 - configured client name set:  `name@host:port offline`
 - no configured name:          `host:port offline`
-The host is never duplicated when a name is configured.
+The host is never duplicated when a name is configured. When the accepted
+poll failure carries provenance, the stable category is appended inside the
+existing width budget (`offline (refused)`, `offline (http) HTTP 503`);
+pending rows never carry a reason. Provenance is `OfflineKind`/`OfflineReason`
+(`poller.rs`, via `PollOutcome::offline_reason()`), stored in `AppState` and
+cleared by accepted successes — never recomputed by the renderer, never
+sourced from transport error types.
 
 **Expanded drive rows** (shared between normal and condensed views):
 `text::build_drive_detail_row` + `text::compute_drive_table_layout` +

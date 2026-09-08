@@ -12,18 +12,21 @@ README, the matching architecture deep dive, the relevant skill, and add a
 
 ## Project structure
 
-Three Rust crates in a workspace, strict one-way dependency direction:
+Four Rust crates in a workspace, strict one-way dependency direction:
 
 ```
 gregg-protocol  ◄── greggd      (daemon, metrics collection, HTTP server)
 gregg-protocol  ◄── gregg       (client, TUI, polling)
+gregg-update    ◄── greggd      (shared self-update mechanics)
+gregg-update    ◄── gregg       (shared self-update mechanics)
 ```
 
 - `gregg-protocol`: shared wire types (serde, serde_json, thiserror only). **No runtime, HTTP, terminal, or platform dependencies.** `#![forbid(unsafe_code)]`
-- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets. Platform collectors live under `src/collector/{linux,macos,windows}/`
-- `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`. UI modules under `src/ui/`
+- `gregg-update`: internal shared binary-first self-update mechanics (version/target/asset policy, bounded curl/Cargo execution, SHA-256, staging, replacement). Not a user-facing product; knows nothing about service managers, TUI, EggPool, or the wire protocol. Publishable member; publication order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets. Platform collectors live under `src/collector/{linux,macos,windows}/`; startup/install/restart logic lives under `src/startup/` (method/process/systemd/launchd/cron/state/install); read-only diagnostics in `src/status.rs`
+- `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`. UI modules under `src/ui/`; config ownership split across `src/config/` (model/store/validation/lock); offline provenance in `src/poller.rs` (`OfflineKind`/`OfflineReason`)
 
-`greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on either application crate.
+`greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on any other workspace crate. `gregg-update` must never depend on either application crate, on service-manager concepts, or on the wire protocol.
 → Details and boundary rules: `architecture/workspace.md`
 
 ## Build and verify
@@ -78,7 +81,7 @@ passes locally, the distinction is the cause.
 - **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
-- **Dependency upper bounds** are used intentionally when fresh resolution exceeds MSRV. Check `Cargo.toml` comments before changing dependency versions.
+- **Dependency upper bounds** are load-bearing or explicit guards for Rust 1.75 fresh resolution (relaxing them pulls rust-version 1.77–1.88). Per-pin KEEP evidence lives in `architecture/workspace.md` (Plan 105 audit). Re-audit with a relax + 1.75 check before removing any bound; never raise MSRV incidentally.
 
 ### Client polling and state (`architecture/gregg-client.md`)
 
@@ -126,8 +129,10 @@ passes locally, the distinction is the cause.
   actions arm a resettable ten-second event-loop deadline that dispatches
   `Action::ClearSelectionHighlight` without touching `selected_id`. Do not add
   a periodic frame ticker or per-keypress background task.
-- Offline rows render `name@host:port offline` or `host:port offline`; the host
-  is never duplicated when a name is set.
+- Offline rows render `name@host:port offline` or `host:port offline`, with the
+  stable failure category appended when provenance is known
+  (`offline (refused)`, `offline (http) HTTP 503`); the host
+  is never duplicated when a name is set. Pending rows never carry a reason.
 
 ### CLI contracts (`architecture/gregg-client.md`, `architecture/greggd-daemon.md`)
 
@@ -144,6 +149,12 @@ passes locally, the distinction is the cause.
   the repo.
 - `greggd configprint` is read-only and prints only the configured canonical
   bind `host:port`; it must not probe, bind, mutate config, or manage services.
+- `greggd status` is read-only and composes version, config path, canonical
+  bind `host:port`, the bounded `/v2/healthz` classification
+  (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority
+  as `croncheck`), and detected startup-manager state. Exit 0 only when a
+  valid Gregg endpoint answered; it never starts/stops/restarts/installs,
+  never infers process ownership from port occupancy, and never invokes `sudo`.
 - `greggd croncheck` is a watchdog for non-systemd supervisors: it probes the
   configured local `/v2/healthz` endpoint with bounded raw HTTP (wildcards become
   loopback). Valid Gregg Ready/Warming/Failed responses mean running; refusal
@@ -164,7 +175,7 @@ passes locally, the distinction is the cause.
 - `greggd startup install` (`auto` default; `--method systemd|launchd|cron` explicit) installs automatic startup: systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron` directly, prints manual lines if `crontab` missing). Auto picks Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. An identified systemd/launchd host never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied`. No internal `sudo`.
 - `greggd startup instructions` (`--method` optional) is read-only and prints exact commands/paths for the selected method without mutating state.
 - `greggd restart` is manager-aware and reusable by `update`: Windows via SCM, systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, otherwise via control `stop` + definitive endpoint-absence check + detached `run`; success requires a bounded valid Gregg health response, not merely process creation. Manager calls are bounded and retain stderr; privilege failures print exact elevated `systemctl`/`launchctl` command and return `PermissionDenied` without competing fallback.
-- `gregg update` / `greggd update` are binary-first, crates.io-authoritative (`max_stable_version` via `curl` with Gregg User-Agent, SemVer-safe `MAJOR.MINOR.PATCH` compare, `env!("CARGO_PKG_VERSION")` is local version, GitHub `latest` never authoritative), exact `vX.Y.Z` asset `https://github.com/eggstack/gregg/releases/download/vX.Y.Z/<program>-<target>[.exe]` plus `.sha256`, bounded `curl -fsSL --max-time` download to an exclusive owner-private `tempfile::TempDir`, SHA-256 via `sha2` crate (not platform tools) before any `chmod +x` or execution, candidate `version` must equal `"<program> X.Y.Z"` with exit 0, staged before touching current exe, Unix same-filesystem atomic rename via `self-replace` (preserves symlink target, never overwrites symlink file, `self-replace` 1.5.0 / Rust 1.63 / small footprint), Windows running-image via `self-replace`, `current_exe()` derived destination never assumed prefix, permission probe before any `greggd` shutdown with `sudo <exe> update` message, only HTTP 404 permits `cargo install --locked --version "=X.Y.Z" --root <temp>` staged then verified then same replacement path, Cargo timeout kills/reaps its child, checksum/version mismatch never falls back, and `greggd` fully prepares before stopping a running Windows SCM service; a stop failure prevents replacement. `greggd` preserves config/registration and restarts only when running/managed, with stopped services remaining stopped and `UpdatedButRestartFailed` preserving partial-success semantics; no background checks, TUI notifications, package-manager, or internal `sudo`.
+- `gregg update` / `greggd update` are binary-first, crates.io-authoritative (`max_stable_version` via `curl` with Gregg User-Agent, SemVer-safe `MAJOR.MINOR.PATCH` compare, `env!("CARGO_PKG_VERSION")` is local version, GitHub `latest` never authoritative), exact `vX.Y.Z` asset `https://github.com/eggstack/gregg/releases/download/vX.Y.Z/<program>-<target>[.exe]` plus `.sha256`, bounded `curl -fsSL --max-time` download to an exclusive owner-private `tempfile::TempDir`, SHA-256 via `sha2` crate (not platform tools) before any `chmod +x` or execution, candidate `version` must equal `"<program> X.Y.Z"` with exit 0, staged before touching current exe, Unix same-filesystem atomic rename via `self-replace` (preserves symlink target, never overwrites symlink file, `self-replace` 1.5.0 / Rust 1.63 / small footprint), Windows running-image via `self-replace`, `current_exe()` derived destination never assumed prefix, permission probe before any `greggd` shutdown with `sudo <exe> update` message, only HTTP 404 permits `cargo install --locked --version "=X.Y.Z" --root <temp>` staged then verified then same replacement path, Cargo timeout kills/reaps its child, checksum/version mismatch never falls back, and `greggd` fully prepares before stopping a running Windows SCM service; a stop failure prevents replacement. `greggd` preserves config/registration and restarts only when running/managed, with stopped services remaining stopped and `UpdatedButRestartFailed` preserving partial-success semantics; no background checks, TUI notifications, package-manager, or internal `sudo`. The shared transport/staging/replacement mechanism lives in `gregg-update` (`UpdateSpec`-parameterized, no service-manager concepts); `greggd` owns only activation/restart coordination and the Plan 102 prepare-before-quiesce transaction rule.
 - Reusable `greggd` library/runtime code returns errors without printing or
   calling `std::process::exit()`; the binary boundary owns logging, one-time
   diagnostics, and exit-code classification (`0` success · `1` configuration ·
@@ -236,7 +247,7 @@ and `architecture/gregg-protocol.md`.
 
 ## Crate versions and publishing
 
-All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inter-crate dependency versions must match workspace version exactly. Publication order is mandatory: `gregg-protocol` → `greggd` → `gregg`. Ordinary CI never publishes; the tagged `release-binaries` workflow may create/update a **draft** GitHub Release from prebuilt binaries after manual `cargo publish` + tag, but never publishes crates or auto-publishes the release. See `RELEASING.md`.
+All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inter-crate dependency versions must match workspace version exactly. Publication order is mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`. Ordinary CI never publishes; the tagged `release-binaries` workflow may create/update a **draft** GitHub Release from prebuilt binaries after manual `cargo publish` + tag, but never publishes crates or auto-publishes the release. See `RELEASING.md`.
 
 ## Testing patterns
 
@@ -245,8 +256,7 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
 - **Sustained workload tests:** the `mixed_fleet_evidence` and `sustained_workload` modules are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
-- **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
-- **`probe_top` dev bin:** `gregg` always builds `src/bin/probe_top.rs` (auto-discovered from `src/bin/`, no required features). It is a standalone TCP-connectivity probe driven by `PROBE_HOST`/`PROBE_PORT` env vars, not part of the product CLI — don't mistake it for shipped functionality
+- **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config/lock.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
 
 ## CI
 

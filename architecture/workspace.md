@@ -248,6 +248,43 @@ Compatibility-only dependency bounds keep fresh workspace and package-source
 resolution within that MSRV; the local release preflight and the small MSRV CI
 job provide the compatibility checks.
 
+### MSRV decision (Plan 105, September 2026): retain 1.75
+
+Retaining Rust 1.75 remains worthwhile: prebuilt binaries cover the five
+primary targets, but ARMv7/unknown hosts and crates.io consumers still build
+from source, and the compatibility surface is 13 bounded pins, not a
+maintenance burden. Raising the floor would abandon source-build users for
+no product gain. Evidence: `cargo check --workspace --all-features` with
+Rust 1.75 passes on the consolidated tree (shared updater crate, split
+startup/config modules included).
+
+### Compatibility-pin audit (Plan 105)
+
+Relaxing all upper bounds and re-resolving pulls requirements of Rust
+1.77–1.88 (measured September 2026), so the pins are load-bearing, not
+cosmetic. Per-pin outcome (`gregg` manifest unless noted):
+
+| Pin | Fresh version (rust-version) | Decision |
+| --- | --- | --- |
+| `indexmap <2.12` (+ `greggd`) | 2.14.2 (1.85) | KEEP, load-bearing |
+| `instability <0.3.11` | 0.3.13 (1.88) | KEEP, load-bearing |
+| `unicode-segmentation <1.13` | 1.13.3 (1.85) | KEEP, load-bearing |
+| `uuid <1.21` | 1.26.0 (1.85) | KEEP, load-bearing |
+| `reqwest <0.12.29` | 0.12.28 (unchanged) | KEEP as upper-bound guard for the HTTP/TLS stack |
+| `url <2.5.5` | 2.5.8 requires `idna ^1.1.0` (unresolvable with the idna pin) | KEEP, load-bearing |
+| `idna <1.1` | 1.1.0 pulls `idna_adapter` 1.2.2 (1.86) | KEEP, load-bearing |
+| `idna_adapter <1.2` | 1.2.2 (1.86) | KEEP, load-bearing |
+| `hyper-rustls <0.27.8` | 0.27.9 (1.85) | KEEP, load-bearing |
+| `quinn-proto <0.11.15` | 0.11.17 (1.85) | KEEP, load-bearing |
+| `rustc-hash <2.1` | 2.1.3 (1.77) | KEEP, load-bearing |
+| `zeroize <1.9` | 1.9.0 (1.85) | KEEP, load-bearing |
+| `thiserror-compat <2.0.13` | 2.0.20 (1.71, compatible) | KEEP as guard: the only bound on the transitive `thiserror` 2.x line required by `quinn` |
+
+`Cargo.lock` protects CI, but fresh source builds resolve bounds anew, so
+guard pins stay even when they are no-ops today. Re-audit with a relax +
+`cargo check` under Rust 1.75 before removing any bound; never raise the
+MSRV incidentally via a dependency update.
+
 ## Lints
 
 The workspace enables `clippy::pedantic` as a warning (not an error) so that

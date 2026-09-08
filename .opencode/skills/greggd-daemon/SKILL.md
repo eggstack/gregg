@@ -7,8 +7,8 @@ description: Work with the greggd daemon crate (collectors wiring, sampler, HTTP
 
 Guide agents through the `greggd` daemon crate: runtime wiring, the sampler and
 HTTP server, the Unix control socket behind `greggd stop`, the `croncheck`
-watchdog, `configprint`, `startup install`/`instructions` and manager-aware
-`restart`, and Windows SCM service management.
+watchdog, `configprint`, read-only `status`, `startup install`/`instructions`
+and manager-aware `restart`, and Windows SCM service management.
 
 ## When to use me
 
@@ -22,15 +22,16 @@ service lifecycle. For platform metric collection itself, use the
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: logging init, diagnostics, exit-code classification |
-| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update` is synchronous, binary-first); `ExitCode` taxonomy |
+| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update` coordinates lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
 | `run` | `src/run.rs` | Supervision loop; `RunOutcome`, public `run_with_shutdown()`, pub(crate) `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
-| `startup` | `src/startup.rs` | Startup install/instructions/restart: auto systemd/launchd/cron/Windows SCM detection, atomic unit/plist write, bounded manager commands with captured stderr, cron quoting/merging, `startup_state()` for `restart`/`update`, `PermissionDenied` without silent fallback |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` verify, candidate `version` check, private `tempfile::TempDir` staging, real Cargo child kill/reap on timeout, Windows SCM stop only after complete preparation, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404, manager-aware restart via `startup_state`, `UpdatedButRestartFailed` |
+| `startup/*` | `src/startup/*.rs` | Startup install/instructions/restart split by ownership (façade `src/startup.rs` re-exports `crate::startup::X`): method identity/paths/detection, bounded child execution, systemd unit/install/restart, launchd plist/install/restart, shell quoting + cron block/install, `StartupState` detection, errors/atomic writes/privilege/install dispatch/instructions/restart coordination |
+| `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
+| `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism (binds identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after preparation, manager-aware restart via `startup_state`, `UpdatedButRestartFailed`); transport/staging/replacement live in `gregg-update` |
 | `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
 
 ## Runtime ownership
@@ -54,6 +55,7 @@ service lifecycle. For platform metric collection itself, use the
 | `stop` | Unix: single tiny control socket targeting only the local instance matching the resolved config identity. Windows: delegates to SCM. Idempotent when already stopped |
 | `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
+| `status` | Read-only local diagnostics: version, config path, canonical bind `host:port`, bounded `/v2/healthz` classification (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority as `croncheck`), detected startup-manager state. Exit 0 only when a valid Gregg endpoint answered; never starts/stops/restarts/installs, never infers process ownership, never invokes `sudo` |
 | `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise control `stop` + definitive endpoint-absence check + detached `run`); success requires a bounded valid Gregg health response, not merely process creation. Permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse |

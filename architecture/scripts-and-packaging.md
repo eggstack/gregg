@@ -218,15 +218,20 @@ pull requests:
 Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
 `v*` tags and manual dispatch:
 
-- mandatory preflight: workspace/tag version equality, tag points at HEAD, clean
-  checkout, crates.io visibility for `gregg`/`greggd`;
-- five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig,
-  macOS Intel/ARM64 native, Windows x86_64 native) each build both binaries,
-  run `version`/`--help`, a foreground `greggd` loopback smoke
-  (`/v2/healthz` + `/v2/status` schema 2), hash after verification, and upload
-  artifacts;
-- assemble job validates the ten executables + ten `.sha256` stable names, checks
-  `install.sh` syntax, and creates/updates a **draft** GitHub Release via `gh`
+- mandatory preflight via `scripts/release-preflight.sh`: workspace/member
+  version equality (including the `gregg-update` internal dependency),
+  tag points at HEAD, clean checkout, crates.io visibility for
+  `gregg`/`greggd`;
+- five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig
+  installed by `scripts/release-install-zig.sh`, macOS Intel/ARM64 native,
+  Windows x86_64 native) each build both binaries, run `version`/`--help`,
+  a foreground `greggd` loopback smoke (`/v2/healthz` + `/v2/status`
+  schema 2), hash after verification, and upload artifacts;
+- assemble job validates the ten executables + ten `.sha256` stable names
+  via `scripts/release-check-assets.sh` (derived from the single
+  `scripts/release-targets.txt` table, which the `gregg-update` drift test
+  also checks against the Rust updater constants), checks `install.sh`
+  syntax, and creates/updates a **draft** GitHub Release via `gh`
   (`--clobber` on rerun, hard failure if already published), never calling
   `cargo publish`, `git tag`, or auto-publishing.
 
@@ -240,7 +245,7 @@ release from prebuilt binaries.
 ## Build configuration
 
 **`Cargo.toml`** (workspace root):
-- Three members: `gregg-protocol`, `greggd`, `gregg`
+- Four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`
 - One shared version from `[workspace.package]` (currently `1.0.12`),
   edition 2021, MSRV 1.75
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics

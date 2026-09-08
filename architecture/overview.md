@@ -36,7 +36,7 @@ dive links in the order that matches your task:
 ## System at a glance
 
 `gregg` is a cross-platform system metrics collection and monitoring tool
-composed of three Rust crates in a single Cargo workspace.
+composed of four Rust crates in a single Cargo workspace.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -59,6 +59,12 @@ composed of three Rust crates in a single Cargo workspace.
 │  Shared wire types, schema versions, validation, health responses   │
 │  No runtime, HTTP, terminal, or platform dependencies               │
 └─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────┐
+│                   gregg-update (library, internal)                  │
+│  Shared binary-first self-update mechanics used by gregg + greggd   │
+│  No service-manager, TUI, EggPool, or protocol concepts             │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 **Dependency direction is strictly one-way:**
@@ -66,11 +72,15 @@ composed of three Rust crates in a single Cargo workspace.
 ```
 gregg-protocol  ◄── greggd
 gregg-protocol  ◄── gregg
+gregg-update    ◄── greggd
+gregg-update    ◄── gregg
 ```
 
 `greggd` and `gregg` never depend on each other. `gregg-protocol` never
-depends on either application crate. This constraint is enforced by the
-workspace Cargo manifests and must not be violated.
+depends on any other workspace crate. `gregg-update` never depends on
+either application crate, on service-manager concepts, or on the wire
+protocol. These constraints are enforced by the workspace Cargo manifests
+and must not be violated.
 
 ---
 
@@ -79,6 +89,7 @@ workspace Cargo manifests and must not be violated.
 | Crate | Path | Type | Role | Deep dive |
 |-------|------|------|------|-----------|
 | `gregg-protocol` | `crates/gregg-protocol/` | Library | Wire contract between daemon and client | [gregg-protocol.md](gregg-protocol.md) |
+| `gregg-update` | `crates/gregg-update/` | Library (internal) | Shared binary-first self-update mechanics | [greggd-daemon.md](greggd-daemon.md) / [gregg-client.md](gregg-client.md) |
 | `greggd` | `crates/greggd/` | Bin + lib | Metrics daemon, collector, HTTP server, service manager | [greggd-daemon.md](greggd-daemon.md) |
 | `gregg` | `crates/gregg/` | Bin + lib | Client TUI, endpoint CLI, polling, EggPool | [gregg-client.md](gregg-client.md) |
 
@@ -123,6 +134,42 @@ or platform crate enters this boundary. `#![forbid(unsafe_code)]`.
 
 ---
 
+## gregg-update (internal shared updater)
+
+**Purpose:** One authoritative implementation of the binary-first
+self-update mechanics shared by `gregg update` and `greggd update`
+(Plan 104). Workspace-internal infrastructure, not a user-facing product.
+Knows nothing about service managers, TUI, EggPool, or the wire protocol.
+
+### Modules
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `lib` | `src/lib.rs` | `UpdateSpec` identity, `UpdatePlan`, `prepare_candidate`, `cargo_fallback`, `run_simple_update`, shared `UpdateOutcome` |
+| `error` | `src/error.rs` | Shared `UpdateError` taxonomy (`RestartFailed` constructed only by `greggd` coordination) |
+| `version` | `src/version.rs` | Stable `MAJOR.MINOR.PATCH` parsing/comparison |
+| `target` | `src/target.rs` | `SUPPORTED_TARGETS`, host mapping, asset naming, GitHub URLs; drift test against `scripts/release-targets.txt` |
+| `exec` | `src/exec.rs` | `curl`/Cargo discovery, bounded child execution with kill/reap, crates.io lookup, downloads (404-only fallback) |
+| `verify` | `src/verify.rs` | SHA-256 checksum + staged candidate `version` identity verification |
+| `stage` | `src/stage.rs` | Owner-private staging, current-exe resolution, permission probe, `self-replace` replacement |
+
+### Key concepts
+
+- **Caller-parameterized** — each program passes `UpdateSpec { crate_name,
+  program_name, current_version }`; the mechanism never learns which
+  program it serves beyond names and versions.
+- **Daemon activation stays out** — `greggd` coordinates
+  `prepare_candidate` → quiesce → replace → manager-aware restart itself,
+  preserving the prepare-before-quiesce transaction rule.
+- **One policy source** — the five-target table is checked against
+  `scripts/release-targets.txt` by unit test, so Rust, installers, and
+  the release workflow cannot silently diverge.
+
+**Deep dives:** [greggd-daemon.md](greggd-daemon.md),
+[gregg-client.md](gregg-client.md)
+
+---
+
 ## greggd (daemon)
 
 **Purpose:** Runs on the monitored host. Collects system metrics using native OS
@@ -138,7 +185,8 @@ integration tests.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root re-exporting all modules below |
 | `run` | `src/run.rs` | Supervision loop wiring collector, sampler, server, signals, and the local control socket; `RunOutcome`; entry points `run()`, `run_with_control_path()` (Unix), `run_with_control_path_or_default()` all delegate into the shared `run_with_shutdown()` core with a 10s graceful deadline |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog), `configprint` (read-only bind address), `host`, `port`, `version`, `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog), `configprint` (read-only bind address), `status` (read-only diagnostic composition), `host`, `port`, `version`, `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`/`service`; `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigError`, `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`); config identity via FNV-1a digest of canonicalized path; restrictive permissions, conservative stale-socket cleanup; `ControlSocketGuard` cleanup on every exit path |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
@@ -152,8 +200,14 @@ integration tests.
 | `collector/linux/` | `src/collector/linux/` | Linux collector: cpu, memory, drives, identity; `FileSource` trait (`ProcSource` prod reads `/proc`, `MemorySource` test) plus statvfs FFI in `source.rs` |
 | `collector/macos/` | `src/collector/macos/` | macOS collector: cpu, memory, swap, identity, normalize; Mach/sysctl FFI seam in `ffi.rs` (`MacNativeQueries` trait, `FfiNativeQueries` prod, mock for tests) |
 | `collector/windows/` | `src/collector/windows/` | Windows collector: cpu, memory, commit, identity; `WindowsSource` trait (`NativeWindowsSource` prod, mock for tests) |
-| `startup` | `src/startup.rs` | Startup installation and restart: `StartupMethod`, auto detection, bounded systemd/launchd commands with stderr, cron quoting/merging, `startup_state()` for `restart`/`update`, atomic unit/plist write, `PermissionDenied` without silent fallback |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256`, `sha2` checksum, candidate `version` verification, exclusive `tempfile::TempDir` staging, real Cargo child kill/reap on timeout, Windows stop-after-preparation, `self-replace` atomic/WINDOWS, Cargo fallback only on 404, manager-aware restart, `UpdatedButRestartFailed` partial-success |
+| `startup/method` | `src/startup/method.rs` | Method identity, standard paths, systemd environment detection, auto/resolve selection |
+| `startup/process` | `src/startup/process.rs` | Bounded child-process execution shared by manager probes and commands |
+| `startup/systemd` | `src/startup/systemd.rs` | Unit content, unit-existence/activity probes, user/config setup, `install_systemd`, `restart_systemd` |
+| `startup/launchd` | `src/startup/launchd.rs` | Plist content, plist/load probes, `install_launchd`, `restart_launchd` |
+| `startup/cron` | `src/startup/cron.rs` | Shell quoting, watchdog block rendering/merging, crontab access, `install_cron` |
+| `startup/state` | `src/startup/state.rs` | `StartupState` detection (`startup_state`, pure `*_state_with` helpers) for restart/update decisions |
+| `startup/install` | `src/startup/install.rs` | `InstallError`, atomic writes, privilege/elevation guidance, `install_startup`, instruction rendering, restart coordination (`restart_with_state`, `restart_daemon`) |
+| `update` | `src/update.rs` | Thin daemon lifecycle coordinator over `gregg-update`: binds daemon identity, prepares via the shared mechanism, then quiesces (Windows running service only, after preparation) and restarts through detected-manager policy with `UpdatedButRestartFailed` partial-success |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait (Windows-only) |
 | `service/windows` | `src/service/windows.rs` | Windows SCM integration via `windows-service`; native dispatcher entry owned by the binary, one current-thread Tokio runtime per service worker |
 
@@ -193,7 +247,6 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 |--------|------|---------|
 | `gregg` | `src/main.rs` | The client itself: CLI dispatch plus the async TUI event loop |
 | `lock_helper` | `src/bin/lock_helper.rs` | Cross-process config-lock test helper; only built behind the `test-helper` feature |
-| `probe_top` | `src/bin/probe_top.rs` | Standalone TCP-connectivity probe helper (Tokio + std connect checks against `PROBE_HOST`/`PROBE_PORT`); auto-discovered by Cargo from `src/bin/` and always built |
 
 ### Modules
 
@@ -203,15 +256,18 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, biased `tokio::select!` event loop, TUI lifecycle, subcommand dispatch (update is synchronous, not Tokio) |
 | `cli` | `src/cli.rs` | Clap CLI: `version`, `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `eggpool add/list/remove`; strict port-required endpoint parsing for `add`; `ExitCode` taxonomy |
-| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking; `ConfigStore` with `load_or_default`, `load_existing`, `write`, `mutate`; editor resolution for `edit` |
-| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, pane/view-mode state, selection-highlight deadline |
+| `config/model` | `src/config/model.rs` | Config model: entries, limits, defaults, load/validate/write primitives |
+| `config/store` | `src/config/store.rs` | `ConfigStore` coordination, atomic persistence, staging I/O, `ConfigError`, `AtomicWriteError` |
+| `config/validation` | `src/config/validation.rs` | `ConfigViolation` kinds and field checks |
+| `config/lock` | `src/config/lock.rs` | Cross-process advisory file locking (`FileLockGuard`) |
+| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, pane/view-mode state, selection-highlight deadline; per-system `offline_reason` provenance set from accepted failures and cleared by accepted successes |
 | `action` | `src/action.rs` | `Action` enum (14 variants: `MoveDown`, `MoveUp`, `PageDown`, `PageUp`, `SelectFirst`, `SelectLast`, `PreviousPane`, `NextPane`, `ToggleSystemView`, `ToggleDrives`, `RefreshNow`, `Resize`, `ClearSelectionHighlight`, `Quit`) |
 
 #### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback (fallback only on HTTP 404), `PollBatch` with generation counter, 64 KiB body cap |
+| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback (fallback only on HTTP 404), `PollBatch` with generation counter, 64 KiB body cap; `OfflineKind`/`OfflineReason` stable failure provenance (`PollOutcome::offline_reason`) |
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler; `SchedulerCommand` (`Refresh`, `ReplaceEndpoints`); semaphore-bounded per-endpoint tasks; one ordered result per endpoint per generation; offline endpoints keep polling every cadence |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: `host:port`, `[ipv6]:port`, HTTP URL convenience form, `nickname@host:port`; explicit port always required for `add`; HTTPS never accepted/downgraded |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing; real and fake implementations |
@@ -244,7 +300,7 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
 |--------|------|---------|
 | `eggpool` | `src/eggpool.rs` | EggPool summary client and background worker; separate bounded command channel with generation checks; 60-second passive refresh when the pane is active; Hour/Day/Week/Month period cycling |
 | `eggpool_endpoint` | `src/eggpool_endpoint.rs` | EggPool-specific endpoint parsing; defaults to HTTP port 11300 |
-| `update` | `src/update.rs` | Binary-first self-update: crates.io `max_stable_version` via `curl`, SemVer-safe compare, exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` checksum, candidate `version` verification, staged temp, `self-replace` atomic/WINDOWS, Cargo `=X.Y.Z` fallback only on 404 |
+| `update` | `src/update.rs` | Thin CLI adapter over `gregg-update`: binds program identity, delegates the full flow, preserves exact outcome strings |
 
 #### Test modules
 
@@ -277,6 +333,14 @@ normal and condensed fleet views. Optionally displays EggPool summary data.
   value stays in the named env var), and rendering.
 - **Cross-process config locking** — `flock(2)` / `LockFileEx` prevents
   concurrent corruption of the TOML config file.
+- **Offline provenance** — accepted poll failures normalize to
+  `OfflineKind`/`OfflineReason` at the poller boundary and travel into
+  `AppState` (`SystemState::offline_reason`); accepted successes clear
+  them in the same generation, stale generations never overwrite newer
+  state, and `Cancelled` never touches state. The normal-view offline row
+  appends the stable category (`offline (refused)`,
+  `offline (http) HTTP 503`) inside the existing width budget; pending
+  rows never carry a reason.
 - **Width degradation** — header line drops lower-priority segments as width
   decreases (< 32: no load, < 50: no OS, < 80: no arch); compact-mode metric
   suffixes are suppressed fleet-wide when they exceed a quarter of terminal
@@ -407,6 +471,10 @@ loopback smoke tests, and systemd/launchd/SCM service definitions.
 | Artifact | Purpose |
 |----------|---------|
 | `scripts/check-local.sh` / `.ps1` | Primary local validation: fmt check + workspace tests; `--release` adds Clippy, docs, smoke, protocol dry-run |
+| `scripts/release-targets.txt` | Single machine-readable prebuilt-target table consumed by release scripts and cross-checked by the `gregg-update` drift test |
+| `scripts/release-preflight.sh` | Release version/tag/registry preflight: workspace/member version consistency (incl. `gregg-update` deps), tag/HEAD/tree identity, crates.io visibility; called by the release workflow, runnable locally |
+| `scripts/release-check-assets.sh` | Validate staged `dist/` assets against `release-targets.txt` (names + checksum format); called by the release workflow |
+| `scripts/release-install-zig.sh` | Pinned Zig + cargo-zigbuild install shared by both Linux release jobs |
 | `scripts/verify-installed-daemon.sh` | Bounded loopback smoke: isolated port, temp config, health poll, SIGTERM |
 | `scripts/test-verify-installed-daemon.sh` | Self-test wrapper for the verify script |
 | `scripts/smoke-windows.ps1` | Bounded Administrator SCM lifecycle smoke: install → start → health → stop → restart → cleanup |
@@ -432,10 +500,11 @@ create a draft from prebuilt binaries. See `RELEASING.md` and
 
 ### Workspace rules
 
-Three crates, strict one-way dependency direction, shared version from
+Four crates, strict one-way dependency direction, shared version from
 `[workspace.package]`, MSRV Rust 1.75 pinned via `rust-toolchain.toml`,
 clippy pedantic warnings, unsafe restricted to named FFI files with mandatory
-safety comments, and publication order `gregg-protocol` → `greggd` → `gregg`.
+safety comments, and publication order `gregg-protocol` → `gregg-update` →
+`greggd` → `gregg`.
 
 **Deep dive:** [workspace.md](workspace.md)
 

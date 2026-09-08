@@ -1,6 +1,6 @@
 # Plan 106: bounded daemon status and client offline provenance
 
-Status: planned.
+Status: complete at implementation `a243162`.
 
 Depends on: Plan 103; preferably after Plans 104-105 so diagnostics are added on the consolidated structure.
 
@@ -293,3 +293,42 @@ Plan 106 is complete only when:
 8. Existing polling cadence, v2/v1 fallback, TUI geometry, EggPool behavior, and daemon API schemas remain unchanged.
 9. Ubuntu direct-runtime smoke proves status works both while running and after stop without systemd coupling.
 10. Full local verification and existing applicable native CI jobs pass.
+
+## Closure record
+
+Implemented in `a243162` (September 2026):
+
+- Probe sharing (Step 1): `cli.rs` fetch refactored into
+  `fetch_health_bytes` (bounded, shared) + `classify_health_response`
+  (strict, returns readiness) with two classifiers on top:
+  `probe_health` (Ready/Warming/Failed/Unreachable/NotGregg for `status`)
+  and `probe_greggd` (Running/Absent/Ambiguous for `croncheck`, semantics
+  bit-identical: refusal alone permits spawning). The previously duplicated
+  `update.rs` health fetch/parse (~70 lines) is deleted; the
+  UnmanagedOrCron restart decision now calls the same `probe_health`
+  authority (`matches!(Ready|Warming|Failed)`), so all three consumers
+  share one bounded fetch and one strict validator.
+- `greggd status` (Part A): new `src/status.rs` with `StatusReport`,
+  injected `gather_status`, stable `render_status` (version/config/listen/
+  health/startup lines), and `status_is_present` (valid endpoint =
+  ready/warming/failed, the same running definition `croncheck` uses).
+  Strictly read-only; exit 0 on a valid endpoint, `RuntimeError` (3) with
+  the report still printed otherwise, config errors exit 1 via the
+  existing taxonomy. Nine status unit tests cover all classifications
+  plus injected startup rendering.
+- Client provenance (Part B): `PollOutcome::offline_reason()` maps every
+  failure to `OfflineKind`/`OfflineReason` (bounded single-line detail,
+  HTTP code preserved); `SystemState::offline_reason` replaces the
+  never-rendered `last_error: Option<PollOutcome>`, set from accepted
+  failures and cleared by accepted successes in the same generation.
+  `Cancelled` still never touches state; stale generations still cannot
+  overwrite. Normal-view offline rows append the category inside the
+  existing width budget (`offline (refused)`); pending rows never carry a
+  reason; condensed view and all geometry invariants untouched.
+- Docs updated (`docs/daemon.md`, `docs/client.md`, `docs/display.md`,
+  crate READMEs, architecture, skills, CHANGELOG).
+- Verification: full local checks green; Ubuntu direct-runtime smoke
+  proves `status` reports `ready`/exit 0 while running,
+  `unreachable`/exit 3 after `stop` without spawning, `not-gregg`/exit 3
+  against a non-Gregg occupant, and exit 1 on unreadable config — all
+  without systemd.

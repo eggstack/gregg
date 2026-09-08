@@ -21,16 +21,19 @@ renders a Ratatui-based terminal UI.
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, event loop, TUI wiring (update is synchronous, before Tokio) |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (binary-first self-update), `eggpool` |
-| `config` | `src/config.rs` | Config model, validation, atomic I/O, cross-process locking |
-| `state` | `src/state.rs` | AppState reducer, viewport logic |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `eggpool` |
+| `config/model` | `src/config/model.rs` | Config model: entries, limits, defaults, load/validate/write primitives |
+| `config/store` | `src/config/store.rs` | `ConfigStore` coordination, atomic persistence, staging I/O, `ConfigError`, `AtomicWriteError` |
+| `config/validation` | `src/config/validation.rs` | `ConfigViolation` kinds and field checks |
+| `config/lock` | `src/config/lock.rs` | Cross-process advisory file locking (`FileLockGuard`) |
+| `state` | `src/state.rs` | AppState reducer, viewport logic; per-system `offline_reason` provenance set from accepted failures, cleared by accepted successes |
 | `action` | `src/action.rs` | Action enum (14 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
 
 ### Polling
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, PollOutcome classification |
+| `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, PollOutcome classification; `OfflineKind`/`OfflineReason` stable failure provenance (`PollOutcome::offline_reason`) |
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing plus HTTP URL adaptation for `add` |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing |
@@ -274,7 +277,14 @@ against the same structural prefix width.
 configured client name is set the row reads `name@host:port offline`;
 otherwise it reads `host:port offline` and never duplicates the host.
 The configured client name persists on `SystemEntry.name`; the daemon's
-`system.name` is not used for client-side display.
+`system.name` is not used for client-side display. When the accepted poll
+failure carries provenance, the stable category is appended inside the
+existing width budget (`offline (refused)`,
+`offline (http) HTTP 503`); pending rows never carry a reason. Provenance
+is stored in `AppState` (`SystemState::offline_reason`, set from
+`PollOutcome::offline_reason()` on accepted failures and cleared by
+accepted successes in the same generation), never recomputed by the
+renderer and never sourced from transport error types.
 
 **Expanded drive rows** (`e` in normal or condensed view, shared between
 `ui/system_block.rs` and `ui/condensed.rs`): one table layout per
@@ -366,7 +376,7 @@ library callers from async tasks must move the mutation to a blocking thread.
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
-| `update` | Binary-first self-update to latest stable crates.io version: exact `vX.Y.Z` asset + `.sha256` via `curl --max-time`, `sha2` verification, candidate `version` check, staged temp, `self-replace` (same-filesystem atomic), Cargo `=X.Y.Z` fallback only on 404; no `sudo` |
+| `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings); full flow (`run_simple_update`) lives in `gregg-update` |
 | `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 
 ## EggPool

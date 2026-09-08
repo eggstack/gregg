@@ -108,26 +108,47 @@ cargo search gregg-protocol --limit 1
 
 Confirm the exact `$VERSION` appears.
 
-## 5. Dry-run dependent crates (after protocol publication)
+## 4b. Dry-run and publish gregg-update
 
-Dependent-crate dry-runs must wait for the new `gregg-protocol` version to
-be visible on crates.io. The local release preflight does not run them
-because the registry has not yet indexed the new version. Run them
-manually here:
+The shared updater is a publishable member so the path + version
+dependencies from `greggd`/`gregg` keep resolving on crates.io:
 
 ```bash
+cargo publish -p gregg-update --dry-run --locked
+cargo publish -p gregg-update --locked
+```
+
+Wait for crates.io availability before continuing:
+
+```bash
+cargo search gregg-update --limit 1
+```
+
+Confirm the exact `$VERSION` appears.
+
+## 5. Dry-run dependent crates (after protocol and updater publication)
+
+Dependent-crate dry-runs must wait for the new `gregg-protocol` and
+`gregg-update` versions to be visible on crates.io. The local release
+preflight does not run them because the registry has not yet indexed the
+new versions. Run them manually here:
+
+```bash
+cargo publish -p gregg-update --dry-run --locked
 cargo publish -p greggd --dry-run --locked
 cargo publish -p gregg --dry-run --locked
 ```
 
 This is the authoritative dependent-package check because it resolves the
-published protocol version from crates.io.
+published dependency versions from crates.io. Publication order is
+mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
 
-## 6. Publish daemon and client
+## 6. Publish updater, daemon, and client
 
 Publish sequentially, not concurrently:
 
 ```bash
+cargo publish -p gregg-update --locked
 cargo publish -p greggd --locked
 cargo publish -p gregg --locked
 ```

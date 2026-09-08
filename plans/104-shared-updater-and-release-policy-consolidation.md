@@ -1,6 +1,6 @@
 # Plan 104: shared updater and release-policy consolidation
 
-Status: planned.
+Status: complete at implementation `27ec978`.
 
 Depends on: Plan 103; existing update/release behavior from Plans 099-102.
 
@@ -278,3 +278,38 @@ Plan 104 is complete only when:
 10. No automatic crates.io publication, tag creation, or automatic public release is introduced.
 11. Full local verification passes and the existing native CI jobs are green.
 12. Architecture and planning docs identify the new ownership boundary accurately.
+
+## Closure record
+
+Implemented in `27ec978` (September 2026):
+
+- New publishable member `crates/gregg-update` owns version/target/asset/
+  download/checksum/staging/replacement plus the shared `UpdateError` /
+  `UpdateOutcome` / `UpdateSpec` / `UpdatePlan` / `prepare_candidate` /
+  `run_simple_update` surface. It depends only on `serde_json`,
+  `thiserror`, `sha2`, `self-replace`, `tempfile`: no protocol, TUI,
+  EggPool, or service-manager concepts. The shared `RestartFailed` error
+  variant is constructed only by `greggd` coordination (opaque string, no
+  manager types leak into the crate).
+- `crates/gregg/src/update.rs` is a thin adapter (identity + exact outcome
+  strings, full flow via `run_simple_update`); `crates/greggd/src/update.rs`
+  is a lifecycle coordinator (identity, `prepare_candidate` → Windows
+  quiesce only after preparation → replace → manager-aware restart,
+  `UpdatedButRestartFailed` preserved). Net deletion of ~1700 duplicated lines.
+- Release policy: `scripts/release-targets.txt` (single table),
+  `scripts/release-preflight.sh` (version/tag/registry, locally runnable),
+  `scripts/release-check-assets.sh` (staged-asset validation),
+  `scripts/release-install-zig.sh` (shared Zig setup); the workflow calls
+  them, keeping platform build commands explicit. Drift prevention:
+  `supported_targets_match_release_table` unit test plus the asset-check
+  script deriving names from the same table.
+- Contract proof: `gregg version` / `greggd version` report `1.0.12`, no
+  `sudo` invocation in any updater path, Ubuntu foreground lifecycle smoke
+  (`run` → `/v2/healthz` ready → `stop` → exit, no systemd), full local
+  verification green (`fmt`, `clippy --all-targets --all-features
+  -D warnings`, `test --workspace --all-targets --all-features`, `doc`).
+  Preflight script passes locally; `release-check-assets.sh` verified
+  against empty (fails loudly) and complete (20 files OK) fixtures.
+- Publication order extended to
+  `gregg-protocol` → `gregg-update` → `greggd` → `gregg`
+  (`RELEASING.md`, release-process skill, `check-local.sh` package list).
