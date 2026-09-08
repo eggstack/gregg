@@ -102,7 +102,7 @@ check_version_consistency() {
 
     local crate
     local manifest
-    for crate in crates/gregg-protocol crates/greggd crates/gregg; do
+    for crate in crates/gregg-protocol crates/gregg-update crates/greggd crates/gregg; do
         manifest="${crate}/Cargo.toml"
         if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${manifest}"; then
             echo "error: ${manifest} is missing version.workspace = true" >&2
@@ -113,11 +113,13 @@ check_version_consistency() {
     local dependency_lines
     local line
     local dependency_version
+    local dep
     for crate in crates/greggd crates/gregg; do
         manifest="${crate}/Cargo.toml"
-        dependency_lines="$(grep -E '^[[:space:]]*gregg-protocol[[:space:]]*=' "${manifest}" || true)"
+        for dep in gregg-protocol gregg-update; do
+        dependency_lines="$(grep -E "^[[:space:]]*${dep}[[:space:]]*=" "${manifest}" || true)"
         if [[ -z "${dependency_lines}" ]]; then
-            echo "error: ${manifest} has no gregg-protocol dependency declaration" >&2
+            echo "error: ${manifest} has no ${dep} dependency declaration" >&2
             return 1
         fi
         while IFS= read -r line; do
@@ -125,17 +127,18 @@ check_version_consistency() {
             if [[ "${line}" =~ version[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
                 dependency_version="${BASH_REMATCH[1]}"
             else
-                echo "error: ${manifest} gregg-protocol dependency has no registry version" >&2
+                echo "error: ${manifest} ${dep} dependency has no registry version" >&2
                 return 1
             fi
             if [[ "${dependency_version}" != "${workspace_version_value}" ]]; then
-                echo "error: ${manifest} gregg-protocol dependency version ${dependency_version} != workspace ${workspace_version_value}" >&2
+                echo "error: ${manifest} ${dep} dependency version ${dependency_version} != workspace ${workspace_version_value}" >&2
                 return 1
             fi
         done <<< "${dependency_lines}"
+        done
     done
 
-    echo "  workspace version ${workspace_version_value}; all members inherit it and gregg-protocol constraints match"
+    echo "  workspace version ${workspace_version_value}; all members inherit it and gregg-protocol/gregg-update constraints match"
 }
 
 if [[ "${MODE}" == "release" ]]; then
@@ -157,6 +160,9 @@ if [[ "${MODE}" == "release" ]]; then
 
     step "cargo package --list (gregg-protocol)"
     run_or_fail cargo package --list -p gregg-protocol
+
+    step "cargo package --list (gregg-update)"
+    run_or_fail cargo package --list -p gregg-update
 
     step "cargo package --list (greggd)"
     run_or_fail cargo package --list -p greggd
