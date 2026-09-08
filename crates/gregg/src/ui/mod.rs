@@ -471,6 +471,44 @@ mod tests {
     }
 
     #[test]
+    fn render_offline_row_shows_stable_failure_category() {
+        let config = test_config(&["web1"]);
+        let mut state = AppState::from_config(&config);
+        apply_offline(&mut state, 0);
+        let output = render_state(&state, 80, 4);
+        assert!(
+            output.contains("offline (refused)"),
+            "expected stable refused category in output:\n{output}"
+        );
+        // The row keeps its 1-line shape: no raw transport error text.
+        assert!(!output.contains("ConnectionRefused"), "{output}");
+    }
+
+    #[test]
+    fn render_offline_row_truncates_reason_within_width() {
+        let config = test_config(&["web1"]);
+        let mut state = AppState::from_config(&config);
+        apply_offline(&mut state, 0);
+        let width = 30u16;
+        let output = render_state(&state, width, 4);
+        for line in output.lines() {
+            assert!(
+                UnicodeWidthStr::width(line) <= usize::from(width),
+                "line exceeds width: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_pending_row_carries_no_failure_category() {
+        let config = test_config(&["web1"]);
+        let state = AppState::from_config(&config);
+        let output = render_state(&state, 80, 4);
+        assert!(output.contains("pending"), "{output}");
+        assert!(!output.contains('('), "{output}");
+    }
+
+    #[test]
     fn render_offline_system_preserves_configured_ip() {
         let mut config = test_config(&["web1"]);
         config.systems[0].host = "192.168.183.143".into();
@@ -491,7 +529,9 @@ mod tests {
         let width = 40u16;
         let output = render_state(&state, width, 1);
         let line = output.lines().next().unwrap();
-        let prefix = "é@host0.local:11310 offline ";
+        // The offline row carries the stable failure category; padding math
+        // must still use terminal cells, not UTF-8 bytes.
+        let prefix = "é@host0.local:11310 offline (refused) ";
         let expected_dots = usize::from(width) - UnicodeWidthStr::width(prefix);
 
         assert!(line.starts_with(prefix), "rendered line: {line:?}");

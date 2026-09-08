@@ -131,6 +131,115 @@ pub enum PollOutcome {
     Cancelled,
 }
 
+/// Stable application-level category for a failed poll (Plan 106).
+///
+/// Transport-specific details stay at the poller boundary: the renderer
+/// consumes only this category plus a short bounded detail string, never
+/// `reqwest::Error` or platform DNS error types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OfflineKind {
+    /// The request timed out.
+    Timeout,
+    /// DNS resolution failed.
+    Dns,
+    /// The connection was refused or the host is unreachable.
+    Refused,
+    /// An unexpected network error occurred.
+    Network,
+    /// The server returned a non-success HTTP status code.
+    Http,
+    /// The response body exceeded the size cap.
+    TooLarge,
+    /// The response could not be decoded or failed protocol validation.
+    Invalid,
+    /// The endpoint speaks an unsupported schema.
+    Unsupported,
+    /// The poll was cancelled before completion.
+    Cancelled,
+}
+
+impl std::fmt::Display for OfflineKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let token = match self {
+            Self::Timeout => "timeout",
+            Self::Dns => "dns",
+            Self::Refused => "refused",
+            Self::Network => "network",
+            Self::Http => "http",
+            Self::TooLarge => "too-large",
+            Self::Invalid => "invalid",
+            Self::Unsupported => "unsupported",
+            Self::Cancelled => "cancelled",
+        };
+        write!(f, "{token}")
+    }
+}
+
+/// Normalized offline provenance stored in [`crate::state::AppState`].
+///
+/// Travels with the accepted poll result into state (and is cleared by the
+/// next accepted success) rather than being recomputed by the renderer.
+/// `detail` is a bounded single-line sanitized string; the stable
+/// [`OfflineKind`] is primary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OfflineReason {
+    /// Stable failure category.
+    pub kind: OfflineKind,
+    /// Bounded detail (for example the HTTP status code).
+    pub detail: Option<String>,
+}
+
+impl OfflineReason {
+    /// Build a reason with no detail.
+    #[must_use]
+    pub fn new(kind: OfflineKind) -> Self {
+        Self { kind, detail: None }
+    }
+
+    /// Build a reason with a sanitized bounded detail string: truncated to
+    /// 120 chars, flattened to one line.
+    #[must_use]
+    pub fn with_detail(kind: OfflineKind, detail: &str) -> Self {
+        let flat: String = detail
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(120)
+            .collect();
+        let flat = flat.trim().to_string();
+        Self {
+            kind,
+            detail: if flat.is_empty() { None } else { Some(flat) },
+        }
+    }
+}
+
+impl PollOutcome {
+    /// Normalize a poll outcome into offline provenance.
+    ///
+    /// Returns `None` for successful outcomes; the caller clears stale
+    /// provenance when a newer success is accepted.
+    #[must_use]
+    pub fn offline_reason(&self) -> Option<OfflineReason> {
+        match self {
+            Self::Online(_) | Self::OnlineV2(_) => None,
+            Self::Timeout => Some(OfflineReason::new(OfflineKind::Timeout)),
+            Self::DnsFailure => Some(OfflineReason::new(OfflineKind::Dns)),
+            Self::ConnectionRefused => Some(OfflineReason::new(OfflineKind::Refused)),
+            Self::NetworkError => Some(OfflineReason::new(OfflineKind::Network)),
+            Self::HttpStatus(status) => Some(OfflineReason::with_detail(
+                OfflineKind::Http,
+                &format!("HTTP {status}"),
+            )),
+            Self::BodyTooLarge => Some(OfflineReason::new(OfflineKind::TooLarge)),
+            Self::DecodeError | Self::InvalidSnapshot => {
+                Some(OfflineReason::new(OfflineKind::Invalid))
+            }
+            Self::UnsupportedSchema => Some(OfflineReason::new(OfflineKind::Unsupported)),
+            Self::Cancelled => Some(OfflineReason::new(OfflineKind::Cancelled)),
+        }
+    }
+}
+
 /// A completed batch of poll results for a single generation.
 #[derive(Debug)]
 pub struct PollBatch {
@@ -488,6 +597,74 @@ mod tests {
     use std::io;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn offline_reason_maps_failure_categories() {
+        let cases: Vec<(PollOutcome, OfflineKind, Option<&str>)> = vec![
+            (PollOutcome::Timeout, OfflineKind::Timeout, None),
+            (PollOutcome::DnsFailure, OfflineKind::Dns, None),
+            (PollOutcome::ConnectionRefused, OfflineKind::Refused, None),
+            (PollOutcome::NetworkError, OfflineKind::Network, None),
+            (
+                PollOutcome::HttpStatus(503),
+                OfflineKind::Http,
+                Some("HTTP 503"),
+            ),
+            (
+                PollOutcome::HttpStatus(404),
+                OfflineKind::Http,
+                Some("HTTP 404"),
+            ),
+            (PollOutcome::BodyTooLarge, OfflineKind::TooLarge, None),
+            (PollOutcome::DecodeError, OfflineKind::Invalid, None),
+            (PollOutcome::InvalidSnapshot, OfflineKind::Invalid, None),
+            (
+                PollOutcome::UnsupportedSchema,
+                OfflineKind::Unsupported,
+                None,
+            ),
+            (PollOutcome::Cancelled, OfflineKind::Cancelled, None),
+        ];
+        for (outcome, kind, detail) in cases {
+            let reason = outcome
+                .offline_reason()
+                .unwrap_or_else(|| panic!("{outcome:?} must map to a reason"));
+            assert_eq!(reason.kind, kind, "{outcome:?}");
+            assert_eq!(reason.detail.as_deref(), detail, "{outcome:?}");
+        }
+    }
+
+    #[test]
+    fn offline_kind_tokens_are_short_and_stable() {
+        let tokens: Vec<(OfflineKind, &str)> = vec![
+            (OfflineKind::Timeout, "timeout"),
+            (OfflineKind::Dns, "dns"),
+            (OfflineKind::Refused, "refused"),
+            (OfflineKind::Network, "network"),
+            (OfflineKind::Http, "http"),
+            (OfflineKind::TooLarge, "too-large"),
+            (OfflineKind::Invalid, "invalid"),
+            (OfflineKind::Unsupported, "unsupported"),
+            (OfflineKind::Cancelled, "cancelled"),
+        ];
+        for (kind, token) in tokens {
+            assert_eq!(kind.to_string(), token);
+        }
+    }
+
+    #[test]
+    fn offline_detail_is_bounded_and_single_line() {
+        let long = "x".repeat(500);
+        let reason = OfflineReason::with_detail(OfflineKind::Http, &long);
+        let detail = reason.detail.unwrap();
+        assert!(detail.len() <= 120, "detail must be bounded");
+        let dirty = "HTTP 503\r\ninjected: header\nsecond";
+        let reason = OfflineReason::with_detail(OfflineKind::Http, dirty);
+        let detail = reason.detail.unwrap();
+        assert!(!detail.contains('\r') && !detail.contains('\n'));
+        let empty = OfflineReason::with_detail(OfflineKind::Http, "   ");
+        assert!(empty.detail.is_none());
+    }
 
     /// Spin up a minimal mock HTTP server that returns the given body
     /// and status line. Returns the base URL.

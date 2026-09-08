@@ -485,7 +485,7 @@ mod tests {
             last_success_at: Some(Instant::now()),
             last_attempt_at: Some(Instant::now()),
             latency: None,
-            last_error: None,
+            offline_reason: None,
         }
     }
 

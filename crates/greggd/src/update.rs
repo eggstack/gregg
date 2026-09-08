@@ -242,80 +242,13 @@ fn is_unmanaged_daemon_running(config_path: &Path, explicit: bool) -> bool {
         return false;
     };
     let target = crate::cli::croncheck_target(&config);
-    probe_is_running(target)
-}
-
-fn probe_is_running(target: std::net::SocketAddr) -> bool {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    use std::time::Duration;
-
-    const TIMEOUT: Duration = Duration::from_millis(750);
-    const MAX_BYTES: usize = 256 * 1024;
-
-    let mut stream = match TcpStream::connect_timeout(&target, TIMEOUT) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => return false,
-        Err(_) => return false,
-    };
-    let _ = stream.set_read_timeout(Some(TIMEOUT));
-    let _ = stream.set_write_timeout(Some(TIMEOUT));
-    if stream
-        .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
-        .is_err()
-    {
-        return false;
-    }
-    let mut response = Vec::new();
-    let mut chunk = [0u8; 4096];
-    loop {
-        match stream.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                response.extend_from_slice(&chunk[..n]);
-                if response.len() > MAX_BYTES {
-                    return false;
-                }
-            }
-            Err(_) => return false,
-        }
-    }
-    parse_greggd_health(&response)
-}
-
-fn parse_greggd_health(response: &[u8]) -> bool {
-    let Some(header_end) = response.windows(4).position(|w| w == b"\r\n\r\n") else {
-        return false;
-    };
-    let headers = &response[..header_end];
-    let body = &response[header_end + 4..];
-    let Some(status_line) = headers.split(|b| *b == 10).next() else {
-        return false;
-    };
-    let mut parts = status_line.split(|b| *b == 32 || *b == 13);
-    let Some(version) = parts.next() else {
-        return false;
-    };
-    let Some(status) = parts
-        .next()
-        .and_then(|v| std::str::from_utf8(v).ok())
-        .and_then(|v| v.parse::<u16>().ok())
-    else {
-        return false;
-    };
-    if version != b"HTTP/1.0" && version != b"HTTP/1.1" {
-        return false;
-    }
-    let Ok(health) = serde_json::from_slice::<gregg_protocol::v2::HealthResponseV2>(body) else {
-        return false;
-    };
+    // Reuse the authoritative bounded probe: a valid Gregg readiness state
+    // means a daemon is running, regardless of startup manager.
     matches!(
-        (status, health.state),
-        (200, gregg_protocol::ReadinessState::Ready)
-            | (
-                503,
-                gregg_protocol::ReadinessState::Warming | gregg_protocol::ReadinessState::Failed
-            )
+        crate::cli::probe_health(target),
+        crate::cli::HealthProbe::Ready
+            | crate::cli::HealthProbe::Warming
+            | crate::cli::HealthProbe::Failed
     )
 }
 

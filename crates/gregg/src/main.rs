@@ -803,7 +803,7 @@ mod tests {
         assert!(app.systems[0].last_success_at.is_none());
         assert!(app.systems[0].last_attempt_at.is_none());
         assert!(app.systems[0].latency.is_none());
-        assert!(app.systems[0].last_error.is_none());
+        assert!(app.systems[0].offline_reason.is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }

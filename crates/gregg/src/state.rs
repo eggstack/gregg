@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::eggpool::{EggpoolFetchOutcome, EggpoolPeriod, EggpoolResult, EggpoolSummary};
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
-use crate::poller::{PollBatch, PollOutcome};
+use crate::poller::{OfflineReason, PollBatch, PollOutcome};
 
 /// A stable system identifier (UUID v4 string).
 pub type SystemId = String;
@@ -111,8 +111,10 @@ pub struct SystemState {
     pub last_attempt_at: Option<Instant>,
     /// Round-trip latency of the most recent successful poll.
     pub latency: Option<Duration>,
-    /// The outcome of the most recent failed poll, if any.
-    pub last_error: Option<PollOutcome>,
+    /// Normalized provenance of the most recent failed poll, if any.
+    /// Stored from the accepted poll result and cleared by the next
+    /// accepted success; the renderer consumes only this, never transport errors.
+    pub offline_reason: Option<OfflineReason>,
 }
 
 /// The top-level application state.
@@ -282,7 +284,7 @@ impl AppState {
                         system.last_success_at = Some(batch.completed_at);
                         system.last_attempt_at = Some(batch.completed_at);
                         system.latency = Some(result.latency);
-                        system.last_error = None;
+                        system.offline_reason = None;
                     }
                     PollOutcome::OnlineV2(snapshot) => {
                         system.reachability = Reachability::Online;
@@ -290,12 +292,12 @@ impl AppState {
                         system.last_success_at = Some(batch.completed_at);
                         system.last_attempt_at = Some(batch.completed_at);
                         system.latency = Some(result.latency);
-                        system.last_error = None;
+                        system.offline_reason = None;
                     }
                     _ => {
                         system.reachability = Reachability::Offline;
                         system.last_attempt_at = Some(batch.completed_at);
-                        system.last_error = Some(result.outcome.clone());
+                        system.offline_reason = result.outcome.offline_reason();
                     }
                 }
             }
@@ -614,7 +616,7 @@ fn system_from_entry(entry: &crate::config::SystemEntry) -> SystemState {
         last_success_at: None,
         last_attempt_at: None,
         latency: None,
-        last_error: None,
+        offline_reason: None,
     }
 }
 
@@ -923,7 +925,9 @@ mod tests {
                 .collect(),
         };
         state.apply_batch(&first_batch);
-        state.systems[0].last_error = Some(PollOutcome::Timeout);
+        state.systems[0].offline_reason = Some(crate::poller::OfflineReason::new(
+            crate::poller::OfflineKind::Timeout,
+        ));
 
         let retained_snapshot = state.systems[1].latest.clone();
         let retained_success = state.systems[1].last_success_at;
@@ -961,7 +965,7 @@ mod tests {
         assert!(state.systems[0].last_success_at.is_none());
         assert!(state.systems[0].last_attempt_at.is_none());
         assert!(state.systems[0].latency.is_none());
-        assert!(state.systems[0].last_error.is_none());
+        assert!(state.systems[0].offline_reason.is_none());
 
         assert_eq!(state.systems[1].configured_name.as_deref(), Some("Renamed"));
         assert_eq!(state.systems[1].reachability, Reachability::Online);
@@ -1263,7 +1267,7 @@ mod tests {
         assert!(state.systems[0].latest.is_some());
         assert!(state.systems[0].last_success_at.is_some());
         assert!(state.systems[0].latency.is_some());
-        assert!(state.systems[0].last_error.is_none());
+        assert!(state.systems[0].offline_reason.is_none());
         assert_eq!(state.last_applied_generation, 1);
         // System b is still pending.
         assert_eq!(state.systems[1].reachability, Reachability::Pending);
@@ -1291,7 +1295,13 @@ mod tests {
         assert_eq!(state.systems[0].reachability, Reachability::Offline);
         assert!(state.systems[0].latest.is_none());
         assert!(state.systems[0].last_attempt_at.is_some());
-        assert!(state.systems[0].last_error.is_some());
+        assert_eq!(
+            state.systems[0]
+                .offline_reason
+                .as_ref()
+                .map(|reason| reason.kind),
+            Some(crate::poller::OfflineKind::Refused)
+        );
     }
 
     #[test]
@@ -1332,6 +1342,72 @@ mod tests {
         assert_eq!(state.last_applied_generation, 2);
         // Reachability should still be Online.
         assert_eq!(state.systems[0].reachability, Reachability::Online);
+        // A stale failure must not plant provenance over newer online state.
+        assert!(state.systems[0].offline_reason.is_none());
+    }
+
+    #[test]
+    fn apply_batch_success_clears_offline_reason() {
+        use crate::poller::{OfflineKind, OfflineReason};
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.systems[0].reachability = Reachability::Offline;
+        state.systems[0].offline_reason = Some(OfflineReason::new(OfflineKind::Timeout));
+
+        let batch = PollBatch {
+            generation: 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(10),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        // Recovery in the same accepted generation clears stale provenance.
+        assert_eq!(state.systems[0].reachability, Reachability::Online);
+        assert!(state.systems[0].offline_reason.is_none());
+    }
+
+    #[test]
+    fn apply_batch_newer_failure_replaces_reason() {
+        use crate::poller::OfflineKind;
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+
+        for (generation, outcome, kind) in [
+            (1, PollOutcome::Timeout, OfflineKind::Timeout),
+            (2, PollOutcome::DnsFailure, OfflineKind::Dns),
+            (3, PollOutcome::HttpStatus(503), OfflineKind::Http),
+        ] {
+            let batch = PollBatch {
+                generation,
+                started_at: Instant::now(),
+                completed_at: Instant::now(),
+                results: vec![crate::poller::PollResult {
+                    system_id: "a".into(),
+                    endpoint: state.systems[0].endpoint.clone(),
+                    outcome,
+                    latency: Duration::from_millis(10),
+                }],
+            };
+            state.apply_batch(&batch);
+            assert_eq!(state.systems[0].reachability, Reachability::Offline);
+            assert_eq!(
+                state.systems[0].offline_reason.as_ref().map(|r| r.kind),
+                Some(kind)
+            );
+        }
+        assert_eq!(
+            state.systems[0]
+                .offline_reason
+                .as_ref()
+                .and_then(|r| r.detail.clone()),
+            Some("HTTP 503".to_string())
+        );
     }
 
     #[test]
@@ -1652,7 +1728,7 @@ mod tests {
                 last_success_at: None,
                 last_attempt_at: None,
                 latency: None,
-                last_error: None,
+                offline_reason: None,
             }],
             selected_id: Some("test".into()),
             viewport_top_id: Some("test".into()),

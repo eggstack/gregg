@@ -627,7 +627,19 @@ pub fn render_offline(f: &mut Frame, area: Rect, system: &SystemState, is_visual
         None => system.endpoint.display_address(),
     };
 
-    let prefix_with_status = format!("{prefix} {status_text} ");
+    // Offline systems with known provenance show the stable failure
+    // category (`offline (refused)`). Pending systems have no poll result
+    // yet, so they never carry a reason. The suffix is part of the
+    // truncated prefix, so width bounding and dot-fill below are unchanged.
+    let reason_suffix = match (&system.reachability, &system.offline_reason) {
+        (crate::state::Reachability::Offline, Some(reason)) => match reason.detail.as_deref() {
+            Some(detail) => format!(" ({}) {detail}", reason.kind),
+            None => format!(" ({})", reason.kind),
+        },
+        _ => String::new(),
+    };
+
+    let prefix_with_status = format!("{prefix} {status_text}{reason_suffix} ");
     let total_width = area.width as usize;
     // Bound the prefix to the terminal width so a long name@host:port
     // cannot push the status text into clipped cells.

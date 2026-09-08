@@ -25,5 +25,7 @@ pub mod server;
 pub mod service;
 /// Startup installation and restart helpers.
 pub mod startup;
+/// Read-only local diagnostic status composing config, version, health, and startup state.
+pub mod status;
 /// Binary-first self-update.
 pub mod update;

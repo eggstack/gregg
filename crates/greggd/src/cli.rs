@@ -69,6 +69,12 @@ pub enum Command {
     Croncheck,
     /// Print the configured bind address without probing or mutating state.
     Configprint,
+    /// Show read-only local diagnostic status: version, config path,
+    /// configured bind address, local health classification, and detected
+    /// startup-manager state. Never starts, stops, restarts, installs, or
+    /// mutates configuration; exit 0 only when a valid Gregg health
+    /// endpoint answered (ready, warming, or failed).
+    Status,
     /// Update the bind address (applies on the next daemon start).
     Host {
         /// The new IPv4 or IPv6 address to bind to.
@@ -361,49 +367,67 @@ pub(crate) enum CroncheckProbe {
 const CRONCHECK_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_CRONCHECK_RESPONSE_BYTES: usize = 256 * 1024;
 
-fn parse_greggd_health(response: &[u8]) -> bool {
-    let Some(header_end) = response.windows(4).position(|window| window == b"\r\n\r\n") else {
-        return false;
-    };
+/// Classify a raw `/v2/healthz` response body into its readiness state.
+///
+/// Returns `None` unless the response is a well-formed HTTP/1.x reply whose
+/// status/JSON pair is a valid Gregg health response: `200` + `ready`, or
+/// `503` + `warming`/`failed`. Anything else (wrong status, non-JSON body,
+/// schema mismatch, truncated headers) is not a valid Gregg endpoint.
+fn classify_health_response(response: &[u8]) -> Option<gregg_protocol::ReadinessState> {
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")?;
     let headers = &response[..header_end];
     let body = &response[header_end + 4..];
-    let Some(status_line) = headers.split(|byte| *byte == 10).next() else {
-        return false;
-    };
+    let status_line = headers.split(|byte| *byte == 10).next()?;
     let mut status_parts = status_line.split(|byte| *byte == 32 || *byte == 13);
-    let Some(version) = status_parts.next() else {
-        return false;
-    };
-    let Some(status) = status_parts
+    let version = status_parts.next()?;
+    let status = status_parts
         .next()
         .and_then(|value| std::str::from_utf8(value).ok())
-        .and_then(|value| value.parse::<u16>().ok())
-    else {
-        return false;
-    };
+        .and_then(|value| value.parse::<u16>().ok())?;
     if version != b"HTTP/1.0" && version != b"HTTP/1.1" {
-        return false;
+        return None;
     }
     let Ok(health) = serde_json::from_slice::<gregg_protocol::v2::HealthResponseV2>(body) else {
-        return false;
+        return None;
     };
-    matches!(
-        (status, health.state),
-        (200, gregg_protocol::ReadinessState::Ready)
-            | (
-                503,
-                gregg_protocol::ReadinessState::Warming | gregg_protocol::ReadinessState::Failed
-            )
-    )
+    match (status, health.state) {
+        (200, gregg_protocol::ReadinessState::Ready) => Some(gregg_protocol::ReadinessState::Ready),
+        (503, gregg_protocol::ReadinessState::Warming) => {
+            Some(gregg_protocol::ReadinessState::Warming)
+        }
+        (503, gregg_protocol::ReadinessState::Failed) => {
+            Some(gregg_protocol::ReadinessState::Failed)
+        }
+        _ => None,
+    }
 }
 
-pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
+/// Raw outcome of the bounded local health fetch shared by `croncheck`,
+/// restart/update coordination, and `status`.
+#[derive(Debug, PartialEq, Eq)]
+enum FetchOutcome {
+    /// The listener definitely refused the connection: nothing accepts
+    /// traffic on this address.
+    Refused,
+    /// No usable answer: timeout, unreachable host, write/read failure, or
+    /// an over-cap response body.
+    Failed,
+    /// The peer answered within bounds; classification happens separately.
+    Responded(Vec<u8>),
+}
+
+/// Perform the bounded raw-HTTP `GET /v2/healthz` fetch: finite
+/// connection/read deadline, bounded response body, no service-manager
+/// invocation, no mutation.
+fn fetch_health_bytes(target: SocketAddr) -> FetchOutcome {
     let mut stream = match TcpStream::connect_timeout(&target, CRONCHECK_TIMEOUT) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
-            return CroncheckProbe::Absent
+            return FetchOutcome::Refused
         }
-        Err(_) => return CroncheckProbe::Ambiguous,
+        Err(_) => return FetchOutcome::Failed,
     };
     let _ = stream.set_read_timeout(Some(CRONCHECK_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CRONCHECK_TIMEOUT));
@@ -411,7 +435,7 @@ pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
         .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
         .is_err()
     {
-        return CroncheckProbe::Ambiguous;
+        return FetchOutcome::Failed;
     }
     let mut response = Vec::new();
     let mut chunk = [0_u8; 4096];
@@ -421,16 +445,59 @@ pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
             Ok(read) => {
                 response.extend_from_slice(&chunk[..read]);
                 if response.len() > MAX_CRONCHECK_RESPONSE_BYTES {
-                    return CroncheckProbe::Ambiguous;
+                    return FetchOutcome::Failed;
                 }
             }
-            Err(_) => return CroncheckProbe::Ambiguous,
+            Err(_) => return FetchOutcome::Failed,
         }
     }
-    if parse_greggd_health(&response) {
-        CroncheckProbe::Running
-    } else {
-        CroncheckProbe::Ambiguous
+    FetchOutcome::Responded(response)
+}
+
+/// Detailed local health classification used by `greggd status`.
+///
+/// Unlike [`CroncheckProbe`], which answers only "definitely running /
+/// definitely absent / ambiguous", this distinguishes a valid Gregg
+/// readiness state from an unreachable endpoint and from a peer that
+/// answered but is not a valid Gregg health endpoint. It never infers
+/// process ownership from port occupancy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthProbe {
+    /// A valid Gregg endpoint reports `ready`.
+    Ready,
+    /// A valid Gregg endpoint reports `warming`.
+    Warming,
+    /// A valid Gregg endpoint reports `failed` (alive but unhealthy).
+    Failed,
+    /// No listener answered: refused, timed out, or otherwise unreachable.
+    Unreachable,
+    /// Something answered but it is not a valid Gregg health endpoint.
+    NotGregg,
+}
+
+/// Run the authoritative bounded health probe and classify the result.
+pub(crate) fn probe_health(target: SocketAddr) -> HealthProbe {
+    match fetch_health_bytes(target) {
+        FetchOutcome::Refused | FetchOutcome::Failed => HealthProbe::Unreachable,
+        FetchOutcome::Responded(bytes) => match classify_health_response(&bytes) {
+            Some(gregg_protocol::ReadinessState::Ready) => HealthProbe::Ready,
+            Some(gregg_protocol::ReadinessState::Warming) => HealthProbe::Warming,
+            Some(gregg_protocol::ReadinessState::Failed) => HealthProbe::Failed,
+            None => HealthProbe::NotGregg,
+        },
+    }
+}
+
+pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
+    // Same bounded fetch and strict validation as probe_health; only the
+    // three-way watchdog answer differs. Refusal alone permits spawning;
+    // anything else that is not a valid Gregg response stays ambiguous.
+    match fetch_health_bytes(target) {
+        FetchOutcome::Refused => CroncheckProbe::Absent,
+        FetchOutcome::Responded(bytes) if classify_health_response(&bytes).is_some() => {
+            CroncheckProbe::Running
+        }
+        FetchOutcome::Responded(_) | FetchOutcome::Failed => CroncheckProbe::Ambiguous,
     }
 }
 
@@ -535,6 +602,26 @@ pub fn dispatch_with_config_intent(
             let config = load_config(config_path, explicit)?;
             println!("{}", display_address(&config));
             Ok(())
+        }
+        Command::Status => {
+            let config = load_config(config_path, explicit)?;
+            let report = crate::status::gather_status(
+                &config,
+                config_path,
+                version_string(),
+                probe_health,
+                crate::startup::startup_state(),
+            );
+            print!("{}", crate::status::render_status(&report));
+            if crate::status::status_is_present(&report) {
+                Ok(())
+            } else {
+                Err(Box::new(std::io::Error::other(format!(
+                    "greggd status: configured endpoint is {} (health: {})",
+                    crate::status::status_outcome(&report),
+                    crate::status::health_token(report.health),
+                ))) as Box<dyn std::error::Error>)
+            }
         }
         Command::Host { address } => mutate_config(config_path, explicit, |config| {
             config.host = *address;
