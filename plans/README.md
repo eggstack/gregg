@@ -79,8 +79,8 @@ façades, audited all 13 compatibility pins (documented KEEP), and
 retained MSRV 1.75 with a passing 1.75 workspace check. Plan 106 added
 read-only `greggd status` (same probe authority as `croncheck`) and
 stable client offline provenance rendered inside the existing row width.
-Implementations `27ec978` / `2e4c4a1` / `a243162`; each verified by the
-full local checks plus Ubuntu direct-lifecycle smokes.
+Implementations `27ec978` / `2e4c4a1` / `a243162` (plus follow-up fix `30f7efe` for platform-conditional imports); each verified by the
+full local checks plus Ubuntu direct-lifecycle smokes, and existing CI run `34293771380` green across all five jobs (Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV Rust 1.75).
 
 Plan 092 is complete: it closed the actionable findings from the
 2026-08-31 bugs audit around IPv6 zone-ID URL normalization, DNS error
@@ -153,9 +153,9 @@ excluded.
 | [`101-binary-first-self-update-and-release-integration.md`](101-binary-first-self-update-and-release-integration.md) | Binary-first self-update and release integration (`gregg update`/`greggd update`, crates.io authority, exact-tag assets, Cargo fallback) | complete; implementation `2eb0577` (feat) verified by CI `33683771778` green (Linux, macOS Intel/ARM64, Windows, MSRV) |
 | [`102-update-restart-release-readiness-corrective-pass.md`](102-update-restart-release-readiness-corrective-pass.md) | Update/restart lifecycle corrections, bounded manager and Cargo processes, private staging, and truthful pre-binary-release installation docs | complete; implementation `008092c`; CI run `33695133206` green |
 | [`103-maintenance-consolidation-and-bounded-diagnostics-roadmap.md`](103-maintenance-consolidation-and-bounded-diagnostics-roadmap.md) | Maintenance consolidation and bounded diagnostics roadmap for Plans 104-106 | complete; see Plans 104-106 closures below |
-| [`104-shared-updater-and-release-policy-consolidation.md`](104-shared-updater-and-release-policy-consolidation.md) | One shared internal updater (`gregg-update`), thin application adapters, release-policy scripts, single target table with drift test | complete; implementation `27ec978` |
-| [`105-source-boundary-repository-hygiene-and-msrv-review.md`](105-source-boundary-repository-hygiene-and-msrv-review.md) | Remove `probe_top`, split startup/config modules, audit compatibility pins, retain MSRV 1.75 | complete; implementation `2e4c4a1` |
-| [`106-bounded-daemon-status-and-client-offline-provenance.md`](106-bounded-daemon-status-and-client-offline-provenance.md) | Read-only `greggd status` and client offline provenance | complete; implementation `a243162` |
+| [`104-shared-updater-and-release-policy-consolidation.md`](104-shared-updater-and-release-policy-consolidation.md) | One shared internal updater (`gregg-update`), thin application adapters, release-policy scripts, single target table with drift test | complete; implementation `27ec978`; CI `34293771380` green |
+| [`105-source-boundary-repository-hygiene-and-msrv-review.md`](105-source-boundary-repository-hygiene-and-msrv-review.md) | Remove `probe_top`, split startup/config modules, audit compatibility pins, retain MSRV 1.75 | complete; implementation `2e4c4a1`; CI `34293771380` green |
+| [`106-bounded-daemon-status-and-client-offline-provenance.md`](106-bounded-daemon-status-and-client-offline-provenance.md) | Read-only `greggd status` and client offline provenance | complete; implementation `a243162`; CI `34293771380` green |
 
 Dependency order:
 

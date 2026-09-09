@@ -2,6 +2,8 @@
 
 Status: complete at implementation `a243162`.
 
+Existing CI run `34293771380` green across all five jobs (Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV Rust 1.75).
+
 Depends on: Plan 103; preferably after Plans 104-105 so diagnostics are added on the consolidated structure.
 
 ## Objective

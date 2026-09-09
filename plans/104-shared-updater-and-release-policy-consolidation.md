@@ -2,6 +2,8 @@
 
 Status: complete at implementation `27ec978`.
 
+Existing CI run `34293771380` green across all five jobs (Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV Rust 1.75).
+
 Depends on: Plan 103; existing update/release behavior from Plans 099-102.
 
 ## Objective

@@ -2,6 +2,8 @@
 
 Status: complete at implementation `2e4c4a1`.
 
+Existing CI run `34293771380` green across all five jobs (Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV Rust 1.75).
+
 Depends on: Plan 103; preferably Plan 104 first so updater ownership is settled before module decomposition.
 
 ## Objective
