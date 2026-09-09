@@ -110,6 +110,9 @@ Details:
   stopped, and a replacement whose restart fails reports
   `Installed X.Y.Z but not activated` with the exact restart command. No
   background checks, package-manager integration, or automatic `sudo`.
+  The download/verify/stage/replace mechanism is shared with `gregg update`
+  in the internal `gregg-update` crate; `greggd` owns only
+  activation/restart coordination.
 
 ## Platform notes
 

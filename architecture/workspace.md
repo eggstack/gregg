@@ -1,10 +1,11 @@
 # Workspace and crate boundaries
 
-The repository is a Cargo workspace with three independently publishable
-members under `crates/`:
+The repository is a Cargo workspace with four members under `crates/`
+(three user-facing plus one internal shared mechanism):
 
 ```text
 crates/gregg-protocol    library    versioned wire types and compatibility rules
+crates/gregg-update      library    shared binary-first self-update mechanics (internal, Plan 104)
 crates/greggd           bin + lib  Linux/macOS/Windows metrics daemon + service-management CLI (lib exposes the collector for integration tests)
 crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
@@ -16,16 +17,23 @@ The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macO
 ```text
 gregg-protocol  ◄── greggd
 gregg-protocol  ◄── gregg
+gregg-update    ◄── greggd
+gregg-update    ◄── gregg
 ```
 
 Allowed:
 
 - `gregg-protocol` depends only on narrow serialization and error crates.
-- `greggd` and `gregg` may each depend on `gregg-protocol`.
+- `gregg-update` depends only on transport/staging/replacement crates
+  (`serde_json`, `thiserror`, `sha2`, `self-replace`, `tempfile`); no
+  protocol, TUI, EggPool, or service-manager concepts.
+- `greggd` and `gregg` may each depend on `gregg-protocol` and `gregg-update`.
 
 Forbidden:
 
-- `gregg-protocol` depending on either binary crate.
+- `gregg-protocol` depending on any other workspace crate.
+- `gregg-update` depending on either application crate, on service-manager
+  concepts, or on the wire protocol.
 - `greggd` depending on `gregg`, or vice versa.
 - Sharing implementation code through `gregg-protocol` to avoid creating a new
   internal module in the consuming crate.
@@ -39,6 +47,10 @@ Within each binary crate, the following are kept separate:
 - Client polling is distinct from application-state reduction.
 - The renderer reads state; it does not perform I/O or mutate polling internals.
 - Platform-specific code remains under narrow `cfg(target_os = ...)` modules.
+- Self-update mechanics live once in `gregg-update`; `gregg` adapts CLI
+  outcomes and `greggd` coordinates daemon activation/restart around the
+  shared prepare/replace calls. Neither application crate keeps copied
+  version/target/asset/download/checksum/staging helpers.
 
 ## Collector module boundary
 
@@ -84,10 +96,13 @@ loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 ## CLI and configuration
 
 The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
-for structured argument parsing. Subcommands include `run`, `croncheck` (a bounded /v2/healthz watchdog that spawns `run` only on refusal),
-`configprint`, `host`, `port`, and `version`. Windows also exposes `start`, `stop`, and `restart`
-through native SCM. Unix config mutations only persist atomically; Unix service
-lifecycle is owned by optional external packaging.
+for structured argument parsing. Subcommands include `run`, `stop`, `croncheck` (a bounded /v2/healthz watchdog that spawns `run` only on refusal),
+`configprint`, `status`, `host`, `port`, `version`, `update` (daemon lifecycle
+coordination over `gregg-update`), `startup install`/`instructions`, and
+`restart` (manager-aware, factored for `update` reuse). Windows also exposes
+`start` and the internal SCM `service` entry through native SCM. Unix config mutations only persist atomically; Unix service
+lifecycle is owned by `src/startup/` (systemd/launchd/cron) with legacy
+packaging helpers under `packaging/`.
 
 Configuration lives in `crates/greggd/src/config.rs`. The `Config` struct is
 serialized/deserialized via `serde` and `toml` with `deny_unknown_fields` to
@@ -98,10 +113,12 @@ write-flush-rename-verify pattern.
 ## Client CLI and configuration
 
 The client CLI lives in `crates/gregg/src/cli.rs` and uses `clap` derive macros.
-Subcommands include `add`, `list`, `remove`, `refresh`, and `edit`. Running
+Subcommands include `add`, `list`, `remove`, `refresh`, `edit`, `version`,
+`update` (thin adapter over `gregg-update`), and `eggpool add/list/remove`. Running
 `gregg` without a subcommand starts the TUI entry point.
 
-Client configuration lives in `crates/gregg/src/config.rs`. It stores monitored
+Client configuration lives in `crates/gregg/src/config/` (`model`, `store`,
+`validation`, `lock`, behind the `src/config.rs` façade). It stores monitored
 endpoints as `[[systems]]` entries with stable UUID v4 IDs, host, port, and
 optional display name. The `ConfigStore` provides `load_or_default`,
 `load_existing`, `write`, `mutate`, and `mutate_with_result` operations with
@@ -231,8 +248,13 @@ and panic paths.
 
 ## Service management
 
-Only the Windows SCM service abstraction remains in `crates/greggd/src/service/`.
-Unix service lifecycle is operator-managed through optional packaging assets:
+Windows SCM integration lives in `crates/greggd/src/service/` (Windows-only).
+Unix startup installation and manager-aware restart live in
+`crates/greggd/src/startup/` (`method`, `process`, `systemd`, `launchd`,
+`cron`, `state`, `install`, behind the `src/startup.rs` façade); the
+bootstrap installer delegates to `greggd startup install` after placing the
+binary. Legacy local-build packaging helpers remain under `packaging/` for
+operator-managed installs.
 
 - `service/windows.rs` — wraps the Windows SCM through the `windows-service`
   crate with `start_service`, `stop_service`, and `service_control_handler`.
@@ -289,8 +311,8 @@ MSRV incidentally via a dependency update.
 
 The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
-changes. The two binary crates and `gregg-protocol` all `#[deny(unsafe_code)]`
-through the workspace lint table. The macOS collector FFI module
+changes. All members deny `unsafe_code` through the workspace lint table.
+The macOS collector FFI module
 (`crates/greggd/src/collector/macos/ffi.rs`), the Windows source module
 (`crates/greggd/src/collector/windows/source.rs`), and the client's narrowly scoped
 Unix `flock` wrapper and Windows `LockFileEx` adapter are the only

@@ -64,7 +64,7 @@ function Get-WorkspaceVersion {
 
 function Test-VersionConsistency {
     $workspaceVersion = Get-WorkspaceVersion
-    $crates = @('crates/gregg-protocol', 'crates/greggd', 'crates/gregg')
+    $crates = @('crates/gregg-protocol', 'crates/gregg-update', 'crates/greggd', 'crates/gregg')
     foreach ($crate in $crates) {
         $manifest = Join-Path $RepoRoot "$crate/Cargo.toml"
         $inheritance = @(Select-String -LiteralPath $manifest -Pattern '^\s*version\.workspace\s*=\s*true\s*$')
@@ -75,25 +75,27 @@ function Test-VersionConsistency {
 
     foreach ($crate in @('crates/greggd', 'crates/gregg')) {
         $manifest = Join-Path $RepoRoot "$crate/Cargo.toml"
-        $dependencyLines = @(Get-Content -LiteralPath $manifest | Where-Object {
-                $_ -match '^\s*gregg-protocol\s*='
-            })
-        if ($dependencyLines.Count -eq 0) {
-            throw "error: $manifest has no gregg-protocol dependency declaration"
-        }
-        foreach ($line in $dependencyLines) {
-            $match = [regex]::Match([string]$line, 'version\s*=\s*"([^"]+)"')
-            if (-not $match.Success) {
-                throw "error: $manifest gregg-protocol dependency has no registry version"
+        foreach ($dep in @('gregg-protocol', 'gregg-update')) {
+            $dependencyLines = @(Get-Content -LiteralPath $manifest | Where-Object {
+                    $_ -match "^\s*$dep\s*="
+                })
+            if ($dependencyLines.Count -eq 0) {
+                throw "error: $manifest has no $dep dependency declaration"
             }
-            $dependencyVersion = $match.Groups[1].Value
-            if ($dependencyVersion -ne $workspaceVersion) {
-                throw "error: $manifest gregg-protocol dependency version $dependencyVersion != workspace $workspaceVersion"
+            foreach ($line in $dependencyLines) {
+                $match = [regex]::Match([string]$line, 'version\s*=\s*"([^"]+)"')
+                if (-not $match.Success) {
+                    throw "error: $manifest $dep dependency has no registry version"
+                }
+                $dependencyVersion = $match.Groups[1].Value
+                if ($dependencyVersion -ne $workspaceVersion) {
+                    throw "error: $manifest $dep dependency version $dependencyVersion != workspace $workspaceVersion"
+                }
             }
         }
     }
 
-    Write-Host "  workspace version $workspaceVersion; all members inherit it and gregg-protocol constraints match"
+    Write-Host "  workspace version $workspaceVersion; all members inherit it and gregg-protocol/gregg-update constraints match"
 }
 
 function Get-FreeLoopbackPort {
@@ -205,6 +207,9 @@ if ($Mode -eq 'release') {
     # Package content check (no publish)
     Write-Step "cargo package --list (gregg-protocol)"
     Invoke-OrFail { cargo package --list -p gregg-protocol }
+
+    Write-Step "cargo package --list (gregg-update)"
+    Invoke-OrFail { cargo package --list -p gregg-update }
 
     Write-Step "cargo package --list (greggd)"
     Invoke-OrFail { cargo package --list -p greggd }

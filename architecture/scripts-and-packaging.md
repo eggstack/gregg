@@ -110,9 +110,15 @@ exits nonzero with a clear error when run under non-bash `sh`).
 
 Raw executables are published, not per-target tarballs/zip files; Windows `.exe` is already directly executable.
 
-### Self-update (`gregg update` / `greggd update`, Plans 101-102)
+### Self-update (`gregg update` / `greggd update`, Plans 101-102, shared mechanism Plan 104)
 
-Both binaries share the same binary-first contract (no fourth public crate; small duplication is intentional):
+One shared internal crate owns the mechanism; both binaries are thin adapters:
+
+- `crates/gregg-update` owns version/target/asset/download/checksum/staging/replacement plus the shared `UpdateError` / `UpdateOutcome` / `UpdateSpec` / `UpdatePlan` / `prepare_candidate` / `run_simple_update` surface. It knows nothing about service managers, TUI, EggPool, or the wire protocol.
+- `crates/gregg/src/update.rs` binds the client identity and delegates the full flow to `run_simple_update`, preserving exact outcome strings.
+- `crates/greggd/src/update.rs` binds the daemon identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after full preparation, replaces, then restarts through detected-manager policy with `UpdatedButRestartFailed` partial-success (Plan 102 prepare-before-quiesce rule preserved).
+
+Both binaries share the same binary-first contract:
 
 - `env!("CARGO_PKG_VERSION")` is the local version; crates.io `max_stable_version` (via `curl -fsSL --max-time 15 -H "User-Agent: gregg/<version> ..." https://crates.io/api/v1/crates/<crate>`) is the authority; GitHub `latest` is never authoritative.
 - SemVer-safe `MAJOR.MINOR.PATCH` compare; equal version exits 0 without file mutation.

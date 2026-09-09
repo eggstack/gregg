@@ -45,11 +45,12 @@ The root workspace version is authoritative. Confirm it appears once in
 ```bash
 grep -E '^version' Cargo.toml
 grep -E '^version\.workspace' crates/gregg-protocol/Cargo.toml
+grep -E '^version\.workspace' crates/gregg-update/Cargo.toml
 grep -E '^version\.workspace' crates/greggd/Cargo.toml
 grep -E '^version\.workspace' crates/gregg/Cargo.toml
 ```
 
-All three member manifests must contain exactly `version.workspace = true`,
+All four member manifests must contain exactly `version.workspace = true`,
 and the root `Cargo.toml` must contain `version = "$VERSION"` inside
 `[workspace.package]`.
 
@@ -58,11 +59,13 @@ Then confirm inter-crate dependency versions match `$VERSION`:
 ```bash
 grep 'gregg-protocol' crates/greggd/Cargo.toml
 grep 'gregg-protocol' crates/gregg/Cargo.toml
+grep 'gregg-update' crates/greggd/Cargo.toml
+grep 'gregg-update' crates/gregg/Cargo.toml
 ```
 
-Both `greggd` and `gregg` must reference `gregg-protocol = "=$VERSION"` (or
-the exact same version) in their normal dependency and dev-dependency
-declarations.
+Both `greggd` and `gregg` must reference `gregg-protocol = "=$VERSION"` and
+`gregg-update = "=$VERSION"` (or the exact same version) in their
+dependency declarations.
 
 Verify the changelog contains the release version and date. Confirm crate
 descriptions and supported-platform documentation are current.
@@ -134,7 +137,6 @@ preflight does not run them because the registry has not yet indexed the
 new versions. Run them manually here:
 
 ```bash
-cargo publish -p gregg-update --dry-run --locked
 cargo publish -p greggd --dry-run --locked
 cargo publish -p gregg --dry-run --locked
 ```
@@ -143,12 +145,11 @@ This is the authoritative dependent-package check because it resolves the
 published dependency versions from crates.io. Publication order is
 mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
 
-## 6. Publish updater, daemon, and client
+## 6. Publish daemon and client
 
 Publish sequentially, not concurrently:
 
 ```bash
-cargo publish -p gregg-update --locked
 cargo publish -p greggd --locked
 cargo publish -p gregg --locked
 ```
@@ -400,7 +401,7 @@ visible.
 
 ## Policy
 
-- Publication order is mandatory: `gregg-protocol`, `greggd`, `gregg`.
+- Publication order is mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
 - A published crates.io version is immutable.
 - No repository automation performs crates.io publication, version bumping,
   or tag creation.

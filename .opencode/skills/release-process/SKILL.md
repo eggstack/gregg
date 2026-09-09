@@ -64,7 +64,6 @@ Wait for crates.io availability before continuing.
 ### 5. Dry-run dependent crates
 
 ```bash
-cargo publish -p gregg-update --dry-run --locked
 cargo publish -p greggd --dry-run --locked
 cargo publish -p gregg --dry-run --locked
 ```
@@ -145,7 +144,7 @@ Cargo fallback; installers never silently invoke `sudo`.
 
 ## Publication order
 
-**Mandatory:** `gregg-protocol` → `greggd` → `gregg`
+**Mandatory:** `gregg-protocol` → `gregg-update` → `greggd` → `gregg`
 
 ## Policy
 

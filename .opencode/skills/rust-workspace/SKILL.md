@@ -9,7 +9,7 @@ Guide agents through building, testing, and verifying changes to the gregg works
 
 ## When to use me
 
-Use this when making code changes, adding features, or fixing bugs in any of the three crates.
+Use this when making code changes, adding features, or fixing bugs in any of the four workspace crates (`gregg-protocol`, `gregg-update`, `greggd`, `gregg`).
 
 ## Build and verify
 
