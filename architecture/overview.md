@@ -224,7 +224,7 @@ integration tests.
   sampler task; graceful shutdown with a 10-second deadline. SIGTERM/SIGINT,
   SCM Stop/Shutdown, and `STOP\n` on the local control socket all feed the
   same shutdown path.
-- **Service manager** — Windows SCM (dispatcher started synchronously before any Tokio runtime exists). Unix startup is via explicit `startup install`/`restart` commands in `startup.rs` (systemd/launchd/cron) that the bootstrap installer delegates to after placing the binary; `run` itself stays foreground and supervisor-agnostic.
+- **Service manager** — Windows SCM (dispatcher started synchronously before any Tokio runtime exists). Unix startup is via explicit `startup install`/`restart` commands in `src/startup/` (method/process/systemd/launchd/cron/state/install, behind the `src/startup.rs` façade) that the bootstrap installer delegates to after placing the binary; `run` itself stays foreground and supervisor-agnostic.
 - **Exit codes** — `0` success, `1` configuration, `2` service management,
   `3` runtime, `4` permission denied.
 - **Binary/library split** — reusable runtime code returns errors without

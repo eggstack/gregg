@@ -8,7 +8,7 @@
 //! 4. Releases the lock by closing the file handle.
 //!
 //! This helper is used by `#[cfg(windows)]` and `#[cfg(unix)]` tests in
-//! `config.rs` to prove cross-process lock contention behavior.
+//! `src/config/lock.rs` to prove cross-process lock contention behavior.
 
 #![allow(unsafe_code)] // Required for libc::flock and windows-sys LockFileEx/UnlockFileEx.
 

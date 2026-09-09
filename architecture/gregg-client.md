@@ -424,7 +424,7 @@ Every module has inline `#[cfg(test)]` tests:
 | Module | ~Lines | Coverage |
 |--------|--------|----------|
 | `cli.rs` | 30+ tests | CLI parsing, add/remove/replace, port resolution |
-| `config.rs` | 60+ tests | Validation, atomic writes, cross-process locking |
+| `config/` | 60+ tests | Validation, atomic writes, cross-process locking (`model`/`store`/`validation`/`lock` behind the `src/config.rs` façade) |
 | `state.rs` | 35+ tests | Batch application, selection, viewport, config rebuild |
 | `event.rs` | ~21 tests | All key mappings, modifier handling |
 | `poller.rs` | 30+ tests | Mock servers for all failure modes |

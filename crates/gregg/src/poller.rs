@@ -1652,7 +1652,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "live probe against a real daemon; run with --ignored --nocapture"]
     async fn live_probe_classifies_real_response() {
-        let host = std::env::var("PROBE_HOST").unwrap_or_else(|_| "192.168.182.143".to_string());
+        // Default to loopback so no private-LAN address remains as a default
+        // anywhere in the tree (Plan 105); override with PROBE_HOST for a
+        // real daemon on the LAN.
+        let host = std::env::var("PROBE_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port: u16 = std::env::var("PROBE_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
