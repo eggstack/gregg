@@ -130,6 +130,14 @@ system; the expanded rows share one table layout so mount names, used,
 total, remaining, and percentage columns stay aligned across drives. View
 and expansion state are not persisted.
 
+Unreachable systems collapse to one offline row (`name@host:port offline`
+or `host:port offline`). When the accepted poll failure carries provenance,
+the stable failure category is appended inside the existing width budget
+(`offline (refused)`, `offline (http) HTTP 503`); pending systems never
+carry a reason. Recovery clears the reason in the same poll generation.
+Offline endpoints keep polling on every configured cadence and recover
+automatically.
+
 ## Supported platforms
 
 | Platform | Architecture | Rust target | Status |
