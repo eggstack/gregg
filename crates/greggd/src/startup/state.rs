@@ -2,7 +2,9 @@
 
 #[cfg(all(unix, target_os = "macos"))]
 use super::launchd::{launchd_is_loaded, launchd_plist_exists};
+#[cfg(all(unix, target_os = "linux"))]
 use super::method::is_systemd_environment;
+#[cfg(all(unix, target_os = "linux"))]
 use super::systemd::{systemd_is_active, systemd_unit_exists};
 use std::fmt;
 

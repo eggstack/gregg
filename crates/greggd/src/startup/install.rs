@@ -8,6 +8,7 @@ use super::method::{
     standard_launchd_plist_path, standard_systemd_binary, standard_systemd_config,
     standard_systemd_unit_path, StartupMethod, StartupMethodArg,
 };
+#[cfg(unix)]
 use super::process::DIRECT_RESTART_TIMEOUT;
 #[cfg(test)]
 use super::state::systemd_state_with;
@@ -18,7 +19,9 @@ use std::fmt;
 use std::fs;
 use std::io::{self};
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::thread;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 // ── Instruction rendering ─────────────────────────────────────────────────

@@ -105,7 +105,6 @@ fn inject_permission_set_failure() {
     FAIL_NEXT_PERMISSION_SET.with(|fail| fail.set(true));
 }
 
-/// Minimum allowed refresh interval in seconds.
 pub(crate) fn sync_parent_directory(dir: &Path) -> io::Result<()> {
     let dir = if dir.as_os_str().is_empty() {
         Path::new(".")

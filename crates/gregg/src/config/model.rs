@@ -11,6 +11,8 @@ use std::fmt;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// Minimum allowed refresh interval in seconds.
 pub const MIN_REFRESH_SECONDS: u64 = 1;
 
 /// Maximum allowed refresh interval in seconds.

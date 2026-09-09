@@ -41,7 +41,6 @@ impl Drop for FileLockGuard {
     }
 }
 
-/// Errors that can occur during configuration operations.
 #[cfg(test)]
 mod tests {
     use super::super::model::Config;
