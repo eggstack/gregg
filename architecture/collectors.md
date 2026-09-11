@@ -27,6 +27,12 @@ All collector byte-ratio percentages use the shared
 `collector::clamped_usage_pct` helper so v1 and v2 platform paths have the
 same zero, clamp, and non-finite behavior.
 
+Optional live telemetry uses the shared collector/rate.rs baseline helper.
+Cumulative two-direction counters are keyed by native identity and divided by
+actual monotonic elapsed time. First observations, counter decreases, zero or
+backward elapsed time, and identity disappearance/reappearance all establish a
+fresh baseline. Rates never use the nominal sampler interval.
+
 ### CollectError taxonomy
 
 | Kind | Meaning |
@@ -140,6 +146,17 @@ MetricCapabilitiesV2 { cpu_iowait: true, load_average: true, swap: true, memory_
 
 ---
 
+### Linux live telemetry
+
+CPU frequency reads CPUFreq policy files with hardware-current preference and
+scaling-current fallback, converts kHz to Hz with checked arithmetic, and
+weights valid policies by represented logical CPUs. Disk rates use cumulative
+sector fields from top-level /sys/block/*/stat with the kernel 512-byte unit;
+loop, RAM, zram, and layered devices with slaves are excluded from the
+accounting set. Network counters use /proc/net/dev and sysfs speed, state,
+flags, and master membership. Slaves are not added to their master, down links
+do not add capacity, and loopback is detail-only for capacity.
+
 ## macOS collector
 
 **Source:** `crates/greggd/src/collector/macos/`
@@ -235,6 +252,11 @@ Swap comes from `vm.swapusage`, so the default v2 derivation reports
 - Sleep/wake transitions, recovery, unbounded growth
 
 ---
+
+Live disk records use IOKit block-storage statistics and stable registry-entry
+identities. Network records use AF_LINK if_data64 counters and ifi_baudrate.
+Current CPU frequency remains unavailable because no supported public
+unprivileged source was found.
 
 ## Windows collector
 
@@ -341,6 +363,12 @@ load/swap which Windows cannot produce.
   NUL-free identity strings
 
 ---
+
+Current frequency uses documented ProcessorInformation / CurrentMhz data. Disk
+performance uses bounded direct physical-disk handles and closes each handle.
+Network uses GetIfTable2 rows for InOctets, OutOctets, directional speeds,
+operational state, and native loopback type. Failed optional queries are
+omitted without changing core readiness.
 
 ## Fixture files
 

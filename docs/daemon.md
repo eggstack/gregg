@@ -118,6 +118,11 @@ Details:
 
 - Collectors use kernel interfaces (`/proc`), Mach APIs, or Windows native
   APIs. No external commands are executed for metrics collection.
+- V2 live telemetry is best-effort and native: Linux reads CPUFreq policy data,
+  top-level block statistics, and procfs/sysfs network data; macOS reads public
+  AF_LINK and IOKit records; Windows reads processor power information, direct
+  disk performance IOCTLs, and IP Helper interface rows. Rates use monotonic
+  elapsed time and re-warm after reset, restart, disappearance, or hotplug.
 - macOS does not expose an aggregate CPU I/O-wait state; it is reported as
   `null`, never fabricated as zero.
 - Windows does not report load averages or swap; it reports memory commit

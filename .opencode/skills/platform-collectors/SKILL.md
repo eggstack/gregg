@@ -70,6 +70,14 @@ after a valid sample.
 
 Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_commit: false`
 
+Live telemetry uses CPUFreq policy files (hardware-current first, scaling
+current fallback, weighted by affected_cpus), top-level /sys/block/*/stat
+sector counters, and /proc/net/dev plus sysfs link metadata. The aggregate
+disk set is separate from mounted capacity rows. Network slaves are not added
+to their master, down links do not contribute capacity, and loopback remains
+detail-only for capacity. All cumulative counters use the shared monotonic
+baseline helper in collector/rate.rs.
+
 ## macOS collector
 
 **Source:** `crates/greggd/src/collector/macos/`
@@ -82,7 +90,13 @@ Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_co
 - Drives: `getmntinfo()` — excludes devfs, autofs, `MNT_DONTBROWSE`; retain
   both `f_bfree` and `f_bavail`
 
-Capabilities: `cpu_iowait: false`, `load_average: true`, `swap: false`, `memory_commit: false`
+Current CPU frequency remains unavailable because no supported public
+unprivileged source was found. Disk counters come from IOKit block-storage
+driver statistics and network counters/capacity from AF_LINK if_data64.
+Malformed storage records are skipped independently; loopback is retained only
+as detail and never contributes aggregate capacity.
+
+Capabilities: `cpu_iowait: false`, `load_average: true`, `swap: true`, `memory_commit: false`
 
 FFI seam: `MacNativeQueries` trait. Production: `FfiNativeQueries`. Test: `MockNativeQueries`.
 
@@ -97,6 +111,12 @@ FFI seam: `MacNativeQueries` trait. Production: `FfiNativeQueries`. Test: `MockN
 - Drives: `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW` — fixed and
   removable drives (`DRIVE_FIXED`, `DRIVE_REMOVABLE`) with positive capacity;
   retain caller-available and total-free outputs separately
+
+Live telemetry uses CallNtPowerInformation / ProcessorInformation and
+CurrentMhz, direct per-disk IOCTL_DISK_PERFORMANCE, and documented IP Helper
+MIB_IF_ROW2 data. Inaccessible disks and failed optional API calls are skipped
+or omitted without failing the core sample; disconnected adapters and loopback
+do not contribute aggregate capacity.
 
 Capabilities: `cpu_iowait: false`, `load_average: false`, `swap: false`, `memory_commit: true`
 

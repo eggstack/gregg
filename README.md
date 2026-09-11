@@ -10,6 +10,12 @@ and optional live throughput across multiple machines over LAN.
 
 A lightweight daemon (`greggd`) runs on each machine you want to monitor and exposes a read-only JSON API on port `11310`. The `gregg` client polls configured daemons and renders a live TUI.
 
+Schema-v2 status responses may include best-effort native live telemetry: current
+CPU frequency, de-duplicated disk read/write bytes per second, and directional
+network throughput with link capacities. Values are omitted when the host API
+cannot provide them; no privilege escalation or external metrics command is
+used.
+
 ## Supported targets
 
 | Platform | Architecture | Rust target | Asset suffix |

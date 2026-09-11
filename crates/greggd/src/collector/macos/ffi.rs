@@ -95,6 +95,29 @@ pub struct RawMountedFilesystem {
     pub block_size: u64,
 }
 
+/// Cumulative storage-service byte counters from `IOKit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDiskIo {
+    pub id: String,
+    pub name: String,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+}
+
+/// Cumulative `AF_LINK` counters and native link metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawNetworkInterface {
+    pub id: String,
+    pub name: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_capacity_bps: Option<u64>,
+    pub tx_capacity_bps: Option<u64>,
+    pub is_loopback: bool,
+    pub operational: bool,
+    pub aggregate_member: bool,
+}
+
 // ---------------------------------------------------------------------------
 // Native query trait for test injection
 // ---------------------------------------------------------------------------
@@ -120,6 +143,22 @@ pub trait MacNativeQueries: Send + Sync + std::fmt::Debug {
 
     /// Read system identity fields via sysctl.
     fn identity(&self) -> Result<RawIdentity, CollectError>;
+
+    /// Read cumulative native storage byte counters.
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "IOKit storage statistics unavailable",
+        ))
+    }
+
+    /// Read `AF_LINK` interface counters and link metadata.
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError>;
+
+    /// macOS has no supported unprivileged current-frequency source here.
+    fn cpu_frequency_hz(&self) -> Option<u64> {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +193,14 @@ impl MacNativeQueries for FfiNativeQueries {
     fn identity(&self) -> Result<RawIdentity, CollectError> {
         collect_raw_identity()
     }
+
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        disk_io()
+    }
+
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError> {
+        network_interfaces()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +228,8 @@ pub struct MockNativeQueries {
     /// call so successive samples produce a valid non-zero CPU interval.
     pub auto_increment_cpu: bool,
     pub(crate) cpu_call_count: std::sync::atomic::AtomicU32,
+    pub disk: Vec<RawDiskIo>,
+    pub network: Vec<RawNetworkInterface>,
 }
 
 impl Clone for MockNativeQueries {
@@ -203,6 +252,8 @@ impl Clone for MockNativeQueries {
                 self.cpu_call_count
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            disk: self.disk.clone(),
+            network: self.network.clone(),
         }
     }
 }
@@ -257,6 +308,8 @@ impl MockNativeQueries {
             mounted_error: false,
             auto_increment_cpu: false,
             cpu_call_count: std::sync::atomic::AtomicU32::new(0),
+            disk: Vec::new(),
+            network: Vec::new(),
         }
     }
 }
@@ -334,6 +387,14 @@ impl MacNativeQueries for MockNativeQueries {
         }
         Ok(self.identity.clone())
     }
+
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        Ok(self.disk.clone())
+    }
+
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError> {
+        Ok(self.network.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +418,7 @@ pub(crate) const MNT_LOCAL: u32 = 0x0000_1000;
 pub(crate) const MNT_DONTBROWSE: u32 = 0x0010_0000;
 
 #[cfg(target_os = "macos")]
+#[allow(clippy::struct_field_names)]
 #[repr(C)]
 struct StatFs {
     f_bsize: i32,
@@ -421,6 +483,48 @@ extern "C" {
     ) -> i32;
 
     fn getloadavg(loadavg: *mut f64, nelem: std::ffi::c_int) -> std::ffi::c_int;
+
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "IOKit", kind = "framework")]
+extern "C" {
+    fn IOServiceMatching(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn IOServiceGetMatchingServices(
+        master: mach_port_t,
+        matching: *mut std::ffi::c_void,
+        existing: *mut u32,
+    ) -> i32;
+    fn IOIteratorNext(iterator: u32) -> u32;
+    fn IOObjectRelease(object: u32) -> i32;
+    fn IORegistryEntryCreateCFProperties(
+        entry: u32,
+        properties: *mut *mut std::ffi::c_void,
+        allocator: *const std::ffi::c_void,
+        options: u32,
+    ) -> i32;
+    fn IORegistryEntryGetName(entry: u32, name: *mut std::ffi::c_char) -> i32;
+    fn IORegistryEntryGetRegistryEntryID(entry: u32, entry_id: *mut u64) -> i32;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFStringCreateWithCString(
+        allocator: *const std::ffi::c_void,
+        string: *const std::ffi::c_char,
+        encoding: u32,
+    ) -> *mut std::ffi::c_void;
+    fn CFDictionaryGetValue(
+        dictionary: *const std::ffi::c_void,
+        key: *const std::ffi::c_void,
+    ) -> *const std::ffi::c_void;
+    fn CFNumberGetValue(
+        number: *const std::ffi::c_void,
+        number_type: i32,
+        value: *mut std::ffi::c_void,
+    ) -> bool;
+    fn CFRelease(object: *const std::ffi::c_void);
 }
 
 fn native_c_string(bytes: &[i8]) -> Result<String, CollectError> {
@@ -428,7 +532,10 @@ fn native_c_string(bytes: &[i8]) -> Result<String, CollectError> {
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(bytes.len());
-    let bytes: Vec<u8> = bytes[..length].iter().map(|byte| *byte as u8).collect();
+    let bytes: Vec<u8> = bytes[..length]
+        .iter()
+        .map(|byte| byte.to_ne_bytes()[0])
+        .collect();
     String::from_utf8(bytes).map_err(|_| {
         CollectError::new(
             CollectErrorKind::Parse,
@@ -463,6 +570,185 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
         });
     }
     Ok(result)
+}
+
+/// Query `AF_LINK` records. The `if_data64` record is the native 64-bit
+/// interface counter seam; it avoids the truncation of legacy `if_data`.
+fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut head = std::ptr::null_mut();
+        // Safety: getifaddrs initializes an owned linked list on success;
+        // every returned list is released exactly once below.
+        let result = unsafe { libc::getifaddrs(&mut head) };
+        if result != 0 {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "getifaddrs failed",
+            ));
+        }
+        let mut records = Vec::new();
+        let mut current = head;
+        while !current.is_null() {
+            // Safety: current is a node in the list owned by getifaddrs and
+            // remains valid until freeifaddrs after this traversal.
+            let item = unsafe { &*current };
+            if !item.ifa_name.is_null()
+                && !item.ifa_addr.is_null()
+                // AF_LINK is the only address family with if_data64 here.
+                && unsafe { i32::from((*item.ifa_addr).sa_family) } == libc::AF_LINK
+                && !item.ifa_data.is_null()
+            {
+                // Safety: AF_LINK ifa_data points at the Darwin if_data64
+                // record for this interface. Copy only scalar fields.
+                let data = unsafe { &*(item.ifa_data.cast::<libc::if_data64>()) };
+                let name = unsafe { std::ffi::CStr::from_ptr(item.ifa_name) }
+                    .to_str()
+                    .map_err(|_| {
+                        CollectError::new(CollectErrorKind::Parse, "interface name is not UTF-8")
+                    })?;
+                let is_loopback = item.ifa_flags & libc::IFF_LOOPBACK as u32 != 0;
+                let operational = item.ifa_flags & libc::IFF_UP as u32 != 0
+                    && item.ifa_flags & libc::IFF_RUNNING as u32 != 0;
+                records.push(RawNetworkInterface {
+                    id: name.to_owned(),
+                    name: name.to_owned(),
+                    rx_bytes: data.ifi_ibytes,
+                    tx_bytes: data.ifi_obytes,
+                    rx_capacity_bps: (data.ifi_baudrate > 0).then_some(data.ifi_baudrate),
+                    tx_capacity_bps: (data.ifi_baudrate > 0).then_some(data.ifi_baudrate),
+                    is_loopback,
+                    operational,
+                    aggregate_member: !is_loopback,
+                });
+            }
+            // Safety: traversal remains within the list returned by getifaddrs.
+            current = unsafe { (*current).ifa_next };
+        }
+        // Safety: head was returned by getifaddrs and has not been freed yet.
+        unsafe { libc::freeifaddrs(head) };
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        records.dedup_by(|left, right| left.id == right.id);
+        Ok(records)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "macOS interface API unavailable",
+        ))
+    }
+}
+
+/// Read `IOKit` block-storage driver statistics. One malformed service is
+/// skipped, allowing other optional metric families to remain healthy.
+fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
+    #[cfg(target_os = "macos")]
+    {
+        let class = std::ffi::CString::new("IOBlockStorageDriver").expect("literal has no NUL");
+        // Safety: IOKit returns an iterator owned by this function and the
+        // matching dictionary is consumed by the matching-services call.
+        let matching = unsafe { IOServiceMatching(class.as_ptr()) };
+        if matching.is_null() {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "IOMedia matching unavailable",
+            ));
+        }
+        let mut iterator = 0;
+        let status = unsafe { IOServiceGetMatchingServices(0, matching, &mut iterator) };
+        if status != 0 {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "IOMedia enumeration failed",
+            ));
+        }
+        let statistics_key = cf_string("Statistics")?;
+        let read_key = cf_string("Bytes (Read)")?;
+        let write_key = cf_string("Bytes (Write)")?;
+        let mut records = Vec::new();
+        loop {
+            let service = unsafe { IOIteratorNext(iterator) };
+            if service == 0 {
+                break;
+            }
+            let mut properties = std::ptr::null_mut();
+            let result = unsafe {
+                IORegistryEntryCreateCFProperties(service, &mut properties, std::ptr::null(), 0)
+            };
+            if result == 0 && !properties.is_null() {
+                let values = unsafe { CFDictionaryGetValue(properties, statistics_key.cast()) };
+                if !values.is_null() {
+                    let read = unsafe { CFDictionaryGetValue(values, read_key.cast()) };
+                    let write = unsafe { CFDictionaryGetValue(values, write_key.cast()) };
+                    let mut read_bytes = 0i64;
+                    let mut write_bytes = 0i64;
+                    let read_ok = !read.is_null()
+                        && unsafe {
+                            CFNumberGetValue(read, 4, std::ptr::addr_of_mut!(read_bytes).cast())
+                        };
+                    let write_ok = !write.is_null()
+                        && unsafe {
+                            CFNumberGetValue(write, 4, std::ptr::addr_of_mut!(write_bytes).cast())
+                        };
+                    if read_ok && write_ok && read_bytes >= 0 && write_bytes >= 0 {
+                        let mut name = [0i8; 256];
+                        let name_ok =
+                            unsafe { IORegistryEntryGetName(service, name.as_mut_ptr()) } == 0;
+                        let mut registry_id = 0u64;
+                        let id_status =
+                            unsafe { IORegistryEntryGetRegistryEntryID(service, &mut registry_id) };
+                        if name_ok && id_status == 0 {
+                            let display = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) }
+                                .to_string_lossy()
+                                .into_owned();
+                            records.push(RawDiskIo {
+                                id: format!("ioreg-{registry_id}"),
+                                name: display,
+                                read_bytes: u64::try_from(read_bytes).unwrap_or(0),
+                                write_bytes: u64::try_from(write_bytes).unwrap_or(0),
+                            });
+                        }
+                    }
+                }
+                unsafe { CFRelease(properties.cast()) };
+            }
+            unsafe { IOObjectRelease(service) };
+        }
+        unsafe { IOObjectRelease(iterator) };
+        unsafe {
+            CFRelease(statistics_key.cast());
+            CFRelease(read_key.cast());
+            CFRelease(write_key.cast());
+        }
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "IOKit unavailable",
+        ))
+    }
+}
+
+#[cfg(target_os = "macos")]
+type CfMutableRef = *mut std::ffi::c_void;
+
+#[cfg(target_os = "macos")]
+fn cf_string(value: &str) -> Result<CfMutableRef, CollectError> {
+    let c = std::ffi::CString::new(value)
+        .map_err(|_| CollectError::new(CollectErrorKind::Parse, "invalid CoreFoundation key"))?;
+    // Safety: c is a valid NUL-terminated UTF-8 string and the returned
+    // object is released by the caller after dictionary access.
+    let result = unsafe { CFStringCreateWithCString(std::ptr::null(), c.as_ptr(), 0x0800_0100) };
+    (!result.is_null()).then_some(result).ok_or_else(|| {
+        CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "CoreFoundation key allocation failed",
+        )
+    })
 }
 
 #[cfg(target_os = "macos")]

@@ -128,6 +128,14 @@ topology; loopback may appear in network detail but cannot contribute to
 aggregate capacity. Linux and macOS retain `/v1/status`; Windows is v2-only
 for status semantics.
 
+Live rates use cumulative native counters and the actual monotonic elapsed time
+between observations. Counter reset, daemon restart, device hotplug, and link
+disappearance re-establish a baseline before a rate is published. Linux uses
+CPUFreq policy files, `/sys/block/*/stat`, `/proc/net/dev`, and sysfs link
+metadata; macOS uses public AF_LINK records and IOKit storage statistics; and
+Windows uses `CallNtPowerInformation`, `IOCTL_DISK_PERFORMANCE`, and IP Helper.
+Optional source failures never make an otherwise valid core sample unready.
+
 The configured daemon display name must be non-empty, at most 128 bytes, and
 contain no control characters. If identity collection fails, the daemon does
 not publish a blank identity; it remains warming or failed and preserves any

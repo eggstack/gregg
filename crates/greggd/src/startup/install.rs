@@ -242,7 +242,7 @@ pub(crate) fn is_privileged() -> bool {
         // Best-effort: try to query SCM; if AccessDenied, not privileged.
         // Use a simple check: attempt to open ServiceManager.
         // If we can't, assume not privileged.
-        return is_windows_admin();
+        is_windows_admin()
     }
     #[cfg(not(target_os = "windows"))]
     {

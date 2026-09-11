@@ -9,6 +9,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Native live-metrics collection** (Plan 109): greggd now samples current
+  CPU frequency where supported, de-duplicated disk throughput, and
+  per-interface network throughput/capacity using native Linux, macOS, and
+  Windows APIs. Rates use actual monotonic elapsed time and re-warm on reset,
+  restart, disappearance, or hotplug; optional source failures do not make
+  core daemon readiness fail. Loopback and layered storage are kept out of
+  aggregate capacity/accounting where required.
 - **Additive live-metrics v2 payloads and client normalization** (Plan 108):
   schema-v2 status responses may now carry optional raw CPU frequency in Hz,
   daemon-selected disk read/write bytes per second, and directional network

@@ -8,7 +8,9 @@
 use gregg_protocol::{MetricCapabilities, StatusSnapshot};
 
 use super::cpu::compute_cpu_percentages;
-use super::ffi::{MockNativeQueries, RawCpuTicks, RawSwapUsage, RawVmStats};
+use super::ffi::{
+    MockNativeQueries, RawCpuTicks, RawDiskIo, RawNetworkInterface, RawSwapUsage, RawVmStats,
+};
 use super::identity::collect_identity;
 use super::memory::compute_memory;
 use super::swap::compute_swap;
@@ -456,6 +458,77 @@ fn drive_capacity_preserves_total_free_and_caller_available() {
     assert_eq!(drive.used_bytes, 75 * 4096);
     assert_eq!(drive.total_bytes, 100 * 4096);
     assert_eq!(drive.available_bytes, Some(20 * 4096));
+}
+
+#[test]
+fn live_metrics_publish_rates_capacities_and_loopback_detail() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.disk = vec![RawDiskIo {
+        id: "disk0".to_string(),
+        name: "disk0".to_string(),
+        read_bytes: 1_000,
+        write_bytes: 2_000,
+    }];
+    mock.network = vec![
+        RawNetworkInterface {
+            id: "lo0".to_string(),
+            name: "lo0".to_string(),
+            rx_bytes: 10_000,
+            tx_bytes: 20_000,
+            rx_capacity_bps: Some(1_000_000_000),
+            tx_capacity_bps: Some(1_000_000_000),
+            is_loopback: true,
+            operational: true,
+            aggregate_member: false,
+        },
+        RawNetworkInterface {
+            id: "en0".to_string(),
+            name: "en0".to_string(),
+            rx_bytes: 30_000,
+            tx_bytes: 40_000,
+            rx_capacity_bps: Some(10_000_000_000),
+            tx_capacity_bps: Some(8_000_000_000),
+            is_loopback: false,
+            operational: true,
+            aggregate_member: true,
+        },
+    ];
+    let mut collector = MacOsCollector::with_source(mock, None).expect("collector constructs");
+
+    let _ = collector.sample().expect_err("first sample warms");
+    let baseline = collector
+        .sample()
+        .expect("second sample establishes live baselines");
+    assert!(baseline.disk_io.is_none());
+    assert!(baseline.network.is_none());
+
+    collector.source_mut().disk[0].read_bytes += 1_000;
+    collector.source_mut().disk[0].write_bytes += 2_000;
+    collector.source_mut().network[0].rx_bytes += 1_000;
+    collector.source_mut().network[0].tx_bytes += 2_000;
+    collector.source_mut().network[1].rx_bytes += 3_000;
+    collector.source_mut().network[1].tx_bytes += 4_000;
+
+    let metrics = collector
+        .sample()
+        .expect("third sample publishes live metrics");
+    let disk = metrics.disk_io.expect("disk rates");
+    assert_eq!(disk.devices.len(), 1);
+    assert!(disk.aggregate_read_bytes_per_sec > 0);
+    assert!(disk.aggregate_write_bytes_per_sec > 0);
+
+    let network = metrics.network.expect("network rates");
+    assert!(network.aggregate_rx_bytes_per_sec > 0);
+    assert!(network.aggregate_tx_bytes_per_sec > 0);
+    assert_eq!(network.aggregate_rx_capacity_bps, Some(10_000_000_000));
+    assert_eq!(network.aggregate_tx_capacity_bps, Some(8_000_000_000));
+    assert!(network
+        .interfaces
+        .iter()
+        .find(|interface| interface.is_loopback)
+        .is_some_and(|interface| !interface.aggregate_member));
+    assert!(metrics.cpu_frequency_hz.is_none());
 }
 
 #[test]

@@ -488,6 +488,7 @@ async fn sync_sampler_state(
 }
 
 /// Wait for a platform-appropriate shutdown signal.
+#[allow(clippy::unnecessary_wraps)]
 fn wait_for_shutdown_signal(
 ) -> Result<impl std::future::Future<Output = Result<&'static str, std::io::Error>>, std::io::Error>
 {

@@ -20,8 +20,8 @@
 //!   hard collector failure when reporting health.
 
 use gregg_protocol::v2::{
-    CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
-    StatusSnapshotV2, SwapMetrics as SwapMetricsV2, SCHEMA_VERSION_V2,
+    CommitMetrics, CpuMetricsV2, DiskIoPayload, DriveMetrics, MetricCapabilitiesV2, NetworkPayload,
+    StatusPayloadV2, StatusSnapshotV2, SwapMetrics as SwapMetricsV2, SCHEMA_VERSION_V2,
 };
 use gregg_protocol::{
     CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
@@ -29,6 +29,7 @@ use gregg_protocol::{
 };
 
 mod drives;
+pub(crate) mod rate;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
@@ -216,6 +217,12 @@ pub struct CollectedMetrics {
     /// was unavailable; an empty list means it succeeded with no eligible
     /// local filesystems.
     pub drives: Option<Vec<DriveMetrics>>,
+    /// Host-level current CPU frequency in Hz.
+    pub cpu_frequency_hz: Option<u64>,
+    /// Daemon-selected cumulative disk throughput rates.
+    pub disk_io: Option<DiskIoPayload>,
+    /// Daemon-selected cumulative network throughput and capacity rates.
+    pub network: Option<NetworkPayload>,
 }
 
 impl CollectedMetrics {
@@ -359,9 +366,11 @@ impl CollectedMetrics {
         capabilities: MetricCapabilitiesV2,
         system: SystemIdentity,
     ) -> Result<StatusPayloadV2, CollectError> {
-        let mut this = self;
-        let drives = this.drives.take();
-        let snapshot = this.into_snapshot_v2(
+        let drives = self.drives.clone();
+        let cpu_frequency_hz = self.cpu_frequency_hz;
+        let disk_io = self.disk_io.clone();
+        let network = self.network.clone();
+        let snapshot = self.into_snapshot_v2(
             observed_at_unix_ms,
             sample_interval_ms,
             capabilities,
@@ -370,9 +379,9 @@ impl CollectedMetrics {
         Ok(StatusPayloadV2 {
             snapshot,
             drives,
-            cpu_frequency_hz: None,
-            disk_io: None,
-            network: None,
+            cpu_frequency_hz,
+            disk_io,
+            network,
         })
     }
 }

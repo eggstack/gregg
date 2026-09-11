@@ -1,6 +1,6 @@
 # Plan 109: native clock, disk-I/O, and network collectors
 
-Status: ready for implementation after Plan 108.
+Status: implementation complete; closure record pending the implementation commit and remote CI.
 
 Depends on: Plans 107-108.
 

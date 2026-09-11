@@ -106,6 +106,18 @@ pub enum SamplerError {
     IntervalOutOfBounds(u64),
 }
 
+fn validate_v2_payload(payload: StatusPayloadV2) -> Result<StatusPayloadV2, CollectError> {
+    payload.validate().map(|()| payload).map_err(|violations| {
+        CollectError::new(
+            CollectErrorKind::Numeric,
+            format!(
+                "v2 payload validation failed ({} violations)",
+                violations.len()
+            ),
+        )
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Sampler
 // ---------------------------------------------------------------------------
@@ -400,12 +412,14 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 collector.capabilities(),
                 identity.clone(),
             );
-            let v2 = metrics.into_status_payload_v2(
-                now_ms,
-                self.interval_ms,
-                collector.capabilities_v2(),
-                identity,
-            );
+            let v2 = metrics
+                .into_status_payload_v2(
+                    now_ms,
+                    self.interval_ms,
+                    collector.capabilities_v2(),
+                    identity,
+                )
+                .and_then(validate_v2_payload);
             match (v1, v2) {
                 (Ok(v1), Ok(v2)) => Ok((Some(v1), v2)),
                 (Err(err), _) | (_, Err(err)) => Err(err),
@@ -418,6 +432,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                     collector.capabilities_v2(),
                     identity,
                 )
+                .and_then(validate_v2_payload)
                 .map(|v2| (None, v2))
         }
     }
@@ -613,6 +628,9 @@ mod tests {
                     },
                     commit: None,
                     drives: None,
+                    cpu_frequency_hz: None,
+                    disk_io: None,
+                    network: None,
                 }),
             ])
         }
@@ -676,6 +694,9 @@ mod tests {
             },
             commit: None,
             drives: None,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
         }
     }
 

@@ -23,7 +23,7 @@ gregg-update    ◄── gregg       (shared self-update mechanics)
 
 - `gregg-protocol`: shared wire types (serde, serde_json, thiserror only). **No runtime, HTTP, terminal, or platform dependencies.** `#![forbid(unsafe_code)]`
 - `gregg-update`: internal shared binary-first self-update mechanics (version/target/asset policy, bounded curl/Cargo execution, SHA-256, staging, replacement). Not a user-facing product; knows nothing about service managers, TUI, EggPool, or the wire protocol. Publishable member; publication order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
-- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets. Platform collectors live under `src/collector/{linux,macos,windows}/`; startup/install/restart logic lives under `src/startup/` (method/process/systemd/launchd/cron/state/install); read-only diagnostics in `src/status.rs`
+- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets. Platform collectors live under `src/collector/{linux,macos,windows}/`; shared monotonic live-counter arithmetic lives in `src/collector/rate.rs`; startup/install/restart logic lives under `src/startup/` (method/process/systemd/launchd/cron/state/install); read-only diagnostics in `src/status.rs`
 - `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`. UI modules under `src/ui/`; config ownership split across `src/config/` (model/store/validation/lock); offline provenance in `src/poller.rs` (`OfflineKind`/`OfflineReason`)
 
 `greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on any other workspace crate. `gregg-update` must never depend on either application crate, on service-manager concepts, or on the wire protocol.
@@ -79,6 +79,12 @@ passes locally, the distinction is the cause.
 - **Clippy pedantic** is a warning, not an error. Don't suppress new warnings unless fixing pre-existing ones.
 - **Unsafe is heavily restricted.** Only allowed in: `crates/greggd/src/collector/linux/source.rs` (statvfs), `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI), `crates/gregg/src/` (Unix flock + Windows file lock), `crates/greggd/src/collector/windows/source.rs`. Every unsafe block must have a safety comment.
 - **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
+- **Optional live telemetry is best effort:** CPU frequency, disk throughput,
+  and network throughput/capacity must use native cumulative counters and
+  actual monotonic elapsed time. Reset, restart, hotplug, disappearance, or
+  unsupported APIs re-baseline or omit the affected family without making core
+  CPU/memory readiness fail. Keep aggregate disk accounting independent from
+  filesystem-capacity rows; loopback may be detail-only and never capacity.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
 - **Dependency upper bounds** are load-bearing or explicit guards for Rust 1.75 fresh resolution (relaxing them pulls rust-version 1.77–1.88). Per-pin KEEP evidence lives in `architecture/workspace.md` (Plan 105 audit). Re-audit with a relax + 1.75 check before removing any bound; never raise MSRV incidentally.
@@ -262,7 +268,7 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 ## Testing patterns
 
 - **Integration tests:** `crates/gregg-protocol/tests/integration.rs`, `crates/greggd/tests/linux_collector.rs`, `crates/greggd/tests/windows_smoke.rs`
-- **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads; ~46 text fixtures under `crates/greggd/src/collector/test_fixtures/`
+- **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads; text fixtures under `crates/greggd/src/collector/test_fixtures/`; injectable CPUFreq, block, network, AF_LINK, IOKit, processor-power, disk-IOCTL, and IP Helper seams cover optional telemetry
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
 - **Live-metrics compatibility fixtures:** `gregg-protocol` includes the

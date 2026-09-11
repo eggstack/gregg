@@ -82,6 +82,29 @@ pub struct RawLogicalDrive {
     pub available_bytes: u64,
 }
 
+/// Cumulative disk byte counters from `IOCTL_DISK_PERFORMANCE`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDiskIo {
+    pub id: String,
+    pub name: String,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+}
+
+/// Cumulative interface counters and link metadata from IP Helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawNetworkInterface {
+    pub id: String,
+    pub name: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_capacity_bps: Option<u64>,
+    pub tx_capacity_bps: Option<u64>,
+    pub is_loopback: bool,
+    pub operational: bool,
+    pub aggregate_member: bool,
+}
+
 /// Abstraction over native Windows system queries.
 ///
 /// Production code calls FFI; tests inject a mock to exercise edge cases
@@ -106,6 +129,12 @@ pub trait WindowsSource: Send + Sync + std::fmt::Debug {
 
     /// Read system identity fields.
     fn identity(&self) -> Result<RawIdentity, CollectError>;
+    /// Read current MHz from documented processor power information.
+    fn cpu_frequency_hz(&self) -> Result<Option<u64>, CollectError>;
+    /// Read cumulative per-disk byte counters.
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError>;
+    /// Read cumulative interface counters and link metadata.
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError>;
 }
 
 /// Mock Windows source for unit tests. All fields are public so tests can
@@ -130,6 +159,9 @@ pub struct MockWindowsSource {
     /// non-zero CPU interval.
     pub auto_increment_cpu: bool,
     pub(crate) cpu_call_count: std::sync::atomic::AtomicU32,
+    pub cpu_frequency: Option<u64>,
+    pub disk: Vec<RawDiskIo>,
+    pub network: Vec<RawNetworkInterface>,
 }
 
 impl Clone for MockWindowsSource {
@@ -152,6 +184,9 @@ impl Clone for MockWindowsSource {
                 self.cpu_call_count
                     .load(std::sync::atomic::Ordering::Relaxed),
             ),
+            cpu_frequency: self.cpu_frequency,
+            disk: self.disk.clone(),
+            network: self.network.clone(),
         }
     }
 }
@@ -202,6 +237,9 @@ impl MockWindowsSource {
             drives_error: false,
             auto_increment_cpu: false,
             cpu_call_count: std::sync::atomic::AtomicU32::new(0),
+            cpu_frequency: None,
+            disk: Vec::new(),
+            network: Vec::new(),
         }
     }
 }
@@ -287,6 +325,16 @@ impl WindowsSource for MockWindowsSource {
         }
         Ok(self.identity.clone())
     }
+
+    fn cpu_frequency_hz(&self) -> Result<Option<u64>, CollectError> {
+        Ok(self.cpu_frequency)
+    }
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        Ok(self.disk.clone())
+    }
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError> {
+        Ok(self.network.clone())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +380,18 @@ impl WindowsSource for NativeWindowsSource {
 
     fn identity(&self) -> Result<RawIdentity, CollectError> {
         collect_raw_identity()
+    }
+
+    fn cpu_frequency_hz(&self) -> Result<Option<u64>, CollectError> {
+        cpu_frequency_hz()
+    }
+
+    fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        disk_io()
+    }
+
+    fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError> {
+        network_interfaces()
     }
 }
 
@@ -419,6 +479,72 @@ mod ffi {
         pub sz_c_version_string: [u16; 128],
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct ProcessorPowerInformation {
+        pub number: u32,
+        pub max_mhz: u32,
+        pub current_mhz: u32,
+        pub mhz_limit: u32,
+        pub max_idle_state: u32,
+        pub current_idle_state: u32,
+    }
+
+    #[repr(C)]
+    pub struct DiskPerformance {
+        pub bytes_read: u64,
+        pub bytes_written: u64,
+        pub read_time: i64,
+        pub write_time: i64,
+        pub idle_time: i64,
+        pub read_count: u32,
+        pub write_count: u32,
+        pub queue_depth: u32,
+        pub split_count: u32,
+        pub query_time: i64,
+        pub storage_device_number: u32,
+        pub storage_manager_name: [u16; 8],
+    }
+
+    #[repr(C)]
+    pub struct MibIfRow2 {
+        pub interface_luid: u64,
+        pub interface_index: u32,
+        pub interface_guid: [u8; 16],
+        pub alias: [u16; 257],
+        pub description: [u16; 257],
+        pub physical_address_length: u32,
+        pub physical_address: [u8; 32],
+        pub permanent_physical_address: [u8; 32],
+        pub mtu: u32,
+        pub interface_type: u32,
+        pub tunnel_type: u32,
+        pub media_type: u32,
+        pub physical_medium_type: u32,
+        pub access_type: u32,
+        pub direction_type: u32,
+        pub interface_and_oper_status_flags: u8,
+        pub oper_status: u32,
+        pub admin_status: u32,
+        pub media_connect_state: u32,
+        pub network_guid: [u8; 16],
+        pub connection_type: u32,
+        pub transmit_link_speed: u64,
+        pub receive_link_speed: u64,
+        pub in_octets: u64,
+        pub in_ucast_pkts: u64,
+        pub in_nucast_pkts: u64,
+        pub in_discards: u64,
+        pub in_errors: u64,
+        pub in_unknown_protos: u64,
+        pub out_octets: u64,
+        pub out_ucast_pkts: u64,
+        pub out_nucast_pkts: u64,
+        pub out_discards: u64,
+        pub out_errors: u64,
+        pub out_qlen: u64,
+    }
+
     /// `SYSTEM_INFO` — processor architecture info (simplified for `x86_64`).
     #[repr(C)]
     #[cfg(target_arch = "x86_64")]
@@ -439,6 +565,8 @@ mod ffi {
     #[link(name = "kernel32")]
     #[link(name = "ntdll")]
     #[link(name = "psapi")]
+    #[link(name = "powrprof")]
+    #[link(name = "iphlpapi")]
     extern "system" {
         pub fn GetSystemTimes(
             idle_time: *mut FileTime,
@@ -473,6 +601,36 @@ mod ffi {
             total_number_of_bytes: *mut u64,
             total_number_of_free_bytes: *mut u64,
         ) -> i32;
+
+        pub fn CallNtPowerInformation(
+            information_level: u32,
+            input_buffer: *const u8,
+            input_buffer_length: u32,
+            output_buffer: *mut u8,
+            output_buffer_length: u32,
+        ) -> i32;
+        pub fn CreateFileW(
+            name: *const u16,
+            access: u32,
+            share: u32,
+            security: *const u8,
+            creation: u32,
+            flags: u32,
+            template: *const u8,
+        ) -> *mut std::ffi::c_void;
+        pub fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+        pub fn DeviceIoControl(
+            handle: *mut std::ffi::c_void,
+            code: u32,
+            input: *const u8,
+            input_size: u32,
+            output: *mut u8,
+            output_size: u32,
+            returned: *mut u32,
+            overlapped: *mut u8,
+        ) -> i32;
+        pub fn GetIfTable2(table: *mut *mut MibIfRow2) -> u32;
+        pub fn FreeMibTable(table: *mut MibIfRow2);
     }
 }
 
@@ -499,7 +657,10 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
         let mut required = validate_drive_string_count(unsafe {
             // Safety: buffer is writable and its declared length matches its
             // allocation. The returned size is checked before parsing.
-            ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
+            ffi::GetLogicalDriveStringsW(
+                u32::try_from(buffer.len()).expect("bounded drive buffer"),
+                buffer.as_mut_ptr(),
+            )
         })?;
         if required >= buffer.len() {
             let size = required.checked_add(1).ok_or_else(|| {
@@ -512,7 +673,10 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             let retry_required = unsafe {
                 // Safety: the resized buffer is writable and the API receives
                 // its exact capacity.
-                ffi::GetLogicalDriveStringsW(buffer.len() as u32, buffer.as_mut_ptr())
+                ffi::GetLogicalDriveStringsW(
+                    u32::try_from(buffer.len()).expect("bounded drive buffer"),
+                    buffer.as_mut_ptr(),
+                )
             };
             required = validate_drive_string_count(retry_required)?;
             if required >= buffer.len() {
@@ -775,6 +939,218 @@ fn commit() -> Result<RawCommit, CollectError> {
             "Windows performance APIs not available on this platform",
         ))
     }
+}
+
+/// Query current processor frequency using the documented native power API.
+fn cpu_frequency_hz() -> Result<Option<u64>, CollectError> {
+    #[cfg(target_os = "windows")]
+    {
+        let count = active_processor_count()?;
+        let count = usize::try_from(count).map_err(|_| {
+            CollectError::new(CollectErrorKind::Numeric, "processor count overflow")
+        })?;
+        if count == 0 || count > 4096 {
+            return Ok(None);
+        }
+        let size = count
+            .checked_mul(std::mem::size_of::<ffi::ProcessorPowerInformation>())
+            .ok_or_else(|| {
+                CollectError::new(
+                    CollectErrorKind::Numeric,
+                    "processor information size overflow",
+                )
+            })?;
+        let mut buffer = vec![ffi::ProcessorPowerInformation::default(); count];
+        let status = unsafe {
+            // Safety: buffer is writable and sized for one record per active
+            // processor; the API only writes the declared output length.
+            ffi::CallNtPowerInformation(
+                11,
+                std::ptr::null(),
+                0,
+                buffer.as_mut_ptr().cast(),
+                u32::try_from(size).map_err(|_| {
+                    CollectError::new(
+                        CollectErrorKind::Numeric,
+                        "processor information size exceeds API limit",
+                    )
+                })?,
+            )
+        };
+        if status != 0 {
+            return Ok(None);
+        }
+        let records = &buffer;
+        let mut sum = 0u64;
+        let mut valid = 0u64;
+        for record in records {
+            if record.current_mhz == 0 {
+                continue;
+            }
+            sum = sum
+                .checked_add(u64::from(record.current_mhz))
+                .ok_or_else(|| {
+                    CollectError::new(
+                        CollectErrorKind::Numeric,
+                        "processor frequency sum overflow",
+                    )
+                })?;
+            valid += 1;
+        }
+        let Some(mean_mhz) = (valid > 0).then_some(sum / valid) else {
+            return Ok(None);
+        };
+        Ok(mean_mhz.checked_mul(1_000))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(None)
+    }
+}
+
+/// Query per-disk byte counters with bounded direct handles. Failed disks are
+/// skipped because this is optional telemetry.
+#[allow(clippy::unnecessary_wraps)]
+fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut records = Vec::new();
+        for index in 0..32u32 {
+            let path: Vec<u16> = format!(r"\\.\PhysicalDrive{index}")
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let handle = unsafe {
+                ffi::CreateFileW(
+                    path.as_ptr(),
+                    0,
+                    3,
+                    std::ptr::null(),
+                    3,
+                    0,
+                    std::ptr::null(),
+                )
+            };
+            if handle as isize == -1 {
+                continue;
+            }
+            let mut performance = std::mem::MaybeUninit::<ffi::DiskPerformance>::zeroed();
+            let mut returned = 0u32;
+            let ok = unsafe {
+                // Safety: the handle is valid for this call and the output
+                // buffer has the declared DISK_PERFORMANCE size.
+                ffi::DeviceIoControl(
+                    handle,
+                    0x0007_0020,
+                    std::ptr::null(),
+                    0,
+                    performance.as_mut_ptr().cast(),
+                    u32::try_from(std::mem::size_of::<ffi::DiskPerformance>())
+                        .expect("small performance structure"),
+                    &mut returned,
+                    std::ptr::null_mut(),
+                )
+            } != 0;
+            if ok
+                && returned
+                    >= u32::try_from(std::mem::size_of::<ffi::DiskPerformance>())
+                        .expect("small performance structure")
+            {
+                let value = unsafe { performance.assume_init() };
+                records.push(RawDiskIo {
+                    id: format!("physical-{index}"),
+                    name: format!("PhysicalDrive{index}"),
+                    read_bytes: value.bytes_read,
+                    write_bytes: value.bytes_written,
+                });
+            }
+            unsafe {
+                ffi::CloseHandle(handle);
+            }
+        }
+        Ok(records)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "Windows disk API unavailable",
+        ))
+    }
+}
+
+/// Enumerate interface rows with the documented IP Helper table API.
+fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut table = std::ptr::null_mut();
+        let status = unsafe { ffi::GetIfTable2(&mut table) };
+        if status != 0 || table.is_null() {
+            return Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                "GetIfTable2 failed",
+            ));
+        }
+        let count = unsafe { (*table.cast::<u32>()) as usize };
+        if count > 1024 {
+            unsafe {
+                ffi::FreeMibTable(table);
+            }
+            return Err(CollectError::new(
+                CollectErrorKind::Numeric,
+                "interface table exceeds bound",
+            ));
+        }
+        #[allow(clippy::cast_ptr_alignment)]
+        let first = unsafe {
+            let table_offset =
+                (std::mem::size_of::<u32>() + std::mem::align_of::<ffi::MibIfRow2>() - 1)
+                    & !(std::mem::align_of::<ffi::MibIfRow2>() - 1);
+            table
+                .cast::<u8>()
+                .add(table_offset)
+                .cast::<ffi::MibIfRow2>()
+        };
+        let rows = unsafe { std::slice::from_raw_parts(first, count) };
+        let mut records = Vec::with_capacity(count);
+        for row in rows {
+            let name = utf16_field(&row.alias);
+            let is_loopback = row.interface_type == 24;
+            let operational = row.oper_status == 1 && row.media_connect_state == 1;
+            records.push(RawNetworkInterface {
+                id: format!("luid-{:016x}", row.interface_luid),
+                name,
+                rx_bytes: row.in_octets,
+                tx_bytes: row.out_octets,
+                rx_capacity_bps: (row.receive_link_speed > 0).then_some(row.receive_link_speed),
+                tx_capacity_bps: (row.transmit_link_speed > 0).then_some(row.transmit_link_speed),
+                is_loopback,
+                operational,
+                aggregate_member: !is_loopback,
+            });
+        }
+        unsafe {
+            ffi::FreeMibTable(table);
+        }
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "Windows interface API unavailable",
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn utf16_field(field: &[u16]) -> String {
+    let end = field
+        .iter()
+        .position(|value| *value == 0)
+        .unwrap_or(field.len());
+    String::from_utf16_lossy(&field[..end])
 }
 
 /// Collect raw identity fields via Windows APIs.

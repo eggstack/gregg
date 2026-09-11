@@ -5,9 +5,16 @@
 //! in this module; the shared collector contract is defined in
 //! [`crate::collector`].
 
+use std::time::Instant;
+
+use gregg_protocol::v2::{
+    DiskIoMetrics, DiskIoPayload, MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload,
+    MAX_DISK_IO_ENTRIES, MAX_NETWORK_INTERFACE_ENTRIES,
+};
 use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
+use crate::collector::rate::CounterBaselines;
 use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
 
 pub mod cpu;
@@ -65,6 +72,8 @@ pub struct MacOsCollector<S: ffi::MacNativeQueries = ffi::FfiNativeQueries> {
     logical_cores: u32,
     physical_memory_bytes: u64,
     drive_refresh: Option<DriveRefreshCache>,
+    disk_baselines: CounterBaselines,
+    network_baselines: CounterBaselines,
 }
 
 impl MacOsCollector<ffi::FfiNativeQueries> {
@@ -95,6 +104,8 @@ impl<S: ffi::MacNativeQueries + Clone> MacOsCollector<S> {
             logical_cores,
             physical_memory_bytes,
             drive_refresh: None,
+            disk_baselines: CounterBaselines::default(),
+            network_baselines: CounterBaselines::default(),
         })
     }
 
@@ -118,6 +129,110 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
             .as_mut()
             .and_then(DriveRefreshCache::poll)
     }
+
+    fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
+        let Ok(records) = self.source.disk_io() else {
+            self.disk_baselines.clear();
+            return None;
+        };
+        self.disk_baselines
+            .retain_ids(records.iter().map(|r| r.id.as_str()));
+        let mut devices = Vec::new();
+        let mut read_total = 0u64;
+        let mut write_total = 0u64;
+        for record in records {
+            if record.id.is_empty()
+                || record.name.is_empty()
+                || record.id.contains('\0')
+                || record.name.contains('\0')
+            {
+                continue;
+            }
+            let Some(rate) =
+                self.disk_baselines
+                    .observe(&record.id, now, record.read_bytes, record.write_bytes)
+            else {
+                continue;
+            };
+            read_total = read_total.checked_add(rate.first_per_sec)?;
+            write_total = write_total.checked_add(rate.second_per_sec)?;
+            if devices.len() < MAX_DISK_IO_ENTRIES {
+                devices.push(DiskIoMetrics {
+                    id: record.id,
+                    name: record.name,
+                    read_bytes_per_sec: rate.first_per_sec,
+                    write_bytes_per_sec: rate.second_per_sec,
+                    drive_name: None,
+                });
+            }
+        }
+        (!devices.is_empty()).then_some(DiskIoPayload {
+            aggregate_read_bytes_per_sec: read_total,
+            aggregate_write_bytes_per_sec: write_total,
+            devices,
+        })
+    }
+
+    fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
+        let Ok(records) = self.source.network_interfaces() else {
+            self.network_baselines.clear();
+            return None;
+        };
+        self.network_baselines
+            .retain_ids(records.iter().map(|r| r.id.as_str()));
+        let mut interfaces = Vec::new();
+        let mut rx_total = 0u64;
+        let mut tx_total = 0u64;
+        let mut rx_capacity: Option<u64> = None;
+        let mut tx_capacity: Option<u64> = None;
+        for record in records {
+            if record.id.is_empty()
+                || record.name.is_empty()
+                || record.id.contains('\0')
+                || record.name.contains('\0')
+            {
+                continue;
+            }
+            let Some(rate) =
+                self.network_baselines
+                    .observe(&record.id, now, record.rx_bytes, record.tx_bytes)
+            else {
+                continue;
+            };
+            let aggregate_member = record.aggregate_member && !record.is_loopback;
+            if aggregate_member {
+                rx_total = rx_total.checked_add(rate.first_per_sec)?;
+                tx_total = tx_total.checked_add(rate.second_per_sec)?;
+                if record.operational && !record.is_loopback {
+                    if let Some(capacity) = record.rx_capacity_bps {
+                        rx_capacity = Some(rx_capacity.unwrap_or(0).checked_add(capacity)?);
+                    }
+                    if let Some(capacity) = record.tx_capacity_bps {
+                        tx_capacity = Some(tx_capacity.unwrap_or(0).checked_add(capacity)?);
+                    }
+                }
+            }
+            if interfaces.len() < MAX_NETWORK_INTERFACE_ENTRIES {
+                interfaces.push(NetworkInterfaceMetrics {
+                    id: record.id,
+                    name: record.name,
+                    rx_bytes_per_sec: rate.first_per_sec,
+                    tx_bytes_per_sec: rate.second_per_sec,
+                    rx_capacity_bps: record.rx_capacity_bps,
+                    tx_capacity_bps: record.tx_capacity_bps,
+                    is_loopback: record.is_loopback,
+                    aggregate_member,
+                });
+            }
+        }
+        (!interfaces.is_empty()).then_some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: rx_total,
+            aggregate_tx_bytes_per_sec: tx_total,
+            aggregate_rx_capacity_bps: rx_capacity,
+            aggregate_tx_capacity_bps: tx_capacity,
+            interfaces,
+        })
+    }
 }
 
 impl<S: ffi::MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollector<S> {
@@ -130,6 +245,7 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollec
         let raw_vm = self.source.vm_info64()?;
         let raw_swap = self.source.swap_usage()?;
         let raw_load = self.source.load_averages()?;
+        let now = Instant::now();
 
         let cpu_sample = if let Some(prev) = self.previous_cpu.as_ref() {
             match cpu::compute_cpu_percentages(prev, &raw_cpu) {
@@ -174,11 +290,23 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollec
             swap: swap.into_metrics(),
             commit: None,
             drives: self.refresh_drives(),
+            cpu_frequency_hz: self.source.cpu_frequency_hz(),
+            disk_io: self.collect_disk_io(now),
+            network: self.collect_network(now),
         })
     }
 
     fn capabilities(&self) -> MetricCapabilities {
         self.capabilities
+    }
+
+    fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
+        MetricCapabilitiesV2 {
+            cpu_iowait: false,
+            load_average: true,
+            swap: true,
+            memory_commit: false,
+        }
     }
 }
 

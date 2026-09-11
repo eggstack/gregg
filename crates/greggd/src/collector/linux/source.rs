@@ -25,6 +25,12 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
     /// Read the entire contents of the named file.
     fn read_to_string(&self, path: &Path) -> Result<String, CollectError>;
 
+    /// Enumerate immediate children of a native directory.
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, CollectError>;
+
+    /// Test whether a native path exists, including a sysfs symlink.
+    fn path_exists(&self, path: &Path) -> bool;
+
     /// Return the kernel-reported logical core count, if known.
     fn available_parallelism(&self) -> Option<usize>;
 
@@ -163,6 +169,167 @@ impl ProcSource {
         memory::parse_meminfo(&raw)
     }
 
+    /// Read current `CPUFreq` policy frequencies, preferring hardware-reported
+    /// `cpuinfo_cur_freq` and falling back to `scaling_cur_freq`.
+    pub fn cpu_frequency_hz(&self) -> Option<u64> {
+        let root = Path::new("/sys/devices/system/cpu/cpufreq");
+        let policies = self.inner.read_dir(root).ok()?;
+        let logical_cores = self.logical_core_count().unwrap_or(1);
+        let mut weighted_sum = 0u128;
+        let mut weight_sum = 0u128;
+        for policy in policies {
+            if !policy
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("policy"))
+            {
+                continue;
+            }
+            let affected = self.inner.read_to_string(&policy.join("affected_cpus"));
+            let weight = match affected {
+                Ok(raw) => parse_cpu_list(&raw, logical_cores).or_else(|| {
+                    self.inner
+                        .read_to_string(&policy.join("related_cpus"))
+                        .ok()
+                        .and_then(|raw| parse_cpu_list(&raw, logical_cores))
+                }),
+                Err(_) => self
+                    .inner
+                    .read_to_string(&policy.join("related_cpus"))
+                    .ok()
+                    .and_then(|raw| parse_cpu_list(&raw, logical_cores))
+                    .or(Some(1)),
+            }
+            .unwrap_or(0);
+            if weight == 0 {
+                continue;
+            }
+            let khz = self
+                .inner
+                .read_to_string(&policy.join("cpuinfo_cur_freq"))
+                .ok()
+                .and_then(|raw| parse_positive_u64(&raw))
+                .or_else(|| {
+                    self.inner
+                        .read_to_string(&policy.join("scaling_cur_freq"))
+                        .ok()
+                        .and_then(|raw| parse_positive_u64(&raw))
+                });
+            let Some(khz) = khz else { continue };
+            let Some(hz) = khz.checked_mul(1_000) else {
+                continue;
+            };
+            weighted_sum = weighted_sum.checked_add(u128::from(hz) * weight as u128)?;
+            weight_sum = weight_sum.checked_add(weight as u128)?;
+        }
+        u64::try_from(weighted_sum.checked_div(weight_sum)?).ok()
+    }
+
+    /// Read top-level Linux block-device sector counters. Partitions are not
+    /// enumerated separately, and layered devices with slaves are omitted so
+    /// one physical accounting layer is selected deterministically.
+    pub fn disk_io(&self) -> Result<Vec<RawDiskIo>, CollectError> {
+        let root = Path::new("/sys/block");
+        let devices = self.inner.read_dir(root)?;
+        let mut records = Vec::new();
+        for device in devices {
+            let Some(name) = device.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("zram") {
+                continue;
+            }
+            if self.inner.path_exists(&device.join("slaves"))
+                && self
+                    .inner
+                    .read_dir(&device.join("slaves"))
+                    .is_ok_and(|slaves| !slaves.is_empty())
+            {
+                continue;
+            }
+            let Ok(raw) = self.inner.read_to_string(&device.join("stat")) else {
+                continue;
+            };
+            let fields: Vec<_> = raw.split_whitespace().collect();
+            if fields.len() < 7 {
+                continue;
+            }
+            let Ok(read_sectors) = fields[2].parse::<u64>() else {
+                continue;
+            };
+            let Ok(write_sectors) = fields[6].parse::<u64>() else {
+                continue;
+            };
+            records.push(RawDiskIo {
+                id: name.to_owned(),
+                name: name.to_owned(),
+                read_bytes: read_sectors.checked_mul(512).ok_or_else(|| {
+                    CollectError::new(
+                        CollectErrorKind::Numeric,
+                        "disk read-sector byte conversion overflowed",
+                    )
+                })?,
+                write_bytes: write_sectors.checked_mul(512).ok_or_else(|| {
+                    CollectError::new(
+                        CollectErrorKind::Numeric,
+                        "disk write-sector byte conversion overflowed",
+                    )
+                })?,
+            });
+        }
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+
+    /// Read byte counters and link metadata from procfs/sysfs.
+    pub fn network_interfaces(&self) -> Result<Vec<RawNetworkInterface>, CollectError> {
+        let raw = self.inner.read_to_string(Path::new("/proc/net/dev"))?;
+        let mut records = Vec::new();
+        for line in raw.lines().skip(2) {
+            let Some((name, values)) = line.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            let fields: Vec<_> = values.split_whitespace().collect();
+            if fields.len() < 9 {
+                continue;
+            }
+            let (Ok(rx_bytes), Ok(tx_bytes)) = (fields[0].parse(), fields[8].parse()) else {
+                continue;
+            };
+            let path = Path::new("/sys/class/net").join(name);
+            let flags = self
+                .inner
+                .read_to_string(&path.join("flags"))
+                .ok()
+                .and_then(|value| {
+                    u32::from_str_radix(value.trim().trim_start_matches("0x"), 16).ok()
+                })
+                .unwrap_or(0);
+            let is_loopback = flags & 0x8 != 0;
+            let rx_capacity_bps =
+                parse_link_speed(self.inner.read_to_string(&path.join("speed")).ok());
+            let tx_capacity_bps = rx_capacity_bps;
+            let operational = self
+                .inner
+                .read_to_string(&path.join("operstate"))
+                .is_ok_and(|state| state.trim() == "up");
+            let slave = self.inner.path_exists(&path.join("master"));
+            records.push(RawNetworkInterface {
+                id: name.to_owned(),
+                name: name.to_owned(),
+                rx_bytes,
+                tx_bytes,
+                rx_capacity_bps,
+                tx_capacity_bps,
+                is_loopback,
+                operational,
+                aggregate_member: !is_loopback && !slave,
+            });
+        }
+        records.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(records)
+    }
+
     /// Read Linux mount records from `/proc/self/mountinfo`.
     pub fn read_mountinfo(&self) -> Result<String, CollectError> {
         self.read_path(Path::new("/proc/self/mountinfo"))
@@ -265,6 +432,21 @@ impl FileSource for HostSource {
             Ok(s) => Ok(s),
             Err(err) => Err(map_io_error(path, err)),
         }
+    }
+
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, CollectError> {
+        fs::read_dir(path)
+            .map_err(|err| map_io_error(path, err))?
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.path())
+                    .map_err(|err| map_io_error(path, err))
+            })
+            .collect()
+    }
+
+    fn path_exists(&self, path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok()
     }
 
     fn available_parallelism(&self) -> Option<usize> {
@@ -391,6 +573,33 @@ impl FileSource for MemorySource {
         }
     }
 
+    fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, CollectError> {
+        let mut children = std::collections::BTreeSet::new();
+        for candidate in self.files.keys() {
+            if let Ok(relative) = candidate.strip_prefix(path) {
+                if let Some(first) = relative.components().next() {
+                    children.insert(path.join(first.as_os_str()));
+                }
+            }
+        }
+        if children.is_empty() {
+            Err(CollectError::new(
+                CollectErrorKind::SourceUnavailable,
+                format!("fixture directory missing: {}", path.display()),
+            ))
+        } else {
+            Ok(children.into_iter().collect())
+        }
+    }
+
+    fn path_exists(&self, path: &Path) -> bool {
+        self.files.contains_key(path)
+            || self
+                .files
+                .keys()
+                .any(|candidate| candidate.starts_with(path))
+    }
+
     fn available_parallelism(&self) -> Option<usize> {
         self.logical_cores
     }
@@ -420,6 +629,57 @@ pub struct RawStatvfs {
     pub available_blocks: u64,
     pub fragment_size: u64,
     pub block_size: u64,
+}
+
+/// Cumulative Linux block-device byte counters after sector conversion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawDiskIo {
+    pub id: String,
+    pub name: String,
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+}
+
+/// Cumulative Linux interface counters and native link metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawNetworkInterface {
+    pub id: String,
+    pub name: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub rx_capacity_bps: Option<u64>,
+    pub tx_capacity_bps: Option<u64>,
+    pub is_loopback: bool,
+    pub operational: bool,
+    pub aggregate_member: bool,
+}
+
+fn parse_positive_u64(raw: &str) -> Option<u64> {
+    let value = raw.trim().parse::<u64>().ok()?;
+    (value > 0).then_some(value)
+}
+
+fn parse_link_speed(raw: Option<String>) -> Option<u64> {
+    let mbps = raw?.trim().parse::<u64>().ok()?;
+    (mbps > 0).then(|| mbps.checked_mul(1_000_000)).flatten()
+}
+
+fn parse_cpu_list(raw: &str, logical_cores: usize) -> Option<usize> {
+    let mut count = 0usize;
+    for item in raw.trim().split(',') {
+        let (start, end) = item.split_once('-').map_or_else(
+            || item.parse::<usize>().ok().map(|value| (value, value)),
+            |(start, end)| Some((start.parse().ok()?, end.parse().ok()?)),
+        )?;
+        if end < start {
+            return None;
+        }
+        let bounded_end = end.min(logical_cores.saturating_sub(1));
+        if start <= bounded_end {
+            count = count.checked_add(bounded_end - start + 1)?;
+        }
+    }
+    (count > 0).then_some(count)
 }
 
 /// Output of [`ProcSource::read_proc_stat`].
@@ -453,3 +713,126 @@ pub struct KernelIdentity {
 // Pull the cpu and memory submodules in so the public helpers referenced
 // above are defined.
 use crate::collector::linux::{cpu, memory};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source_with(files: &[(&str, &str)]) -> ProcSource {
+        let mut source = MemorySource::new().with_logical_cores(4);
+        for (path, content) in files {
+            source.add_file(*path, *content);
+        }
+        ProcSource::for_memory(source)
+    }
+
+    #[test]
+    fn cpufreq_prefers_hardware_current_and_weights_policy_membership() {
+        let source = source_with(&[
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "0-1\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+                "2000000\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+                "2-3\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+                "1000000\n",
+            ),
+        ]);
+        assert_eq!(source.cpu_frequency_hz(), Some(1_500_000_000));
+    }
+
+    #[test]
+    fn cpufreq_falls_back_to_scaling_current_and_ignores_bad_policy() {
+        let source = source_with(&[
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "0\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+                "not-a-frequency\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq",
+                "1800000\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+                "1\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+                "0\n",
+            ),
+        ]);
+        assert_eq!(source.cpu_frequency_hz(), Some(1_800_000_000));
+    }
+
+    #[test]
+    fn disk_stats_convert_sectors_and_select_one_layer() {
+        let source = source_with(&[
+            ("/sys/block/sda/stat", "1 2 10 4 5 6 20 8 9 10 11\n"),
+            ("/sys/block/dm-0/stat", "1 2 100 4 5 6 200 8 9 10 11\n"),
+            ("/sys/block/dm-0/slaves/sda", "\n"),
+        ]);
+        let disks = source.disk_io().expect("disk fixtures");
+        assert_eq!(disks.len(), 1);
+        assert_eq!(disks[0].read_bytes, 5_120);
+        assert_eq!(disks[0].write_bytes, 10_240);
+    }
+
+    #[test]
+    fn network_keeps_loopback_detail_and_excludes_slave_capacity() {
+        let source = source_with(&[
+            ("/proc/net/dev", "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed\nlo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\neth0: 300 0 0 0 0 0 0 0 400 0 0 0 0 0 0 0\neth1: 500 0 0 0 0 0 0 0 600 0 0 0 0 0 0 0\n"),
+            ("/sys/class/net/lo/flags", "0x9\n"),
+            ("/sys/class/net/lo/operstate", "unknown\n"),
+            ("/sys/class/net/eth0/flags", "0x1\n"),
+            ("/sys/class/net/eth0/operstate", "up\n"),
+            ("/sys/class/net/eth0/speed", "1000\n"),
+            ("/sys/class/net/eth1/flags", "0x1\n"),
+            ("/sys/class/net/eth1/operstate", "down\n"),
+            ("/sys/class/net/eth1/speed", "1000\n"),
+            ("/sys/class/net/eth1/master", "\n"),
+        ]);
+        let interfaces = source.network_interfaces().expect("network fixtures");
+        assert_eq!(interfaces.len(), 3);
+        assert!(
+            interfaces
+                .iter()
+                .find(|i| i.id == "lo")
+                .unwrap()
+                .is_loopback
+        );
+        assert!(
+            interfaces
+                .iter()
+                .find(|i| i.id == "eth0")
+                .unwrap()
+                .aggregate_member
+        );
+        assert!(
+            !interfaces
+                .iter()
+                .find(|i| i.id == "eth1")
+                .unwrap()
+                .aggregate_member
+        );
+        assert_eq!(
+            interfaces
+                .iter()
+                .find(|i| i.id == "eth0")
+                .unwrap()
+                .rx_capacity_bps,
+            Some(1_000_000_000)
+        );
+    }
+}

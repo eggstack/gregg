@@ -194,12 +194,13 @@ integration tests.
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, five routes (`/`, `/v1/status`, `/v2/status`, `/healthz`, `/v2/healthz`), staleness detection; `ServerState`, `PublishedState` |
 | `server/error` | `src/server/error.rs` | Server error types |
 | `server/tests` | `src/server/tests.rs` | In-module HTTP handler tests |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait (`identity()`, `sample()`, `capabilities()`, `capabilities_v2()`, `supports_v1_snapshot()`); `CollectedMetrics` normalization to v1/v2 wire formats |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait; `CollectedMetrics` normalization to v1/v2 wire formats, including optional live telemetry |
+| `collector/rate` | `src/collector/rate.rs` | Identity-keyed monotonic counter baselines and checked actual-elapsed-time rates |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: candidates, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
-| `collector/linux/` | `src/collector/linux/` | Linux collector: cpu, memory, drives, identity; `FileSource` trait (`ProcSource` prod reads `/proc`, `MemorySource` test) plus statvfs FFI in `source.rs` |
-| `collector/macos/` | `src/collector/macos/` | macOS collector: cpu, memory, swap, identity, normalize; Mach/sysctl FFI seam in `ffi.rs` (`MacNativeQueries` trait, `FfiNativeQueries` prod, mock for tests) |
-| `collector/windows/` | `src/collector/windows/` | Windows collector: cpu, memory, commit, identity; `WindowsSource` trait (`NativeWindowsSource` prod, mock for tests) |
+| `collector/linux/` | `src/collector/linux/` | Linux collector: CPUFreq, CPU/memory, drives, block I/O, procfs/sysfs network, identity; `FileSource` test seam plus statvfs FFI |
+| `collector/macos/` | `src/collector/macos/` | macOS collector: CPU/memory/swap, IOKit disk I/O, AF_LINK network, identity; Mach/sysctl/IOKit FFI seam |
+| `collector/windows/` | `src/collector/windows/` | Windows collector: processor power frequency, CPU/memory/commit, disk IOCTL, IP Helper network, identity; `WindowsSource` test seam |
 | `startup/method` | `src/startup/method.rs` | Method identity, standard paths, systemd environment detection, auto/resolve selection |
 | `startup/process` | `src/startup/process.rs` | Bounded child-process execution shared by manager probes and commands |
 | `startup/systemd` | `src/startup/systemd.rs` | Unit content, unit-existence/activity probes, user/config setup, `install_systemd`, `restart_systemd` |
@@ -419,9 +420,9 @@ No external commands are executed for metric collection.
 
 | Platform | Source | Key interfaces | Test seam |
 |----------|--------|----------------|-----------|
-| Linux | `collector/linux/` | `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` | `FileSource` trait (`ProcSource` prod, in-memory test source) |
-| macOS | `collector/macos/` | Mach `host_statistics`, `sysctl`, `getloadavg`, `getmntinfo` | `MacNativeQueries` trait (`FfiNativeQueries` prod, mock in tests) |
-| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` | `WindowsSource` trait (`NativeWindowsSource` prod, mock in tests) |
+| Linux | `collector/linux/` | `/proc/stat`, `/proc/meminfo`, CPUFreq sysfs, `/sys/block`, `/proc/net/dev`, network sysfs, mounts, `statvfs` | `FileSource` trait (`ProcSource` prod, in-memory test source) |
+| macOS | `collector/macos/` | Mach `host_statistics`, `sysctl`, `getloadavg`, `getmntinfo`, AF_LINK, IOKit | `MacNativeQueries` trait (`FfiNativeQueries` prod, mock in tests) |
+| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, `CallNtPowerInformation`, disk IOCTL, IP Helper | `WindowsSource` trait (`NativeWindowsSource` prod, mock in tests) |
 
 Platform gaps are reported honestly: macOS has no I/O-wait equivalent
 (`iowait_pct` is `null`); Windows cannot produce load average, swap, or

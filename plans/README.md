@@ -56,8 +56,9 @@ manual evidence rather than CI infrastructure.
 Plans 107-111 coordinate the next additive live-metrics work. Plan 108 owns
 the protocol/client normalization boundary first: optional schema-v2 CPU
 frequency, disk-I/O, and network fields, bounded validation, and mixed-version
-fixtures. Plans 109-111 remain sequenced behind it and are not implemented by
-this registration.
+fixtures. Plan 109 now owns native daemon collection and monotonic rate
+publication; Plans 110-111 remain sequenced behind it for TUI presentation and
+final compatibility verification.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -164,7 +165,7 @@ excluded.
 | [`106-bounded-daemon-status-and-client-offline-provenance.md`](106-bounded-daemon-status-and-client-offline-provenance.md) | Read-only `greggd status` and client offline provenance | complete; implementation `a243162`; CI `34293771380` green |
 | [`107-live-throughput-and-clock-metrics-roadmap.md`](107-live-throughput-and-clock-metrics-roadmap.md) | Live CPU clock, disk-I/O, and network roadmap | coordination roadmap; Plans 108-111 sequenced |
 | [`108-additive-live-metrics-protocol-and-normalization.md`](108-additive-live-metrics-protocol-and-normalization.md) | Additive v2 live-metrics wire types, validation, fixtures, and client normalization | complete; implementation `94f01c5`; CI run `34606521857` green |
-| [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | ready after Plan 108 |
+| [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | implementation complete; closure pending commit and CI |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | ready after Plan 109 |
 | [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | ready after Plans 108-110 |
 

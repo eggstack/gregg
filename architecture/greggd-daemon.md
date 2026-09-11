@@ -28,7 +28,8 @@ available through the Windows-only service path.
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
 | `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, module-local `Config` (with `ServerConfigError`) |
 | `server/error` | `src/server/error.rs` | Server error types |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()` |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()`, optional live telemetry publication |
+| `collector/rate` | `src/collector/rate.rs` | Monotonic counter baselines, reset/hotplug handling, checked rate arithmetic |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
 | `startup/method` … `startup/install` | `src/startup/*.rs` | Startup installation and restart split by ownership (Plan 105, behavior-preserving): method identity/paths/detection (`method`), bounded child execution (`process`), systemd unit/install/restart (`systemd`), launchd plist/install/restart (`launchd`), shell quoting + cron block/install (`cron`), `StartupState` detection (`state`), errors/atomic writes/privilege/install dispatch/instructions/restart coordination (`install`). `src/startup.rs` is a façade re-exporting the historical `crate::startup::X` paths |
@@ -138,6 +139,11 @@ The sampler owns the clock and cadence. Key behaviors:
   standard thread with a bounded result channel and a 30-second cadence, so a
   slow native filesystem call cannot stall fresh CPU/memory/load snapshots or
   Tokio runtime shutdown.
+  Live CPU frequency, disk counters, and network counters are observed at
+  ordinary sample cadence. Shared identity-keyed baselines use actual monotonic
+  elapsed time and discard the interval on reset, backwards/zero elapsed time,
+  disappearance, or reappearance. Optional source failures yield absent live
+  fields while core CPU/memory sampling remains eligible for Ready.
   The collector is shared with the blocking task behind a mutex; a panicked
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.
@@ -295,13 +301,16 @@ These are crate-local typed errors. Wire responses carry only `HealthCategory`.
 
 ### Platform collectors
 
-See [collectors.md](collectors.md) for detailed platform-specific analysis.
+See [collectors.md](collectors.md) for detailed platform-specific analysis. The
+sampler validates the complete v2 payload, including optional live-telemetry
+bounds and invariants, before publication; an invalid optional record is
+discarded at the collector boundary and does not fabricate a zero value.
 
 | Platform | Source | Key interfaces |
 |----------|--------|---------------|
-| Linux | `collector/linux/` | `/proc/stat`, `/proc/meminfo`, `/proc/self/mountinfo`, `statvfs` |
-| macOS | `collector/macos/` | Mach `host_statistics`, `sysctl`, `getloadavg`, `getmntinfo` |
-| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo` |
+| Linux | `collector/linux/` | `/proc/stat`, CPUFreq sysfs, `/sys/block/*/stat`, `/proc/net/dev`, network sysfs, mounts, `statvfs` |
+| macOS | `collector/macos/` | Mach/sysctl, `getloadavg`, `getmntinfo`, AF_LINK, IOKit block statistics |
+| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, processor power, disk IOCTL, IP Helper |
 
 ## Tests
 

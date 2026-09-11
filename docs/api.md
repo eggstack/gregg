@@ -29,3 +29,9 @@ normalize them as unavailable. Network utilization uses the larger valid
 receive/transmit directional percentage, so simultaneous full-duplex traffic
 does not double-count; missing capacity leaves throughput available but no
 utilization percentage.
+
+The daemon derives live rates from cumulative native counters using monotonic
+elapsed time. The first observation and any reset or hotplug observation warms
+the corresponding identity. The aggregate disk set is independent of mounted
+filesystem rows and excludes obvious parent/child duplication; network detail
+may include loopback, but loopback never contributes aggregate capacity.

@@ -9,10 +9,16 @@
 //! state. These are reported as unsupported with explicit capability
 //! flags.
 
-use gregg_protocol::v2::MetricCapabilitiesV2;
+use std::time::Instant;
+
+use gregg_protocol::v2::{
+    DiskIoMetrics, DiskIoPayload, MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload,
+    MAX_DISK_IO_ENTRIES, MAX_NETWORK_INTERFACE_ENTRIES,
+};
 use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
 
 use crate::collector::error::{CollectError, CollectErrorKind};
+use crate::collector::rate::CounterBaselines;
 use crate::collector::windows::source::{RawCpuTimes, WindowsSource};
 use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
 
@@ -57,6 +63,8 @@ pub struct WindowsCollector<S: WindowsSource = source::NativeWindowsSource> {
     previous_cpu: Option<RawCpuTimes>,
     logical_cores: u32,
     drive_refresh: Option<DriveRefreshCache>,
+    disk_baselines: CounterBaselines,
+    network_baselines: CounterBaselines,
 }
 
 impl WindowsCollector<source::NativeWindowsSource> {
@@ -120,6 +128,8 @@ impl<S: WindowsSource + Clone> WindowsCollector<S> {
             previous_cpu: None,
             logical_cores,
             drive_refresh: None,
+            disk_baselines: CounterBaselines::default(),
+            network_baselines: CounterBaselines::default(),
         })
     }
 
@@ -143,6 +153,110 @@ impl<S: WindowsSource + Clone + 'static> WindowsCollector<S> {
             .as_mut()
             .and_then(DriveRefreshCache::poll)
     }
+
+    fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
+        let Ok(records) = self.source.disk_io() else {
+            self.disk_baselines.clear();
+            return None;
+        };
+        self.disk_baselines
+            .retain_ids(records.iter().map(|r| r.id.as_str()));
+        let mut devices = Vec::new();
+        let mut read_total = 0u64;
+        let mut write_total = 0u64;
+        for record in records {
+            if record.id.is_empty()
+                || record.name.is_empty()
+                || record.id.contains('\0')
+                || record.name.contains('\0')
+            {
+                continue;
+            }
+            let Some(rate) =
+                self.disk_baselines
+                    .observe(&record.id, now, record.read_bytes, record.write_bytes)
+            else {
+                continue;
+            };
+            read_total = read_total.checked_add(rate.first_per_sec)?;
+            write_total = write_total.checked_add(rate.second_per_sec)?;
+            if devices.len() < MAX_DISK_IO_ENTRIES {
+                devices.push(DiskIoMetrics {
+                    id: record.id,
+                    name: record.name,
+                    read_bytes_per_sec: rate.first_per_sec,
+                    write_bytes_per_sec: rate.second_per_sec,
+                    drive_name: None,
+                });
+            }
+        }
+        (!devices.is_empty()).then_some(DiskIoPayload {
+            aggregate_read_bytes_per_sec: read_total,
+            aggregate_write_bytes_per_sec: write_total,
+            devices,
+        })
+    }
+
+    fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
+        let Ok(records) = self.source.network_interfaces() else {
+            self.network_baselines.clear();
+            return None;
+        };
+        self.network_baselines
+            .retain_ids(records.iter().map(|r| r.id.as_str()));
+        let mut interfaces = Vec::new();
+        let mut rx_total = 0u64;
+        let mut tx_total = 0u64;
+        let mut rx_capacity: Option<u64> = None;
+        let mut tx_capacity: Option<u64> = None;
+        for record in records {
+            if record.id.is_empty()
+                || record.name.is_empty()
+                || record.id.contains('\0')
+                || record.name.contains('\0')
+            {
+                continue;
+            }
+            let Some(rate) =
+                self.network_baselines
+                    .observe(&record.id, now, record.rx_bytes, record.tx_bytes)
+            else {
+                continue;
+            };
+            let aggregate_member = record.aggregate_member && !record.is_loopback;
+            if aggregate_member {
+                rx_total = rx_total.checked_add(rate.first_per_sec)?;
+                tx_total = tx_total.checked_add(rate.second_per_sec)?;
+                if record.operational && !record.is_loopback {
+                    if let Some(capacity) = record.rx_capacity_bps {
+                        rx_capacity = Some(rx_capacity.unwrap_or(0).checked_add(capacity)?);
+                    }
+                    if let Some(capacity) = record.tx_capacity_bps {
+                        tx_capacity = Some(tx_capacity.unwrap_or(0).checked_add(capacity)?);
+                    }
+                }
+            }
+            if interfaces.len() < MAX_NETWORK_INTERFACE_ENTRIES {
+                interfaces.push(NetworkInterfaceMetrics {
+                    id: record.id,
+                    name: record.name,
+                    rx_bytes_per_sec: rate.first_per_sec,
+                    tx_bytes_per_sec: rate.second_per_sec,
+                    rx_capacity_bps: record.rx_capacity_bps,
+                    tx_capacity_bps: record.tx_capacity_bps,
+                    is_loopback: record.is_loopback,
+                    aggregate_member,
+                });
+            }
+        }
+        (!interfaces.is_empty()).then_some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: rx_total,
+            aggregate_tx_bytes_per_sec: tx_total,
+            aggregate_rx_capacity_bps: rx_capacity,
+            aggregate_tx_capacity_bps: tx_capacity,
+            interfaces,
+        })
+    }
 }
 
 impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S> {
@@ -154,6 +268,7 @@ impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S>
         let raw_cpu = self.source.cpu_times()?;
         let raw_memory = self.source.physical_memory()?;
         let raw_commit = self.source.commit()?;
+        let now = Instant::now();
 
         let cpu_sample = if let Some(prev) = self.previous_cpu.as_ref() {
             match cpu::compute_cpu_percentages(prev, &raw_cpu) {
@@ -205,6 +320,9 @@ impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S>
             },
             commit: Some(commit_sample.into_metrics()),
             drives: self.refresh_drives(),
+            cpu_frequency_hz: self.source.cpu_frequency_hz().ok().flatten(),
+            disk_io: self.collect_disk_io(now),
+            network: self.collect_network(now),
         })
     }
 
@@ -224,7 +342,9 @@ impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collector::windows::source::{MockWindowsSource, RawIdentity, RawProcessorTopology};
+    use crate::collector::windows::source::{
+        MockWindowsSource, RawDiskIo, RawIdentity, RawNetworkInterface, RawProcessorTopology,
+    };
     use crate::collector::SystemCollector;
 
     fn default_identity() -> RawIdentity {
@@ -396,6 +516,77 @@ mod tests {
         assert_eq!(drive.used_bytes, 75);
         assert_eq!(drive.total_bytes, 100);
         assert_eq!(drive.available_bytes, Some(20));
+    }
+
+    #[test]
+    fn live_metrics_publish_frequency_rates_capacities_and_loopback_detail() {
+        let mut mock = mock_source();
+        mock.cpu_frequency = Some(2_400_000_000);
+        mock.disk = vec![RawDiskIo {
+            id: "physical-0".to_string(),
+            name: "PhysicalDrive0".to_string(),
+            read_bytes: 1_000,
+            write_bytes: 2_000,
+        }];
+        mock.network = vec![
+            RawNetworkInterface {
+                id: "loopback".to_string(),
+                name: "Loopback".to_string(),
+                rx_bytes: 10_000,
+                tx_bytes: 20_000,
+                rx_capacity_bps: Some(1_000_000_000),
+                tx_capacity_bps: Some(1_000_000_000),
+                is_loopback: true,
+                operational: true,
+                aggregate_member: false,
+            },
+            RawNetworkInterface {
+                id: "ethernet".to_string(),
+                name: "Ethernet".to_string(),
+                rx_bytes: 30_000,
+                tx_bytes: 40_000,
+                rx_capacity_bps: Some(10_000_000_000),
+                tx_capacity_bps: Some(8_000_000_000),
+                is_loopback: false,
+                operational: true,
+                aggregate_member: true,
+            },
+        ];
+        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+
+        let _ = collector.sample().expect_err("first sample warms");
+        let baseline = collector
+            .sample()
+            .expect("second sample establishes live baselines");
+        assert!(baseline.disk_io.is_none());
+        assert!(baseline.network.is_none());
+
+        collector.source_mut().disk[0].read_bytes += 1_000;
+        collector.source_mut().disk[0].write_bytes += 2_000;
+        collector.source_mut().network[0].rx_bytes += 1_000;
+        collector.source_mut().network[0].tx_bytes += 2_000;
+        collector.source_mut().network[1].rx_bytes += 3_000;
+        collector.source_mut().network[1].tx_bytes += 4_000;
+
+        let metrics = collector
+            .sample()
+            .expect("third sample publishes live metrics");
+        assert_eq!(metrics.cpu_frequency_hz, Some(2_400_000_000));
+        let disk = metrics.disk_io.expect("disk rates");
+        assert_eq!(disk.devices.len(), 1);
+        assert!(disk.aggregate_read_bytes_per_sec > 0);
+        assert!(disk.aggregate_write_bytes_per_sec > 0);
+
+        let network = metrics.network.expect("network rates");
+        assert!(network.aggregate_rx_bytes_per_sec > 0);
+        assert!(network.aggregate_tx_bytes_per_sec > 0);
+        assert_eq!(network.aggregate_rx_capacity_bps, Some(10_000_000_000));
+        assert_eq!(network.aggregate_tx_capacity_bps, Some(8_000_000_000));
+        assert!(network
+            .interfaces
+            .iter()
+            .find(|interface| interface.is_loopback)
+            .is_some_and(|interface| !interface.aggregate_member));
     }
 
     #[test]
