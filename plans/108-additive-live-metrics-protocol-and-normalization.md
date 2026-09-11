@@ -1,6 +1,6 @@
 # Plan 108: additive live-metrics protocol and client normalization
 
-Status: implementation in progress.
+Status: complete.
 
 Depends on: Plan 107.
 
@@ -265,6 +265,33 @@ cargo test -p gregg --all-targets --all-features normalized
 cargo test -p gregg --all-targets --all-features mixed_fleet
 cargo test --workspace --all-targets --all-features
 ```
+
+## Closure record
+
+Implemented in `94f01c5` (September 2026).
+
+- Added additive optional v2 payload fields for positive CPU frequency in Hz,
+  bounded disk-I/O aggregate/device byte rates, and bounded directional
+  network aggregate/interface byte rates with bit/s capacities and daemon
+  selected aggregate membership.
+- Added structured payload validation for live-metrics bounds, NUL-free
+  non-empty IDs/names, duplicate IDs, zero frequency/capacity values, and the
+  loopback aggregate-member invariant. Aggregate rates are intentionally not
+  compared with detail sums.
+- Added `live-metrics-v2.json`, subset/null/future-field compatibility tests,
+  exact-boundary validation tests, and test-support builder setters.
+- Extended `NormalizedSnapshot` with optional CPU frequency, disk I/O, and
+  network models. V1 and old-v2 normalization leaves them absent; pure
+  checked byte-rate conversion and full-duplex-safe utilization helpers keep
+  formatting out of normalization.
+- Updated active protocol/client architecture, API and crate documentation,
+  skills, `AGENTS.md`, `README.md`, `CHANGELOG.md`, and the plan index. Plans
+  109-111 remain ready and are not included in this closure.
+- Local verification passed: fmt check, strict workspace clippy, protocol
+  all-target/all-feature tests, focused normalized and mixed-fleet tests,
+  full workspace all-target/all-feature tests, `check-local.sh`, Rust 1.75
+  compilation, and workspace docs generation. The docs build emitted only
+  pre-existing unrelated rustdoc link warnings.
 
 No new CI job or protocol-major endpoint is required.
 
