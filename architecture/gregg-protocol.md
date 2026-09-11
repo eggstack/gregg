@@ -21,9 +21,9 @@ depends on nothing from either.
 |--------|------|---------|
 | `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `MAX_IDENTITY_FIELD_BYTES = 512`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES` |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `DiskIoPayload`, `NetworkPayload`, `HealthResponseV2`; constants for schema and bounded collections/strings |
 | `validate` | `src/validate.rs` | V1 validation: 9 violation kinds; re-exports `validate()` |
-| `validate_v2` | `src/validate_v2.rs` | V2 validation: 16 violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
+| `validate_v2` | `src/validate_v2.rs` | V2 validation: base and live-metrics violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
 | `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 
@@ -31,7 +31,9 @@ depends on nothing from either.
 
 All payloads are JSON with `snake_case` field names. The v1 status endpoint
 returns `StatusSnapshot` directly. The v2 status endpoint returns
-`StatusPayloadV2` which flattens the snapshot and adds an optional `drives` array.
+`StatusPayloadV2` which flattens the snapshot and adds optional drive capacity,
+CPU-frequency, disk-I/O, and network telemetry fields. New telemetry is
+additive: old v2 payloads omit it and old clients ignore it.
 
 ### V1 snapshot shape
 
@@ -110,7 +112,16 @@ additive JSON changes from silently loosening invariants.
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 16 violation kinds (9 from V1 + 7 additional).
+Live telemetry adds bounded validation for positive CPU frequency/capacities,
+disk-I/O and network collection sizes, non-empty NUL-free bounded IDs and
+names, unique IDs within each detail list, and the rule that loopback cannot
+be an aggregate network-capacity member. `Some(0)` capacities are rejected;
+missing capacities remain valid and mean that utilization cannot be derived.
+The daemon-provided disk/network aggregates are intentionally not checked
+against detail-record sums because their accounting sets may differ.
+
+The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
+live-metrics validation adds 15 structured kinds.
 
 ## Health responses
 
@@ -127,7 +138,8 @@ v2 status and health remain independently ready after a valid sample.
 
 Both v1 (`HealthResponse`) and v2 (`HealthResponseV2`) have constructors for
 each state: `ready()`, `warming()`, `warming_with_message()`, `failed()`.
-`StatusPayloadV2` also has its own `validate()` method.
+`StatusPayloadV2` also has its own `validate()` method, which validates the
+optional live telemetry in addition to the base snapshot and drives.
 
 ## Test support
 
@@ -138,8 +150,8 @@ defaults:
 |---------|----------|
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
-| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives and `build_payload()` |
-| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit and `build_payload()` |
+| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry and `build_payload()` |
+| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit, optional live telemetry, and `build_payload()` |
 
 `IdentityFixture` provides `linux()`, `macos()`, and `windows()` const
 constructors for shared identity defaults across all builders.
@@ -156,6 +168,7 @@ is enforced by validation.
 
 Located in `tests/fixtures/`:
 - `linux-v1.json`, `linux-v2.json`
+- `live-metrics-v2.json`
 - `macos-v1.json`, `macos-v2.json`
 - `windows-v2.json`
 - `health-ready-v1.json`, `health-warming-v1.json`, `health-collector-failure-v1.json`

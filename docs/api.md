@@ -20,3 +20,12 @@ resumes once the clock catches up.
 
 Wire-format details (schema versions, capabilities, validation) live in
 `architecture/protocol.md`.
+
+Schema-v2 status may add optional `cpu_frequency_hz` (current host frequency
+in Hz), `disk_io` (daemon-selected aggregate and bounded device byte rates),
+and `network` (directional aggregate/interface byte rates and optional link
+capacities in bits per second). Older daemons omit these fields and clients
+normalize them as unavailable. Network utilization uses the larger valid
+receive/transmit directional percentage, so simultaneous full-duplex traffic
+does not double-count; missing capacity leaves throughput available but no
+utilization percentage.

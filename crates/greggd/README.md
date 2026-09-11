@@ -116,12 +116,17 @@ HTTP/1 JSON API on the configured port (default 11310) and is not hardened
 for public internet exposure. No firewall rules are created automatically.
 LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
-`/v2/status` is the universal status endpoint and may include a bounded
-`drives` list of mounted local filesystem names with numeric used and total
-bytes. Missing or `null` drive data means unavailable/legacy; an empty list
-means successful enumeration with no eligible volumes. Collection is
-best-effort and does not model physical disks or storage topology. Linux and
-macOS retain `/v1/status`; Windows is v2-only for status semantics.
+`/v2/status` is the universal status endpoint and may include bounded `drives`
+capacity records plus additive live telemetry: current CPU frequency in raw
+Hz, daemon-selected disk read/write bytes per second, and directional network
+receive/transmit bytes per second with optional link capacities in bits per
+second. Missing or `null` optional data means unavailable/legacy; an empty
+list means successful enumeration with no eligible records. Disk/network
+aggregates are separate from detail records and are not inferred from display
+rows. Collection is best-effort and does not model physical disks or storage
+topology; loopback may appear in network detail but cannot contribute to
+aggregate capacity. Linux and macOS retain `/v1/status`; Windows is v2-only
+for status semantics.
 
 The configured daemon display name must be non-empty, at most 128 bytes, and
 contain no control characters. If identity collection fails, the daemon does

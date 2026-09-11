@@ -14,7 +14,8 @@ Use this when modifying wire types, adding new schema versions, changing validat
 ## Schema versions
 
 - **V1** (`SCHEMA_VERSION_V1 = 1`): Original Linux/macOS format with required load/swap
-- **V2** (`SCHEMA_VERSION_V2 = 2`): Extended with capability flags for load, swap, commit; drives array
+- **V2** (`SCHEMA_VERSION_V2 = 2`): Extended with capability flags for load,
+  swap, commit; optional drives, CPU frequency, disk-I/O, and network arrays
 
 The client requests v2 first, accepts only the schema matching each endpoint, and falls back to v1 only on an HTTP 404 from /v2/status. `/v2/status` is the universal cross-platform endpoint.
 
@@ -24,10 +25,12 @@ The client requests v2 first, accepts only the schema matching each endpoint, an
 |------|----------|---------|
 | `StatusSnapshot` | `src/snapshot.rs` | V1 wire type |
 | `StatusSnapshotV2` | `src/v2.rs` | V2 wire type |
-| `StatusPayloadV2` | `src/v2.rs` | Flat wrapper with optional `drives` |
+| `StatusPayloadV2` | `src/v2.rs` | Flat wrapper with optional drives and live telemetry |
 | `MetricCapabilities` | `src/snapshot.rs` | V1 capability flag (cpu_iowait) |
 | `MetricCapabilitiesV2` | `src/v2.rs` | V2 capability flags (4 flags) |
 | `DriveMetrics` | `src/v2.rs` | Per-drive used/total and optional caller-available bytes |
+| `DiskIoPayload` / `DiskIoMetrics` | `src/v2.rs` | Daemon-selected aggregate and bounded per-device byte rates |
+| `NetworkPayload` / `NetworkInterfaceMetrics` | `src/v2.rs` | Directional aggregate/interface byte rates and bit capacities |
 | `CommitMetrics` | `src/v2.rs` | Windows commit charge |
 | `HealthResponse` | `src/health.rs` | V1 health type |
 | `HealthResponseV2` | `src/v2.rs` | V2 health type |
@@ -53,6 +56,13 @@ contradictions. System identity fields are limited to 512 UTF-8 bytes.
 - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems.
   `available_bytes` is optional for old-v2 compatibility; when present it is
   caller-available space and is independent of total filesystem free space.
+- `cpu_frequency_hz` is an optional positive raw Hz value; never serialize
+  formatted frequency text.
+- Disk/network rates are integer bytes per second. Network capacities are
+  directional bits per second. Aggregate rates are daemon-selected and must
+  not be reconstructed by summing detail records.
+- Network loopback can appear in detail but cannot be an aggregate member;
+  missing capacity leaves throughput available without a utilization value.
 
 ## Validation
 
@@ -84,7 +94,9 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-V2 total: 16 violation kinds (9 from V1 + 7 additional).
+V2 also validates live-metrics collection/string bounds, duplicate IDs,
+positive CPU frequency/capacities, and the loopback aggregate-member rule.
+`Some(0)` capacities and zero CPU frequency are rejected.
 
 ## Test support
 
@@ -94,8 +106,8 @@ The `test_support` feature flag exposes builder fixtures:
 |---------|----------|
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
-| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives |
-| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit |
+| `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry |
+| `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit/live telemetry |
 
 ## Fixture files
 
@@ -103,6 +115,7 @@ Located in `crates/gregg-protocol/tests/fixtures/`:
 - `linux-v1.json`, `linux-v2.json`
 - `macos-v1.json`, `macos-v2.json`
 - `windows-v2.json`
+- `live-metrics-v2.json`
 - `health-ready-v1.json`, `health-warming-v1.json`, `health-collector-failure-v1.json`
 - `health-ready-v2.json`
 

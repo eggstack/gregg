@@ -1349,6 +1349,71 @@ fn v2_windows_fixture_round_trips() {
 }
 
 #[test]
+fn live_metrics_fixture_round_trips_and_preserves_aggregates() {
+    let bytes = fixture("live-metrics-v2.json");
+    let payload: StatusPayloadV2 = serde_json::from_slice(&bytes).unwrap();
+    payload.validate().expect("live metrics fixture validates");
+    assert_eq!(payload.cpu_frequency_hz, Some(2_400_000_000));
+    assert_eq!(
+        payload
+            .disk_io
+            .as_ref()
+            .unwrap()
+            .aggregate_read_bytes_per_sec,
+        1_048_576
+    );
+    assert_eq!(payload.disk_io.as_ref().unwrap().devices.len(), 2);
+    assert_eq!(payload.network.as_ref().unwrap().interfaces.len(), 2);
+
+    let encoded = serde_json::to_vec(&payload).unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let emitted: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(original, emitted);
+}
+
+#[test]
+fn live_metrics_subsets_and_explicit_nulls_are_compatible() {
+    let original: serde_json::Value =
+        serde_json::from_slice(&fixture("live-metrics-v2.json")).unwrap();
+    for key in ["disk_io", "network", "cpu_frequency_hz"] {
+        let mut value = original.clone();
+        value.as_object_mut().unwrap().remove(key);
+        let payload: StatusPayloadV2 = serde_json::from_value(value).unwrap();
+        payload.validate().unwrap();
+        match key {
+            "disk_io" => assert!(payload.disk_io.is_none()),
+            "network" => assert!(payload.network.is_none()),
+            "cpu_frequency_hz" => assert!(payload.cpu_frequency_hz.is_none()),
+            _ => unreachable!(),
+        }
+    }
+
+    let mut nulls = original;
+    let object = nulls.as_object_mut().unwrap();
+    object.insert("cpu_frequency_hz".into(), serde_json::Value::Null);
+    object.insert("disk_io".into(), serde_json::Value::Null);
+    object.insert("network".into(), serde_json::Value::Null);
+    let payload: StatusPayloadV2 = serde_json::from_value(nulls).unwrap();
+    payload.validate().unwrap();
+    assert!(payload.cpu_frequency_hz.is_none());
+    assert!(payload.disk_io.is_none());
+    assert!(payload.network.is_none());
+}
+
+#[test]
+fn old_v2_payload_ignores_future_live_metrics_fields() {
+    let mut value: serde_json::Value = serde_json::from_slice(&fixture("linux-v2.json")).unwrap();
+    value["cpu_frequency_hz"] = serde_json::json!(2_400_000_000_u64);
+    value["network"] = serde_json::json!({
+        "aggregate_rx_bytes_per_sec": 1,
+        "aggregate_tx_bytes_per_sec": 2,
+        "interfaces": []
+    });
+    let old_snapshot: StatusSnapshotV2 = serde_json::from_value(value).unwrap();
+    old_snapshot.validate().unwrap();
+}
+
+#[test]
 fn old_v2_payload_without_drives_is_available_as_none() {
     let bytes = fixture("health-ready-v2.json");
     let health: HealthResponseV2 = serde_json::from_slice(&bytes).unwrap();
@@ -1356,6 +1421,9 @@ fn old_v2_payload_without_drives_is_available_as_none() {
     let payload = StatusPayloadV2 {
         snapshot,
         drives: None,
+        cpu_frequency_hz: None,
+        disk_io: None,
+        network: None,
     };
     payload.validate().unwrap();
     assert!(payload.drives.is_none());
@@ -1412,6 +1480,7 @@ fn v2_fixture_paths_exist() {
         "linux-v2.json",
         "macos-v2.json",
         "windows-v2.json",
+        "live-metrics-v2.json",
         "health-ready-v2.json",
     ] {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

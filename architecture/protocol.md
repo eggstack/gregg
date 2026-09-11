@@ -30,7 +30,8 @@ Key differences from v1:
 - `MetricCapabilitiesV2` has four flags: `cpu_iowait`, `load_average`,
   `swap`, and `memory_commit`.
 - Windows can report `commit` without fabricating load or swap.
-- `/v2/status` uses a flat `StatusPayloadV2` wrapper with optional `drives`.
+- `/v2/status` uses a flat `StatusPayloadV2` wrapper with optional `drives`,
+  current CPU frequency, disk-I/O throughput, and network telemetry.
   The wrapper preserves source compatibility for public Rust code that uses
   `StatusSnapshotV2` struct literals while keeping the JSON shape flat.
 - Clients prefer v2 but fall back to v1 on 404 Not Found.
@@ -67,6 +68,25 @@ V2 additional optional fields:
 - `swap: Option<SwapMetrics>` — `None` when `capabilities.swap` is `false`.
 - `commit: Option<CommitMetrics>` — Windows commit charge; `None` when
   `capabilities.memory_commit` is `false`.
+
+The flat v2 payload additionally carries these additive optional fields:
+
+- `cpu_frequency_hz: Option<u64>` — host-level current frequency in Hz;
+  zero is invalid and formatted units never cross the wire.
+- `disk_io: Option<DiskIoPayload>` — daemon-selected aggregate read/write
+  bytes per second plus bounded stable device records. The aggregate is not
+  derived by the client from potentially overlapping display rows.
+- `network: Option<NetworkPayload>` — directional aggregate receive/transmit
+  bytes per second and optional directional capacities in bits per second,
+  plus bounded interface records. `aggregate_member` is daemon-selected;
+  clients do not rediscover topology. Loopback may appear in detail but may
+  not be an aggregate member.
+
+All disk and network rates are integer bytes per second. Missing capacity does
+not remove throughput, but makes that direction unavailable for utilization.
+Utilization is `max(rx_bits / rx_capacity, tx_bits / tx_capacity)`, clamped to
+`0..=100`, so full-duplex traffic cannot exceed 100% merely by combining both
+directions.
 
 V2 status may also carry `drives: Option<Vec<DriveMetrics>>`. Each record has
 an owned display `name`, `used_bytes`, `total_bytes`, and optional
@@ -150,7 +170,13 @@ are:
 - `DriveNameTooLong` — drive name exceeds 512 UTF-8 bytes
 - `TooManyDrives` — more than 32 drive entries
 
-V2 total: 16 violation kinds (9 from v1 + 7 additional).
+The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
+live-metrics validation adds 15 structured kinds.
+
+The additive live-metrics validation extends this with bounded collection and
+string checks, duplicate-ID checks, positive CPU frequency/capacity checks,
+and the loopback aggregate-member invariant. It does not require aggregate
+rates to equal the sum of detail records.
 
 V2 validation rejects capability/value contradictions:
 - `cpu_iowait == false` requires `iowait_pct == None`
@@ -190,6 +216,7 @@ Canonical fixtures live at:
 - `crates/gregg-protocol/tests/fixtures/macos-v2.json`
 - `crates/gregg-protocol/tests/fixtures/windows-v2.json`
 - `crates/gregg-protocol/tests/fixtures/health-ready-v2.json`
+- `crates/gregg-protocol/tests/fixtures/live-metrics-v2.json`
 
 These fixtures deserialise into the corresponding types, validate cleanly,
 and re-serialise value-stable (key-order-independent JSON equality). The v2
@@ -251,10 +278,18 @@ Windows.
 
 Both v1 and v2 snapshots are normalized into an internal
 `NormalizedSnapshot` type that the state reducer and TUI consume. This
-eliminates version-branching throughout the rendering code.
+eliminates version-branching throughout the rendering code. V1 and legacy v2
+normalization sets CPU frequency, disk I/O, and network telemetry to `None`;
+new v2 values are copied into client-owned normalized structures without
+formatting. The pure network helper evaluates directional capacities
+independently and returns no percentage when neither direction has a valid
+capacity.
 Normalized drive records preserve source order. `aggregate_drives` owns the
 used/total/available/percentage calculation and returns no aggregate for an
-empty, invalid, or overflowing list.
+empty, invalid, or overflowing list. Live disk-I/O and network aggregates are
+daemon-provided and remain separate from their detail lists; the client does
+not sum overlapping records or rediscover network topology. Formatting
+(`GHz`, `MiB/s`, and percentage text) remains in the renderer layer.
 
 ## Platform-specific endpoint behavior
 

@@ -3,7 +3,8 @@
 //! Version 2 extends the version-1 snapshot with explicit capability flags
 //! for load average, swap, and memory commit. This allows the protocol to
 //! truthfully represent Linux, macOS, and Windows metric differences without
-//! fabricating unsupported values.
+//! fabricating unsupported values. Optional live-metrics fields are carried
+//! by the flat status payload so old v2 snapshots remain valid.
 //!
 //! V2 snapshots are served from the daemon on a separate endpoint
 //! (`/v2/status`). V1 endpoints remain unchanged. Clients prefer v2 but
@@ -22,6 +23,18 @@ pub const MAX_DRIVE_ENTRIES: usize = 32;
 /// Maximum UTF-8 byte length of a drive display name.
 pub const MAX_DRIVE_NAME_BYTES: usize = 512;
 
+/// Maximum number of disk-I/O device records in a v2 status payload.
+pub const MAX_DISK_IO_ENTRIES: usize = 32;
+
+/// Maximum number of network interface records in a v2 status payload.
+pub const MAX_NETWORK_INTERFACE_ENTRIES: usize = 32;
+
+/// Maximum UTF-8 byte length of a live-metrics stable identity.
+pub const MAX_LIVE_METRIC_ID_BYTES: usize = 512;
+
+/// Maximum UTF-8 byte length of a live-metrics display name or association.
+pub const MAX_LIVE_METRIC_NAME_BYTES: usize = 512;
+
 /// Capacity metrics for one operator-visible mounted filesystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,13 +52,90 @@ pub struct DriveMetrics {
     pub available_bytes: Option<u64>,
 }
 
-/// Flat v2 status response with optional drive capacity data.
+/// Aggregate and per-device disk throughput for a sampling interval.
+///
+/// Aggregate values are selected and de-duplicated by the daemon. Clients
+/// must not derive them by summing detail records, because display records can
+/// overlap the daemon's accounting set.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DiskIoPayload {
+    /// De-duplicated aggregate read throughput in bytes per second.
+    pub aggregate_read_bytes_per_sec: u64,
+    /// De-duplicated aggregate write throughput in bytes per second.
+    pub aggregate_write_bytes_per_sec: u64,
+    /// Bounded device or logical-device detail records.
+    pub devices: Vec<DiskIoMetrics>,
+}
+
+/// Disk throughput for one stable device or logical-device identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DiskIoMetrics {
+    /// Stable identity used by the daemon for baseline handling.
+    pub id: String,
+    /// Source-provided display name.
+    pub name: String,
+    /// Read throughput in bytes per second.
+    pub read_bytes_per_sec: u64,
+    /// Write throughput in bytes per second.
+    pub write_bytes_per_sec: u64,
+    /// Optional trustworthy association with an existing drive name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drive_name: Option<String>,
+}
+
+/// Aggregate and per-interface network throughput and link capacity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NetworkPayload {
+    /// Aggregate receive throughput in bytes per second.
+    pub aggregate_rx_bytes_per_sec: u64,
+    /// Aggregate transmit throughput in bytes per second.
+    pub aggregate_tx_bytes_per_sec: u64,
+    /// Aggregate receive capacity in bits per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_rx_capacity_bps: Option<u64>,
+    /// Aggregate transmit capacity in bits per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregate_tx_capacity_bps: Option<u64>,
+    /// Bounded interface detail records.
+    pub interfaces: Vec<NetworkInterfaceMetrics>,
+}
+
+/// Network throughput and directional capacity for one interface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct NetworkInterfaceMetrics {
+    /// Stable native interface identity used for baseline handling.
+    pub id: String,
+    /// Source-provided display name.
+    pub name: String,
+    /// Receive throughput in bytes per second.
+    pub rx_bytes_per_sec: u64,
+    /// Transmit throughput in bytes per second.
+    pub tx_bytes_per_sec: u64,
+    /// Current receive link capacity in bits per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rx_capacity_bps: Option<u64>,
+    /// Current transmit link capacity in bits per second, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_capacity_bps: Option<u64>,
+    /// Whether this is a loopback interface. Loopback is detail-only for
+    /// aggregate capacity purposes.
+    pub is_loopback: bool,
+    /// Whether the daemon selected this interface for aggregate accounting.
+    pub aggregate_member: bool,
+}
+
+/// Flat v2 status response with optional capacity and live-metrics data.
 ///
 /// The base snapshot is flattened so the JSON shape remains compatible with
-/// existing v2 clients. Keeping drives in this wrapper also preserves source
-/// compatibility for downstream Rust code that constructs `StatusSnapshotV2`
-/// literals. Missing or null `drives` means unavailable/legacy; an empty list
-/// means enumeration succeeded and found no eligible filesystems.
+/// existing v2 clients. Keeping optional data in this wrapper also preserves
+/// source compatibility for downstream Rust code that constructs
+/// `StatusSnapshotV2` literals. Missing or null fields mean unavailable,
+/// unsupported, or legacy daemon data; an empty collection means successful
+/// enumeration with no eligible records.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct StatusPayloadV2 {
@@ -53,10 +143,20 @@ pub struct StatusPayloadV2 {
     pub snapshot: StatusSnapshotV2,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drives: Option<Vec<DriveMetrics>>,
+    /// Host-level current CPU frequency in Hz, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu_frequency_hz: Option<u64>,
+    /// Optional disk throughput data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_io: Option<DiskIoPayload>,
+    /// Optional network throughput and capacity data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<NetworkPayload>,
 }
 
 impl StatusPayloadV2 {
-    /// Validate the base snapshot and every optional drive record.
+    /// Validate the base snapshot and every optional capacity/live-metrics
+    /// record.
     pub fn validate(&self) -> Result<(), Vec<crate::ValidationViolationV2>> {
         crate::validate_v2::validate_payload_v2(self)
     }

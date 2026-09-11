@@ -367,7 +367,13 @@ impl CollectedMetrics {
             capabilities,
             system,
         )?;
-        Ok(StatusPayloadV2 { snapshot, drives })
+        Ok(StatusPayloadV2 {
+            snapshot,
+            drives,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
+        })
     }
 }
 

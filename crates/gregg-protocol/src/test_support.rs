@@ -9,8 +9,8 @@ use crate::{
         SystemIdentity,
     },
     v2::{
-        CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
-        StatusSnapshotV2, SCHEMA_VERSION_V2,
+        CommitMetrics, CpuMetricsV2, DiskIoPayload, DriveMetrics, MetricCapabilitiesV2,
+        NetworkPayload, StatusPayloadV2, StatusSnapshotV2, SCHEMA_VERSION_V2,
     },
     SCHEMA_VERSION_V1,
 };
@@ -365,6 +365,9 @@ pub struct LinuxSnapshotV2Builder {
     sample_interval_ms: u64,
     observed_at_unix_ms: u64,
     drives: Option<Vec<DriveMetrics>>,
+    cpu_frequency_hz: Option<u64>,
+    disk_io: Option<DiskIoPayload>,
+    network: Option<NetworkPayload>,
 }
 
 impl Default for LinuxSnapshotV2Builder {
@@ -386,6 +389,9 @@ impl Default for LinuxSnapshotV2Builder {
             sample_interval_ms: 1000,
             observed_at_unix_ms: 1_716_460_800_000,
             drives: None,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
         }
     }
 }
@@ -449,11 +455,41 @@ impl LinuxSnapshotV2Builder {
         self
     }
 
+    /// Override the optional current CPU frequency.
+    #[must_use]
+    pub const fn cpu_frequency_hz(mut self, frequency_hz: Option<u64>) -> Self {
+        self.cpu_frequency_hz = frequency_hz;
+        self
+    }
+
+    /// Override optional disk-I/O telemetry.
+    #[must_use]
+    pub fn disk_io(mut self, disk_io: Option<DiskIoPayload>) -> Self {
+        self.disk_io = disk_io;
+        self
+    }
+
+    /// Override optional network telemetry.
+    #[must_use]
+    pub fn network(mut self, network: Option<NetworkPayload>) -> Self {
+        self.network = network;
+        self
+    }
+
     #[must_use]
     pub fn build_payload(mut self) -> StatusPayloadV2 {
         let drives = self.drives.take();
+        let cpu_frequency_hz = self.cpu_frequency_hz.take();
+        let disk_io = self.disk_io.take();
+        let network = self.network.take();
         let snapshot = self.build();
-        let payload = StatusPayloadV2 { snapshot, drives };
+        let payload = StatusPayloadV2 {
+            snapshot,
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        };
         payload.validate().expect("linux v2 payload validates");
         payload
     }
@@ -507,6 +543,9 @@ pub struct WindowsSnapshotV2Builder {
     sample_interval_ms: u64,
     observed_at_unix_ms: u64,
     drives: Option<Vec<DriveMetrics>>,
+    cpu_frequency_hz: Option<u64>,
+    disk_io: Option<DiskIoPayload>,
+    network: Option<NetworkPayload>,
 }
 
 impl Default for WindowsSnapshotV2Builder {
@@ -522,6 +561,9 @@ impl Default for WindowsSnapshotV2Builder {
             sample_interval_ms: 1000,
             observed_at_unix_ms: 1_716_460_800_000,
             drives: None,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
         }
     }
 }
@@ -573,11 +615,41 @@ impl WindowsSnapshotV2Builder {
         self
     }
 
+    /// Override the optional current CPU frequency.
+    #[must_use]
+    pub const fn cpu_frequency_hz(mut self, frequency_hz: Option<u64>) -> Self {
+        self.cpu_frequency_hz = frequency_hz;
+        self
+    }
+
+    /// Override optional disk-I/O telemetry.
+    #[must_use]
+    pub fn disk_io(mut self, disk_io: Option<DiskIoPayload>) -> Self {
+        self.disk_io = disk_io;
+        self
+    }
+
+    /// Override optional network telemetry.
+    #[must_use]
+    pub fn network(mut self, network: Option<NetworkPayload>) -> Self {
+        self.network = network;
+        self
+    }
+
     #[must_use]
     pub fn build_payload(mut self) -> StatusPayloadV2 {
         let drives = self.drives.take();
+        let cpu_frequency_hz = self.cpu_frequency_hz.take();
+        let disk_io = self.disk_io.take();
+        let network = self.network.take();
         let snapshot = self.build();
-        let payload = StatusPayloadV2 { snapshot, drives };
+        let payload = StatusPayloadV2 {
+            snapshot,
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        };
         payload.validate().expect("windows v2 payload validates");
         payload
     }

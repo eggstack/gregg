@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Additive live-metrics v2 payloads and client normalization** (Plan 108):
+  schema-v2 status responses may now carry optional raw CPU frequency in Hz,
+  daemon-selected disk read/write bytes per second, and directional network
+  throughput/capacity with bounded device/interface detail. Validation rejects
+  zero frequencies/capacities, duplicate or oversized identities, and
+  loopback aggregate membership. v1 and pre-feature v2 payloads remain
+  compatible; normalized network utilization is full-duplex safe and returns
+  unavailable when capacity is absent.
 - **Read-only `greggd status`** (Plan 106): composes version, config path,
   canonical bind `host:port`, the bounded `/v2/healthz` classification
   (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe

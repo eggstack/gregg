@@ -1,6 +1,6 @@
 # Plan 108: additive live-metrics protocol and client normalization
 
-Status: ready for implementation.
+Status: implementation in progress.
 
 Depends on: Plan 107.
 

@@ -240,8 +240,18 @@ and `architecture/gregg-protocol.md`.
   - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
     v2 `available_bytes` is optional caller-available capacity and may not
     complement used bytes because of reservations or quotas.
-- Validation uses `validate()` methods returning structured violations, not
-  serde failures. V1 has 9 violation kinds; V2 has 16 (9 from V1 + 7 additional).
+  - Additive v2 live telemetry is optional: `cpu_frequency_hz` is raw positive
+    Hz; `disk_io` carries daemon-selected aggregate and bounded device rates;
+    `network` carries directional aggregate/interface byte rates and optional
+    bit/s capacities. Missing values are unavailable, never fabricated zeroes.
+    Network aggregate membership is daemon-selected; loopback may appear in
+    detail but is never an aggregate capacity member, and utilization uses the
+    maximum valid receive/transmit direction rather than summing full-duplex
+    traffic. Daemon-version transport remains deferred.
+  - Validation uses `validate()` methods returning structured violations, not
+    serde failures. V1 has 9 violation kinds; the base V2 contract has 16
+    (9 from V1 + 7 additional), plus structured live-telemetry bounds and
+    identity violations.
   V2 capability objects require all four explicit capability fields, and every
   system identity field is limited to 512 UTF-8 bytes.
 
@@ -255,6 +265,9 @@ All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inte
 - **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads; ~46 text fixtures under `crates/greggd/src/collector/test_fixtures/`
 - **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
 - **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
+- **Live-metrics compatibility fixtures:** `gregg-protocol` includes the
+  pre-feature v1/v2 fixtures plus `live-metrics-v2.json`; optional v2 telemetry
+  must remain absent in v1 and old-v2 normalization.
 - **Sustained workload tests:** the `mixed_fleet_evidence` and `sustained_workload` modules are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
 - **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config/lock.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
 

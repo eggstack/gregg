@@ -138,6 +138,12 @@ carry a reason. Recovery clears the reason in the same poll generation.
 Offline endpoints keep polling on every configured cadence and recover
 automatically.
 
+The client also normalizes optional v2 CPU-frequency, disk-I/O, and network
+telemetry for later presentation. Older daemons and unsupported platforms
+leave these fields absent; byte rates remain raw integer values and network
+utilization is derived directionally without double-counting full-duplex
+traffic.
+
 ## Supported platforms
 
 | Platform | Architecture | Rust target | Status |

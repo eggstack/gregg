@@ -160,6 +160,13 @@ design is retained intentionally.
 - v1 and v2 wire formats → `NormalizedSnapshot` with capability flags
 - Eliminates version-branching in the UI
 - `aggregate_drives()` with checked arithmetic
+- Optional CPU frequency, normalized disk-I/O devices/aggregate, and
+  normalized network interfaces/aggregate are copied from v2; v1 and
+  pre-feature v2 payloads leave them absent
+- `network_utilization_pct()` and
+  `bytes_per_second_to_bits_per_second()` are pure helpers. Utilization uses
+  the maximum valid directional percentage, never `rx + tx`, and returns
+  `None` when capacities are unavailable
 
 ### State model
 

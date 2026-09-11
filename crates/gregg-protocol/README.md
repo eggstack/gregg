@@ -42,8 +42,11 @@ deserialize untrusted bytes directly should impose an input-size limit first;
 the protocol crate does not provide a serde-level allocation cap.
 
 Version 2 status responses use a flat `StatusPayloadV2` wrapper. Its optional
-`drives` field carries bounded numeric capacity records; missing means
-unavailable/legacy and an empty list means successful empty enumeration.
+`drives`, `cpu_frequency_hz`, `disk_io`, and `network` fields are additive;
+missing means unavailable/unsupported/legacy. Disk and network rates are
+integer bytes per second, while link capacities are bits per second. The
+daemon supplies de-duplicated aggregates and the client preserves detail
+records without summing them.
 
 ## Links
 

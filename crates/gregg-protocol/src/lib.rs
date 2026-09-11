@@ -24,7 +24,9 @@
 //! extends v1 with explicit capability flags for load average, swap, and
 //! memory commit. This allows the protocol to truthfully represent Linux,
 //! macOS, and Windows metric differences without fabricating unsupported
-//! values.
+//! values. The flat [`v2::StatusPayloadV2`] also carries additive optional
+//! CPU-frequency, disk-I/O, and network telemetry without changing the
+//! required snapshot or capability object.
 //!
 //! V2 snapshots use `Option` for metrics that are unsupported on some
 //! platforms. Capability flags determine which `Option` values must be

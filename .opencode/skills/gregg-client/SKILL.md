@@ -104,6 +104,15 @@ malformed entry does not produce a misleading duplicate diagnostic.
 **Normalization** (`normalized.rs`):
 - v1 and v2 wire formats → `NormalizedSnapshot` with capability flags
 - Eliminates version-branching in the UI
+- Optional CPU frequency, disk-I/O aggregate/devices, and network
+  aggregate/interfaces are copied from v2; v1 and legacy v2 leave them
+  absent
+- `network_utilization_pct()` evaluates receive/transmit directions
+  independently and takes the maximum valid percentage, so full-duplex
+  traffic is not double-counted; missing capacity yields no percentage while
+  raw throughput remains available
+- Formatting (`GHz`, `MiB/s`, and percentage strings) belongs to renderers,
+  not normalization
 
 ### State model
 

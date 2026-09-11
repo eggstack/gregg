@@ -13,8 +13,10 @@ use std::fmt;
 use thiserror::Error;
 
 use crate::v2::{
-    CommitMetrics, StatusPayloadV2, StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES,
-    MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
+    CommitMetrics, DiskIoMetrics, NetworkInterfaceMetrics, StatusPayloadV2, StatusSnapshotV2,
+    SwapMetrics, MAX_DISK_IO_ENTRIES, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES,
+    MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES, MAX_NETWORK_INTERFACE_ENTRIES,
+    SCHEMA_VERSION_V2,
 };
 use crate::{
     LoadAverage, MemoryMetrics, SystemIdentity, MAX_IDENTITY_FIELD_BYTES, MAX_SAMPLE_INTERVAL_MS,
@@ -72,6 +74,36 @@ pub enum ViolationKindV2 {
     DriveNameTooLong { max_bytes: usize },
     /// The drive collection exceeded the protocol bound.
     TooManyDrives { max_entries: usize },
+    /// CPU frequency was explicitly reported as zero.
+    CpuFrequencyZero,
+    /// The disk-I/O collection exceeded the protocol bound.
+    TooManyDiskIoDevices { max_entries: usize },
+    /// A disk-I/O identity was empty or contained a NUL character.
+    DiskIoIdInvalid,
+    /// A disk-I/O identity exceeded the protocol bound.
+    DiskIoIdTooLong { max_bytes: usize },
+    /// A disk-I/O display name or association was empty or contained NUL.
+    DiskIoNameInvalid,
+    /// A disk-I/O display name or association exceeded the protocol bound.
+    DiskIoNameTooLong { max_bytes: usize },
+    /// A disk-I/O identity occurred more than once.
+    DuplicateDiskIoId,
+    /// The network interface collection exceeded the protocol bound.
+    TooManyNetworkInterfaces { max_entries: usize },
+    /// A network interface identity was empty or contained a NUL character.
+    NetworkInterfaceIdInvalid,
+    /// A network interface identity exceeded the protocol bound.
+    NetworkInterfaceIdTooLong { max_bytes: usize },
+    /// A network interface display name was empty or contained NUL.
+    NetworkInterfaceNameInvalid,
+    /// A network interface display name exceeded the protocol bound.
+    NetworkInterfaceNameTooLong { max_bytes: usize },
+    /// A network interface identity occurred more than once.
+    DuplicateNetworkInterfaceId,
+    /// A link capacity was explicitly reported as zero.
+    ZeroCapacity,
+    /// A loopback interface was incorrectly selected for aggregate capacity.
+    LoopbackAggregateMember,
     /// An identity string was empty or contained NUL padding.
     InvalidIdentityField,
 }
@@ -115,6 +147,50 @@ impl fmt::Display for ViolationKindV2 {
                     f,
                     "drive list exceeds maximum length of {max_entries} entries"
                 )
+            }
+            Self::CpuFrequencyZero => f.write_str("cpu frequency must be positive"),
+            Self::TooManyDiskIoDevices { max_entries } => write!(
+                f,
+                "disk-I/O device list exceeds maximum length of {max_entries} entries"
+            ),
+            Self::DiskIoIdInvalid => {
+                f.write_str("disk-I/O identity must be non-empty and contain no NUL characters")
+            }
+            Self::DiskIoIdTooLong { max_bytes } => {
+                write!(f, "disk-I/O identity exceeds maximum length of {max_bytes} bytes")
+            }
+            Self::DiskIoNameInvalid => f.write_str(
+                "disk-I/O display name or association must be non-empty and contain no NUL characters",
+            ),
+            Self::DiskIoNameTooLong { max_bytes } => write!(
+                f,
+                "disk-I/O display name or association exceeds maximum length of {max_bytes} bytes"
+            ),
+            Self::DuplicateDiskIoId => f.write_str("disk-I/O identities must be unique"),
+            Self::TooManyNetworkInterfaces { max_entries } => write!(
+                f,
+                "network interface list exceeds maximum length of {max_entries} entries"
+            ),
+            Self::NetworkInterfaceIdInvalid => f.write_str(
+                "network interface identity must be non-empty and contain no NUL characters",
+            ),
+            Self::NetworkInterfaceIdTooLong { max_bytes } => write!(
+                f,
+                "network interface identity exceeds maximum length of {max_bytes} bytes"
+            ),
+            Self::NetworkInterfaceNameInvalid => f.write_str(
+                "network interface display name must be non-empty and contain no NUL characters",
+            ),
+            Self::NetworkInterfaceNameTooLong { max_bytes } => write!(
+                f,
+                "network interface display name exceeds maximum length of {max_bytes} bytes"
+            ),
+            Self::DuplicateNetworkInterfaceId => {
+                f.write_str("network interface identities must be unique")
+            }
+            Self::ZeroCapacity => f.write_str("capacity must be positive when present"),
+            Self::LoopbackAggregateMember => {
+                f.write_str("loopback interfaces must not be aggregate members")
             }
             Self::InvalidIdentityField => {
                 f.write_str("identity field must be non-empty and contain no NUL characters")
@@ -244,10 +320,187 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         }
     }
 
+    if payload.cpu_frequency_hz == Some(0) {
+        violations.push(ValidationViolationV2::new(
+            ViolationKindV2::CpuFrequencyZero,
+            "cpu_frequency_hz",
+        ));
+    }
+    if let Some(disk_io) = &payload.disk_io {
+        validate_disk_io(disk_io, &mut violations);
+    }
+    if let Some(network) = &payload.network {
+        validate_network(network, &mut violations);
+    }
+
     if violations.is_empty() {
         Ok(())
     } else {
         Err(violations)
+    }
+}
+
+fn validate_disk_io(disk_io: &crate::v2::DiskIoPayload, out: &mut Vec<ValidationViolationV2>) {
+    if disk_io.devices.len() > MAX_DISK_IO_ENTRIES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::TooManyDiskIoDevices {
+                max_entries: MAX_DISK_IO_ENTRIES,
+            },
+            "disk_io.devices",
+        ));
+    }
+    for (index, device) in disk_io.devices.iter().enumerate() {
+        validate_disk_io_device(index, device, out);
+        if disk_io.devices[..index]
+            .iter()
+            .any(|previous| previous.id == device.id)
+        {
+            out.push(ValidationViolationV2::new(
+                ViolationKindV2::DuplicateDiskIoId,
+                format!("disk_io.devices[{index}].id"),
+            ));
+        }
+    }
+}
+
+fn validate_disk_io_device(
+    index: usize,
+    device: &DiskIoMetrics,
+    out: &mut Vec<ValidationViolationV2>,
+) {
+    let prefix = format!("disk_io.devices[{index}]");
+    if device.id.is_empty() || device.id.contains('\0') {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::DiskIoIdInvalid,
+            format!("{prefix}.id"),
+        ));
+    }
+    if device.id.len() > MAX_LIVE_METRIC_ID_BYTES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::DiskIoIdTooLong {
+                max_bytes: MAX_LIVE_METRIC_ID_BYTES,
+            },
+            format!("{prefix}.id"),
+        ));
+    }
+    validate_disk_io_name(&device.name, format!("{prefix}.name"), out);
+    if let Some(drive_name) = &device.drive_name {
+        validate_disk_io_name(drive_name, format!("{prefix}.drive_name"), out);
+    }
+}
+
+fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViolationV2>) {
+    if name.is_empty() || name.contains('\0') {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::DiskIoNameInvalid,
+            field.clone(),
+        ));
+    }
+    if name.len() > MAX_LIVE_METRIC_NAME_BYTES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::DiskIoNameTooLong {
+                max_bytes: MAX_LIVE_METRIC_NAME_BYTES,
+            },
+            field,
+        ));
+    }
+}
+
+fn validate_network(network: &crate::v2::NetworkPayload, out: &mut Vec<ValidationViolationV2>) {
+    validate_capacity(
+        network.aggregate_rx_capacity_bps,
+        "network.aggregate_rx_capacity_bps",
+        out,
+    );
+    validate_capacity(
+        network.aggregate_tx_capacity_bps,
+        "network.aggregate_tx_capacity_bps",
+        out,
+    );
+    if network.interfaces.len() > MAX_NETWORK_INTERFACE_ENTRIES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::TooManyNetworkInterfaces {
+                max_entries: MAX_NETWORK_INTERFACE_ENTRIES,
+            },
+            "network.interfaces",
+        ));
+    }
+    for (index, interface) in network.interfaces.iter().enumerate() {
+        validate_network_interface(index, interface, out);
+        if network.interfaces[..index]
+            .iter()
+            .any(|previous| previous.id == interface.id)
+        {
+            out.push(ValidationViolationV2::new(
+                ViolationKindV2::DuplicateNetworkInterfaceId,
+                format!("network.interfaces[{index}].id"),
+            ));
+        }
+    }
+}
+
+fn validate_network_interface(
+    index: usize,
+    interface: &NetworkInterfaceMetrics,
+    out: &mut Vec<ValidationViolationV2>,
+) {
+    let prefix = format!("network.interfaces[{index}]");
+    if interface.id.is_empty() || interface.id.contains('\0') {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::NetworkInterfaceIdInvalid,
+            format!("{prefix}.id"),
+        ));
+    }
+    if interface.id.len() > MAX_LIVE_METRIC_ID_BYTES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::NetworkInterfaceIdTooLong {
+                max_bytes: MAX_LIVE_METRIC_ID_BYTES,
+            },
+            format!("{prefix}.id"),
+        ));
+    }
+    if interface.name.is_empty() || interface.name.contains('\0') {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::NetworkInterfaceNameInvalid,
+            format!("{prefix}.name"),
+        ));
+    }
+    if interface.name.len() > MAX_LIVE_METRIC_NAME_BYTES {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::NetworkInterfaceNameTooLong {
+                max_bytes: MAX_LIVE_METRIC_NAME_BYTES,
+            },
+            format!("{prefix}.name"),
+        ));
+    }
+    validate_capacity(
+        interface.rx_capacity_bps,
+        format!("{prefix}.rx_capacity_bps"),
+        out,
+    );
+    validate_capacity(
+        interface.tx_capacity_bps,
+        format!("{prefix}.tx_capacity_bps"),
+        out,
+    );
+    if interface.is_loopback && interface.aggregate_member {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::LoopbackAggregateMember,
+            format!("{prefix}.aggregate_member"),
+        ));
+    }
+}
+
+fn validate_capacity(
+    capacity: Option<u64>,
+    field: impl Into<String>,
+    out: &mut Vec<ValidationViolationV2>,
+) {
+    if capacity == Some(0) {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::ZeroCapacity,
+            field,
+        ));
     }
 }
 
@@ -478,8 +731,11 @@ fn check_percentage_v2(value: f32, field: &str, out: &mut Vec<ValidationViolatio
 mod tests {
     use super::*;
     use crate::v2::{
-        CommitMetrics, CpuMetricsV2, DriveMetrics, MetricCapabilitiesV2, StatusPayloadV2,
-        StatusSnapshotV2, SwapMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES, SCHEMA_VERSION_V2,
+        CommitMetrics, CpuMetricsV2, DiskIoMetrics, DiskIoPayload, DriveMetrics,
+        MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload, StatusPayloadV2,
+        StatusSnapshotV2, SwapMetrics, MAX_DISK_IO_ENTRIES, MAX_DRIVE_ENTRIES,
+        MAX_DRIVE_NAME_BYTES, MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES,
+        MAX_NETWORK_INTERFACE_ENTRIES, SCHEMA_VERSION_V2,
     };
     use crate::{LoadAverage, MemoryMetrics, SystemIdentity};
 
@@ -535,6 +791,50 @@ mod tests {
         StatusPayloadV2 {
             snapshot: valid_linux_v2(),
             drives,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
+        }
+    }
+
+    fn valid_disk_io(devices: Vec<DiskIoMetrics>) -> DiskIoPayload {
+        DiskIoPayload {
+            aggregate_read_bytes_per_sec: 100,
+            aggregate_write_bytes_per_sec: 200,
+            devices,
+        }
+    }
+
+    fn disk_device(id: &str, name: &str) -> DiskIoMetrics {
+        DiskIoMetrics {
+            id: id.into(),
+            name: name.into(),
+            read_bytes_per_sec: 1,
+            write_bytes_per_sec: 2,
+            drive_name: None,
+        }
+    }
+
+    fn valid_network(interfaces: Vec<NetworkInterfaceMetrics>) -> NetworkPayload {
+        NetworkPayload {
+            aggregate_rx_bytes_per_sec: 100,
+            aggregate_tx_bytes_per_sec: 200,
+            aggregate_rx_capacity_bps: Some(800),
+            aggregate_tx_capacity_bps: Some(1600),
+            interfaces,
+        }
+    }
+
+    fn network_interface(id: &str, name: &str) -> NetworkInterfaceMetrics {
+        NetworkInterfaceMetrics {
+            id: id.into(),
+            name: name.into(),
+            rx_bytes_per_sec: 1,
+            tx_bytes_per_sec: 2,
+            rx_capacity_bps: Some(8),
+            tx_capacity_bps: Some(16),
+            is_loopback: false,
+            aggregate_member: true,
         }
     }
 
@@ -696,6 +996,130 @@ mod tests {
             violation.kind == ViolationKindV2::AvailableExceedsTotal
                 && violation.field == "drives[0].available_bytes"
         }));
+    }
+
+    #[test]
+    fn live_metric_bounds_and_duplicate_ids_are_validated() {
+        let mut payload = valid_payload(None);
+        payload.cpu_frequency_hz = Some(0);
+        payload.disk_io = Some(valid_disk_io(vec![
+            disk_device("same", "disk"),
+            disk_device("same", "disk-2"),
+        ]));
+        payload.network = Some(valid_network(vec![
+            network_interface("same", "eth0"),
+            network_interface("same", "eth1"),
+        ]));
+        let error = payload.validate().unwrap_err();
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::CpuFrequencyZero));
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::DuplicateDiskIoId));
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::DuplicateNetworkInterfaceId));
+    }
+
+    #[test]
+    fn live_metric_ids_and_names_are_bounded_and_nul_free() {
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "x".repeat(MAX_LIVE_METRIC_ID_BYTES + 1),
+            name: format!("bad\0{}", "x".repeat(MAX_LIVE_METRIC_NAME_BYTES)),
+            read_bytes_per_sec: 0,
+            write_bytes_per_sec: 0,
+            drive_name: Some("x".repeat(MAX_LIVE_METRIC_NAME_BYTES + 1)),
+        }]));
+        payload.network = Some(valid_network(vec![NetworkInterfaceMetrics {
+            id: String::new(),
+            name: "x".repeat(MAX_LIVE_METRIC_NAME_BYTES + 1),
+            rx_bytes_per_sec: 0,
+            tx_bytes_per_sec: 0,
+            rx_capacity_bps: None,
+            tx_capacity_bps: None,
+            is_loopback: false,
+            aggregate_member: false,
+        }]));
+        let error = payload.validate().unwrap_err();
+        assert!(error.iter().any(|violation| violation.kind
+            == ViolationKindV2::DiskIoIdTooLong {
+                max_bytes: MAX_LIVE_METRIC_ID_BYTES
+            }));
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::DiskIoNameInvalid));
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::NetworkInterfaceIdInvalid));
+        assert!(error.iter().any(|violation| violation.kind
+            == ViolationKindV2::NetworkInterfaceNameTooLong {
+                max_bytes: MAX_LIVE_METRIC_NAME_BYTES
+            }));
+    }
+
+    #[test]
+    fn network_capacity_zero_and_loopback_membership_are_rejected() {
+        let mut payload = valid_payload(None);
+        payload.network = Some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: 0,
+            aggregate_tx_bytes_per_sec: 0,
+            aggregate_rx_capacity_bps: Some(0),
+            aggregate_tx_capacity_bps: None,
+            interfaces: vec![NetworkInterfaceMetrics {
+                is_loopback: true,
+                aggregate_member: true,
+                ..network_interface("lo", "lo")
+            }],
+        });
+        let error = payload.validate().unwrap_err();
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::ZeroCapacity));
+        assert!(error
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::LoopbackAggregateMember));
+    }
+
+    #[test]
+    fn live_metric_entry_boundaries_are_inclusive() {
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(valid_disk_io(
+            (0..MAX_DISK_IO_ENTRIES)
+                .map(|index| disk_device(&format!("disk-{index}"), "disk"))
+                .collect(),
+        ));
+        payload.network = Some(valid_network(
+            (0..MAX_NETWORK_INTERFACE_ENTRIES)
+                .map(|index| network_interface(&format!("if-{index}"), "if"))
+                .collect(),
+        ));
+        payload
+            .validate()
+            .expect("maximum live metric lists validate");
+
+        payload
+            .disk_io
+            .as_mut()
+            .unwrap()
+            .devices
+            .push(disk_device("disk-over", "disk"));
+        payload
+            .network
+            .as_mut()
+            .unwrap()
+            .interfaces
+            .push(network_interface("if-over", "if"));
+        let error = payload.validate().unwrap_err();
+        assert!(error.iter().any(|violation| matches!(
+            violation.kind,
+            ViolationKindV2::TooManyDiskIoDevices { .. }
+        )));
+        assert!(error.iter().any(|violation| matches!(
+            violation.kind,
+            ViolationKindV2::TooManyNetworkInterfaces { .. }
+        )));
     }
 
     #[test]
