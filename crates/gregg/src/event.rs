@@ -119,6 +119,7 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         Key::Char('l') | Key::Right if !event.shift => Some(Action::NextPane),
         Key::Char('v') if !event.shift => Some(Action::ToggleSystemView),
         Key::Char('e') if !event.shift => Some(Action::ToggleDrives),
+        Key::Char('n') if !event.shift => Some(Action::ToggleNetwork),
         Key::Char('g') if !event.shift => Some(Action::SelectFirst),
         Key::Char('G') => Some(Action::SelectLast),
         Key::PageDown | Key::Char('f') if !event.ctrl => Some(Action::PageDown),
@@ -238,13 +239,14 @@ mod tests {
     }
 
     #[test]
-    fn key_to_action_view_and_drive_controls() {
+    fn key_to_action_view_drive_and_network_controls() {
         for (key, expected) in [
             (Key::Char('h'), 0),
             (Key::Left, 0),
             (Key::Char('l'), 1),
             (Key::Right, 1),
             (Key::Char('e'), 2),
+            (Key::Char('n'), 3),
         ] {
             let action = key_to_action(KeyEvent {
                 key,
@@ -257,6 +259,7 @@ mod tests {
                 (Some(crate::action::Action::PreviousPane), 0)
                     | (Some(crate::action::Action::NextPane), 1)
                     | (Some(crate::action::Action::ToggleDrives), 2)
+                    | (Some(crate::action::Action::ToggleNetwork), 3)
             ));
         }
     }

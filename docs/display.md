@@ -1,6 +1,8 @@
 # Display
 
-Reachable systems show five rows (normal view). All four metric rows share
+Reachable systems show five rows in an all-legacy fleet. When any online
+snapshot has network telemetry, reachable systems show six rows. All active
+metric rows share
 the same fleet-wide `bar_width` so the opening `[` and closing `]` columns
 always align across every online system, and the metric rows are indented by
 exactly four spaces:
@@ -11,7 +13,14 @@ Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
     MEM  [||||||||||||||||||                            ] 37.8% 5.9 GiB / 15.6 GiB
     SWP  [                                                ]  0.0% 0 B / 4.0 GiB
     DISK [||||||||||||                                  ] 25.0% 238.0 GiB / 952.0 GiB
+    NET  [||||||||||||                                  ] 31.0% 39.0 MiB/s rx 5.0 MiB/s tx
 ```
+
+The NET row is fleet-wide in a mixed old/new fleet so bars remain aligned;
+legacy systems show `—` there. If every online daemon is legacy, NET is
+omitted and the historical five-row block remains. CPU detail appends the
+current clock after the core count when available, for example `16 cores
+2.40GHz`.
 
 The DISK suffix is `<used bytes> / <total bytes>` so the slash denominator
 matches the percentage calculation; explicit caller-available capacity is
@@ -52,5 +61,17 @@ deadpool@192.168.1.10:11310 offline (refused)
 
 Pending systems (never polled) never carry a reason.
 
-Condensed view shows one comparison row per system with CPU, memory, disk,
-load, and I/O-wait columns.
+Press `e` to expand drive details. With live disk-I/O data, the expansion adds
+`R/s` and `W/s` columns plus a daemon-supplied `I/O TOTAL` line. Per-drive
+rates appear only for an exact, unambiguous drive/device association;
+ambiguous values render `—`, and the aggregate is not recomputed from rows.
+
+Press `n` to independently expand network details. The expansion shows an
+aggregate Rx/s/Tx/s/capacity summary followed by interfaces, including
+loopback when supplied. Unknown capacity leaves utilization unavailable while
+preserving raw rates.
+
+Condensed view shows one comparison row per system with CPU, memory, disk, and
+NET utilization, then LOAD/IOWAIT where the width tier allows. At narrow
+widths the existing HOST truncation and tier fallback preserve numeric
+columns. `v` toggles between normal and condensed views.

@@ -114,11 +114,19 @@ passes locally, the distinction is the cause.
 ### TUI rendering (`architecture/gregg-client.md`)
 
 - The shared normal-view metric-row geometry in
-  `crates/gregg/src/ui/system_block.rs` (`MetricRow`, `build_metric_rows`,
+  `crates/gregg/src/ui/system_block.rs` (`MetricRow`, `MetricRows`, `build_metric_rows`,
   `compute_fleet_metric_layout`, `resolve_system_suffixes`, `render_metric_row`)
-  is authoritative for the four CPU/MEM/SWP-or-COMMIT/DISK rows. One fleet-wide
+  is authoritative for the four CPU/MEM/SWP-or-COMMIT/DISK rows and the
+  optional fleet-wide NET row. One fleet-wide
   layout per render keeps `[`/`]` columns aligned across every online system,
   including while scrolling; rows are indented exactly four spaces.
+- NET appears fleet-wide when any online snapshot has network telemetry; in a
+  mixed old/new fleet legacy systems show `—` in the aligned row, while an
+  all-legacy fleet keeps the historical four-metric-row height.
+- `e` and `n` are independent selected-system expansions. `e` can show disk
+  aggregate/per-drive R/s and W/s only for exact device associations; `n`
+  shows aggregate and interface network detail, including loopback. Missing
+  telemetry is omitted or rendered as `—`, never fabricated as zero.
 - The DISK aggregate suffix is `<used bytes> / <total bytes>` so the slash
   denominator matches the percentage; explicit caller-available capacity
   (`available_bytes`) is preserved in the normalized model and surfaced only

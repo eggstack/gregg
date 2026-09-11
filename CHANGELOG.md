@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **TUI live-metrics presentation** (Plan 110): the client now shows optional
+  CPU clock detail, fleet-aligned NET utilization, disk R/s/W/s and daemon
+  aggregate throughput in `e` detail, and independent network/interface detail
+  in `n`. Condensed view adds a width-aware NET column; legacy and unsupported
+  telemetry remains absent or unavailable without fabricated zeroes.
+
 - **Native live-metrics collection** (Plan 109): greggd now samples current
   CPU frequency where supported, de-duplicated disk throughput, and
   per-interface network throughput/capacity using native Linux, macOS, and

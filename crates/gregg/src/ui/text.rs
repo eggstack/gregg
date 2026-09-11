@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 
-use crate::normalized::NormalizedDrive;
+use crate::normalized::{NormalizedDiskIo, NormalizedDrive, NormalizedNetwork};
 use crate::state::SystemState;
+use std::fmt::Write as _;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const KIB: u64 = 1024;
@@ -50,6 +51,40 @@ pub fn format_bytes(bytes: u64) -> String {
         );
     }
     format!("{}.{fraction} {label}", tenths / 10, fraction = tenths % 10)
+}
+
+/// Format a byte rate for compact throughput detail.
+pub fn format_rate(bytes_per_sec: u64) -> String {
+    format!("{}/s", format_bytes(bytes_per_sec))
+}
+
+/// Format the current CPU clock with a bounded, deterministic unit.
+#[allow(clippy::cast_precision_loss)]
+pub fn format_frequency(hz: u64) -> String {
+    if hz >= 1_000_000_000 {
+        format!("{:.2}GHz", hz as f64 / 1_000_000_000.0)
+    } else if hz >= 1_000_000 {
+        format!("{:.2}MHz", hz as f64 / 1_000_000.0)
+    } else {
+        format!("{hz}Hz")
+    }
+}
+
+/// Format a directional link capacity in bits per second.
+#[allow(clippy::cast_precision_loss)]
+pub fn format_capacity(bits_per_sec: Option<u64>) -> String {
+    let Some(bits) = bits_per_sec else {
+        return "—".to_string();
+    };
+    if bits >= 1_000_000_000 {
+        format!("{:.2}Gb/s", bits as f64 / 1_000_000_000.0)
+    } else if bits >= 1_000_000 {
+        format!("{:.2}Mb/s", bits as f64 / 1_000_000.0)
+    } else if bits >= 1_000 {
+        format!("{:.2}Kb/s", bits as f64 / 1_000.0)
+    } else {
+        format!("{bits}b/s")
+    }
 }
 
 /// Format a percentage value.
@@ -164,6 +199,8 @@ pub(crate) struct DriveDetailRow {
     pub(crate) total: String,
     pub(crate) remaining: String,
     pub(crate) percent: String,
+    pub(crate) read_rate: String,
+    pub(crate) write_rate: String,
 }
 
 /// Width mode for the drive-detail table. Plan 085 picks one of:
@@ -174,6 +211,7 @@ pub(crate) struct DriveDetailRow {
 pub(crate) enum DriveDetailMode {
     Full,
     Compact,
+    Throughput,
     Minimal,
 }
 
@@ -185,6 +223,9 @@ pub(crate) struct DriveTableLayout {
     total_width: usize,
     remaining_width: usize,
     percent_width: usize,
+    read_width: usize,
+    write_width: usize,
+    show_throughput: bool,
     mode: DriveDetailMode,
 }
 
@@ -207,6 +248,13 @@ fn percentage_for_drive(drive: &NormalizedDrive) -> f32 {
 /// Format one drive's pre-table fields. Eligibility (`used <= total`,
 /// `total > 0`) must be checked by the caller.
 pub(crate) fn build_drive_detail_row(drive: &NormalizedDrive) -> DriveDetailRow {
+    build_drive_detail_row_with_io(drive, None)
+}
+
+fn build_drive_detail_row_with_io(
+    drive: &NormalizedDrive,
+    disk_io: Option<&NormalizedDiskIo>,
+) -> DriveDetailRow {
     let used = format_bytes(drive.used_bytes);
     let total = format_bytes(drive.total_bytes);
     let remaining_bytes = drive
@@ -214,22 +262,44 @@ pub(crate) fn build_drive_detail_row(drive: &NormalizedDrive) -> DriveDetailRow 
         .unwrap_or(drive.total_bytes - drive.used_bytes);
     let remaining = format!("({})", format_bytes(remaining_bytes));
     let percent = format_pct(percentage_for_drive(drive));
+    let matching = disk_io.and_then(|io| {
+        let mut matches = io
+            .devices
+            .iter()
+            .filter(|device| device.drive_name.as_deref() == Some(drive.name.as_str()));
+        let device = matches.next()?;
+        if matches.next().is_some() {
+            None
+        } else {
+            Some(device)
+        }
+    });
     DriveDetailRow {
         name: drive.name.clone(),
         used,
         total,
         remaining,
         percent,
+        read_rate: matching.map_or_else(
+            || "—".into(),
+            |device| format_rate(device.read_bytes_per_sec),
+        ),
+        write_rate: matching.map_or_else(
+            || "—".into(),
+            |device| format_rate(device.write_bytes_per_sec),
+        ),
     }
 }
 
-fn drive_row_widths(row: &DriveDetailRow) -> (usize, usize, usize, usize, usize) {
+fn drive_row_widths(row: &DriveDetailRow) -> (usize, usize, usize, usize, usize, usize, usize) {
     (
         UnicodeWidthStr::width(row.name.as_str()),
         UnicodeWidthStr::width(row.used.as_str()),
         UnicodeWidthStr::width(row.total.as_str()),
         UnicodeWidthStr::width(row.remaining.as_str()),
         UnicodeWidthStr::width(row.percent.as_str()),
+        UnicodeWidthStr::width(row.read_rate.as_str()),
+        UnicodeWidthStr::width(row.write_rate.as_str()),
     )
 }
 
@@ -246,6 +316,18 @@ fn drive_row_widths(row: &DriveDetailRow) -> (usize, usize, usize, usize, usize)
 /// the ` / ` separator, and the Compact fallback considers a
 /// truncated name before falling to Minimal.
 pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) -> DriveTableLayout {
+    let show_io = rows
+        .iter()
+        .any(|row| row.read_rate != "—" || row.write_rate != "—");
+    compute_drive_table_layout_with_io(rows, width, show_io)
+}
+
+#[allow(clippy::too_many_lines)]
+fn compute_drive_table_layout_with_io(
+    rows: &[DriveDetailRow],
+    width: u16,
+    show_io: bool,
+) -> DriveTableLayout {
     let available = usize::from(width);
 
     // Widths implied by the widest formatted field across every row.
@@ -254,13 +336,18 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
     let mut max_total = 0usize;
     let mut max_remaining = 0usize;
     let mut max_percent = 0usize;
+    let mut max_read = 0usize;
+    let mut max_write = 0usize;
     for row in rows {
-        let (name_w, used_w, total_w, remaining_w, percent_w) = drive_row_widths(row);
+        let (name_w, used_w, total_w, remaining_w, percent_w, read_w, write_w) =
+            drive_row_widths(row);
         max_name = max_name.max(name_w);
         max_used = max_used.max(used_w);
         max_total = max_total.max(total_w);
         max_remaining = max_remaining.max(remaining_w);
         max_percent = max_percent.max(percent_w);
+        max_read = max_read.max(read_w);
+        max_write = max_write.max(write_w);
     }
 
     // Full layout width = indent + name + gap + used + " / " + total + gap + remaining + gap + percent.
@@ -275,7 +362,17 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         .saturating_add(max_percent);
     let full_name_budget = available.saturating_sub(full_fixed);
 
-    if full_name_budget >= max_name {
+    let io_fixed = if show_io {
+        DRIVE_GAP_CELLS
+            .saturating_add(max_read)
+            .saturating_add(DRIVE_GAP_CELLS)
+            .saturating_add(max_write)
+    } else {
+        0
+    };
+    let full_io_name_budget = full_name_budget.saturating_sub(io_fixed);
+
+    if full_io_name_budget >= max_name {
         // Full natural fits.
         return DriveTableLayout {
             name_width: max_name,
@@ -283,6 +380,23 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
             total_width: max_total,
             remaining_width: max_remaining,
             percent_width: max_percent,
+            read_width: max_read,
+            write_width: max_write,
+            show_throughput: show_io,
+            mode: DriveDetailMode::Full,
+        };
+    }
+
+    if full_name_budget >= max_name {
+        return DriveTableLayout {
+            name_width: max_name,
+            used_width: max_used,
+            total_width: max_total,
+            remaining_width: max_remaining,
+            percent_width: max_percent,
+            read_width: 0,
+            write_width: 0,
+            show_throughput: false,
             mode: DriveDetailMode::Full,
         };
     }
@@ -295,7 +409,30 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
             total_width: max_total,
             remaining_width: max_remaining,
             percent_width: max_percent,
+            read_width: 0,
+            write_width: 0,
+            show_throughput: false,
             mode: DriveDetailMode::Full,
+        };
+    }
+
+    let throughput_fixed = DRIVE_INDENT_CELLS
+        .saturating_add(DRIVE_GAP_CELLS)
+        .saturating_add(max_read)
+        .saturating_add(DRIVE_GAP_CELLS)
+        .saturating_add(max_write);
+    let throughput_name_budget = available.saturating_sub(throughput_fixed);
+    if show_io && throughput_name_budget >= 1 {
+        return DriveTableLayout {
+            name_width: max_name.min(throughput_name_budget),
+            used_width: 0,
+            total_width: 0,
+            remaining_width: 0,
+            percent_width: 0,
+            read_width: max_read,
+            write_width: max_write,
+            show_throughput: true,
+            mode: DriveDetailMode::Throughput,
         };
     }
 
@@ -316,6 +453,9 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
             total_width: 0,
             remaining_width: max_remaining,
             percent_width: max_percent,
+            read_width: 0,
+            write_width: 0,
+            show_throughput: false,
             mode: DriveDetailMode::Compact,
         };
     }
@@ -332,6 +472,9 @@ pub(crate) fn compute_drive_table_layout(rows: &[DriveDetailRow], width: u16) ->
         total_width: 0,
         remaining_width: 0,
         percent_width: max_percent,
+        read_width: 0,
+        write_width: 0,
+        show_throughput: false,
         mode: DriveDetailMode::Minimal,
     }
 }
@@ -357,14 +500,26 @@ pub(crate) fn render_drive_detail_row(row: &DriveDetailRow, layout: &DriveTableL
             let total_padded = pad_left(&row.total, layout.total_width);
             let remaining_padded = pad_left(&row.remaining, layout.remaining_width);
             let percent_padded = pad_left(&row.percent, layout.percent_width);
-            format!(
+            let base = format!(
                 "{indent}{name_padded}{gap}{used_padded} / {total_padded}{gap}{remaining_padded}{gap}{percent_padded}"
-            )
+            );
+            if layout.show_throughput {
+                let read_padded = pad_left(&row.read_rate, layout.read_width);
+                let write_padded = pad_left(&row.write_rate, layout.write_width);
+                format!("{base}{gap}{read_padded}{gap}{write_padded}")
+            } else {
+                base
+            }
         }
         DriveDetailMode::Compact => {
             let remaining_padded = pad_left(&row.remaining, layout.remaining_width);
             let percent_padded = pad_left(&row.percent, layout.percent_width);
             format!("{indent}{name_padded}{gap}{remaining_padded}{gap}{percent_padded}")
+        }
+        DriveDetailMode::Throughput => {
+            let read_padded = pad_left(&row.read_rate, layout.read_width);
+            let write_padded = pad_left(&row.write_rate, layout.write_width);
+            format!("{indent}{name_padded}{gap}{read_padded}{gap}{write_padded}")
         }
         DriveDetailMode::Minimal => {
             let percent_padded = pad_left(&row.percent, layout.percent_width);
@@ -382,18 +537,110 @@ fn pad_left(value: &str, width: usize) -> String {
     }
 }
 
+fn pad_right(value: &str, width: usize) -> String {
+    let used = UnicodeWidthStr::width(value);
+    format!("{value}{}", " ".repeat(width.saturating_sub(used)))
+}
+
 /// Pre-formatted fields plus the shared table layout for the selected
 /// system's expanded drive view.
 pub(crate) fn render_drive_detail_lines(drives: &[NormalizedDrive], width: u16) -> Vec<String> {
+    render_drive_detail_lines_with_io(drives, None, width)
+}
+
+pub(crate) fn render_drive_detail_lines_with_io(
+    drives: &[NormalizedDrive],
+    disk_io: Option<&NormalizedDiskIo>,
+    width: u16,
+) -> Vec<String> {
     let rows: Vec<DriveDetailRow> = drives
         .iter()
         .filter(|d| d.total_bytes > 0 && d.used_bytes <= d.total_bytes)
-        .map(build_drive_detail_row)
+        .map(|drive| build_drive_detail_row_with_io(drive, disk_io))
         .collect();
-    let layout = compute_drive_table_layout(&rows, width);
-    rows.iter()
-        .map(|row| render_drive_detail_row(row, &layout))
-        .collect()
+    let layout = compute_drive_table_layout_with_io(&rows, width, disk_io.is_some());
+    let mut lines = Vec::new();
+    if disk_io.is_some() {
+        lines.push(render_drive_detail_header(&layout, width));
+    }
+    lines.extend(rows.iter().map(|row| render_drive_detail_row(row, &layout)));
+    if let Some(io) = disk_io {
+        lines.push(render_disk_io_total_line(io, width));
+    }
+    lines
+}
+
+fn render_drive_detail_header(layout: &DriveTableLayout, width: u16) -> String {
+    let mut line = format!(
+        "  {}  {} / {}  {}  {}",
+        pad_right("DRIVE/MOUNT", layout.name_width),
+        pad_left("USED", layout.used_width),
+        pad_left("TOTAL", layout.total_width),
+        pad_left("REMAIN", layout.remaining_width),
+        pad_left("PERCENT", layout.percent_width),
+    );
+    if layout.show_throughput {
+        let _ = write!(
+            line,
+            "  {}  {}",
+            pad_left("R/s", layout.read_width),
+            pad_left("W/s", layout.write_width)
+        );
+    }
+    truncate_width(&line, usize::from(width))
+}
+
+fn render_disk_io_total_line(io: &NormalizedDiskIo, width: u16) -> String {
+    truncate_width(
+        &format!(
+            "  I/O TOTAL  R/s {}  W/s {}",
+            format_rate(io.aggregate_read_bytes_per_sec),
+            format_rate(io.aggregate_write_bytes_per_sec)
+        ),
+        usize::from(width),
+    )
+}
+
+pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u16) -> Vec<String> {
+    let utilization = network
+        .aggregate_utilization_pct()
+        .map_or_else(|| "—".into(), format_pct);
+    let capacity = match (
+        network.aggregate_rx_capacity_bps,
+        network.aggregate_tx_capacity_bps,
+    ) {
+        (Some(rx), Some(tx)) if rx == tx => format_capacity(Some(rx)),
+        (Some(rx), Some(tx)) => format!(
+            "{}/{}",
+            format_capacity(Some(rx)),
+            format_capacity(Some(tx))
+        ),
+        (Some(value), None) | (None, Some(value)) => format_capacity(Some(value)),
+        (None, None) => "—".into(),
+    };
+    let mut lines = vec![truncate_width(
+        &format!(
+            "  NETWORK TOTAL  RX {}  TX {}  CAP {}  {}",
+            format_rate(network.aggregate_rx_bytes_per_sec),
+            format_rate(network.aggregate_tx_bytes_per_sec),
+            capacity,
+            utilization
+        ),
+        usize::from(width),
+    )];
+    lines.extend(network.interfaces.iter().map(|interface| {
+        truncate_width(
+            &format!(
+                "  {}  RX {}  TX {}  LINK {}",
+                interface.name,
+                format_rate(interface.rx_bytes_per_sec),
+                format_rate(interface.tx_bytes_per_sec),
+                format_capacity(interface.rx_capacity_bps.or(interface.tx_capacity_bps)),
+            ),
+            usize::from(width),
+        )
+    }));
+    lines
 }
 
 /// Truncate `s` to at most `max_width` terminal cells.
@@ -445,6 +692,51 @@ mod tests {
     fn format_bytes_carries_rounding_into_the_next_unit() {
         assert_eq!(format_bytes(TIB - 1), "1.0 TiB");
         assert_eq!(format_bytes(GIB - 1), "1.0 GiB");
+    }
+
+    #[test]
+    fn format_frequency_uses_bounded_mhz_and_ghz_units() {
+        assert_eq!(format_frequency(999_999), "999999Hz");
+        assert_eq!(format_frequency(1_000_000), "1.00MHz");
+        assert_eq!(format_frequency(2_400_000_000), "2.40GHz");
+        assert_eq!(format_frequency(u64::MAX), "18446744073.71GHz");
+    }
+
+    #[test]
+    fn network_detail_preserves_rates_without_capacity_and_loopback() {
+        let network = NormalizedNetwork {
+            aggregate_rx_bytes_per_sec: 39 * MIB,
+            aggregate_tx_bytes_per_sec: 5 * MIB,
+            aggregate_rx_capacity_bps: None,
+            aggregate_tx_capacity_bps: None,
+            interfaces: vec![
+                crate::normalized::NormalizedNetworkInterface {
+                    id: "eth0".into(),
+                    name: "eth0".into(),
+                    rx_bytes_per_sec: 38 * MIB,
+                    tx_bytes_per_sec: 4 * MIB,
+                    rx_capacity_bps: Some(1_000_000_000),
+                    tx_capacity_bps: Some(1_000_000_000),
+                    is_loopback: false,
+                    aggregate_member: true,
+                },
+                crate::normalized::NormalizedNetworkInterface {
+                    id: "lo".into(),
+                    name: "lo".into(),
+                    rx_bytes_per_sec: MIB,
+                    tx_bytes_per_sec: MIB,
+                    rx_capacity_bps: None,
+                    tx_capacity_bps: None,
+                    is_loopback: true,
+                    aggregate_member: false,
+                },
+            ],
+        };
+        let lines = render_network_detail_lines(&network, 120);
+        assert!(lines[0].contains("RX 39.0 MiB/s"));
+        assert!(lines[0].contains("CAP —"));
+        assert!(lines.iter().any(|line| line.contains("eth0")));
+        assert!(lines.iter().any(|line| line.contains("lo")));
     }
 
     fn drive(name: &str, used: u64, total: u64, available: Option<u64>) -> NormalizedDrive {
@@ -697,7 +989,9 @@ mod tests {
                         "Full at one cell below exact width overflows: {line_below:?}"
                     );
                 }
-                DriveDetailMode::Compact | DriveDetailMode::Minimal => {}
+                DriveDetailMode::Compact
+                | DriveDetailMode::Throughput
+                | DriveDetailMode::Minimal => {}
             }
         }
     }
@@ -843,6 +1137,63 @@ mod tests {
                 .count()
             - 1;
         assert_eq!(pct_0, pct_1, "percent column must align: {rendered:?}");
+    }
+
+    #[test]
+    fn disk_io_details_use_exact_associations_and_daemon_aggregate() {
+        let drives = vec![
+            drive("/", 80 * GIB, 100 * GIB, None),
+            drive("/data", 20 * GIB, 100 * GIB, None),
+        ];
+        let io = NormalizedDiskIo {
+            aggregate_read_bytes_per_sec: 90 * MIB,
+            aggregate_write_bytes_per_sec: 22 * MIB,
+            devices: vec![
+                crate::normalized::NormalizedDiskIoDevice {
+                    id: "sda".into(),
+                    name: "sda".into(),
+                    read_bytes_per_sec: 80 * MIB,
+                    write_bytes_per_sec: 20 * MIB,
+                    drive_name: Some("/".into()),
+                },
+                crate::normalized::NormalizedDiskIoDevice {
+                    id: "sdb".into(),
+                    name: "sdb".into(),
+                    read_bytes_per_sec: 10 * MIB,
+                    write_bytes_per_sec: 2 * MIB,
+                    drive_name: Some("/data".into()),
+                },
+            ],
+        };
+        let lines = render_drive_detail_lines_with_io(&drives, Some(&io), 120);
+        assert!(lines.iter().any(|line| line.contains("R/s")));
+        assert!(lines.iter().any(|line| line.contains("80.0 MiB/s")));
+        assert!(lines.iter().any(|line| line.contains("10.0 MiB/s")));
+        assert!(lines.iter().any(|line| line.contains("I/O TOTAL")));
+        assert!(lines.iter().any(|line| line.contains("90.0 MiB/s")));
+
+        let ambiguous = NormalizedDiskIo {
+            devices: vec![
+                crate::normalized::NormalizedDiskIoDevice {
+                    id: "sda".into(),
+                    name: "sda".into(),
+                    read_bytes_per_sec: 80 * MIB,
+                    write_bytes_per_sec: 20 * MIB,
+                    drive_name: Some("/".into()),
+                },
+                crate::normalized::NormalizedDiskIoDevice {
+                    id: "sda-part".into(),
+                    name: "sda-part".into(),
+                    read_bytes_per_sec: 1,
+                    write_bytes_per_sec: 1,
+                    drive_name: Some("/".into()),
+                },
+            ],
+            ..io
+        };
+        let ambiguous_lines =
+            render_drive_detail_lines_with_io(&drives[..1], Some(&ambiguous), 120);
+        assert!(ambiguous_lines.iter().any(|line| line.contains("—")));
     }
 
     fn locate_slash_cell(line: &str) -> Option<usize> {

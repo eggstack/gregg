@@ -14,9 +14,11 @@ use std::rc::Rc;
 use ratatui::Frame;
 
 use crate::normalized::NormalizedSnapshot;
-use crate::state::{AppState, Pane, Reachability, SystemViewMode};
+use crate::state::{
+    fleet_has_network_telemetry, normal_base_height, AppState, Pane, Reachability, SystemViewMode,
+};
 
-use system_block::MetricRow;
+use system_block::MetricRows;
 
 /// Render the full TUI into the current frame.
 pub fn render(f: &mut Frame, state: &AppState) {
@@ -41,7 +43,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 .and_then(|&index| state.systems.get(index))
                 .is_some_and(|system| system.reachability == Reachability::Online);
             if first_is_online {
-                5
+                normal_base_height(state)
             } else {
                 1
             }
@@ -76,7 +78,9 @@ pub fn render(f: &mut Frame, state: &AppState) {
     // identical snapshots produce identical rows, so each system's rows are
     // rebuilt only when its snapshot content or membership changed.
     let (online_rows, fleet_layout) = if state.system_view_mode == SystemViewMode::Normal {
-        let online_rows: Vec<(usize, Rc<[MetricRow; 4]>)> = metric_rows_for_fleet(state);
+        let include_network = fleet_has_network_telemetry(state);
+        let online_rows: Vec<(usize, Rc<MetricRows>)> =
+            metric_rows_for_fleet(state, include_network);
         let fleet_layout = system_block::compute_fleet_metric_layout(
             online_rows.iter().map(|(_, rows)| &**rows),
             area.width,
@@ -96,6 +100,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 &condensed_layout,
                 entry.is_visually_selected,
                 entry.drive_rows_visible,
+                entry.network_rows_visible,
             );
             continue;
         }
@@ -113,6 +118,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
                     &fleet_layout,
                     entry.is_visually_selected,
                     entry.drive_rows_visible,
+                    entry.network_rows_visible,
                 );
             }
             Reachability::Offline | Reachability::Pending => {
@@ -136,7 +142,8 @@ pub fn render(f: &mut Frame, state: &AppState) {
 struct CachedMetricRows {
     system_id: String,
     snapshot: NormalizedSnapshot,
-    rows: Rc<[MetricRow; 4]>,
+    include_network: bool,
+    rows: Rc<MetricRows>,
 }
 
 thread_local! {
@@ -150,7 +157,7 @@ thread_local! {
 /// system's formatted rows are rebuilt only when its snapshot content
 /// (compared by full value, immune to any mutation path) or membership
 /// changed. Returns `(system index, rows)` pairs in configured order.
-fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<[MetricRow; 4]>)> {
+fn metric_rows_for_fleet(state: &AppState, include_network: bool) -> Vec<(usize, Rc<MetricRows>)> {
     let mut online_rows = Vec::new();
     METRIC_ROWS_CACHE.with_borrow_mut(|cache| {
         for (index, system) in state.systems.iter().enumerate() {
@@ -161,18 +168,25 @@ fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<[MetricRow; 4]>)> {
                 continue;
             };
             let rows = match cache.iter_mut().find(|entry| entry.system_id == system.id) {
-                Some(entry) if entry.snapshot == *snapshot => Rc::clone(&entry.rows),
+                Some(entry)
+                    if entry.snapshot == *snapshot && entry.include_network == include_network =>
+                {
+                    Rc::clone(&entry.rows)
+                }
                 Some(entry) => {
                     entry.snapshot = snapshot.clone();
-                    entry.rows = Rc::new(system_block::build_metric_rows(snapshot));
+                    entry.include_network = include_network;
+                    entry.rows =
+                        Rc::new(system_block::build_metric_rows(snapshot, include_network));
                     Rc::clone(&entry.rows)
                 }
                 None => {
-                    let rows: Rc<[MetricRow; 4]> =
-                        Rc::new(system_block::build_metric_rows(snapshot));
+                    let rows: Rc<MetricRows> =
+                        Rc::new(system_block::build_metric_rows(snapshot, include_network));
                     cache.push(CachedMetricRows {
                         system_id: system.id.clone(),
                         snapshot: snapshot.clone(),
+                        include_network,
                         rows: Rc::clone(&rows),
                     });
                     rows
@@ -399,9 +413,10 @@ mod tests {
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 8);
+        assert!(!output.contains("NET"));
 
         let lines: Vec<&str> = output.lines().collect();
-        // Online system occupies five rows.
+        // Legacy online system occupies five base rows.
         assert!(
             !lines[0].trim().is_empty(),
             "header row should not be empty"
@@ -1320,7 +1335,7 @@ mod tests {
 
         // Plan 087: width 120 keeps suffixes visible for the
         // default Linux snapshot.
-        let output = render_state(&state, 120, 16);
+        let output = render_state(&state, 200, 16);
         let lines: Vec<&str> = output.lines().collect();
 
         // System a is first (online, selected), then system b.
@@ -2025,6 +2040,61 @@ mod tests {
     }
 
     #[test]
+    fn live_metric_expansions_render_without_changing_selection() {
+        let config = test_config(&["live"]);
+        let mut state = AppState::from_config(&config);
+        let payload = LinuxSnapshotV2Builder::default()
+            .cpu_frequency_hz(Some(2_400_000_000))
+            .drives(Some(vec![DriveMetrics {
+                name: "/".into(),
+                used_bytes: 5,
+                total_bytes: 10,
+                available_bytes: None,
+            }]))
+            .disk_io(Some(gregg_protocol::v2::DiskIoPayload {
+                aggregate_read_bytes_per_sec: 90 * 1024 * 1024,
+                aggregate_write_bytes_per_sec: 22 * 1024 * 1024,
+                devices: vec![gregg_protocol::v2::DiskIoMetrics {
+                    id: "nvme0".into(),
+                    name: "nvme0".into(),
+                    read_bytes_per_sec: 80 * 1024 * 1024,
+                    write_bytes_per_sec: 20 * 1024 * 1024,
+                    drive_name: Some("/".into()),
+                }],
+            }))
+            .network(Some(gregg_protocol::v2::NetworkPayload {
+                aggregate_rx_bytes_per_sec: 39 * 1024 * 1024,
+                aggregate_tx_bytes_per_sec: 5 * 1024 * 1024,
+                aggregate_rx_capacity_bps: Some(1_000_000_000),
+                aggregate_tx_capacity_bps: Some(1_000_000_000),
+                interfaces: vec![gregg_protocol::v2::NetworkInterfaceMetrics {
+                    id: "eth0".into(),
+                    name: "eth0".into(),
+                    rx_bytes_per_sec: 39 * 1024 * 1024,
+                    tx_bytes_per_sec: 5 * 1024 * 1024,
+                    rx_capacity_bps: Some(1_000_000_000),
+                    tx_capacity_bps: Some(1_000_000_000),
+                    is_loopback: false,
+                    aggregate_member: true,
+                }],
+            }))
+            .build_payload();
+        apply_online_v2(&mut state, 0, payload, 1);
+        let selected = state.selected_id.clone();
+        state.drives_expanded = true;
+        state.apply_action(crate::action::Action::ToggleNetwork);
+        assert!(state.network_expanded);
+        assert_eq!(state.selected_id, selected);
+
+        let output = render_state(&state, 120, 16);
+        assert!(output.contains("NET"));
+        assert!(output.contains("I/O TOTAL"));
+        assert!(output.contains("80.0 MiB/s"));
+        assert!(output.contains("NETWORK TOTAL"));
+        assert!(output.contains("eth0"));
+    }
+
+    #[test]
     fn mixed_fleet_renders_protocol_capabilities_and_selected_details_in_both_views() {
         let config = test_config(&["legacy", "linux", "mac", "windows", "offline", "pending"]);
         let mut state = AppState::from_config(&config);
@@ -2133,11 +2203,16 @@ mod tests {
                     |offset| offset + search_from,
                 );
             let mut rows = Vec::new();
-            for line in lines.iter().skip(block_start + 1).take(4) {
-                rows.push((*line).to_string());
+            for line in lines.iter().skip(block_start + 1) {
+                let label = line.split_whitespace().next().unwrap_or_default();
+                if matches!(label, "CPU" | "MEM" | "SWP" | "COMMIT" | "DISK" | "NET") {
+                    rows.push((*line).to_string());
+                } else {
+                    break;
+                }
             }
             out.push(rows);
-            search_from = block_start + 5;
+            search_from = block_start + 1;
         }
         out
     }

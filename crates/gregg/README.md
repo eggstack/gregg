@@ -92,6 +92,7 @@ milliseconds. Values outside that range are rejected during config validation.
 | `l` / Right | Next view |
 | `v` | Toggle Normal/Condensed Systems view |
 | `e` | Expand or collapse selected-system drives |
+| `n` | Expand or collapse selected-system network details |
 | `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 
 If a Systems config reload is missing, malformed, or invalid, the last-known-good
@@ -101,7 +102,7 @@ If the bounded scheduler channel is full, delivery remains ordered while the
 event loop continues processing input and poll results.
 
 `selected_id` is the persistent logical selection that drives `e`
-(drive expansion) and viewport behavior. The reverse-video highlight
+(drive expansion), `n` (network expansion), and viewport behavior. The reverse-video highlight
 on the selected device is transient: it activates when you navigate,
 and disappears after about ten seconds of inactivity. Leaving the
 Systems pane or returning to it does not extend or re-trigger the
@@ -113,8 +114,9 @@ after the highlight fades.
 Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
-The normal view uses five rows for an online system, including aggregate disk
-capacity. All four metric rows share a fleet-wide `bar_width` so the opening
+The normal view uses five rows for an online system in an all-legacy fleet, or
+six when any online daemon provides network telemetry, including aggregate
+disk and NET capacity. All active metric rows share a fleet-wide `bar_width` so the opening
 `[` and closing `]` columns align across every online system. When the
 longest natural metric suffix across the entire online fleet exceeds one
 quarter of the terminal width, every normal-view metric row collapses to
@@ -127,8 +129,11 @@ surfaced only through the expanded per-drive rows. The condensed view uses
 one comparison row per system. `e` adds bounded detail rows for valid
 mounted-local-filesystem records belonging only to the selected online
 system; the expanded rows share one table layout so mount names, used,
-total, remaining, and percentage columns stay aligned across drives. View
-and expansion state are not persisted.
+total, remaining, and percentage columns stay aligned across drives. When
+disk-I/O telemetry is available, `e` also shows daemon aggregate and
+trustworthy per-drive R/s/W/s values; `n` independently shows aggregate and
+per-interface network rates/capacity, including loopback. View and expansion
+state are not persisted.
 
 Unreachable systems collapse to one offline row (`name@host:port offline`
 or `host:port offline`). When the accepted poll failure carries provenance,

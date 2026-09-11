@@ -92,7 +92,8 @@ Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)
 arm or reset the deadline to ten seconds from now via
 `SELECTION_HIGHLIGHT_DURATION`. Non-selection events (poll batches,
 EggPool results, `Resize`, `RefreshNow`, `ToggleSystemView`,
-`ToggleDrives`) do not extend the deadline. The `ClearSelectionHighlight`
+`ToggleDrives`, `ToggleNetwork`) do not extend the deadline. The
+`ClearSelectionHighlight`
 arm is parked at a far-future sleep while no highlight is active so the
 select branch never fires spuriously.
 
@@ -105,7 +106,7 @@ enum Action {
     MoveDown, MoveUp, PageDown, PageUp,
     SelectFirst, SelectLast,
     PreviousPane, NextPane,
-    ToggleSystemView, ToggleDrives,
+    ToggleSystemView, ToggleDrives, ToggleNetwork,
     RefreshNow,
     ClearSelectionHighlight,   // Plan 087: dispatched by the highlight timer
     Resize, Quit,
@@ -180,15 +181,18 @@ struct AppState {
     terminal_size: Option<(u16, u16)>,   // terminal dimensions
     active_pane: Pane,                   // Systems or Eggpool
     system_view_mode: SystemViewMode,    // Normal or Condensed
-    drives_expanded: bool,               // drive detail rows visible
+    drives_expanded: bool,               // selected-system drive detail
+    network_expanded: bool,              // selected-system network detail
     selection_highlight_active: bool,    // transient reverse-video highlight
     eggpool: Option<EggpoolState>,       // EggPool pane state (None if unconfigured)
 }
 ```
 
 **Display order:** Online systems first (stable order), then offline/pending.
-**Viewport:** Computes visible range for mixed-height entries (normal = 5 rows,
-condensed = 1 row). Selected system is always visible.
+**Viewport:** Computes visible range for mixed-height entries (legacy normal =
+5 rows, network-capable normal = 6 rows, condensed = 1 row). Selected-system
+drive and network detail lines are added centrally, so resize and scrolling do
+not rely on renderer-only offsets. Selected system is always visible.
 
 **First-batch snap:** `AppState::apply_batch` snaps `selected_id` and
 `viewport_top_id` to `display_order()[0]` only when `last_applied_generation
@@ -197,7 +201,8 @@ Subsequent batches preserve the existing selection/viewport semantics.
 `Ctrl-R` does not re-snap.
 
 **Visual vs. logical selection (Plan 087):** `selected_id` is the
-persistent logical selection that drives `e` (drive expansion) and
+persistent logical selection that drives `e` (drive expansion), `n` (network
+expansion), and
 viewport behavior. `selection_highlight_active` is the transient
 visual-highlight flag that drives the reverse-video styling. Startup
 sets both: the logical selection is deterministic but the highlight
@@ -224,6 +229,7 @@ reappear when the operator comes back.
 | `h`/`l` | Previous/next pane |
 | `v` | Toggle normal/condensed view |
 | `e` | Toggle drive expansion |
+| `n` | Toggle network detail expansion (legacy systems are a no-op) |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
 | `Ctrl-R` | Reload Systems config and reliably replace/poll endpoints, or refresh EggPool |
@@ -255,14 +261,22 @@ The UI never infers a zero from a missing measurement.
 
 ### UI views
 
-**Normal view** (`ui/system_block.rs`): 5-row blocks per system:
+**Normal view** (`ui/system_block.rs`): legacy blocks have five rows; when any
+online snapshot exposes network telemetry, all online blocks have six aligned
+rows:
 1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
+6. NET aggregate bar (fleet-wide when any online system supports it)
 
-The four metric rows share one fleet-wide label width and one
+The mixed-fleet policy is deterministic: all-legacy fleets omit NET and keep
+the historical height; mixed fleets include NET for every online system and
+legacy systems render `—` in that aligned row. CPU frequency is per-system
+optional and is formatted by the client after the core count.
+
+The active metric rows share one fleet-wide label width and one
 fleet-wide `bar_width`; their opening `[` and closing `]` always occupy
 the same terminal column across every online system. Geometry is
 computed once per render via `build_metric_rows`,
@@ -308,6 +322,18 @@ shared between the fit calculation and the renderer, and rewrites the
 Compact fallback so Compact considers a truncated name before falling to
 Minimal.
 
+When v2 disk-I/O telemetry is present, `e` adds a table heading, optional
+`R/s`/`W/s` columns, and an `I/O TOTAL` line. A drive receives a rate only
+when exactly one daemon device record names that mount; ambiguous or missing
+associations render `—`. The aggregate line is always taken from the daemon's
+aggregate and is never recomputed from visible drive rows.
+
+**Network detail** (`n`): the independent expansion adds one aggregate summary
+followed by the normalized interface order, including loopback when supplied.
+Each row includes Rx/s and Tx/s and shows link capacity where available.
+Aggregate utilization uses the maximum valid directional percentage; an
+unknown capacity leaves the percentage as `—` while preserving raw rates.
+
 **Condensed view** (`ui/condensed.rs`): One row per system with tier-appropriate
 columns based on terminal width (Wide ≥ 64, Medium 48-63, Narrow 30-47,
 Minimal < 30). Header and online rows use one shared
@@ -326,6 +352,11 @@ Plan 087 keeps the condensed `IOWAIT` column unchanged: an unsupported
 or missing value still renders the unavailable em-dash inside its own
 column, distinct from the normal-header `IO` token which is now
 omitted entirely.
+
+Condensed tiers add `NET` between `DISK` and `LOAD` where the tier fits:
+Wide includes `NET` and `IOWAIT`, Medium includes `NET` and `LOAD`, Narrow
+includes `NET`, and Minimal retains only HOST/CPU/MEM. Natural-width fallback
+may choose a narrower tier or truncate HOST, but never clips a numeric cell.
 
 ## Configuration
 

@@ -140,6 +140,10 @@ pub struct AppState {
     pub system_view_mode: SystemViewMode,
     /// Whether the selected online system's drives are expanded.
     pub drives_expanded: bool,
+    /// Whether the selected online system's network details are expanded.
+    /// This is independent of drive expansion so both telemetry families
+    /// can be inspected at once.
+    pub network_expanded: bool,
     /// Plan 087: whether the logical selection is currently being
     /// visually highlighted with `Modifier::REVERSED`. Independent of
     /// `selected_id`; cleared by the event-loop timer (about ten
@@ -188,6 +192,7 @@ impl AppState {
             },
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            network_expanded: false,
             selection_highlight_active: false,
             eggpool,
         }
@@ -327,7 +332,7 @@ impl AppState {
     }
 
     /// Apply a user action.
-    #[allow(clippy::match_same_arms)]
+    #[allow(clippy::match_same_arms, clippy::too_many_lines)]
     pub fn apply_action(&mut self, action: Action) {
         match action {
             Action::MoveDown => {
@@ -409,7 +414,7 @@ impl AppState {
             | Action::Quit => return,
             // Note: `ToggleSystemView` on the Systems pane deliberately
             // falls through because view mode changes entry heights.
-            Action::ToggleSystemView | Action::ToggleDrives
+            Action::ToggleSystemView | Action::ToggleDrives | Action::ToggleNetwork
                 if self.active_pane == Pane::Eggpool =>
             {
                 return
@@ -417,6 +422,19 @@ impl AppState {
             Action::ToggleSystemView => return,
             Action::ToggleDrives => {
                 self.drives_expanded = !self.drives_expanded;
+            }
+            Action::ToggleNetwork => {
+                let has_network = self
+                    .selected_id
+                    .as_ref()
+                    .and_then(|selected| self.systems.iter().find(|system| &system.id == selected))
+                    .filter(|system| system.reachability == Reachability::Online)
+                    .and_then(|system| system.latest.as_ref())
+                    .and_then(|snapshot| snapshot.network.as_ref())
+                    .is_some();
+                if has_network {
+                    self.network_expanded = !self.network_expanded;
+                }
             }
             Action::Resize { width, height } => {
                 self.terminal_size = Some((width, height));
@@ -638,29 +656,49 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
     };
     match (state.system_view_mode, system.reachability) {
         (SystemViewMode::Condensed, _) => {
-            if state.drives_expanded
+            if (state.drives_expanded || state.network_expanded)
                 && state.selected_id.as_deref() == Some(system.id.as_str())
                 && system.reachability == Reachability::Online
             {
-                1_u16.saturating_add(valid_drive_count(system))
+                1_u16
+                    .saturating_add(if state.drives_expanded {
+                        valid_drive_detail_count(system)
+                    } else {
+                        0
+                    })
+                    .saturating_add(if state.network_expanded {
+                        valid_network_detail_count(system)
+                    } else {
+                        0
+                    })
             } else {
                 1
             }
         }
         (SystemViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
         (SystemViewMode::Normal, Reachability::Online) => {
-            let details = if state.drives_expanded
+            let details = if (state.drives_expanded || state.network_expanded)
                 && state.selected_id.as_deref() == Some(system.id.as_str())
             {
-                system
-                    .latest
-                    .as_ref()
-                    .and_then(|snapshot| snapshot.drives.as_ref())
-                    .map_or(0, |drives| valid_drive_count_from_slice(drives))
+                let drives = if state.drives_expanded {
+                    system
+                        .latest
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.drives.as_ref())
+                        .map_or(0, |_| valid_drive_detail_count(system))
+                } else {
+                    0
+                };
+                let network = if state.network_expanded {
+                    valid_network_detail_count(system)
+                } else {
+                    0
+                };
+                drives.saturating_add(network)
             } else {
                 0
             };
-            5_u16.saturating_add(details)
+            normal_base_height(state).saturating_add(details)
         }
     }
 }
@@ -668,8 +706,9 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
 /// Compute which systems in display order are visible given a top
 /// index, the system states, and available height.
 ///
-/// Online entries take five base rows, with optional selected-system drive
-/// rows; offline and pending entries take one row. A first entry is retained
+/// Online entries take four metric rows plus a header, or six rows when any
+/// online snapshot exposes network telemetry. Selected-system drive and
+/// network detail rows follow; offline and pending entries take one row. A first entry is retained
 /// even when its full dynamic height is taller than the viewport so the caller
 /// can clip only detail rows while preserving its complete base block.
 #[must_use]
@@ -712,7 +751,7 @@ fn minimum_render_height(state: &AppState, system_index: usize) -> u16 {
         .get(system_index)
         .map(|system| (state.system_view_mode, system.reachability))
     {
-        Some((SystemViewMode::Normal, Reachability::Online)) => 5,
+        Some((SystemViewMode::Normal, Reachability::Online)) => normal_base_height(state),
         Some(_) => 1,
         None => 0,
     }
@@ -798,6 +837,30 @@ fn valid_drive_count(system: &SystemState) -> u16 {
         .map_or(0, valid_drive_count_from_slice)
 }
 
+/// Number of rendered drive-detail lines for one selected system.
+#[must_use]
+pub fn entry_detail_drive_count(state: &AppState, system_index: usize) -> usize {
+    if !state.drives_expanded {
+        return 0;
+    }
+    state
+        .systems
+        .get(system_index)
+        .map_or(0, |system| usize::from(valid_drive_detail_count(system)))
+}
+
+/// Number of rendered network-detail lines for one selected system.
+#[must_use]
+pub fn entry_detail_network_count(state: &AppState, system_index: usize) -> usize {
+    if !state.network_expanded {
+        return 0;
+    }
+    state
+        .systems
+        .get(system_index)
+        .map_or(0, |system| usize::from(valid_network_detail_count(system)))
+}
+
 fn valid_drive_count_from_slice(drives: &[crate::normalized::NormalizedDrive]) -> u16 {
     drives
         .iter()
@@ -805,6 +868,53 @@ fn valid_drive_count_from_slice(drives: &[crate::normalized::NormalizedDrive]) -
         .count()
         .try_into()
         .unwrap_or(u16::MAX)
+}
+
+fn valid_drive_detail_count(system: &SystemState) -> u16 {
+    let rows = valid_drive_count(system);
+    if system
+        .latest
+        .as_ref()
+        .and_then(|snapshot| snapshot.disk_io.as_ref())
+        .is_some()
+    {
+        rows.saturating_add(2) // table heading + aggregate I/O total
+    } else {
+        rows
+    }
+}
+
+/// Whether the current online fleet has a network telemetry family to align.
+/// Mixed old/new fleets use the new row for every online block once one
+/// current snapshot exposes it; legacy-only fleets retain four metric rows.
+#[must_use]
+pub fn fleet_has_network_telemetry(state: &AppState) -> bool {
+    state.systems.iter().any(|system| {
+        system.reachability == Reachability::Online
+            && system
+                .latest
+                .as_ref()
+                .and_then(|snapshot| snapshot.network.as_ref())
+                .is_some()
+    })
+}
+
+/// Number of rows in an online normal-view block before optional details.
+#[must_use]
+pub fn normal_base_height(state: &AppState) -> u16 {
+    if fleet_has_network_telemetry(state) {
+        6
+    } else {
+        5
+    }
+}
+
+fn valid_network_detail_count(system: &SystemState) -> u16 {
+    system.latest.as_ref().map_or(0, |snapshot| {
+        snapshot.network.as_ref().map_or(0, |network| {
+            1_u16.saturating_add(network.interfaces.len().try_into().unwrap_or(u16::MAX))
+        })
+    })
 }
 
 #[cfg(test)]
@@ -1739,6 +1849,7 @@ mod tests {
             active_pane: Pane::Systems,
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
+            network_expanded: false,
             selection_highlight_active: false,
             eggpool: None,
         };
@@ -1999,6 +2110,36 @@ mod tests {
         state.apply_action(Action::ToggleSystemView);
         assert_eq!(state.system_view_mode, SystemViewMode::Normal);
         assert!(state.drives_expanded);
+    }
+
+    #[test]
+    fn network_expansion_is_independent_and_legacy_is_a_noop() {
+        let config = test_config_with_ids(&["live"]);
+        let mut state = AppState::from_config(&config);
+        state.systems[0].reachability = Reachability::Online;
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v2_payload(
+            &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 10,
+                    aggregate_tx_bytes_per_sec: 20,
+                    aggregate_rx_capacity_bps: None,
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+        ));
+        state.apply_action(Action::ToggleDrives);
+        state.apply_action(Action::ToggleNetwork);
+        assert!(state.drives_expanded);
+        assert!(state.network_expanded);
+        assert_eq!(entry_height(&state, 0), 7);
+
+        let mut legacy = AppState::from_config(&config);
+        legacy.systems[0].reachability = Reachability::Online;
+        legacy.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        legacy.apply_action(Action::ToggleNetwork);
+        assert!(!legacy.network_expanded);
+        assert_eq!(entry_height(&legacy, 0), 5);
     }
 
     #[test]

@@ -21,8 +21,8 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `version`, `eggpool` |
 | `update` | `src/update.rs` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings) |
 | `config/*` | `src/config/*.rs` | Config ownership split (façade `src/config.rs` re-exports `crate::config::X`): model entries/limits/primitives, store coordination + atomic persistence + errors, violation kinds, cross-process locking |
-| `state` | `src/state.rs` | `AppState` reducer, viewport logic, display order, transient selection highlight; per-system `offline_reason` provenance set from accepted failures, cleared by accepted successes |
-| `action` | `src/action.rs` | `Action` enum (14 variants including Plan 087's `ClearSelectionHighlight`) |
+| `state` | `src/state.rs` | `AppState` reducer, fleet-aware mixed-height viewport logic, display order, independent drive/network expansions, transient selection highlight, and offline provenance |
+| `action` | `src/action.rs` | `Action` enum including `ToggleDrives`, `ToggleNetwork`, and Plan 087's `ClearSelectionHighlight` |
 
 ### Polling
 
@@ -48,8 +48,8 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 |--------|------|---------|
 | `ui/mod` | `src/ui/mod.rs` | Render dispatcher; dispatches on `active_pane` and `system_view_mode` |
 | `ui/layout` | `src/ui/layout.rs` | Viewport computation (visible systems, rect positions) |
-| `ui/system_block` | `src/ui/system_block.rs` | Normal-view system rendering (5-row blocks) |
-| `ui/condensed` | `src/ui/condensed.rs` | Condensed one-row fleet view (Wide/Medium/Narrow/Minimal tiers) |
+| `ui/system_block` | `src/ui/system_block.rs` | Normal-view system rendering (legacy 5-row or network-capable 6-row blocks) |
+| `ui/condensed` | `src/ui/condensed.rs` | Condensed one-row fleet view with NET-aware Wide/Medium/Narrow/Minimal tiers |
 | `ui/bar` | `src/ui/bar.rs` | Reusable ASCII usage bar widget |
 | `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages, load averages) |
 | `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config and terminal-too-small messages |
@@ -127,6 +127,7 @@ struct AppState {
     active_pane: Pane,              // Systems or Eggpool
     system_view_mode: SystemViewMode, // Normal or Condensed
     drives_expanded: bool,
+    network_expanded: bool,
     selection_highlight_active: bool,  // Plan 087: transient reverse-video highlight
     eggpool: Option<EggpoolState>,
 }
@@ -157,6 +158,7 @@ never activate the Systems-device highlight.
 | `h`/`l` | Previous/next pane |
 | `v` | Toggle normal/condensed view |
 | `e` | Toggle drive expansion |
+| `n` | Toggle network detail expansion; legacy systems are a no-op |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
 | `Ctrl-R` | Reload Systems config and replace/poll endpoints; on EggPool, refresh pane |
@@ -169,8 +171,10 @@ Header line drops lower-priority segments as width decreases:
 - < 50 cols: no OS
 - < 80 cols: no architecture
 
-Condensed-view column priority (Wide ≥ 64, Medium 48-63, Narrow 30-47,
-Minimal < 30) drops IOWAIT before LOAD before DISK before MEM.
+Condensed-view tiers (Wide ≥ 64, Medium 48-63, Narrow 30-47, Minimal < 30)
+place NET between DISK and LOAD where it fits: Wide has NET/LOAD/IOWAIT,
+Medium has NET/LOAD, Narrow has NET, and Minimal keeps HOST/CPU/MEM. Natural
+width fallback may narrow the tier or truncate HOST, never numeric cells.
 
 Plan 087 also adds a strict integer-safe compact-mode policy for the
 normal metric rows: when the longest *natural* suffix across the
@@ -184,14 +188,17 @@ I/O-wait value, instead of rendering a placeholder.
 
 ### UI views
 
-**Normal view** (`ui/system_block.rs`): 5-row blocks per system:
+**Normal view** (`ui/system_block.rs`): legacy blocks have five rows; when any
+online snapshot exposes network telemetry, all online blocks have six aligned
+rows:
 1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
+6. NET aggregate bar, fleet-wide for mixed old/new systems
 
-The four metric rows share one fleet-wide label width and one
+The active metric rows share one fleet-wide label width and one
 fleet-wide bar width via `build_metric_rows`,
 `compute_fleet_metric_layout`, `resolve_system_suffixes`, and
 `render_metric_row`. The opening `[` and closing `]` columns always
@@ -237,6 +244,14 @@ Minimal (`name  percent`). Plan 086 centralizes the
 constants so the fit calculation and renderer share the same
 structural cells, and rewrites the Compact fallback so Compact
 considers a truncated name before falling to Minimal.
+
+When v2 disk-I/O telemetry is present, `e` adds a heading, optional `R/s` and
+`W/s` columns, and an independent `I/O TOTAL` aggregate line. A drive gets a
+rate only when exactly one normalized device record names that mount;
+ambiguous or missing associations render `—`, and the aggregate is never
+recomputed from visible drive rows. `n` independently adds an aggregate
+network summary followed by interface rows, including loopback when supplied;
+unknown capacity preserves Rx/s and Tx/s while leaving utilization `—`.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with
 tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47,

@@ -32,6 +32,8 @@ pub enum Action {
     ToggleSystemView,
     /// Toggle drive details for the selected system.
     ToggleDrives,
+    /// Toggle network details for the selected system.
+    ToggleNetwork,
     /// Trigger an immediate poll cycle (handled by the scheduler).
     RefreshNow,
     /// Plan 087: drop the visual selection highlight (the reversed
@@ -67,6 +69,7 @@ mod tests {
             Action::NextPane,
             Action::ToggleSystemView,
             Action::ToggleDrives,
+            Action::ToggleNetwork,
             Action::RefreshNow,
             Action::ClearSelectionHighlight,
             Action::Resize {
@@ -86,16 +89,17 @@ mod tests {
         assert!(matches!(actions[7], Action::NextPane));
         assert!(matches!(actions[8], Action::ToggleSystemView));
         assert!(matches!(actions[9], Action::ToggleDrives));
-        assert!(matches!(actions[10], Action::RefreshNow));
-        assert!(matches!(actions[11], Action::ClearSelectionHighlight));
+        assert!(matches!(actions[10], Action::ToggleNetwork));
+        assert!(matches!(actions[11], Action::RefreshNow));
+        assert!(matches!(actions[12], Action::ClearSelectionHighlight));
         assert!(matches!(
-            actions[12],
+            actions[13],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[13], Action::Quit));
+        assert!(matches!(actions[14], Action::Quit));
     }
 
     #[test]

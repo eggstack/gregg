@@ -134,6 +134,7 @@ gregg update                       # update the client
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
 - `e`: expand/collapse drives for the selected system
+- `n`: expand/collapse network details for the selected system
 - `Ctrl-R`: reload config and poll immediately
 
 ## Docs

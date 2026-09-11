@@ -2,13 +2,15 @@
 
 //! Normal-view system block rendering.
 //!
-//! The five-row online block is laid out in this fixed order:
+//! The online block is laid out in this fixed order:
 //!
 //! 1. Header line (priority-aware in `text::header_line`)
 //! 2. CPU row
 //! 3. MEM row
 //! 4. SWP or COMMIT row (platform-determined)
-//! 5. DISK aggregate row, optionally followed by per-drive detail rows
+//! 5. DISK aggregate row
+//! 6. NET aggregate row when the current fleet has any network telemetry,
+//!    optionally followed by per-drive and network detail rows
 //!
 //! Rows 2 through 5 share one fleet-wide geometry so the opening and
 //! closing brackets line up exactly across every online system. The
@@ -61,7 +63,7 @@ fn metric_compact_prefix_width(label_width: u16) -> u16 {
 /// Render a normal-view online system block using the precomputed
 /// fleet-wide metric geometry.
 ///
-/// `rows` supplies this system's four metric rows when the caller has
+/// `rows` supplies this system's metric rows when the caller has
 /// them from a shared per-render memo; identical snapshots produce
 /// identical rows, so `None` only triggers a local rebuild fallback.
 #[allow(
@@ -73,12 +75,13 @@ pub(crate) fn render_online(
     f: &mut Frame,
     area: Rect,
     system: &SystemState,
-    rows: Option<&[MetricRow; 4]>,
+    rows: Option<&MetricRows>,
     fleet_layout: &MetricFleetLayout,
     is_visually_selected: bool,
     drive_rows_visible: usize,
+    network_rows_visible: usize,
 ) {
-    if area.height < 5 || area.width == 0 {
+    if area.width == 0 {
         return;
     }
 
@@ -86,6 +89,13 @@ pub(crate) fn render_online(
         render_waiting(f, area, system, is_visually_selected);
         return;
     };
+    let base_height = rows.map_or_else(
+        || if snap.network.is_some() { 6 } else { 5 },
+        MetricRows::base_height,
+    );
+    if area.height < base_height {
+        return;
+    }
 
     let sel_style = if is_visually_selected {
         Style::default().add_modifier(Modifier::REVERSED)
@@ -102,44 +112,40 @@ pub(crate) fn render_online(
     // geometry so the opening/closing brackets line up with every other
     // online system in the same render.
     let rebuilt;
-    let rows: &[MetricRow; 4] = if let Some(rows) = rows {
+    let rows: &MetricRows = if let Some(rows) = rows {
         rows
     } else {
-        rebuilt = build_metric_rows(snap);
+        rebuilt = build_metric_rows(snap, snap.network.is_some());
         &rebuilt
     };
     let suffixes = resolve_system_suffixes(rows, area.width, *fleet_layout);
 
-    let row_areas = [
-        Rect {
-            y: area.y.saturating_add(1),
-            height: 1,
-            ..area
-        },
-        Rect {
-            y: area.y.saturating_add(2),
-            height: 1,
-            ..area
-        },
-        Rect {
-            y: area.y.saturating_add(3),
-            height: 1,
-            ..area
-        },
-        Rect {
-            y: area.y.saturating_add(4),
-            height: 1,
-            ..area
-        },
-    ];
-
-    for (idx, row) in rows.iter().enumerate() {
-        render_metric_row(f, row_areas[idx], row, fleet_layout, &suffixes[idx]);
+    for (idx, (row, suffix)) in rows.as_slice().iter().zip(suffixes.iter()).enumerate() {
+        render_metric_row(
+            f,
+            Rect {
+                y: area
+                    .y
+                    .saturating_add(1 + u16::try_from(idx).unwrap_or(u16::MAX)),
+                height: 1,
+                ..area
+            },
+            row,
+            fleet_layout,
+            suffix,
+        );
     }
 
     // Drive-detail visibility is governed by the precomputed viewport entry,
     // whose visibility is based on logical selection.
-    render_drive_details(f, area, snap, drive_rows_visible);
+    render_drive_details(f, area, snap, drive_rows_visible, base_height);
+    render_network_details(
+        f,
+        area,
+        snap,
+        network_rows_visible,
+        base_height.saturating_add(u16::try_from(drive_rows_visible).unwrap_or(u16::MAX)),
+    );
 }
 
 fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_visually_selected: bool) {
@@ -182,7 +188,7 @@ impl MetricRow {
     /// unavailable marker.
     fn default_suffix(&self) -> String {
         match self.pct {
-            None => "—".to_string(),
+            None => self.detail.clone().unwrap_or_else(|| "—".to_string()),
             Some(p) => {
                 let pct = text::format_pct(p);
                 match &self.detail {
@@ -209,12 +215,59 @@ impl MetricRow {
     }
 }
 
-/// Build the four metric rows for one snapshot.
-pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> [MetricRow; 4] {
+/// Fixed-capacity metric rows. NET is present only when the fleet policy
+/// requests it; the `len` field keeps the all-legacy layout at four rows.
+#[derive(Debug, Clone)]
+pub(crate) struct MetricRows {
+    rows: [MetricRow; 5],
+    len: usize,
+}
+
+pub(crate) trait MetricRowSet {
+    fn rows(&self) -> &[MetricRow];
+}
+
+impl MetricRows {
+    fn as_slice(&self) -> &[MetricRow] {
+        &self.rows[..self.len]
+    }
+
+    fn base_height(&self) -> u16 {
+        u16::try_from(self.len + 1).unwrap_or(u16::MAX)
+    }
+}
+
+impl MetricRowSet for MetricRows {
+    fn rows(&self) -> &[MetricRow] {
+        self.as_slice()
+    }
+}
+
+impl MetricRowSet for [MetricRow; 4] {
+    fn rows(&self) -> &[MetricRow] {
+        self
+    }
+}
+
+impl MetricRowSet for [MetricRow; 5] {
+    fn rows(&self) -> &[MetricRow] {
+        self
+    }
+}
+
+/// Build metric rows for one snapshot. `include_network` is the fleet-wide
+/// mixed-version alignment decision made by the render dispatcher.
+pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot, include_network: bool) -> MetricRows {
     let cpu = MetricRow {
         label: "CPU",
         pct: Some(snap.usage_pct),
-        detail: Some(format!("{} cores", snap.logical_cores)),
+        detail: Some(format!(
+            "{} cores{}",
+            snap.logical_cores,
+            snap.cpu_frequency_hz
+                .map(|hz| format!(" {}", text::format_frequency(hz)))
+                .unwrap_or_default()
+        )),
     };
 
     let mem = MetricRow {
@@ -277,7 +330,27 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> [MetricRow; 4] {
         },
     };
 
-    [cpu, mem, third, disk]
+    let network = match snap.network.as_ref() {
+        Some(network) => MetricRow {
+            label: "NET",
+            pct: network.aggregate_utilization_pct(),
+            detail: Some(format!(
+                "{} rx {} tx",
+                text::format_rate(network.aggregate_rx_bytes_per_sec),
+                text::format_rate(network.aggregate_tx_bytes_per_sec)
+            )),
+        },
+        None => MetricRow {
+            label: "NET",
+            pct: None,
+            detail: None,
+        },
+    };
+
+    MetricRows {
+        rows: [cpu, mem, third, disk, network],
+        len: if include_network { 5 } else { 4 },
+    }
 }
 
 /// Fleet-wide metric geometry shared by every online system block.
@@ -293,7 +366,7 @@ pub(crate) struct MetricFleetLayout {
     /// participating system (so mixed `SWP`/`COMMIT` fleets pick the
     /// wider label).
     pub label_width: u16,
-    /// Common bar width shared by all four metric rows and every
+    /// Common bar width shared by all active metric rows and every
     /// online system block in the same render.
     pub bar_width: u16,
     /// Plan 087: when false, normal metric rows render as bar-only —
@@ -320,7 +393,7 @@ impl MetricFleetLayout {
 /// Compute the shared fleet metric geometry from the rows of every
 /// participating online system.
 ///
-/// `rows` is an iterator of references to each system's four metric
+/// `rows` is an iterator of references to each system's active metric
 /// rows. The resulting layout picks the widest label seen across the
 /// fleet (so mixed Linux/Windows fleets keep `COMMIT` wider than `SWP`)
 /// and reserves a bar width that is uniform across every system.
@@ -331,15 +404,16 @@ impl MetricFleetLayout {
 /// pure bar-only rows, the bar grows by the cell that would otherwise
 /// be the suffix separator, and the existing Plan 085/086 percentage
 /// fallback is not consulted for visible output (no suffix is rendered).
-pub(crate) fn compute_fleet_metric_layout<'a, I>(rows: I, width: u16) -> MetricFleetLayout
+pub(crate) fn compute_fleet_metric_layout<'a, I, T>(rows: I, width: u16) -> MetricFleetLayout
 where
-    I: IntoIterator<Item = &'a [MetricRow; 4]>,
+    I: IntoIterator<Item = &'a T>,
+    T: MetricRowSet + 'a,
 {
-    let collected: Vec<&'a [MetricRow; 4]> = rows.into_iter().collect();
+    let collected: Vec<&'a T> = rows.into_iter().collect();
 
     let mut label_width: u16 = 0;
     for system_rows in &collected {
-        for row in *system_rows {
+        for row in system_rows.rows() {
             label_width = label_width.max(row.label_width());
         }
     }
@@ -351,12 +425,11 @@ where
     // an already-truncated result of the suffix resolver.
     let mut max_natural_suffix: usize = 0;
     for system_rows in &collected {
-        let natural = [
-            system_rows[0].default_suffix(),
-            system_rows[1].default_suffix(),
-            system_rows[2].default_suffix(),
-            system_rows[3].default_suffix(),
-        ];
+        let natural: Vec<String> = system_rows
+            .rows()
+            .iter()
+            .map(MetricRow::default_suffix)
+            .collect();
         let w = max_suffix_display(&natural);
         if w > max_natural_suffix {
             max_natural_suffix = w;
@@ -393,7 +466,7 @@ where
     // suffix from the full budget.
     let mut max_suffix: usize = 0;
     for system_rows in &collected {
-        let suffixes = resolve_metric_suffixes(system_rows, total_suffix_budget);
+        let suffixes = resolve_metric_suffixes(*system_rows, total_suffix_budget);
         let width_for_system = max_suffix_display(&suffixes);
         if width_for_system > max_suffix {
             max_suffix = width_for_system;
@@ -440,13 +513,13 @@ pub(crate) fn should_suppress_suffix(width: u16, longest_suffix_width: usize) ->
 /// every row renders empty suffixes and the renderer omits the `] `
 /// separator so the bar can claim the cells that would otherwise be
 /// the suffix budget.
-fn resolve_system_suffixes(
-    rows: &[MetricRow; 4],
+fn resolve_system_suffixes<T: MetricRowSet>(
+    rows: &T,
     width: u16,
     fleet_layout: MetricFleetLayout,
-) -> [String; 4] {
+) -> Vec<String> {
     if !fleet_layout.show_suffix {
-        return [String::new(), String::new(), String::new(), String::new()];
+        return rows.rows().iter().map(|_| String::new()).collect();
     }
     let prefix_w = metric_prefix_width(fleet_layout.label_width);
     let after_bracket_w: u16 = METRIC_SUFFIX_GAP_CELLS;
@@ -456,20 +529,15 @@ fn resolve_system_suffixes(
     resolve_metric_suffixes(rows, usize::from(suffix_budget))
 }
 
-fn resolve_metric_suffixes(rows: &[MetricRow; 4], budget: usize) -> [String; 4] {
+fn resolve_metric_suffixes<T: MetricRowSet>(rows: &T, budget: usize) -> Vec<String> {
     if budget == 0 {
         // No room for a suffix at all. The renderer still emits "] "
         // for layout consistency; an empty suffix keeps brackets adjacent.
-        return [String::new(), String::new(), String::new(), String::new()];
+        return rows.rows().iter().map(|_| String::new()).collect();
     }
 
     // First pass: full details.
-    let mut suffixes = [
-        rows[0].default_suffix(),
-        rows[1].default_suffix(),
-        rows[2].default_suffix(),
-        rows[3].default_suffix(),
-    ];
+    let mut suffixes: Vec<String> = rows.rows().iter().map(MetricRow::default_suffix).collect();
     if max_suffix_display(&suffixes) <= budget {
         return suffixes;
     }
@@ -477,22 +545,24 @@ fn resolve_metric_suffixes(rows: &[MetricRow; 4], budget: usize) -> [String; 4] 
     // Second pass: drop optional details. Some metrics are unavailable
     // (no percentage) or have no detail field; those already collapsed
     // to the percentage-only form on the first pass.
-    suffixes = [
-        rows[0].percentage_only_suffix(),
-        rows[1].percentage_only_suffix(),
-        rows[2].percentage_only_suffix(),
-        rows[3].percentage_only_suffix(),
-    ];
+    suffixes = rows
+        .rows()
+        .iter()
+        .map(MetricRow::percentage_only_suffix)
+        .collect();
     if max_suffix_display(&suffixes) <= budget {
         return suffixes;
     }
 
     // Third pass: truncate every suffix so the longest one fits. The
     // helper guarantees the returned width is `<= budget`.
-    suffixes.map(|s| bar::truncate_to_cells(&s, budget))
+    suffixes
+        .into_iter()
+        .map(|s| bar::truncate_to_cells(&s, budget))
+        .collect()
 }
 
-fn max_suffix_display(suffixes: &[String; 4]) -> usize {
+fn max_suffix_display(suffixes: &[String]) -> usize {
     suffixes
         .iter()
         .map(|s| UnicodeWidthStr::width(s.as_str()))
@@ -572,20 +642,55 @@ fn render_drive_details(
     area: Rect,
     snap: &NormalizedSnapshot,
     drive_rows_visible: usize,
+    base_height: u16,
 ) {
     if drive_rows_visible == 0 {
         return;
     }
-    let Some(drives) = snap.drives.as_deref() else {
-        return;
-    };
+    let drives = snap.drives.as_deref().unwrap_or(&[]);
     // Plan 085: compute the table layout from every eligible drive so
     // vertical clipping never shifts horizontal columns.
-    let lines = text::render_drive_detail_lines(drives, area.width);
+    let lines = text::render_drive_detail_lines_with_io(drives, snap.disk_io.as_ref(), area.width);
     for (offset, line) in lines.into_iter().take(drive_rows_visible).enumerate() {
         let row = area
             .y
-            .saturating_add(5 + u16::try_from(offset).unwrap_or(u16::MAX));
+            .saturating_add(base_height + u16::try_from(offset).unwrap_or(u16::MAX));
+        if row >= area.y.saturating_add(area.height) {
+            break;
+        }
+        bar::render_text_line(
+            f,
+            Rect {
+                y: row,
+                height: 1,
+                ..area
+            },
+            &line,
+        );
+    }
+}
+
+fn render_network_details(
+    f: &mut Frame,
+    area: Rect,
+    snap: &NormalizedSnapshot,
+    rows_visible: usize,
+    start_offset: u16,
+) {
+    if rows_visible == 0 {
+        return;
+    }
+    let Some(network) = snap.network.as_ref() else {
+        return;
+    };
+    for (offset, line) in text::render_network_detail_lines(network, area.width)
+        .into_iter()
+        .take(rows_visible)
+        .enumerate()
+    {
+        let row = area
+            .y
+            .saturating_add(start_offset.saturating_add(u16::try_from(offset).unwrap_or(u16::MAX)));
         if row >= area.y.saturating_add(area.height) {
             break;
         }
@@ -1170,8 +1275,8 @@ mod tests {
             },
         ]);
 
-        let rows = build_metric_rows(&snap);
-        let disk = &rows[3];
+        let rows = build_metric_rows(&snap, false);
+        let disk = &rows.rows()[3];
         let pct = disk.pct.expect("disk pct available");
         assert!((pct - 80.0).abs() < 0.01, "percentage = {pct}");
         let detail = disk.detail.as_ref().expect("disk detail present");
@@ -1209,13 +1314,40 @@ mod tests {
             },
         ]);
 
-        let rows = build_metric_rows(&snap);
-        let disk = &rows[3];
+        let rows = build_metric_rows(&snap, false);
+        let disk = &rows.rows()[3];
         let detail = disk.detail.as_ref().expect("disk detail present");
         assert!(
             detail.contains("160.0 GiB / 200.0 GiB"),
             "fallback availability still uses total denominator, got {detail:?}"
         );
+    }
+
+    #[test]
+    fn cpu_frequency_and_network_rows_are_optional_and_truthful() {
+        let payload = gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+            .cpu_frequency_hz(Some(2_400_000_000))
+            .network(Some(gregg_protocol::v2::NetworkPayload {
+                aggregate_rx_bytes_per_sec: 10 * 1024 * 1024,
+                aggregate_tx_bytes_per_sec: 5 * 1024 * 1024,
+                aggregate_rx_capacity_bps: None,
+                aggregate_tx_capacity_bps: None,
+                interfaces: vec![],
+            }))
+            .build_payload();
+        let snap = NormalizedSnapshot::from_v2_payload(&payload);
+        let rows = build_metric_rows(&snap, true);
+        assert_eq!(rows.rows().len(), 5);
+        assert!(rows.rows()[0].default_suffix().contains("2.40GHz"));
+        assert!(rows.rows()[4].pct.is_none());
+        assert!(rows.rows()[4].default_suffix().contains("MiB/s"));
+
+        let legacy = NormalizedSnapshot::from_v1(
+            &gregg_protocol::test_support::LinuxSnapshotBuilder::default().build(),
+        );
+        let legacy_rows = build_metric_rows(&legacy, false);
+        assert_eq!(legacy_rows.rows().len(), 4);
+        assert!(legacy_rows.rows().iter().all(|row| row.label != "NET"));
     }
 
     fn base_disk_snapshot() -> NormalizedSnapshot {

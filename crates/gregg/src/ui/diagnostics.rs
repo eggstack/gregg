@@ -45,14 +45,14 @@ pub fn render_key_hint(f: &mut Frame, area: Rect, state: &AppState) {
             }
         } else if area.width < 60 {
             if both {
-                "j/k select  h/l pane  v view  e drives  q quit"
+                "j/k select  h/l pane  v view  e drives  n net  q quit"
             } else {
-                "j/k select  v view  e drives  q quit"
+                "j/k select  v view  e drives  n net  q quit"
             }
         } else if both {
-            "j/k:select  h/l:pane  v:view  e:drives  Ctrl-R:refresh  q:quit"
+            "j/k:select  h/l:pane  v:view  e:drives  n:net  Ctrl-R:refresh  q:quit"
         } else {
-            "j/k:select  v:view  e:drives  Ctrl-R:refresh  q:quit"
+            "j/k:select  v:view  e:drives  n:net  Ctrl-R:refresh  q:quit"
         }
     };
     let color = if state.config_reload_error.is_some() {

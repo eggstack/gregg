@@ -27,6 +27,7 @@ impl Tier {
                 Column::Cpu,
                 Column::Mem,
                 Column::Disk,
+                Column::Net,
                 Column::Load,
                 Column::Iowait,
             ],
@@ -35,9 +36,16 @@ impl Tier {
                 Column::Cpu,
                 Column::Mem,
                 Column::Disk,
+                Column::Net,
                 Column::Load,
             ],
-            Tier::Narrow => &[Column::Host, Column::Cpu, Column::Mem, Column::Disk],
+            Tier::Narrow => &[
+                Column::Host,
+                Column::Cpu,
+                Column::Mem,
+                Column::Disk,
+                Column::Net,
+            ],
             Tier::Minimal => &[Column::Host, Column::Cpu, Column::Mem],
         }
     }
@@ -49,6 +57,7 @@ pub(crate) enum Column {
     Cpu,
     Mem,
     Disk,
+    Net,
     Load,
     Iowait,
 }
@@ -60,6 +69,7 @@ impl Column {
             Column::Cpu => "CPU",
             Column::Mem => "MEM",
             Column::Disk => "DISK",
+            Column::Net => "NET",
             Column::Load => "LOAD",
             Column::Iowait => "IOWAIT",
         }
@@ -85,6 +95,7 @@ pub(crate) struct CondensedTableLayout {
     cpu_width: usize,
     mem_width: usize,
     disk_width: usize,
+    net_width: usize,
     load_width: usize,
     iowait_width: usize,
     /// Display-cell width of every column plus the inter-column gap.
@@ -101,6 +112,7 @@ impl CondensedTableLayout {
             Column::Cpu => self.cpu_width,
             Column::Mem => self.mem_width,
             Column::Disk => self.disk_width,
+            Column::Net => self.net_width,
             Column::Load => self.load_width,
             Column::Iowait => self.iowait_width,
         }
@@ -127,6 +139,7 @@ struct PreformattedValues {
     cpu: String,
     mem: String,
     disk: String,
+    net: String,
     load: String,
     iowait: String,
 }
@@ -143,6 +156,7 @@ fn preformat_online(system: &SystemState) -> PreformattedValues {
             cpu: "—".into(),
             mem: "—".into(),
             disk: "—".into(),
+            net: "—".into(),
             load: "—".into(),
             iowait: "—".into(),
         };
@@ -153,6 +167,11 @@ fn preformat_online(system: &SystemState) -> PreformattedValues {
         || "—".to_string(),
         |aggregate| format!("{:.0}%", aggregate.usage_pct),
     );
+    let net = snap
+        .network
+        .as_ref()
+        .and_then(crate::normalized::NormalizedNetwork::aggregate_utilization_pct)
+        .map_or_else(|| "—".to_string(), |value| format!("{value:.0}%"));
     let load = snap
         .load
         .as_ref()
@@ -166,6 +185,7 @@ fn preformat_online(system: &SystemState) -> PreformattedValues {
         cpu,
         mem,
         disk,
+        net,
         load,
         iowait,
     }
@@ -179,6 +199,7 @@ fn column_max(values: &[PreformattedValues], column: Column) -> usize {
             Column::Cpu => cell_width(&v.cpu),
             Column::Mem => cell_width(&v.mem),
             Column::Disk => cell_width(&v.disk),
+            Column::Net => cell_width(&v.net),
             Column::Load => cell_width(&v.load),
             Column::Iowait => cell_width(&v.iowait),
         })
@@ -246,6 +267,7 @@ pub(crate) fn compute_condensed_table_layout(
             Column::Cpu,
             Column::Mem,
             Column::Disk,
+            Column::Net,
             Column::Load,
             Column::Iowait,
         ]
@@ -267,8 +289,9 @@ pub(crate) fn compute_condensed_table_layout(
                 Column::Cpu => widths[1],
                 Column::Mem => widths[2],
                 Column::Disk => widths[3],
-                Column::Load => widths[4],
-                Column::Iowait => widths[5],
+                Column::Net => widths[4],
+                Column::Load => widths[5],
+                Column::Iowait => widths[6],
                 Column::Host => 0,
             })
             .sum();
@@ -303,7 +326,7 @@ pub(crate) fn compute_condensed_table_layout(
     }
 }
 
-fn total_layout_width(tier: Tier, widths: &[usize; 6]) -> usize {
+fn total_layout_width(tier: Tier, widths: &[usize; 7]) -> usize {
     let columns = tier.columns();
     let mut total = 0usize;
     for (idx, column) in columns.iter().enumerate() {
@@ -312,8 +335,9 @@ fn total_layout_width(tier: Tier, widths: &[usize; 6]) -> usize {
             Column::Cpu => widths[1],
             Column::Mem => widths[2],
             Column::Disk => widths[3],
-            Column::Load => widths[4],
-            Column::Iowait => widths[5],
+            Column::Net => widths[4],
+            Column::Load => widths[5],
+            Column::Iowait => widths[6],
         };
         if idx > 0 {
             total += COLUMN_GAP_CELLS;
@@ -323,15 +347,16 @@ fn total_layout_width(tier: Tier, widths: &[usize; 6]) -> usize {
     total
 }
 
-fn build_layout(tier: Tier, widths: [usize; 6], total: usize) -> CondensedTableLayout {
+fn build_layout(tier: Tier, widths: [usize; 7], total: usize) -> CondensedTableLayout {
     CondensedTableLayout {
         tier,
         host_width: widths[0],
         cpu_width: widths[1],
         mem_width: widths[2],
         disk_width: widths[3],
-        load_width: widths[4],
-        iowait_width: widths[5],
+        net_width: widths[4],
+        load_width: widths[5],
+        iowait_width: widths[6],
         total_width: total,
     }
 }
@@ -369,6 +394,7 @@ pub(crate) fn render_entry(
     layout: &CondensedTableLayout,
     is_visually_selected: bool,
     drive_rows_visible: usize,
+    network_rows_visible: usize,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -389,18 +415,52 @@ pub(crate) fn render_entry(
     );
 
     if system.reachability == Reachability::Online && drive_rows_visible > 0 {
-        if let Some(drives) = system
-            .latest
-            .as_ref()
-            .and_then(|snapshot| snapshot.drives.as_deref())
-        {
+        if let Some(snapshot) = system.latest.as_ref() {
+            let drives = snapshot.drives.as_deref().unwrap_or(&[]);
             // Plan 085: compute the table layout from every eligible
             // drive so vertical clipping never shifts horizontal columns.
-            let lines = text::render_drive_detail_lines(drives, area.width);
+            let lines = text::render_drive_detail_lines_with_io(
+                drives,
+                system
+                    .latest
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.disk_io.as_ref()),
+                area.width,
+            );
             for (offset, line) in lines.into_iter().take(drive_rows_visible).enumerate() {
                 let y = area
                     .y
                     .saturating_add(1 + u16::try_from(offset).unwrap_or(u16::MAX));
+                if y >= area.y.saturating_add(area.height) {
+                    break;
+                }
+                f.render_widget(
+                    Line::from(Span::raw(line)),
+                    Rect {
+                        y,
+                        height: 1,
+                        ..area
+                    },
+                );
+            }
+        }
+    }
+
+    if system.reachability == Reachability::Online && network_rows_visible > 0 {
+        if let Some(network) = system
+            .latest
+            .as_ref()
+            .and_then(|snapshot| snapshot.network.as_ref())
+        {
+            let drive_offset = u16::try_from(drive_rows_visible).unwrap_or(u16::MAX);
+            for (offset, line) in text::render_network_detail_lines(network, area.width)
+                .into_iter()
+                .take(network_rows_visible)
+                .enumerate()
+            {
+                let y = area
+                    .y
+                    .saturating_add(1 + drive_offset + u16::try_from(offset).unwrap_or(u16::MAX));
                 if y >= area.y.saturating_add(area.height) {
                     break;
                 }
@@ -429,6 +489,7 @@ fn render_online_row(system: &SystemState, layout: &CondensedTableLayout) -> Str
             Column::Cpu => &preformatted.cpu,
             Column::Mem => &preformatted.mem,
             Column::Disk => &preformatted.disk,
+            Column::Net => &preformatted.net,
             Column::Load => &preformatted.load,
             Column::Iowait => &preformatted.iowait,
         };
@@ -575,6 +636,29 @@ mod tests {
         assert!(line.contains("50%"), "{line:?}");
         assert!(line.contains("0.32"), "{line:?}");
         assert!(line.contains("18.2"), "{line:?}");
+    }
+
+    #[test]
+    fn network_column_uses_aggregate_utilization_and_shared_geometry() {
+        let mut network_system = system("net");
+        network_system.latest = Some(NormalizedSnapshot::from_v2_payload(
+            &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 500,
+                    aggregate_tx_bytes_per_sec: 0,
+                    aggregate_rx_capacity_bps: Some(8_000),
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+        ));
+        let layout = compute_condensed_table_layout(&[network_system.clone()], 80);
+        let line = render_online_row(&network_system, &layout);
+
+        assert!(layout.tier().columns().contains(&Column::Net));
+        assert_eq!(layout.column_width(Column::Net), 3);
+        assert!(line.contains("50%"), "{line:?}");
+        assert_eq!(cell_width(&line), layout.total_width());
     }
 
     #[test]

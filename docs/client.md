@@ -61,6 +61,7 @@ the command reports an already-configured endpoint conflict.
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
 - `e`: expand/collapse drives for the selected system
+- `n`: expand/collapse network details for the selected system
 - `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint
   replacement, and poll it immediately; on EggPool, refresh that pane
 
@@ -71,7 +72,7 @@ command channel is full, replacement delivery waits in the event loop's
 pending-command branch so input and poll results remain responsive.
 
 The selected system keeps its logical selection (`e` still toggles its drive
-details), but the reverse-video highlight is transient — it appears when you
+details and `n` toggles network details independently), but the reverse-video highlight is transient — it appears when you
 navigate, and fades after roughly ten seconds of inactivity so stale
 reverse-video does not survive a quiet screen. Leaving the Systems pane or
 returning to it does not extend or re-trigger the highlight.
