@@ -28,7 +28,7 @@ Runs `cargo fmt --all -- --check` followed by `cargo test --workspace`. Does not
 ./scripts/check-local.sh --release
 ```
 
-Adds: Clippy, documentation, clean-tree check, version consistency, package lists, installed-binary v2 loopback smoke, and protocol dry-run.
+Adds: Clippy, documentation, clean-tree check, version consistency, per-crate `cargo package --list` (all four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`), installed-binary v2 loopback smoke, and protocol dry-run.
 
 **Platform-native collector tests (run separately when focused coverage is needed):**
 
@@ -48,7 +48,9 @@ cargo test -p gregg -- <test_name>
 
 For Systems endpoint-reload changes, include the production-path bounded
 command-pressure and sequential replacement tests in `cargo test -p gregg
---bin gregg`. A successful reload must await the existing bounded scheduler
+--bin gregg` (they live in `src/main.rs`; the offline-retry scheduler
+invariants live in `src/scheduler.rs` under plain `cargo test -p gregg`).
+A successful reload must await the existing bounded scheduler
 sender; do not make the channel unbounded or discard replacement-send errors.
 
 **CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings errors. Local clippy pedantic is a warning only.

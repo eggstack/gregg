@@ -15,16 +15,17 @@ Use this when implementing features that change crate boundaries, module structu
 
 | Document | Scope |
 |----------|-------|
-| [`overview.md`](../../architecture/overview.md) | Bird's-eye view: data flow, module map, index of all documents |
-| [`gregg-protocol.md`](../../architecture/gregg-protocol.md) | Deep dive: protocol crate — wire types, schema versions, validation, test support |
-| [`greggd-daemon.md`](../../architecture/greggd-daemon.md) | Deep dive: daemon crate — collectors, sampler, HTTP server, service management |
-| [`gregg-client.md`](../../architecture/gregg-client.md) | Deep dive: client crate — CLI, polling, state engine, TUI, EggPool |
-| [`collectors.md`](../../architecture/collectors.md) | Deep dive: platform collectors — Linux, macOS, Windows native metric collection |
-| [`scripts-and-packaging.md`](../../architecture/scripts-and-packaging.md) | Deep dive: scripts, installers, service definitions, CI |
-| [`workspace.md`](../../architecture/workspace.md) | Cargo workspace layout, member responsibilities, dependency direction, crate-boundary rules |
-| [`protocol.md`](../../architecture/protocol.md) | Schema-version wire contract, capabilities, validation, compatibility policy |
-| [`error-conventions.md`](../../architecture/error-conventions.md) | Typed error boundaries, command-level diagnostics, wire response constraints |
-| [`macos-collector-notes.md`](../../architecture/macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / top / vm_stat |
+| [`overview.md`](../../../architecture/overview.md) | Bird's-eye view: data flow, module map, index of all documents |
+| [`gregg-protocol.md`](../../../architecture/gregg-protocol.md) | Deep dive: protocol crate — wire types, schema versions, validation, test support |
+| [`gregg-update.md`](../../../architecture/gregg-update.md) | Deep dive: updater crate — version/target policy, download/verify/stage/replace mechanics |
+| [`greggd-daemon.md`](../../../architecture/greggd-daemon.md) | Deep dive: daemon crate — collectors, sampler, HTTP server, service management |
+| [`gregg-client.md`](../../../architecture/gregg-client.md) | Deep dive: client crate — CLI, polling, state engine, TUI, EggPool |
+| [`collectors.md`](../../../architecture/collectors.md) | Deep dive: platform collectors — Linux, macOS, Windows native metric collection |
+| [`scripts-and-packaging.md`](../../../architecture/scripts-and-packaging.md) | Deep dive: scripts, installers, service definitions, CI |
+| [`workspace.md`](../../../architecture/workspace.md) | Cargo workspace layout, member responsibilities, dependency direction, crate-boundary rules |
+| [`protocol.md`](../../../architecture/protocol.md) | Schema-version wire contract, capabilities, validation, compatibility policy |
+| [`error-conventions.md`](../../../architecture/error-conventions.md) | Typed error boundaries, command-level diagnostics, wire response constraints |
+| [`macos-collector-notes.md`](../../../architecture/macos-collector-notes.md) | Expected differences between macOS collector and Activity Monitor / top / vm_stat |
 
 ## Supporting documentation surfaces
 

@@ -113,6 +113,7 @@ Work is plan-driven under `plans/`. Register new plans in `plans/README.md`, clo
 | Document | Scope |
 |----------|-------|
 | `architecture/overview.md` | Bird's-eye view, data flow, index |
+| `architecture/README.md` | Directory index and purpose |
 | `architecture/gregg-protocol.md` | Wire types, validation, test support |
 | `architecture/gregg-update.md` | Shared self-update mechanics, targets, staging |
 | `architecture/greggd-daemon.md` | Collectors, sampler, server, service mgmt |
@@ -126,4 +127,4 @@ Work is plan-driven under `plans/`. Register new plans in `plans/README.md`, clo
 
 ## OpenCode config
 
-No `opencode.json`/`.cursorrules`. Skills in `.opencode/skills/`, load via skill tool as needed: `rust-workspace`, `architecture-docs`, `plans-workflow`, `protocol-wire`, `platform-collectors`, `greggd-daemon`, `gregg-client`, `release-process`, `eggpool`.
+No `opencode.json`/`.cursorrules`. Skills live in `.opencode/skills/` (there is no top-level `.skills/` or `skills/` directory), load via skill tool as needed: `rust-workspace`, `architecture-docs`, `plans-workflow`, `protocol-wire`, `platform-collectors`, `greggd-daemon`, `gregg-client`, `release-process`, `eggpool`.

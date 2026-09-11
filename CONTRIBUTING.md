@@ -38,8 +38,10 @@ product contract.
 - Unsafe Rust is permitted only in narrowly scoped modules:
   `crates/greggd/src/collector/linux/source.rs` (statvfs),
   `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI),
-  `crates/gregg/src/` (Unix flock + Windows file lock),
-  `crates/greggd/src/collector/windows/source.rs`.
+  `crates/greggd/src/collector/windows/source.rs`,
+  `crates/greggd/src/startup/install.rs` (privilege probe),
+  `crates/gregg/src/config/lock.rs` + `config/store.rs` + `src/bin/lock_helper.rs`
+  (Unix flock + Windows file lock), `crates/gregg/src/cli.rs` (executable probe).
   Every unsafe block must have a safety comment.
 - Dependencies must solve a concrete version-1 requirement. Avoid adding
   dependencies without discussion.
