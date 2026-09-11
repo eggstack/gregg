@@ -1,6 +1,6 @@
 # Plan 110: TUI clock, disk-I/O, and network integration
 
-Status: ready for implementation after Plan 109.
+Status: complete; implementation `af9b9bd`; CI run `34640870291`.
 
 Depends on: Plans 107-109.
 
@@ -363,6 +363,39 @@ docs/client.md
 docs/display.md
 architecture/gregg-client.md
 ```
+
+## Closure record
+
+Implementation commit `af9b9bd` integrates optional live telemetry into the
+client TUI. Normal view now formats CPU frequency, adds a deterministic
+mixed-fleet NET row, and preserves all-legacy layout compatibility. `e`
+expands daemon-provided aggregate and trustworthy per-drive disk throughput;
+`n` independently expands aggregate and interface network rates/capacity,
+including loopback detail without fabricated utilization. Condensed view adds
+NET through documented width tiers. Shared state, viewport, and renderer
+geometry were updated together, with compatibility and renderer-level
+regression coverage.
+
+Documentation was updated in `README.md`, `AGENTS.md`,
+`architecture/gregg-client.md`, `docs/client.md`, `docs/display.md`,
+`crates/gregg/README.md`, `CHANGELOG.md`, and the `gregg-client` skill.
+
+Verification completed before closure:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passed.
+- `cargo test -p gregg --all-targets --all-features` passed.
+- `cargo test --workspace --all-targets --all-features` passed with
+  `RUSTFLAGS=-D warnings`.
+- `./scripts/check-local.sh` passed.
+- Rust 1.75 `cargo check --workspace --all-features` passed.
+- Linux collector-focused tests passed.
+- Remote CI run `34640870291` passed Linux, macOS arm64, macOS Intel,
+  Windows including SCM lifecycle smoke, and MSRV Rust 1.75.
+
+Interactive terminal/manual daemon activity was not run in this noninteractive
+closure session; renderer-level buffer assertions, normalized fixtures, and
+the full local/native CI matrix provide the automated coverage.
 
 ## Local verification
 
