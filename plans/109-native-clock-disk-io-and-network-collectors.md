@@ -1,6 +1,6 @@
 # Plan 109: native clock, disk-I/O, and network collectors
 
-Status: implementation complete; closure record pending the implementation commit and remote CI.
+Status: complete; implementation `0028843`; CI run `34636802865` green.
 
 Depends on: Plans 107-108.
 
@@ -413,6 +413,32 @@ On the current Ubuntu host, add a focused runtime probe after implementation:
 7. stop and restart the daemon and confirm first post-start counter observation re-warms rather than inheriting stale rates.
 
 Do not add this live smoke to CI. Existing macOS/Windows CI remains compile/unit-test truth for those platforms.
+
+## Closure record
+
+Implementation commit `0028843` added the shared monotonic counter/rate helper,
+native Linux/macOS/Windows CPU-frequency, disk-I/O, and network collection,
+optional v2 publication, collector-boundary filtering, final v2 validation, and
+platform regression coverage. Documentation and the platform-collector skill
+were updated in the same change.
+
+Verification completed before closure:
+
+- `./scripts/check-local.sh` passed (format plus full workspace tests).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passed.
+- `cargo test --workspace --all-targets --all-features` passed.
+- `rustup run 1.75 cargo check --workspace --all-features` passed.
+- `cargo check -p greggd --all-targets --all-features` passed for the installed
+  macOS Intel and Windows targets with `RUSTFLAGS=-D warnings`.
+- Ubuntu direct lifecycle smoke passed: warmup/readiness, live v2 payloads,
+  bounded disk/network activity, loopback detail without aggregate capacity,
+  stop, restart, and post-restart re-warm.
+- Remote CI run `34636802865` passed Linux, macOS arm64, macOS Intel, Windows
+  including SCM lifecycle smoke, and MSRV Rust 1.75.
+
+The native live smoke remains manual evidence as required; it was not added to
+CI. Linux per-filesystem I/O association remains omitted when no unambiguous
+mapping is available.
 
 ## Acceptance criteria
 
