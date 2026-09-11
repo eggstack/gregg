@@ -232,7 +232,10 @@ async fn mixed_fleet_sustained_workload() {
                 // Track per-endpoint outcomes for transitions.
                 for result in &batch.results {
                     let _was_online = matches!(seen_online.get(&result.system_id), Some(true));
-                    let is_online = matches!(&result.outcome, PollOutcome::Online(_));
+                    let is_online = matches!(
+                        &result.outcome,
+                        PollOutcome::Online(_) | PollOutcome::OnlineV2(_)
+                    );
 
                     if is_online {
                         online_results += 1;

@@ -1,7 +1,7 @@
 # Plan 111: live-metrics compatibility, verification, and documentation closure
 
-Status: complete; implementation correction `efb18dc` and documentation closure
-`fa4b022` landed on main after verification.
+Status: complete; implementation corrections `efb18dc` and `TBD` plus
+documentation closure `fa4b022` landed on main after verification.
 
 Depends on: Plans 107-110.
 
@@ -277,6 +277,8 @@ directly in the Plan 109 Linux CPUFreq path: this Ubuntu host exposes
 `affected_cpus` as a whitespace-separated list, so the parser now accepts
 kernel range, comma-separated, and whitespace-separated forms. The regression
 is covered by `collector::linux::source::tests::cpufreq_accepts_kernel_space_separated_cpu_lists`.
+The same verification also corrected the sustained-workload compatibility
+driver so valid `OnlineV2` results count as online alongside v1 results.
 
 Compatibility evidence on the current tree:
 

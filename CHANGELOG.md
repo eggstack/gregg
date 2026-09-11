@@ -88,6 +88,10 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   frequency remains optional and is reported only when a supported source is
   readable.
 
+- **Sustained workload v2 accounting** (`gregg`, Plan 111): count validated
+  `OnlineV2` results alongside v1 results so the compatibility smoke accepts
+  current schema-v2 fixtures.
+
 - **Bootstrap installer requires bash, docs use it everywhere** (`install.sh`,
   packaging, workflows, docs): every documented pipe-to-shell installer
   command used `sh -s --`, but `install.sh` is a bash script (`set -o
