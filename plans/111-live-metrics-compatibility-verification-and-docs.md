@@ -321,6 +321,9 @@ cargo doc --workspace --no-deps
 rustup run 1.75 cargo check --workspace --all-features
 ```
 
+Remote CI run `34644786245` for head `1202296` passed Linux, macOS Intel,
+macOS arm64, Windows SCM, and MSRV 1.75 checks.
+
 The documentation build emits only the repository's pre-existing rustdoc link
 warnings. Existing native-platform CI remains the authority for macOS
 Intel/arm64, Windows API bindings and SCM behavior, and MSRV 1.75; no new

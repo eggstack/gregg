@@ -171,7 +171,7 @@ excluded.
 | [`108-additive-live-metrics-protocol-and-normalization.md`](108-additive-live-metrics-protocol-and-normalization.md) | Additive v2 live-metrics wire types, validation, fixtures, and client normalization | complete; implementation `94f01c5`; CI run `34606521857` green |
 | [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | complete; implementation `0028843`; CI `34636802865` green |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | complete; implementation `af9b9bd`; CI `34640870291` green |
-| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`, `29a2633`; docs `fa4b022` |
+| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`, `29a2633`; docs `fa4b022`; CI `34644786245` green |
 
 Dependency order:
 
