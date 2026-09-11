@@ -1,387 +1,128 @@
 # AGENTS.md
 
-Compact instructions for AI coding agents working in this repository.
-Every line answers: "Would an agent likely miss this without help?"
+Compact instructions for AI coding agents. Every line answers: "Would an agent likely miss this without help?"
 
-Deep design detail lives in `architecture/` (index: `architecture/overview.md`);
-phase sequencing and acceptance criteria live in `plans/` (index:
-`plans/README.md`). This file stays compact: constraints plus pointers. When a
-change alters user-visible behavior, update `README.md`, the affected crate
-README, the matching architecture deep dive, the relevant skill, and add a
-`CHANGELOG.md` entry in the same pass.
+Deep detail lives in `architecture/` (index: `architecture/overview.md`); sequencing and acceptance criteria live in `plans/` (index: `plans/README.md`). When a change alters user-visible behavior, update `README.md`, the affected crate README, the matching architecture deep dive, the relevant skill, and add a `CHANGELOG.md` entry in the same pass.
 
 ## Project structure
 
-Four Rust crates in a workspace, strict one-way dependency direction:
+Four Rust crates, strict one-way dependencies:
 
 ```
-gregg-protocol  ◄── greggd      (daemon, metrics collection, HTTP server)
+gregg-protocol  ◄── greggd      (daemon, metrics, HTTP server)
 gregg-protocol  ◄── gregg       (client, TUI, polling)
 gregg-update    ◄── greggd      (shared self-update mechanics)
 gregg-update    ◄── gregg       (shared self-update mechanics)
 ```
 
-- `gregg-protocol`: shared wire types (serde, serde_json, thiserror only). **No runtime, HTTP, terminal, or platform dependencies.** `#![forbid(unsafe_code)]`
-- `gregg-update`: internal shared binary-first self-update mechanics (version/target/asset policy, bounded curl/Cargo execution, SHA-256, staging, replacement). Not a user-facing product; knows nothing about service managers, TUI, EggPool, or the wire protocol. Publishable member; publication order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
-- `greggd`: metrics daemon. Exposes both `bin` and `lib` targets. Platform collectors live under `src/collector/{linux,macos,windows}/`; shared monotonic live-counter arithmetic lives in `src/collector/rate.rs`; startup/install/restart logic lives under `src/startup/` (method/process/systemd/launchd/cron/state/install); read-only diagnostics in `src/status.rs`
-- `gregg`: client TUI (ratatui + crossterm). Event loop in `src/main.rs`. UI modules under `src/ui/`; config ownership split across `src/config/` (model/store/validation/lock); offline provenance in `src/poller.rs` (`OfflineKind`/`OfflineReason`)
-
-`greggd` and `gregg` must never depend on each other. `gregg-protocol` must never depend on any other workspace crate. `gregg-update` must never depend on either application crate, on service-manager concepts, or on the wire protocol.
-→ Details and boundary rules: `architecture/workspace.md`
+- `gregg-protocol`: wire types only (`serde`, `serde_json`, `thiserror`). No runtime/HTTP/terminal/platform deps. `#![forbid(unsafe_code)]`
+- `gregg-update`: internal binary-first self-update (version/target policy, bounded curl/Cargo, SHA-256, staging, replace). Knows nothing about service managers, TUI, EggPool, or wire protocol. Publishable; order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+- `greggd`: bin+lib daemon. Collectors `src/collector/{linux,macos,windows}/`; shared rate math `src/collector/rate.rs`; startup `src/startup/`; read-only diagnostics `src/status.rs`.
+- `gregg`: TUI client (ratatui+crossterm). Event loop `src/main.rs`; UI `src/ui/`; config `src/config/`; offline provenance `src/poller.rs`.
+- `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-update` never depends on app crates, service managers, or the protocol.
+→ `architecture/workspace.md`
 
 ## Build and verify
 
-**Fast local check (routine development loop):**
+Routine loop (fmt + tests only; no clippy/docs/release checks):
 
 ```bash
 ./scripts/check-local.sh          # Linux/macOS
 .\scripts\check-local.ps1         # Windows PowerShell
+./scripts/check-local.sh --release  # preflight: +clippy -D warnings, docs, clean-tree, version/package checks, installed-binary smoke, protocol dry-run
 ```
 
-This runs exactly `cargo fmt --all -- --check` followed by `cargo test --workspace`.
-It is the short routine loop and does not repeat native tests, build docs, or run
-release checks.
-
-**Platform-native collector tests (run separately):**
-
-```bash
-cargo test -p greggd --all-features -- collector::linux     # Linux
-cargo test -p greggd --all-features -- collector::macos     # macOS
-cargo test -p greggd --all-targets -- collector::windows    # Windows
-```
-
-**Release preflight (non-publishing):**
-
-```bash
-./scripts/check-local.sh --release
-```
-
-Adds: Clippy, documentation, clean-tree and version consistency, package lists,
-installed-binary v2 loopback smoke, and the protocol dry-run.
-
-**Running a single test:**
+Single / focused tests (mirror CI flags when touching that area):
 
 ```bash
 cargo test -p gregg-protocol -- <test_name>
 cargo test -p greggd --all-features -- <test_name>
 cargo test -p gregg -- <test_name>
+cargo test -p greggd --all-features -- collector::linux     # Linux native
+cargo test -p greggd --all-features -- collector::macos     # macOS native
+cargo test -p greggd --all-targets -- collector::windows    # Windows native
 ```
 
-**CI note:** GitHub Actions sets `RUSTFLAGS: -D warnings`, making all warnings
-errors. Local clippy pedantic is a warning only. If CI fails on a warning that
-passes locally, the distinction is the cause.
+CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` build + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo check --workspace --all-features` on Rust 1.75.
 
 ## Key constraints
 
-### Workspace-wide (`architecture/workspace.md`)
+### Workspace (`architecture/workspace.md`)
 
-- **MSRV: Rust 1.75.** Toolchain pinned in `rust-toolchain.toml` (stable channel). All member crates inherit `rust-version = "1.75"` from workspace.
-- **Clippy pedantic** is a warning, not an error. Don't suppress new warnings unless fixing pre-existing ones.
-- **Unsafe is heavily restricted.** Only allowed in: `crates/greggd/src/collector/linux/source.rs` (statvfs), `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI), `crates/gregg/src/` (Unix flock + Windows file lock), `crates/greggd/src/collector/windows/source.rs`. Every unsafe block must have a safety comment.
-- **No external command execution** for metrics collection. Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs.
-- **Optional live telemetry is best effort:** CPU frequency, disk throughput,
-  and network throughput/capacity must use native cumulative counters and
-  actual monotonic elapsed time. Reset, restart, hotplug, disappearance, or
-  unsupported APIs re-baseline or omit the affected family without making core
-  CPU/memory readiness fail. Keep aggregate disk accounting independent from
-  filesystem-capacity rows; `R/s`/`W/s` and `Rx/s`/`Tx/s` are byte rates.
-  CPU frequency means current OS-reported frequency, not base/max frequency;
-  macOS may omit it. Network utilization takes the maximum valid directional
-  percentage rather than summing full-duplex Rx and Tx, and loopback may be
-  detail-only but never aggregate capacity.
-- **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
-- **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
-- **Dependency upper bounds** are load-bearing or explicit guards for Rust 1.75 fresh resolution (relaxing them pulls rust-version 1.77–1.88). Per-pin KEEP evidence lives in `architecture/workspace.md` (Plan 105 audit). Re-audit with a relax + 1.75 check before removing any bound; never raise MSRV incidentally.
+- **MSRV 1.75.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.75"`. Never raise MSRV incidentally.
+- **Clippy pedantic is warn, not error.** Don't add new warnings.
+- **Unsafe allowlist only, each block needs a safety comment:** `greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `gregg/src/` (flock/LockFileEx).
+- **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
+- **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
+- **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
+- **Dep upper bounds are load-bearing for 1.75** (see `architecture/workspace.md` Plan 105 audit). Re-audit with relax + 1.75 check before removing any bound.
 
-### Client polling and state (`architecture/gregg-client.md`)
+### Client polling/state (`architecture/gregg-client.md`)
 
-- Client polling is intentionally bounded and isolated: preserve one ordered
-  result per endpoint per generation, the semaphore limit, panic-to-`Cancelled`
-  conversion, fixed periodic cadence, and cancellation behavior. EggPool commands remain on a separate bounded channel with generation checks; do not replace either state machine merely to reduce line count without a smaller behaviorally equivalent design.
-- Offline endpoints continue to be polled on every configured cadence
-  (no backoff/retry queue); they are never pruned or suppressed by reachability.
-  The `offline_endpoint_is_retried_and_recovers_on_next_generation` and
-  `offline_endpoint_remains_in_scheduler_across_generations` tests in
-  `crates/gregg/src/scheduler.rs` lock that invariant in.
-- Systems-pane `Ctrl-R` is the explicit config reload boundary: reload the
-  resolved client `ConfigStore`, reconcile stable system IDs, reliably deliver
-  the replacement through the bounded scheduler command channel, and poll
-  immediately. A full channel applies backpressure; a closed receiver returns
-  through the TUI error boundary; invalid reloads preserve last-known-good
-  state. There is no filesystem watcher. EggPool refresh remains pane-local.
-- `AppState::apply_batch` snaps `selected_id` and `viewport_top_id` to
-  `display_order()[0]` only on the **first** accepted poll batch
-  (`last_applied_generation == 0` before applying). Later batches preserve
-  ordinary selection/viewport semantics; `Ctrl-R` does not re-snap. Do not add
-  a second scroll state machine for this.
+- Keep scheduler invariants: one ordered result per endpoint per generation, semaphore bound, panic→`Cancelled`, fixed cadence. Offline endpoints are retried every cadence, never pruned/backed-off (locked by `offline_endpoint_is_retried_and_recovers_on_next_generation` + `offline_endpoint_remains_in_scheduler_across_generations` in `crates/gregg/src/scheduler.rs`).
+- `Ctrl-R` is the only config-reload boundary (no watcher): reload `ConfigStore`, reconcile stable IDs, deliver via bounded scheduler channel (full = backpressure, closed = TUI error), poll immediately; invalid reload keeps last-known-good.
+- `AppState::apply_batch` snaps selection/viewport to `display_order()[0]` only on the first accepted batch (`last_applied_generation == 0`); later batches and `Ctrl-R` preserve selection. No second scroll state machine.
 
 ### TUI rendering (`architecture/gregg-client.md`)
 
-- The shared normal-view metric-row geometry in
-  `crates/gregg/src/ui/system_block.rs` (`MetricRow`, `MetricRows`, `build_metric_rows`,
-  `compute_fleet_metric_layout`, `resolve_system_suffixes`, `render_metric_row`)
-  is authoritative for the four CPU/MEM/SWP-or-COMMIT/DISK rows and the
-  optional fleet-wide NET row. One fleet-wide
-  layout per render keeps `[`/`]` columns aligned across every online system,
-  including while scrolling; rows are indented exactly four spaces.
-- NET appears fleet-wide when any online snapshot has network telemetry; in a
-  mixed old/new fleet legacy systems show `—` in the aligned row, while an
-  all-legacy fleet keeps the historical four-metric-row height.
-- `e` and `n` are independent selected-system expansions. `e` can show disk
-  aggregate/per-drive R/s and W/s only for exact device associations; `n`
-  shows aggregate and interface network detail, including loopback. Missing
-  telemetry is omitted or rendered as `—`, never fabricated as zero.
-- The DISK aggregate suffix is `<used bytes> / <total bytes>` so the slash
-  denominator matches the percentage; explicit caller-available capacity
-  (`available_bytes`) is preserved in the normalized model and surfaced only
-  through expanded drive detail rows. Unavailable rows render `—`, never a
-  fabricated `0.0%`.
-- Compact-mode policy (per render, no persisted state): when the longest natural
-  suffix across the online fleet exceeds one quarter of terminal width, the whole
-  suffix region disappears fleet-wide (`MetricFleetLayout::show_suffix = false`);
-  the normal-header `IO` token is omitted entirely when I/O-wait is unsupported
-  or has no real value — never a placeholder.
-- Logical vs visual selection are separate: `selected_id` persists and drives
-  `e` and viewport behavior; `selection_highlight_active` is transient reverse
-  video. Startup leaves the highlight `false`; selection-changing Systems
-  actions arm a resettable ten-second event-loop deadline that dispatches
-  `Action::ClearSelectionHighlight` without touching `selected_id`. Do not add
-  a periodic frame ticker or per-keypress background task.
-- Offline rows render `name@host:port offline` or `host:port offline`, with the
-  stable failure category appended when provenance is known
-  (`offline (refused)`, `offline (http) HTTP 503`); the host
-  is never duplicated when a name is set. Pending rows never carry a reason.
+- `crates/gregg/src/ui/system_block.rs` (`build_metric_rows`, `compute_fleet_metric_layout`, `render_metric_row`) is authoritative: one fleet-wide layout per render aligns `[`/`]` across all online systems; rows indent 4 spaces. NET row appears fleet-wide if any online snapshot has it (`—` for legacy systems; all-legacy keeps 4-row height).
+- `e` (drives) and `n` (network) are independent expansions; per-drive rates only on exact device match. DISK suffix is `<used> / <total>`; missing rows render `—`, never `0.0%`/fabricated zero. Compact mode drops the whole suffix fleet-wide when longest natural suffix > 1/4 terminal width; header `IO` token is omitted (not placeholder) when iowait unsupported.
+- Logical `selected_id` persists; reverse-video highlight is transient (startup `false`, Systems actions arm a resettable 10s event-loop `ClearSelectionHighlight`). No frame ticker. Offline rows are `name@host:port offline` (never duplicate host) + stable category when known (`offline (refused)`, `offline (http) HTTP 503`); pending rows never carry a reason.
 
 ### CLI contracts (`architecture/gregg-client.md`, `architecture/greggd-daemon.md`)
 
-- `gregg add` requires an explicit port on every accepted form. Accepted:
-  `host:port`, `[ipv6]:port`, `http://host:port/`, and `nickname@host:port`.
-  Rejected: host-only (`host`, `192.168.182.146`, `::1`), HTTP URL without a
-  port, `nickname@host` without a port, `nickname@`, and the ambiguous
-  combination of inline `nickname@` with `--name`. HTTPS is never accepted and
-  is not downgraded to HTTP. `gregg remove` still accepts host-only input.
-  Persisted fields remain normalized `host` and `port`; the inline `nickname@`
-  form just populates the existing `SystemEntry.name` field. `default_port`
-  remains in the configuration schema for compatibility but is not used by
-  `gregg add`. Do not introduce implicit-port `gregg add` examples anywhere in
-  the repo.
-- `greggd configprint` is read-only and prints only the configured canonical
-  bind `host:port`; it must not probe, bind, mutate config, or manage services.
-- `greggd status` is read-only and composes version, config path, canonical
-  bind `host:port`, the bounded `/v2/healthz` classification
-  (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority
-  as `croncheck`), and detected startup-manager state. Exit 0 only when a
-  valid Gregg endpoint answered; it never starts/stops/restarts/installs,
-  never infers process ownership from port occupancy, and never invokes `sudo`.
-- `greggd croncheck` is a watchdog for non-systemd supervisors: it probes the
-  configured local `/v2/healthz` endpoint with bounded raw HTTP (wildcards become
-  loopback). Valid Gregg Ready/Warming/Failed responses mean running; refusal
-  alone permits spawning detached `<current_exe> run`. Unrelated, malformed,
-  silent, or ambiguous peers return nonzero without spawning. It must not invoke
-  service managers, shells, `pkill`/`killall`, or PID-file management; `host`/`port`
-  subcommands only persist config.
-- `greggd stop` (Linux/macOS) targets only the local instance matching the
-  resolved config identity via one tiny Unix-domain control socket
-  (`STOP\n` → `OK\n`). Identity is an FNV-1a digest of the normalized config
-  path (canonicalized for existing files, lexical absolute fallback for a
-  missing implicit default) — never the parent directory alone, so two configs
-  in one directory cannot cross-stop. Sockets are created `0600`; stale-socket
-  cleanup unlinks only after metadata confirms a socket and connect fails with
-  `ConnectionRefused` or `NotFound`. No service managers, shells, process-name
-  scanning, or PID files; the HTTP API stays read-only. Windows delegates to
-  SCM.
-- `greggd startup install` (`auto` default; `--method systemd|launchd|cron` explicit) installs automatic startup: systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron` directly, prints manual lines if `crontab` missing). Auto picks Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. An identified systemd/launchd host never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied`. No internal `sudo`.
-- `greggd startup instructions` (`--method` optional) is read-only and prints exact commands/paths for the selected method without mutating state.
-- `greggd restart` is manager-aware and reusable by `update`: Windows via SCM, systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, otherwise via control `stop` + definitive endpoint-absence check + detached `run`; success requires a bounded valid Gregg health response, not merely process creation. Manager calls are bounded and retain stderr; privilege failures print exact elevated `systemctl`/`launchctl` command and return `PermissionDenied` without competing fallback.
-- `gregg update` / `greggd update` are binary-first, crates.io-authoritative (`max_stable_version` via `curl` with Gregg User-Agent, SemVer-safe `MAJOR.MINOR.PATCH` compare, `env!("CARGO_PKG_VERSION")` is local version, GitHub `latest` never authoritative), exact `vX.Y.Z` asset `https://github.com/eggstack/gregg/releases/download/vX.Y.Z/<program>-<target>[.exe]` plus `.sha256`, bounded `curl -fsSL --max-time` download to an exclusive owner-private `tempfile::TempDir`, SHA-256 via `sha2` crate (not platform tools) before any `chmod +x` or execution, candidate `version` must equal `"<program> X.Y.Z"` with exit 0, staged before touching current exe, Unix same-filesystem atomic rename via `self-replace` (preserves symlink target, never overwrites symlink file, `self-replace` 1.5.0 / Rust 1.63 / small footprint), Windows running-image via `self-replace`, `current_exe()` derived destination never assumed prefix, permission probe before any `greggd` shutdown with `sudo <exe> update` message, only HTTP 404 permits `cargo install --locked --version "=X.Y.Z" --root <temp>` staged then verified then same replacement path, Cargo timeout kills/reaps its child, checksum/version mismatch never falls back, and `greggd` fully prepares before stopping a running Windows SCM service; a stop failure prevents replacement. `greggd` preserves config/registration and restarts only when running/managed, with stopped services remaining stopped and `UpdatedButRestartFailed` preserving partial-success semantics; no background checks, TUI notifications, package-manager, or internal `sudo`. The shared transport/staging/replacement mechanism lives in `gregg-update` (`UpdateSpec`-parameterized, no service-manager concepts); `greggd` owns only activation/restart coordination and the Plan 102 prepare-before-quiesce transaction rule.
-- Reusable `greggd` library/runtime code returns errors without printing or
-  calling `std::process::exit()`; the binary boundary owns logging, one-time
-  diagnostics, and exit-code classification (`0` success · `1` configuration ·
-  `2` service management · `3` runtime · `4` permission denied).
+- `gregg add` requires an explicit port (`host:port`, `[ipv6]:port`, `http://host:port/`, `nickname@host:port`); reject host-only, portless URLs, `nickname@host`, `nickname@`, inline-nickname+`--name`. HTTPS never accepted/downgraded. `gregg remove` accepts host-only. `default_port` is compat-only. Don't add implicit-port examples anywhere.
+- `greggd configprint` (prints canonical bind only), `status` (version+bind+bounded `/v2/healthz` ready/warming/failed/unreachable/not-gregg+manager state, exit 0 only on valid Gregg answer), and `croncheck` (watchdog: only refusal may spawn detached `<current_exe> run`; no shells, `pkill`, PID files, service managers) are read-only/bounded. `stop` uses only the Unix control socket (`STOP\n`→`OK\n`) keyed by FNV-1a of normalized config path (never parent dir), `0600` sockets, narrow stale cleanup; Windows delegates to SCM. `run` never self-daemonizes.
+- `startup install` defaults `auto` (Windows→SCM, macOS→launchd, Linux systemd-if-running else cron); systemd/launchd hosts never silently fall back to cron — print exact `sudo <exe> startup install --method …` and return `PermissionDenied`. No internal `sudo`. `restart` is manager-aware (`systemctl`/`launchctl kickstart -k`/SCM else stop+absence-check+detached `run`) and requires a valid health response, not just process spawn.
+- `gregg update` / `greggd update` are binary-first, crates.io-authoritative (`curl` max-stable SemVer compare, GitHub `latest` never authoritative), exact `vX.Y.Z` asset `<program>-<target>[.exe]`+`.sha256`, bounded `curl -fsSL --max-time` to owner-private `TempDir`, `sha2`-verified before chmod/exec, candidate `version` must equal `"<program> X.Y.Z"`, staged before touching current exe (`self-replace`), only HTTP 404 falls back to `cargo install --locked --version "=X.Y.Z"`. `greggd` prepares fully before stopping (Windows SCM stop failure blocks replace); restarts only if running/managed. Shared mechanics live in `gregg-update` (`UpdateSpec`-parameterized); `greggd` owns activation/restart.
+- Reusable `greggd` lib code returns errors (no printing/`exit()`); binary maps to exit codes `0` ok · `1` config · `2` service · `3` runtime · `4` permission.
 
-### Daemon runtime ownership (`architecture/greggd-daemon.md`)
+### Daemon runtime / release (`architecture/greggd-daemon.md`, `architecture/scripts-and-packaging.md`)
 
-- `greggd` dispatches synchronously before entering Tokio: Windows SCM
-  `service` enters `service_dispatcher::start` first; the generated
-  `ServiceMain` worker owns exactly one current-thread runtime and publishes
-  `RUNNING` only after the shared daemon binds its listener. SCM Stop/Shutdown
-  send a nonblocking one-shot signal into the shared `run_with_shutdown()`
-  core, which is also reused for Unix SIGTERM/SIGINT and a successful `STOP\n`;
-  control-socket cleanup runs on every exit path.
+- Dispatch synchronously before Tokio: Windows SCM `service_dispatcher::start` first, one current-thread runtime per worker, `RUNNING` only after bind; Unix SIGTERM/SIGINT, SCM Stop/Shutdown, and successful `STOP\n` share `run_with_shutdown()`; control-socket cleanup on every exit. Never init a global tracing subscriber from lib code.
+- Asset contract: `gregg-<target>` / `greggd-<target>[.exe]`, targets exactly `x86_64-unknown-linux-gnu` + `aarch64-unknown-linux-gnu` (glibc 2.17 via zigbuild), `x86_64-apple-darwin`, `aarch64-apple-darwin` (unsigned), `x86_64-pc-windows-msvc.exe`, each + `.sha256`. `release-binaries.yml` (only `v*` tags/manual) verifies tag==workspace version and tag==HEAD, checks crates.io visibility, smokes `version`/`--help`/loopback, assembles a **draft** (`--clobber` on rerun, fail if published). Never `cargo publish`/`git tag`/push from scripts or CI. Installers `packaging/install.sh|ps1` are binary-first, Cargo fallback only for `armv7l`/unknown; never edit shell rc, never silent `sudo`, never fallback on checksum/version mismatch.
 
-### Release binaries and bootstrap installers (`architecture/scripts-and-packaging.md`, `plans/099-*`)
+## Schema protocol (`architecture/protocol.md`, `architecture/gregg-protocol.md`)
 
-- Release binaries use a single public asset contract: `gregg-<target>` /
-  `greggd-<target>[.exe]` where `<target>` is exactly one of
-  `x86_64-unknown-linux-gnu` (glibc 2.17 via cargo-zigbuild), `aarch64-unknown-linux-gnu` (2.17,
-  covers 64-bit Raspberry Pi/Le Potato), `x86_64-apple-darwin`,
-  `aarch64-apple-darwin` (unsigned), `x86_64-pc-windows-msvc.exe`; every
-  executable has a `<asset>.sha256`. Installers must use the same suffixes.
-- The release-only workflow `.github/workflows/release-binaries.yml` triggers
-  only on `v*` tags and manual dispatch, verifies tag `vX.Y.Z` == workspace
-  version and tag points at HEAD, checks crates.io visibility for `gregg`/`greggd`,
-  builds the five targets (Linux with Zig 2.17 floor, macOS native, Windows
-  native), runs `version`/`--help` plus a loopback `greggd` smoke before
-  hashing, and assembles a **draft** GitHub Release via `gh` (`--clobber` on
-  rerun, hard failure if already published). It never calls `cargo publish`,
-  `git tag`, or pushes commits.
-- Bootstrap installers `packaging/install.sh` (Unix) and `packaging/install.ps1`
-  (Windows) are binary-first, Cargo second: map `uname -s`/`uname -m` (and
-  Windows `PROCESSOR_ARCHITECTURE`/Is64Bit) to the contract target, construct
-  `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or
-  `.../download/vX.Y.Z/<asset>` for `--version X.Y.Z`, `curl -fsSL` to a fresh
-  `mktemp -d`, fetch `<asset>.sha256`, verify (`sha256sum`/`shasum -a 256` or
-  `Get-FileHash`), `chmod +x` and `<candidate> version` must equal the expected
-  program/version, trap cleanup, install to `/usr/local/bin` (root) or
-  `$HOME/.local/bin` (`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg` on
-  Windows, preserving `%ProgramData%\gregg\greggd.toml`), warn when the dest
-  is not on `PATH`, never edit shell rc files, never silently invoke `sudo`,
-  never fallback on checksum/version mismatch, and only `armv7l`/unknown hosts
-  fall back to `cargo install --locked` (with `="X.Y.Z"` when pinned).
+- Client tries `/v2/status` first, falls back to v1 only on HTTP 404 from `/v2/status`. `/v2/status` is universal; `/v1/status` is Linux/macOS only (Windows 503).
+- Never fabricate: macOS `iowait_pct` null; Windows load/swap/iowait null, commit instead; `drives` null = unavailable/legacy, `[]` = none eligible; optional v2 freq/disk_io/network absent on old daemons stays absent. `system.name` = configured daemon name; `system.hostname` = native hostname. V2 caps required on all four fields; identity fields ≤512 UTF-8 bytes. `validate()` returns structured violations (V1: 9 kinds, V2 base: 16 + telemetry/identity bounds), not serde errors.
 
-## Schema protocol
+## Versions and testing
 
-Wire types live in `gregg-protocol`. Full contract: `architecture/protocol.md`
-and `architecture/gregg-protocol.md`.
-
-- Schema version is explicit (`SCHEMA_VERSION_V1 = 1`, `SCHEMA_VERSION_V2 = 2`).
-  The client requests v2 first, accepts only the schema matching each endpoint,
-  and falls back to v1 only on an HTTP 404 from `/v2/status`. `/v2/status` is
-  the universal cross-platform endpoint; `/v1/status` is Linux/macOS only
-  (Windows returns 503).
-- Platform truth rules (never fabricate values):
-  - macOS: `iowait_pct` is `null` (unsupported).
-  - Windows: load average, swap, iowait are `null`/unsupported; commit is reported instead.
-  - Identity: `system.name` is the validated configured daemon name;
-    `system.hostname` remains the native platform hostname (no NUL padding from
-    `GetComputerNameExW` on Windows).
-  - Drives: `null` = unavailable/legacy, empty list = no eligible filesystems;
-    v2 `available_bytes` is optional caller-available capacity and may not
-    complement used bytes because of reservations or quotas.
-  - Additive v2 live telemetry is optional: `cpu_frequency_hz` is raw positive
-    Hz; `disk_io` carries daemon-selected aggregate and bounded device rates;
-    `network` carries directional aggregate/interface byte rates and optional
-    bit/s capacities. Missing values are unavailable, never fabricated zeroes.
-    Network aggregate membership is daemon-selected; loopback may appear in
-    detail but is never an aggregate capacity member, and utilization uses the
-    maximum valid receive/transmit direction rather than summing full-duplex
-    traffic. Older v1 and pre-feature v2 daemons remain supported with these
-    optional fields absent. Daemon-version transport remains deferred.
-  - Validation uses `validate()` methods returning structured violations, not
-    serde failures. V1 has 9 violation kinds; the base V2 contract has 16
-    (9 from V1 + 7 additional), plus structured live-telemetry bounds and
-    identity violations.
-  V2 capability objects require all four explicit capability fields, and every
-  system identity field is limited to 512 UTF-8 bytes.
-
-## Crate versions and publishing
-
-All crates inherit version from `[workspace.package]` in root `Cargo.toml`. Inter-crate dependency versions must match workspace version exactly. Publication order is mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`. Ordinary CI never publishes; the tagged `release-binaries` workflow may create/update a **draft** GitHub Release from prebuilt binaries after manual `cargo publish` + tag, but never publishes crates or auto-publishes the release. See `RELEASING.md`.
-
-## Testing patterns
-
-- **Integration tests:** `crates/gregg-protocol/tests/integration.rs`, `crates/greggd/tests/linux_collector.rs`, `crates/greggd/tests/windows_smoke.rs`
-- **Fixtures:** JSON fixtures in `crates/gregg-protocol/tests/fixtures/` for v1/v2 cross-platform payloads; text fixtures under `crates/greggd/src/collector/test_fixtures/`; injectable CPUFreq, block, network, AF_LINK, IOKit, processor-power, disk-IOCTL, and IP Helper seams cover optional telemetry
-- **TUI tests:** `gregg` crate has `#[cfg(test)]` modules `mixed_fleet_evidence` and `sustained_workload` declared in `src/lib.rs` (separate files `src/mixed_fleet_evidence.rs` and `src/sustained_workload.rs`). `src/main.rs` has its own inline `#[cfg(test)]` module.
-- **Test support feature:** `gregg-protocol` exposes `test_support` feature for mock builders in integration tests
-- **Live-metrics compatibility fixtures:** `gregg-protocol` includes the
-  pre-feature v1/v2 fixtures plus `live-metrics-v2.json`; optional v2 telemetry
-  must remain absent in v1 and old-v2 normalization.
-- **Sustained workload tests:** the `mixed_fleet_evidence` and `sustained_workload` modules are `#[cfg(test)]`-only product-validation drivers invoked by the external runner `scripts/run-mixed-fleet-sustained.py`; that runner has its own pytest suite in `scripts/tests/`
-- **`lock_helper` second bin:** `gregg` also builds `src/bin/lock_helper.rs`, but only with the `test-helper` feature (`required-features = ["test-helper"]`). The cross-process config-lock test in `src/config/lock.rs` silently skips when the binary is absent — plain `cargo test -p gregg` skips it; `--all-features` builds and runs it
-
-## CI
-
-GitHub Actions CI runs on push to `main` and pull requests (`.github/workflows/ci.yml`):
-
-- **Linux**: fmt, clippy, and full workspace tests
-- **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows** (`windows-2022`): workspace tests, a release `greggd` build, and
-  the bounded Administrator SCM lifecycle smoke in
-  `scripts/smoke-windows.ps1`
-- **MSRV**: compilation check with Rust 1.75
-
-The release-only workflow `.github/workflows/release-binaries.yml` runs only
-on `v*` tags / manual dispatch and builds the five release targets
-(Linux x86_64/AArch64 glibc 2.17, macOS Intel/ARM64, Windows x86_64) into a
-draft release. See above and `architecture/scripts-and-packaging.md`.
-
-Local verification via the default `check-local.sh` is the source of truth for
-the routine loop; release preflight is manual and nonpublishing. Ordinary CI
-keeps one read-only workflow with generic Linux checks, native macOS/Windows
-coverage, and one Rust 1.75 compile check. The Windows SCM smoke is the
-authoritative operational proof for dispatcher startup, post-bind readiness,
-service lifecycle, custom configuration paths, bind-failure recovery, and
-cleanup. CI does not build documentation, publish crates, or upload evidence
-beyond the release draft assets.
-→ Details: `architecture/scripts-and-packaging.md`
+- All crates inherit workspace version; inter-crate dep versions must equal it. Publish order `gregg-protocol` → `gregg-update` → `greggd` → `gregg`. Ordinary CI never publishes; see `RELEASING.md`.
+- Integration: `gregg-protocol/tests/integration.rs`, `greggd/tests/{linux_collector.rs,windows_smoke.rs}`; fixtures `gregg-protocol/tests/fixtures/` + `greggd/src/collector/test_fixtures/` (+ `live-metrics-v2.json` for optional-telemetry compat). `test_support` feature gates mock builders. `gregg` TUI drivers `mixed_fleet_evidence`/`sustained_workload` (`#[cfg(test)]`) run via `scripts/run-mixed-fleet-sustained.py` (pytest in `scripts/tests/`). `lock_helper` bin needs `test-helper` feature — plain `cargo test -p gregg` silently skips that test; use `--all-features` to run it.
 
 ## What not to do
 
-- Don't broaden scope (no process monitoring, alerting, web dashboards, plugins, TLS, auth)
-- Don't add dependencies without checking existing patterns and MSRV compatibility
-- Don't add `cargo publish` to any script or workflow
-- Don't add automated tagging, GitHub Release creation, or publication to CI
-  (the release workflow's draft creation from prebuilt binaries is the one
-  narrow exception and must never publish crates, auto-publish the draft, or
-  push tags/commits)
-- Don't add self-daemonization or PID-file management to the daemon
-- Don't initialize a global tracing subscriber from reusable daemon runtime code;
-  the binary boundary uses fallible initialization.
-- Don't fabricate metric values for unsupported platform capabilities
+- No scope broadening (process monitoring, alerting, dashboards, plugins, TLS, auth); no new deps without MSRV + pattern check; no `cargo publish`/auto-tag/auto-publish in scripts/workflows; no self-daemonization or PID files; no fabricated metrics.
 
 ## Plans workflow
 
-Implementation work is plan-driven under `plans/`. Register new plans in
-`plans/README.md`, close them truthfully against their acceptance criteria,
-and never rewrite a closed plan's history (append corrections instead).
-→ See the `plans-workflow` skill and `plans/README.md` (completion rule,
-verification model, per-plan status table).
+Work is plan-driven under `plans/`. Register new plans in `plans/README.md`, close truthfully against acceptance criteria, never rewrite closed history (append corrections). → `plans-workflow` skill + `plans/README.md` completion rule.
 
-## Files to read before implementing
+## Read before implementing
 
-1. `README.md` — public scope and command behavior
-2. `architecture/overview.md` — bird's-eye view, data flow, module map, and index of all architecture documents
-3. `plans/README.md` — plan index, roadmap status, completion rule
-4. Active phase plan in `plans/` for current requirements
-5. `architecture/protocol.md` — wire format details
+1. `README.md` — scope and command behavior
+2. `architecture/overview.md` — data flow, module map, doc index
+3. `plans/README.md` — roadmap status, completion rule
+4. Active phase plan in `plans/`
+5. `architecture/protocol.md` — wire format
 
 ## Architecture index
 
-Deep-dive documents in `architecture/` capture decisions larger than a single crate:
-
 | Document | Scope |
 |----------|-------|
-| `architecture/overview.md` | Bird's-eye view: data flow, module map, index of all documents |
-| `architecture/gregg-protocol.md` | Protocol crate: wire types, schema versions, validation, test support |
-| `architecture/greggd-daemon.md` | Daemon crate: collectors, sampler, HTTP server, service management |
-| `architecture/gregg-client.md` | Client crate: CLI, polling, state engine, TUI, EggPool |
-| `architecture/collectors.md` | Platform collectors: Linux, macOS, Windows native metric collection |
-| `architecture/workspace.md` | Crate boundaries, module structure, dependency direction |
-| `architecture/protocol.md` | Wire format specification, capabilities, validation, compatibility |
-| `architecture/error-conventions.md` | Error boundary design, wire response constraints |
-| `architecture/scripts-and-packaging.md` | Scripts, installers, service definitions |
-| `architecture/macos-collector-notes.md` | macOS collector differences from Activity Monitor / top |
+| `architecture/overview.md` | Bird's-eye view, data flow, index |
+| `architecture/gregg-protocol.md` | Wire types, validation, test support |
+| `architecture/greggd-daemon.md` | Collectors, sampler, server, service mgmt |
+| `architecture/gregg-client.md` | CLI, polling, state, TUI, EggPool |
+| `architecture/collectors.md` | Linux/macOS/Windows collection |
+| `architecture/workspace.md` | Boundaries, MSRV, deps, structure |
+| `architecture/protocol.md` | Wire spec, capabilities, compat |
+| `architecture/error-conventions.md` | Error boundaries, wire limits |
+| `architecture/scripts-and-packaging.md` | Scripts, installers, services |
+| `architecture/macos-collector-notes.md` | macOS vs Activity Monitor/top differences |
 
 ## OpenCode config
 
-No `opencode.json` or `.cursorrules` exists. Skills live in `.opencode/skills/`
-and are loaded via the skill tool as needed.
-
-## Skills
-
-Reusable agent instructions live in `.opencode/skills/`:
-
-| Skill | Purpose |
-|-------|---------|
-| `rust-workspace` | Build, test, verify the workspace |
-| `architecture-docs` | Read and update architecture documentation |
-| `plans-workflow` | Create, register, and close phase plans under `plans/` |
-| `protocol-wire` | Wire types, schema versions, validation |
-| `platform-collectors` | Platform-specific metric collectors |
-| `greggd-daemon` | Daemon crate: runtime wiring, control socket, croncheck/configprint/stop, SCM service |
-| `gregg-client` | Client crate: TUI, polling, state engine, CLI |
-| `release-process` | Manual release procedure |
-| `eggpool` | EggPool summary pane implementation |
-
-Use the skill tool to load a skill when a task matches its description.
+No `opencode.json`/`.cursorrules`. Skills in `.opencode/skills/`, load via skill tool as needed: `rust-workspace`, `architecture-docs`, `plans-workflow`, `protocol-wire`, `platform-collectors`, `greggd-daemon`, `gregg-client`, `release-process`, `eggpool`.
