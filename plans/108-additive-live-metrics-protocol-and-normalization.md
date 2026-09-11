@@ -292,6 +292,8 @@ Implemented in `94f01c5` (September 2026).
   full workspace all-target/all-feature tests, `check-local.sh`, Rust 1.75
   compilation, and workspace docs generation. The docs build emitted only
   pre-existing unrelated rustdoc link warnings.
+- Existing remote CI run `34606521857` passed all five jobs: Linux, macOS
+  arm64, macOS Intel, Windows including SCM smoke, and MSRV Rust 1.75.
 
 No new CI job or protocol-major endpoint is required.
 
