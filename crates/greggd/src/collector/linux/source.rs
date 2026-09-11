@@ -666,7 +666,11 @@ fn parse_link_speed(raw: Option<String>) -> Option<u64> {
 
 fn parse_cpu_list(raw: &str, logical_cores: usize) -> Option<usize> {
     let mut count = 0usize;
-    for item in raw.trim().split(',') {
+    for item in raw
+        .trim()
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|item| !item.is_empty())
+    {
         let (start, end) = item.split_once('-').map_or_else(
             || item.parse::<usize>().ok().map(|value| (value, value)),
             |(start, end)| Some((start.parse().ok()?, end.parse().ok()?)),
@@ -774,6 +778,21 @@ mod tests {
             ),
         ]);
         assert_eq!(source.cpu_frequency_hz(), Some(1_800_000_000));
+    }
+
+    #[test]
+    fn cpufreq_accepts_kernel_space_separated_cpu_lists() {
+        let source = source_with(&[
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "0 1 2 3\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq",
+                "2100000\n",
+            ),
+        ]);
+        assert_eq!(source.cpu_frequency_hz(), Some(2_100_000_000));
     }
 
     #[test]
