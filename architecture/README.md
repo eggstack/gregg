@@ -11,6 +11,7 @@ and that contributors should read before reorganising code across boundaries.
 | --- | --- |
 | [`overview.md`](overview.md) | Bird's-eye view of the entire codebase: data flow, module map, index of all documents. |
 | [`gregg-protocol.md`](gregg-protocol.md) | Deep dive: protocol crate — wire types, schema versions, validation, test support. |
+| [`gregg-update.md`](gregg-update.md) | Deep dive: updater crate — version/target policy, download/verify/stage/replace mechanics. |
 | [`greggd-daemon.md`](greggd-daemon.md) | Deep dive: daemon crate — collectors, sampler, HTTP server, service management. |
 | [`gregg-client.md`](gregg-client.md) | Deep dive: client crate — CLI, polling, state engine, TUI, EggPool. |
 | [`collectors.md`](collectors.md) | Deep dive: platform collectors — Linux, macOS, Windows native metric collection. |

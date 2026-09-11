@@ -114,6 +114,7 @@ Work is plan-driven under `plans/`. Register new plans in `plans/README.md`, clo
 |----------|-------|
 | `architecture/overview.md` | Bird's-eye view, data flow, index |
 | `architecture/gregg-protocol.md` | Wire types, validation, test support |
+| `architecture/gregg-update.md` | Shared self-update mechanics, targets, staging |
 | `architecture/greggd-daemon.md` | Collectors, sampler, server, service mgmt |
 | `architecture/gregg-client.md` | CLI, polling, state, TUI, EggPool |
 | `architecture/collectors.md` | Linux/macOS/Windows collection |
