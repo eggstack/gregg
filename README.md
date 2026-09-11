@@ -137,6 +137,27 @@ gregg update                       # update the client
 - `n`: expand/collapse network details for the selected system
 - `Ctrl-R`: reload config and poll immediately
 
+## Live metrics and compatibility
+
+Schema-v2 live telemetry is additive and optional. The client still tries
+`/v2/status` first and falls back to a v1-only daemon only on HTTP 404, so
+older daemons remain online with CPU, memory, load, swap, and historical drive
+behavior intact. Pre-feature v2 daemons likewise remain healthy; they simply
+omit the newer fields. Gregg does not track daemon versions over the wire.
+
+CPU frequency, when present, is the current OS-reported frequency in raw Hz,
+not a base or maximum-clock claim. macOS may omit it because Gregg uses no
+privileged or undocumented frequency mechanism. Disk capacity (`used / total`)
+and disk I/O are separate accounting domains: `R/s` and `W/s` are byte rates,
+and per-drive rates appear only for exact device associations. Network `Rx/s`
+and `Tx/s` are byte rates; NET utilization uses the maximum valid directional
+rate against its link capacity, so full-duplex traffic is not double-counted.
+Loopback can appear in `n` detail but is excluded from aggregate capacity.
+
+Use `e` for disk details, `n` for network/interface details, and `v` for the
+width-aware condensed view. See [Display](docs/display.md) for the mixed-fleet
+row and width policies.
+
 ## Docs
 
 - [Installation](docs/installation.md) — installer behavior, pinned versions, direct downloads, Cargo fallback

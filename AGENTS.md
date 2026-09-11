@@ -84,7 +84,11 @@ passes locally, the distinction is the cause.
   actual monotonic elapsed time. Reset, restart, hotplug, disappearance, or
   unsupported APIs re-baseline or omit the affected family without making core
   CPU/memory readiness fail. Keep aggregate disk accounting independent from
-  filesystem-capacity rows; loopback may be detail-only and never capacity.
+  filesystem-capacity rows; `R/s`/`W/s` and `Rx/s`/`Tx/s` are byte rates.
+  CPU frequency means current OS-reported frequency, not base/max frequency;
+  macOS may omit it. Network utilization takes the maximum valid directional
+  percentage rather than summing full-duplex Rx and Tx, and loopback may be
+  detail-only but never aggregate capacity.
 - **Config writes must be atomic:** serialize to temp file, flush, rename, validate. Never leave partial writes.
 - **Tests must not sleep** for production refresh intervals. Inject clocks or short intervals.
 - **Dependency upper bounds** are load-bearing or explicit guards for Rust 1.75 fresh resolution (relaxing them pulls rust-version 1.77–1.88). Per-pin KEEP evidence lives in `architecture/workspace.md` (Plan 105 audit). Re-audit with a relax + 1.75 check before removing any bound; never raise MSRV incidentally.
@@ -261,7 +265,8 @@ and `architecture/gregg-protocol.md`.
     Network aggregate membership is daemon-selected; loopback may appear in
     detail but is never an aggregate capacity member, and utilization uses the
     maximum valid receive/transmit direction rather than summing full-duplex
-    traffic. Daemon-version transport remains deferred.
+    traffic. Older v1 and pre-feature v2 daemons remain supported with these
+    optional fields absent. Daemon-version transport remains deferred.
   - Validation uses `validate()` methods returning structured violations, not
     serde failures. V1 has 9 violation kinds; the base V2 contract has 16
     (9 from V1 + 7 additional), plus structured live-telemetry bounds and

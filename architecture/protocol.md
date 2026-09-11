@@ -308,3 +308,26 @@ truthful v1 snapshot cannot be produced, the v1 endpoint returns
 The client polling logic (`v2-first, v1-fallback on 404`) handles
 mixed-version fleets correctly: a Linux daemon serves v2 (200), and
 a Windows daemon serves v2 (200) while v1 returns 503.
+
+### Live-metrics compatibility matrix
+
+The additive fields are intentionally independent of the base snapshot:
+
+| Peer daemon | Client result |
+| --- | --- |
+| v1-only | v2 request receives 404, v1 fallback succeeds; live fields stay absent |
+| pre-feature v2 | v2 succeeds with legacy drives when present; omitted live fields stay absent |
+| current v2 | each available live family is normalized independently |
+
+The client and renderer consume normalized optional values rather than branching
+on wire version. In a mixed fleet, NET becomes a fleet-wide row/column only
+when at least one online system supplies network telemetry; older systems show
+unavailable in that aligned position. Unknown additive JSON fields are ignored
+by older v2 clients, preserving the old-client compatibility contract.
+
+CPU frequency is a current OS-reported value, not a base/max frequency claim.
+Disk `R/s`/`W/s` and network `Rx/s`/`Tx/s` are byte rates. Disk capacity and
+disk-I/O accounting remain separate. Network utilization compares Rx and Tx
+independently with their directional capacities and takes the maximum; it does
+not sum full-duplex directions. Loopback can remain in interface detail but is
+never an aggregate-capacity member. Daemon-version transport remains deferred.

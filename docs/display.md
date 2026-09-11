@@ -19,8 +19,9 @@ Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
 The NET row is fleet-wide in a mixed old/new fleet so bars remain aligned;
 legacy systems show `—` there. If every online daemon is legacy, NET is
 omitted and the historical five-row block remains. CPU detail appends the
-current clock after the core count when available, for example `16 cores
-2.40GHz`.
+current OS-reported clock after the core count when available, for example
+`16 cores 2.40GHz`; this is not a base/max frequency claim, and macOS may
+omit it.
 
 The DISK suffix is `<used bytes> / <total bytes>` so the slash denominator
 matches the percentage calculation; explicit caller-available capacity is
@@ -68,8 +69,11 @@ ambiguous values render `—`, and the aggregate is not recomputed from rows.
 
 Press `n` to independently expand network details. The expansion shows an
 aggregate Rx/s/Tx/s/capacity summary followed by interfaces, including
-loopback when supplied. Unknown capacity leaves utilization unavailable while
-preserving raw rates.
+loopback when supplied. `Rx/s` and `Tx/s` are byte rates. Unknown capacity
+leaves utilization unavailable while preserving raw rates; utilization uses
+the maximum valid direction, so simultaneous full-duplex traffic does not
+exceed 100% merely by combining Rx and Tx. Loopback is detail-only for
+aggregate capacity.
 
 Condensed view shows one comparison row per system with CPU, memory, disk, and
 NET utilization, then LOAD/IOWAIT where the width tier allows. At narrow

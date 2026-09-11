@@ -150,7 +150,9 @@ MetricCapabilitiesV2 { cpu_iowait: true, load_average: true, swap: true, memory_
 
 CPU frequency reads CPUFreq policy files with hardware-current preference and
 scaling-current fallback, converts kHz to Hz with checked arithmetic, and
-weights valid policies by represented logical CPUs. Disk rates use cumulative
+weights valid policies by represented logical CPUs. CPUFreq CPU-list values are
+accepted in the kernel's range, comma-separated, and whitespace-separated
+forms. Disk rates use cumulative
 sector fields from top-level /sys/block/*/stat with the kernel 512-byte unit;
 loop, RAM, zram, and layered devices with slaves are excluded from the
 accounting set. Network counters use /proc/net/dev and sysfs speed, state,

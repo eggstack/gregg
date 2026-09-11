@@ -57,12 +57,19 @@ contradictions. System identity fields are limited to 512 UTF-8 bytes.
   `available_bytes` is optional for old-v2 compatibility; when present it is
   caller-available space and is independent of total filesystem free space.
 - `cpu_frequency_hz` is an optional positive raw Hz value; never serialize
-  formatted frequency text.
+  formatted frequency text. It means current OS-reported frequency, not a
+  base/max frequency claim; macOS may omit it.
 - Disk/network rates are integer bytes per second. Network capacities are
   directional bits per second. Aggregate rates are daemon-selected and must
   not be reconstructed by summing detail records.
 - Network loopback can appear in detail but cannot be an aggregate member;
   missing capacity leaves throughput available without a utilization value.
+
+Compatibility matrix: v1-only daemons use the client's v2-404 fallback and
+leave all live fields absent; pre-feature v2 daemons deserialize unchanged and
+leave missing optional fields absent; current v2 families are normalized
+independently. Older v2 clients ignore the additive JSON keys. Do not add
+daemon-version transport to this contract.
 
 ## Validation
 

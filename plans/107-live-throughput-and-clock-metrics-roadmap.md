@@ -1,6 +1,6 @@
 # Plan 107: live throughput and clock metrics roadmap
 
-Status: ready for implementation.
+Status: complete; closed by Plan 111.
 
 Depends on: current main after completed Plan 106.
 
@@ -236,3 +236,16 @@ This roadmap is complete only when:
 10. Condensed `v` view gains a NET column at widths where it can fit while preserving bounded fallback tiers.
 11. No privileged subprocesses, daemon-version transport, persistent telemetry, or generalized observability subsystem is introduced.
 12. Full local verification, Ubuntu runtime evidence, and the existing native macOS/Windows CI jobs pass.
+
+## Closure record
+
+The roadmap is complete through Plans 108-111. Plan 108 added the additive v2
+wire fields and client normalization, Plan 109 added native monotonic live
+collection, Plan 110 integrated the telemetry into the TUI, and Plan 111 closed
+the mixed-version, runtime, documentation, and verification work. The only
+implementation correction found during final closure was the Linux CPUFreq
+parser accepting the whitespace-separated `affected_cpus` form emitted by the
+current Ubuntu host (`efb18dc`).
+
+Daemon-version transport, persistent history, process attribution, and the
+other roadmap exclusions remain deferred.

@@ -144,10 +144,16 @@ Offline endpoints keep polling on every configured cadence and recover
 automatically.
 
 The client also normalizes optional v2 CPU-frequency, disk-I/O, and network
-telemetry for later presentation. Older daemons and unsupported platforms
-leave these fields absent; byte rates remain raw integer values and network
-utilization is derived directionally without double-counting full-duplex
-traffic.
+telemetry without renderer branches on wire version. A v1-only or pre-feature
+v2 daemon remains online and leaves these fields absent; `gregg` falls back
+from `/v2/status` to v1 only on HTTP 404. CPU frequency means the current
+OS-reported frequency, not base or maximum frequency, and macOS may omit it
+because no privileged or undocumented source is used. `R/s`, `W/s`, `Rx/s`,
+and `Tx/s` are byte-throughput rates. Disk capacity remains separate from disk
+I/O accounting, while network utilization uses the maximum valid directional
+percentage rather than summing full-duplex traffic. Loopback is available in
+`n` detail but excluded from aggregate capacity. Gregg does not transport
+daemon versions.
 
 ## Supported platforms
 

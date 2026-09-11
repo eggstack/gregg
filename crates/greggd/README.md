@@ -120,13 +120,20 @@ LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 capacity records plus additive live telemetry: current CPU frequency in raw
 Hz, daemon-selected disk read/write bytes per second, and directional network
 receive/transmit bytes per second with optional link capacities in bits per
-second. Missing or `null` optional data means unavailable/legacy; an empty
-list means successful enumeration with no eligible records. Disk/network
-aggregates are separate from detail records and are not inferred from display
-rows. Collection is best-effort and does not model physical disks or storage
+second. CPU frequency is current OS-reported frequency, not a base or maximum
+clock; macOS omits it because Gregg uses no privileged or undocumented source.
+Missing or `null` optional data means unavailable/legacy; an empty list means
+successful enumeration with no eligible records. Disk capacity (`used / total`)
+and disk I/O are separate accounting domains, and `R/s`/`W/s` are byte rates.
+Disk/network aggregates are separate from detail records and are not inferred
+from display rows. Network utilization is directional and full-duplex-safe:
+the maximum valid Rx or Tx percentage is used rather than summing both.
+Collection is best-effort and does not model physical disks or storage
 topology; loopback may appear in network detail but cannot contribute to
-aggregate capacity. Linux and macOS retain `/v1/status`; Windows is v2-only
-for status semantics.
+aggregate capacity. Older clients and daemons remain compatible by ignoring or
+omitting these additive fields; daemon-version transport is not part of the
+wire contract. Linux and macOS retain `/v1/status`; Windows is v2-only for
+status semantics.
 
 Live rates use cumulative native counters and the actual monotonic elapsed time
 between observations. Counter reset, daemon restart, device hotplug, and link

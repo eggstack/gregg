@@ -46,7 +46,13 @@ Version 2 status responses use a flat `StatusPayloadV2` wrapper. Its optional
 missing means unavailable/unsupported/legacy. Disk and network rates are
 integer bytes per second, while link capacities are bits per second. The
 daemon supplies de-duplicated aggregates and the client preserves detail
-records without summing them.
+records without summing them. CPU frequency is current OS-reported frequency,
+not a base or maximum-clock claim; macOS may omit it. Disk capacity is a
+separate accounting domain from disk I/O. Network utilization is derived from
+the maximum valid directional percentage, so full-duplex Rx and Tx are not
+summed, and loopback may be detail-only rather than an aggregate-capacity
+member. v1-only and pre-feature v2 payloads remain valid with these fields
+absent, while older v2 clients ignore the additive JSON keys.
 
 ## Links
 

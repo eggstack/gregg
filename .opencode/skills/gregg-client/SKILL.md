@@ -114,6 +114,15 @@ malformed entry does not produce a misleading duplicate diagnostic.
 - Formatting (`GHz`, `MiB/s`, and percentage strings) belongs to renderers,
   not normalization
 
+Compatibility is normalized without wire-version renderer branches. v1-only
+and pre-feature v2 daemons retain their historical core metrics and simply
+provide no live fields. CPU frequency is current OS-reported frequency, not a
+base/max claim. Disk capacity is separate from disk I/O; `R/s`/`W/s` and
+`Rx/s`/`Tx/s` are byte-throughput labels. Network utilization uses the maximum
+valid directional percentage, never `rx + tx`, and loopback may appear in
+`n` detail without contributing aggregate capacity. Daemon-version transport
+remains deferred.
+
 ### State model
 
 ```rust

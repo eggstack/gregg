@@ -47,6 +47,16 @@ service lifecycle. For platform metric collection itself, use the
   socket all feed the same nonblocking one-shot shutdown signal into
   `run_with_shutdown()` (10s graceful deadline).
 
+The daemon's v2 live telemetry is additive and best effort. CPU frequency is
+the current OS-reported value, not a base/max claim; macOS may omit it. Disk
+capacity is separate from disk I/O, and `R/s`/`W/s` plus `Rx/s`/`Tx/s` are byte
+rates derived from native cumulative counters using monotonic elapsed time.
+Network utilization is directional/full-duplex-safe, and loopback is detail
+only rather than aggregate capacity. Reset, restart, hotplug, disappearance,
+or unsupported optional sources re-baseline or omit that family without
+blocking core readiness. Older v1 and pre-feature v2 peers remain supported;
+daemon-version transport is deferred.
+
 ## CLI subcommands
 
 | Command | Contract |

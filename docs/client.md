@@ -51,6 +51,19 @@ The client stores its config at:
 Client `request_timeout_ms` values must be between 100 and 60,000
 milliseconds; invalid values are rejected before polling starts.
 
+### Optional live telemetry
+
+The client accepts additive v2 CPU-frequency, disk-I/O, and network fields.
+It remains compatible with v1-only and pre-feature v2 daemons: those daemons
+stay online and simply provide no newer telemetry. CPU frequency means the
+current OS-reported frequency, not base or maximum frequency; macOS may omit
+it because Gregg does not use privileged or undocumented mechanisms. Disk
+capacity is independent of disk I/O, and `R/s`/`W/s` plus `Rx/s`/`Tx/s` are
+byte-throughput rates. Network utilization uses the maximum valid directional
+percentage against link capacity, not `Rx + Tx`; loopback can be shown in
+`n` detail but does not contribute to aggregate capacity. Daemon version
+transport remains deferred.
+
 Only one EggPool endpoint is supported (`gregg eggpool add
 pool.local:11300`); use `--replace` to change an existing one. Without it,
 the command reports an already-configured endpoint conflict.

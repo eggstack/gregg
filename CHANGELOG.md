@@ -81,6 +81,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Linux CPUFreq policy-list compatibility** (`greggd`, Plan 111): accept
+  the whitespace-separated CPU membership form emitted by some kernels in
+  addition to ranges and comma-separated lists, so readable
+  `scaling_cur_freq` values are not omitted on those hosts. Current CPU
+  frequency remains optional and is reported only when a supported source is
+  readable.
+
 - **Bootstrap installer requires bash, docs use it everywhere** (`install.sh`,
   packaging, workflows, docs): every documented pipe-to-shell installer
   command used `sh -s --`, but `install.sh` is a bash script (`set -o

@@ -144,6 +144,14 @@ The sampler owns the clock and cadence. Key behaviors:
   elapsed time and discard the interval on reset, backwards/zero elapsed time,
   disappearance, or reappearance. Optional source failures yield absent live
   fields while core CPU/memory sampling remains eligible for Ready.
+  CPU frequency is the current OS-reported value, not a base or maximum-clock
+  claim; macOS leaves it absent because no privileged or undocumented source is
+  used. Disk `R/s`/`W/s` and network `Rx/s`/`Tx/s` are byte rates. Filesystem
+  capacity and disk-I/O accounting are separate, while network utilization is
+  computed directionally and takes the maximum valid Rx/Tx percentage. Loopback
+  may be published for interface detail but cannot contribute aggregate link
+  capacity. Older clients and daemons remain compatible because these fields
+  are additive; daemon-version transport remains deferred.
   The collector is shared with the blocking task behind a mutex; a panicked
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.

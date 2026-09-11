@@ -1,6 +1,7 @@
 # Plan 111: live-metrics compatibility, verification, and documentation closure
 
-Status: ready for implementation after Plans 108-110.
+Status: complete; implementation correction `efb18dc` and documentation closure
+landed on main after verification.
 
 Depends on: Plans 107-110.
 
@@ -268,3 +269,58 @@ Plan 111 and the Plan 107 roadmap are complete only when:
 12. Current docs/architecture/skills describe the implemented semantics accurately.
 13. Plans 107-111 and `plans/README.md` carry truthful closure records.
 14. Daemon fleet-version transport/display remains deferred and unimplemented.
+
+## Closure record
+
+Plan 111 is complete. The final verification found and corrected one defect
+directly in the Plan 109 Linux CPUFreq path: this Ubuntu host exposes
+`affected_cpus` as a whitespace-separated list, so the parser now accepts
+kernel range, comma-separated, and whitespace-separated forms. The regression
+is covered by `collector::linux::source::tests::cpufreq_accepts_kernel_space_separated_cpu_lists`.
+
+Compatibility evidence on the current tree:
+
+- `gregg-protocol` integration tests round-trip v1, legacy v2, and live-metrics
+  fixtures; v1 and old-v2 normalization leaves CPU frequency, disk I/O, and
+  network absent; additive subsets/nulls deserialize; older v2 snapshot models
+  ignore future live fields.
+- Client normalization and renderer tests cover independent optional families,
+  exact full-duplex directional utilization, loopback detail, mixed old/new
+  fleet geometry, `e`/`n`/`v`, resize, selection, and mixed-height viewport
+  behavior without wire-version renderer branches.
+- The Ubuntu 24.04.4 LTS aarch64 host smoke used a temporary loopback config
+  and direct `greggd` lifecycle. CPUFreq was present but `cpuinfo_cur_freq`
+  was permission-denied; readable `scaling_cur_freq` then reported changing
+  current values (1.7–2.2 GHz) after the parser correction. `/sys/block`
+  exposed `mmcblk0` and `nvme0n1` after loop/RAM filtering. Bounded temporary
+  file writes and direct reads raised W/s and R/s, then rates returned to zero.
+  `lo` reported loopback traffic in detail while `eth0` supplied 1 Gb/s
+  aggregate capacity; loopback did not inflate the physical aggregate. A
+  physical-interface traffic generator was not available in this environment,
+  so deterministic directional/topology tests remain authoritative for
+  full-duplex saturation and capacity aggregation.
+- Direct control-socket stop and restart succeeded. The first post-restart
+  status had no disk/network rate fields, and the following sample warmed to
+  ordinary rates without a lifetime-average spike.
+- The existing PTY mixed-fleet TUI smoke exercised a current daemon together
+  with a v1-only fixture through normal/condensed views, `e`/`n`, resize, and
+  navigation. Automated renderer tests provide the stable assertions for the
+  NET row/column and detail labels because terminal redraw escape sequences are
+  not a durable artifact of this noninteractive runner.
+
+Required local gates passed on the final implementation tree:
+
+```text
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+cargo doc --workspace --no-deps
+./scripts/check-local.sh
+rustup run 1.75 cargo check --workspace --all-features
+```
+
+The documentation build emits only the repository's pre-existing rustdoc link
+warnings. Existing native-platform CI remains the authority for macOS
+Intel/arm64, Windows API bindings and SCM behavior, and MSRV 1.75; no new
+matrix or workflow was added. Daemon fleet-version transport/display remains
+deferred and unimplemented.

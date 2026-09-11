@@ -53,13 +53,16 @@ health endpoint before deciding whether to spawn. Deterministic regressions and
 local lifecycle evidence are required before closure; the extended soak remains
 manual evidence rather than CI infrastructure.
 
-Plans 107-111 coordinate the next additive live-metrics work. Plan 108 owns
+Plans 107-111 coordinated the additive live-metrics work and are now complete.
+Plan 108 owns
 the protocol/client normalization boundary first: optional schema-v2 CPU
 frequency, disk-I/O, and network fields, bounded validation, and mixed-version
 fixtures. Plan 109 now owns native daemon collection and monotonic rate
 publication. Plan 110 is complete at implementation `af9b9bd` with remote CI
-run `34640870291`; Plan 111 remains sequenced behind it for final compatibility
-verification.
+run `34640870291`. Plan 111 closed final compatibility verification and
+documentation after correcting Linux CPUFreq whitespace-list parsing in
+`efb18dc`; its final documentation commit is recorded in the closure history
+below. Daemon-version transport remains deferred.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -164,11 +167,11 @@ excluded.
 | [`104-shared-updater-and-release-policy-consolidation.md`](104-shared-updater-and-release-policy-consolidation.md) | One shared internal updater (`gregg-update`), thin application adapters, release-policy scripts, single target table with drift test | complete; implementation `27ec978`; CI `34293771380` green |
 | [`105-source-boundary-repository-hygiene-and-msrv-review.md`](105-source-boundary-repository-hygiene-and-msrv-review.md) | Remove `probe_top`, split startup/config modules, audit compatibility pins, retain MSRV 1.75 | complete; implementation `2e4c4a1`; CI `34293771380` green |
 | [`106-bounded-daemon-status-and-client-offline-provenance.md`](106-bounded-daemon-status-and-client-offline-provenance.md) | Read-only `greggd status` and client offline provenance | complete; implementation `a243162`; CI `34293771380` green |
-| [`107-live-throughput-and-clock-metrics-roadmap.md`](107-live-throughput-and-clock-metrics-roadmap.md) | Live CPU clock, disk-I/O, and network roadmap | coordination roadmap; Plans 108-111 sequenced |
+| [`107-live-throughput-and-clock-metrics-roadmap.md`](107-live-throughput-and-clock-metrics-roadmap.md) | Live CPU clock, disk-I/O, and network roadmap | complete; closed by Plan 111 |
 | [`108-additive-live-metrics-protocol-and-normalization.md`](108-additive-live-metrics-protocol-and-normalization.md) | Additive v2 live-metrics wire types, validation, fixtures, and client normalization | complete; implementation `94f01c5`; CI run `34606521857` green |
 | [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | complete; implementation `0028843`; CI `34636802865` green |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | complete; implementation `af9b9bd`; CI `34640870291` green |
-| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | ready after Plans 108-110 |
+| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`; final docs commit recorded in closure |
 
 Dependency order:
 

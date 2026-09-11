@@ -71,12 +71,14 @@ after a valid sample.
 Capabilities: `cpu_iowait: true`, `load_average: true`, `swap: true`, `memory_commit: false`
 
 Live telemetry uses CPUFreq policy files (hardware-current first, scaling
-current fallback, weighted by affected_cpus), top-level /sys/block/*/stat
-sector counters, and /proc/net/dev plus sysfs link metadata. The aggregate
-disk set is separate from mounted capacity rows. Network slaves are not added
-to their master, down links do not contribute capacity, and loopback remains
-detail-only for capacity. All cumulative counters use the shared monotonic
-baseline helper in collector/rate.rs.
+current fallback, weighted by affected CPU membership), top-level
+/sys/block/*/stat sector counters, and /proc/net/dev plus sysfs link metadata.
+CPUFreq membership parsing must accept the kernel's range, comma-separated, and
+space-separated CPU-list forms. The aggregate disk set is separate from
+mounted capacity rows. Network slaves are not added to their master, down
+links do not contribute capacity, and loopback remains detail-only for
+capacity. All cumulative counters use the shared monotonic baseline helper in
+collector/rate.rs.
 
 ## macOS collector
 
@@ -134,6 +136,12 @@ buffer padding cannot produce a NUL in the wire identity.
 
 - No external command execution for metrics collection
 - Use kernel interfaces (`/proc`), Mach APIs, or Windows native APIs
+- Current CPU frequency is optional OS-reported frequency, never a base/max
+  claim; macOS remains absent when no supported unprivileged source exists
+- Disk capacity is distinct from disk I/O; `R/s`/`W/s` and `Rx/s`/`Tx/s` are
+  byte-throughput rates
+- Network utilization is directional/full-duplex-safe and loopback is detail
+  only, never aggregate capacity
 - Every unsafe block must have a safety comment
 - Tests must not sleep for production refresh intervals
 - Inject clocks or short intervals for deterministic testing

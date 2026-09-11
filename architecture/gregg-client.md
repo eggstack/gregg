@@ -169,6 +169,15 @@ design is retained intentionally.
   the maximum valid directional percentage, never `rx + tx`, and returns
   `None` when capacities are unavailable
 
+Compatibility is proven at the normalization boundary and does not require
+wire-version branches in renderers: v1 fallback and legacy-v2 payloads retain
+their historical core metrics, while current-v2 optional families appear or
+degrade independently. CPU frequency is current OS-reported frequency, not a
+base/max claim. Disk capacity is separate from disk I/O; `R/s`, `W/s`, `Rx/s`,
+and `Tx/s` are byte-throughput labels. Loopback remains available to `n`
+detail without contributing to aggregate network capacity, and daemon-version
+transport is intentionally deferred.
+
 ### State model
 
 ```rust
