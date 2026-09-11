@@ -27,7 +27,7 @@ renders a Ratatui-based terminal UI.
 | `config/validation` | `src/config/validation.rs` | `ConfigViolation` kinds and field checks |
 | `config/lock` | `src/config/lock.rs` | Cross-process advisory file locking (`FileLockGuard`) |
 | `state` | `src/state.rs` | AppState reducer, viewport logic; per-system `offline_reason` provenance set from accepted failures, cleared by accepted successes |
-| `action` | `src/action.rs` | Action enum (14 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
+| `action` | `src/action.rs` | Action enum (15 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
 
 ### Polling
 

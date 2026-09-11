@@ -28,6 +28,10 @@ failure once and classifies it as configuration (`1`), service (`2`), runtime
 boundary with a fallible subscriber setup, so embedding and tests remain safe
 when a global subscriber already exists.
 
+The `gregg` client uses its own exit-code taxonomy (`src/cli.rs`): success
+(`0`), configuration (`1`), endpoint parse/validation (`2`), operation
+failure (`3`), config not found (`4`), editor launch failure (`5`).
+
 Windows SCM dispatcher failures return to `main` for the ordinary diagnostic
 and exit-code boundary. Once the generated `ServiceMain` callback has been
 invoked, worker failures are logged once by that callback, represented by a

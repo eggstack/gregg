@@ -87,6 +87,7 @@ space, so reservations or quotas may make used plus available less than total.
 | `identity` | `identity.rs` | hostname, kernel, `/etc/os-release` |
 | `drives` | `drives.rs` | `/proc/self/mountinfo` + `statvfs` |
 | `fixtures` | `fixtures.rs` | Test fixture loader |
+| `tests` | `tests.rs` | `#[cfg(test)]` fixture-driven collector tests |
 
 ### CPU (`/proc/stat`)
 
@@ -117,7 +118,7 @@ Swap uses same formula with `SwapTotal` and `SwapFree`.
 
 - hostname: `gethostname()` or `/proc/sys/kernel/hostname`
 - kernel: `/proc/sys/kernel/osrelease`
-- architecture: `/proc/sys/kernel/osmachine` or `uname`
+- architecture: `/proc/sys/kernel/arch`, falling back to the `machine` field in `/proc/cpuinfo`
 - OS: `/etc/os-release` (handles quoted/escaped values)
 - All identifiers clipped to 128 bytes
 
@@ -125,7 +126,7 @@ Swap uses same formula with `SwapTotal` and `SwapFree`.
 
 - Parses `/proc/self/mountinfo` on the optional refresh worker
 - Excludes pseudo, network, `autofs`, and generic FUSE filesystem types
-- Prefers `/` mount point for root
+- Ranks candidates so a record with `mount_point == "/"` or `root == "/"` wins over other mounts
 - Uses `statvfs` for capacity (the contained `unsafe` FFI lives in
   `source.rs`, with a documented safety comment)
 - Handles octal escapes in mount paths

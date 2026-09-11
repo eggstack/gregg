@@ -258,8 +258,8 @@ release from prebuilt binaries.
 
 **`deny.toml`** (cargo-deny):
 - Advisory checking, license auditing, dependency bans
-- Allowed licenses: MIT, Apache-2.0, Unicode-3.0, BSD-2/3, ISC, Zlib, CDLA
+- Allowed licenses: MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CDLA-Permissive-2.0
 - Sources: only crates.io
 
 **`rust-toolchain.toml`**:
-- Pinned to `stable` channel with `rustfmt` and `clippy` components
+- Pinned to `stable` channel with the `minimal` profile plus `rustfmt` and `clippy` components

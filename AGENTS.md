@@ -51,7 +51,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 
 - **MSRV 1.75.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.75"`. Never raise MSRV incidentally.
 - **Clippy pedantic is warn, not error.** Don't add new warnings.
-- **Unsafe allowlist only, each block needs a safety comment:** `greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `gregg/src/` (flock/LockFileEx).
+- **Unsafe allowlist only, each block needs a safety comment:** `greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `greggd/src/startup/install.rs` (`geteuid`), `gregg/src/` (flock/LockFileEx, `cli.rs` executable probe).
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.

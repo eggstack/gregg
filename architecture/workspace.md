@@ -139,7 +139,8 @@ Platform-specific config paths:
 Cross-process locking:
 - Unix: `flock(2)` advisory lock on `<config>.lock`
 - Windows: `LockFileEx` exclusive lock on `<config>.lock`
-- Other platforms: in-process `Mutex` only
+- Other targets fail the build via `compile_error!` rather than silently
+  degrading to in-process-only locking (`crates/gregg/src/config/lock.rs`).
 
 The endpoint parser lives in `crates/gregg/src/endpoint.rs`. Canonical parsing
 supports IPv4, IPv6 (bracketed and bare), and DNS/mDNS hostnames with optional
@@ -312,13 +313,15 @@ MSRV incidentally via a dependency update.
 The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
 changes. All members deny `unsafe_code` through the workspace lint table.
-The macOS collector FFI module
-(`crates/greggd/src/collector/macos/ffi.rs`), the Windows source module
-(`crates/greggd/src/collector/windows/source.rs`), and the client's narrowly scoped
-Unix `flock` wrapper and Windows `LockFileEx` adapter are the only
-exceptions; each uses `#![allow(unsafe_code)]` with documented safety
-invariants. No unsafe pointers or borrowed foreign buffers cross those
-boundaries.
+Narrowly scoped `#[allow(unsafe_code)]` sites with documented safety
+invariants are the only exceptions: the collectors
+(`greggd/src/collector/linux/source.rs` for `statvfs`,
+`collector/macos/ffi.rs` for Mach, `collector/windows/source.rs`), the
+`greggd` startup privilege probe (`startup/install.rs` for `geteuid`), and
+the client config lock (`gregg/src/config/lock.rs`, `config/store.rs`,
+`bin/lock_helper.rs` for `flock`/`LockFileEx`) plus the client executable
+probe (`gregg/src/cli.rs` for `access`). No unsafe pointers or borrowed
+foreign buffers cross those boundaries.
 
 ## Release profiles
 
@@ -346,8 +349,8 @@ and dependency bans:
 
 - **Advisories:** unmaintained crates are a workspace-level concern; yanked
   crates produce warnings.
-- **Licences:** only MIT, Apache-2.0, Unicode-3.0, Unicode-DFS-2016,
-  BSD-2-Clause, BSD-3-Clause, ISC, Zlib, and CDLA-Permissive-2.0 are allowed.
+- **Licences:** only MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause,
+  ISC, Zlib, and CDLA-Permissive-2.0 are allowed.
 - **Bans:** multiple versions of the same crate produce warnings.
 - **Sources:** only crates.io is permitted; unknown registries and git sources
   are denied.
