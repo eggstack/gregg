@@ -1,7 +1,7 @@
 # Plan 111: live-metrics compatibility, verification, and documentation closure
 
 Status: complete; implementation correction `efb18dc` and documentation closure
-landed on main after verification.
+`fa4b022` landed on main after verification.
 
 Depends on: Plans 107-110.
 

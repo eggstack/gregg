@@ -61,8 +61,8 @@ fixtures. Plan 109 now owns native daemon collection and monotonic rate
 publication. Plan 110 is complete at implementation `af9b9bd` with remote CI
 run `34640870291`. Plan 111 closed final compatibility verification and
 documentation after correcting Linux CPUFreq whitespace-list parsing in
-`efb18dc`; its final documentation commit is recorded in the closure history
-below. Daemon-version transport remains deferred.
+`efb18dc`; final documentation closure is `fa4b022`. Daemon-version transport
+remains deferred.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -171,7 +171,7 @@ excluded.
 | [`108-additive-live-metrics-protocol-and-normalization.md`](108-additive-live-metrics-protocol-and-normalization.md) | Additive v2 live-metrics wire types, validation, fixtures, and client normalization | complete; implementation `94f01c5`; CI run `34606521857` green |
 | [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | complete; implementation `0028843`; CI `34636802865` green |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | complete; implementation `af9b9bd`; CI `34640870291` green |
-| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`; final docs commit recorded in closure |
+| [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`; docs `fa4b022` |
 
 Dependency order:
 
