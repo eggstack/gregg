@@ -12,7 +12,6 @@ use super::process::{run_bounded_command, MANAGER_COMMAND_TIMEOUT};
 use std::fs;
 use std::io::{self};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ── Canonical unit / plist content ────────────────────────────────────────
 
@@ -86,30 +85,33 @@ pub(crate) fn systemd_is_active() -> bool {
     )
 }
 fn ensure_greggd_user() -> io::Result<()> {
-    // Check if user exists via `id -u greggd`
-    let mut cmd = Command::new("id");
-    cmd.arg("-u");
-    cmd.arg("greggd");
-    cmd.stdout(std::process::Stdio::null());
-    cmd.stderr(std::process::Stdio::null());
-    if let Ok(status) = cmd.status() {
-        if status.success() {
-            return Ok(());
-        }
+    // Check if user exists via `id -u greggd`, bounded like every other
+    // manager invocation so a hung NSS backend cannot stall install forever.
+    let exists = matches!(
+        run_bounded_command("id", &["-u", "greggd"], MANAGER_COMMAND_TIMEOUT),
+        Ok(output) if output.status.success()
+    );
+    if exists {
+        return Ok(());
     }
     // Create system user
-    let mut add = Command::new("useradd");
-    add.arg("--system");
-    add.arg("--no-create-home");
-    add.arg("--shell");
-    add.arg("/usr/sbin/nologin");
-    add.arg("greggd");
-    let status = add.status()?;
-    if status.success() {
+    let output = run_bounded_command(
+        "useradd",
+        &[
+            "--system",
+            "--no-create-home",
+            "--shell",
+            "/usr/sbin/nologin",
+            "greggd",
+        ],
+        MANAGER_COMMAND_TIMEOUT,
+    )?;
+    if output.status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "useradd greggd failed with status {status}"
+            "useradd greggd failed with status {}",
+            output.status
         )))
     }
 }
@@ -119,18 +121,20 @@ fn set_config_ownership() -> io::Result<()> {
     if !dir.exists() {
         return Ok(());
     }
-    let mut cmd = Command::new("chown");
-    cmd.arg("-R");
-    cmd.arg("greggd:greggd");
-    cmd.arg(&dir);
-    let status = cmd.status()?;
-    if status.success() {
+    let dir_str = dir.to_string_lossy().to_string();
+    let output = run_bounded_command(
+        "chown",
+        &["-R", "greggd:greggd", &dir_str],
+        MANAGER_COMMAND_TIMEOUT,
+    )?;
+    if output.status.success() {
         Ok(())
     } else {
         // Not fatal for install; log and continue.
         eprintln!(
-            "warning: chown greggd:greggd {} failed: {status}",
-            dir.display()
+            "warning: chown greggd:greggd {} failed: {}",
+            dir.display(),
+            output.status
         );
         Ok(())
     }

@@ -443,10 +443,11 @@ fn fetch_health_bytes(target: SocketAddr) -> FetchOutcome {
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
-                response.extend_from_slice(&chunk[..read]);
-                if response.len() > MAX_CRONCHECK_RESPONSE_BYTES {
+                // Check before buffering so at most the cap itself is held.
+                if response.len().saturating_add(read) > MAX_CRONCHECK_RESPONSE_BYTES {
                     return FetchOutcome::Failed;
                 }
+                response.extend_from_slice(&chunk[..read]);
             }
             Err(_) => return FetchOutcome::Failed,
         }

@@ -85,11 +85,15 @@ pub fn run_curl_capture(curl: &str, args: &[&str]) -> Result<Vec<u8>, UpdateErro
 /// Probe the HTTP status code of a URL with a short bounded request.
 /// Returns `None` when the probe itself cannot run.
 pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
+    #[cfg(windows)]
+    let null_device = "NUL";
+    #[cfg(not(windows))]
+    let null_device = "/dev/null";
     let output = Command::new(curl)
         .args([
             "-s",
             "-o",
-            "/dev/null",
+            null_device,
             "-w",
             "%{http_code}",
             "--max-time",
@@ -170,7 +174,13 @@ pub enum DownloadOutcome {
     Failed(String),
 }
 
-/// Download a URL to `dest` with a bounded `curl` invocation.
+/// Download a URL to `dest` with a single bounded `curl` invocation.
+///
+/// The HTTP status code is captured from this same invocation (`-w
+/// %{http_code}` alongside `-o`), so a failed download never triggers a
+/// second probe request. Only an exact `404` code permits the Cargo
+/// fallback; every other failure (timeout, 5xx, TLS, spawn error) is a
+/// hard `Failed`.
 pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadOutcome {
     let dest_str = dest.to_string_lossy().to_string();
     let output = Command::new(curl)
@@ -180,19 +190,19 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
             DOWNLOAD_TIMEOUT_SECS,
             "-o",
             &dest_str,
+            "-w",
+            "%{http_code}",
             url,
         ])
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output();
     match output {
         Ok(out) if out.status.success() => DownloadOutcome::Success,
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-            // Probe HTTP code to distinguish 404 vs transport/5xx.
-            if let Some(404) = probe_http_code(curl, url) {
-                DownloadOutcome::NotFound
-            } else if stderr.contains("404") {
+            let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if code == "404" {
                 DownloadOutcome::NotFound
             } else {
                 DownloadOutcome::Failed(format!("curl exit {:?}: {stderr}", out.status.code()))
@@ -294,6 +304,48 @@ mod tests {
         assert!(matches!(failed, DownloadOutcome::Failed(_)));
         // Ensure missing asset permits fallback while transport failure does not.
         // This is checked in the prepare_candidate match arms.
+    }
+
+    /// Stub `curl` that records invocations, prints the fake HTTP code to
+    /// stdout (as `-w %{http_code}` would), and exits 22 like `curl -f`.
+    #[cfg(unix)]
+    fn stub_curl_with_code(dir: &std::path::Path, code: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("curl");
+        let script = format!(
+            "#!/bin/sh\necho x >> \"{}\"\nprintf '%s' \"{code}\"\necho \"curl: (22) the requested URL returned error: {code}\" >&2\nexit 22\n",
+            dir.join("calls").display(),
+        );
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stub.to_string_lossy().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_classifies_code_in_a_single_request() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-download").unwrap();
+        let dir = temp.path().to_path_buf();
+        let dest = dir.join("asset");
+        let calls = dir.join("calls");
+
+        // Exact 404 → NotFound, with no second probe request.
+        let curl = stub_curl_with_code(&dir, "404");
+        assert!(matches!(
+            download_file(&curl, "https://example.invalid/asset", &dest),
+            DownloadOutcome::NotFound
+        ));
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
+        let _ = std::fs::remove_file(&calls);
+
+        // A body/message mentioning 404 must not be sniffed as NotFound
+        // when the captured status code is 500.
+        let curl = stub_curl_with_code(&dir, "500");
+        assert!(matches!(
+            download_file(&curl, "https://example.invalid/404-docs", &dest),
+            DownloadOutcome::Failed(_)
+        ));
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
     }
 
     #[test]

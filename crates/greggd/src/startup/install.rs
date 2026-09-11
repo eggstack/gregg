@@ -203,16 +203,24 @@ pub(crate) fn write_atomic_text(path: &Path, content: &str) -> io::Result<()> {
     let tmp_path = dir.join(tmp_name);
     // Ensure we clean up on failure.
     let write_res = (|| -> io::Result<()> {
-        fs::write(&tmp_path, content)?;
-        // Flush to disk where possible.
-        let file = fs::OpenOptions::new().read(true).open(&tmp_path)?;
-        let _ = file.sync_all();
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&tmp_path)?;
+        io::Write::write_all(&mut file, content.as_bytes())?;
+        // Propagate durability failures instead of silently dropping them.
+        file.sync_all()?;
+        drop(file);
         fs::rename(&tmp_path, path)?;
         // Sync parent directory where supported.
         #[cfg(unix)]
         {
             if let Ok(dir_file) = fs::OpenOptions::new().read(true).open(dir) {
-                let _ = dir_file.sync_all();
+                dir_file.sync_all()?;
             }
         }
         Ok(())

@@ -658,7 +658,12 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             // Safety: buffer is writable and its declared length matches its
             // allocation. The returned size is checked before parsing.
             ffi::GetLogicalDriveStringsW(
-                u32::try_from(buffer.len()).expect("bounded drive buffer"),
+                u32::try_from(buffer.len()).map_err(|_| {
+                    CollectError::new(
+                        CollectErrorKind::Numeric,
+                        "logical-drive buffer size exceeds API limit",
+                    )
+                })?,
                 buffer.as_mut_ptr(),
             )
         })?;
@@ -674,7 +679,12 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 // Safety: the resized buffer is writable and the API receives
                 // its exact capacity.
                 ffi::GetLogicalDriveStringsW(
-                    u32::try_from(buffer.len()).expect("bounded drive buffer"),
+                    u32::try_from(buffer.len()).map_err(|_| {
+                        CollectError::new(
+                            CollectErrorKind::Numeric,
+                            "logical-drive buffer size exceeds API limit",
+                        )
+                    })?,
                     buffer.as_mut_ptr(),
                 )
             };
@@ -1045,16 +1055,24 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
                     std::ptr::null(),
                     0,
                     performance.as_mut_ptr().cast(),
-                    u32::try_from(std::mem::size_of::<ffi::DiskPerformance>())
-                        .expect("small performance structure"),
+                    u32::try_from(std::mem::size_of::<ffi::DiskPerformance>()).map_err(|_| {
+                        CollectError::new(
+                            CollectErrorKind::Numeric,
+                            "disk performance structure size exceeds API limit",
+                        )
+                    })?,
                     &mut returned,
                     std::ptr::null_mut(),
                 )
             } != 0;
             if ok
                 && returned
-                    >= u32::try_from(std::mem::size_of::<ffi::DiskPerformance>())
-                        .expect("small performance structure")
+                    >= u32::try_from(std::mem::size_of::<ffi::DiskPerformance>()).map_err(|_| {
+                        CollectError::new(
+                            CollectErrorKind::Numeric,
+                            "disk performance structure size exceeds API limit",
+                        )
+                    })?
             {
                 let value = unsafe { performance.assume_init() };
                 records.push(RawDiskIo {

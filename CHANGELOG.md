@@ -81,6 +81,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Bug-audit hardening** (no behavior additions): reject `ready` v2 health
+  responses that carry a `category` (`gregg-protocol`); treat
+  from-the-future snapshots as stale when the clock jumps backward
+  (`greggd` server); create `startup install` temp files with `0600` and
+  propagate file/dir sync errors; classify asset-download failures from the
+  HTTP code captured in the same `curl` invocation instead of a second
+  probe request plus `"404"` substring sniffing (also fixes the
+  Unix-only `/dev/null` probe target on Windows); use `saturating_add`
+  for the client response cap; bound `id`/`useradd`/`chown` in systemd
+  install with the existing 10s manager runner; remove the
+  `path_exists`+`read_dir` TOCTOU in the Linux disk-slave check; check the
+  croncheck response cap before buffering; replace `expect` on Windows
+  FFI size conversions and the macOS `CString` literal with fallible
+  `SourceUnavailable`/`Parse` paths; route Windows memory/commit
+  percentages through the shared clamped helper.
+
 - **Linux CPUFreq policy-list compatibility** (`greggd`, Plan 111): accept
   the whitespace-separated CPU membership form emitted by some kernels in
   addition to ranges and comma-separated lists, so readable

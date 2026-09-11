@@ -26,15 +26,7 @@ impl CommitSample {
     /// Convert into the wire [`CommitMetrics`].
     #[must_use]
     pub fn into_metrics(self) -> CommitMetrics {
-        let usage_pct = if self.limit_bytes == 0 {
-            0.0
-        } else {
-            #[allow(clippy::cast_precision_loss)]
-            let pct = (self.used_bytes as f64) * 100.0 / (self.limit_bytes as f64);
-            #[allow(clippy::cast_possible_truncation)]
-            let as_f32 = pct as f32;
-            as_f32.clamp(0.0, 100.0)
-        };
+        let usage_pct = crate::collector::clamped_usage_pct(self.used_bytes, self.limit_bytes);
         CommitMetrics {
             used_bytes: self.used_bytes,
             limit_bytes: self.limit_bytes,

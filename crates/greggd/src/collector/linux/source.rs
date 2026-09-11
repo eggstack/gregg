@@ -238,11 +238,14 @@ impl ProcSource {
             if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("zram") {
                 continue;
             }
-            if self.inner.path_exists(&device.join("slaves"))
-                && self
-                    .inner
-                    .read_dir(&device.join("slaves"))
-                    .is_ok_and(|slaves| !slaves.is_empty())
+            // Single `read_dir` attempt: a missing `slaves` directory means
+            // a leaf device. A separate `path_exists` probe first would be
+            // a TOCTOU pair (the directory can appear/disappear between
+            // the two syscalls); any read error is treated as "no slaves".
+            if self
+                .inner
+                .read_dir(&device.join("slaves"))
+                .is_ok_and(|slaves| !slaves.is_empty())
             {
                 continue;
             }

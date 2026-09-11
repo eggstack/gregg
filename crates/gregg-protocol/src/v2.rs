@@ -332,6 +332,11 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
                         "ready health response must include a snapshot",
                     ));
                 }
+                if raw.category.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "ready health response must not include a category",
+                    ));
+                }
             }
             crate::ReadinessState::Failed => {
                 if raw.snapshot.is_some() {
@@ -582,6 +587,47 @@ mod tests {
     fn v2_ready_health_requires_snapshot() {
         let json = r#"{"schema_version":2,"state":"ready","snapshot":null}"#;
         assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_ready_health_rejects_category() {
+        let snap = StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms: 1,
+            sample_interval_ms: 1000,
+            capabilities: MetricCapabilitiesV2 {
+                cpu_iowait: false,
+                load_average: true,
+                swap: false,
+                memory_commit: true,
+            },
+            system: v2_identity(),
+            cpu: CpuMetricsV2 {
+                logical_cores: 4,
+                usage_pct: 10.0,
+                iowait_pct: None,
+            },
+            load: Some(LoadAverage {
+                one: 1.0,
+                five: 0.5,
+                fifteen: 0.3,
+            }),
+            memory: crate::MemoryMetrics {
+                used_bytes: 1_000_000_000,
+                total_bytes: 4_000_000_000,
+                usage_pct: 25.0,
+            },
+            swap: None,
+            commit: Some(CommitMetrics {
+                used_bytes: 2_000_000_000,
+                limit_bytes: 8_000_000_000,
+                usage_pct: 25.0,
+            }),
+        };
+        let mut json = serde_json::to_value(HealthResponseV2::ready(snap)).unwrap();
+        json["category"] = serde_json::json!("warming");
+        let body = serde_json::to_string(&json).unwrap();
+        assert!(serde_json::from_str::<HealthResponseV2>(&body).is_err());
     }
 
     #[test]

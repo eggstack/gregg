@@ -304,8 +304,13 @@ impl ServerState {
                 return true;
             };
             if let Some(observed_at_unix_ms) = state.last_observed_at_unix_ms {
+                // A `None` age means `observed_at` lies in the future
+                // (backward clock jump after sampling); treat a
+                // from-the-future snapshot as stale rather than fresh.
                 let age_ms = now_unix_ms.checked_sub(observed_at_unix_ms);
-                if age_ms.is_some_and(|age| u128::from(age) >= self.max_snapshot_age.as_millis()) {
+                if age_ms.map_or(true, |age| {
+                    u128::from(age) >= self.max_snapshot_age.as_millis()
+                }) {
                     return true;
                 }
             }

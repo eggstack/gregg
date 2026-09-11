@@ -406,7 +406,7 @@ impl HttpClient {
         let mut body = Vec::new();
         while let Some(chunk_result) = stream.next().await {
             let c = chunk_result.map_err(|_| PollOutcome::NetworkError)?;
-            if body.len() + c.len() > MAX_RESPONSE_BYTES {
+            if body.len().saturating_add(c.len()) > MAX_RESPONSE_BYTES {
                 return Err(PollOutcome::BodyTooLarge);
             }
             body.extend_from_slice(&c);

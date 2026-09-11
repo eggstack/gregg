@@ -689,28 +689,36 @@ async fn fresh_snapshot_returns_200() {
 }
 
 #[tokio::test]
-async fn future_snapshot_is_not_stale_when_clock_goes_backward() {
+async fn future_snapshot_is_stale_when_clock_goes_backward() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
     let snap = LinuxSnapshotBuilder::default()
         .observed_at_unix_ms(u64::MAX)
         .build();
     update_both(&state, snap).await;
 
+    // `observed_at` lies in the future relative to the current clock
+    // (backward jump after sampling): the snapshot must not be served
+    // as fresh.
     let app = build_test_router(state);
     let response = app.oneshot(get("/v1/status")).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body_str = response_body_string(response).await;
+    let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
 }
 
 #[tokio::test]
-async fn pre_epoch_clock_does_not_mark_cached_snapshot_stale() {
+async fn snapshot_ahead_of_now_is_stale() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
     let snap = LinuxSnapshotBuilder::default()
         .observed_at_unix_ms(1_000)
         .build();
     update_both(&state, snap).await;
 
+    // `now` precedes `observed_at`: the snapshot is from the future and
+    // therefore stale.
     let published = state.published.read().await;
-    assert!(!state.is_stale(&published, Some(0)));
+    assert!(state.is_stale(&published, Some(0)));
 }
 
 #[tokio::test]

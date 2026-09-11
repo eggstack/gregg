@@ -645,7 +645,9 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
 fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
     #[cfg(target_os = "macos")]
     {
-        let class = std::ffi::CString::new("IOBlockStorageDriver").expect("literal has no NUL");
+        let class = std::ffi::CString::new("IOBlockStorageDriver").map_err(|_| {
+            CollectError::new(CollectErrorKind::Parse, "IOKit class name contains NUL")
+        })?;
         // Safety: IOKit returns an iterator owned by this function and the
         // matching dictionary is consumed by the matching-services call.
         let matching = unsafe { IOServiceMatching(class.as_ptr()) };
