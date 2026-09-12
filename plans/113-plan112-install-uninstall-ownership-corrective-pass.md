@@ -551,3 +551,7 @@ Local evidence on the final tree:
 
 Remote CI run `34711999742` passed all five jobs: Linux, macOS arm64, macOS
 Intel, Windows (including the SCM lifecycle smoke), and Rust 1.75 MSRV.
+
+## Post-closure correction note (2026-09-12)
+
+Subsequent review after `7295c6e` found three residual lifecycle/diagnostic defects outside the uninstall ownership correction itself: `greggd restart` still dispatches from host-global manager state rather than exact-executable ownership; a same-scope Unix user-local direct/cron bootstrap replacement can leave the already-running old process image alive; and shared Windows update/uninstall permission hints can emit Unix `sudo` guidance. Plan 115 owns these corrections. The closure record above remains the historical record for the Plan 113 implementation and is not evidence that these later-discovered edges are already fixed.
