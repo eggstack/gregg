@@ -251,7 +251,11 @@ impl EndpointSpec {
             }
             1 => {
                 // host:port — split on the last colon.
-                let (host_part, port_part) = rsplit_once_colon(input_str);
+                let Some((host_part, port_part)) = rsplit_once_colon(input_str) else {
+                    return Err(EndpointError::MalformedBrackets {
+                        input: input_str.to_string(),
+                    });
+                };
                 let port = parse_port(port_part, input_str)?;
                 Ok(Self {
                     host: normalize_host(host_part)?,
@@ -280,7 +284,11 @@ impl EndpointSpec {
                     // explicitly before using the general fallback. This
                     // keeps malformed zone IDs from being treated as DNS
                     // names by accident.
-                    let (host_part, port_part) = rsplit_once_colon(input_str);
+                    let Some((host_part, port_part)) = rsplit_once_colon(input_str) else {
+                        return Err(EndpointError::MalformedBrackets {
+                            input: input_str.to_string(),
+                        });
+                    };
                     if input_str.contains('%') && !is_ipv6_with_zone_id(host_part) {
                         return Err(EndpointError::MalformedBrackets {
                             input: input_str.to_string(),
@@ -523,21 +531,25 @@ fn parse_port(port_str: &str, full_input: &str) -> Result<u16, EndpointError> {
     Ok(port as u16)
 }
 
-fn rsplit_once_colon(s: &str) -> (&str, &str) {
-    // Safety: caller guarantees at least one colon.
-    debug_assert!(s.contains(':'));
-    let idx = s.rfind(':').unwrap();
-    (&s[..idx], &s[idx + 1..])
+fn rsplit_once_colon(s: &str) -> Option<(&str, &str)> {
+    let idx = s.rfind(':')?;
+    Some((&s[..idx], &s[idx + 1..]))
 }
 
 /// Canonical display address for a host and port.
+///
+/// Returns an explicit `<invalid>` placeholder when the host fails
+/// normalization instead of emitting an un-normalized address that the
+/// poller would reject, so display and request paths never diverge.
 #[must_use]
 pub fn display_address(host: &str, port: u16) -> String {
-    let host = bracketed_host(host).unwrap_or_else(|_| unbracketed_host(host).to_string());
-    if host.contains(':') {
-        format!("[{host}]:{port}")
+    let Ok(normalized) = bracketed_host(host) else {
+        return format!("<invalid>:{port}");
+    };
+    if normalized.contains(':') {
+        format!("[{normalized}]:{port}")
     } else {
-        format!("{host}:{port}")
+        format!("{normalized}:{port}")
     }
 }
 
@@ -923,6 +935,12 @@ mod tests {
     #[test]
     fn display_address_ipv4() {
         assert_eq!(display_address("192.168.1.1", 8080), "192.168.1.1:8080");
+    }
+
+    #[test]
+    fn display_address_invalid_host_is_explicit() {
+        assert_eq!(display_address("fe80::1%", 8080), "<invalid>:8080");
+        assert_eq!(display_address("", 8080), "<invalid>:8080");
     }
 
     #[test]

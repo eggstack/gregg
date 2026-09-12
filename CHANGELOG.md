@@ -81,6 +81,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Bug-audit hardening, second pass** (no behavior additions): saturate
+  instead of dropping the disk/network payload on aggregate overflow (all
+  three collectors); return an error instead of panicking in endpoint
+  colon-splitting and render an explicit `<invalid>` display placeholder
+  for hosts that fail normalization; reject SemVer-illegal leading zeroes
+  in stable-version parsing; map curl `000` probe codes to `None` and
+  remove partial download residue on failure; record attempt time and
+  provenance for cancelled polls; retry the update permission probe on
+  name collision; require exact candidate `version` identity up to one
+  trailing newline.
+
 - **Bug-audit hardening** (no behavior additions): reject `ready` v2 health
   responses that carry a `category` (`gregg-protocol`); treat
   from-the-future snapshots as stale when the clock jumps backward

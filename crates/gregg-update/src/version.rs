@@ -12,12 +12,21 @@ pub fn parse_stable_version(input: &str) -> Option<(u64, u64, u64)> {
         return None;
     }
     let mut parts = input.split('.');
-    let major = parts.next()?.parse::<u64>().ok()?;
-    let minor = parts.next()?.parse::<u64>().ok()?;
-    let patch = parts.next()?.parse::<u64>().ok()?;
+    let major_str = parts.next()?;
+    let minor_str = parts.next()?;
+    let patch_str = parts.next()?;
     if parts.next().is_some() {
         return None;
     }
+    // SemVer 2.0 §2: numeric identifiers must not include leading zeroes.
+    for part in [major_str, minor_str, patch_str] {
+        if part.len() > 1 && part.starts_with('0') {
+            return None;
+        }
+    }
+    let major = major_str.parse::<u64>().ok()?;
+    let minor = minor_str.parse::<u64>().ok()?;
+    let patch = patch_str.parse::<u64>().ok()?;
     Some((major, minor, patch))
 }
 
@@ -52,6 +61,9 @@ mod tests {
         assert_eq!(parse_stable_version("1.0.0.0"), None);
         assert_eq!(parse_stable_version(""), None);
         assert_eq!(parse_stable_version("a.b.c"), None);
+        assert_eq!(parse_stable_version("01.02.03"), None);
+        assert_eq!(parse_stable_version("1.02.3"), None);
+        assert_eq!(parse_stable_version("0.0.0"), Some((0, 0, 0)));
     }
 
     #[test]

@@ -73,9 +73,14 @@ pub fn verify_checksum(file: &Path, sha_file: &Path) -> Result<(), UpdateError> 
 
 /// Pure helper: does staged-candidate `version` stdout equal the exact
 /// expected `<program> <version>` identity line?
+///
+/// Only a single trailing newline (`\n`, optionally preceded by `\r`) is
+/// stripped; surrounding whitespace is significant so padded output fails.
 #[must_use]
 pub fn candidate_output_matches(program: &str, expected_version: &str, stdout: &str) -> bool {
-    stdout.trim() == format!("{program} {expected_version}")
+    let normalized = stdout.strip_suffix('\n').unwrap_or(stdout);
+    let normalized = normalized.strip_suffix('\r').unwrap_or(normalized);
+    normalized == format!("{program} {expected_version}")
 }
 
 /// Validate a staged candidate: minimum size sanity, Unix executable bit,
@@ -208,6 +213,16 @@ mod tests {
             "gregg",
             "1.0.12",
             "greggd 1.0.12"
+        ));
+        assert!(!candidate_output_matches(
+            "gregg",
+            "1.0.12",
+            "  gregg 1.0.12  "
+        ));
+        assert!(!candidate_output_matches(
+            "gregg",
+            "1.0.12",
+            "gregg 1.0.12\n\n"
         ));
     }
 }

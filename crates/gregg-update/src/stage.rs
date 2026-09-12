@@ -102,33 +102,45 @@ pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<()
             exe_path.display()
         ))
     })?;
-    let probe = parent.join(format!(
-        ".gregg-update-perm-{}-{}.tmp",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
-    {
-        Ok(_) => {
-            let _ = fs::remove_file(&probe);
-            Ok(())
+    // Retry on `AlreadyExists`: two updates from the same PID within one
+    // nanosecond collide on the probe name. A fresh timestamp per attempt
+    // keeps a collision from masquerading as a permission failure.
+    for _ in 0..3 {
+        let probe = parent.join(format!(
+            ".gregg-update-perm-{}-{}.tmp",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(_) => {
+                let _ = fs::remove_file(&probe);
+                return Ok(());
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                return Err(UpdateError::PermissionDenied {
+                    message: format!("permission denied writing to {}", parent.display()),
+                    elevated: format!("sudo {} update", original_exe.display()),
+                });
+            }
+            Err(e) => {
+                return Err(UpdateError::Io(format!(
+                    "permission probe failed for {}: {e}",
+                    parent.display()
+                )));
+            }
         }
-        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-            Err(UpdateError::PermissionDenied {
-                message: format!("permission denied writing to {}", parent.display()),
-                elevated: format!("sudo {} update", original_exe.display()),
-            })
-        }
-        Err(e) => Err(UpdateError::Io(format!(
-            "permission probe failed for {}: {e}",
-            parent.display()
-        ))),
     }
+    Err(UpdateError::Io(format!(
+        "permission probe collided for {}",
+        parent.display()
+    )))
 }
 
 /// Replace the current executable with a verified candidate.

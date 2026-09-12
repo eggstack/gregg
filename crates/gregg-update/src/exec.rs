@@ -105,7 +105,9 @@ pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
         .output()
         .ok()?;
     let code_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    code_str.parse::<u16>().ok()
+    // curl emits `000` for transport failures (timeout/DNS/TLS); code 0 is
+    // never a real server answer, so map it to `None` instead of `Some(0)`.
+    code_str.parse::<u16>().ok().filter(|code| *code != 0)
 }
 
 /// Fetch the latest stable version for `crate_name` from crates.io.
@@ -200,6 +202,9 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
     match output {
         Ok(out) if out.status.success() => DownloadOutcome::Success,
         Ok(out) => {
+            // `curl -o dest` truncates `dest` before the status is known;
+            // remove the partial residue so a retry never checksums it.
+            let _ = std::fs::remove_file(dest);
             let stderr = String::from_utf8_lossy(&out.stderr).to_string();
             let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if code == "404" {
@@ -208,7 +213,10 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
                 DownloadOutcome::Failed(format!("curl exit {:?}: {stderr}", out.status.code()))
             }
         }
-        Err(e) => DownloadOutcome::Failed(format!("failed to spawn curl: {e}")),
+        Err(e) => {
+            let _ = std::fs::remove_file(dest);
+            DownloadOutcome::Failed(format!("failed to spawn curl: {e}"))
+        }
     }
 }
 

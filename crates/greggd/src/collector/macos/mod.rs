@@ -154,8 +154,8 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
             else {
                 continue;
             };
-            read_total = read_total.checked_add(rate.first_per_sec)?;
-            write_total = write_total.checked_add(rate.second_per_sec)?;
+            read_total = read_total.saturating_add(rate.first_per_sec);
+            write_total = write_total.saturating_add(rate.second_per_sec);
             if devices.len() < MAX_DISK_IO_ENTRIES {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -201,14 +201,14 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                rx_total = rx_total.checked_add(rate.first_per_sec)?;
-                tx_total = tx_total.checked_add(rate.second_per_sec)?;
+                rx_total = rx_total.saturating_add(rate.first_per_sec);
+                tx_total = tx_total.saturating_add(rate.second_per_sec);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
-                        rx_capacity = Some(rx_capacity.unwrap_or(0).checked_add(capacity)?);
+                        rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));
                     }
                     if let Some(capacity) = record.tx_capacity_bps {
-                        tx_capacity = Some(tx_capacity.unwrap_or(0).checked_add(capacity)?);
+                        tx_capacity = Some(tx_capacity.unwrap_or(0).saturating_add(capacity));
                     }
                 }
             }

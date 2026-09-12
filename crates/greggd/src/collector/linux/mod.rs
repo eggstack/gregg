@@ -129,8 +129,8 @@ impl LinuxCollector {
             else {
                 continue;
             };
-            aggregate_read = aggregate_read.checked_add(rate.first_per_sec)?;
-            aggregate_write = aggregate_write.checked_add(rate.second_per_sec)?;
+            aggregate_read = aggregate_read.saturating_add(rate.first_per_sec);
+            aggregate_write = aggregate_write.saturating_add(rate.second_per_sec);
             if devices.len() < MAX_DISK_IO_ENTRIES {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -176,16 +176,16 @@ impl LinuxCollector {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                aggregate_rx = aggregate_rx.checked_add(rate.first_per_sec)?;
-                aggregate_tx = aggregate_tx.checked_add(rate.second_per_sec)?;
+                aggregate_rx = aggregate_rx.saturating_add(rate.first_per_sec);
+                aggregate_tx = aggregate_tx.saturating_add(rate.second_per_sec);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
                         rx_capacity_total =
-                            Some(rx_capacity_total.unwrap_or(0).checked_add(capacity)?);
+                            Some(rx_capacity_total.unwrap_or(0).saturating_add(capacity));
                     }
                     if let Some(capacity) = record.tx_capacity_bps {
                         tx_capacity_total =
-                            Some(tx_capacity_total.unwrap_or(0).checked_add(capacity)?);
+                            Some(tx_capacity_total.unwrap_or(0).saturating_add(capacity));
                     }
                 }
             }

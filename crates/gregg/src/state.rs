@@ -282,7 +282,6 @@ impl AppState {
                     continue;
                 }
                 match &result.outcome {
-                    PollOutcome::Cancelled => {}
                     PollOutcome::Online(snapshot) => {
                         system.reachability = Reachability::Online;
                         system.latest = Some(NormalizedSnapshot::from_v1(snapshot));
@@ -1522,6 +1521,7 @@ mod tests {
 
     #[test]
     fn apply_batch_cancelled_no_state_change() {
+        use crate::poller::OfflineKind;
         let config = test_config_with_ids(&["a"]);
         let mut state = AppState::from_config(&config);
 
@@ -1539,8 +1539,14 @@ mod tests {
 
         state.apply_batch(&batch);
 
-        // Should still be Pending (not changed by Cancelled).
-        assert_eq!(state.systems[0].reachability, Reachability::Pending);
+        // A cancelled poll (scheduler panic) records an attempt like any
+        // other offline outcome instead of leaving a stale timestamp.
+        assert_eq!(state.systems[0].reachability, Reachability::Offline);
+        assert!(state.systems[0].last_attempt_at.is_some());
+        assert_eq!(
+            state.systems[0].offline_reason.as_ref().map(|r| r.kind),
+            Some(OfflineKind::Cancelled)
+        );
     }
 
     #[test]
