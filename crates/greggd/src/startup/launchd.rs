@@ -2,7 +2,7 @@
 
 use super::install::{
     elevated_command, ensure_config_preserved, is_privileged, manager_error_is_permission,
-    write_atomic_text, InstallError,
+    repair_system_config_permissions, write_atomic_text, InstallError,
 };
 use super::method::{
     launchd_label, standard_launchd_binary, standard_launchd_config, standard_launchd_plist_path,
@@ -128,6 +128,12 @@ pub fn install_launchd(exe: &Path, _config_path: &Path) -> Result<(), InstallErr
         })?;
     }
     ensure_config_preserved(&cfg_path).map_err(|e| InstallError::Io {
+        path: cfg_path.clone(),
+        source: e,
+    })?;
+    // Older installs left the system config 0600, which breaks
+    // unprivileged `croncheck`/`status`/`configprint` with EACCES.
+    repair_system_config_permissions(&cfg_path).map_err(|e| InstallError::Io {
         path: cfg_path.clone(),
         source: e,
     })?;

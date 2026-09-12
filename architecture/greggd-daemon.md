@@ -174,7 +174,12 @@ override. `system.hostname` is collected independently from the native host
 interface and is never replaced by the configured name.
 
 Validation produces structured `ConfigViolation` values. Atomic writes use
-write-flush-rename-verify.
+write-flush-rename-verify: the temp file is `0600` during the write, then
+the final daemon config is relaxed to `0644` because it carries no secrets
+and read-only `croncheck`/`status`/`configprint` must work for unprivileged
+operators and cron. Systemd/launchd installs repair older `0600` system
+configs to `0644` with a traversable (`0755`) parent; the Unix control
+socket stays `0600`.
 
 Platform defaults:
 - Linux: `/etc/gregg/greggd.toml`

@@ -114,6 +114,10 @@ until the clock is corrected.
 Configuration metadata errors are propagated instead of treated as a missing
 default file. Atomic writes restrict newly created parent directories to
 `0700` while preserving permissions on existing operator-managed directories.
+Daemon config temp files are `0600` during the write, then the final file is
+`0644` (no secrets; unprivileged `croncheck`/`status`/`configprint` must work).
+Systemd/launchd installs repair older `0600` system configs to `0644`/`0755`;
+control sockets stay `0600`.
 
 ## Tests
 

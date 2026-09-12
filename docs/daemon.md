@@ -25,6 +25,13 @@ The display name (`name`) must be non-empty, at most 128 bytes, and contain
 no control characters. Override the file location per-invocation with
 `greggd run --config /path/to/greggd.toml`.
 
+System configs contain no secrets and are world-readable (`0644`) so
+unprivileged `croncheck`/`status`/`configprint` work; the Unix control
+socket stays owner-only (`0600`). If an older install still reports
+`Permission denied (os error 13)` for those read-only commands, repair it
+with `sudo greggd startup install --method systemd` (Linux) or
+`--method launchd` (macOS).
+
 ## Managing the daemon
 
 ```bash

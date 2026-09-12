@@ -7,6 +7,22 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Daemon config readability** (`greggd`): system configs such as
+  `/etc/gregg/greggd.toml` are now written `0644` (temp file stays `0600`
+  during the write) and `startup install --method systemd|launchd` repairs
+  older `0600` installs to `0644`/`0755`. Previously an unprivileged
+  `greggd croncheck`/`status`/`configprint` failed with
+  `Permission denied (os error 13)` for anyone except the daemon user and
+  root. The Unix control socket stays `0600`, so `stop` still requires the
+  daemon owner or root.
+- **Update permission exit code** (`greggd`): `greggd update` permission
+  failures now exit `4` (`PermissionDenied`) with the exact
+  `sudo <exe> update` rerun hint instead of falling through to exit `3`.
+  Already-current invocations need no privilege and still exit `0` for any
+  user; verified for both `greggd update` and `gregg update`.
+
 ## [1.0.13] - 2026-09-12
 
 ### Added

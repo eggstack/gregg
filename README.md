@@ -117,6 +117,11 @@ greggd configprint                 # print the configured bind address
 greggd status                      # read-only diagnostics: version, bind, health, startup state
 ```
 
+System daemon configs contain no secrets and are world-readable (`0644`)
+so unprivileged `croncheck`/`status`/`configprint` work; the Unix control
+socket stays owner-only (`0600`), so `stop`/`restart` of a system service
+still need the daemon owner or root.
+
 Client config: Linux `~/.config/gregg/gregg.toml` (honors `XDG_CONFIG_HOME`),
 macOS `~/Library/Application Support/gregg/gregg.toml`, Windows
 `%APPDATA%\gregg\gregg.toml`.

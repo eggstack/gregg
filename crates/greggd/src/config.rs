@@ -342,6 +342,25 @@ impl Config {
             }
         })?;
 
+        // 6b. Relax the final mode to world-readable. The temp file is
+        // 0600 during the write so partial content is never exposed, but
+        // the daemon config carries no secrets (name/host/port/intervals)
+        // and read-only diagnostics (`croncheck`, `status`, `configprint`)
+        // must work for unprivileged operators and cron. A user-local
+        // parent created 0700 above still protects that case; a system
+        // directory such as /etc/gregg is 0755 so 0644 is actually
+        // readable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o644)).map_err(|e| {
+                ConfigError::AtomicWrite {
+                    path: path.to_path_buf(),
+                    source: AtomicWriteError::Io(e),
+                }
+            })?;
+        }
+
         sync_parent_directory(dir).map_err(|e| ConfigError::AtomicWrite {
             path: path.to_path_buf(),
             source: AtomicWriteError::Io(e),
@@ -817,6 +836,42 @@ unknown_field = "oops"
             0o600
         );
         drop(file);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn write_atomic_produces_world_readable_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join("greggd_test_world_readable");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        // New files are world-readable so unprivileged `croncheck`,
+        // `status`, and `configprint` can read a system config.
+        Config::default().write_atomic(&path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+
+        // Overwriting an old 0600 install also relaxes to 0644; the
+        // 0600 temp-file guarantee above still protects partial writes.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        Config {
+            name: String::from("relaxed"),
+            ..Config::default()
+        }
+        .write_atomic(&path)
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
+        assert_eq!(Config::load(&path).unwrap().name, "relaxed");
+
         let _ = fs::remove_dir_all(&dir);
     }
 

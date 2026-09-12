@@ -354,6 +354,41 @@ pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
         .map_err(|e| io::Error::other(format!("failed to write default config: {e}")))?;
     Ok(())
 }
+/// Repair an existing system config so read-only diagnostics work for
+/// unprivileged operators.
+///
+/// System daemon configs carry no secrets, but older installs wrote them
+/// `0600 greggd:greggd`, which makes `croncheck`/`status`/`configprint`
+/// fail with `Permission denied (os error 13)` for anyone except the
+/// daemon user and root. The daemon user still owns the file; this only
+/// relaxes the mode to world-readable and ensures the parent directory is
+/// traversable. Best-effort for missing paths; hard errors for real I/O
+/// failures so install surfaces them.
+pub(crate) fn repair_system_config_permissions(config_path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Some(parent) = config_path.parent() {
+            if parent.exists() {
+                // 0755: owner can manage, everyone can traverse/read.
+                // Existing operator-managed modes are intentionally
+                // normalized here because a 0700 system directory would
+                // still block unprivileged `croncheck` even with a 0644
+                // file.
+                fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        if config_path.exists() {
+            fs::set_permissions(config_path, fs::Permissions::from_mode(0o644))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config_path;
+        Ok(())
+    }
+}
 pub(crate) fn manager_error_is_permission(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("permission")
@@ -676,5 +711,38 @@ mod tests {
         ));
         assert!(manager_error_is_permission("Access denied"));
         assert!(!manager_error_is_permission("unit failed"));
+    }
+    #[test]
+    #[cfg(unix)]
+    fn repair_system_config_permissions_relaxes_old_0600() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("greggd_test_repair_perms_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        // Simulate a pre-fix install: 0700 dir, 0600 file.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            &path,
+            "name = \"greggd\"\nhost = \"0.0.0.0\"\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n",
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        repair_system_config_permissions(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "system config must become world-readable for croncheck/status"
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "system config dir must stay traversable"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }

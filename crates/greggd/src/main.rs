@@ -122,6 +122,9 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
     if let Some(error) = error.downcast_ref::<greggd::startup::InstallError>() {
         return greggd::cli::ExitCode::from(error);
     }
+    if let Some(error) = error.downcast_ref::<greggd::update::UpdateError>() {
+        return greggd::cli::ExitCode::from(error);
+    }
     #[cfg(target_os = "windows")]
     if let Some(error) = error.downcast_ref::<greggd::service::ServiceError>() {
         return greggd::cli::ExitCode::from(error);
@@ -191,6 +194,22 @@ mod tests {
         assert_eq!(
             classify_error(&validation),
             greggd::cli::ExitCode::ConfigError
+        );
+
+        let update_permission = greggd::update::UpdateError::PermissionDenied {
+            message: "permission denied writing to /usr/local/bin".to_string(),
+            elevated: "sudo /usr/local/bin/greggd update".to_string(),
+        };
+        assert_eq!(
+            classify_error(&update_permission),
+            greggd::cli::ExitCode::PermissionDenied
+        );
+
+        let update_runtime =
+            greggd::update::UpdateError::RestartFailed("restart failed".to_string());
+        assert_eq!(
+            classify_error(&update_runtime),
+            greggd::cli::ExitCode::RuntimeError
         );
         assert_eq!(greggd::cli::ExitCode::Success as i32, 0);
     }

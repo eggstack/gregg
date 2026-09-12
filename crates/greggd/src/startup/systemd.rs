@@ -2,7 +2,7 @@
 
 use super::install::{
     elevated_command, ensure_config_preserved, is_privileged, manager_error_is_permission,
-    write_atomic_text, InstallError,
+    repair_system_config_permissions, write_atomic_text, InstallError,
 };
 use super::method::{
     is_systemd_environment, standard_systemd_binary, standard_systemd_config,
@@ -209,6 +209,13 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
     })?;
     set_config_ownership().map_err(|e| InstallError::Io {
         path: standard_systemd_config_dir(),
+        source: e,
+    })?;
+    // Older installs left the system config 0600, which breaks
+    // unprivileged `croncheck`/`status`/`configprint` with EACCES.
+    // Normalize to 0644/0755 after chown (chown preserves mode).
+    repair_system_config_permissions(&standard_systemd_config()).map_err(|e| InstallError::Io {
+        path: standard_systemd_config(),
         source: e,
     })?;
     // Write unit atomically.

@@ -148,10 +148,17 @@ contain no control characters. If identity collection fails, the daemon does
 not publish a blank identity; it remains warming or failed and preserves any
 previous valid snapshot.
 
-When writing configuration, a newly created parent directory is restricted to
-mode `0700`; an existing operator-managed directory keeps its current
-permissions. Metadata errors while loading a default config are reported
-instead of silently falling back to defaults.
+When writing configuration, the temp file is created `0600` and the final
+file is relaxed to `0644`: the daemon config carries no secrets and
+read-only `croncheck`/`status`/`configprint` must work for unprivileged
+operators and cron. A newly created parent directory is restricted to mode
+`0700`; an existing operator-managed directory keeps its current
+permissions. Systemd/launchd installs normalize an older `0600` system
+config to `0644` with a traversable (`0755`) parent. Metadata errors while
+loading a default config are reported instead of silently falling back to
+defaults. If an existing install still shows
+`Permission denied (os error 13)`, rerun
+`sudo greggd startup install --method systemd` (or `launchd` on macOS).
 
 On Unix, `greggd stop` uses the config-specific local control socket. The
 socket path is reserved by the kernel before its restrictive permissions are
