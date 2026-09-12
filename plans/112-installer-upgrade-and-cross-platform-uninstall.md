@@ -698,3 +698,7 @@ self-check, SCM removal, sibling runnable, config preserved).
 22. Implementation SHA: `a62c7a2`; CI run: `34701714387`; Ubuntu
     lifecycle results and the systemd-host limitation above are
     recorded without overstating evidence.
+
+## Post-closure correction note (2026-09-12)
+
+Subsequent source review found four lifecycle defects that the original Plan 112 closure did not cover: daemon startup discovery is host-global rather than bound to the exact invoked executable, Windows SCM uninstall discovery collapses `NotInstalled` into `Stopped` and loses registration identity, Unix Cargo-owned uninstall returns before Gregg-owned startup/purge lifecycle work, and staged-Cargo bootstrap fallback bypasses daemon post-install finalization. Plan 113 (`113-plan112-install-uninstall-ownership-corrective-pass.md`) owns those corrections. The closure record above remains the historical record of what was demonstrated at `a62c7a2`; it must not be read as evidence that the Plan 113 edge cases are already fixed.
