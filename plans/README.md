@@ -62,14 +62,27 @@ documentation after correcting Linux CPUFreq whitespace-list parsing in
 `efb18dc` and `29a2633`; final documentation closure is `fa4b022`.
 Daemon-version transport remains deferred.
 
-Plan 112 is complete. It codified the existing
+Plan 112 is complete as the historical implementation record. It codified the existing
 same-scope installer-rerun behavior as an explicit upgrade contract, stages
 bootstrap Cargo fallbacks so the installer owns the final binary cleanly, and
 adds component-safe `gregg uninstall` / `greggd uninstall` commands with
-`--dry-run` and opt-in `--purge`. Daemon uninstall removes only Gregg-owned
-systemd, launchd, cron, or SCM integration actually present, preserves config
-by default, removes only the exact invoked component executable, and keeps
-package-manager ownership intact rather than silently corrupting Cargo state.
+`--dry-run` and opt-in `--purge`. Post-closure review found four lifecycle
+correctness gaps in exact-executable startup ownership, Windows SCM discovery,
+Cargo-owned uninstall sequencing, and staged-Cargo daemon finalization; Plan 113
+owns those corrections without rewriting Plan 112's original closure evidence.
+
+Plan 113 is planned and ready for implementation. It is the narrow Plan 112
+corrective successor: bind systemd/launchd/cron/SCM teardown to the exact invoked
+`greggd` executable, preserve full Windows SCM state and registration identity,
+sequence Unix Cargo-owned uninstall through the complete Gregg lifecycle, and
+make prebuilt/Cargo bootstrap acquisition converge before daemon finalization.
+
+Plan 114 is planned and ready for implementation and may proceed independently
+of Plan 113. It is a client-only TUI polish pass: remap drive details from `e`
+to mnemonic `d`, keep `n` for network, and make the normal-view NET row a
+per-system availability decision so systems without network telemetry do not
+show a misleading empty bar. Fleet-wide horizontal metric geometry and the
+condensed table's fleet-level NET-column policy remain intact.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -179,22 +192,26 @@ excluded.
 | [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | complete; implementation `0028843`; CI `34636802865` green |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | complete; implementation `af9b9bd`; CI `34640870291` green |
 | [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`, `29a2633`; docs `fa4b022`; CI `34644786245` green |
-| [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | complete; implementation verified with local checks, Ubuntu lifecycle smokes, and native CI (see plan closure record) |
+| [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | complete historical record; post-closure lifecycle corrections are Plan 113 |
+| [`113-plan112-install-uninstall-ownership-corrective-pass.md`](113-plan112-install-uninstall-ownership-corrective-pass.md) | Correct Plan 112 exact-executable startup ownership, SCM discovery, Cargo uninstall sequencing, and fallback finalization | planned; ready for implementation |
+| [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | planned; ready for implementation |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101 -> 102 -> 103 -> 104 -> 105 -> 106 -> 107 -> 108 -> 109 -> 110 -> 111 -> 112
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101 -> 102 -> 103 -> 104 -> 105 -> 106 -> 107 -> 108 -> 109 -> 110 -> 111 -> 112 -> 113 -> 114
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
 101 requires 099's asset contract and 100's restart contract;
 102 requires 098-101's implementation and corrects their release-readiness boundaries without rewriting their historical closure records;
 103 coordinates 104-106 and completes with them; 104 removes duplicated updater/release policy first, 105 cleans module/repository/dependency boundaries on the settled ownership, 106 adds bounded diagnostics on the simplified structure; 107 coordinates live metrics, 108 owns the additive protocol and normalization boundary, 109 owns native collection, 110 owns TUI integration, and 111 owns final compatibility/verification closure;
-112 depends on the settled installer/update/startup ownership from 099-105, can proceed independently of the remaining Plan 091 soak record, and owns only install-rerun/uninstall lifecycle behavior.
+112 depends on the settled installer/update/startup ownership from 099-105, can proceed independently of the remaining Plan 091 soak record, and owns the original install-rerun/uninstall lifecycle implementation;
+113 depends on Plan 112's implementation and closes only the post-closure lifecycle findings;
+114 depends on the settled Plans 110-111 TUI/live-metrics baseline and is independent of Plan 113, so it may proceed in parallel despite being the next numbered plan.
 ```
 
-Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record. Plan 112 is separately justified by the current installer/uninstaller ownership gap: same-scope upgrades already work but are implicit, while Unix lacks a CLI uninstall and the Windows script can recursively remove a shared component directory.
+Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record. Plan 112 is separately justified by the installer/uninstaller ownership gap it originally addressed. Plan 113 is separately justified by four concrete post-closure lifecycle defects in Plan 112's implementation: host-global startup ownership, lossy Windows SCM discovery, Cargo-owned early returns, and fallback finalization bypass. Plan 114 is separately justified by the current drive-key mnemonic mismatch and the fleet-wide normal NET-row policy that renders an unavailable bar for hosts whose own snapshot has no network telemetry.
 
 ## Execution record for Plan 075
 
