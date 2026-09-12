@@ -118,7 +118,7 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         Key::Char('h') | Key::Left if !event.shift => Some(Action::PreviousPane),
         Key::Char('l') | Key::Right if !event.shift => Some(Action::NextPane),
         Key::Char('v') if !event.shift => Some(Action::ToggleSystemView),
-        Key::Char('e') if !event.shift => Some(Action::ToggleDrives),
+        Key::Char('d') if !event.shift => Some(Action::ToggleDrives),
         Key::Char('n') if !event.shift => Some(Action::ToggleNetwork),
         Key::Char('g') if !event.shift => Some(Action::SelectFirst),
         Key::Char('G') => Some(Action::SelectLast),
@@ -245,7 +245,7 @@ mod tests {
             (Key::Left, 0),
             (Key::Char('l'), 1),
             (Key::Right, 1),
-            (Key::Char('e'), 2),
+            (Key::Char('d'), 2),
             (Key::Char('n'), 3),
         ] {
             let action = key_to_action(KeyEvent {
@@ -262,6 +262,13 @@ mod tests {
                     | (Some(crate::action::Action::ToggleNetwork), 3)
             ));
         }
+        assert!(key_to_action(KeyEvent {
+            key: Key::Char('e'),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        })
+        .is_none());
     }
 
     #[test]
@@ -269,7 +276,7 @@ mod tests {
         for key in [
             Key::Char('h'),
             Key::Char('l'),
-            Key::Char('e'),
+            Key::Char('d'),
             Key::Left,
             Key::Right,
         ] {
@@ -285,6 +292,22 @@ mod tests {
                 ctrl: true,
                 alt: false,
                 shift: false
+            })
+            .is_none());
+        }
+        for key in [Key::Char('d'), Key::Char('e')] {
+            assert!(key_to_action(KeyEvent {
+                key,
+                ctrl: false,
+                alt: true,
+                shift: false,
+            })
+            .is_none());
+            assert!(key_to_action(KeyEvent {
+                key,
+                ctrl: true,
+                alt: false,
+                shift: false,
             })
             .is_none());
         }

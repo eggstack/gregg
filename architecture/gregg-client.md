@@ -210,7 +210,7 @@ Subsequent batches preserve the existing selection/viewport semantics.
 `Ctrl-R` does not re-snap.
 
 **Visual vs. logical selection (Plan 087):** `selected_id` is the
-persistent logical selection that drives `e` (drive expansion), `n` (network
+persistent logical selection that drives `d` (drive expansion), `n` (network
 expansion), and
 viewport behavior. `selection_highlight_active` is the transient
 visual-highlight flag that drives the reverse-video styling. Startup
@@ -237,7 +237,7 @@ reappear when the operator comes back.
 | `j`/`k` | Move down/up |
 | `h`/`l` | Previous/next pane |
 | `v` | Toggle normal/condensed view |
-| `e` | Toggle drive expansion |
+| `d` | Toggle drive expansion |
 | `n` | Toggle network detail expansion (legacy systems are a no-op) |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
@@ -270,19 +270,19 @@ The UI never infers a zero from a missing measurement.
 
 ### UI views
 
-**Normal view** (`ui/system_block.rs`): legacy blocks have five rows; when any
-online snapshot exposes network telemetry, all online blocks have six aligned
-rows:
+**Normal view** (`ui/system_block.rs`): each online block has five rows when
+its current snapshot lacks network telemetry and six rows when its snapshot
+exposes it. Mixed fleets may therefore have different vertical block heights:
 1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
-6. NET aggregate bar (fleet-wide when any online system supports it)
+6. NET aggregate bar, only for systems with network telemetry
 
-The mixed-fleet policy is deterministic: all-legacy fleets omit NET and keep
-the historical height; mixed fleets include NET for every online system and
-legacy systems render `—` in that aligned row. CPU frequency is per-system
+The mixed-fleet policy is deterministic: each system omits NET when its own
+snapshot lacks network telemetry, while zero-throughput and unknown-capacity
+snapshots retain a valid NET row. CPU frequency is per-system
 optional and is formatted by the client after the core count.
 
 The active metric rows share one fleet-wide label width and one
@@ -316,7 +316,7 @@ is stored in `AppState` (`SystemState::offline_reason`, set from
 accepted successes in the same generation), never recomputed by the
 renderer and never sourced from transport error types.
 
-**Expanded drive rows** (`e` in normal or condensed view, shared between
+**Expanded drive rows** (`d` in normal or condensed view, shared between
 `ui/system_block.rs` and `ui/condensed.rs`): one table layout per
 selected system, computed from every eligible drive before the visible
 subset is rendered. The full shape is
@@ -331,7 +331,7 @@ shared between the fit calculation and the renderer, and rewrites the
 Compact fallback so Compact considers a truncated name before falling to
 Minimal.
 
-When v2 disk-I/O telemetry is present, `e` adds a table heading, optional
+When v2 disk-I/O telemetry is present, `d` adds a table heading, optional
 `R/s`/`W/s` columns, and an `I/O TOTAL` line. A drive receives a rate only
 when exactly one daemon device record names that mount; ambiguous or missing
 associations render `—`. The aggregate line is always taken from the daemon's

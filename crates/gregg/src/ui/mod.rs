@@ -14,9 +14,7 @@ use std::rc::Rc;
 use ratatui::Frame;
 
 use crate::normalized::NormalizedSnapshot;
-use crate::state::{
-    fleet_has_network_telemetry, normal_base_height, AppState, Pane, Reachability, SystemViewMode,
-};
+use crate::state::{AppState, Pane, Reachability, SystemViewMode};
 
 use system_block::MetricRows;
 
@@ -43,7 +41,10 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 .and_then(|&index| state.systems.get(index))
                 .is_some_and(|system| system.reachability == Reachability::Online);
             if first_is_online {
-                normal_base_height(state)
+                display_order
+                    .first()
+                    .and_then(|&index| state.systems.get(index))
+                    .map_or(1, crate::state::normal_base_height_for)
             } else {
                 1
             }
@@ -78,9 +79,7 @@ pub fn render(f: &mut Frame, state: &AppState) {
     // identical snapshots produce identical rows, so each system's rows are
     // rebuilt only when its snapshot content or membership changed.
     let (online_rows, fleet_layout) = if state.system_view_mode == SystemViewMode::Normal {
-        let include_network = fleet_has_network_telemetry(state);
-        let online_rows: Vec<(usize, Rc<MetricRows>)> =
-            metric_rows_for_fleet(state, include_network);
+        let online_rows: Vec<(usize, Rc<MetricRows>)> = metric_rows_for_fleet(state);
         let fleet_layout = system_block::compute_fleet_metric_layout(
             online_rows.iter().map(|(_, rows)| &**rows),
             area.width,
@@ -142,7 +141,6 @@ pub fn render(f: &mut Frame, state: &AppState) {
 struct CachedMetricRows {
     system_id: String,
     snapshot: NormalizedSnapshot,
-    include_network: bool,
     rows: Rc<MetricRows>,
 }
 
@@ -157,7 +155,7 @@ thread_local! {
 /// system's formatted rows are rebuilt only when its snapshot content
 /// (compared by full value, immune to any mutation path) or membership
 /// changed. Returns `(system index, rows)` pairs in configured order.
-fn metric_rows_for_fleet(state: &AppState, include_network: bool) -> Vec<(usize, Rc<MetricRows>)> {
+fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<MetricRows>)> {
     let mut online_rows = Vec::new();
     METRIC_ROWS_CACHE.with_borrow_mut(|cache| {
         for (index, system) in state.systems.iter().enumerate() {
@@ -168,25 +166,17 @@ fn metric_rows_for_fleet(state: &AppState, include_network: bool) -> Vec<(usize,
                 continue;
             };
             let rows = match cache.iter_mut().find(|entry| entry.system_id == system.id) {
-                Some(entry)
-                    if entry.snapshot == *snapshot && entry.include_network == include_network =>
-                {
-                    Rc::clone(&entry.rows)
-                }
+                Some(entry) if entry.snapshot == *snapshot => Rc::clone(&entry.rows),
                 Some(entry) => {
                     entry.snapshot = snapshot.clone();
-                    entry.include_network = include_network;
-                    entry.rows =
-                        Rc::new(system_block::build_metric_rows(snapshot, include_network));
+                    entry.rows = Rc::new(system_block::build_metric_rows(snapshot));
                     Rc::clone(&entry.rows)
                 }
                 None => {
-                    let rows: Rc<MetricRows> =
-                        Rc::new(system_block::build_metric_rows(snapshot, include_network));
+                    let rows: Rc<MetricRows> = Rc::new(system_block::build_metric_rows(snapshot));
                     cache.push(CachedMetricRows {
                         system_id: system.id.clone(),
                         snapshot: snapshot.clone(),
-                        include_network,
                         rows: Rc::clone(&rows),
                     });
                     rows
@@ -1468,7 +1458,7 @@ mod tests {
 
     #[test]
     fn toggle_drives_works_after_visual_highlight_expires() {
-        // Plan 087: `e` (drive expansion) is bound to logical
+        // Plan 087: `d` (drive expansion) is bound to logical
         // selection, not the transient highlight. After the highlight
         // is cleared the drives must still expand/collapse for the
         // logically selected system.
@@ -1481,7 +1471,7 @@ mod tests {
         // Visual highlight expires.
         state.apply_action(crate::action::Action::ClearSelectionHighlight);
         assert!(!state.selection_highlight_active);
-        // Toggle drives (the `e` action) must still operate on the
+        // Toggle drives (the `d` action) must still operate on the
         // logical selection.
         state.apply_action(crate::action::Action::ToggleDrives);
         assert!(state.drives_expanded);
@@ -1784,6 +1774,8 @@ mod tests {
             output.contains("j/k:select"),
             "key hint should appear with extra space:\n{output}"
         );
+        assert!(output.contains("d:drives"));
+        assert!(!output.contains("e:drives"));
     }
 
     #[test]
@@ -2092,6 +2084,55 @@ mod tests {
         assert!(output.contains("80.0 MiB/s"));
         assert!(output.contains("NETWORK TOTAL"));
         assert!(output.contains("eth0"));
+    }
+
+    #[test]
+    fn normal_network_row_is_per_system_and_cache_tracks_transitions() {
+        let config = test_config(&["network", "legacy"]);
+        let mut state = AppState::from_config(&config);
+        apply_online_v2(
+            &mut state,
+            0,
+            LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 0,
+                    aggregate_tx_bytes_per_sec: 0,
+                    aggregate_rx_capacity_bps: None,
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+            1,
+        );
+        let mut legacy_batch = make_online_batch(&state, 1, linux_snap());
+        legacy_batch.generation = 2;
+        state.apply_batch(&legacy_batch);
+
+        let output = render_state(&state, 120, 20);
+        let blocks = collect_metric_rows(&output, &["network", "legacy"]);
+        assert_eq!(
+            blocks[0].len(),
+            5,
+            "network row should be present: {output}"
+        );
+        assert_eq!(blocks[1].len(), 4, "legacy row should be omitted: {output}");
+        assert!(blocks[0].last().is_some_and(|line| line.contains("NET")));
+        assert!(blocks[0].last().is_some_and(|line| line.contains("0 B/s")));
+        assert!(blocks[0].last().is_some_and(|line| !line.contains("0.0%")));
+        assert_brackets_align(&blocks, "mixed per-system network availability");
+
+        state.systems[0].latest.as_mut().unwrap().network = None;
+        let output = render_state(&state, 120, 20);
+        let blocks = collect_metric_rows(&output, &["network", "legacy"]);
+        assert_eq!(
+            blocks[0].len(),
+            4,
+            "cache must drop NET after transition: {output}"
+        );
+        assert_eq!(blocks[1].len(), 4);
+        assert!(!output
+            .lines()
+            .any(|line| line.trim_start().starts_with("NET")));
     }
 
     #[test]

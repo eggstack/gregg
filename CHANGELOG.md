@@ -9,6 +9,12 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Per-system network rows and drive-key mnemonic** (Plan 114): normal-view
+  NET rows now appear only for systems whose current snapshot includes network
+  telemetry, preserving valid zero-throughput and unknown-capacity data while
+  omitting phantom rows for legacy systems. Drive details are now toggled with
+  `d`; `n` and `v` retain their existing meanings.
+
 - **Installer upgrade semantics and cross-platform uninstall** (Plan 112):
   rerunning `packaging/install.sh` / `packaging/install.ps1` at the same
   scope now classifies the destination (`absent` / `replace` / `foreign`)

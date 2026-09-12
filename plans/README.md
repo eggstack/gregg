@@ -87,6 +87,10 @@ per-system availability decision so systems without network telemetry do not
 show a misleading empty bar. Fleet-wide horizontal metric geometry and the
 condensed table's fleet-level NET-column policy remain intact.
 
+Plan 114 is complete: drive details use `d`, plain `e` is unmapped, and normal
+view NET rows follow each online snapshot's network availability while the
+fleet-wide horizontal geometry and condensed NET-column policy remain intact.
+
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
 never contain binary attachments and Actions never creates release artifacts,
@@ -197,7 +201,7 @@ excluded.
 | [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`, `29a2633`; docs `fa4b022`; CI `34644786245` green |
 | [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | complete historical record; post-closure lifecycle corrections are Plan 113 |
 | [`113-plan112-install-uninstall-ownership-corrective-pass.md`](113-plan112-install-uninstall-ownership-corrective-pass.md) | Correct Plan 112 exact-executable startup ownership, SCM discovery, Cargo uninstall sequencing, and fallback finalization | planned; ready for implementation |
-| [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | planned; ready for implementation |
+| [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | complete; local workspace gates passed |
 
 Dependency order:
 

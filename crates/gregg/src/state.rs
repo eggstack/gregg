@@ -149,7 +149,7 @@ pub struct AppState {
     /// `selected_id`; cleared by the event-loop timer (about ten
     /// seconds of inactivity) and on pane changes away from Systems.
     /// Logical selection itself remains available for keyboard actions
-    /// (`e` and friends) when this flag is `false`.
+    /// (`d` and friends) when this flag is `false`.
     pub selection_highlight_active: bool,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
@@ -698,7 +698,7 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
             } else {
                 0
             };
-            normal_base_height(state).saturating_add(details)
+            normal_base_height_for(system).saturating_add(details)
         }
     }
 }
@@ -706,8 +706,8 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
 /// Compute which systems in display order are visible given a top
 /// index, the system states, and available height.
 ///
-/// Online entries take four metric rows plus a header, or six rows when any
-/// online snapshot exposes network telemetry. Selected-system drive and
+/// Online entries take four metric rows plus a header, or six rows when that
+/// system's snapshot exposes network telemetry. Selected-system drive and
 /// network detail rows follow; offline and pending entries take one row. A first entry is retained
 /// even when its full dynamic height is taller than the viewport so the caller
 /// can clip only detail rows while preserving its complete base block.
@@ -751,7 +751,10 @@ fn minimum_render_height(state: &AppState, system_index: usize) -> u16 {
         .get(system_index)
         .map(|system| (state.system_view_mode, system.reachability))
     {
-        Some((SystemViewMode::Normal, Reachability::Online)) => normal_base_height(state),
+        Some((SystemViewMode::Normal, Reachability::Online)) => state
+            .systems
+            .get(system_index)
+            .map_or(1, normal_base_height_for),
         Some(_) => 1,
         None => 0,
     }
@@ -884,25 +887,14 @@ fn valid_drive_detail_count(system: &SystemState) -> u16 {
     }
 }
 
-/// Whether the current online fleet has a network telemetry family to align.
-/// Mixed old/new fleets use the new row for every online block once one
-/// current snapshot exposes it; legacy-only fleets retain four metric rows.
+/// Number of rows in one online normal-view block before optional details.
 #[must_use]
-pub fn fleet_has_network_telemetry(state: &AppState) -> bool {
-    state.systems.iter().any(|system| {
-        system.reachability == Reachability::Online
-            && system
-                .latest
-                .as_ref()
-                .and_then(|snapshot| snapshot.network.as_ref())
-                .is_some()
-    })
-}
-
-/// Number of rows in an online normal-view block before optional details.
-#[must_use]
-pub fn normal_base_height(state: &AppState) -> u16 {
-    if fleet_has_network_telemetry(state) {
+pub fn normal_base_height_for(system: &SystemState) -> u16 {
+    if system
+        .latest
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.network.is_some())
+    {
         6
     } else {
         5
@@ -1862,6 +1854,19 @@ mod tests {
         };
         assert_eq!(entry_height(&state, 0), 5);
 
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v2_payload(
+            &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 0,
+                    aggregate_tx_bytes_per_sec: 0,
+                    aggregate_rx_capacity_bps: None,
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+        ));
+        assert_eq!(entry_height(&state, 0), 6);
+
         state.systems[0].reachability = Reachability::Pending;
         assert_eq!(entry_height(&state, 0), 1);
 
@@ -1947,6 +1952,103 @@ mod tests {
             &order,
         );
         assert_eq!(viewport[0].drive_rows_visible, 1);
+    }
+
+    #[test]
+    fn mixed_network_availability_uses_non_overlapping_per_system_heights() {
+        let config = test_config_with_ids(&["network-a", "legacy", "network-b", "offline"]);
+        let mut state = AppState::from_config(&config);
+        for index in [0, 1, 2] {
+            state.systems[index].reachability = Reachability::Online;
+        }
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v2_payload(
+            &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 0,
+                    aggregate_tx_bytes_per_sec: 0,
+                    aggregate_rx_capacity_bps: None,
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+        ));
+        state.systems[1].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        state.systems[2].latest = state.systems[0].latest.clone();
+
+        let order = state.display_order();
+        assert_eq!(
+            order
+                .iter()
+                .map(|&index| entry_height(&state, index))
+                .collect::<Vec<_>>(),
+            vec![6, 5, 6, 1]
+        );
+        let viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 120, 18),
+            &order,
+        );
+        assert_eq!(
+            viewport
+                .iter()
+                .map(|entry| (entry.rect.y, entry.rect.height))
+                .collect::<Vec<_>>(),
+            vec![(0, 6), (6, 5), (11, 6), (17, 1)]
+        );
+    }
+
+    #[test]
+    fn expansion_offsets_follow_selected_system_base_height() {
+        let config = test_config_with_ids(&["legacy", "network"]);
+        let mut state = AppState::from_config(&config);
+        for system in &mut state.systems {
+            system.reachability = Reachability::Online;
+        }
+        state.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        state.systems[1].latest = Some(NormalizedSnapshot::from_v2_payload(
+            &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+                .network(Some(gregg_protocol::v2::NetworkPayload {
+                    aggregate_rx_bytes_per_sec: 1,
+                    aggregate_tx_bytes_per_sec: 2,
+                    aggregate_rx_capacity_bps: None,
+                    aggregate_tx_capacity_bps: None,
+                    interfaces: vec![],
+                }))
+                .build_payload(),
+        ));
+        state.systems[0].latest.as_mut().unwrap().drives =
+            Some(vec![crate::normalized::NormalizedDrive {
+                name: "/".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+                available_bytes: None,
+            }]);
+        state.systems[1].latest.as_mut().unwrap().drives = state.systems[0]
+            .latest
+            .as_ref()
+            .and_then(|snapshot| snapshot.drives.clone());
+
+        state.selected_id = Some("legacy".into());
+        state.drives_expanded = true;
+        let order = state.display_order();
+        let legacy_viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 120, 6),
+            &order,
+        );
+        assert_eq!(legacy_viewport[0].drive_rows_visible, 1);
+        assert_eq!(legacy_viewport[0].network_rows_visible, 0);
+
+        state.selected_id = Some("network".into());
+        state.viewport_top_id = Some("network".into());
+        state.network_expanded = true;
+        let network_viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 120, 8),
+            &order,
+        );
+        assert_eq!(network_viewport[0].drive_rows_visible, 1);
+        assert_eq!(network_viewport[0].network_rows_visible, 1);
     }
 
     #[test]

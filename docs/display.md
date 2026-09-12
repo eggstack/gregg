@@ -1,7 +1,8 @@
 # Display
 
-Reachable systems show five rows in an all-legacy fleet. When any online
-snapshot has network telemetry, reachable systems show six rows. All active
+Reachable systems show five rows when their own snapshot has no network
+telemetry, and six rows when it does. In a mixed fleet, online systems may
+therefore have different base heights. All active
 metric rows share
 the same fleet-wide `bar_width` so the opening `[` and closing `]` columns
 always align across every online system, and the metric rows are indented by
@@ -16,9 +17,10 @@ Deadpool · Ubuntu 24.04 x86_64 · Linux 6.8  IO 0.4%  L(8) 1.32/.91/.62
     NET  [||||||||||||                                  ] 31.0% 39.0 MiB/s rx 5.0 MiB/s tx
 ```
 
-The NET row is fleet-wide in a mixed old/new fleet so bars remain aligned;
-legacy systems show `—` there. If every online daemon is legacy, NET is
-omitted and the historical five-row block remains. CPU detail appends the
+The NET row appears only for systems whose own snapshot has network telemetry;
+legacy systems omit it rather than showing an unavailable bar. Zero traffic
+and unknown capacity remain valid NET telemetry, so those systems still show
+the row. CPU detail appends the
 current OS-reported clock after the core count when available, for example
 `16 cores 2.40GHz`; this is not a base/max frequency claim, and macOS may
 omit it.
@@ -62,7 +64,7 @@ deadpool@192.168.1.10:11310 offline (refused)
 
 Pending systems (never polled) never carry a reason.
 
-Press `e` to expand drive details. With live disk-I/O data, the expansion adds
+Press `d` to expand drive details. With live disk-I/O data, the expansion adds
 `R/s` and `W/s` columns plus a daemon-supplied `I/O TOTAL` line. Per-drive
 rates appear only for an exact, unambiguous drive/device association;
 ambiguous values render `—`, and the aggregate is not recomputed from rows.

@@ -201,7 +201,7 @@ own client, auth, cadence, and rendering — see
 | Metrics | CPU %, mem, load (Linux/macOS), swap (Linux/macOS) vs commit (Windows), drives (`null` = unavailable, `[]` = none), freq Hz, disk/net byte rates; best-effort live telemetry, omitted when unsupported |
 | Honesty | No fabricated zeroes; macOS `iowait` null, Windows load/swap/iowait null; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; net util is max(Rx,Tx); loopback detail-only |
 | Compatibility | `/v2/status` universal; `/v1/status` Linux/macOS only (Windows 503); client falls back v1-only on HTTP 404; additive fields ignored by old peers |
-| Client UX | Explicit-port `add`; offline retried every cadence with stable reason; `Ctrl-R` is the only reload boundary; `e`/`n` independent expansions; fleet-aligned rows, width-degrading headers |
+| Client UX | Explicit-port `add`; offline retried every cadence with stable reason; `Ctrl-R` is the only reload boundary; `d`/`n` independent expansions; per-system normal NET rows with fleet-wide horizontal geometry; width-degrading headers |
 | Daemon ops | Foreground `run`; Unix control-socket `stop`, Windows SCM; `croncheck` watchdog spawns only on refusal; `configprint`/`status` read-only; `startup install` auto (systemd/launchd/cron/SCM); manager-aware `restart`; binary-first `update` |
 
 ---

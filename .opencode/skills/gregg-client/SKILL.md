@@ -151,7 +151,7 @@ struct AppState {
 batches and `Ctrl-R` reloads preserve ordinary selection/viewport.
 
 **Plan 087 logical vs visual selection:** `selected_id` is the
-persistent logical selection (drives `e` and viewport behavior).
+persistent logical selection (drives `d` and viewport behavior).
 `selection_highlight_active` is the transient reverse-video flag.
 Startup leaves the highlight `false`, so the TUI never opens with a
 reversed row. Selection-changing Systems actions arm a resettable
@@ -167,7 +167,7 @@ never activate the Systems-device highlight.
 | `j`/`k` | Move down/up |
 | `h`/`l` | Previous/next pane |
 | `v` | Toggle normal/condensed view |
-| `e` | Toggle drive expansion |
+| `d` | Toggle drive expansion |
 | `n` | Toggle network detail expansion; legacy systems are a no-op |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
@@ -198,15 +198,15 @@ I/O-wait value, instead of rendering a placeholder.
 
 ### UI views
 
-**Normal view** (`ui/system_block.rs`): legacy blocks have five rows; when any
-online snapshot exposes network telemetry, all online blocks have six aligned
-rows:
+**Normal view** (`ui/system_block.rs`): each online block has five rows when
+its current snapshot lacks network telemetry and six rows when its snapshot
+exposes it. Mixed fleets may therefore have different vertical block heights:
 1. Header (name, IO if available, load, cores, OS, kernel, arch)
 2. CPU bar
 3. MEM bar
 4. SWP or COMMIT bar (platform-dependent)
 5. DISK aggregate bar + optional drive detail rows
-6. NET aggregate bar, fleet-wide for mixed old/new systems
+6. NET aggregate bar, only for systems with network telemetry
 
 The active metric rows share one fleet-wide label width and one
 fleet-wide bar width via `build_metric_rows`,
@@ -255,7 +255,7 @@ constants so the fit calculation and renderer share the same
 structural cells, and rewrites the Compact fallback so Compact
 considers a truncated name before falling to Minimal.
 
-When v2 disk-I/O telemetry is present, `e` adds a heading, optional `R/s` and
+When v2 disk-I/O telemetry is present, `d` adds a heading, optional `R/s` and
 `W/s` columns, and an independent `I/O TOTAL` aggregate line. A drive gets a
 rate only when exactly one normalized device record names that mount;
 ambiguous or missing associations render `—`, and the aggregate is never

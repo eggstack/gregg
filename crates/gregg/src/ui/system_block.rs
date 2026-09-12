@@ -9,7 +9,7 @@
 //! 3. MEM row
 //! 4. SWP or COMMIT row (platform-determined)
 //! 5. DISK aggregate row
-//! 6. NET aggregate row when the current fleet has any network telemetry,
+//! 6. NET aggregate row when the current snapshot has network telemetry,
 //!    optionally followed by per-drive and network detail rows
 //!
 //! Rows 2 through 5 share one fleet-wide geometry so the opening and
@@ -115,7 +115,7 @@ pub(crate) fn render_online(
     let rows: &MetricRows = if let Some(rows) = rows {
         rows
     } else {
-        rebuilt = build_metric_rows(snap, snap.network.is_some());
+        rebuilt = build_metric_rows(snap);
         &rebuilt
     };
     let suffixes = resolve_system_suffixes(rows, area.width, *fleet_layout);
@@ -215,8 +215,8 @@ impl MetricRow {
     }
 }
 
-/// Fixed-capacity metric rows. NET is present only when the fleet policy
-/// requests it; the `len` field keeps the all-legacy layout at four rows.
+/// Fixed-capacity metric rows. NET is present only when this snapshot has
+/// network telemetry; the `len` field keeps legacy systems at four rows.
 #[derive(Debug, Clone)]
 pub(crate) struct MetricRows {
     rows: [MetricRow; 5],
@@ -265,9 +265,10 @@ impl MetricRowSet for [MetricRow; 5] {
     }
 }
 
-/// Build metric rows for one snapshot. `include_network` is the fleet-wide
-/// mixed-version alignment decision made by the render dispatcher.
-pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot, include_network: bool) -> MetricRows {
+/// Build metric rows for one snapshot. Network availability is a property of
+/// this snapshot, so legacy systems do not receive a phantom NET row in a
+/// mixed fleet.
+pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> MetricRows {
     let cpu = MetricRow {
         label: "CPU",
         pct: Some(snap.usage_pct),
@@ -359,7 +360,7 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot, include_network: bool
 
     MetricRows {
         rows: [cpu, mem, third, disk, network],
-        len: if include_network { 5 } else { 4 },
+        len: if snap.network.is_some() { 5 } else { 4 },
     }
 }
 
@@ -1285,7 +1286,7 @@ mod tests {
             },
         ]);
 
-        let rows = build_metric_rows(&snap, false);
+        let rows = build_metric_rows(&snap);
         let disk = &rows.rows()[3];
         let pct = disk.pct.expect("disk pct available");
         assert!((pct - 80.0).abs() < 0.01, "percentage = {pct}");
@@ -1324,7 +1325,7 @@ mod tests {
             },
         ]);
 
-        let rows = build_metric_rows(&snap, false);
+        let rows = build_metric_rows(&snap);
         let disk = &rows.rows()[3];
         let detail = disk.detail.as_ref().expect("disk detail present");
         assert!(
@@ -1346,7 +1347,7 @@ mod tests {
             }))
             .build_payload();
         let snap = NormalizedSnapshot::from_v2_payload(&payload);
-        let rows = build_metric_rows(&snap, true);
+        let rows = build_metric_rows(&snap);
         assert_eq!(rows.rows().len(), 5);
         assert!(rows.rows()[0].default_suffix().contains("2.40GHz"));
         assert!(rows.rows()[4].pct.is_none());
@@ -1355,7 +1356,7 @@ mod tests {
         let legacy = NormalizedSnapshot::from_v1(
             &gregg_protocol::test_support::LinuxSnapshotBuilder::default().build(),
         );
-        let legacy_rows = build_metric_rows(&legacy, false);
+        let legacy_rows = build_metric_rows(&legacy);
         assert_eq!(legacy_rows.rows().len(), 4);
         assert!(legacy_rows.rows().iter().all(|row| row.label != "NET"));
     }

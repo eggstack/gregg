@@ -155,7 +155,7 @@ gregg uninstall --purge            # also remove the client config file (destruc
 - `j` / `k` (or arrow keys): move between systems
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
-- `e`: expand/collapse drives for the selected system
+- `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
 - `Ctrl-R`: reload config and poll immediately
 
@@ -176,7 +176,7 @@ and `Tx/s` are byte rates; NET utilization uses the maximum valid directional
 rate against its link capacity, so full-duplex traffic is not double-counted.
 Loopback can appear in `n` detail but is excluded from aggregate capacity.
 
-Use `e` for disk details, `n` for network/interface details, and `v` for the
+Use `d` for disk details, `n` for network/interface details, and `v` for the
 width-aware condensed view. See [Display](docs/display.md) for the mixed-fleet
 row and width policies.
 

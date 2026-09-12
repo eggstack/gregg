@@ -9,7 +9,7 @@ pub struct ViewportEntry {
     pub index: usize,
     pub rect: Rect,
     /// Plan 087: logical selection (the persistent selected system
-    /// ID). Drives drive-detail row allocation and the `e` action.
+    /// ID). Drives drive-detail row allocation and the `d` action.
     pub is_selected: bool,
     /// Plan 087: visual selection. `true` only when the entry is
     /// logically selected AND `AppState::selection_highlight_active`.
@@ -77,7 +77,7 @@ pub fn compute_viewport(
         };
 
         let base_height = match state.system_view_mode {
-            crate::state::SystemViewMode::Normal => crate::state::normal_base_height(state),
+            crate::state::SystemViewMode::Normal => crate::state::normal_base_height_for(system),
             crate::state::SystemViewMode::Condensed => 1,
         };
         // Plan 087: drive-detail visibility is tied to logical

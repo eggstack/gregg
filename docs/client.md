@@ -88,7 +88,7 @@ the command reports an already-configured endpoint conflict.
 - `j` / `k` (or arrow keys): move between systems
 - `h` / `l`: cycle panes
 - `v`: toggle normal/condensed layout
-- `e`: expand/collapse drives for the selected system
+- `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
 - `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint
   replacement, and poll it immediately; on EggPool, refresh that pane
@@ -99,7 +99,7 @@ diagnostic line until a later reload succeeds. When the bounded scheduler
 command channel is full, replacement delivery waits in the event loop's
 pending-command branch so input and poll results remain responsive.
 
-The selected system keeps its logical selection (`e` still toggles its drive
+The selected system keeps its logical selection (`d` still toggles its drive
 details and `n` toggles network details independently), but the reverse-video highlight is transient — it appears when you
 navigate, and fades after roughly ten seconds of inactivity so stale
 reverse-video does not survive a quiet screen. Leaving the Systems pane or

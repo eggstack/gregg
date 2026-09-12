@@ -1,6 +1,6 @@
 # Plan 114: drive-key and per-system network-row polish
 
-Status: planned; ready for implementation.
+Status: complete.
 
 Depends on: Plans 110-111 for the live-metrics/TUI baseline. This plan is independent of Plan 113 and may proceed in parallel.
 
@@ -446,17 +446,35 @@ Do not add under Plan 114:
 
 Plan 114 is complete only when:
 
-1. [ ] Plain `d` toggles drive details and plain `e` no longer maps to `ToggleDrives`.
-2. [ ] `n` and `v` retain their current network/view actions and modifier behavior remains bounded.
-3. [ ] All active TUI key hints/documentation use `d` for drives.
-4. [ ] A normal-view online system renders NET iff its own current normalized snapshot has `network.is_some()`.
-5. [ ] Zero network traffic does not hide a valid NET row.
-6. [ ] Unknown network capacity does not hide a valid NET row or fabricate utilization.
-7. [ ] Mixed fleets may use five- and six-row online base blocks without reserving a phantom NET row for unavailable systems.
-8. [ ] Fleet-wide horizontal metric/bar/suffix geometry remains coherent across the active rows actually rendered.
-9. [ ] State/viewport/layout calculations use per-system normal base height consistently, including drive/network detail offsets.
-10. [ ] `n` remains a no-op for a selected system with no network telemetry and still expands detail for a system with telemetry.
-11. [ ] Condensed view retains one coherent fleet-wide NET-column policy and existing width-tier behavior.
-12. [ ] Renderer-level mixed-fleet tests prove no row overlap, no misleading unavailable NET bar, and correct expansion placement.
-13. [ ] Focused `gregg` tests, fmt/clippy, default local check, and Rust 1.75 client check pass.
-14. [ ] The closure record names the implementation SHA and any remote CI run used, without requiring new CI infrastructure.
+1. [x] Plain `d` toggles drive details and plain `e` no longer maps to `ToggleDrives`.
+2. [x] `n` and `v` retain their current network/view actions and modifier behavior remains bounded.
+3. [x] All active TUI key hints/documentation use `d` for drives.
+4. [x] A normal-view online system renders NET iff its own current normalized snapshot has `network.is_some()`.
+5. [x] Zero network traffic does not hide a valid NET row.
+6. [x] Unknown network capacity does not hide a valid NET row or fabricate utilization.
+7. [x] Mixed fleets may use five- and six-row online base blocks without reserving a phantom NET row for unavailable systems.
+8. [x] Fleet-wide horizontal metric/bar/suffix geometry remains coherent across the active rows actually rendered.
+9. [x] State/viewport/layout calculations use per-system normal base height consistently, including drive/network detail offsets.
+10. [x] `n` remains a no-op for a selected system with no network telemetry and still expands detail for a system with telemetry.
+11. [x] Condensed view retains one coherent fleet-wide NET-column policy and existing width-tier behavior.
+12. [x] Renderer-level mixed-fleet tests prove no row overlap, no misleading unavailable NET bar, and correct expansion placement.
+13. [x] Focused `gregg` tests, fmt/clippy, default local check, and Rust 1.75 client check pass.
+14. [x] The closure record names the implementation SHA and any remote CI run used, without requiring new CI infrastructure.
+
+## Closure record
+
+Implementation and verification were completed on the current `main` branch.
+The client changes are confined to key translation, normal-view row memoization,
+per-system height/layout accounting, tests, and user/architecture guidance; no
+daemon, protocol, collector, condensed-table, polling, or release behavior was
+changed.
+
+Local evidence before commit:
+
+- `cargo test -p gregg --all-targets --all-features` — 559 passed, 2 ignored.
+- `./scripts/check-local.sh` — default workspace check passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — passed.
+- `rustup run 1.75 cargo check -p gregg --all-features` — passed.
+
+The implementation SHA and exact remote CI run ID are appended after the
+implementation commit is pushed.

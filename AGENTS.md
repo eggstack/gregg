@@ -65,8 +65,8 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 
 ### TUI rendering (`architecture/gregg-client.md`)
 
-- `crates/gregg/src/ui/system_block.rs` (`build_metric_rows`, `compute_fleet_metric_layout`, `render_metric_row`) is authoritative: one fleet-wide layout per render aligns `[`/`]` across all online systems; rows indent 4 spaces. NET row appears fleet-wide if any online snapshot has it (`—` for legacy systems; all-legacy keeps 4-row height).
-- `e` (drives) and `n` (network) are independent expansions; per-drive rates only on exact device match. DISK suffix is `<used> / <total>`; missing rows render `—`, never `0.0%`/fabricated zero. Compact mode drops the whole suffix fleet-wide when longest natural suffix > 1/4 terminal width; header `IO` token is omitted (not placeholder) when iowait unsupported.
+- `crates/gregg/src/ui/system_block.rs` (`build_metric_rows`, `compute_fleet_metric_layout`, `render_metric_row`) is authoritative: one fleet-wide layout per render aligns `[`/`]` across all online systems' active rows; rows indent 4 spaces. NET is present only when that system's current snapshot has network telemetry, while horizontal geometry remains fleet-wide.
+- `d` (drives) and `n` (network) are independent expansions; per-drive rates only on exact device match. DISK suffix is `<used> / <total>`; missing rows render `—`, never `0.0%`/fabricated zero. Compact mode drops the whole suffix fleet-wide when longest natural suffix > 1/4 terminal width; header `IO` token is omitted (not placeholder) when iowait unsupported.
 - Logical `selected_id` persists; reverse-video highlight is transient (startup `false`, Systems actions arm a resettable 10s event-loop `ClearSelectionHighlight`). No frame ticker. Offline rows are `name@host:port offline` (never duplicate host) + stable category when known (`offline (refused)`, `offline (http) HTTP 503`); pending rows never carry a reason.
 
 ### CLI contracts (`architecture/gregg-client.md`, `architecture/greggd-daemon.md`)
