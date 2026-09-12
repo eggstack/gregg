@@ -591,8 +591,9 @@ impl AppState {
     /// Compute the page size (number of systems to skip) based on
     /// terminal height and the current viewport.
     ///
-    /// Returns at least one when entries exist, so page movement remains
-    /// usable even when the viewport cannot render one full entry.
+    /// Returns 0 when the top entry exceeds the usable viewport (nothing
+    /// fits, so page movement is a no-op); otherwise returns at least one
+    /// when entries exist.
     fn page_size(&self, order: &[usize]) -> isize {
         let height = self
             .terminal_size

@@ -24,6 +24,10 @@ use std::thread;
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
+/// Process-wide counter disambiguating concurrent atomic writers in the same
+/// PID that collide on PID+nanosecond with `create_new(true)`.
+static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // ── Instruction rendering ─────────────────────────────────────────────────
 
 /// Render human-readable startup instructions for the given method.
@@ -194,11 +198,12 @@ pub(crate) fn write_atomic_text(path: &Path, content: &str) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     // Write to a temp file in the same directory.
     let tmp_name = format!(
-        ".greggd-startup-{}-{}.tmp",
+        ".greggd-startup-{}-{}-{}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
+            .map_or(0, |d| d.as_nanos()),
+        TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
     let tmp_path = dir.join(tmp_name);
     // Ensure we clean up on failure.
@@ -436,7 +441,7 @@ fn restart_cron_direct(exe: &Path, config_path: &Path, explicit: bool) -> Result
                 println!("greggd not running (control socket)");
                 RestartStopState::NotRunning
             }
-            Ok(crate::control::StopOutcome::Uncertain) => RestartStopState::Uncertain,
+            Ok(crate::control::StopOutcome::Uncertain { .. }) => RestartStopState::Uncertain,
             Err(e) => {
                 // If permission denied, surface it
                 if let crate::control::ControlError::Io(io_e) = &e {

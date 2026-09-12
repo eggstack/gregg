@@ -399,10 +399,23 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
         Some(e) if e.kind() == std::io::ErrorKind::PermissionDenied => Err(ControlError::Io(e)),
         // An unexpected condition (silent close, timeout, shadowed path)
         // must never claim "not running": a live-but-stuck daemon would be
-        // indistinguishable from an absent one.
+        // indistinguishable from an absent one. Classify timeout vs reset
+        // in the detail so operators can tell "hung daemon" from
+        // "contended socket".
         Some(e) => {
             tracing::warn!(error = ?e, "control socket stop attempt failed unexpectedly");
-            Ok(StopOutcome::Uncertain)
+            let detail = match e.kind() {
+                std::io::ErrorKind::TimedOut => {
+                    format!("timed out waiting for daemon response: {e}")
+                }
+                std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::UnexpectedEof
+                | std::io::ErrorKind::BrokenPipe => {
+                    format!("connection reset/closed mid-response (daemon may have crashed): {e}")
+                }
+                _ => format!("unexpected control socket error: {e}"),
+            };
+            Ok(StopOutcome::Uncertain { detail })
         }
         None => Ok(StopOutcome::NotRunning),
     }
@@ -423,7 +436,12 @@ pub enum StopOutcome {
     /// An unexpected I/O condition prevented classifying the daemon state;
     /// a live-but-unresponsive daemon cannot be distinguished from an
     /// absent one. Callers must not treat this as a successful stop.
-    Uncertain,
+    /// `detail` distinguishes timeout ("hung daemon") from reset/close
+    /// ("crashed mid-response") for operator diagnostics.
+    Uncertain {
+        /// Human-readable classification of the unexpected condition.
+        detail: String,
+    },
 }
 
 /// Outcome of the async control listener accept loop.
@@ -1195,7 +1213,10 @@ mod tests {
         });
 
         let outcome = send_stop(&cfg);
-        assert_eq!(outcome.unwrap(), StopOutcome::Uncertain);
+        assert!(
+            matches!(outcome, Ok(StopOutcome::Uncertain { .. })),
+            "silent close must be uncertain, got {outcome:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -276,6 +276,10 @@ pub struct CommitMetrics {
 }
 
 /// Health and readiness response for schema version 2.
+///
+/// Do not construct non-Ready responses with struct literals (fields are `pub`
+/// for serialization); use `warming()`/`warming_with_message()`/`failed()` so
+/// `category`/`message` stay populated.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HealthResponseV2 {

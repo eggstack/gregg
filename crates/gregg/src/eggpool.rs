@@ -466,6 +466,12 @@ where
                     };
                     let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
                     if active {
+                        // Two clocks: `started_at`/`completed_at` use wall-clock
+                        // `now()` while the refresh deadline uses the Tokio
+                        // timer clock `tokio_now()`. A fake clock must advance
+                        // the wall clock for timestamps and rely on the runtime
+                        // clock for deadlines (see `FakeClock`); advancing one
+                        // without the other breaks refresh scheduling silently.
                         next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
                     }
                 }

@@ -61,7 +61,9 @@ fi
 
 # Validate architecture matches host.
 HOST_ARCH="$(uname -m)"
-FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|aarch64|ARM|80386' | head -1)"
+FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|aarch64|80386' | head -1)"
+# armv7l fallback: 32-bit ARM binaries report only `ARM` in `file` output.
+if [[ -z "$FILE_ARCH" ]]; then FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'ARM' | head -1)"; fi
 case "$HOST_ARCH" in
     x86_64)  EXPECTED_ARCH="x86_64" ;;
     aarch64) EXPECTED_ARCH="aarch64" ;;

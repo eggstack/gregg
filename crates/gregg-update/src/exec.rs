@@ -36,6 +36,12 @@ pub const CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
 /// Wall-clock bound for HTTP status probes.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Shared fragment identifying an oversized bounded body. `pipe_reader_limited`
+/// reports this message and `map_capture_error` matches on it; keep both in
+/// sync via this const so a reword cannot silently disable the mapping.
+/// The `OutOfMemory` kind check remains the reliable path.
+const RESPONSE_TOO_LARGE_FRAGMENT: &str = "response too large";
+
 /// Wall-clock bound for release-asset downloads (curl `--max-time` plus
 /// spawn/reap margin).
 pub const DOWNLOAD_WALL_TIMEOUT: Duration = Duration::from_secs(100);
@@ -105,7 +111,8 @@ fn map_capture_error(e: &io::Error) -> UpdateError {
     if e.kind() == io::ErrorKind::TimedOut {
         return UpdateError::VersionLookup("curl timed out and was killed".to_string());
     }
-    if e.kind() == io::ErrorKind::OutOfMemory || e.to_string().contains("response too large") {
+    if e.kind() == io::ErrorKind::OutOfMemory || e.to_string().contains(RESPONSE_TOO_LARGE_FRAGMENT)
+    {
         return UpdateError::VersionLookup("crates.io response too large".to_string());
     }
     UpdateError::VersionLookup(format!("failed to spawn curl: {e}"))
@@ -162,8 +169,14 @@ pub fn fetch_latest_stable_version(
         &format!("User-Agent: {user_agent}"),
         &url,
     ];
-    let stdout = run_curl_capture(&curl, &args).map_err(|e| {
-        UpdateError::VersionLookup(format!("crates.io request failed for {crate_name}: {e}"))
+    let stdout = run_curl_capture(&curl, &args).map_err(|e| match e {
+        // `run_curl_capture` already returns `VersionLookup`; reword from the
+        // inner message instead of formatting the outer display (which would
+        // nest the "version lookup failed:" prefix twice).
+        UpdateError::VersionLookup(inner) => UpdateError::VersionLookup(format!(
+            "crates.io request failed for {crate_name}: {inner}"
+        )),
+        other => other,
     })?;
     if stdout.len() > MAX_CRATES_IO_BYTES {
         return Err(UpdateError::VersionLookup(
@@ -234,7 +247,23 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
     .stderr(Stdio::piped());
     let output = run_child_with_timeout(cmd, DOWNLOAD_WALL_TIMEOUT);
     match output {
-        Ok(out) if out.status.success() => DownloadOutcome::Success,
+        Ok(out) if out.status.success() => {
+            // Defense in depth: callers pass `-f` (fail on non-2xx), but
+            // assert the captured `%{http_code}` is 2xx anyway so a future
+            // curl without `-f` cannot accept an error body as success.
+            // An unparsable code keeps today's accept behavior.
+            let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if let Ok(code) = code.parse::<u16>() {
+                if !(200..300).contains(&code) {
+                    let _ = std::fs::remove_file(dest);
+                    if code == 404 {
+                        return DownloadOutcome::NotFound;
+                    }
+                    return DownloadOutcome::Failed(format!("unexpected HTTP {code} for {url}"));
+                }
+            }
+            DownloadOutcome::Success
+        }
         Ok(out) => {
             // `curl -o dest` truncates `dest` before the status is known;
             // remove the partial residue so a retry never checksums it.
@@ -344,7 +373,7 @@ fn run_child_with_timeout_capped(
     if stdout.len() > max_bytes {
         return Err(io::Error::new(
             io::ErrorKind::OutOfMemory,
-            "child response too large",
+            format!("child {RESPONSE_TOO_LARGE_FRAGMENT}"),
         ));
     }
     Ok(Output {

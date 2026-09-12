@@ -178,8 +178,8 @@ if [[ "${MODE}" == "release" ]]; then
     run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --version
     run_or_fail "${TEMP_INSTALL_DIR}/bin/greggd" --help
     run_or_fail bash "${SCRIPT_DIR}/verify-installed-daemon.sh" "${TEMP_INSTALL_DIR}/bin/greggd"
-    trap - EXIT
     cleanup_install
+    trap - EXIT
 
     step "cargo publish -p gregg-protocol --dry-run --locked"
     run_or_fail cargo publish -p gregg-protocol --dry-run --locked

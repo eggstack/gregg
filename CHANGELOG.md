@@ -81,6 +81,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Bug-audit hardening, fourth pass** (no behavior additions): fix
+  `install-linux.sh` rejecting correct ARM64 binaries (`file` matched bare
+  `ARM` before `aarch64`); check `sc.exe config obj=` / `failure` exit codes
+  in both Windows installers and wrap `WaitForStatus` timeouts in
+  gregg-style errors; match any `-pc-windows-msvc` target for the `.exe`
+  asset suffix; avoid double `VersionLookup` nesting on crates.io fetch
+  failures; document the scheduler batch bound as intentional backpressure,
+  the `page_size` zero path, the drive vs disk-I/O NUL policy, the
+  `HealthResponse` constructor-only contract, the bounded-command poll
+  interval, the EggPool two-clock coupling, and the `base_height` fallback
+  rule; share the oversized-body fragment const; assert HTTP 2xx on the
+  download success path; disambiguate atomic-write temp names with a
+  process-wide counter; run explicit cleanup before releasing the
+  check-local trap; name the drive-refresh worker thread; return a
+  timeout/reset-classified detail with `StopOutcome::Uncertain`; hoist the
+  redundant `current_exe()` call, the eager `expected` alloc, the
+  `unwrap_or_default` invariant, and the sampler lock scope.
 - **Bug-audit hardening, third pass** (no behavior additions): reject `ready`
   v1 health responses that carry a `category` (matching v2); propagate
   staged-candidate chmod failures instead of discarding them; bound curl

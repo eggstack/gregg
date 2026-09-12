@@ -402,23 +402,28 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         metrics: CollectedMetrics,
         now_ms: u64,
     ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
-        let collector = self.lock_collector();
-        let identity = collector.identity()?;
-        if collector.supports_v1_snapshot() {
+        // Clone the needed scalars under the lock, then drop the guard before
+        // the pure `into_snapshot`/`into_status_payload_v2` formatting so the
+        // mutex is not held across conversion.
+        let (identity, capabilities, capabilities_v2, supports_v1) = {
+            let collector = self.lock_collector();
+            (
+                collector.identity()?,
+                collector.capabilities(),
+                collector.capabilities_v2(),
+                collector.supports_v1_snapshot(),
+            )
+        };
+        if supports_v1 {
             let v1 = metrics.clone().into_snapshot(
                 SCHEMA_VERSION_V1,
                 now_ms,
                 self.interval_ms,
-                collector.capabilities(),
+                capabilities,
                 identity.clone(),
             );
             let v2 = metrics
-                .into_status_payload_v2(
-                    now_ms,
-                    self.interval_ms,
-                    collector.capabilities_v2(),
-                    identity,
-                )
+                .into_status_payload_v2(now_ms, self.interval_ms, capabilities_v2, identity)
                 .and_then(validate_v2_payload);
             match (v1, v2) {
                 (Ok(v1), Ok(v2)) => Ok((Some(v1), v2)),
@@ -426,12 +431,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             }
         } else {
             metrics
-                .into_status_payload_v2(
-                    now_ms,
-                    self.interval_ms,
-                    collector.capabilities_v2(),
-                    identity,
-                )
+                .into_status_payload_v2(now_ms, self.interval_ms, capabilities_v2, identity)
                 .and_then(validate_v2_payload)
                 .map(|v2| (None, v2))
         }

@@ -58,9 +58,9 @@ fn run_main() -> Result<(), Box<dyn Error>> {
                     println!("greggd not running");
                     Ok(())
                 }
-                Ok(greggd::control::StopOutcome::Uncertain) => {
+                Ok(greggd::control::StopOutcome::Uncertain { detail }) => {
                     eprintln!(
-                        "warning: unable to confirm whether greggd stopped; it may still be running"
+                        "warning: unable to confirm whether greggd stopped ({detail}); it may still be running"
                     );
                     Err(Box::new(std::io::Error::other(
                         "greggd stop outcome is uncertain; see daemon logs",

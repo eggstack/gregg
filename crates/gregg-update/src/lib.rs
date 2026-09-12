@@ -188,7 +188,7 @@ pub fn prepare_candidate(
         return Ok((true, staged));
     }
 
-    let target = target_opt.unwrap_or_default();
+    let target = target_opt.expect("supported target checked above");
     let (asset_url, sha_url) = github_urls(&spec.program_name, target, latest);
     eprintln!(
         "Latest {} is {latest} (current {current}); downloading {asset_url} ...",
@@ -290,9 +290,10 @@ pub fn run_simple_update(spec: &UpdateSpec) -> Result<UpdateOutcome, UpdateError
     };
 
     // Permission check before any download.
+    // Reuse the resolved exe path for the elevated-command hint instead of a
+    // second `current_exe()` syscall; the canonical path is valid for rerun.
     let exe_path = stage::current_exe_path()?;
-    let original_exe =
-        std::env::current_exe().unwrap_or_else(|_| PathBuf::from(&spec.program_name));
+    let original_exe = exe_path.clone();
     stage::check_write_permission(&exe_path, &original_exe)?;
 
     let (from_cargo, staged) = prepare_candidate(spec, &current, &latest, target.as_deref())?;
@@ -320,9 +321,11 @@ pub fn run_simple_update(spec: &UpdateSpec) -> Result<UpdateOutcome, UpdateError
 
 /// Permission-probe helper shared by daemon coordination: resolve the
 /// executable paths and verify writability before any download.
-pub fn preflight_exe_writable(program: &str) -> Result<(PathBuf, PathBuf), UpdateError> {
+pub fn preflight_exe_writable(_program: &str) -> Result<(PathBuf, PathBuf), UpdateError> {
     let exe_path = stage::current_exe_path()?;
-    let original_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from(program));
+    // Same single-syscall reuse as `run_simple_update`; canonical path is a
+    // valid rerun hint.
+    let original_exe = exe_path.clone();
     stage::check_write_permission(&exe_path, &original_exe)?;
     Ok((exe_path, original_exe))
 }

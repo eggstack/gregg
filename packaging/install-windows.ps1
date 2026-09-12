@@ -126,21 +126,25 @@ if ($service) {
     # Update existing service configuration.
     Write-Host "Updating service registration..."
     sc.exe config $ServiceName binPath= $ImagePath start= auto | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc.exe config binPath= failed" }
 } else {
     # Create new service.
     Write-Host "Registering service..."
     sc.exe create $ServiceName binPath= $ImagePath start= auto DisplayName= $DisplayName | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed" }
 }
 
 # Configure LocalService account.
 Write-Host "Configuring service account: NT AUTHORITY\LocalService"
 sc.exe config $ServiceName obj= "NT AUTHORITY\LocalService" | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "sc.exe config obj= failed" }
 
 # ── Configure failure recovery ────────────────────────────────────────────
 
 # Restart the service up to 3 times with 60-second delays on failure.
 Write-Host "Configuring failure recovery..."
 sc.exe failure $ServiceName reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed" }
 
 # ── Start the service ─────────────────────────────────────────────────────
 
@@ -149,7 +153,11 @@ Start-Service -Name $ServiceName
 
 # Wait for the service to reach Running state.
 $service = Get-Service -Name $ServiceName
-$service.WaitForStatus("Running", (New-TimeSpan -Seconds 30))
+try {
+    $service.WaitForStatus("Running", (New-TimeSpan -Seconds 30))
+} catch {
+    throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
+}
 
 # ── Summary ───────────────────────────────────────────────────────────────
 

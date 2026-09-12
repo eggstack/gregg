@@ -97,6 +97,12 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         cancel: CancellationToken,
         command_rx: mpsc::Receiver<SchedulerCommand>,
     ) -> SchedulerRunHandle {
+        // Bounded batch channel (cap 4) is intentional backpressure: if the
+        // TUI stops draining, the poll loop blocks on `tx.send` (cancel still
+        // wins) instead of buffering unbounded generations. `Skip` bounds
+        // overlap but not this wait; with the default cadence this is
+        // theoretical, with fast refresh + slow terminal it delays a
+        // generation until drain or cancel.
         let (tx, rx) = mpsc::channel::<PollBatch>(4);
 
         let task =

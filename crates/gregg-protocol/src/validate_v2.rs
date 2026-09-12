@@ -390,6 +390,9 @@ fn validate_disk_io_device(
 }
 
 fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViolationV2>) {
+    // Unlike drive names (mount-path labels that historically contained odd
+    // bytes and are length-only checked), disk-I/O names are protocol
+    // identifiers and reject NUL like identity fields.
     if name.is_empty() || name.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoNameInvalid,

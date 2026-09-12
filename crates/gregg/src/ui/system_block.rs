@@ -90,7 +90,7 @@ pub(crate) fn render_online(
         return;
     };
     let base_height = rows.map_or_else(
-        || if snap.network.is_some() { 6 } else { 5 },
+        || base_height_for(snap.network.is_some()),
         MetricRows::base_height,
     );
     if area.height < base_height {
@@ -234,6 +234,16 @@ impl MetricRows {
 
     fn base_height(&self) -> u16 {
         u16::try_from(self.len + 1).unwrap_or(u16::MAX)
+    }
+}
+
+/// Shared `len + 1` rule for the local-rebuild fallback (no prebuilt rows):
+/// 4 rows (no NET) -> 5, 5 rows (NET) -> 6.
+fn base_height_for(has_net: bool) -> u16 {
+    if has_net {
+        6
+    } else {
+        5
     }
 }
 

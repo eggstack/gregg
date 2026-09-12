@@ -62,57 +62,60 @@ impl DriveRefreshCache {
     {
         let (request_tx, request_rx) = std::sync::mpsc::sync_channel(1);
         let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
-        let worker = std::thread::spawn(move || {
-            let mut retry_delay = std::time::Duration::ZERO;
-            loop {
-                let wait = if retry_delay.is_zero() {
-                    DRIVE_REFRESH_INTERVAL
-                } else {
-                    retry_delay
-                };
-                let request = request_rx.recv_timeout(wait);
-                if matches!(
-                    request,
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
-                ) {
-                    break;
-                }
-                let caught =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| collect(&source)));
-                let (result, panicked) = if let Ok(result) = caught {
-                    (result, false)
-                } else {
-                    tracing::warn!("drive refresh worker collector panicked; retrying");
-                    (
-                        Err(CollectError::new(
-                            CollectErrorKind::SourceUnavailable,
-                            "drive refresh collector panicked",
-                        )),
-                        true,
-                    )
-                };
-                retry_delay = if panicked {
-                    if retry_delay.is_zero() {
-                        DRIVE_REFRESH_RETRY_START
+        let worker = std::thread::Builder::new()
+            .name("greggd-drive-refresh".into())
+            .spawn(move || {
+                let mut retry_delay = std::time::Duration::ZERO;
+                loop {
+                    let wait = if retry_delay.is_zero() {
+                        DRIVE_REFRESH_INTERVAL
                     } else {
                         retry_delay
-                            .checked_mul(2)
-                            .map_or(DRIVE_REFRESH_INTERVAL, |delay| {
-                                delay.min(DRIVE_REFRESH_INTERVAL)
-                            })
+                    };
+                    let request = request_rx.recv_timeout(wait);
+                    if matches!(
+                        request,
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected)
+                    ) {
+                        break;
                     }
-                } else {
-                    std::time::Duration::ZERO
-                };
-                // Do not discard a completed refresh merely because the sampler
-                // has not drained the previous result yet. A bounded send keeps
-                // the worker from racing ahead while still allowing cache drop
-                // to disconnect it without blocking the owner.
-                if result_tx.send(result).is_err() {
-                    break;
+                    let caught =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| collect(&source)));
+                    let (result, panicked) = if let Ok(result) = caught {
+                        (result, false)
+                    } else {
+                        tracing::warn!("drive refresh worker collector panicked; retrying");
+                        (
+                            Err(CollectError::new(
+                                CollectErrorKind::SourceUnavailable,
+                                "drive refresh collector panicked",
+                            )),
+                            true,
+                        )
+                    };
+                    retry_delay = if panicked {
+                        if retry_delay.is_zero() {
+                            DRIVE_REFRESH_RETRY_START
+                        } else {
+                            retry_delay
+                                .checked_mul(2)
+                                .map_or(DRIVE_REFRESH_INTERVAL, |delay| {
+                                    delay.min(DRIVE_REFRESH_INTERVAL)
+                                })
+                        }
+                    } else {
+                        std::time::Duration::ZERO
+                    };
+                    // Do not discard a completed refresh merely because the sampler
+                    // has not drained the previous result yet. A bounded send keeps
+                    // the worker from racing ahead while still allowing cache drop
+                    // to disconnect it without blocking the owner.
+                    if result_tx.send(result).is_err() {
+                        break;
+                    }
                 }
-            }
-        });
+            })
+            .expect("drive refresh worker spawn");
         drop(worker);
         let _ = request_tx.try_send(());
         Self {

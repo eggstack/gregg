@@ -35,6 +35,11 @@ pub enum HealthCategory {
 /// The `Ready` variant carries a fresh snapshot. The other variants carry a
 /// short human-readable message and a [`HealthCategory`]; they never include
 /// filesystem paths, internal error chains, or platform-private structures.
+///
+/// Do not construct non-Ready responses with struct literals (fields are `pub`
+/// for serialization); use `warming()`/`warming_with_message()`/`failed()` so
+/// `category`/`message` stay populated. Clients may render a message-less
+/// Warming/Failed blank.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct HealthResponse {

@@ -8,6 +8,11 @@ use std::time::{Duration, Instant};
 pub(crate) const MANAGER_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(unix)]
 pub(crate) const DIRECT_RESTART_TIMEOUT: Duration = Duration::from_secs(10);
+/// Poll interval for bounded child waits. A 10ms sleep keeps manager probes
+/// responsive without a timeout thread; wakeups are bounded (~1000 per 10s
+/// probe) and probes are infrequent operator commands, so blocking `wait()`
+/// with `wait_timeout` is not worth the extra dependency.
+pub(crate) const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub(crate) fn run_bounded_command(
     program: &str,
     args: &[&str],
@@ -34,7 +39,7 @@ pub(crate) fn run_bounded_command(
                     format!("{program} timed out after {}s", timeout.as_secs()),
                 ));
             }
-            None => thread::sleep(Duration::from_millis(10)),
+            None => thread::sleep(CHILD_POLL_INTERVAL),
         }
     };
     Ok(Output {

@@ -336,7 +336,11 @@ stale_after_ms = 10000
             if ($svc -and $svc.Status -eq 'Running') {
                 Write-Host "Stopping existing greggd service..."
                 Stop-Service -Name greggd -Force -ErrorAction SilentlyContinue
-                $svc.WaitForStatus("Stopped", (New-TimeSpan -Seconds 30)) | Out-Null
+                try {
+                    $svc.WaitForStatus("Stopped", (New-TimeSpan -Seconds 30)) | Out-Null
+                } catch {
+                    throw "greggd did not reach Stopped within 30s; aborting install: $($_.Exception.Message)"
+                }
                 $serviceWasRunning = $true
             }
         }
@@ -361,18 +365,28 @@ stale_after_ms = 10000
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed" }
             }
             sc.exe config greggd obj= "NT AUTHORITY\LocalService" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe config obj= failed" }
             sc.exe failure greggd reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed" }
             if ($serviceWasRunning -or $svc) {
                 Write-Host "Starting service..."
                 Start-Service -Name greggd -ErrorAction SilentlyContinue
                 $svc2 = Get-Service -Name greggd
-                $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
+                try {
+                    $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
+                } catch {
+                    throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
+                }
                 Write-Host "Service running"
             } else {
                 Write-Host "Starting service..."
                 Start-Service -Name greggd
                 $svc2 = Get-Service -Name greggd
-                $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
+                try {
+                    $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
+                } catch {
+                    throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
+                }
             }
             Write-Host "Service: greggd (Gregg Metrics Daemon) Automatic, LocalService"
         } elseif ($Program -eq "greggd" -and -not $IsAdmin) {

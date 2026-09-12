@@ -58,7 +58,7 @@ pub fn is_supported_binary_target(target: &str) -> bool {
 /// Asset name for a program+target (no version in filename).
 #[must_use]
 pub fn asset_name(program: &str, target: &str) -> String {
-    if target == "x86_64-pc-windows-msvc" {
+    if target.ends_with("-pc-windows-msvc") {
         format!("{program}-{target}.exe")
     } else {
         format!("{program}-{target}")
@@ -132,6 +132,10 @@ mod tests {
         assert_eq!(
             asset_name("greggd", "x86_64-pc-windows-msvc"),
             "greggd-x86_64-pc-windows-msvc.exe"
+        );
+        assert_eq!(
+            asset_name("gregg", "aarch64-pc-windows-msvc"),
+            "gregg-aarch64-pc-windows-msvc.exe"
         );
     }
 

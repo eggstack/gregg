@@ -126,8 +126,8 @@ pub fn validate_candidate(
         )));
     }
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let expected = format!("{program} {expected_version}");
     if !candidate_output_matches(program, expected_version, &stdout) {
+        let expected = format!("{program} {expected_version}");
         return Err(UpdateError::CandidateMismatch(format!(
             "candidate version mismatch: expected {expected:?}, got {:?}",
             stdout.trim()
