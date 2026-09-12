@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.13] - 2026-09-12
+
 ### Added
 
 - **TUI live-metrics presentation** (Plan 110): the client now shows optional

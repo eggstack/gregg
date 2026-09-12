@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "gregg"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "clap",
  "crossterm",
@@ -542,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "gregg-protocol"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "serde",
  "serde_json",
@@ -551,7 +551,7 @@ dependencies = [
 
 [[package]]
 name = "gregg-update"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "self-replace",
  "serde_json",
@@ -562,7 +562,7 @@ dependencies = [
 
 [[package]]
 name = "greggd"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "axum",
  "clap",
