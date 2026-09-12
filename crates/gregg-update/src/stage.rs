@@ -106,9 +106,13 @@ fn normalize_lexically(path: &Path) -> PathBuf {
             Component::ParentDir => {
                 // Pop a trailing normal segment; never pop the filesystem
                 // root, and preserve leading `..` on relative paths.
+                // Use `has_root` (not `is_absolute`): on Windows a
+                // drive-relative root like `\` has a root but is not
+                // absolute (no drive prefix), and `..` above it must still
+                // stay at the root.
                 if out.file_name().is_some() {
                     out.pop();
-                } else if !out.is_absolute() {
+                } else if !out.has_root() {
                     out.push("..");
                 }
             }
