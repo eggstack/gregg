@@ -37,7 +37,7 @@ available through the Windows-only service path.
 | `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism: binds daemon identity, prepares the candidate via `prepare_candidate`, quiesces a running Windows SCM service only after full preparation, replaces, then restarts through detected-manager policy (`restart_with_state`) with `UpdatedButRestartFailed` partial-success; preserves the Plan 102 prepare-before-quiesce transaction rule |
 | `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent read-only discovery per artifact, pure `plan_from_discovery` shared by `--dry-run` and execution, preflight before teardown, manager teardown via the startup owners + SCM `unregister`, direct control-stop with uncertain-stop blocking deletion, config preserved by default with `--purge` removing only resolved files |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait and bounded `ServiceRegistration` observations |
-| `service/windows` | `src/service/windows.rs` | Windows: SCM integration, native state plus registered image-path query |
+| `service/windows` | `src/service/windows.rs` | Windows: SCM integration, native state plus bounded parsing of the registered `lpBinaryPathName` command into an exact image-path ownership target |
 
 ## Architecture
 
@@ -270,11 +270,18 @@ entry.
 ### Windows service management
 
 The Windows-only `ServiceManager` trait provides `start`, `stop`, `restart`,
-`is_active`, and `unregister` (stop-when-running, wait stopped, delete only the `greggd` registration; missing registration is idempotent):
+`is_active`, `unregister`, and a bounded registration query (full
+`ServiceState` plus the registered image target). The native query parses the
+SCM `lpBinaryPathName` launch command narrowly: quoted absolute image paths
+may have arguments, while ambiguous/unparseable commands fail closed so
+uninstall reports unknown ownership instead of guessing. Unregister
+stop-when-running, waits stopped, and deletes only the `greggd` registration;
+missing registration is idempotent:
 
 - **Windows SCM** (`windows.rs`) — uses the `windows-service` dispatcher and
   generated `ServiceMain` for the daemon entry, a one-shot control signal for
-  Stop/Shutdown, and an `ScmAdapter` trait for lifecycle-manager testability
+  Stop/Shutdown, a fail-closed image-command parser for ownership, and an
+  `ScmAdapter` trait for lifecycle-manager testability
 
 The existing `windows-2022` CI job builds the release daemon and runs
 `scripts/smoke-windows.ps1` as the operational SCM proof. The bounded smoke

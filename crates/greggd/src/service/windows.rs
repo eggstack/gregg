@@ -38,7 +38,7 @@ use tokio::sync::oneshot;
 #[cfg(any(test, target_os = "windows"))]
 use super::{ServiceError, ServiceManager, ServiceRegistration, ServiceState};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(test, target_os = "windows"))]
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "windows")]
@@ -193,9 +193,18 @@ impl ScmAdapter for NativeScmAdapter {
         };
         let status = service.query_status().map_err(native_query_error)?;
         let config = service.query_config().map_err(native_query_error)?;
+        let executable_path =
+            parse_service_executable(&config.executable_path).ok_or_else(|| {
+                ServiceError::StateQueryFailed {
+                    source: std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "SCM executable command is ambiguous or has no absolute image path",
+                    ),
+                }
+            })?;
         Ok(ServiceRegistration {
             state: map_service_state(status.current_state),
-            executable_path: Some(config.executable_path),
+            executable_path: Some(executable_path),
         })
     }
 
@@ -291,6 +300,35 @@ impl ScmAdapter for NativeScmAdapter {
             }),
         }
     }
+}
+
+/// Extract the image path from the SCM `lpBinaryPathName` command line.
+///
+/// `windows-service` exposes the complete launch command through
+/// `ServiceConfig::executable_path`; Gregg only accepts an unambiguous,
+/// absolute image path for ownership decisions. Quoted paths may have
+/// arguments. Unquoted paths are accepted only when they contain no
+/// whitespace and no arguments, because an unquoted path with spaces cannot
+/// be distinguished safely from its first token.
+#[cfg(any(test, target_os = "windows"))]
+fn parse_service_executable(command: &Path) -> Option<PathBuf> {
+    let text = command.to_str()?.trim_start();
+    let image = if let Some(quoted) = text.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        let image = &quoted[..end];
+        let remainder = &quoted[end + 1..];
+        if !remainder.is_empty() && !remainder.chars().next()?.is_whitespace() {
+            return None;
+        }
+        image
+    } else {
+        if text.chars().any(char::is_whitespace) {
+            return None;
+        }
+        text
+    };
+    let path = PathBuf::from(image);
+    path.is_absolute().then_some(path)
 }
 
 #[cfg(target_os = "windows")]
@@ -927,6 +965,40 @@ mod tests {
     fn service_display_name_is_human_readable() {
         assert!(!SERVICE_DISPLAY_NAME.is_empty());
         assert!(!SERVICE_DISPLAY_NAME.contains('\n'));
+    }
+
+    #[cfg(target_os = "windows")]
+    const SCM_TEST_IMAGE: &str = r"C:\Gregg\greggd.exe";
+    #[cfg(not(target_os = "windows"))]
+    const SCM_TEST_IMAGE: &str = "/opt/gregg/greggd";
+
+    #[test]
+    fn scm_command_parser_extracts_quoted_image() {
+        let command = format!(
+            r#""{}" service --config "C:\Gregg\greggd.toml""#,
+            SCM_TEST_IMAGE
+        );
+        assert_eq!(
+            parse_service_executable(Path::new(&command)),
+            Some(PathBuf::from(SCM_TEST_IMAGE))
+        );
+    }
+
+    #[test]
+    fn scm_command_parser_accepts_plain_image_without_arguments() {
+        assert_eq!(
+            parse_service_executable(Path::new(SCM_TEST_IMAGE)),
+            Some(PathBuf::from(SCM_TEST_IMAGE))
+        );
+    }
+
+    #[test]
+    fn scm_command_parser_rejects_ambiguous_commands() {
+        let unquoted = format!("{SCM_TEST_IMAGE} service");
+        assert_eq!(parse_service_executable(Path::new(&unquoted)), None);
+        let unterminated = format!(r#""{SCM_TEST_IMAGE} service"#);
+        assert_eq!(parse_service_executable(Path::new(&unterminated)), None);
+        assert_eq!(parse_service_executable(Path::new("greggd service")), None);
     }
 
     // --- Debug test ---

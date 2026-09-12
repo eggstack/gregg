@@ -30,6 +30,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Plan 113 install/uninstall ownership corrections**: daemon startup
+  teardown is now bound to the exact invoked executable across systemd,
+  launchd, cron, and Windows SCM. Windows SCM discovery preserves full
+  service state and parses its launch command fail-closed for ownership;
+  unknown registration state blocks mutation. Unix Cargo-owned uninstall now
+  completes owned lifecycle work before Cargo removes the package and applies
+  `--purge` only after successful Cargo removal. Staged Cargo daemon fallback
+  now shares the prebuilt install finalization path on Unix and Windows.
+
 - **Daemon config readability** (`greggd`): system configs such as
   `/etc/gregg/greggd.toml` are now written `0644` (temp file stays `0600`
   during the write) and `startup install --method systemd|launchd` repairs

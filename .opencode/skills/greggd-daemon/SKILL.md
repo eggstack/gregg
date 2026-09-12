@@ -33,7 +33,7 @@ service lifecycle. For platform metric collection itself, use the
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism (binds identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after preparation, manager-aware restart via `startup_state`, `UpdatedButRestartFailed`); transport/staging/replacement live in `gregg-update` |
 | `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent discovery, explicit `ArtifactOwnership` from exact systemd/launchd/cron/SCM executable targets, pure plan shared by `--dry-run`/execution, preflight before teardown, startup-owner teardown + SCM `unregister`, direct control-stop with uncertain-stop blocking, default config preservation with opt-in `--purge`; Unix Cargo-owned lifecycle completes before Cargo removal and post-success purge |
-| `service` | `src/service/` | Windows-only `ServiceManager` (`start`/`stop`/`restart`/`is_active`/`unregister` plus bounded state/image-path registration query); native dispatcher entry; fake `ScmAdapter` tests run on every platform |
+| `service` | `src/service/` | Windows-only `ServiceManager` (`start`/`stop`/`restart`/`is_active`/`unregister` plus bounded state/registration query); the native query parses only an unambiguous absolute image from SCM `lpBinaryPathName` and fails closed on ambiguous commands; native dispatcher entry; fake `ScmAdapter` tests run on every platform |
 
 ## Runtime ownership
 
