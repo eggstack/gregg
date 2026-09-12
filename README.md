@@ -112,6 +112,9 @@ greggd port 11311                  # change the listen port
 greggd startup install             # register automatic startup (systemd / launchd / cron / SCM)
 greggd restart                     # manager-aware restart
 greggd update                      # update to the latest stable release
+greggd uninstall --dry-run         # preview removal (mutates nothing)
+greggd uninstall                   # remove this daemon binary + startup integration (config preserved)
+greggd uninstall --purge           # also remove the daemon config file (destructive)
 greggd stop                        # stop the local daemon
 greggd configprint                 # print the configured bind address
 greggd status                      # read-only diagnostics: version, bind, health, startup state
@@ -126,11 +129,22 @@ Client config: Linux `~/.config/gregg/gregg.toml` (honors `XDG_CONFIG_HOME`),
 macOS `~/Library/Application Support/gregg/gregg.toml`, Windows
 `%APPDATA%\gregg\gregg.toml`.
 
+Rerunning a bootstrap installer at the same scope replaces that scope's
+component in place (first install vs update is reported; an unrelated
+executable at the canonical path is never overwritten). `gregg update` /
+`greggd update` instead update the exact invoked binary. `gregg uninstall` /
+`greggd uninstall` remove only the exact invoked binary plus (for the daemon)
+its Gregg-owned startup integration; configuration is preserved unless
+`--purge` is passed. See [Installation](docs/installation.md).
+
 ```bash
 gregg list                         # list configured endpoints
 gregg remove 192.168.1.10          # host-only remove is supported
 gregg edit                         # open config in $EDITOR
 gregg update                       # update the client
+gregg uninstall --dry-run          # preview removal (mutates nothing)
+gregg uninstall                    # remove only this client binary (config preserved)
+gregg uninstall --purge            # also remove the client config file (destructive)
 ```
 
 ## TUI navigation

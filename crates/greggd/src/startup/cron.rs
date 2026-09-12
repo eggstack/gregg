@@ -154,7 +154,7 @@ pub fn merge_crontab(existing: &str, new_block: &str) -> String {
     out
 }
 // ── Cron installation ─────────────────────────────────────────────────────
-fn run_crontab_list() -> io::Result<String> {
+pub(crate) fn run_crontab_list() -> io::Result<String> {
     let output = Command::new("crontab").arg("-l").output()?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -181,7 +181,7 @@ fn run_crontab_list() -> io::Result<String> {
         }
     }
 }
-fn run_crontab_install(content: &str) -> io::Result<()> {
+pub(crate) fn run_crontab_install(content: &str) -> io::Result<()> {
     let mut child = Command::new("crontab")
         .arg("-")
         .stdin(std::process::Stdio::piped())
@@ -245,6 +245,64 @@ pub fn install_cron(exe: &Path, config: &Path, explicit: bool) -> Result<(), Ins
     println!("Verify with: crontab -l");
     Ok(())
 }
+// ── Cron uninstall (Plan 112) ─────────────────────────────────────────────────
+
+/// Pure helper: stripped crontab after Gregg managed-block removal, or
+/// `None` when the crontab has no Gregg block and must be left untouched.
+///
+/// The caller installs the returned content only when `Some`, so a
+/// block-free crontab never triggers a redundant `crontab -` write.
+#[must_use]
+pub fn cron_uninstall_changed(existing: &str) -> Option<String> {
+    let stripped = remove_managed_cron_block(existing);
+    if stripped == existing {
+        None
+    } else {
+        Some(stripped)
+    }
+}
+
+/// Remove only the Gregg managed watchdog block from the current
+/// account's crontab, preserving unrelated entries byte-for-byte where
+/// [`remove_managed_cron_block`] already guarantees that behavior.
+///
+/// Returns `true` when a managed block was removed. No crontab or no
+/// Gregg marker is a successful no-op (`false`). A missing `crontab`
+/// executable is only an error when listing proves there is nothing to
+/// conclude from — without the binary there is no positive evidence of
+/// Gregg cron integration, so removal is a no-op rather than a blocker
+/// for the rest of the uninstall. Scoped to the current account only;
+/// never enumerates other users or edits `/var/spool/cron` directly.
+pub fn uninstall_cron() -> Result<bool, InstallError> {
+    let existing = match run_crontab_list() {
+        Ok(content) => content,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(InstallError::Io {
+                path: PathBuf::from("crontab -l"),
+                source: e,
+            });
+        }
+    };
+    let Some(stripped) = cron_uninstall_changed(&existing) else {
+        return Ok(false);
+    };
+    run_crontab_install(&stripped).map_err(|e| {
+        if e.kind() == io::ErrorKind::NotFound {
+            InstallError::CrontabUnavailable {
+                message: "crontab not found while removing the Gregg managed block".to_string(),
+            }
+        } else {
+            InstallError::Io {
+                path: PathBuf::from("crontab -"),
+                source: e,
+            }
+        }
+    })?;
+    println!("greggd cron watchdog removed");
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +394,22 @@ mod tests {
         let block = cron_block_with_config(exe, cfg).unwrap();
         let merged = merge_crontab("", &block);
         assert_eq!(merged, block);
+    }
+    #[test]
+    fn cron_uninstall_reports_change_only_for_managed_block() {
+        assert_eq!(cron_uninstall_changed(""), None);
+        assert_eq!(cron_uninstall_changed("FOO=bar\n"), None);
+        let existing = "FOO=bar\n# greggd managed watchdog\n@reboot '/a' --config '/b' croncheck\n* * * * * '/a' --config '/b' croncheck\nOTHER=1\n";
+        assert_eq!(
+            cron_uninstall_changed(existing),
+            Some("FOO=bar\nOTHER=1\n".to_string())
+        );
+    }
+    #[test]
+    fn cron_uninstall_block_only_strips_to_empty() {
+        let exe = Path::new("/usr/local/bin/greggd");
+        let cfg = Path::new("/etc/gregg/greggd.toml");
+        let block = cron_block_with_config(exe, cfg).unwrap();
+        assert_eq!(cron_uninstall_changed(&block), Some(String::new()));
     }
 }

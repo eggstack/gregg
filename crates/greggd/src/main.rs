@@ -125,6 +125,9 @@ fn classify_error(error: &(dyn Error + 'static)) -> greggd::cli::ExitCode {
     if let Some(error) = error.downcast_ref::<greggd::update::UpdateError>() {
         return greggd::cli::ExitCode::from(error);
     }
+    if let Some(error) = error.downcast_ref::<greggd::uninstall::UninstallError>() {
+        return greggd::cli::ExitCode::from(error);
+    }
     #[cfg(target_os = "windows")]
     if let Some(error) = error.downcast_ref::<greggd::service::ServiceError>() {
         return greggd::cli::ExitCode::from(error);

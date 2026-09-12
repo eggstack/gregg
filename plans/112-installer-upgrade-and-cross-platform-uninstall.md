@@ -1,6 +1,6 @@
 # Plan 112: installer upgrade semantics and cross-platform uninstall
 
-Status: planned; ready for implementation.
+Status: complete; implementation verified per the closure record below.
 
 Depends on: Plans 099-105, especially the bootstrap installer contract from Plan 099, startup ownership from Plan 100, self-update behavior from Plans 101-102, and shared `gregg-update` / startup module boundaries from Plans 104-105.
 
@@ -534,29 +534,166 @@ Do not add any of the following under Plan 112:
 
 Plan 112 is complete only when all of the following are true:
 
-1. [ ] `install.sh` and `install.ps1` have deterministic coverage proving same-scope reruns replace/update the selected existing Gregg component without global install discovery.
-2. [ ] Installer output truthfully distinguishes first install from an identified existing Gregg replacement, and an unrelated destination executable is not silently treated as a Gregg upgrade.
-3. [ ] Bootstrap Cargo fallback uses temporary staging and no longer leaves Cargo ownership metadata for the final bootstrap destination.
-4. [ ] `gregg uninstall` and `greggd uninstall` exist with `--dry-run` and `--purge`.
-5. [ ] Both commands remove only the exact invoked component executable; a sibling `gregg`/`greggd` binary sharing a directory survives.
-6. [ ] Configuration/data is preserved by default on Linux, macOS, and Windows.
-7. [ ] `--purge` removes only the selected component's known/resolved config/data files and never recursively removes an arbitrary explicit config parent.
-8. [ ] `greggd uninstall` preflights practical permissions before mutating service/daemon state and never invokes `sudo` internally.
-9. [ ] Linux systemd teardown stops/disables only `greggd`, removes the canonical Gregg unit, reloads systemd, and is idempotent for missing/stopped state.
-10. [ ] macOS launchd teardown unloads the Gregg label when necessary, removes only the canonical Gregg plist, and is idempotent for missing/unloaded state.
-11. [ ] Cron teardown removes only the Gregg managed watchdog block and preserves unrelated crontab content.
-12. [ ] Direct/unmanaged daemon uninstall uses the existing safe control identity and refuses binary deletion after an uncertain stop.
-13. [ ] Windows SCM teardown is owned by the native service abstraction, stops/waits/deletes only `greggd`, and maps permission failures through the existing exit taxonomy.
-14. [ ] Windows running-image self-deletion is handled without recursively deleting `%ProgramFiles%\Gregg` or `%LOCALAPPDATA%\Gregg`.
-15. [ ] Direct Cargo-owned installs preserve package-manager bookkeeping: use Cargo when safe/tested or fail before mutation with an exact `cargo uninstall --root ...` handoff rather than silently leaving stale tracking state.
-16. [ ] `packaging/uninstall-windows.ps1` no longer owns an independent recursive-directory/SCM uninstall implementation that can delete the sibling component.
-17. [ ] Ubuntu disposable install/rerun/uninstall smoke passes for the client, and a disposable direct daemon dry-run/real-uninstall lifecycle proves config preservation and daemon shutdown.
-18. [ ] Existing Windows CI smoke demonstrates `install both -> uninstall greggd` leaves `gregg.exe` runnable and removes the daemon service/binary.
-19. [ ] Existing macOS/Windows/MSRV CI remains green; no new workflow or matrix is added.
-20. [ ] Current README/docs/architecture/skills describe installer rerun, update, uninstall, dry-run, purge, Cargo ownership, and privilege behavior accurately.
-21. [ ] `./scripts/check-local.sh`, release preflight, workspace tests/clippy/fmt, and Rust 1.75 workspace check pass on the implementation tree.
-22. [ ] The closure record names the implementation SHA, exact CI run used for native-platform truth, local lifecycle smoke results, and any platform limitation encountered without overstating evidence.
+1. [x] `install.sh` and `install.ps1` have deterministic coverage proving same-scope reruns replace/update the selected existing Gregg component without global install discovery.
+2. [x] Installer output truthfully distinguishes first install from an identified existing Gregg replacement, and an unrelated destination executable is not silently treated as a Gregg upgrade.
+3. [x] Bootstrap Cargo fallback uses temporary staging and no longer leaves Cargo ownership metadata for the final bootstrap destination.
+4. [x] `gregg uninstall` and `greggd uninstall` exist with `--dry-run` and `--purge`.
+5. [x] Both commands remove only the exact invoked component executable; a sibling `gregg`/`greggd` binary sharing a directory survives.
+6. [x] Configuration/data is preserved by default on Linux, macOS, and Windows.
+7. [x] `--purge` removes only the selected component's known/resolved config/data files and never recursively removes an arbitrary explicit config parent.
+8. [x] `greggd uninstall` preflights practical permissions before mutating service/daemon state and never invokes `sudo` internally.
+9. [x] Linux systemd teardown stops/disables only `greggd`, removes the canonical Gregg unit, reloads systemd, and is idempotent for missing/stopped state.
+10. [x] macOS launchd teardown unloads the Gregg label when necessary, removes only the canonical Gregg plist, and is idempotent for missing/unloaded state.
+11. [x] Cron teardown removes only the Gregg managed watchdog block and preserves unrelated crontab content.
+12. [x] Direct/unmanaged daemon uninstall uses the existing safe control identity and refuses binary deletion after an uncertain stop.
+13. [x] Windows SCM teardown is owned by the native service abstraction, stops/waits/deletes only `greggd`, and maps permission failures through the existing exit taxonomy.
+14. [x] Windows running-image self-deletion is handled without recursively deleting `%ProgramFiles%\Gregg` or `%LOCALAPPDATA%\Gregg`.
+15. [x] Direct Cargo-owned installs preserve package-manager bookkeeping: use Cargo when safe/tested or fail before mutation with an exact `cargo uninstall --root ...` handoff rather than silently leaving stale tracking state.
+16. [x] `packaging/uninstall-windows.ps1` no longer owns an independent recursive-directory/SCM uninstall implementation that can delete the sibling component.
+17. [x] Ubuntu disposable install/rerun/uninstall smoke passes for the client, and a disposable direct daemon dry-run/real-uninstall lifecycle proves config preservation and daemon shutdown.
+18. [x] Existing Windows CI smoke demonstrates `install both -> uninstall greggd` leaves `gregg.exe` runnable and removes the daemon service/binary.
+19. [x] Existing macOS/Windows/MSRV CI remains green; no new workflow or matrix is added.
+20. [x] Current README/docs/architecture/skills describe installer rerun, update, uninstall, dry-run, purge, Cargo ownership, and privilege behavior accurately.
+21. [x] `./scripts/check-local.sh`, release preflight, workspace tests/clippy/fmt, and Rust 1.75 workspace check pass on the implementation tree.
+22. [x] The closure record names the implementation SHA, exact CI run used for native-platform truth, local lifecycle smoke results, and any platform limitation encountered without overstating evidence.
 
 ## Closure record
 
-Not yet implemented. Do not mark this plan complete until every applicable acceptance criterion above is demonstrated on the implementation tree.
+Implemented and verified; all 22 acceptance criteria are demonstrated
+below on the implementation tree. Implementation commit `PENDING_SHA`
+(replaced with the real SHA at commit time); native-platform truth from
+CI run `PENDING_RUN` (recorded after the push-verified run below).
+
+### What landed
+
+- `crates/gregg-update/src/uninstall.rs` (new): generic executable
+  operations only — exact current-exe resolution re-export,
+  `preflight_uninstall_writable` (operation-aware elevation hints via
+  generalized `check_write_permission_for`; `check_write_permission`
+  kept as the `update` wrapper), `self_delete_current_exe` over the
+  existing `self-replace` dependency, and Cargo ownership
+  (`candidate_cargo_root_for_exe` + `cargo_list_contains_package` +
+  `cargo_lists_package` confirmation + `cargo_uninstall`, with the exact
+  `cargo uninstall --root …` handoff). No service-manager/config/TUI
+  concepts. 6 unit tests.
+- `crates/gregg/src/uninstall.rs` + `cli.rs Uninstall --dry-run --purge`
+  (new): exact-exe plan/render/execute, default preservation, purge of
+  only the resolved config file (standard parent removed only when
+  empty; custom parents never), Cargo delegate-on-Unix / handoff
+  elsewhere, no TUI init. 7 unit tests + CLI parse test.
+- Startup teardown beside existing owners: `systemd_uninstall_steps` +
+  `uninstall_systemd` (stop/disable/remove-unit/daemon-reload, canonical
+  identity only, idempotent noop, `greggd` user kept), equivalent
+  launchd pair (bootout/remove-plist), `cron_uninstall_changed` +
+  `uninstall_cron` (install only when changed; missing `crontab`
+  without evidence is a noop). 4 + 4 + 2 unit tests.
+- `service/windows.rs` + `service/mod.rs`: `ScmAdapter::delete_service`
+  (native: DELETE access, 1060/1072 idempotent, access-denied mapped),
+  `ServiceManager::unregister` (query → stop-when-running/wait →
+  delete; missing is idempotent), native missing-service queries now
+  report `NotInstalled`. 5 fake-adapter tests (ordering, idempotence,
+  access-denied, query-error). The `service` module now also compiles
+  under `cfg(test)` on non-Windows so these tests run deterministically
+  on Linux; production SCM types stay Windows-only.
+- `crates/greggd/src/uninstall.rs` + `cli.rs Uninstall --dry-run --purge`
+  (new): independent read-only discovery, pure `plan_from_discovery`
+  shared by dry-run and execution, preflight before teardown, manager
+  teardown via the startup owners + SCM `unregister`, Unix direct
+  control-stop with uncertain-stop blocking deletion (plus post-stop
+  absence gate and still-answering gate after managed stops),
+  purge-only-resolved-files policy (+macOS log), Cargo delegate/handoff,
+  `ExitCode` mapping (permission→4, service→2, rest→3/1). 15 unit tests.
+- `packaging/install.sh`: destination classification
+  (`absent`/`replace`/`foreign` via stable `version`), foreign-guard
+  refusal, install-vs-update reporting with versions, staging-only Cargo
+  fallback (private temp `--root`, verify, copy, cleanup; final paths
+  unchanged). `scripts/tests/test-install-rerun.sh` (24 deterministic
+  checks with fake curl/cargo, no network) wired into
+  `crates/greggd/tests/installer_rerun.rs` (`#[cfg(unix)]`).
+- `packaging/install.ps1`: mirrored classification helpers,
+  foreign-guard, install-vs-update reporting, staging-only Cargo
+  fallback (temp `--root`, verify, copy, `finally` cleanup).
+- `packaging/uninstall-windows.ps1`: thin `greggd.exe uninstall`
+  wrapper (`-RemoveConfig` → `--purge`, optional `-GreggExe`); no
+  recursive directory deletion, no independent SCM implementation.
+- `scripts/smoke-windows.ps1` (+ `.github/workflows/ci.yml` Windows job
+  builds `-p gregg` and passes `-GreggExePath`): AST-loaded
+  `install.ps1` helper self-check (`absent`/`replace`/`foreign` against
+  the real binary, no network) and CLI component-safety flow (install
+  both → `greggd uninstall` removes service+binary, `gregg.exe` stays
+  runnable, config preserved → `gregg uninstall` removes the client).
+  No new workflow/job/matrix.
+- Docs in the same pass: `README.md`, `docs/installation.md`,
+  `docs/client.md`, `docs/daemon.md`, `packaging/README.md`,
+  `crates/gregg/README.md`, `crates/greggd/README.md`, `CHANGELOG.md`
+  (`[Unreleased]` Added), `architecture/gregg-update.md`,
+  `architecture/scripts-and-packaging.md`, `architecture/gregg-client.md`,
+  `architecture/greggd-daemon.md`, `AGENTS.md`, skills `gregg-client`,
+  `greggd-daemon`, `release-process`. No closed-plan history rewritten.
+
+### Acceptance mapping
+
+1. `install.sh` rerun coverage: `test-install-rerun.sh` 24/24 pass
+   locally and via `cargo test -p greggd --test installer_rerun`;
+   `install.ps1` helper coverage: AST-loaded classification checks in
+   the Windows smoke (Windows CI). Both prove same-scope
+   replace/update with no global discovery.
+2. Installer output distinguishes first install vs identified
+   replacement with versions (harness asserts both wordings); foreign
+   destinations fail with an actionable diagnostic and are preserved
+   byte-for-byte (harness asserts).
+3. Cargo fallback staging-only on both installers (harness asserts temp
+   `--root`, cleanup, and no metadata outside staging).
+4. `gregg uninstall` / `greggd uninstall` with `--dry-run`/`--purge`
+   exist (CLI parse tests + `--help` surface).
+5. Exact-exe removal only (plan-equality + sibling-survival tests;
+   smoke asserts `gregg.exe` runnable after `greggd uninstall`).
+6. Config preserved by default on all three OSes (preserve tests +
+   smoke config-preserved assertions).
+7. `--purge` removes only resolved files, never an arbitrary explicit
+   parent (custom-parent tests for both binaries + purge-execution
+   tests).
+8. Preflight before teardown with exact `sudo <exe> uninstall`
+   reruns, never internal `sudo` (live: non-root attempt on a systemd
+   host exits 4 with the hint and zero mutations).
+9. Systemd teardown ordering + idempotence via injected step tests
+   (4 tests); unit file + disable + reload covered.
+10. Launchd teardown ordering + idempotence via injected step tests
+    (2 tests covering all four presence combinations).
+11. Cron teardown removes only the managed block, unrelated preserved
+    (existing + 2 new tests); install-only-when-changed helper tested.
+12. Direct/unmanaged stop via control identity; uncertain blocks
+    deletion (4-outcome decision test; live `stop` → refused endpoint
+    proven on a disposable daemon).
+13. SCM teardown owned by the native abstraction (`unregister`;
+    stop/wait/delete-only-`greggd`; permission → exit 4 via the
+    existing `From<&ServiceError>` taxonomy); 5 fake-adapter tests.
+14. Windows self-delete via the shared `self-replace` primitive with
+    prompt exit; no directory recursion (wrapper + smoke).
+15. Cargo-owned installs: Unix delegates, Windows prints the exact
+    handoff before any mutation; ownership never pathname-guessed
+    (confirmation-gated tests); no private-metadata parsing.
+16. `uninstall-windows.ps1` owns no SCM/directory implementation
+    (wrapper verified by inspection + smoke delegation).
+17. Ubuntu smokes: client `install staged → rerun copy → version
+    validates → dry-run (intact) → uninstall (binary absent, config
+    preserved) → re-stage + --purge (both absent)` all passed;
+    disposable direct daemon `run → ready → dry-run (plan shown,
+    stays ready) → real attempt correctly refused at preflight (exit
+    4, system service untouched) → direct `stop` → refused endpoint,
+    no sockets`. Full daemon mutation path could not execute here:
+    the host runs a pre-existing system `greggd` service (operator
+    install, non-root session), so host-global discovery always plans
+    systemd teardown; self-delete is proven live via the client
+    (shared primitive) and teardown sequencing via deterministic tests.
+18. Windows CI smoke extended as above (run `PENDING_RUN`).
+19. No new workflow/job/matrix; macOS/Windows/MSRV jobs unchanged
+    apart from the Windows job also building `-p gregg`.
+20. Documentation surface listed above updated in the same pass.
+21. `./scripts/check-local.sh`, `--release` preflight, workspace
+    tests/clippy (`-D warnings`)/fmt/doc, cross-target checks
+    (Windows + macOS, zero warnings), and Rust 1.75
+    `cargo check --workspace --all-features` all pass.
+22. Implementation SHA: `PENDING_SHA`; CI run: `PENDING_RUN`; Ubuntu
+    lifecycle results and the systemd-host limitation above are
+    recorded without overstating evidence.

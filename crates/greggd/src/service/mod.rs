@@ -139,6 +139,19 @@ pub trait ServiceManager: Send + Sync {
     ///
     /// Returns [`ServiceError`] if the state cannot be determined.
     fn is_active(&self) -> Result<bool, ServiceError>;
+
+    /// Delete only the greggd SCM registration.
+    ///
+    /// Stops a running service first and waits for the bounded stopped
+    /// state. A missing registration is idempotent success. Used by
+    /// `greggd uninstall`; never touches binaries or configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ServiceError`] if the service cannot be stopped or
+    /// deleted, including [`ServiceError::AccessDenied`] when the caller
+    /// must rerun from an Administrator shell.
+    fn unregister(&self) -> Result<(), ServiceError>;
 }
 
 /// Return the native Windows SCM manager.

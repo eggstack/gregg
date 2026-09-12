@@ -13,7 +13,7 @@ use std::time::Duration;
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::{Config, ConfigError};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 use crate::service::ServiceError;
 use crate::startup::StartupMethodArg;
 
@@ -84,6 +84,28 @@ pub enum Command {
     Port {
         /// The new port number (1-65535).
         port: u16,
+    },
+    /// Uninstall the greggd daemon binary and its Gregg-owned startup integration.
+    ///
+    /// Removes only the exact invoked executable; a sibling `gregg` binary
+    /// sharing the install directory is never touched, and install
+    /// directories are never removed recursively. Startup teardown removes
+    /// only canonical Gregg artifacts actually present (systemd unit,
+    /// launchd plist, managed cron block, or the `greggd` SCM
+    /// registration). Configuration is preserved by default; `--purge`
+    /// additionally removes the resolved daemon config file (and the macOS
+    /// daemon log). `--dry-run` prints the exact resources that would be
+    /// removed without mutating anything. There is no interactive prompt;
+    /// invoking `uninstall` is the explicit destructive action.
+    Uninstall {
+        /// Print the exact resources that would be removed without
+        /// stopping, mutating, or deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also remove the resolved daemon config/data files
+        /// (destructive). Without this flag configuration is preserved.
+        #[arg(long)]
+        purge: bool,
     },
     /// Print the binary version.
     Version,
@@ -175,7 +197,7 @@ impl From<&ConfigError> for ExitCode {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", test))]
 impl From<&ServiceError> for ExitCode {
     fn from(e: &ServiceError) -> Self {
         match e {
@@ -201,6 +223,21 @@ impl From<&crate::startup::InstallError> for ExitCode {
             crate::startup::InstallError::BinaryMissing { .. }
             | crate::startup::InstallError::UnsupportedMethod { .. } => Self::ConfigError,
             _ => Self::ServiceError,
+        }
+    }
+}
+
+impl From<&crate::uninstall::UninstallError> for ExitCode {
+    fn from(e: &crate::uninstall::UninstallError) -> Self {
+        match e {
+            crate::uninstall::UninstallError::Permission { .. } => Self::PermissionDenied,
+            crate::uninstall::UninstallError::Service { .. } => Self::ServiceError,
+            crate::uninstall::UninstallError::CurrentExe(_)
+            | crate::uninstall::UninstallError::Io { .. }
+            | crate::uninstall::UninstallError::UncertainStop { .. }
+            | crate::uninstall::UninstallError::Cron { .. }
+            | crate::uninstall::UninstallError::CargoHandoff { .. }
+            | crate::uninstall::UninstallError::CargoFailed(_) => Self::RuntimeError,
         }
     }
 }
@@ -630,6 +667,10 @@ pub fn dispatch_with_config_intent(
         Command::Port { port } => mutate_config(config_path, explicit, |config| {
             config.port = *port;
         }),
+        Command::Uninstall { dry_run, purge } => {
+            crate::uninstall::run_uninstall(config_path, explicit, *dry_run, *purge)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
+        }
         Command::Version => {
             println!("{}", version_string());
             Ok(())
@@ -727,6 +768,8 @@ mod native_tests {
             Cli::try_parse_from(["greggd", "startup", "install", "--method", "systemd"]).is_ok()
         );
         assert!(Cli::try_parse_from(["greggd", "startup", "install", "--method", "cron"]).is_ok());
+        assert!(Cli::try_parse_from(["greggd", "uninstall"]).is_ok());
+        assert!(Cli::try_parse_from(["greggd", "uninstall", "--dry-run", "--purge"]).is_ok());
         assert!(Cli::try_parse_from(["greggd", "startup", "instructions"]).is_ok());
         assert!(
             Cli::try_parse_from(["greggd", "startup", "instructions", "--method", "launchd"])

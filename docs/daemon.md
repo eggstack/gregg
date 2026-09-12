@@ -54,6 +54,9 @@ greggd startup instructions               # read-only: exact commands/paths for 
 greggd startup instructions --method cron # read-only for a specific method
 greggd restart                            # manager-aware restart
 greggd update                             # binary-first update; restarts only if running/managed
+greggd uninstall --dry-run                # preview removal (mutates nothing)
+greggd uninstall                          # remove this binary + Gregg startup integration (config preserved)
+greggd uninstall --purge                  # also remove the daemon config/data files (destructive)
 ```
 
 Details:
@@ -120,6 +123,23 @@ Details:
   The download/verify/stage/replace mechanism is shared with `gregg update`
   in the internal `gregg-update` crate; `greggd` owns only
   activation/restart coordination.
+
+`uninstall` removes only the exact invoked `greggd` executable plus the
+Gregg-owned startup integration actually present for it: the canonical
+systemd unit (`stop`/`disable`/remove/`daemon-reload`), the
+`com.eggstack.greggd` launchd job and plist, the `# greggd managed
+watchdog` cron block (unrelated crontab entries preserved), or the `greggd`
+SCM registration (stop/wait/delete). Discovery is independent per artifact,
+so a stale unit plus a managed cron block are both removed. Permissions are
+preflighted before any teardown mutation and nothing invokes `sudo`
+internally (rerun the printed `sudo <exe> uninstall` instead). An unmanaged
+daemon is stopped via the existing control-socket identity; an uncertain
+stop blocks deletion rather than orphaning a running process. The `greggd`
+system account is left in place, and Cargo-owned installs keep Cargo
+bookkeeping (Unix delegates to `cargo uninstall`, Windows prints the exact
+handoff). The legacy `packaging/uninstall-windows.ps1` is a thin wrapper
+around `greggd uninstall` (`-RemoveConfig` maps to `--purge`) and no longer
+recursively deletes the shared install directory.
 
 ## Platform notes
 

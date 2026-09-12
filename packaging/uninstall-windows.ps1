@@ -1,24 +1,38 @@
 <#
 .SYNOPSIS
-    Removes the greggd Windows service and optionally its configuration.
+    Compatibility entry point for removing the greggd daemon on Windows.
 
 .DESCRIPTION
-    Stops and removes the greggd Windows service, deletes the installed
-    binary, and optionally removes the configuration directory.
+    Delegates to the installed `greggd.exe uninstall` command, which owns the
+    component-safe lifecycle: it stops and deletes only the `greggd` SCM
+    registration, deletes only the exact invoked `greggd.exe`, preserves
+    configuration by default, and never removes a sibling `gregg.exe` or
+    recursively deletes the shared install directory.
 
-    This script must be run as Administrator.
+    The previous recursive `%ProgramFiles%\Gregg` removal is retired: shared
+    directories are containers, not component-owned artifacts.
+
+    This script must be run as Administrator when the daemon was installed
+    system-wide.
 
 .PARAMETER RemoveConfig
-    If specified, removes the ProgramData configuration directory
-    (%ProgramData%\gregg). By default, configuration is preserved.
+    Maps to `greggd uninstall --purge`: additionally removes the daemon
+    config file (`%ProgramData%\gregg\greggd.toml`). By default,
+    configuration is preserved.
+
+.PARAMETER GreggdExe
+    Explicit path to the installed `greggd.exe`. Defaults to
+    `%ProgramFiles%\Gregg\greggd.exe`.
 
 .EXAMPLE
     .\uninstall-windows.ps1
     .\uninstall-windows.ps1 -RemoveConfig
+    .\uninstall-windows.ps1 -GreggdExe "C:\tools\greggd.exe" -RemoveConfig
 #>
 [CmdletBinding()]
 param(
-    [switch]$RemoveConfig
+    [switch]$RemoveConfig,
+    [string]$GreggdExe
 )
 
 Set-StrictMode -Version Latest
@@ -28,76 +42,40 @@ $ErrorActionPreference = "Stop"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Error "This script must be run as Administrator."
+    Write-Error "This script must be run as Administrator when greggd was installed system-wide. Otherwise run the installed binary directly: greggd uninstall"
     exit 1
 }
 
-# ── Constants ──────────────────────────────────────────────────────────────
+# ── Resolve the installed daemon binary ────────────────────────────────────
 
-$ServiceName = "greggd"
-$InstallDir = Join-Path $env:ProgramFiles "Gregg"
-$ProgramDataDir = Join-Path $env:ProgramData "gregg"
-
-# ── Stop and remove service ───────────────────────────────────────────────
-
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-if ($service) {
-    Write-Host "Stopping service..."
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-
-    # Wait for the service to stop (up to 30 seconds).
-    try {
-        $service.WaitForStatus("Stopped", (New-TimeSpan -Seconds 30))
-    } catch {
-        Write-Warning "Service did not stop within 30 seconds."
-    }
-
-    Write-Host "Removing service registration..."
-    sc.exe delete $ServiceName | Out-Null
-    Start-Sleep -Seconds 2  # Give SCM time to process the deletion.
-    Write-Host "Service removed."
-} else {
-    Write-Host "Service '$ServiceName' is not registered. Continuing..."
+if (-not $GreggdExe) {
+    $GreggdExe = Join-Path $env:ProgramFiles "Gregg\greggd.exe"
+}
+if (-not (Test-Path -LiteralPath $GreggdExe -PathType Leaf)) {
+    Write-Error "Installed daemon not found at $GreggdExe. Nothing was changed. If greggd was installed user-local, pass -GreggdExe explicitly or run that binary's uninstall command directly: <path>\greggd.exe uninstall"
+    exit 1
 }
 
-# ── Remove installed binary ───────────────────────────────────────────────
+# ── Delegate to the CLI-owned uninstall ────────────────────────────────────
 
-if (Test-Path $InstallDir) {
-    Write-Host "Removing installed binary directory: $InstallDir"
-    try {
-        Remove-Item -Path $InstallDir -Recurse -Force
-        Write-Host "Binary directory removed."
-    } catch {
-        Write-Warning "Could not remove $InstallDir : $($_.Exception.Message)"
-        Write-Warning "The file may be in use. Please close any running instances and try again."
-    }
-} else {
-    Write-Host "Binary directory not found. Continuing..."
-}
-
-# ── Remove config directory if requested ──────────────────────────────────
-
+$uninstallArgs = @("uninstall")
 if ($RemoveConfig) {
-    if (Test-Path $ProgramDataDir) {
-        Write-Host "Removing configuration directory: $ProgramDataDir"
-        Remove-Item -Path $ProgramDataDir -Recurse -Force
-        Write-Host "Configuration directory removed."
-    } else {
-        Write-Host "Configuration directory not found. Continuing..."
-    }
-} else {
-    if (Test-Path $ProgramDataDir) {
-        Write-Host "Configuration preserved at: $ProgramDataDir"
-        Write-Host "Use -RemoveConfig to delete the configuration directory."
-    }
+    $uninstallArgs += "--purge"
 }
 
-# ── Summary ───────────────────────────────────────────────────────────────
+Write-Host "Delegating to: $GreggdExe $($uninstallArgs -join ' ')"
+& $GreggdExe @uninstallArgs
+$exitCode = $LASTEXITCODE
+if ($exitCode -ne 0) {
+    Write-Error "greggd uninstall failed with exit code $exitCode."
+    exit $exitCode
+}
 
 Write-Host ""
 Write-Host "=== greggd uninstalled ===" -ForegroundColor Green
 if ($RemoveConfig) {
-    Write-Host "Service, binary, and configuration have been removed."
+    Write-Host "Service and binary removed; configuration purged."
 } else {
     Write-Host "Service and binary removed. Configuration preserved."
+    Write-Host "Rerun with -RemoveConfig to also remove %ProgramData%\gregg\greggd.toml."
 }

@@ -45,8 +45,10 @@ usage: install.sh [--version X.Y.Z] gregg|greggd|both
 Install prebuilt gregg and/or greggd binaries for the current OS/architecture.
 Downloads the matching GitHub Release asset (latest or pinned version), verifies
 SHA-256 and candidate version, and installs to /usr/local/bin (root) or
-$HOME/.local/bin (non-root). If no asset exists for the host and Cargo is
-available, falls back to `cargo install --locked`.
+$HOME/.local/bin (non-root). Rerunning at the same scope replaces that scope's
+component in place (first install vs update is reported). If no asset exists
+for the host and Cargo is available, builds via `cargo install --locked` into
+private staging and copies only the verified binary to the destination.
 
 arguments:
   gregg          install only the client
@@ -208,6 +210,38 @@ check_path_advice() {
   esac
 }
 
+# Print `<dest> version` output when the destination already holds a
+# runnable executable, else print nothing. Never fails: an unrunnable or
+# missing destination is simply not an identified Gregg component.
+existing_version_for() {
+  local dest="$1"
+  if [[ -x "$dest" ]]; then
+    "$dest" version 2>/dev/null || true
+  fi
+}
+
+# Classify a canonical destination for one Gregg component:
+#   absent   - nothing installed yet (first install)
+#   replace  - destination identifies as the expected component via its
+#              stable `version` command (same-scope update/replacement)
+#   foreign  - something exists but does not identify as the expected
+#              component; the installer must not overwrite it.
+classify_destination() {
+  local dest="$1"
+  local program="$2"
+  if [[ ! -e "$dest" ]]; then
+    echo "absent"
+    return 0
+  fi
+  local existing
+  existing="$(existing_version_for "$dest")"
+  if [[ "$existing" == "${program} "* ]]; then
+    echo "replace"
+  else
+    echo "foreign"
+  fi
+}
+
 verify_checksum() {
   local file="$1"
   local sha_file="$2"
@@ -270,12 +304,12 @@ cargo_fallback() {
     exit 1
   fi
 
-  local cargo_root
-  if [[ "$DEST_DIR" == "/usr/local/bin" ]]; then
-    cargo_root="/usr/local"
-  else
-    cargo_root="${HOME}/.local"
-  fi
+  # Build into an owner-private staging root so the bootstrap installer
+  # (not Cargo metadata) owns the final destination. The staging root is
+  # removed afterwards; no Cargo install root persists beside the binary.
+  local stage_root
+  stage_root="$(mktemp -d)"
+  local cargo_root="${stage_root}/cargo-root"
 
   local -a args=(install --locked)
   if [[ -n "$STRIPPED_VERSION" ]]; then
@@ -283,23 +317,32 @@ cargo_fallback() {
   fi
   args+=(--root "$cargo_root" "$program")
 
-  echo "No prebuilt $program asset for ${TARGET:-unknown}; building from source:" >&2
+  echo "No prebuilt $program asset for ${TARGET:-unknown}; building from source (staged):" >&2
   echo "  cargo ${args[*]}" >&2
 
   # cargo install may fail if run as root without cargo in root's PATH; surface clearly
   if ! cargo "${args[@]}"; then
+    rm -rf "$stage_root"
     die "Cargo fallback failed for $program"
   fi
 
-  local installed="${cargo_root}/bin/${program}"
-  if [[ ! -x "$installed" ]]; then
-    die "cargo install succeeded but $installed not found or not executable"
+  local staged="${cargo_root}/bin/${program}"
+  if [[ ! -x "$staged" ]]; then
+    rm -rf "$stage_root"
+    die "cargo install succeeded but $staged not found or not executable"
   fi
-  verify_candidate_version "$installed" "$program"
-  echo "$program installed via Cargo to $installed" >&2
-  if [[ "$DEST_DIR" != "${cargo_root}/bin" ]]; then
-    echo "note: Cargo installed to ${cargo_root}/bin; DEST_DIR is $DEST_DIR" >&2
+  verify_candidate_version "$staged" "$program"
+
+  mkdir -p "$DEST_DIR"
+  if command -v install >/dev/null 2>&1; then
+    install -m 755 "$staged" "${DEST_DIR}/${program}"
+  else
+    cp "$staged" "${DEST_DIR}/${program}"
+    chmod 755 "${DEST_DIR}/${program}"
   fi
+  rm -rf "$stage_root"
+
+  echo "$program installed via staged Cargo build to ${DEST_DIR}/${program}" >&2
   check_path_advice
 }
 
@@ -307,6 +350,24 @@ install_program() {
   local program="$1"
   local asset url sha_url
   local tmpdir
+  local dest="${DEST_DIR}/${program}"
+  local scope
+  local existing_version=""
+
+  # Same-scope contract: rerunning at the same scope replaces that scope's
+  # component. Classify before any download; a foreign executable at the
+  # canonical path is never silently treated as a Gregg upgrade.
+  scope="$(classify_destination "$dest" "$program")"
+  if [[ "$scope" == "foreign" ]]; then
+    echo "error: ${dest} exists but does not identify as '${program}' via '${program} version':" >&2
+    echo "  got: $(existing_version_for "$dest" || true)" >&2
+    echo "Refusing to overwrite an unrelated executable. Remove or rename it manually, then rerun." >&2
+    exit 1
+  fi
+  if [[ "$scope" == "replace" ]]; then
+    existing_version="$(existing_version_for "$dest")"
+    echo "Found existing ${existing_version} at ${dest}; this rerun will replace it in place (same scope)." >&2
+  fi
 
   # Source-only hosts go directly to Cargo fallback
   if [[ -z "$TARGET" || "$SUPPORTED_BINARY" != "true" ]]; then
@@ -379,7 +440,11 @@ install_program() {
     chmod 755 "${DEST_DIR}/${program}"
   fi
 
-  echo "Installed ${program} to ${DEST_DIR}/${program}" >&2
+  if [[ "$scope" == "replace" ]]; then
+    echo "Updated ${program} at ${DEST_DIR}/${program} (${existing_version} -> $("$DEST_DIR/$program" version 2>&1 || echo "unverified"))" >&2
+  else
+    echo "Installed ${program} to ${DEST_DIR}/${program}" >&2
+  fi
 
   rm -rf "$tmpdir"
   trap - EXIT

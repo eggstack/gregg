@@ -123,6 +123,26 @@ function Test-OnPath {
     return $false
 }
 
+function Get-ExistingVersion {
+    param([string]$DestPath)
+    if (-not (Test-Path -LiteralPath $DestPath -PathType Leaf)) { return "" }
+    try {
+        $out = & $DestPath version 2>$null
+        if ($LASTEXITCODE -eq 0 -and $out) { return "$out".Trim() }
+    } catch {
+        # Unrunnable destination: not an identified Gregg component.
+    }
+    return ""
+}
+
+function Get-DestinationClassification {
+    param([string]$DestPath, [string]$Program)
+    if (-not (Test-Path -LiteralPath $DestPath)) { return "absent" }
+    $existing = Get-ExistingVersion -DestPath $DestPath
+    if ($existing.StartsWith("$Program ")) { return "replace" }
+    return "foreign"
+}
+
 function Invoke-CargoFallback {
     param([string]$Program)
 
@@ -142,79 +162,72 @@ function Invoke-CargoFallback {
         throw "Cargo not available for fallback"
     }
 
-    $destDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
-    # cargo --root expects the prefix (parent of bin)
-    $cargoRoot = Split-Path $destDir -Parent
-    if (-not $cargoRoot -or $cargoRoot -eq "") {
-        # Fallback: use destDir itself as root when it has no parent (should not happen)
-        $cargoRoot = $destDir
-    }
-    # For %ProgramFiles%\Gregg, cargoRoot would be %ProgramFiles%; that's not ideal for cargo's layout.
-    # In that case, just use the default cargo install location and copy.
-    $useDirectCopy = $false
-    if ($IsAdmin -and $destDir -like "*Program Files*") {
-        $useDirectCopy = $true
-        $cargoRoot = $null
-    }
-
-    $cargoArgs = @("install", "--locked")
-    if ($StrippedVersion) {
-        $cargoArgs += @("--version", "=$StrippedVersion")
-    }
-    if (-not $useDirectCopy) {
-        $cargoArgs += @("--root", $cargoRoot)
-    }
-    $cargoArgs += $Program
-
-    Write-Host "No prebuilt $Program asset for $($Target ? $Target : 'unknown'); building from source: cargo $($cargoArgs -join ' ')"
-    $proc = Start-Process -FilePath "cargo" -ArgumentList $cargoArgs -NoNewWindow -Wait -PassThru
-    if ($proc.ExitCode -ne 0) { throw "Cargo fallback failed for $Program (exit $($proc.ExitCode))" }
-
-    if ($useDirectCopy) {
-        $installed = Join-Path $destDir "$Program.exe"
-        # cargo installed to default %USERPROFILE%\.cargo\bin; copy to dest if needed
-        $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin\$Program.exe"
-        if (-not (Test-Path $cargoBin)) {
-            # Also check $env:CARGO_HOME
-            if ($env:CARGO_HOME) { $cargoBin = Join-Path $env:CARGO_HOME "bin\$Program.exe" }
+    # Build into an owner-private staging root so the bootstrap installer
+    # (not Cargo metadata) owns the final destination. The staging root is
+    # removed afterwards; no Cargo install root persists beside the binary.
+    $StageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("gregg-cargo-" + [System.IO.Path]::GetRandomFileName())
+    New-Item -ItemType Directory -Path $StageRoot -Force | Out-Null
+    try {
+        $CargoRoot = Join-Path $StageRoot "cargo-root"
+        $cargoArgs = @("install", "--locked")
+        if ($StrippedVersion) {
+            $cargoArgs += @("--version", "=$StrippedVersion")
         }
-        if (Test-Path $cargoBin) {
-            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            Copy-Item -Path $cargoBin -Destination $installed -Force
-        } else {
-            throw "cargo install succeeded but $cargoBin not found"
+        $cargoArgs += @("--root", $CargoRoot, $Program)
+
+        Write-Host "No prebuilt $Program asset for $($Target ? $Target : 'unknown'); building from source (staged): cargo $($cargoArgs -join ' ')"
+        $proc = Start-Process -FilePath "cargo" -ArgumentList $cargoArgs -NoNewWindow -Wait -PassThru
+        if ($proc.ExitCode -ne 0) { throw "Cargo fallback failed for $Program (exit $($proc.ExitCode))" }
+
+        $Staged = Join-Path $CargoRoot "bin\$Program.exe"
+        if (-not (Test-Path -LiteralPath $Staged -PathType Leaf)) {
+            throw "cargo install succeeded but $Staged not found"
         }
-    } else {
-        $installed = Join-Path $destDir "$Program.exe"
-        # When using --root, binary is at $cargoRoot\bin\$Program.exe which may already be $installed
-        # If destDir is LOCALAPPDATA\Gregg, cargoRoot is LOCALAPPDATA, so bin is LOCALAPPDATA\bin\gregg.exe not LOCALAPPDATA\Gregg\gregg.exe
-        # Prefer the actual cargo output location, then copy to expected destDir.
-        $cargoBin = Join-Path $cargoRoot "bin\$Program.exe"
-        if ((Test-Path $cargoBin) -and ($cargoBin -ne $installed)) {
-            New-Item -ItemType Directory -Path $destDir -Force | Out-Null
-            Copy-Item -Path $cargoBin -Destination $installed -Force
-        }
-        if (-not (Test-Path $installed)) {
-            if (Test-Path $cargoBin) { $installed = $cargoBin } else { throw "cargo install succeeded but $installed not found" }
+
+        # Verify staged candidate before installing to the destination.
+        $out = & $Staged version 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "staged $Program failed version check: $out" }
+        if (-not ("$out".StartsWith("$Program "))) { throw "staged version output does not start with '$Program ': $out" }
+        $verPart = ("$out" -split ' ')[1]
+        if ($StrippedVersion -and $verPart -ne $StrippedVersion) { throw "staged version $verPart != requested $StrippedVersion" }
+        Write-Host "Verified candidate: $out"
+
+        $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
+        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        $DestPath = Join-Path $DestDir "$Program.exe"
+        Copy-Item -Path $Staged -Destination $DestPath -Force
+        Write-Host "$Program installed via staged Cargo build to $DestPath"
+    } finally {
+        if (Test-Path -LiteralPath $StageRoot) {
+            Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    # Verify version
-    $out = & $installed version 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "installed $Program failed version check: $out" }
-    if (-not $out.StartsWith("$Program ")) { throw "candidate version output does not start with '$Program ': $out" }
-    $verPart = ($out -split ' ')[1]
-    if ($StrippedVersion -and $verPart -ne $StrippedVersion) { throw "candidate version $verPart != requested $StrippedVersion" }
-    Write-Host "Verified candidate: $out"
-    Write-Host "$Program installed via Cargo to $installed"
-
-    if (-not (Test-OnPath $destDir)) {
-        Write-Host "note: $destDir is not in PATH; add it to your PATH or use the full path." -ForegroundColor Yellow
+    $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
+    if (-not (Test-OnPath $DestDir)) {
+        Write-Host "note: $DestDir is not in PATH; add it to your PATH or use the full path." -ForegroundColor Yellow
     }
 }
 
 function Install-Program {
     param([string]$Program)
+
+    $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
+    $DestPath = Join-Path $DestDir "$Program.exe"
+
+    # Same-scope contract: rerunning at the same scope replaces that scope's
+    # component. Classify before any download; a foreign executable at the
+    # canonical path is never silently treated as a Gregg upgrade.
+    $Scope = Get-DestinationClassification -DestPath $DestPath -Program $Program
+    if ($Scope -eq "foreign") {
+        $existing = Get-ExistingVersion -DestPath $DestPath
+        throw "error: $DestPath exists but does not identify as '$Program' via '$Program version' (got: '$existing'). Refusing to overwrite an unrelated executable. Remove or rename it manually, then rerun."
+    }
+    $ExistingVersion = ""
+    if ($Scope -eq "replace") {
+        $ExistingVersion = Get-ExistingVersion -DestPath $DestPath
+        Write-Host "Found existing $ExistingVersion at $DestPath; this rerun will replace it in place (same scope)."
+    }
 
     # Source-only hosts go directly to Cargo fallback
     if (-not $Target -or -not $SupportedBinary) {
@@ -302,9 +315,7 @@ function Install-Program {
 
         # Do not install unverified partial download — verification done
 
-        $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
         New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
-        $DestPath = Join-Path $DestDir "$Program.exe"
 
         # For greggd, preserve existing config and handle SCM registration
         if ($Program -eq "greggd") {
@@ -346,7 +357,12 @@ stale_after_ms = 10000
         }
 
         Copy-Item -Path $Candidate -Destination $DestPath -Force
-        Write-Host "Installed $Program to $DestPath"
+        if ($Scope -eq "replace") {
+            $NewVersion = Get-ExistingVersion -DestPath $DestPath
+            Write-Host "Updated $Program at $DestPath ($ExistingVersion -> $NewVersion)"
+        } else {
+            Write-Host "Installed $Program to $DestPath"
+        }
 
         # Register / update SCM service for greggd when Administrator
         if ($Program -eq "greggd" -and $IsAdmin) {

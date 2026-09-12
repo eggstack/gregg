@@ -17,7 +17,22 @@ gregg refresh 30                          # set polling interval (seconds)
 gregg edit                                # open config in $EDITOR
 gregg version                             # print the client version
 gregg update                              # binary-first update to latest stable crates.io version
+gregg uninstall --dry-run                 # preview removal (mutates nothing)
+gregg uninstall                           # remove only this client binary (config preserved)
+gregg uninstall --purge                   # also remove the client config file (destructive)
 ```
+
+`gregg uninstall` always applies to the component whose binary is executing:
+it deletes only the exact invoked `gregg` executable (never a directory, so
+a sibling `greggd` sharing the folder survives) and preserves configuration
+by default. `--purge` additionally removes the resolved client config file
+above (only the exact file; a custom `--config` parent is never removed, and
+the standard Gregg parent only when empty). `--dry-run` prints the exact
+resources without stopping, mutating, or deleting anything. There is no
+interactive prompt and no `sudo` is invoked internally. A directly
+`cargo install`ed client keeps Cargo bookkeeping: on Unix the uninstall
+delegates to `cargo uninstall --root <root> gregg`, while on Windows it
+prints the exact `cargo uninstall` command to run after the process exits.
 
 `gregg add` requires an explicit port. Accepted: `host:port`, `[ipv6]:port`,
 `http://host:port/`, and `nickname@host:port`. Rejected: host-only (`host`,

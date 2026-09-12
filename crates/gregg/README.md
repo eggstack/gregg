@@ -50,7 +50,17 @@ gregg remove 192.168.1.10                     # host-only remove is still suppor
 gregg refresh 30
 gregg edit
 gregg update                                 # binary-first self-update to latest stable crates.io version
+gregg uninstall --dry-run                    # preview removal (mutates nothing)
+gregg uninstall                              # remove only this client binary (config preserved)
+gregg uninstall --purge                      # also remove the client config file (destructive)
 ```
+
+`gregg uninstall` deletes only the exact invoked executable (a sibling
+`greggd` sharing the directory survives; directories are never removed
+recursively). Configuration is preserved by default; `--purge` removes only
+the resolved client config file. Cargo-owned installs keep Cargo
+bookkeeping (Unix delegates to `cargo uninstall`, Windows prints the exact
+handoff).
 
 `gregg add` requires an explicit port. Host-only input such as
 `gregg add 192.168.1.10` is rejected; supply `host:port`, an HTTP URL

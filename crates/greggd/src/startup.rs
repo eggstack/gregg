@@ -28,13 +28,15 @@ pub mod state;
 pub mod systemd;
 
 pub use cron::{
-    cron_block, cron_block_with_config, install_cron, merge_crontab, remove_managed_cron_block,
-    shell_quote, ShellQuoteError, CRON_MANAGED_MARKER,
+    cron_block, cron_block_with_config, cron_uninstall_changed, install_cron, merge_crontab,
+    remove_managed_cron_block, shell_quote, uninstall_cron, ShellQuoteError, CRON_MANAGED_MARKER,
 };
 pub use install::{
     install_startup, render_instructions, restart_daemon, restart_with_state, InstallError,
 };
-pub use launchd::{install_launchd, launchd_plist_content};
+pub use launchd::{
+    install_launchd, launchd_plist_content, launchd_uninstall_steps, uninstall_launchd,
+};
 pub use method::{
     auto_detect_method, auto_method_for, is_systemd_environment, is_systemd_environment_with,
     launchd_label, resolve_startup_method, resolve_startup_method_with, standard_launchd_binary,
@@ -43,4 +45,6 @@ pub use method::{
     StartupMethod, StartupMethodArg,
 };
 pub use state::{launchd_state_with, startup_state, systemd_state_with, StartupState};
-pub use systemd::{install_systemd, systemd_unit_content};
+pub use systemd::{
+    install_systemd, systemd_uninstall_steps, systemd_unit_content, uninstall_systemd,
+};

@@ -55,6 +55,8 @@ on `windows-2022` with Administrator privileges:
 - config mutation and custom config-path persistence;
 - bind failure on an occupied ephemeral loopback port and recovery;
 - reinstall with `LocalService` and config preservation;
+- `install.ps1` destination-classification helpers (`absent`/`replace`/`foreign`) proven without network via AST-loaded function checks;
+- component-safe uninstall: install both exes, `greggd uninstall` removes the SCM registration and `greggd.exe` while `gregg.exe` stays runnable, then `gregg uninstall` removes the client binary (config preserved throughout);
 - configured `system.name` plus nonempty, NUL-free `system.hostname`;
 - service, binary, and temporary-config cleanup.
 
@@ -97,7 +99,8 @@ exits nonzero with a clear error when run under non-bash `sh`).
 - constructs `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or `.../download/vX.Y.Z/<asset>` for pinned; requires fixed `eggstack/gregg` prefix and `curl -fsSL`;
 - downloads into a fresh `mktemp -d` with `trap` cleanup, fetches `<asset>.sha256`, verifies via `sha256sum` (Linux) or `shasum -a 256` (macOS) before any `chmod +x` or execution, runs `<candidate> version` and requires the expected program name and exact version when pinned, never installs a partial download, never falls back to Cargo on checksum/version mismatch;
 - destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`, warns when the dest is not on `PATH`, never edits shell rc files, never silently invokes `sudo`;
-- unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned and `--root` derived from the destination;
+- unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned into a private staging root, verified exactly as a download, then only the executable is copied to the destination (staging removed; no Cargo metadata persists);
+- reruns classify the destination first (`absent`/`replace`/`foreign`) via the existing binary's `version` command: first install vs identified replacement is reported with versions, and a foreign executable is never overwritten (hard error, no `--force`); scope never crosses privilege boundaries;
 - after a verified `greggd` install, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary: privileged runs `daemon-reload`/`enable`/`start`/`restart` or `bootstrap`/`kickstart -k` or idempotent crontab; unprivileged on systemd/launchd prints exact `sudo <exe> startup install --method <...>` without silent cron fallback; on cron hosts installs user-local crontab without elevation.
 
 **`install.ps1` contract (Windows):**
@@ -106,7 +109,8 @@ exits nonzero with a clear error when run under non-bash `sh`).
 - detects `PROCESSOR_ARCHITECTURE`/`Is64BitOperatingSystem` (`AMD64` → `x86_64-pc-windows-msvc`; `ARM64`/unknown → source-only fallback);
 - constructs the same `latest/download` / `download/vX.Y.Z` URLs for `gregg-<target>.exe` / `greggd-<target>.exe` and `.sha256`;
 - `Invoke-WebRequest` to a private temp dir, `Get-FileHash -Algorithm SHA256` verification, candidate `version` check;
-- installs `gregg` user-local where appropriate and `greggd` to `%ProgramFiles%\Gregg` when Administrator (preserving `%ProgramData%\gregg\greggd.toml`), with SCM registration (`LocalService`, `auto` start, failure restart) owned by the installer; `startup install` on Windows is state-reporting only (`startup instructions` prints SCM commands) and there is a single canonical SCM implementation.
+- installs `gregg` user-local where appropriate and `greggd` to `%ProgramFiles%\Gregg` when Administrator (preserving `%ProgramData%\gregg\greggd.toml`), with SCM registration (`LocalService`, `auto` start, failure restart) owned by the installer; `startup install` on Windows is state-reporting only (`startup instructions` prints SCM commands) and there is a single canonical SCM implementation;
+- same destination classification (`absent`/`replace`/`foreign`) and install-vs-update reporting as Unix, with staging-only Cargo fallback (temp `--root`, verified staged binary, copy-then-cleanup).
 
 Raw executables are published, not per-target tarballs/zip files; Windows `.exe` is already directly executable.
 
@@ -166,14 +170,27 @@ All install scripts (bootstrap and legacy):
 - `LocalService` account, `auto` start
 - Failure recovery: 3 restarts with 60s delays
 
-### Uninstall scripts
+### Uninstall surface (Plan 112)
+
+`gregg uninstall [--dry-run] [--purge]` and `greggd uninstall
+[--dry-run] [--purge]` remove only the exact invoked component executable;
+daemon uninstall additionally tears down only the Gregg-owned startup
+integration actually present (systemd unit, launchd plist, managed cron
+block, or `greggd` SCM registration via the native service abstraction's
+`unregister`). Configuration is preserved by default; `--purge` is
+destructive and removes only the resolved component config/data files.
+`--dry-run` mutates nothing. There is no `uninstall --all`, no prompt, no
+internal `sudo`, and no install receipt; Cargo-owned installs keep Cargo
+bookkeeping (Unix delegates, Windows prints the handoff).
 
 | Script | Platform |
 |--------|----------|
 | `uninstall-windows.ps1` | Windows |
 
-Stops and removes the service. Config preserved by default; `-RemoveConfig`
-flag removes config directory.
+Thin compatibility wrapper around the installed `greggd.exe uninstall`
+(`-RemoveConfig` maps to `--purge`). It owns no independent SCM teardown
+and performs no recursive directory deletion, so a sibling `gregg.exe`
+survives. Config preserved by default.
 
 ### Service definitions
 

@@ -21,7 +21,7 @@ renders a Ratatui-based terminal UI.
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Entry point, event loop, TUI wiring (update is synchronous, before Tokio) |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `eggpool` |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
 | `config/model` | `src/config/model.rs` | Config model: entries, limits, defaults, load/validate/write primitives |
 | `config/store` | `src/config/store.rs` | `ConfigStore` coordination, atomic persistence, staging I/O, `ConfigError`, `AtomicWriteError` |
 | `config/validation` | `src/config/validation.rs` | `ConfigViolation` kinds and field checks |
@@ -424,6 +424,7 @@ library callers from async tasks must move the mutation to a blocking thread.
 | `edit` | Open config in editor |
 | `version` | Print client version |
 | `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings); full flow (`run_simple_update`) lives in `gregg-update` |
+| `uninstall [--dry-run] [--purge]` | Remove only the exact invoked client executable (sibling `greggd` survives; no directory recursion); config preserved by default, `--purge` removes only the resolved config file, `--dry-run` mutates nothing; Cargo-owned installs delegate (Unix) or print the handoff (Windows); never inits the TUI runtime |
 | `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 
 ## EggPool

@@ -24,6 +24,7 @@ pub mod scheduler;
 pub mod state;
 pub mod terminal;
 pub mod ui;
+pub mod uninstall;
 pub mod update;
 
 #[cfg(test)]

@@ -22,17 +22,18 @@ service lifecycle. For platform metric collection itself, use the
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: logging init, diagnostics, exit-code classification |
-| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update` coordinates lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update`/`uninstall` coordinate lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
 | `run` | `src/run.rs` | Supervision loop; `RunOutcome`, public `run_with_shutdown()`, pub(crate) `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
 | `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
-| `startup/*` | `src/startup/*.rs` | Startup install/instructions/restart split by ownership (façade `src/startup.rs` re-exports `crate::startup::X`): method identity/paths/detection, bounded child execution, systemd unit/install/restart, launchd plist/install/restart, shell quoting + cron block/install, `StartupState` detection, errors/atomic writes/privilege/install dispatch/instructions/restart coordination |
+| `startup/*` | `src/startup/*.rs` | Startup install/teardown/instructions/restart split by ownership (façade `src/startup.rs` re-exports `crate::startup::X`): method identity/paths/detection, bounded child execution, systemd unit/install/restart/uninstall, launchd plist/install/restart/uninstall, shell quoting + cron block/install/uninstall, `StartupState` detection, errors/atomic writes/privilege/install dispatch/instructions/restart coordination |
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism (binds identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after preparation, manager-aware restart via `startup_state`, `UpdatedButRestartFailed`); transport/staging/replacement live in `gregg-update` |
-| `service` | `src/service/` | Windows-only `ServiceManager`; native dispatcher entry |
+| `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent discovery, pure plan shared by `--dry-run`/execution, preflight before teardown, startup-owner teardown + SCM `unregister`, direct control-stop with uncertain-stop blocking, default config preservation with opt-in `--purge` |
+| `service` | `src/service/` | Windows-only `ServiceManager` (`start`/`stop`/`restart`/`is_active`/`unregister`); native dispatcher entry; fake `ScmAdapter` tests run on every platform |
 
 ## Runtime ownership
 

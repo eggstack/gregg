@@ -303,6 +303,128 @@ pub(crate) fn restart_systemd(exe: &Path) -> Result<(), InstallError> {
         }
     }
 }
+// ── systemd uninstall (Plan 112) ────────────────────────────────────────────
+
+/// One teardown step of the canonical Gregg systemd uninstall, in
+/// execution order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemdUninstallStep {
+    /// `systemctl stop greggd`.
+    Stop,
+    /// `systemctl disable greggd`.
+    Disable,
+    /// Remove the canonical unit file.
+    RemoveUnit,
+    /// `systemctl daemon-reload`.
+    DaemonReload,
+}
+
+/// Pure helper: ordered systemd teardown steps for injected discovery.
+///
+/// `unit_exists` mirrors the canonical unit path; `active` mirrors the
+/// manager's `greggd` state. Missing/stopped/disabled state yields no
+/// steps (idempotent success, not an error). Only the canonical Gregg
+/// unit/service identity is ever addressed.
+#[must_use]
+pub fn systemd_uninstall_steps(unit_exists: bool, active: bool) -> Vec<SystemdUninstallStep> {
+    use SystemdUninstallStep::{DaemonReload, Disable, RemoveUnit, Stop};
+    if !unit_exists && !active {
+        return Vec::new();
+    }
+    let mut steps = Vec::with_capacity(4);
+    if active {
+        steps.push(Stop);
+    }
+    steps.push(Disable);
+    if unit_exists {
+        steps.push(RemoveUnit);
+        steps.push(DaemonReload);
+    }
+    steps
+}
+
+/// Remove Gregg systemd integration: stop/disable only `greggd`, remove
+/// the canonical unit, reload systemd.
+///
+/// Missing/stopped/disabled state is idempotent success. Genuine manager
+/// failures and permission denials surface with the exact elevated
+/// `sudo <exe> uninstall` rerun hint. The `greggd` system account is
+/// intentionally left in place.
+pub fn uninstall_systemd(exe: &Path) -> Result<(), InstallError> {
+    let unit_path = standard_systemd_unit_path();
+    let unit_exists = unit_path.exists();
+    let active = if unit_exists || is_systemd_environment() {
+        systemd_is_active()
+    } else {
+        false
+    };
+    let steps = systemd_uninstall_steps(unit_exists, active);
+    if steps.is_empty() {
+        return Ok(());
+    }
+    for step in steps {
+        match step {
+            SystemdUninstallStep::Stop => {
+                let args = ["stop", "greggd"];
+                run_systemctl(&args).map_err(|e| systemd_manager_error_for(exe, &args, e))?;
+            }
+            SystemdUninstallStep::Disable => {
+                let args = ["disable", "greggd"];
+                run_systemctl(&args).map_err(|e| systemd_manager_error_for(exe, &args, e))?;
+            }
+            SystemdUninstallStep::RemoveUnit => {
+                match fs::remove_file(&unit_path) {
+                    Ok(()) => {}
+                    // Raced with another uninstall; removal is the goal.
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                        return Err(InstallError::Permission {
+                            message: format!(
+                                "permission denied removing {}: rerun as root: sudo {} uninstall",
+                                unit_path.display(),
+                                exe.display()
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(InstallError::Io {
+                            path: unit_path.clone(),
+                            source: e,
+                        });
+                    }
+                }
+            }
+            SystemdUninstallStep::DaemonReload => {
+                let args = ["daemon-reload"];
+                run_systemctl(&args).map_err(|e| systemd_manager_error_for(exe, &args, e))?;
+            }
+        }
+    }
+    println!("greggd systemd integration removed");
+    Ok(())
+}
+
+/// `systemd_manager_error` variant whose elevated hint names `uninstall`
+/// instead of `startup install`.
+fn systemd_manager_error_for(exe: &Path, args: &[&str], error: io::Error) -> InstallError {
+    if error.kind() == io::ErrorKind::PermissionDenied
+        || manager_error_is_permission(&error.to_string())
+    {
+        InstallError::Permission {
+            message: format!(
+                "systemctl {} was denied; rerun as root: sudo {} uninstall",
+                args.join(" "),
+                exe.display()
+            ),
+        }
+    } else {
+        InstallError::Io {
+            path: PathBuf::from(format!("systemctl {}", args.join(" "))),
+            source: error,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,5 +453,36 @@ mod tests {
                 "embedded systemd unit must stay synchronized with packaging/systemd/greggd.service"
             );
         }
+    }
+
+    #[test]
+    fn systemd_uninstall_orders_stop_disable_remove_reload() {
+        use SystemdUninstallStep::{DaemonReload, Disable, RemoveUnit, Stop};
+        assert_eq!(
+            systemd_uninstall_steps(true, true),
+            vec![Stop, Disable, RemoveUnit, DaemonReload]
+        );
+    }
+
+    #[test]
+    fn systemd_uninstall_skips_stop_when_inactive() {
+        use SystemdUninstallStep::{DaemonReload, Disable, RemoveUnit};
+        assert_eq!(
+            systemd_uninstall_steps(true, false),
+            vec![Disable, RemoveUnit, DaemonReload]
+        );
+    }
+
+    #[test]
+    fn systemd_uninstall_missing_state_is_idempotent_noop() {
+        assert!(systemd_uninstall_steps(false, false).is_empty());
+    }
+
+    #[test]
+    fn systemd_uninstall_active_without_unit_still_stops_and_disables() {
+        use SystemdUninstallStep::{Disable, Stop};
+        // A manager-reported active service without the canonical file
+        // still gets stop/disable; there is nothing to remove or reload.
+        assert_eq!(systemd_uninstall_steps(false, true), vec![Stop, Disable]);
     }
 }

@@ -93,6 +93,12 @@ fn main() {
                 } else if let Some(ee) = e.downcast_ref::<eggpool_endpoint::EggpoolEndpointError>()
                 {
                     cli::ExitCode::from(ee)
+                } else if let Some(ue) = e.downcast_ref::<gregg::uninstall::UninstallError>() {
+                    // The client has no permission-specific exit; uninstall
+                    // permission failures surface as operational errors with
+                    // the exact elevated rerun already in the message.
+                    let _ = ue;
+                    cli::ExitCode::OperationError
                 } else {
                     cli::ExitCode::OperationError
                 };

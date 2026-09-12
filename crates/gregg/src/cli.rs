@@ -162,6 +162,33 @@ pub enum Command {
     /// internally; rerun with `sudo gregg update` when the install location
     /// requires it (e.g., `/usr/local/bin`).
     Update,
+    /// Uninstall the gregg client binary.
+    ///
+    /// Removes only the exact invoked executable; a sibling `greggd`
+    /// binary sharing the install directory is never touched, and install
+    /// directories are never removed recursively. Configuration is
+    /// preserved by default; `--purge` additionally removes the resolved
+    /// client config file. `--dry-run` prints the exact resources that
+    /// would be removed without mutating anything. There is no interactive
+    /// prompt; invoking `uninstall` is the explicit destructive action.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg uninstall --dry-run
+    /// gregg uninstall
+    /// gregg uninstall --purge
+    /// ```
+    Uninstall {
+        /// Print the exact resources that would be removed without
+        /// stopping, mutating, or deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Also remove the resolved client config file (destructive).
+        /// Without this flag configuration is preserved.
+        #[arg(long)]
+        purge: bool,
+    },
     /// Manage the optional `EggPool` statistics endpoint.
     Eggpool {
         #[command(subcommand)]
@@ -275,6 +302,7 @@ pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn st
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
         Command::Update => cmd_update(),
+        Command::Uninstall { dry_run, purge } => cmd_uninstall(store, *dry_run, *purge),
         Command::Eggpool { command } => dispatch_eggpool(command, store),
     }
 }
@@ -680,6 +708,34 @@ fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+fn cmd_uninstall(
+    store: &ConfigStore,
+    dry_run: bool,
+    purge: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let plan = crate::uninstall::plan_uninstall(store.path(), purge)?;
+    if dry_run {
+        println!("{}", plan.render());
+        return Ok(());
+    }
+    match crate::uninstall::execute_plan(&plan, false) {
+        Ok(()) => {
+            if plan.cargo.is_some() {
+                println!("uninstalled via Cargo");
+            } else {
+                println!("gregg uninstalled");
+                if purge {
+                    println!("configuration purged");
+                } else {
+                    println!("configuration preserved");
+                }
+            }
+            Ok(())
+        }
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
 /// Resolve the editor to use, checking $VISUAL, $EDITOR, then fallbacks.
 ///
 /// On Unix, fallbacks are `hx`, `vim`, `vi` found via `PATH`.
@@ -976,6 +1032,26 @@ mod tests {
     fn cli_parses_edit() {
         let cli = Cli::try_parse_from(["gregg", "edit"]).unwrap();
         assert!(matches!(cli.command.unwrap(), Command::Edit));
+    }
+
+    #[test]
+    fn cli_parses_uninstall_with_dry_run_and_purge() {
+        let cli = Cli::try_parse_from(["gregg", "uninstall"]).unwrap();
+        assert!(matches!(
+            cli.command.unwrap(),
+            Command::Uninstall {
+                dry_run: false,
+                purge: false
+            }
+        ));
+        let cli = Cli::try_parse_from(["gregg", "uninstall", "--dry-run", "--purge"]).unwrap();
+        assert!(matches!(
+            cli.command.unwrap(),
+            Command::Uninstall {
+                dry_run: true,
+                purge: true
+            }
+        ));
     }
 
     #[test]

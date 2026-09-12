@@ -106,10 +106,13 @@ jobs:
       - name: Build greggd release
         run: cargo build --release -p greggd
 
+      - name: Build gregg release (component-safety uninstall proof)
+        run: cargo build --release -p gregg
+
       - name: Windows SCM lifecycle smoke
         shell: pwsh
         timeout-minutes: 10
-        run: ./scripts/smoke-windows.ps1 -ExePath ./target/release/greggd.exe
+        run: ./scripts/smoke-windows.ps1 -ExePath ./target/release/greggd.exe -GreggExePath ./target/release/gregg.exe
 
   msrv:
     name: MSRV (Rust 1.75)

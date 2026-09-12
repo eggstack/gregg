@@ -132,6 +132,13 @@ Debian/Ubuntu). Do not present a source-only release tag as an available
 installer asset. Cargo remains the fallback for source-only hosts
 (`armv7l`/unknown).
 
+Rerunning an installer at the same scope replaces that scope's component
+in place (install vs update is reported; foreign destinations are never
+overwritten). `gregg update` / `greggd update` upgrade the exact invoked
+binary; `gregg uninstall` / `greggd uninstall` (`--dry-run`, `--purge`)
+remove only the exact invoked binary plus owned startup integration,
+preserving config by default.
+
 `install.sh`/`install.ps1` are binary-first: they map `uname -s`/`uname -m`
 (or Windows arch) to the contract target, download
 `https://github.com/eggstack/gregg/releases/latest/download/<asset>` (or

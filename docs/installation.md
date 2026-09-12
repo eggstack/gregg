@@ -38,9 +38,18 @@ How it works:
   and warns when the destination is not on `PATH` (add
   `export PATH="$HOME/.local/bin:$PATH"` to your shell profile). It never
   edits shell rc files and never silently invokes `sudo`.
+- Rerunning at the same scope replaces that scope's component in place:
+  output distinguishes a first install from an identified existing-Gregg
+  replacement (showing existing and candidate versions). A destination that
+  does not identify via its stable `version` command is never overwritten;
+  the installer fails with an actionable diagnostic instead. The installer
+  never searches `PATH` or crosses privilege boundaries.
 - When no matching asset exists (for example `armv7l` or an unknown
-  OS/arch) it falls back to `cargo install --locked` (with
-  `--version "=X.Y.Z"` when pinned) if Cargo is available.
+  OS/arch) it builds via `cargo install --locked` (with
+  `--version "=X.Y.Z"` when pinned) into a private staging root, verifies
+  the staged binary exactly as a download, then copies only the executable
+  to the destination. Staging is removed afterwards, so no Cargo ownership
+  metadata persists beside the bootstrap binary.
 - After a verified `greggd` install it delegates startup to
   `greggd startup install` (see [daemon](daemon.md)). A non-root install on
   a systemd/launchd host prints the exact elevated
@@ -49,6 +58,22 @@ How it works:
 
 Without a component argument, a terminal-attached run shows a small
 selector; a piped run without a component prints usage and exits nonzero.
+
+## Upgrades and uninstall
+
+- Bootstrap rerun: `install.sh greggd` / `install.ps1 -Component Greggd` at
+  the same scope reinstalls that scope's component (same replacement rules
+  as above; pinned versions still honor the requested tag).
+- Installed-binary upgrade: `gregg update` updates the exact invoked client
+  binary; `greggd update` updates the exact invoked daemon binary plus a
+  manager-aware restart. Do not route `update` through the bootstrap
+  scripts.
+- Removal: `gregg uninstall [--dry-run] [--purge]` and
+  `greggd uninstall [--dry-run] [--purge]` remove only the exact invoked
+  binary plus (for the daemon) its Gregg-owned startup integration.
+  Configuration is preserved by default; `--purge` is destructive. There is
+  no `uninstall --all`: run both commands explicitly. See
+  [client](client.md) and [daemon](daemon.md).
 
 ## Windows (PowerShell)
 
@@ -67,7 +92,9 @@ matching `.exe` plus `.sha256` to a private temp dir, verifies with
 `Get-FileHash -Algorithm SHA256` and a candidate `version` check, then
 installs. An existing `%ProgramData%\gregg\greggd.toml` is preserved. When
 Administrator, it registers the `greggd` service (`NT AUTHORITY\LocalService`,
-`auto` start, restart-on-failure) and starts it. Windows ARM64 is
+`auto` start, restart-on-failure) and starts it. Reruns classify the
+destination first (absent/replace/foreign) and report installs vs updates;
+the Cargo fallback stages privately as on Unix. Windows ARM64 is
 source-build only and uses the Cargo fallback when available.
 
 ## Direct download (no bootstrap)

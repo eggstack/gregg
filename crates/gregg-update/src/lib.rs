@@ -36,6 +36,7 @@ pub mod error;
 pub mod exec;
 pub mod stage;
 pub mod target;
+pub mod uninstall;
 pub mod verify;
 pub mod version;
 
@@ -45,6 +46,10 @@ pub use stage::StagedCandidate;
 pub use target::{
     asset_name, detect_target, detect_target_for, github_urls, is_supported_binary_target,
     GITHUB_REPO, SUPPORTED_TARGETS,
+};
+pub use uninstall::{
+    candidate_cargo_root_for_exe, cargo_list_contains_package, detect_cargo_ownership,
+    preflight_uninstall_writable, self_delete_current_exe, CargoOwnership,
 };
 pub use version::{compare_versions, is_update_available, parse_stable_version};
 

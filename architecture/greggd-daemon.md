@@ -20,7 +20,7 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
 | `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
@@ -32,9 +32,10 @@ available through the Windows-only service path.
 | `collector/rate` | `src/collector/rate.rs` | Monotonic counter baselines, reset/hotplug handling, checked rate arithmetic |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
-| `startup/method` … `startup/install` | `src/startup/*.rs` | Startup installation and restart split by ownership (Plan 105, behavior-preserving): method identity/paths/detection (`method`), bounded child execution (`process`), systemd unit/install/restart (`systemd`), launchd plist/install/restart (`launchd`), shell quoting + cron block/install (`cron`), `StartupState` detection (`state`), errors/atomic writes/privilege/install dispatch/instructions/restart coordination (`install`). `src/startup.rs` is a façade re-exporting the historical `crate::startup::X` paths |
+| `startup/method` … `startup/install` | `src/startup/*.rs` | Startup installation, teardown, and restart split by ownership (Plan 105, behavior-preserving): method identity/paths/detection (`method`), bounded child execution (`process`), systemd unit/install/restart/uninstall (`systemd`), launchd plist/install/restart/uninstall (`launchd`), shell quoting + cron block/install/uninstall (`cron`), `StartupState` detection (`state`), errors/atomic writes/privilege/install dispatch/instructions/restart coordination (`install`). `src/startup.rs` is a façade re-exporting the historical `crate::startup::X` paths |
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism: binds daemon identity, prepares the candidate via `prepare_candidate`, quiesces a running Windows SCM service only after full preparation, replaces, then restarts through detected-manager policy (`restart_with_state`) with `UpdatedButRestartFailed` partial-success; preserves the Plan 102 prepare-before-quiesce transaction rule |
+| `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent read-only discovery per artifact, pure `plan_from_discovery` shared by `--dry-run` and execution, preflight before teardown, manager teardown via the startup owners + SCM `unregister`, direct control-stop with uncertain-stop blocking deletion, config preserved by default with `--purge` removing only resolved files |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait |
 | `service/windows` | `src/service/windows.rs` | Windows: SCM integration |
 
@@ -203,6 +204,7 @@ configuration error and is neither written nor followed by process management.
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Manager-aware restart (Windows SCM, systemd `systemctl restart greggd`, launchd `launchctl kickstart -k`, otherwise `stop` + detached `run`); permission failures print exact elevated command and return `PermissionDenied` without competing fallback; factored for `update` reuse (`startup_state()`) |
 | `update` | Daemon lifecycle coordination over the shared `gregg-update` mechanism (version/target/asset/download/checksum/staging/replacement): exact `vX.Y.Z` asset + `.sha256`, staged temp, candidate `version` check, Cargo `=X.Y.Z` fallback only on 404; fully prepares before quiescing a running Windows SCM service; preserves config/registration and restarts only when running/managed, leaves stopped services stopped; `UpdatedButRestartFailed` partial-success with exact restart command and nonzero exit |
+| `uninstall [--dry-run] [--purge]` | Remove only the exact invoked daemon executable plus independently discovered Gregg-owned startup integration (systemd stop/disable/remove/reload, launchd bootout/remove, managed cron block only, SCM stop/wait/delete-only-`greggd` via `unregister`); preflights permissions first, never `sudo`s internally, blocks deletion on uncertain direct stop, preserves config by default, `--purge` removes only resolved config/data files, Cargo-owned installs delegate (Unix) or print the handoff (Windows) |
 | `host` | Atomically mutate bind host; applies on next start |
 | `port` | Atomically mutate port; applies on next start |
 | `version` | Print compile-time daemon version |
@@ -267,8 +269,8 @@ entry.
 
 ### Windows service management
 
-The Windows-only `ServiceManager` trait provides `start`, `stop`, `restart`, and
-`is_active`:
+The Windows-only `ServiceManager` trait provides `start`, `stop`, `restart`,
+`is_active`, and `unregister` (stop-when-running, wait stopped, delete only the `greggd` registration; missing registration is idempotent):
 
 - **Windows SCM** (`windows.rs`) — uses the `windows-service` dispatcher and
   generated `ServiceMain` for the daemon entry, a one-shot control signal for
@@ -278,7 +280,9 @@ The existing `windows-2022` CI job builds the release daemon and runs
 `scripts/smoke-windows.ps1` as the operational SCM proof. The bounded smoke
 uses an occupied ephemeral loopback port for bind-failure verification and
 checks service creation, `LocalService` configuration, custom config-path
-handoff, post-bind readiness, restart/recovery, reinstall, and cleanup.
+handoff, post-bind readiness, restart/recovery, reinstall, install.ps1 helper
+classification, component-safe CLI uninstall (sibling `gregg.exe` survives),
+and cleanup.
 
 ## Collector architecture
 

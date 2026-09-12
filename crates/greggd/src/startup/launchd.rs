@@ -287,6 +287,103 @@ pub(crate) fn restart_launchd(exe: &Path) -> Result<(), InstallError> {
         }),
     }
 }
+// ── launchd uninstall (Plan 112) ────────────────────────────────────────────
+
+/// One teardown step of the canonical Gregg launchd uninstall, in
+/// execution order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchdUninstallStep {
+    /// `launchctl bootout system/<label>` when the job is loaded.
+    Bootout,
+    /// Remove the canonical plist file.
+    RemovePlist,
+}
+
+/// Pure helper: ordered launchd teardown steps for injected discovery.
+///
+/// `plist_exists` mirrors the canonical plist path; `loaded` mirrors the
+/// Gregg launchd label state. Missing/unloaded state yields no steps
+/// (idempotent success, not an error). Only the canonical Gregg
+/// label/plist is ever addressed.
+#[must_use]
+pub fn launchd_uninstall_steps(plist_exists: bool, loaded: bool) -> Vec<LaunchdUninstallStep> {
+    let mut steps = Vec::with_capacity(2);
+    if loaded {
+        steps.push(LaunchdUninstallStep::Bootout);
+    }
+    if plist_exists {
+        steps.push(LaunchdUninstallStep::RemovePlist);
+    }
+    steps
+}
+
+/// Remove Gregg launchd integration: boot out the Gregg label when
+/// loaded, then remove only the canonical Gregg plist.
+///
+/// Missing/unloaded state is idempotent success. Daemon configuration
+/// and logs are preserved here; `--purge` removal of those files is
+/// owned by the uninstall command, not this primitive.
+pub fn uninstall_launchd(exe: &Path) -> Result<(), InstallError> {
+    let plist_path = standard_launchd_plist_path();
+    let plist_exists = plist_path.exists();
+    let loaded = launchd_is_loaded();
+    let steps = launchd_uninstall_steps(plist_exists, loaded);
+    if steps.is_empty() {
+        return Ok(());
+    }
+    for step in steps {
+        match step {
+            LaunchdUninstallStep::Bootout => {
+                let label = launchd_label();
+                let target = format!("system/{label}");
+                let args = ["bootout", target.as_str()];
+                let output = run_bounded_command("launchctl", &args, MANAGER_COMMAND_TIMEOUT)
+                    .map_err(|source| InstallError::Io {
+                        path: PathBuf::from("launchctl bootout"),
+                        source,
+                    })?;
+                if !output.status.success() {
+                    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    if manager_error_is_permission(&detail) {
+                        return Err(InstallError::Permission {
+                            message: format!(
+                                "launchctl bootout failed: {detail}; rerun as root: sudo {} uninstall",
+                                exe.display()
+                            ),
+                        });
+                    }
+                    return Err(InstallError::Other(format!(
+                        "launchctl bootout failed with status {:?}: {detail}",
+                        output.status.code()
+                    )));
+                }
+            }
+            LaunchdUninstallStep::RemovePlist => match fs::remove_file(&plist_path) {
+                Ok(()) => {}
+                // Raced with another uninstall; removal is the goal.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                    return Err(InstallError::Permission {
+                        message: format!(
+                            "permission denied removing {}: rerun as root: sudo {} uninstall",
+                            plist_path.display(),
+                            exe.display()
+                        ),
+                    });
+                }
+                Err(e) => {
+                    return Err(InstallError::Io {
+                        path: plist_path.clone(),
+                        source: e,
+                    });
+                }
+            },
+        }
+    }
+    println!("greggd launchd integration removed");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,5 +410,29 @@ mod tests {
                 "embedded launchd plist must stay synchronized with packaging/launchd/com.eggstack.greggd.plist"
             );
         }
+    }
+
+    #[test]
+    fn launchd_uninstall_orders_bootout_before_remove() {
+        use LaunchdUninstallStep::{Bootout, RemovePlist};
+        assert_eq!(
+            launchd_uninstall_steps(true, true),
+            vec![Bootout, RemovePlist]
+        );
+    }
+
+    #[test]
+    fn launchd_uninstall_missing_state_is_idempotent_noop() {
+        assert!(launchd_uninstall_steps(false, false).is_empty());
+        // Unloaded but present still removes the stale plist; loaded but
+        // missing still boots out the stale job.
+        assert_eq!(
+            launchd_uninstall_steps(true, false),
+            vec![LaunchdUninstallStep::RemovePlist]
+        );
+        assert_eq!(
+            launchd_uninstall_steps(false, true),
+            vec![LaunchdUninstallStep::Bootout]
+        );
     }
 }

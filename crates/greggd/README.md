@@ -57,7 +57,18 @@ greggd startup instructions                   # read-only, prints exact commands
 greggd startup instructions --method cron
 greggd restart                                # manager-aware restart (systemd / launchd / SCM / direct)
 greggd update                                 # binary-first update; restarts if running, leaves stopped services stopped
+greggd uninstall --dry-run                    # preview removal (mutates nothing)
+greggd uninstall                              # remove this binary + Gregg startup integration (config preserved)
+greggd uninstall --purge                      # also remove the daemon config file (destructive)
 ```
+
+`greggd uninstall` removes only the exact invoked executable plus the
+Gregg-owned startup integration actually present (systemd unit, launchd
+plist, managed cron block, or the `greggd` SCM registration, each
+discovered independently). Configuration is preserved by default;
+`--purge` removes the resolved daemon config (and the macOS daemon log).
+Permissions are preflighted before teardown; an uncertain direct stop
+blocks deletion.
 
 `startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and factored for `update` reuse (systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, Windows via SCM, otherwise `stop` + detached `run`).
 
@@ -79,7 +90,7 @@ greggd status
 greggd version
 ```
 
-On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install/uninstall via the provided PowerShell scripts in `packaging/`. For startup, the PowerShell installer remains the canonical SCM registration; `startup install` on Windows reports service state and `startup instructions` prints SCM commands.
+On Windows, the service entry point is `greggd service` (internal, used by the SCM). Install via the provided PowerShell scripts in `packaging/`; uninstall via `greggd uninstall` (the legacy `packaging/uninstall-windows.ps1` is a thin wrapper around it and no longer deletes directories recursively). For startup, the PowerShell installer remains the canonical SCM registration; `startup install` on Windows reports service state and `startup instructions` prints SCM commands.
 
 ## Configuration
 

@@ -21,11 +21,17 @@ pub mod sampler;
 /// HTTP server for the daemon status and health endpoints.
 pub mod server;
 /// Windows Service Control Manager integration.
-#[cfg(target_os = "windows")]
+///
+/// Compiled on Windows and, for unit tests, on every platform so the
+/// injectable SCM fake-adapter tests run deterministically without a
+/// Windows host. Production SCM types stay Windows-only inside.
+#[cfg(any(target_os = "windows", test))]
 pub mod service;
 /// Startup installation and restart helpers.
 pub mod startup;
 /// Read-only local diagnostic status composing config, version, health, and startup state.
 pub mod status;
+/// Component-safe uninstall.
+pub mod uninstall;
 /// Binary-first self-update.
 pub mod update;

@@ -7,6 +7,27 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Installer upgrade semantics and cross-platform uninstall** (Plan 112):
+  rerunning `packaging/install.sh` / `packaging/install.ps1` at the same
+  scope now classifies the destination (`absent` / `replace` / `foreign`)
+  via the existing binary's `version` command, reports first install vs
+  identified replacement with versions, and refuses to overwrite a foreign
+  executable instead of silently treating it as an upgrade. Bootstrap Cargo
+  fallback builds into a private staging root and copies only the verified
+  binary to the destination, leaving no Cargo ownership metadata behind.
+  New `gregg uninstall [--dry-run] [--purge]` and
+  `greggd uninstall [--dry-run] [--purge]` remove only the exact invoked
+  binary plus the Gregg-owned startup integration actually present
+  (systemd unit, launchd plist, managed cron block, or `greggd` SCM
+  registration, each discovered independently), preserve configuration by
+  default, and never prompt, escalate, recurse into directories, or keep an
+  install receipt. Cargo-owned installs delegate on Unix and print the
+  exact `cargo uninstall` handoff on Windows. The legacy
+  `packaging/uninstall-windows.ps1` is now a thin `greggd uninstall`
+  wrapper with no recursive directory deletion.
+
 ### Fixed
 
 - **Daemon config readability** (`greggd`): system configs such as

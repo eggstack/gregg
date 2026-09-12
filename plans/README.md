@@ -62,7 +62,7 @@ documentation after correcting Linux CPUFreq whitespace-list parsing in
 `efb18dc` and `29a2633`; final documentation closure is `fa4b022`.
 Daemon-version transport remains deferred.
 
-Plan 112 is planned and ready for implementation. It codifies the existing
+Plan 112 is complete. It codified the existing
 same-scope installer-rerun behavior as an explicit upgrade contract, stages
 bootstrap Cargo fallbacks so the installer owns the final binary cleanly, and
 adds component-safe `gregg uninstall` / `greggd uninstall` commands with
@@ -179,7 +179,7 @@ excluded.
 | [`109-native-clock-disk-io-and-network-collectors.md`](109-native-clock-disk-io-and-network-collectors.md) | Native CPU clock, disk-I/O, and network collectors | complete; implementation `0028843`; CI `34636802865` green |
 | [`110-tui-clock-disk-io-and-network-integration.md`](110-tui-clock-disk-io-and-network-integration.md) | TUI clock, disk-I/O, and network presentation | complete; implementation `af9b9bd`; CI `34640870291` green |
 | [`111-live-metrics-compatibility-verification-and-docs.md`](111-live-metrics-compatibility-verification-and-docs.md) | Mixed-version/live-metrics verification and final documentation closure | complete; implementation `efb18dc`, `29a2633`; docs `fa4b022`; CI `34644786245` green |
-| [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | planned; ready for implementation |
+| [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | complete; implementation verified with local checks, Ubuntu lifecycle smokes, and native CI (see plan closure record) |
 
 Dependency order:
 

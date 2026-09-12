@@ -107,7 +107,7 @@ candidate `version` check, install to `%ProgramFiles%\Gregg` when Administrator
 (preserving `%ProgramData%\gregg\greggd.toml`, registering the SCM service as
 `NT AUTHORITY\LocalService` with `auto` start and failure-restart) or
 `%LOCALAPPDATA%\Gregg` otherwise, with Cargo fallback for `ARM64`/unknown
-hosts. `install-windows.ps1` remains a compatible local-build wrapper; `install.ps1` is now the single canonical bootstrap PowerShell installer and `startup install` on Windows is state-reporting only (SCM registration stays in the installer).
+hosts. `install-windows.ps1` remains a compatible local-build wrapper; `install.ps1` is now the single canonical bootstrap PowerShell installer and `startup install` on Windows is state-reporting only (SCM registration stays in the installer). `uninstall-windows.ps1` is a thin wrapper around `greggd.exe uninstall` (`-RemoveConfig` maps to `--purge`) and performs no recursive directory deletion, so a sibling `gregg.exe` survives.
 
 ## Startup integration (Plan 100)
 
@@ -244,16 +244,49 @@ The Windows service runs under `NT AUTHORITY\LocalService` with minimal privileg
 
 ## Upgrade
 
-All install scripts are idempotent. Rerunning them will:
+Bootstrap installers are same-scope updaters. Rerunning the same installer
+at the same scope replaces that scope's selected component with the
+requested/latest verified version:
 
-1. Stop the existing service.
-2. Replace the binary.
-3. Preserve the existing configuration file.
-4. Reload/restart the service.
+1. Classify the canonical destination (`absent` / `replace` / `foreign`)
+   via the existing binary's stable `version` command.
+2. First install vs identified-replacement is reported (existing and
+   candidate versions shown when obtainable).
+3. A foreign/unidentifiable destination fails with an actionable diagnostic
+   instead of being overwritten; there is no `--force`.
+4. Replace the binary, preserve the existing configuration file, and
+   reload/restart the service.
+
+The installer never searches `PATH`, home directories, or other scopes, and
+never escalates privileges: a non-root rerun does not replace
+`/usr/local/bin/gregg[d]`. `gregg update` / `greggd update` remain the
+preferred upgrade for an already-installed binary (they resolve the exact
+invoked executable); bootstrap reruns install/reinstall at the selected
+scope.
+
+Cargo fallback (source-only hosts) builds into a private temporary Cargo
+root, verifies the staged binary exactly as a download, then copies only
+the final executable into the bootstrap destination. Staging is removed
+afterwards; no Cargo install metadata persists beside the binary. Direct
+operator `cargo install gregg[d]` remains Cargo-owned.
 
 On Windows, the install script preserves the existing config at `%ProgramData%\gregg\greggd.toml` unless you explicitly provide a different config path.
 
 ## Uninstall
+
+Prefer the component-safe CLI commands, which remove only the exact invoked
+binary plus Gregg-owned startup integration and preserve configuration by
+default (`--purge` is destructive; `--dry-run` previews without mutating):
+
+```bash
+gregg uninstall --dry-run
+gregg uninstall
+sudo greggd uninstall                 # system install (prints the exact elevated rerun when needed)
+sudo greggd uninstall --purge         # also remove the daemon config file
+```
+
+Manual equivalents (if the binary is already gone) address only canonical
+Gregg artifacts -- never a shared install directory recursively:
 
 ### Linux
 
@@ -263,7 +296,7 @@ sudo systemctl disable greggd
 sudo rm /etc/systemd/system/greggd.service
 sudo systemctl daemon-reload
 sudo rm /usr/local/bin/greggd
-sudo rm -rf /etc/gregg
+# config preserved at /etc/gregg/greggd.toml unless removal is intended
 ```
 
 ### macOS
@@ -272,17 +305,17 @@ sudo rm -rf /etc/gregg
 sudo launchctl bootout system/com.eggstack.greggd
 sudo rm /Library/LaunchDaemons/com.eggstack.greggd.plist
 sudo rm /usr/local/bin/greggd
-sudo rm -rf "/Library/Application Support/gregg"
+# config preserved at "/Library/Application Support/gregg/greggd.toml" unless removal is intended
 ```
 
 ### Windows
 
 ```powershell
-# Stop and remove service (preserves config by default)
+# Thin wrapper around the installed CLI (preserves config by default)
 .\packaging\uninstall-windows.ps1
 
-# Stop and remove service AND config
-.\packaging\uninstall-windows.ps1 -RemoveConfig
+# CLI directly, with config purge
+& "$env:ProgramFiles\Gregg\greggd.exe" uninstall --purge
 ```
 
 ## Security Notes

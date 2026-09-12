@@ -82,6 +82,9 @@ pub(crate) trait ScmAdapter: Send + Sync {
 
     /// Request the SCM to stop the service.
     fn stop_service(&self) -> Result<(), ServiceError>;
+
+    /// Delete only this service's SCM registration.
+    fn delete_service(&self) -> Result<(), ServiceError>;
 }
 
 /// Wait for the service to reach the target state, polling periodically.
@@ -142,14 +145,20 @@ impl ScmAdapter for NativeScmAdapter {
             source: std::io::Error::other(e),
         })?;
 
-        let service = manager
-            .open_service(
-                &self.service_name,
-                windows_service::service::ServiceAccess::QUERY_STATUS,
-            )
-            .map_err(|e| ServiceError::StateQueryFailed {
-                source: std::io::Error::other(e),
-            })?;
+        let service = match manager.open_service(
+            &self.service_name,
+            windows_service::service::ServiceAccess::QUERY_STATUS,
+        ) {
+            Ok(service) => service,
+            // A missing registration is a stable state, not a query
+            // failure: stop/uninstall treat it as idempotent.
+            Err(e) if is_missing_service(&e) => return Ok(ServiceState::NotInstalled),
+            Err(e) => {
+                return Err(ServiceError::StateQueryFailed {
+                    source: std::io::Error::other(e),
+                });
+            }
+        };
 
         let status = service
             .query_status()
@@ -214,6 +223,75 @@ impl ScmAdapter for NativeScmAdapter {
 
         Ok(())
     }
+
+    fn delete_service(&self) -> Result<(), ServiceError> {
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|e| ServiceError::ExecFailed {
+            command: "ServiceManager::connect".into(),
+            source: std::io::Error::other(e),
+        })?;
+
+        let service = match manager.open_service(
+            &self.service_name,
+            windows_service::service::ServiceAccess::DELETE,
+        ) {
+            Ok(service) => service,
+            // Not registered: the uninstall goal is already met.
+            Err(e) if is_missing_service(&e) => return Ok(()),
+            Err(e) if is_access_denied_error(&e) => return Err(ServiceError::AccessDenied),
+            Err(e) => {
+                return Err(ServiceError::ExecFailed {
+                    command: format!("open service `{}`", self.service_name),
+                    source: std::io::Error::other(e),
+                });
+            }
+        };
+
+        match service.delete() {
+            Ok(()) => Ok(()),
+            // Already fully removed, or marked for delete pending stop:
+            // either way there is no live registration left to own.
+            Err(e) if is_missing_service(&e) || is_marked_for_delete(&e) => Ok(()),
+            Err(e) if is_access_denied_error(&e) => Err(ServiceError::AccessDenied),
+            Err(e) => Err(ServiceError::ExecFailed {
+                command: format!("delete service `{}`", self.service_name),
+                source: std::io::Error::other(e),
+            }),
+        }
+    }
+}
+
+/// Win32 `ERROR_SERVICE_DOES_NOT_EXIST` (1060): no such SCM registration.
+#[cfg(target_os = "windows")]
+fn scm_raw_code(error: &windows_service::Error) -> Option<i32> {
+    match error {
+        windows_service::Error::Winapi(io) => io.raw_os_error(),
+        _ => None,
+    }
+}
+
+/// Classify a `windows-service` error as a missing registration (1060).
+#[cfg(target_os = "windows")]
+fn is_missing_service(error: &windows_service::Error) -> bool {
+    scm_raw_code(error) == Some(1060)
+}
+
+/// Classify a `windows-service` error as access denied (5).
+#[cfg(target_os = "windows")]
+fn is_access_denied_error(error: &windows_service::Error) -> bool {
+    if scm_raw_code(error) == Some(5) {
+        return true;
+    }
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("access is denied") || message.contains("access denied")
+}
+
+/// Classify a `windows-service` error as already marked for delete (1072).
+#[cfg(target_os = "windows")]
+fn is_marked_for_delete(error: &windows_service::Error) -> bool {
+    scm_raw_code(error) == Some(1072)
 }
 
 /// Map `windows-service` `ServiceState` to our `ServiceState`.
@@ -478,6 +556,24 @@ impl ServiceManager for WindowsServiceManager {
         let state = self.adapter.query_state()?;
         Ok(state.is_active())
     }
+
+    fn unregister(&self) -> Result<(), ServiceError> {
+        // Resolve first so a missing registration is idempotent without
+        // touching the SCM further.
+        match self.adapter.query_state()? {
+            ServiceState::NotInstalled => Ok(()),
+            ServiceState::Stopped => self.adapter.delete_service(),
+            ServiceState::Running | ServiceState::StartPending => {
+                self.adapter.stop_service()?;
+                wait_for_state(&*self.adapter, ServiceState::Stopped)?;
+                self.adapter.delete_service()
+            }
+            ServiceState::StopPending => {
+                wait_for_state(&*self.adapter, ServiceState::Stopped)?;
+                self.adapter.delete_service()
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -490,7 +586,11 @@ mod tests {
         state: Mutex<ServiceState>,
         start_error: Mutex<Option<ServiceError>>,
         stop_error: Mutex<Option<ServiceError>>,
+        delete_error: Mutex<Option<ServiceError>>,
         query_error: Mutex<Option<ServiceError>>,
+        /// When true, stop transitions straight to `Stopped` so
+        /// unregister tests need no 30s timeout wait.
+        immediate_stop: bool,
         calls: Mutex<Vec<&'static str>>,
     }
 
@@ -500,7 +600,9 @@ mod tests {
                 state: Mutex::new(initial),
                 start_error: Mutex::new(None),
                 stop_error: Mutex::new(None),
+                delete_error: Mutex::new(None),
                 query_error: Mutex::new(None),
+                immediate_stop: false,
                 calls: Mutex::new(Vec::new()),
             })
         }
@@ -533,7 +635,20 @@ mod tests {
             if let Some(err) = self.stop_error.lock().unwrap().take() {
                 return Err(err);
             }
-            *self.state.lock().unwrap() = ServiceState::StopPending;
+            *self.state.lock().unwrap() = if self.immediate_stop {
+                ServiceState::Stopped
+            } else {
+                ServiceState::StopPending
+            };
+            Ok(())
+        }
+
+        fn delete_service(&self) -> Result<(), ServiceError> {
+            self.calls.lock().unwrap().push("delete");
+            if let Some(err) = self.delete_error.lock().unwrap().take() {
+                return Err(err);
+            }
+            *self.state.lock().unwrap() = ServiceState::NotInstalled;
             Ok(())
         }
     }
@@ -550,6 +665,9 @@ mod tests {
         }
         fn stop_service(&self) -> Result<(), ServiceError> {
             self.0.stop_service()
+        }
+        fn delete_service(&self) -> Result<(), ServiceError> {
+            self.0.delete_service()
         }
     }
 
@@ -757,6 +875,69 @@ mod tests {
     }
 
     // --- Debug test ---
+
+    #[test]
+    fn unregister_when_not_installed_is_idempotent() {
+        let mock = MockScmAdapter::new(ServiceState::NotInstalled);
+        let (mgr, mock_ref) = manager_with_mock(mock);
+        assert!(mgr.unregister().is_ok());
+        assert_eq!(mock_ref.calls(), vec!["query"]);
+    }
+
+    #[test]
+    fn unregister_when_stopped_deletes_without_stopping() {
+        let mock = MockScmAdapter::new(ServiceState::Stopped);
+        let (mgr, mock_ref) = manager_with_mock(mock);
+        assert!(mgr.unregister().is_ok());
+        assert_eq!(mock_ref.calls(), vec!["query", "delete"]);
+        assert_eq!(*mock_ref.state.lock().unwrap(), ServiceState::NotInstalled);
+    }
+
+    #[test]
+    fn unregister_when_running_stops_waits_then_deletes() {
+        let mut mock = MockScmAdapter::new(ServiceState::Running);
+        Arc::get_mut(&mut mock)
+            .expect("single owner")
+            .immediate_stop = true;
+        let (mgr, mock_ref) = manager_with_mock(mock);
+        assert!(mgr.unregister().is_ok());
+        let calls = mock_ref.calls();
+        assert!(
+            calls.contains(&"stop"),
+            "must stop before delete: {calls:?}"
+        );
+        assert!(calls.contains(&"delete"), "must delete: {calls:?}");
+        assert!(
+            calls.iter().position(|c| *c == "stop") < calls.iter().position(|c| *c == "delete"),
+            "stop must precede delete: {calls:?}"
+        );
+        assert_eq!(*mock_ref.state.lock().unwrap(), ServiceState::NotInstalled);
+    }
+
+    #[test]
+    fn unregister_propagates_access_denied_on_delete() {
+        let mock = MockScmAdapter::new(ServiceState::Stopped);
+        mock.delete_error
+            .lock()
+            .unwrap()
+            .replace(ServiceError::AccessDenied);
+        let (mgr, _mock_ref) = manager_with_mock(mock);
+        let err = mgr.unregister().unwrap_err();
+        assert!(matches!(err, ServiceError::AccessDenied));
+    }
+
+    #[test]
+    fn unregister_propagates_query_error() {
+        let mock = MockScmAdapter::new(ServiceState::Running);
+        mock.query_error
+            .lock()
+            .unwrap()
+            .replace(ServiceError::AccessDenied);
+        let (mgr, mock_ref) = manager_with_mock(mock);
+        let err = mgr.unregister().unwrap_err();
+        assert!(matches!(err, ServiceError::AccessDenied));
+        assert_eq!(mock_ref.calls(), vec!["query"]);
+    }
 
     #[test]
     fn windows_service_manager_debug() {

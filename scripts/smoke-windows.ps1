@@ -18,7 +18,11 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateScript({ Test-Path $_ -PathType Leaf })]
-    [string]$ExePath
+    [string]$ExePath,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateScript({ Test-Path $_ -PathType Leaf })]
+    [string]$GreggExePath
 )
 
 Set-StrictMode -Version Latest
@@ -36,6 +40,8 @@ $ProgramDataDir = Join-Path $env:ProgramData "gregg"
 $ConfigDir = Join-Path $ProgramDataDir "greggd-smoke"
 $ConfigPath = Join-Path $ConfigDir "greggd.toml"
 $InstalledExe = Join-Path $InstallDir "greggd.exe"
+$InstalledGreggExe = Join-Path $InstallDir "gregg.exe"
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 $OccupiedListener = $null
 $OccupiedPort = $null
 
@@ -48,8 +54,16 @@ if (-not $isAdmin) {
 }
 
 $ExePath = (Resolve-Path $ExePath).Path
+if ($GreggExePath) {
+    $GreggExePath = (Resolve-Path $GreggExePath).Path
+}
 Write-Host "=== greggd Windows lifecycle smoke ===" -ForegroundColor Cyan
 Write-Host "Binary: $ExePath"
+if ($GreggExePath) {
+    Write-Host "Client binary: $GreggExePath"
+} else {
+    Write-Host "Client binary: (not provided; component-safety checks will be skipped)"
+}
 Write-Host ""
 
 # ── Helper functions ──────────────────────────────────────────────────────
@@ -287,54 +301,118 @@ if ($reloadedConfig -notmatch "port = $WorkingPort") {
 }
 Write-Host "   Config preserved after reinstall."
 
-# ── Uninstall ──────────────────────────────────────────────────────────────
+# ── Installer helper self-check (Plan 112) ──────────────────────────────
+#
+# Deterministic coverage for the install.ps1 same-scope helpers without
+# network access: parse the real installer file, load only the pure
+# classification functions, and assert absent/replace/foreign behavior
+# with the real built binary as the identified component.
 
-Write-Host "11. Uninstalling (preserving config)..."
-Invoke-Greggd stop --config $ConfigPath
-Wait-ForServiceStatus -Status "Stopped"
-Stop-AndRemoveService
-
-if (Test-Path $InstallDir) {
-    Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
+Write-Host "11. Checking install.ps1 destination classification helpers..."
+$InstallPs1 = Join-Path $RepoRoot "packaging\install.ps1"
+if (-not (Test-Path -LiteralPath $InstallPs1 -PathType Leaf)) {
+    throw "Installer under test missing: $InstallPs1"
 }
-Write-Host "   Service and binary removed."
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($InstallPs1, [ref]$null, [ref]$parseErrors)
+if ($parseErrors -and $parseErrors.Count -gt 0) {
+    throw "install.ps1 has syntax errors: $($parseErrors | Out-String)"
+}
+$wanted = @("Get-ExistingVersion", "Get-DestinationClassification")
+$funcs = $ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $node.Name
+}, $true)
+if ($funcs.Count -ne $wanted.Count) {
+    throw "install.ps1 must define $($wanted -join ', ') (found $($funcs.Count))."
+}
+foreach ($func in $funcs) {
+    Invoke-Expression $func.Extent.Text
+}
+$HelperCheckDir = Join-Path ([System.IO.Path]::GetTempPath()) ("gregg-helper-check-" + [System.IO.Path]::GetRandomFileName())
+New-Item -ItemType Directory -Path $HelperCheckDir -Force | Out-Null
+try {
+    $absentExe = Join-Path $HelperCheckDir "greggd.exe"
+    if ((Get-DestinationClassification -DestPath $absentExe -Program "greggd") -ne "absent") {
+        throw "missing destination must classify as absent"
+    }
+    $knownExe = Join-Path $HelperCheckDir "known-greggd.exe"
+    Copy-Item -Path $ExePath -Destination $knownExe -Force
+    if ((Get-DestinationClassification -DestPath $knownExe -Program "greggd") -ne "replace") {
+        throw "real greggd binary must classify as replace"
+    }
+    $existingVersion = Get-ExistingVersion -DestPath $knownExe
+    if (-not $existingVersion.StartsWith("greggd ")) {
+        throw "existing version must identify the component (got: '$existingVersion')"
+    }
+    $foreignExe = Join-Path $HelperCheckDir "foreign.exe"
+    "not a gregg binary" | Out-File -LiteralPath $foreignExe -Encoding ascii
+    if ((Get-DestinationClassification -DestPath $foreignExe -Program "greggd") -ne "foreign") {
+        throw "unidentifiable destination must classify as foreign"
+    }
+    Write-Host "   absent/replace/foreign classification proven against install.ps1."
+} finally {
+    if (Test-Path -LiteralPath $HelperCheckDir) {
+        Remove-Item -LiteralPath $HelperCheckDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 
-# Verify config is still present (not removed by default).
-if (Test-Path $ConfigPath) {
-    Write-Host "   Config preserved (as expected)."
+# ── Component-safe uninstall (Plan 112) ───────────────────────────────────
+#
+# install both -> uninstall greggd -> SCM registration gone, greggd.exe
+# gone, gregg.exe still runnable, config preserved. The CLI owns the
+# lifecycle; no script performs its own recursive directory removal.
+
+if (-not $GreggExePath) {
+    Write-Host "12. Skipping component-safety uninstall (no -GreggExePath provided)."
 } else {
-    throw "Config was removed unexpectedly."
+    Write-Host "12. Installing client alongside daemon (same-scope layout)..."
+    Copy-Item -Path $GreggExePath -Destination $InstalledGreggExe -Force
+    $greggVersion = & $InstalledGreggExe version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "installed gregg.exe failed version check: $greggVersion" }
+    Write-Host "   gregg.exe runnable: $greggVersion"
+
+    Write-Host "13. Uninstalling greggd via the CLI (config preserved)..."
+    Invoke-Greggd stop --config $ConfigPath
+    Wait-ForServiceStatus -Status "Stopped"
+    & $InstalledExe uninstall --config $ConfigPath
+    if ($LASTEXITCODE -ne 0) { throw "greggd uninstall failed with exit code $LASTEXITCODE." }
+
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Test-Path -LiteralPath $InstalledExe -PathType Leaf) -and ((Get-Date) -lt $deadline)) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
+        throw "SCM registration was not removed by greggd uninstall."
+    }
+    Write-Host "   SCM registration removed."
+    if (Test-Path -LiteralPath $InstalledExe -PathType Leaf) {
+        throw "greggd.exe was not removed by greggd uninstall."
+    }
+    Write-Host "   greggd.exe removed."
+    if (-not (Test-Path -LiteralPath $InstalledGreggExe -PathType Leaf)) {
+        throw "Sibling gregg.exe must survive greggd uninstall."
+    }
+    $greggStill = & $InstalledGreggExe version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "sibling gregg.exe is not runnable after greggd uninstall: $greggStill" }
+    Write-Host "   sibling gregg.exe still runnable: $greggStill"
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw "Daemon config was removed without --purge."
+    }
+    Write-Host "   daemon config preserved (as expected without --purge)."
+
+    Write-Host "14. Uninstalling gregg via the CLI..."
+    & $InstalledGreggExe uninstall
+    if ($LASTEXITCODE -ne 0) { throw "gregg uninstall failed with exit code $LASTEXITCODE." }
+    $deadline = (Get-Date).AddSeconds(15)
+    while ((Test-Path -LiteralPath $InstalledGreggExe -PathType Leaf) -and ((Get-Date) -lt $deadline)) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (Test-Path -LiteralPath $InstalledGreggExe -PathType Leaf) {
+        throw "gregg.exe was not removed by gregg uninstall."
+    }
+    Write-Host "   gregg.exe removed."
 }
-
-# ── Reinstall and uninstall with -RemoveConfig ───────────────────────────
-
-Write-Host "12. Reinstalling for RemoveConfig test..."
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-Copy-Item -Path $ExePath -Destination $InstalledExe -Force
-Invoke-Sc -Arguments @("create", $ServiceName, "binPath=", $ImagePath, "start=", "demand", "DisplayName=", "Gregg Smoke Test")
-Invoke-Sc -Arguments @("config", $ServiceName, "obj=", "NT AUTHORITY\LocalService")
-Start-Service -Name $ServiceName
-Wait-ForServiceStatus -Status "Running"
-Write-Host "   Service running after reinstall."
-
-Write-Host "13. Uninstalling with config removal..."
-Invoke-Greggd stop --config $ConfigPath
-Wait-ForServiceStatus -Status "Stopped"
-Stop-AndRemoveService
-
-if (Test-Path $InstallDir) {
-    Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction Stop
-}
-# Manually remove config to simulate -RemoveConfig behavior.
-if (Test-Path $ConfigDir) {
-    Remove-Item -Path $ConfigDir -Recurse -Force -ErrorAction Stop
-}
-Write-Host "   Service, binary, and config removed."
-
-if (Test-Path $ConfigDir) {
-    throw "Config directory was not removed."
-}
-Write-Host "   Config directory confirmed removed."
 
 # ── Summary ───────────────────────────────────────────────────────────────
 

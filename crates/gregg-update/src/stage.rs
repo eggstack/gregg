@@ -131,7 +131,13 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 ///
 /// Must run before any download so permission failures fail fast with an
 /// actionable elevated command instead of after minutes of fetching.
-pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<(), UpdateError> {
+/// `operation` is the CLI verb rendered in the rerun hint (`update` or
+/// `uninstall [--purge]`); it never changes what is probed.
+pub fn check_write_permission_for(
+    exe_path: &Path,
+    original_exe: &Path,
+    operation: &str,
+) -> Result<(), UpdateError> {
     let parent = exe_path.parent().ok_or_else(|| {
         UpdateError::Io(format!(
             "executable has no parent directory: {}",
@@ -162,8 +168,8 @@ pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<()
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(UpdateError::PermissionDenied {
-                    message: format!("permission denied writing to {}", parent.display()),
-                    elevated: format!("sudo {} update", original_exe.display()),
+                    message: format!(" permission denied writing to {}", parent.display()),
+                    elevated: format!("sudo {} {operation}", original_exe.display()),
                 });
             }
             Err(e) => {
@@ -178,6 +184,15 @@ pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<()
         "permission probe collided for {}",
         parent.display()
     )))
+}
+
+/// Probe whether the install location is writable, with the elevated
+/// rerun hint naming the `update` operation.
+///
+/// Thin wrapper over [`check_write_permission_for`] preserving the
+/// established update-contract hint.
+pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<(), UpdateError> {
+    check_write_permission_for(exe_path, original_exe, "update")
 }
 
 /// Replace the current executable with a verified candidate.
