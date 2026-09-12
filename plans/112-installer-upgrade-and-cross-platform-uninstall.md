@@ -560,9 +560,9 @@ Plan 112 is complete only when all of the following are true:
 ## Closure record
 
 Implemented and verified; all 22 acceptance criteria are demonstrated
-below on the implementation tree. Implementation commit `PENDING_SHA`
-(replaced with the real SHA at commit time); native-platform truth from
-CI run `PENDING_RUN` (recorded after the push-verified run below).
+below on the implementation tree. Implementation `a62c7a2` (feature `ce7ea5e` plus Windows-correctness fixes
+`56980f8`/`a62c7a2`); native-platform truth from CI run `34701714387`
+(all five jobs green).
 
 ### What landed
 
@@ -686,7 +686,8 @@ CI run `PENDING_RUN` (recorded after the push-verified run below).
     install, non-root session), so host-global discovery always plans
     systemd teardown; self-delete is proven live via the client
     (shared primitive) and teardown sequencing via deterministic tests.
-18. Windows CI smoke extended as above (run `PENDING_RUN`).
+18. Windows CI smoke extended as above (run `34701714387`: helper
+self-check, SCM removal, sibling runnable, config preserved).
 19. No new workflow/job/matrix; macOS/Windows/MSRV jobs unchanged
     apart from the Windows job also building `-p gregg`.
 20. Documentation surface listed above updated in the same pass.
@@ -694,6 +695,6 @@ CI run `PENDING_RUN` (recorded after the push-verified run below).
     tests/clippy (`-D warnings`)/fmt/doc, cross-target checks
     (Windows + macOS, zero warnings), and Rust 1.75
     `cargo check --workspace --all-features` all pass.
-22. Implementation SHA: `PENDING_SHA`; CI run: `PENDING_RUN`; Ubuntu
+22. Implementation SHA: `a62c7a2`; CI run: `34701714387`; Ubuntu
     lifecycle results and the systemd-host limitation above are
     recorded without overstating evidence.
