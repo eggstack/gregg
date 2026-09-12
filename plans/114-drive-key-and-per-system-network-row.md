@@ -476,5 +476,7 @@ Local evidence before commit:
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` — passed.
 - `rustup run 1.75 cargo check -p gregg --all-features` — passed.
 
-The implementation SHA and exact remote CI run ID are appended after the
-implementation commit is pushed.
+Implementation commit: `f794c962557e6af43fd12cff6d39226f2e3bd14d`.
+
+Remote CI: run `34713929966` passed all five jobs (Linux, macOS arm64, macOS
+Intel, Windows including SCM smoke, and MSRV Rust 1.75).
