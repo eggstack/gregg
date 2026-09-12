@@ -71,11 +71,14 @@ correctness gaps in exact-executable startup ownership, Windows SCM discovery,
 Cargo-owned uninstall sequencing, and staged-Cargo daemon finalization; Plan 113
 owns those corrections without rewriting Plan 112's original closure evidence.
 
-Plan 113 is planned and ready for implementation. It is the narrow Plan 112
-corrective successor: bind systemd/launchd/cron/SCM teardown to the exact invoked
-`greggd` executable, preserve full Windows SCM state and registration identity,
-sequence Unix Cargo-owned uninstall through the complete Gregg lifecycle, and
-make prebuilt/Cargo bootstrap acquisition converge before daemon finalization.
+Plan 113 is complete at implementation `7295c6e9a6b266f6da38eaf3d31558ce55d7cafb`
+with CI run `34711999742` green across Linux, macOS arm64, macOS Intel,
+Windows SCM smoke, and MSRV. It binds systemd/launchd/cron/SCM teardown to
+the exact invoked `greggd` executable, preserves full Windows SCM state and
+registration identity, sequences Unix Cargo-owned uninstall through the
+complete Gregg lifecycle, and makes prebuilt/Cargo bootstrap acquisition
+converge before daemon finalization. A follow-up Windows correction added a
+fail-closed parser for the full SCM `lpBinaryPathName` launch command.
 
 Plan 114 is planned and ready for implementation and may proceed independently
 of Plan 113. It is a client-only TUI polish pass: remap drive details from `e`

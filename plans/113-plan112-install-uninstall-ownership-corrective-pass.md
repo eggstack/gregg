@@ -1,6 +1,6 @@
 # Plan 113: Plan 112 install/uninstall ownership corrective pass
 
-Status: planned; ready for implementation.
+Status: complete; implementation `7295c6e9a6b266f6da38eaf3d31558ce55d7cafb`; CI run `34711999742` green.
 
 Depends on: Plan 112 and the settled installer/update/startup ownership from Plans 099-105.
 
@@ -502,25 +502,52 @@ Do not add under Plan 113:
 
 Plan 113 is complete only when:
 
-1. [ ] Daemon uninstall startup ownership is explicitly classified relative to the exact invoked executable; host-global presence alone never authorizes teardown.
-2. [ ] A user-local/Cargo/disposable `greggd uninstall` cannot stop/disable/remove a foreign systemd or launchd installation.
-3. [ ] Managed cron removal requires the managed block to target the current executable; foreign/ambiguous Gregg blocks are preserved.
-4. [ ] Windows uninstall discovery preserves `ServiceState::NotInstalled` versus `Stopped` and obtains the registered executable target through the native SCM abstraction.
-5. [ ] SCM query/access-denied/unknown ownership cannot silently degrade to self-deletion.
-6. [ ] Windows no-SCM plus a running Gregg endpoint follows the unmanaged-running safety path and refuses deletion.
-7. [ ] A foreign SCM registration is preserved and never deleted by an unrelated `greggd` executable.
-8. [ ] Unix direct-stop selection distinguishes a selected custom-config daemon from a foreign active manager and never knowingly stops the foreign managed daemon.
-9. [ ] Unix Cargo-owned client uninstall delegates package removal to Cargo while still honoring default config preservation and post-success `--purge`.
-10. [ ] Unix Cargo-owned daemon uninstall performs owned startup/direct-stop lifecycle, delegates executable removal to Cargo, and applies `--purge` only after Cargo succeeds.
-11. [ ] Windows Cargo-owned uninstall retains a truthful zero-mutation pre-exit handoff unless a smaller proven-safe native solution is implemented.
-12. [ ] Cargo-owned dry-run output no longer hides Gregg-owned lifecycle work on platforms where execution would perform it.
-13. [ ] Unix staged-Cargo bootstrap fallback converges with the prebuilt path before daemon startup finalization.
-14. [ ] Windows staged-Cargo bootstrap fallback converges with the prebuilt path before config/SCM stop-replace-register-restart finalization.
-15. [ ] Same-scope install/update/foreign-destination classification remains unchanged across prebuilt and Cargo acquisition.
-16. [ ] Ubuntu disposable foreign-system-service preservation and direct custom-config lifecycle smokes both pass without altering the operator's system installation.
-17. [ ] Existing Windows component-safety smoke remains green and new SCM ownership/NotInstalled regressions are covered by deterministic tests/native smoke as appropriate.
-18. [ ] Existing macOS/Windows/MSRV CI remains green with no new workflow/job/matrix.
-19. [ ] Active install/uninstall documentation and skills describe exact-executable startup ownership, Cargo handoff/delegation, and fallback finalization accurately.
-20. [ ] Plan 112 receives a short post-closure correction note pointing to Plan 113 without rewriting its original closure record.
-21. [ ] `./scripts/check-local.sh`, release preflight, workspace fmt/clippy/tests, and Rust 1.75 check pass on the implementation tree.
-22. [ ] The closure record names the implementation SHA, exact CI run used for native-platform truth, Ubuntu lifecycle smoke results, and any platform limitation without overstating evidence.
+1. [x] Daemon uninstall startup ownership is explicitly classified relative to the exact invoked executable; host-global presence alone never authorizes teardown.
+2. [x] A user-local/Cargo/disposable `greggd uninstall` cannot stop/disable/remove a foreign systemd or launchd installation.
+3. [x] Managed cron removal requires the managed block to target the current executable; foreign/ambiguous Gregg blocks are preserved.
+4. [x] Windows uninstall discovery preserves `ServiceState::NotInstalled` versus `Stopped` and obtains the registered executable target through the native SCM abstraction.
+5. [x] SCM query/access-denied/unknown ownership cannot silently degrade to self-deletion.
+6. [x] Windows no-SCM plus a running Gregg endpoint follows the unmanaged-running safety path and refuses deletion.
+7. [x] A foreign SCM registration is preserved and never deleted by an unrelated `greggd` executable.
+8. [x] Unix direct-stop selection distinguishes a selected custom-config daemon from a foreign active manager and never knowingly stops the foreign managed daemon.
+9. [x] Unix Cargo-owned client uninstall delegates package removal to Cargo while still honoring default config preservation and post-success `--purge`.
+10. [x] Unix Cargo-owned daemon uninstall performs owned startup/direct-stop lifecycle, delegates executable removal to Cargo, and applies `--purge` only after Cargo succeeds.
+11. [x] Windows Cargo-owned uninstall retains a truthful zero-mutation pre-exit handoff unless a smaller proven-safe native solution is implemented.
+12. [x] Cargo-owned dry-run output no longer hides Gregg-owned lifecycle work on platforms where execution would perform it.
+13. [x] Unix staged-Cargo bootstrap fallback converges with the prebuilt path before daemon startup finalization.
+14. [x] Windows staged-Cargo bootstrap fallback converges with the prebuilt path before config/SCM stop-replace-register-restart finalization.
+15. [x] Same-scope install/update/foreign-destination classification remains unchanged across prebuilt and Cargo acquisition.
+16. [x] Ubuntu disposable foreign-system-service preservation and direct custom-config lifecycle smokes both pass without altering the operator's system installation.
+17. [x] Existing Windows component-safety smoke remains green and new SCM ownership/NotInstalled regressions are covered by deterministic tests/native smoke as appropriate.
+18. [x] Existing macOS/Windows/MSRV CI remains green with no new workflow/job/matrix.
+19. [x] Active install/uninstall documentation and skills describe exact-executable startup ownership, Cargo handoff/delegation, and fallback finalization accurately.
+20. [x] Plan 112 receives a short post-closure correction note pointing to Plan 113 without rewriting its original closure record.
+21. [x] `./scripts/check-local.sh`, release preflight, workspace fmt/clippy/tests, and Rust 1.75 check pass on the implementation tree.
+22. [x] The closure record names the implementation SHA, exact CI run used for native-platform truth, Ubuntu lifecycle smoke results, and any platform limitation without overstating evidence.
+
+## Closure record (2026-09-12)
+
+Implementation is complete in commits `ec6cb852cd775f9508003743e6effb79ba3978f1`
+and `7295c6e9a6b266f6da38eaf3d31558ce55d7cafb` (the final pushed tree). The
+final correction addressed the Windows SCM API's full `lpBinaryPathName`
+launch command by extracting only an unambiguous absolute image path; quoted
+Gregg service commands now classify as owned, while ambiguous commands fail
+closed as unknown. The Windows component-safety smoke and deterministic
+NotInstalled/foreign/unknown planning coverage pass.
+
+Local evidence on the final tree:
+
+- `cargo fmt --all -- --check`, workspace all-target/all-feature tests (558
+  client tests, 345 daemon tests, protocol/update suites), workspace clippy,
+  `./scripts/check-local.sh`, `./scripts/check-local.sh --release`, and
+  `rustup run 1.75 cargo check --workspace --all-features` passed.
+- Ubuntu disposable smoke passed: the pre-existing active systemd service was
+  reported foreign and preserved; a disposable custom-config daemon reached
+  ready, was directly stopped and removed, its config was preserved, and the
+  host service remained active and unchanged.
+- Native Windows MSVC test compilation passed locally. The Windows GNU target
+  is not installed in this environment, so that cross-target check was not
+  available; native Windows SCM truth is covered by CI.
+
+Remote CI run `34711999742` passed all five jobs: Linux, macOS arm64, macOS
+Intel, Windows (including the SCM lifecycle smoke), and Rust 1.75 MSRV.
