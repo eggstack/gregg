@@ -251,18 +251,26 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
             // Defense in depth: callers pass `-f` (fail on non-2xx), but
             // assert the captured `%{http_code}` is 2xx anyway so a future
             // curl without `-f` cannot accept an error body as success.
-            // An unparsable code keeps today's accept behavior.
-            let code = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Ok(code) = code.parse::<u16>() {
-                if !(200..300).contains(&code) {
+            // An unparsable code is a hard failure (partial removed) so a
+            // curl warning on stdout can never be accepted as an asset.
+            let code_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            match code_str.parse::<u16>() {
+                Ok(code) if (200..300).contains(&code) => DownloadOutcome::Success,
+                Ok(code) => {
                     let _ = std::fs::remove_file(dest);
                     if code == 404 {
-                        return DownloadOutcome::NotFound;
+                        DownloadOutcome::NotFound
+                    } else {
+                        DownloadOutcome::Failed(format!("unexpected HTTP {code} for {url}"))
                     }
-                    return DownloadOutcome::Failed(format!("unexpected HTTP {code} for {url}"));
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(dest);
+                    DownloadOutcome::Failed(format!(
+                        "unparseable HTTP status {code_str:?} for {url}"
+                    ))
                 }
             }
-            DownloadOutcome::Success
         }
         Ok(out) => {
             // `curl -o dest` truncates `dest` before the status is known;
@@ -335,7 +343,9 @@ fn pipe_reader_limited<R: Read + Send + 'static>(
     reader.map(|reader| {
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            reader
+                .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+                .read_to_end(&mut bytes)?;
             Ok(bytes)
         })
     })
@@ -474,6 +484,40 @@ mod tests {
             DownloadOutcome::Failed(_)
         ));
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
+    }
+
+    /// Stub `curl` that exits 0 (success) but prints unparseable stdout,
+    /// as a curl warning on stdout would.
+    #[cfg(unix)]
+    fn stub_curl_success_with_output(dir: &std::path::Path, output: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("curl");
+        let script = format!(
+            "#!/bin/sh\necho x >> \"{}\"\nprintf '%s' \"{output}\"\nexit 0\n",
+            dir.join("calls").display(),
+        );
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stub.to_string_lossy().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_rejects_unparseable_status_on_success() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-download-garbage").unwrap();
+        let dir = temp.path().to_path_buf();
+        let dest = dir.join("asset");
+        std::fs::write(&dest, b"partial").unwrap();
+
+        let curl = stub_curl_success_with_output(&dir, "garbage");
+        assert!(matches!(
+            download_file(&curl, "https://example.invalid/asset", &dest),
+            DownloadOutcome::Failed(_)
+        ));
+        assert!(
+            !dest.exists(),
+            "partial file must be removed on unparseable status"
+        );
     }
 
     #[test]

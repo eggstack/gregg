@@ -171,11 +171,13 @@ are:
 - `TooManyDrives` — more than 32 drive entries
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 15 structured kinds.
+live-metrics validation adds 16 structured kinds.
 
 The additive live-metrics validation extends this with bounded collection and
 string checks, duplicate-ID checks, positive CPU frequency/capacity checks,
-and the loopback aggregate-member invariant. It does not require aggregate
+plausible aggregate throughput (`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s, rejected
+as `RateExceedsMaximum` instead of clamped), and the loopback
+aggregate-member invariant. It does not require aggregate
 rates to equal the sum of detail records.
 
 V2 validation rejects capability/value contradictions:

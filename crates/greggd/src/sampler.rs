@@ -266,6 +266,11 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     ///
     /// Direct sampling used outside the runtime loop; [`Self::run`] samples
     /// through [`Self::sample_on_blocking_pool`] instead.
+    ///
+    /// Sampler-internal only; does not publish to `ServerState` — use `run()`
+    /// for serving. The HTTP server reads `ServerState`, which is synced only
+    /// by the `run()` loop, so `sample_once` alone never becomes visible over
+    /// HTTP.
     pub fn sample_once(&mut self) {
         let result = self.lock_collector().sample();
         self.apply_sample_result(result);

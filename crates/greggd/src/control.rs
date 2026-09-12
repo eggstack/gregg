@@ -65,8 +65,15 @@ use tracing::warn;
 
 /// Maximum length of the `sun_path` field on Unix-domain sockets.
 ///
-/// Linux `UNIX_PATH_MAX` is 108. macOS uses a similar bound. We leave a
-/// small margin for a trailing NUL terminator.
+/// Linux `UNIX_PATH_MAX` is 108; macOS is 104. We leave a small margin for a
+/// trailing NUL terminator.
+#[cfg(target_os = "macos")]
+const UNIX_PATH_MAX: usize = 104;
+/// Maximum length of the `sun_path` field on Unix-domain sockets.
+///
+/// Linux `UNIX_PATH_MAX` is 108; macOS is 104 (see the `cfg` override above).
+/// We leave a small margin for a trailing NUL terminator.
+#[cfg(not(target_os = "macos"))]
 const UNIX_PATH_MAX: usize = 108;
 
 /// Maximum bytes read from a single control connection before closing it

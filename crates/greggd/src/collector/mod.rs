@@ -47,6 +47,14 @@ use error::{CollectError, CollectErrorKind};
 const DRIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 const DRIVE_REFRESH_RETRY_START: std::time::Duration = std::time::Duration::from_millis(10);
 
+/// Drive enumeration cache: best-effort, never fails core readiness.
+///
+/// `poll()` keeps serving the last `latest` (stale but bounded) while the
+/// `greggd-drive-refresh` worker is retrying or blocked. In particular, a
+/// worker blocked indefinitely inside `statvfs` on a dead NFS mount blocks
+/// drive refresh until the mount recovers; the sampler still publishes CPU,
+/// memory, and other families. There is deliberately no watchdog that aborts
+/// the blocked collection call and no failure propagated to readiness.
 #[derive(Debug)]
 pub(crate) struct DriveRefreshCache {
     request_tx: Option<std::sync::mpsc::SyncSender<()>>,

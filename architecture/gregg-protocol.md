@@ -114,14 +114,16 @@ additive JSON changes from silently loosening invariants.
 
 Live telemetry adds bounded validation for positive CPU frequency/capacities,
 disk-I/O and network collection sizes, non-empty NUL-free bounded IDs and
-names, unique IDs within each detail list, and the rule that loopback cannot
+names, unique IDs within each detail list, plausible aggregate throughput
+(`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s; above it is rejected as a buggy daemon,
+never silently clamped), and the rule that loopback cannot
 be an aggregate network-capacity member. `Some(0)` capacities are rejected;
 missing capacities remain valid and mean that utilization cannot be derived.
 The daemon-provided disk/network aggregates are intentionally not checked
 against detail-record sums because their accounting sets may differ.
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 15 structured kinds.
+live-metrics validation adds 16 structured kinds.
 
 ## Health responses
 

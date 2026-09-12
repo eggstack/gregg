@@ -81,6 +81,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Bug-audit hardening, fifth pass** (no behavior additions): reject
+  unparseable `%{http_code}` on the download success path as `Failed` and
+  remove the partial file; delete dead `UpdateError::UnsupportedHost` /
+  `ReleaseAssetAbsent` variants; reject absurd aggregate disk/network
+  throughput above `MAX_RATE_BYTES_PER_SEC` (1 TiB/s) as
+  `RateExceedsMaximum` instead of displaying it; remove the all-false
+  `MetricCapabilitiesV2::default()` footgun in favor of explicit `new()`;
+  disambiguate the update permission-probe name with a per-process sequence
+  plus attempt index; use `u64::try_from` for the bounded pipe cap;
+  document the hung-`statvfs` drive-refresh and `sample_once` non-publish
+  behavior; enforce `gregg refresh` 1..=3600 at clap parse time; run
+  `cargo test --workspace --all-targets --all-features` in default
+  `check-local.sh`; use 104-byte `UNIX_PATH_MAX` on macOS.
 - **Bug-audit hardening, fourth pass** (no behavior additions): fix
   `install-linux.sh` rejecting correct ARM64 binaries (`file` matched bare
   `ARM` before `aarch64`); check `sc.exe config obj=` / `failure` exit codes

@@ -9,10 +9,15 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tempfile::{Builder, TempDir};
 
 use crate::error::UpdateError;
+
+/// Per-process probe sequence so two probes within the same nanosecond (or on
+/// a pre-epoch clock that always yields `0`) never share a name.
+static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Create an exclusive owner-private temp dir for update staging.
 /// On Unix the directory mode is `0o700`.
@@ -129,16 +134,17 @@ pub fn check_write_permission(exe_path: &Path, original_exe: &Path) -> Result<()
             exe_path.display()
         ))
     })?;
-    // Retry on `AlreadyExists`: two updates from the same PID within one
-    // nanosecond collide on the probe name. A fresh timestamp per attempt
-    // keeps a collision from masquerading as a permission failure.
-    for _ in 0..3 {
+    // Retry on `AlreadyExists`: mix timestamp, per-process sequence, and
+    // attempt index so a pre-epoch clock (timestamp `0`) or same-nanosecond
+    // probes never collide deterministically.
+    let pid = std::process::id();
+    for attempt in 0..3 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let seq = PROBE_SEQ.fetch_add(1, Ordering::Relaxed);
         let probe = parent.join(format!(
-            ".gregg-update-perm-{}-{}.tmp",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos())
+            ".gregg-update-perm-{pid}-{nanos}-{seq}-{attempt}.tmp",
         ));
         match fs::OpenOptions::new()
             .write(true)

@@ -16,7 +16,7 @@ use crate::v2::{
     CommitMetrics, DiskIoMetrics, NetworkInterfaceMetrics, StatusPayloadV2, StatusSnapshotV2,
     SwapMetrics, MAX_DISK_IO_ENTRIES, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES,
     MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES, MAX_NETWORK_INTERFACE_ENTRIES,
-    SCHEMA_VERSION_V2,
+    MAX_RATE_BYTES_PER_SEC, SCHEMA_VERSION_V2,
 };
 use crate::{
     LoadAverage, MemoryMetrics, SystemIdentity, MAX_IDENTITY_FIELD_BYTES, MAX_SAMPLE_INTERVAL_MS,
@@ -104,6 +104,8 @@ pub enum ViolationKindV2 {
     ZeroCapacity,
     /// A loopback interface was incorrectly selected for aggregate capacity.
     LoopbackAggregateMember,
+    /// A throughput rate exceeded the plausible maximum.
+    RateExceedsMaximum { max_bytes_per_sec: u64 },
     /// An identity string was empty or contained NUL padding.
     InvalidIdentityField,
 }
@@ -192,6 +194,10 @@ impl fmt::Display for ViolationKindV2 {
             Self::LoopbackAggregateMember => {
                 f.write_str("loopback interfaces must not be aggregate members")
             }
+            Self::RateExceedsMaximum { max_bytes_per_sec } => write!(
+                f,
+                "throughput rate exceeds maximum of {max_bytes_per_sec} bytes per second"
+            ),
             Self::InvalidIdentityField => {
                 f.write_str("identity field must be non-empty and contain no NUL characters")
             }
@@ -341,6 +347,16 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
 }
 
 fn validate_disk_io(disk_io: &crate::v2::DiskIoPayload, out: &mut Vec<ValidationViolationV2>) {
+    check_rate(
+        disk_io.aggregate_read_bytes_per_sec,
+        "disk_io.aggregate_read_bytes_per_sec",
+        out,
+    );
+    check_rate(
+        disk_io.aggregate_write_bytes_per_sec,
+        "disk_io.aggregate_write_bytes_per_sec",
+        out,
+    );
     if disk_io.devices.len() > MAX_DISK_IO_ENTRIES {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::TooManyDiskIoDevices {
@@ -410,6 +426,16 @@ fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViol
 }
 
 fn validate_network(network: &crate::v2::NetworkPayload, out: &mut Vec<ValidationViolationV2>) {
+    check_rate(
+        network.aggregate_rx_bytes_per_sec,
+        "network.aggregate_rx_bytes_per_sec",
+        out,
+    );
+    check_rate(
+        network.aggregate_tx_bytes_per_sec,
+        "network.aggregate_tx_bytes_per_sec",
+        out,
+    );
     validate_capacity(
         network.aggregate_rx_capacity_bps,
         "network.aggregate_rx_capacity_bps",
@@ -502,6 +528,17 @@ fn validate_capacity(
     if capacity == Some(0) {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::ZeroCapacity,
+            field,
+        ));
+    }
+}
+
+fn check_rate(rate: u64, field: impl Into<String>, out: &mut Vec<ValidationViolationV2>) {
+    if rate > MAX_RATE_BYTES_PER_SEC {
+        out.push(ValidationViolationV2::new(
+            ViolationKindV2::RateExceedsMaximum {
+                max_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+            },
             field,
         ));
     }
@@ -1083,6 +1120,54 @@ mod tests {
         assert!(error
             .iter()
             .any(|violation| violation.kind == ViolationKindV2::LoopbackAggregateMember));
+    }
+
+    #[test]
+    fn absurd_aggregate_throughput_is_rejected() {
+        use crate::v2::MAX_RATE_BYTES_PER_SEC;
+        // At the bound: valid.
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(DiskIoPayload {
+            aggregate_read_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+            aggregate_write_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+            devices: Vec::new(),
+        });
+        payload.network = Some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+            aggregate_tx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+            aggregate_rx_capacity_bps: None,
+            aggregate_tx_capacity_bps: None,
+            interfaces: Vec::new(),
+        });
+        payload.validate().expect("rates at the bound validate");
+
+        // Above the bound: rejected loudly, not clamped.
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(DiskIoPayload {
+            aggregate_read_bytes_per_sec: MAX_RATE_BYTES_PER_SEC + 1,
+            aggregate_write_bytes_per_sec: u64::MAX,
+            devices: Vec::new(),
+        });
+        payload.network = Some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: u64::MAX,
+            aggregate_tx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC + 1,
+            aggregate_rx_capacity_bps: None,
+            aggregate_tx_capacity_bps: None,
+            interfaces: Vec::new(),
+        });
+        let error = payload.validate().unwrap_err();
+        for field in [
+            "disk_io.aggregate_read_bytes_per_sec",
+            "disk_io.aggregate_write_bytes_per_sec",
+            "network.aggregate_rx_bytes_per_sec",
+            "network.aggregate_tx_bytes_per_sec",
+        ] {
+            assert!(
+                error.iter().any(|violation| violation.field == field
+                    && matches!(violation.kind, ViolationKindV2::RateExceedsMaximum { .. })),
+                "missing RateExceedsMaximum for {field}"
+            );
+        }
     }
 
     #[test]

@@ -29,26 +29,6 @@ pub enum UpdateError {
         /// Why it was rejected.
         reason: String,
     },
-    /// The host has no prebuilt asset and Cargo fallback failed.
-    #[error("unsupported host: {os}/{arch} (target {target:?}). No prebuilt asset and Cargo fallback failed: {fallback}")]
-    UnsupportedHost {
-        /// `std::env::consts::OS` of the current host.
-        os: String,
-        /// `std::env::consts::ARCH` of the current host.
-        arch: String,
-        /// Detected target, if any.
-        target: Option<String>,
-        /// Cargo fallback failure detail.
-        fallback: String,
-    },
-    /// The release asset is absent (HTTP 404) and Cargo fallback failed.
-    #[error("release asset absent (HTTP 404) for {url}; Cargo fallback failed: {fallback}")]
-    ReleaseAssetAbsent {
-        /// Asset URL that returned 404.
-        url: String,
-        /// Cargo fallback failure detail.
-        fallback: String,
-    },
     /// The release asset download failed for a non-404 reason.
     #[error("release download failed for {url}: {reason}")]
     ReleaseDownloadFailed {

@@ -135,6 +135,7 @@ pub enum Command {
     /// ```
     Refresh {
         /// Refresh interval in seconds (1-3600).
+        #[arg(value_parser = clap::value_parser!(u64).range(1..=3600))]
         seconds: u64,
     },
     /// Open the configuration file in an editor.
@@ -959,6 +960,16 @@ mod tests {
             }
             _ => panic!("expected Refresh command"),
         }
+    }
+
+    #[test]
+    fn cli_rejects_refresh_outside_valid_range() {
+        // Clap enforces 1..=3600 at parse time so the error reads as CLI
+        // usage, not a config-file violation.
+        assert!(Cli::try_parse_from(["gregg", "refresh", "0"]).is_err());
+        assert!(Cli::try_parse_from(["gregg", "refresh", "3601"]).is_err());
+        assert!(Cli::try_parse_from(["gregg", "refresh", "1"]).is_ok());
+        assert!(Cli::try_parse_from(["gregg", "refresh", "3600"]).is_ok());
     }
 
     #[test]

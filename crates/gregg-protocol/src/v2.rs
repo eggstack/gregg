@@ -35,6 +35,15 @@ pub const MAX_LIVE_METRIC_ID_BYTES: usize = 512;
 /// Maximum UTF-8 byte length of a live-metrics display name or association.
 pub const MAX_LIVE_METRIC_NAME_BYTES: usize = 512;
 
+/// Maximum plausible aggregate or per-device throughput in bytes per second.
+///
+/// 1 TiB/s (≈ 8.8 Tbps) is well above any real disk or NIC, so values above
+/// it are rejected as a buggy daemon rather than displayed. Aggregates are
+/// daemon-computed (de-duplicated, not summed by the client), so an absurd
+/// aggregate is more likely a collector bug than a real link. Rejected
+/// loudly instead of silently clamped.
+pub const MAX_RATE_BYTES_PER_SEC: u64 = 1 << 40;
+
 /// Capacity metrics for one operator-visible mounted filesystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -215,7 +224,12 @@ impl StatusSnapshotV2 {
 /// All four capability keys are required when deserializing a v2 payload.
 /// An explicit `false` is meaningful and must not be confused with a missing
 /// key in a truncated capabilities object.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// There is deliberately no `Default` impl: `Default` would yield all-`false`,
+/// which fails `validate()` for any snapshot carrying telemetry. Use
+/// [`MetricCapabilitiesV2::new`] so the four flags stay explicit at
+/// construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct MetricCapabilitiesV2 {
@@ -227,6 +241,20 @@ pub struct MetricCapabilitiesV2 {
     pub swap: bool,
     /// Whether memory commit charge is reported.
     pub memory_commit: bool,
+}
+
+impl MetricCapabilitiesV2 {
+    /// Build all four capability flags explicitly.
+    #[must_use]
+    #[allow(clippy::fn_params_excessive_bools)]
+    pub fn new(cpu_iowait: bool, load_average: bool, swap: bool, memory_commit: bool) -> Self {
+        Self {
+            cpu_iowait,
+            load_average,
+            swap,
+            memory_commit,
+        }
+    }
 }
 
 /// CPU utilization snapshot for schema version 2.
@@ -665,5 +693,14 @@ mod tests {
     #[test]
     fn v2_schema_version_constant() {
         assert_eq!(SCHEMA_VERSION_V2, 2);
+    }
+
+    #[test]
+    fn capabilities_new_requires_explicit_flags() {
+        let caps = MetricCapabilitiesV2::new(true, false, true, false);
+        assert!(caps.cpu_iowait);
+        assert!(!caps.load_average);
+        assert!(caps.swap);
+        assert!(!caps.memory_commit);
     }
 }

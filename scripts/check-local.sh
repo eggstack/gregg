@@ -77,8 +77,8 @@ run_or_fail() {
 step "cargo fmt --all -- --check"
 run_or_fail cargo fmt --all -- --check
 
-step "cargo test --workspace"
-run_or_fail cargo test --workspace
+step "cargo test --workspace --all-targets --all-features"
+run_or_fail cargo test --workspace --all-targets --all-features
 
 # ── Release preflight ───────────────────────────────────────────────────────
 
