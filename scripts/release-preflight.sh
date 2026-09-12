@@ -137,7 +137,7 @@ if [[ "$CHECK_REGISTRY" -eq 1 ]]; then
   # The release sequence publishes crates before the tag. A rerun must
   # remain safe. If the registry has not yet indexed the version, fail
   # clearly so the maintainer can rerun after indexing.
-  for crate in gregg greggd; do
+  for crate in gregg-protocol gregg-update gregg greggd; do
     echo "Checking crates.io for $crate $VERSION..."
     # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
     HTTP_CODE="$(curl -s -o /tmp/crate.json -w "%{http_code}" \

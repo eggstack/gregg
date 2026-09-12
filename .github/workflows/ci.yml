@@ -135,4 +135,4 @@ jobs:
             ${{ runner.os }}-msrv-cargo-
 
       - name: Check compilation
-        run: cargo check --workspace --all-features
+        run: cargo test --workspace --all-targets --all-features

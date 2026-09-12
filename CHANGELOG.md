@@ -81,6 +81,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Bug-audit hardening, third pass** (no behavior additions): reject `ready`
+  v1 health responses that carry a `category` (matching v2); propagate
+  staged-candidate chmod failures instead of discarding them; bound curl
+  metadata/probe/download children with wall-clock timeouts, stream the
+  crates.io body through a 256 KiB cap, and cap release downloads with
+  `--max-filesize`; reject ambiguous bare `::1:8080` (use `[::1]:8080`)
+  instead of silently taking the default port; skip (rather than abort on)
+  overflowing disk-sector lines; probe Windows admin via SCM
+  create-service access; verify the pinned Zig tarball SHA-256 before
+  extraction; check all four crates in release preflight; run the full test
+  suite in the MSRV job; lexically normalize `..` in the current-exe
+  symlink fallback.
 - **Bug-audit hardening, second pass** (no behavior additions): saturate
   instead of dropping the disk/network payload on aggregate overflow (all
   three collectors); return an error instead of panicking in endpoint

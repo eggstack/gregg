@@ -89,6 +89,13 @@ impl EggpoolEndpointSpec {
         }
 
         if input.parse::<IpAddr>().is_ok() {
+            // `::1:8080` parses as an IPv6 literal but almost certainly means
+            // host `::1` port `8080`; reject the ambiguous bare form so the
+            // default port is never silently configured. Bracketed
+            // `[ipv6]:port` is the required explicit-port spelling.
+            if is_ambiguous_bare_ipv6_with_port(input) {
+                return Err(EggpoolEndpointError::MalformedBrackets);
+            }
             return Ok(Self {
                 host: normalize_host(input)?,
                 port: DEFAULT_EGGPOOL_PORT,
@@ -145,6 +152,25 @@ fn parse_port(port: &str) -> Result<u16, EggpoolEndpointError> {
     u16::try_from(port).map_err(|_| EggpoolEndpointError::InvalidPort)
 }
 
+/// Mirror of `endpoint::is_ambiguous_bare_ipv6_with_port` for the `EggPool`
+/// parser (kept local to avoid cross-module coupling).
+fn is_ambiguous_bare_ipv6_with_port(input: &str) -> bool {
+    let Some(idx) = input.rfind(':') else {
+        return false;
+    };
+    let (host_part, port_part) = (&input[..idx], &input[idx + 1..]);
+    if host_part.ends_with(':') || host_part.contains('%') {
+        return false;
+    }
+    let Ok(port) = port_part.parse::<u32>() else {
+        return false;
+    };
+    if port == 0 || port > u32::from(u16::MAX) {
+        return false;
+    }
+    host_part.parse::<IpAddr>().is_ok()
+}
+
 /// Format an `EggPool` base address, including scheme and IPv6 brackets.
 #[must_use]
 pub fn display_address(host: &str, port: u16, scheme: EggpoolScheme) -> String {
@@ -192,6 +218,15 @@ mod tests {
             assert!(EggpoolEndpointSpec::parse(input).is_err(), "{input}");
         }
         assert!(EggpoolEndpointSpec::parse("[::1]").is_err());
+    }
+
+    #[test]
+    fn rejects_ambiguous_bare_ipv6_with_port() {
+        assert!(EggpoolEndpointSpec::parse("::1:8080").is_err());
+        assert_eq!(
+            EggpoolEndpointSpec::parse("::1").unwrap().port,
+            DEFAULT_EGGPOOL_PORT
+        );
     }
 
     #[test]

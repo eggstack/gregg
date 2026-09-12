@@ -260,13 +260,16 @@ pub(crate) fn is_privileged() -> bool {
 
 #[cfg(target_os = "windows")]
 fn is_windows_admin() -> bool {
-    // Use `net session` style check via `IsUserAnAdmin` if windows crate
-    // were available. Fallback to checking if we can open SCM.
-    // For now, attempt to use `whoami /groups`? Simpler: try to create a
-    // test file in ProgramFiles; if PermissionDenied, not admin.
-    // Keep it small: return false and let the actual install attempt surface
-    // PermissionDenied, which we then handle. This avoids adding a windows dep.
-    false
+    // Best-effort privilege probe: opening the SCM with create-service
+    // access requires elevation. Success means admin; any failure (including
+    // access-denied) means not privileged, and the real install attempt
+    // still surfaces the true OS error. Uses the existing `windows-service`
+    // dependency — no new crates.
+    windows_service::service_manager::ServiceManager::local_computer(
+        None::<&str>,
+        windows_service::service_manager::ServiceManagerAccess::CREATE_SERVICE,
+    )
+    .is_ok()
 }
 
 // ── Systemd installation ──────────────────────────────────────────────────

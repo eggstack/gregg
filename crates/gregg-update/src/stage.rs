@@ -80,13 +80,40 @@ pub fn current_exe_path() -> Result<PathBuf, UpdateError> {
             if let Ok(target) = fs::read_link(&exe) {
                 if target.is_relative() {
                     if let Some(parent) = exe.parent() {
-                        return Ok(parent.join(target));
+                        return Ok(normalize_lexically(&parent.join(target)));
                     }
                 }
                 return Ok(target);
             }
         }
         Ok(exe)
+    }
+}
+
+/// Lexically normalize `.`/`..` segments without I/O (the target may not
+/// exist, so `canonicalize` is not an option on this fallback path).
+fn normalize_lexically(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop a trailing normal segment; never pop the filesystem
+                // root, and preserve leading `..` on relative paths.
+                if out.file_name().is_some() {
+                    out.pop();
+                } else if !out.is_absolute() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        out
     }
 }
 
@@ -199,5 +226,25 @@ mod tests {
         };
         let msg = err.to_string();
         assert!(msg.contains("sudo /usr/local/bin/gregg update"));
+    }
+
+    #[test]
+    fn lexical_normalization_collapses_dot_segments() {
+        assert_eq!(
+            normalize_lexically(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(
+            normalize_lexically(Path::new("/a/./b/../../c")),
+            PathBuf::from("/c")
+        );
+        assert_eq!(normalize_lexically(Path::new("a/../b")), PathBuf::from("b"));
+        // Leading `..` on relative paths is preserved; `..` above the
+        // filesystem root stays at the root.
+        assert_eq!(
+            normalize_lexically(Path::new("../a")),
+            PathBuf::from("../a")
+        );
+        assert_eq!(normalize_lexically(Path::new("/../a")), PathBuf::from("/a"));
     }
 }

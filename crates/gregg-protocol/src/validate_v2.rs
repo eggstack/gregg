@@ -393,7 +393,7 @@ fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViol
     if name.is_empty() || name.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoNameInvalid,
-            field.clone(),
+            field.as_str(),
         ));
     }
     if name.len() > MAX_LIVE_METRIC_NAME_BYTES {

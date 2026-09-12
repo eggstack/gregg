@@ -14,6 +14,11 @@ use crate::error::UpdateError;
 /// Maximum crates.io metadata body accepted (256 KiB).
 pub const MAX_CRATES_IO_BYTES: usize = 256 * 1024;
 
+/// Maximum release-asset download accepted (64 MiB). Enforced via curl
+/// `--max-filesize` so a malicious mirror cannot fill the staging disk
+/// until `--max-time` expires.
+pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
 /// `--max-time` for crates.io version lookups, in seconds.
 pub const CRATES_IO_TIMEOUT_SECS: &str = "15";
 
@@ -22,6 +27,18 @@ pub const DOWNLOAD_TIMEOUT_SECS: &str = "90";
 
 /// Timeout for staged candidate `version` probes.
 pub const CANDIDATE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Wall-clock bound for crates.io metadata captures (curl `--max-time`
+/// plus spawn/pipe margin). `run_curl_capture` is killed and reaped past
+/// this deadline so a hung curl binary cannot block the caller forever.
+pub const CAPTURE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Wall-clock bound for HTTP status probes.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Wall-clock bound for release-asset downloads (curl `--max-time` plus
+/// spawn/reap margin).
+pub const DOWNLOAD_WALL_TIMEOUT: Duration = Duration::from_secs(100);
 
 /// Timeout for Cargo fallback builds.
 pub const CARGO_TIMEOUT: Duration = Duration::from_secs(600);
@@ -64,13 +81,15 @@ pub fn find_cargo() -> Result<String, UpdateError> {
 
 /// Run `curl` with the given args and capture stdout. Used for small
 /// metadata fetches (crates.io version lookup).
+///
+/// The child is bounded by [`CAPTURE_TIMEOUT`] (killed and reaped past the
+/// deadline) and stdout is streamed through a `take(MAX_CRATES_IO_BYTES+1)`
+/// cap so an oversized response is rejected without buffering it fully.
 pub fn run_curl_capture(curl: &str, args: &[&str]) -> Result<Vec<u8>, UpdateError> {
-    let output = Command::new(curl)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| UpdateError::VersionLookup(format!("failed to spawn curl: {e}")))?;
+    let mut cmd = Command::new(curl);
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let output = run_child_with_timeout_capped(cmd, CAPTURE_TIMEOUT, MAX_CRATES_IO_BYTES)
+        .map_err(|e| map_capture_error(&e))?;
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -82,28 +101,40 @@ pub fn run_curl_capture(curl: &str, args: &[&str]) -> Result<Vec<u8>, UpdateErro
     }
 }
 
+fn map_capture_error(e: &io::Error) -> UpdateError {
+    if e.kind() == io::ErrorKind::TimedOut {
+        return UpdateError::VersionLookup("curl timed out and was killed".to_string());
+    }
+    if e.kind() == io::ErrorKind::OutOfMemory || e.to_string().contains("response too large") {
+        return UpdateError::VersionLookup("crates.io response too large".to_string());
+    }
+    UpdateError::VersionLookup(format!("failed to spawn curl: {e}"))
+}
+
 /// Probe the HTTP status code of a URL with a short bounded request.
 /// Returns `None` when the probe itself cannot run.
+///
+/// The child is bounded by [`PROBE_TIMEOUT`] (killed and reaped past the
+/// deadline) so a hung curl binary cannot block the caller forever.
 pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
     #[cfg(windows)]
     let null_device = "NUL";
     #[cfg(not(windows))]
     let null_device = "/dev/null";
-    let output = Command::new(curl)
-        .args([
-            "-s",
-            "-o",
-            null_device,
-            "-w",
-            "%{http_code}",
-            "--max-time",
-            "15",
-            url,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+    let mut cmd = Command::new(curl);
+    cmd.args([
+        "-s",
+        "-o",
+        null_device,
+        "-w",
+        "%{http_code}",
+        "--max-time",
+        "15",
+        url,
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::null());
+    let output = run_child_with_timeout(cmd, PROBE_TIMEOUT).ok()?;
     let code_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // curl emits `000` for transport failures (timeout/DNS/TLS); code 0 is
     // never a real server answer, so map it to `None` instead of `Some(0)`.
@@ -185,20 +216,23 @@ pub enum DownloadOutcome {
 /// hard `Failed`.
 pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadOutcome {
     let dest_str = dest.to_string_lossy().to_string();
-    let output = Command::new(curl)
-        .args([
-            "-fsSL",
-            "--max-time",
-            DOWNLOAD_TIMEOUT_SECS,
-            "-o",
-            &dest_str,
-            "-w",
-            "%{http_code}",
-            url,
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output();
+    let max_filesize = MAX_DOWNLOAD_BYTES.to_string();
+    let mut cmd = Command::new(curl);
+    cmd.args([
+        "-fsSL",
+        "--max-time",
+        DOWNLOAD_TIMEOUT_SECS,
+        "--max-filesize",
+        &max_filesize,
+        "-o",
+        &dest_str,
+        "-w",
+        "%{http_code}",
+        url,
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let output = run_child_with_timeout(cmd, DOWNLOAD_WALL_TIMEOUT);
     match output {
         Ok(out) if out.status.success() => DownloadOutcome::Success,
         Ok(out) => {
@@ -215,7 +249,7 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
         }
         Err(e) => {
             let _ = std::fs::remove_file(dest);
-            DownloadOutcome::Failed(format!("failed to spawn curl: {e}"))
+            DownloadOutcome::Failed(format!("curl failed: {e}"))
         }
     }
 }
@@ -260,6 +294,63 @@ fn pipe_reader<R: Read + Send + 'static>(
             reader.read_to_end(&mut bytes)?;
             Ok(bytes)
         })
+    })
+}
+
+/// Bounded pipe reader: streams at most `limit + 1` bytes so an oversized
+/// body is detected without buffering it fully.
+fn pipe_reader_limited<R: Read + Send + 'static>(
+    reader: Option<R>,
+    limit: usize,
+) -> Option<thread::JoinHandle<io::Result<Vec<u8>>>> {
+    reader.map(|reader| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            reader.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+            Ok(bytes)
+        })
+    })
+}
+
+/// `run_child_with_timeout` variant that caps captured stdout at
+/// `max_bytes`. Returns an `OutOfMemory`-kind [`io::Error`] when the cap is
+/// exceeded so callers can map it without allocating the full body.
+fn run_child_with_timeout_capped(
+    mut cmd: Command,
+    timeout: Duration,
+    max_bytes: usize,
+) -> io::Result<Output> {
+    let mut child = cmd.spawn()?;
+    let stdout = pipe_reader_limited(child.stdout.take(), max_bytes);
+    let stderr = pipe_reader(child.stderr.take());
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait()? {
+            Some(status) => break status,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = join_pipe(stdout);
+                let _ = join_pipe(stderr);
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "child process timed out and was killed",
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    let stdout = join_pipe(stdout)?;
+    if stdout.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            "child response too large",
+        ));
+    }
+    Ok(Output {
+        status,
+        stdout,
+        stderr: join_pipe(stderr)?,
     })
 }
 

@@ -102,7 +102,12 @@ pub fn validate_candidate(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(candidate, fs::Permissions::from_mode(0o755));
+        fs::set_permissions(candidate, fs::Permissions::from_mode(0o755)).map_err(|e| {
+            UpdateError::Io(format!(
+                "failed to set executable permission on {}: {e}",
+                candidate.display()
+            ))
+        })?;
     }
     let output = crate::exec::run_command_with_timeout(
         {

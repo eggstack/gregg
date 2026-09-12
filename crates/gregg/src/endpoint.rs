@@ -160,7 +160,10 @@ impl fmt::Display for EndpointError {
                 write!(f, "port is not a valid number: {input}")
             }
             Self::MalformedBrackets { input } => {
-                write!(f, "malformed IPv6 bracket syntax: {input}")
+                write!(
+                    f,
+                    "malformed IPv6 bracket syntax (use [ipv6]:port for an explicit port): {input}"
+                )
             }
             Self::EmptyHost => write!(f, "host is empty"),
             Self::InvalidName { reason } => {
@@ -268,9 +271,19 @@ impl EndpointSpec {
                 // Multiple colons: could be bare IPv6 (e.g., `::1`, `fe80::1`).
                 // Bare IPv6 without brackets uses default port.
                 // Check for host:port form with IPv6 (e.g., `::1:8080` is ambiguous).
-                // Strategy: if it parses as a valid IPv6 address, treat as host-only.
+                // Strategy: if it parses as a valid IPv6 address, treat as host-only,
+                // unless it could also be `ip:port` (split on the last colon
+                // yields a valid IP prefix that does not end with `:` plus a
+                // numeric port). The ambiguous form is rejected so `gregg add`
+                // never silently configures the default port when the operator
+                // typed `:8080`; use `[::1]:8080` instead.
                 // If not, try splitting on last colon as host:port.
                 if input_str.parse::<IpAddr>().is_ok() || is_ipv6_with_zone_id(input_str) {
+                    if is_ambiguous_bare_ipv6_with_port(input_str) {
+                        return Err(EndpointError::MalformedBrackets {
+                            input: input_str.to_string(),
+                        });
+                    }
                     // Valid IPv6 literal — use default port.
                     Ok(Self {
                         host: normalize_host(input_str)?,
@@ -534,6 +547,30 @@ fn parse_port(port_str: &str, full_input: &str) -> Result<u16, EndpointError> {
 fn rsplit_once_colon(s: &str) -> Option<(&str, &str)> {
     let idx = s.rfind(':')?;
     Some((&s[..idx], &s[idx + 1..]))
+}
+
+/// Detect ambiguous bare `ipv6:port` without brackets (e.g. `::1:8080`).
+///
+/// Returns `true` when the full input parses as an IP literal but splitting
+/// on the last colon also yields a valid IP prefix plus a numeric port in
+/// `1..=65535`. The prefix must not end with `:` so genuine compressed
+/// literals (`::1`, `fe80::1`, `2001:db8::1`) stay host-only; only the
+/// `addr:port` shape (prefix `::1` in `::1:8080`) is rejected. Callers
+/// should direct the operator to the bracketed `[ipv6]:port` form.
+fn is_ambiguous_bare_ipv6_with_port(input: &str) -> bool {
+    let Some((host_part, port_part)) = rsplit_once_colon(input) else {
+        return false;
+    };
+    if host_part.ends_with(':') || host_part.contains('%') {
+        return false;
+    }
+    let Ok(port) = port_part.parse::<u32>() else {
+        return false;
+    };
+    if port == 0 || port > u32::from(u16::MAX) {
+        return false;
+    }
+    host_part.parse::<IpAddr>().is_ok()
 }
 
 /// Canonical display address for a host and port.
@@ -1039,6 +1076,28 @@ mod tests {
         assert_eq!(spec.host, "::1");
         assert_eq!(spec.port, DEFAULT_PORT);
         assert!(!spec.port_was_explicit);
+    }
+
+    #[test]
+    fn ambiguous_bare_ipv6_with_port_is_rejected() {
+        // `::1:8080` is a valid IPv6 literal but almost certainly means
+        // host `::1` port `8080`; reject and direct to `[::1]:8080` rather
+        // than silently configuring the default port.
+        assert!(matches!(
+            EndpointSpec::parse("::1:8080"),
+            Err(EndpointError::MalformedBrackets { .. })
+        ));
+        // Genuine compressed literals stay host-only.
+        for input in ["::1", "fe80::1", "2001:db8::1"] {
+            let spec = EndpointSpec::parse(input).unwrap();
+            assert_eq!(spec.port, DEFAULT_PORT);
+            assert!(!spec.port_was_explicit, "{input}");
+        }
+        // Bracketed form is the explicit-port spelling.
+        let spec = EndpointSpec::parse("[::1]:8080").unwrap();
+        assert_eq!(spec.host, "::1");
+        assert_eq!(spec.port, 8080);
+        assert!(spec.port_was_explicit);
     }
 
     #[test]

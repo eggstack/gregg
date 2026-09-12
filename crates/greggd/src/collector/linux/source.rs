@@ -252,31 +252,30 @@ impl ProcSource {
             let Ok(raw) = self.inner.read_to_string(&device.join("stat")) else {
                 continue;
             };
-            let fields: Vec<_> = raw.split_whitespace().collect();
-            if fields.len() < 7 {
-                continue;
-            }
-            let Ok(read_sectors) = fields[2].parse::<u64>() else {
+            // Walk fields without a per-line `Vec` allocation.
+            let mut fields = raw.split_whitespace();
+            let (Some(read_str), Some(write_str)) = (fields.nth(2), fields.nth(3)) else {
                 continue;
             };
-            let Ok(write_sectors) = fields[6].parse::<u64>() else {
+            let Ok(read_sectors) = read_str.parse::<u64>() else {
+                continue;
+            };
+            let Ok(write_sectors) = write_str.parse::<u64>() else {
+                continue;
+            };
+            // One corrupt counter must skip only its device, never abort the
+            // whole list (mirrors the parse-failure arms above).
+            let (Some(read_bytes), Some(write_bytes)) = (
+                read_sectors.checked_mul(512),
+                write_sectors.checked_mul(512),
+            ) else {
                 continue;
             };
             records.push(RawDiskIo {
                 id: name.to_owned(),
                 name: name.to_owned(),
-                read_bytes: read_sectors.checked_mul(512).ok_or_else(|| {
-                    CollectError::new(
-                        CollectErrorKind::Numeric,
-                        "disk read-sector byte conversion overflowed",
-                    )
-                })?,
-                write_bytes: write_sectors.checked_mul(512).ok_or_else(|| {
-                    CollectError::new(
-                        CollectErrorKind::Numeric,
-                        "disk write-sector byte conversion overflowed",
-                    )
-                })?,
+                read_bytes,
+                write_bytes,
             });
         }
         records.sort_by(|left, right| left.id.cmp(&right.id));
@@ -292,11 +291,13 @@ impl ProcSource {
                 continue;
             };
             let name = name.trim();
-            let fields: Vec<_> = values.split_whitespace().collect();
-            if fields.len() < 9 {
+            // Walk fields without a per-line `Vec` allocation: field 0 is
+            // rx bytes, field 8 is tx bytes.
+            let mut fields = values.split_whitespace();
+            let (Some(rx_str), Some(tx_str)) = (fields.next(), fields.nth(7)) else {
                 continue;
-            }
-            let (Ok(rx_bytes), Ok(tx_bytes)) = (fields[0].parse(), fields[8].parse()) else {
+            };
+            let (Ok(rx_bytes), Ok(tx_bytes)) = (rx_str.parse(), tx_str.parse()) else {
                 continue;
             };
             let path = Path::new("/sys/class/net").join(name);
