@@ -360,7 +360,8 @@ mod tests {
     #[test]
     fn cargo_owned_plan_renders_handoff_and_blocks_mutation() {
         let dir = tmp_case("cargo_owned");
-        let exe = dir.join("bin").join("gregg");
+        let exe_name = if cfg!(windows) { "gregg.exe" } else { "gregg" };
+        let exe = dir.join("bin").join(exe_name);
         fs::create_dir_all(exe.parent().unwrap()).unwrap();
         fs::write(&exe, b"fake").unwrap();
         let config = dir.join("gregg.toml");

@@ -248,32 +248,44 @@ pub fn cargo_uninstall(ownership: &CargoOwnership) -> Result<(), UpdateError> {
 mod tests {
     use super::*;
 
+    /// Platform-expected executable file name for tests.
+    fn exe_name(program: &str) -> String {
+        if cfg!(windows) {
+            format!("{program}.exe")
+        } else {
+            program.to_string()
+        }
+    }
+
     #[test]
     fn candidate_root_requires_bin_layout_and_program_name() {
+        let cargo_exe = PathBuf::from("/home/u/.cargo")
+            .join("bin")
+            .join(exe_name("greggd"));
         assert_eq!(
-            candidate_cargo_root_for_exe(Path::new("/home/u/.cargo/bin/greggd"), "greggd"),
+            candidate_cargo_root_for_exe(&cargo_exe, "greggd"),
             Some(PathBuf::from("/home/u/.cargo"))
         );
         // Wrong program name is never a candidate.
+        let other_exe = PathBuf::from("/home/u/.cargo")
+            .join("bin")
+            .join(exe_name("gregg"));
+        assert_eq!(candidate_cargo_root_for_exe(&other_exe, "greggd"), None);
+        // A system prefix still matches the `<root>/bin/<program>` layout.
+        let system_exe = PathBuf::from("/usr/local")
+            .join("bin")
+            .join(exe_name("greggd"));
         assert_eq!(
-            candidate_cargo_root_for_exe(Path::new("/home/u/.cargo/bin/gregg"), "greggd"),
-            None
-        );
-        // Not under a `bin` directory: no candidate.
-        assert_eq!(
-            candidate_cargo_root_for_exe(Path::new("/usr/local/bin/greggd"), "greggd"),
+            candidate_cargo_root_for_exe(&system_exe, "greggd"),
             Some(PathBuf::from("/usr/local"))
         );
-        assert_eq!(
-            candidate_cargo_root_for_exe(Path::new("/opt/greggd/greggd"), "greggd"),
-            None
-        );
+        // Not under a `bin` directory: no candidate.
+        let nested_exe = PathBuf::from("/opt/greggd").join(exe_name("greggd"));
+        assert_eq!(candidate_cargo_root_for_exe(&nested_exe, "greggd"), None);
         // A path merely containing `.cargo` without the bin layout is
         // not a candidate.
-        assert_eq!(
-            candidate_cargo_root_for_exe(Path::new("/home/u/.cargo/greggd"), "greggd"),
-            None
-        );
+        let bare_exe = PathBuf::from("/home/u/.cargo").join(exe_name("greggd"));
+        assert_eq!(candidate_cargo_root_for_exe(&bare_exe, "greggd"), None);
     }
 
     #[test]
@@ -296,40 +308,37 @@ mod tests {
 
     #[test]
     fn ownership_never_guessed_from_pathname_alone() {
-        let exe = Path::new("/home/u/.cargo/bin/greggd");
+        let exe = PathBuf::from("/home/u/.cargo")
+            .join("bin")
+            .join(exe_name("greggd"));
         // Even a textbook Cargo path is not owned without Cargo's own
         // confirmation.
         assert_eq!(
-            detect_cargo_ownership_with(exe, "greggd", "greggd", |_, _| false),
+            detect_cargo_ownership_with(&exe, "greggd", "greggd", |_, _| false),
             None
         );
         assert_eq!(
-            detect_cargo_ownership_with(exe, "greggd", "greggd", |_, _| true),
+            detect_cargo_ownership_with(&exe, "greggd", "greggd", |_, _| true),
             Some(CargoOwnership {
                 root: PathBuf::from("/home/u/.cargo"),
                 package: "greggd".to_string(),
             })
         );
-        // Non-candidate paths are never owned regardless of confirmation.
+        // Layout-matching paths confirm through Cargo; anything else is
+        // never owned regardless of confirmation.
+        let system_exe = PathBuf::from("/usr/local")
+            .join("bin")
+            .join(exe_name("greggd"));
         assert_eq!(
-            detect_cargo_ownership_with(
-                Path::new("/usr/local/bin/greggd"),
-                "greggd",
-                "greggd",
-                |_, _| true
-            ),
+            detect_cargo_ownership_with(&system_exe, "greggd", "greggd", |_, _| true),
             Some(CargoOwnership {
                 root: PathBuf::from("/usr/local"),
                 package: "greggd".to_string(),
             })
         );
+        let nested_exe = PathBuf::from("/opt/greggd").join(exe_name("greggd"));
         assert_eq!(
-            detect_cargo_ownership_with(
-                Path::new("/opt/greggd/greggd"),
-                "greggd",
-                "greggd",
-                |_, _| true
-            ),
+            detect_cargo_ownership_with(&nested_exe, "greggd", "greggd", |_, _| true),
             None
         );
     }
