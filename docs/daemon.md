@@ -124,21 +124,22 @@ Details:
   in the internal `gregg-update` crate; `greggd` owns only
   activation/restart coordination.
 
-`uninstall` removes only the exact invoked `greggd` executable plus the
-Gregg-owned startup integration actually present for it: the canonical
-systemd unit (`stop`/`disable`/remove/`daemon-reload`), the
-`com.eggstack.greggd` launchd job and plist, the `# greggd managed
-watchdog` cron block (unrelated crontab entries preserved), or the `greggd`
-SCM registration (stop/wait/delete). Discovery is independent per artifact,
-so a stale unit plus a managed cron block are both removed. Permissions are
+`uninstall` removes only the exact invoked `greggd` executable plus startup
+integration whose command target matches that executable: the canonical
+systemd unit (`ExecStart`), the `com.eggstack.greggd` launchd
+`ProgramArguments`, the managed cron block, or the `greggd` SCM image path.
+Foreign or ambiguous artifacts are reported by `--dry-run` and preserved;
+SCM query uncertainty blocks mutation. Discovery is independent per artifact,
+so multiple owned artifacts can be removed together. Permissions are
 preflighted before any teardown mutation and nothing invokes `sudo`
 internally (rerun the printed `sudo <exe> uninstall` instead). An unmanaged
-daemon is stopped via the existing control-socket identity; an uncertain
+Unix daemon is stopped via the existing control-socket identity; an uncertain
 stop blocks deletion rather than orphaning a running process. The `greggd`
-system account is left in place, and Cargo-owned installs keep Cargo
-bookkeeping (Unix delegates to `cargo uninstall`, Windows prints the exact
-handoff). The legacy `packaging/uninstall-windows.ps1` is a thin wrapper
-around `greggd uninstall` (`-RemoveConfig` maps to `--purge`) and no longer
+system account is left in place. Unix Cargo-owned installs complete owned
+startup/direct-stop work, delegate executable removal to `cargo uninstall`,
+then apply `--purge`; Windows prints the exact zero-mutation Cargo handoff.
+The legacy `packaging/uninstall-windows.ps1` is a thin wrapper around
+`greggd uninstall` (`-RemoveConfig` maps to `--purge`) and no longer
 recursively deletes the shared install directory.
 
 ## Platform notes

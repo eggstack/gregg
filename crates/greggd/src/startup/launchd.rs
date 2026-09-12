@@ -9,6 +9,7 @@ use super::method::{
     StartupMethodArg,
 };
 use super::process::{run_bounded_command, MANAGER_COMMAND_TIMEOUT};
+use super::ArtifactOwnership;
 use std::fs;
 use std::io::{self};
 use std::path::{Path, PathBuf};
@@ -93,6 +94,65 @@ pub(crate) fn launchd_is_loaded() -> bool {
         }
     }
     false
+}
+
+/// Parse only the canonical `ProgramArguments` string list emitted by Gregg.
+/// Missing or malformed arguments are intentionally treated as ambiguous.
+pub fn parse_program_arguments(text: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let section = text
+        .split_once("<key>ProgramArguments</key>")?
+        .1
+        .split_once("</array>")?
+        .0;
+    let args: Vec<PathBuf> = section
+        .split("<string>")
+        .skip(1)
+        .filter_map(|part| {
+            part.split_once("</string>")
+                .map(|(value, _)| value.to_string())
+        })
+        .map(PathBuf::from)
+        .collect();
+    let target = args.first()?.clone();
+    if args.is_empty() || target.as_os_str().is_empty() {
+        return None;
+    }
+    let config = args
+        .windows(2)
+        .find(|pair| pair[0].as_os_str() == "--config")
+        .map(|pair| pair[1].clone());
+    Some((target, config))
+}
+
+/// Classify the canonical launchd plist relative to `exe`. A loaded job
+/// without a readable plist is unknown, so it is never removed by guessing.
+pub fn launchd_artifact_ownership(exe: &Path) -> (ArtifactOwnership, bool, Option<PathBuf>) {
+    let plist_path = standard_launchd_plist_path();
+    let plist_exists = plist_path.exists();
+    let loaded = launchd_is_loaded();
+    let Some(content) = plist_exists
+        .then(|| fs::read_to_string(&plist_path).ok())
+        .flatten()
+    else {
+        return (
+            if plist_exists || loaded {
+                ArtifactOwnership::Unknown
+            } else {
+                ArtifactOwnership::Absent
+            },
+            loaded,
+            None,
+        );
+    };
+    let Some((target, config)) = parse_program_arguments(&content) else {
+        return (ArtifactOwnership::Unknown, loaded, None);
+    };
+    let ownership = if gregg_update::uninstall::paths_equivalent(&target, exe) {
+        ArtifactOwnership::Owned
+    } else {
+        ArtifactOwnership::Foreign
+    };
+    (ownership, loaded, config)
 }
 
 /// Detect the current startup state for restart/update dispatch.
@@ -326,7 +386,10 @@ pub fn launchd_uninstall_steps(plist_exists: bool, loaded: bool) -> Vec<LaunchdU
 pub fn uninstall_launchd(exe: &Path) -> Result<(), InstallError> {
     let plist_path = standard_launchd_plist_path();
     let plist_exists = plist_path.exists();
-    let loaded = launchd_is_loaded();
+    let (ownership, loaded, _) = launchd_artifact_ownership(exe);
+    if !ownership.is_owned() {
+        return Ok(());
+    }
     let steps = launchd_uninstall_steps(plist_exists, loaded);
     if steps.is_empty() {
         return Ok(());
@@ -434,5 +497,23 @@ mod tests {
             launchd_uninstall_steps(false, true),
             vec![LaunchdUninstallStep::Bootout]
         );
+    }
+
+    #[test]
+    fn parses_program_arguments_and_config() {
+        let content = "<key>ProgramArguments</key><array><string>/usr/local/bin/greggd</string><string>run</string><string>--config</string><string>/Library/Application Support/gregg/greggd.toml</string></array>";
+        let parsed = parse_program_arguments(content).unwrap();
+        assert_eq!(parsed.0, PathBuf::from("/usr/local/bin/greggd"));
+        assert_eq!(
+            parsed.1,
+            Some(PathBuf::from(
+                "/Library/Application Support/gregg/greggd.toml"
+            ))
+        );
+    }
+
+    #[test]
+    fn malformed_program_arguments_are_unknown() {
+        assert!(parse_program_arguments("<key>ProgramArguments</key><array></array>").is_none());
     }
 }

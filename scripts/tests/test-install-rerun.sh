@@ -51,6 +51,8 @@ FAKE_CURL_MODE="ok"
 # Log of fake-cargo invocations.
 CARGO_LOG="${SANDBOX}/cargo.log"
 : > "$CARGO_LOG"
+STARTUP_LOG="${SANDBOX}/startup.log"
+: > "$STARTUP_LOG"
 
 # Fake release-asset executable content: prints `<program> <version>`.
 make_fake_asset() {
@@ -64,6 +66,7 @@ if [[ "\${1:-}" == "version" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "startup" ]]; then
+  echo "${program}" >> "\${STARTUP_LOG:?}"
   exit 0
 fi
 echo "fake ${program}" >&2
@@ -116,6 +119,7 @@ if [[ "\${1:-}" == "version" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "startup" ]]; then
+  echo "${program}" >> "\${STARTUP_LOG:?}"
   exit 0
 fi
 exit 0
@@ -195,7 +199,7 @@ EOF
 chmod +x "${FAKEBIN}/cargo"
 
 export PATH="${FAKEBIN}:${PATH}"
-export FAKE_VERSION FAKE_CURL_MODE CARGO_LOG
+export FAKE_VERSION FAKE_CURL_MODE CARGO_LOG STARTUP_LOG
 
 run_install() {
   # run_install <args...> — runs install.sh, captures output+status.
@@ -366,6 +370,16 @@ if [[ "$("${DEST_DIR}/gregg" version)" == "gregg 9.9.9" ]]; then
   ok "staged Cargo binary validates at the destination"
 else
   fail "staged binary version check"
+fi
+
+# A staged daemon candidate must use the same post-install startup path as a
+# downloaded candidate, not stop after copying the binary.
+rm -f "${DEST_DIR}/greggd"
+run_install greggd
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/greggd" && "$(grep -c '^greggd$' "$STARTUP_LOG")" -ge 1 ]]; then
+  ok "staged Cargo daemon reaches shared startup finalization"
+else
+  fail "staged Cargo daemon startup finalization (status=$STATUS, out=$OUT)"
 fi
 
 # --- summary -----------------------------------------------------------------------

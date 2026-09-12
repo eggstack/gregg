@@ -9,6 +9,7 @@ use super::method::{
     standard_systemd_config_dir, standard_systemd_unit_path, StartupMethodArg,
 };
 use super::process::{run_bounded_command, MANAGER_COMMAND_TIMEOUT};
+use super::ArtifactOwnership;
 use std::fs;
 use std::io::{self};
 use std::path::{Path, PathBuf};
@@ -83,6 +84,95 @@ pub(crate) fn systemd_is_active() -> bool {
         ),
         Ok(output) if output.status.success()
     )
+}
+
+/// Parse the narrow `ExecStart` shape emitted by Gregg's unit. The parser
+/// intentionally rejects ambiguous lines instead of trying to understand
+/// arbitrary systemd syntax.
+pub fn parse_exec_start_target(text: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let value = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("ExecStart="))
+        .or_else(|| {
+            let trimmed = text.trim();
+            trimmed.starts_with('{').then_some(trimmed)
+        })?
+        .trim();
+    parse_command_target(value)
+}
+
+fn parse_command_target(value: &str) -> Option<(PathBuf, Option<PathBuf>)> {
+    let command = value
+        .strip_prefix("{ path=")
+        .or_else(|| value.strip_prefix("{path="))
+        .unwrap_or(value);
+    let target = command
+        .split(|c: char| c.is_whitespace() || c == ';' || c == '}')
+        .next()?
+        .trim_matches('"')
+        .strip_prefix('-')
+        .unwrap_or(command.split_whitespace().next()?)
+        .trim_matches('"');
+    if target.is_empty() || target.contains('=') || !target.starts_with('/') {
+        return None;
+    }
+    let tokens: Vec<&str> = value
+        .split_whitespace()
+        .map(|token| token.trim_matches('"').trim_matches(';').trim_matches('}'))
+        .collect();
+    let config = tokens
+        .windows(2)
+        .find(|pair| pair[0] == "--config")
+        .and_then(|pair| pair.get(1))
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from);
+    Some((PathBuf::from(target), config))
+}
+
+/// Classify the canonical systemd artifact relative to `exe`. A present
+/// unit whose target cannot be parsed is `Unknown`, never owned by name.
+pub fn systemd_artifact_ownership(exe: &Path) -> (ArtifactOwnership, bool, Option<PathBuf>) {
+    let unit_path = standard_systemd_unit_path();
+    let unit_exists = unit_path.exists();
+    let active = if unit_exists || is_systemd_environment() {
+        systemd_is_active()
+    } else {
+        false
+    };
+    let command = if unit_exists {
+        fs::read_to_string(&unit_path).ok()
+    } else if active {
+        run_bounded_command(
+            "systemctl",
+            &["show", "greggd", "--property=ExecStart", "--value"],
+            MANAGER_COMMAND_TIMEOUT,
+        )
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        None
+    };
+    let Some(command) = command else {
+        return (
+            if unit_exists || active {
+                ArtifactOwnership::Unknown
+            } else {
+                ArtifactOwnership::Absent
+            },
+            active,
+            None,
+        );
+    };
+    let Some((target, config)) = parse_exec_start_target(&command) else {
+        return (ArtifactOwnership::Unknown, active, None);
+    };
+    let ownership = if gregg_update::uninstall::paths_equivalent(&target, exe) {
+        ArtifactOwnership::Owned
+    } else {
+        ArtifactOwnership::Foreign
+    };
+    (ownership, active, config)
 }
 fn ensure_greggd_user() -> io::Result<()> {
     // Check if user exists via `id -u greggd`, bounded like every other
@@ -352,12 +442,11 @@ pub fn systemd_uninstall_steps(unit_exists: bool, active: bool) -> Vec<SystemdUn
 /// intentionally left in place.
 pub fn uninstall_systemd(exe: &Path) -> Result<(), InstallError> {
     let unit_path = standard_systemd_unit_path();
+    let (ownership, active, _) = systemd_artifact_ownership(exe);
+    if !ownership.is_owned() {
+        return Ok(());
+    }
     let unit_exists = unit_path.exists();
-    let active = if unit_exists || is_systemd_environment() {
-        systemd_is_active()
-    } else {
-        false
-    };
     let steps = systemd_uninstall_steps(unit_exists, active);
     if steps.is_empty() {
         return Ok(());
@@ -484,5 +573,30 @@ mod tests {
         // A manager-reported active service without the canonical file
         // still gets stop/disable; there is nothing to remove or reload.
         assert_eq!(systemd_uninstall_steps(false, true), vec![Stop, Disable]);
+    }
+
+    #[test]
+    fn parses_canonical_exec_start_and_config() {
+        let parsed = parse_exec_start_target(
+            "ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.0, PathBuf::from("/usr/local/bin/greggd"));
+        assert_eq!(parsed.1, Some(PathBuf::from("/etc/gregg/greggd.toml")));
+    }
+
+    #[test]
+    fn parses_systemctl_exec_start_shape() {
+        let parsed = parse_exec_start_target(
+            "{ path=/usr/local/bin/greggd ; argv[]=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml ; }",
+        )
+        .unwrap();
+        assert_eq!(parsed.0, PathBuf::from("/usr/local/bin/greggd"));
+    }
+
+    #[test]
+    fn malformed_exec_start_is_not_owned() {
+        assert!(parse_exec_start_target("ExecStart=\n").is_none());
+        assert!(parse_exec_start_target("ExecStart=not a command =").is_none());
     }
 }

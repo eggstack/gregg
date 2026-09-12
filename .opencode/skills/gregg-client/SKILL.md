@@ -20,7 +20,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `main` | `src/main.rs` | Entry point, event loop (`tokio::select!` biased + 10-second selection-highlight deadline), TUI wiring (update is synchronous, before Tokio) |
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, `--dry-run`/`--purge`), `version`, `eggpool` |
 | `update` | `src/update.rs` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings) |
-| `uninstall` | `src/uninstall.rs` | Component-safe client uninstall: exact-exe plan/render/execute, default config preservation, opt-in purge of only the resolved config file, Cargo-ownership handoff via the shared `gregg-update` primitives; never inits the TUI |
+| `uninstall` | `src/uninstall.rs` | Component-safe client uninstall: exact-exe plan/render/execute, default config preservation, Unix Cargo-owned package removal followed by post-success purge (Windows handoff remains zero-mutation) via shared `gregg-update` primitives; never inits the TUI |
 | `config/*` | `src/config/*.rs` | Config ownership split (façade `src/config.rs` re-exports `crate::config::X`): model entries/limits/primitives, store coordination + atomic persistence + errors, violation kinds, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, fleet-aware mixed-height viewport logic, display order, independent drive/network expansions, transient selection highlight, and offline provenance |
 | `action` | `src/action.rs` | `Action` enum including `ToggleDrives`, `ToggleNetwork`, and Plan 087's `ClearSelectionHighlight` |

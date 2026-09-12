@@ -33,7 +33,7 @@ the wire protocol (`gregg-protocol` is deliberately not involved).
 | `exec` | `src/exec.rs` | `curl`/Cargo discovery, bounded child execution with kill/reap, crates.io `max_stable_version` lookup, downloads (404-only fallback signal) |
 | `verify` | `src/verify.rs` | SHA-256 checksum + staged candidate `version` identity verification (`"<program> X.Y.Z"`) |
 | `stage` | `src/stage.rs` | Owner-private `TempDir` staging, current-exe resolution, permission probe (`check_write_permission_for` names the caller operation), `self-replace` replacement |
-| `uninstall` | `src/uninstall.rs` | Generic executable-uninstall primitives: exact current-exe resolution, writable-parent preflight with `uninstall` elevation hints, `self-replace` self-deletion, Cargo-ownership detection via `cargo install --list` confirmation (never pathname guessing), Cargo handoff/delegation |
+| `uninstall` | `src/uninstall.rs` | Generic executable-uninstall primitives: exact current-exe resolution, shared path equivalence, writable-parent preflight with `uninstall` elevation hints, `self-replace` self-deletion, Cargo-ownership detection via `cargo install --list` confirmation (never pathname guessing), Cargo handoff/delegation |
 
 ## Contract
 
@@ -88,11 +88,11 @@ target in all consumers at once, never in one place alone.
 
 - No dependency on app crates, service managers, TUI, EggPool, or protocol.
 - Uninstall stays in the same boundary: the shared crate owns only generic
-  executable operations (resolution, preflight, self-delete, Cargo
-  ownership). Startup teardown and config/data removal live beside their
+  executable operations (resolution, path equivalence, preflight, self-delete,
+  Cargo ownership). Startup teardown and config/data removal live beside their
   existing owners in each application crate. No install receipt is kept;
-  provenance is exact `current_exe()` identity plus canonical artifacts
-  plus Cargo confirmation.
+  provenance is exact `current_exe()` identity plus parsed canonical artifact
+  targets plus Cargo confirmation.
 - Bounded execution everywhere: `curl --max-time`, build deadlines with
   kill/reap (no orphaned compilers), no predictable shared-temp pathnames.
 - Publish order: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.

@@ -143,8 +143,112 @@ function Get-DestinationClassification {
     return "foreign"
 }
 
+function Install-VerifiedCandidate {
+    param(
+        [string]$Program,
+        [string]$Candidate,
+        [string]$DestPath,
+        [string]$DestDir,
+        [string]$Scope,
+        [string]$ExistingVersion
+    )
+
+    New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+    if ($Program -eq "greggd") {
+        $ProgramDataDir = Join-Path $env:ProgramData "gregg"
+        $DefaultConfigPath = Join-Path $ProgramDataDir "greggd.toml"
+        if (-not (Test-Path $ProgramDataDir)) {
+            New-Item -ItemType Directory -Path $ProgramDataDir -Force | Out-Null
+        }
+        if (-not (Test-Path $DefaultConfigPath)) {
+            $DefaultConfig = @"
+name = "greggd"
+host = "0.0.0.0"
+port = 11310
+sample_interval_ms = 1000
+stale_after_ms = 10000
+"@
+            [System.IO.File]::WriteAllText($DefaultConfigPath, $DefaultConfig)
+            Write-Host "Created default config: $DefaultConfigPath"
+        } else {
+            Write-Host "Existing config preserved: $DefaultConfigPath"
+        }
+    }
+
+    $serviceWasRunning = $false
+    if ($Program -eq "greggd" -and $IsAdmin) {
+        $svc = Get-Service -Name greggd -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq 'Running') {
+            Write-Host "Stopping existing greggd service..."
+            Stop-Service -Name greggd -Force -ErrorAction SilentlyContinue
+            try {
+                $svc.WaitForStatus("Stopped", (New-TimeSpan -Seconds 30)) | Out-Null
+            } catch {
+                throw "greggd did not reach Stopped within 30s; aborting install: $($_.Exception.Message)"
+            }
+            $serviceWasRunning = $true
+        }
+    }
+
+    Copy-Item -Path $Candidate -Destination $DestPath -Force
+    if ($Scope -eq "replace") {
+        $NewVersion = Get-ExistingVersion -DestPath $DestPath
+        Write-Host "Updated $Program at $DestPath ($ExistingVersion -> $NewVersion)"
+    } else {
+        Write-Host "Installed $Program to $DestPath"
+    }
+
+    if ($Program -eq "greggd" -and $IsAdmin) {
+        $InstalledExe = $DestPath
+        $ProgramDataDir = Join-Path $env:ProgramData "gregg"
+        $DefaultConfigPath = Join-Path $ProgramDataDir "greggd.toml"
+        $ImagePath = "`"$InstalledExe`" service --config `"$DefaultConfigPath`""
+        $svc = Get-Service -Name greggd -ErrorAction SilentlyContinue
+        if ($svc) {
+            Write-Host "Updating service registration..."
+            sc.exe config greggd binPath= $ImagePath start= auto | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe config failed" }
+        } else {
+            Write-Host "Registering service..."
+            sc.exe create greggd binPath= $ImagePath start= auto DisplayName= "Gregg Metrics Daemon" | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed" }
+        }
+        sc.exe config greggd obj= "NT AUTHORITY\LocalService" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "sc.exe config obj= failed" }
+        sc.exe failure greggd reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed" }
+        Write-Host "Starting service..."
+        Start-Service -Name greggd -ErrorAction SilentlyContinue
+        $svc2 = Get-Service -Name greggd
+        try {
+            $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
+        } catch {
+            throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
+        }
+        Write-Host "Service running"
+        Write-Host "Service: greggd (Gregg Metrics Daemon) Automatic, LocalService"
+    } elseif ($Program -eq "greggd" -and -not $IsAdmin) {
+        Write-Host "note: greggd installed to $DestDir\$Program.exe (user-local)." -ForegroundColor Yellow
+        Write-Host "For a system service, rerun as Administrator:" -ForegroundColor Yellow
+        if ($Tag) {
+            Write-Host "  irm https://github.com/$Repo/releases/download/$Tag/install.ps1 | iex  # then -Component Greggd" -ForegroundColor Yellow
+        } else {
+            Write-Host "  irm https://github.com/$Repo/releases/latest/download/install.ps1 | iex  # then -Component Greggd" -ForegroundColor Yellow
+        }
+        Write-Host "No service was registered; rerun as Administrator to register the greggd service." -ForegroundColor Yellow
+    }
+
+    if (-not (Test-OnPath $DestDir)) {
+        Write-Host "note: $DestDir is not in PATH; add it to your PATH or use the full path." -ForegroundColor Yellow
+    }
+}
+
 function Invoke-CargoFallback {
-    param([string]$Program)
+    param(
+        [string]$Program,
+        [string]$Scope,
+        [string]$ExistingVersion
+    )
 
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if (-not $cargo) {
@@ -193,20 +297,14 @@ function Invoke-CargoFallback {
         Write-Host "Verified candidate: $out"
 
         $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
-        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
         $DestPath = Join-Path $DestDir "$Program.exe"
-        Copy-Item -Path $Staged -Destination $DestPath -Force
-        Write-Host "$Program installed via staged Cargo build to $DestPath"
+        Install-VerifiedCandidate -Program $Program -Candidate $Staged -DestPath $DestPath -DestDir $DestDir -Scope $Scope -ExistingVersion $ExistingVersion
     } finally {
         if (Test-Path -LiteralPath $StageRoot) {
             Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
-    $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
-    if (-not (Test-OnPath $DestDir)) {
-        Write-Host "note: $DestDir is not in PATH; add it to your PATH or use the full path." -ForegroundColor Yellow
-    }
 }
 
 function Install-Program {
@@ -232,7 +330,7 @@ function Install-Program {
     # Source-only hosts go directly to Cargo fallback
     if (-not $Target -or -not $SupportedBinary) {
         Write-Host "Host $Arch ($($Target ? $Target : 'unknown')) has no prebuilt $Program asset; trying Cargo fallback..."
-        Invoke-CargoFallback -Program $Program
+        Invoke-CargoFallback -Program $Program -Scope $Scope -ExistingVersion $ExistingVersion
         return
     }
 
@@ -276,7 +374,7 @@ function Install-Program {
             }
             if ($httpCode -eq 404) {
                 Write-Host "No prebuilt $Program asset at $Url (HTTP 404); trying Cargo fallback..."
-                Invoke-CargoFallback -Program $Program
+                Invoke-CargoFallback -Program $Program -Scope $Scope -ExistingVersion $ExistingVersion
                 return
             } else {
                 throw "failed to download $Asset from $Url (HTTP $httpCode): $($_.Exception.Message)"
@@ -313,112 +411,10 @@ function Install-Program {
         if ($StrippedVersion -and $verPart -ne $StrippedVersion) { throw "candidate version $verPart != requested $StrippedVersion (output: $out)" }
         Write-Host "Verified candidate: $out"
 
-        # Do not install unverified partial download — verification done
-
-        New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
-
-        # For greggd, preserve existing config and handle SCM registration
-        if ($Program -eq "greggd") {
-            $ProgramDataDir = Join-Path $env:ProgramData "gregg"
-            $DefaultConfigPath = Join-Path $ProgramDataDir "greggd.toml"
-            if (-not (Test-Path $ProgramDataDir)) {
-                New-Item -ItemType Directory -Path $ProgramDataDir -Force | Out-Null
-            }
-            if (-not (Test-Path $DefaultConfigPath)) {
-                $DefaultConfig = @"
-name = "greggd"
-host = "0.0.0.0"
-port = 11310
-sample_interval_ms = 1000
-stale_after_ms = 10000
-"@
-                [System.IO.File]::WriteAllText($DefaultConfigPath, $DefaultConfig)
-                Write-Host "Created default config: $DefaultConfigPath"
-            } else {
-                Write-Host "Existing config preserved: $DefaultConfigPath"
-            }
-        }
-
-        # Install binary (overwrite)
-        # If greggd is running as a service, stop it first when Administrator
-        $serviceWasRunning = $false
-        if ($Program -eq "greggd" -and $IsAdmin) {
-            $svc = Get-Service -Name greggd -ErrorAction SilentlyContinue
-            if ($svc -and $svc.Status -eq 'Running') {
-                Write-Host "Stopping existing greggd service..."
-                Stop-Service -Name greggd -Force -ErrorAction SilentlyContinue
-                try {
-                    $svc.WaitForStatus("Stopped", (New-TimeSpan -Seconds 30)) | Out-Null
-                } catch {
-                    throw "greggd did not reach Stopped within 30s; aborting install: $($_.Exception.Message)"
-                }
-                $serviceWasRunning = $true
-            }
-        }
-
-        Copy-Item -Path $Candidate -Destination $DestPath -Force
-        if ($Scope -eq "replace") {
-            $NewVersion = Get-ExistingVersion -DestPath $DestPath
-            Write-Host "Updated $Program at $DestPath ($ExistingVersion -> $NewVersion)"
-        } else {
-            Write-Host "Installed $Program to $DestPath"
-        }
-
-        # Register / update SCM service for greggd when Administrator
-        if ($Program -eq "greggd" -and $IsAdmin) {
-            $InstalledExe = $DestPath
-            $ProgramDataDir = Join-Path $env:ProgramData "gregg"
-            $DefaultConfigPath = Join-Path $ProgramDataDir "greggd.toml"
-            $ImagePath = "`"$InstalledExe`" service --config `"$DefaultConfigPath`""
-            $svc = Get-Service -Name greggd -ErrorAction SilentlyContinue
-            if ($svc) {
-                Write-Host "Updating service registration..."
-                sc.exe config greggd binPath= $ImagePath start= auto | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "sc.exe config failed" }
-            } else {
-                Write-Host "Registering service..."
-                sc.exe create greggd binPath= $ImagePath start= auto DisplayName= "Gregg Metrics Daemon" | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "sc.exe create failed" }
-            }
-            sc.exe config greggd obj= "NT AUTHORITY\LocalService" | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "sc.exe config obj= failed" }
-            sc.exe failure greggd reset= 86400 actions= restart/60000/restart/60000/restart/60000 | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "sc.exe failure failed" }
-            if ($serviceWasRunning -or $svc) {
-                Write-Host "Starting service..."
-                Start-Service -Name greggd -ErrorAction SilentlyContinue
-                $svc2 = Get-Service -Name greggd
-                try {
-                    $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
-                } catch {
-                    throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
-                }
-                Write-Host "Service running"
-            } else {
-                Write-Host "Starting service..."
-                Start-Service -Name greggd
-                $svc2 = Get-Service -Name greggd
-                try {
-                    $svc2.WaitForStatus("Running", (New-TimeSpan -Seconds 30)) | Out-Null
-                } catch {
-                    throw "greggd did not reach Running within 30s; service installed but not running: $($_.Exception.Message)"
-                }
-            }
-            Write-Host "Service: greggd (Gregg Metrics Daemon) Automatic, LocalService"
-        } elseif ($Program -eq "greggd" -and -not $IsAdmin) {
-            Write-Host "note: greggd installed to $DestDir\$Program.exe (user-local)." -ForegroundColor Yellow
-            Write-Host "For a system service, rerun as Administrator:" -ForegroundColor Yellow
-            if ($Tag) {
-                Write-Host "  irm https://github.com/$Repo/releases/download/$Tag/install.ps1 | iex  # then -Component Greggd" -ForegroundColor Yellow
-            } else {
-                Write-Host "  irm https://github.com/$Repo/releases/latest/download/install.ps1 | iex  # then -Component Greggd" -ForegroundColor Yellow
-            }
-            Write-Host "No service was registered; rerun as Administrator to register the greggd service." -ForegroundColor Yellow
-        }
-
-        if (-not (Test-OnPath $DestDir)) {
-            Write-Host "note: $DestDir is not in PATH; add it to your PATH or use the full path." -ForegroundColor Yellow
-        }
+        # Do not install an unverified partial download — verification done.
+        # Prebuilt and staged-Cargo candidates share the same replacement and
+        # daemon post-install finalization path.
+        Install-VerifiedCandidate -Program $Program -Candidate $Candidate -DestPath $DestPath -DestDir $DestDir -Scope $Scope -ExistingVersion $ExistingVersion
     } finally {
         if (Test-Path $Tmp) { Remove-Item -LiteralPath $Tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }

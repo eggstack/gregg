@@ -32,8 +32,8 @@ service lifecycle. For platform metric collection itself, use the
 | `startup/*` | `src/startup/*.rs` | Startup install/teardown/instructions/restart split by ownership (façade `src/startup.rs` re-exports `crate::startup::X`): method identity/paths/detection, bounded child execution, systemd unit/install/restart/uninstall, launchd plist/install/restart/uninstall, shell quoting + cron block/install/uninstall, `StartupState` detection, errors/atomic writes/privilege/install dispatch/instructions/restart coordination |
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Thin daemon lifecycle coordinator over the shared `gregg-update` mechanism (binds identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after preparation, manager-aware restart via `startup_state`, `UpdatedButRestartFailed`); transport/staging/replacement live in `gregg-update` |
-| `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent discovery, pure plan shared by `--dry-run`/execution, preflight before teardown, startup-owner teardown + SCM `unregister`, direct control-stop with uncertain-stop blocking, default config preservation with opt-in `--purge` |
-| `service` | `src/service/` | Windows-only `ServiceManager` (`start`/`stop`/`restart`/`is_active`/`unregister`); native dispatcher entry; fake `ScmAdapter` tests run on every platform |
+| `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent discovery, explicit `ArtifactOwnership` from exact systemd/launchd/cron/SCM executable targets, pure plan shared by `--dry-run`/execution, preflight before teardown, startup-owner teardown + SCM `unregister`, direct control-stop with uncertain-stop blocking, default config preservation with opt-in `--purge`; Unix Cargo-owned lifecycle completes before Cargo removal and post-success purge |
+| `service` | `src/service/` | Windows-only `ServiceManager` (`start`/`stop`/`restart`/`is_active`/`unregister` plus bounded state/image-path registration query); native dispatcher entry; fake `ScmAdapter` tests run on every platform |
 
 ## Runtime ownership
 
@@ -73,6 +73,7 @@ daemon-version transport is deferred.
 | `host` / `port` | Atomic persisted mutation; applies on next start |
 | `version` | Compile-time version string |
 | `start` / `service` | Windows SCM only (`start` is lifecycle manager; `service` is the internal SCM entry point) |
+| `uninstall` | Removes only the exact invoked executable and startup artifacts whose parsed target matches it; foreign/ambiguous systemd, launchd, cron, and SCM artifacts are preserved, unknown SCM state blocks mutation, and config is purged only after successful Unix Cargo removal when `--purge` is requested |
 
 ## Unix control socket invariants
 

@@ -1,6 +1,7 @@
 //! Shell quoting, cron watchdog block rendering/merging, and cron installation.
 
 use super::install::InstallError;
+use super::ArtifactOwnership;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::io::{self};
@@ -51,6 +52,66 @@ pub fn shell_quote(path: &Path) -> Result<String, ShellQuoteError> {
 }
 // ── Cron block rendering ──────────────────────────────────────────────────
 pub const CRON_MANAGED_MARKER: &str = "# greggd managed watchdog";
+
+/// Classify the managed cron block by the executable it actually invokes.
+/// The marker alone is not ownership evidence.
+pub fn cron_block_ownership(crontab: &str, exe: &Path) -> ArtifactOwnership {
+    let lines: Vec<&str> = crontab.lines().collect();
+    let markers: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| (line.trim() == CRON_MANAGED_MARKER).then_some(index))
+        .collect();
+    let Some(&marker) = markers.first() else {
+        return ArtifactOwnership::Absent;
+    };
+    if markers.len() != 1 || marker + 2 >= lines.len() {
+        return ArtifactOwnership::Unknown;
+    }
+    let first = parse_cron_command_target(lines[marker + 1]);
+    let second = parse_cron_command_target(lines[marker + 2]);
+    let (Ok(first), Ok(second)) = (first, second) else {
+        return ArtifactOwnership::Unknown;
+    };
+    if lines
+        .get(marker + 3)
+        .is_some_and(|line| line.contains("croncheck"))
+    {
+        return ArtifactOwnership::Unknown;
+    }
+    if first != second {
+        return ArtifactOwnership::Unknown;
+    }
+    if gregg_update::uninstall::paths_equivalent(&first, exe) {
+        ArtifactOwnership::Owned
+    } else {
+        ArtifactOwnership::Foreign
+    }
+}
+
+fn parse_cron_command_target(line: &str) -> Result<PathBuf, ()> {
+    let command = if let Some(rest) = line.strip_prefix("@reboot ") {
+        rest
+    } else {
+        let mut fields = line.splitn(6, char::is_whitespace);
+        for _ in 0..5 {
+            fields.next().ok_or(())?;
+        }
+        fields.next().ok_or(())?.trim_start()
+    };
+    let command = command.strip_prefix('\'').ok_or(())?;
+    let end = command.find('\'').ok_or(())?;
+    let encoded = &command[..end];
+    let target = encoded.replace("'\\''", "'");
+    let remainder = command[end + 1..].trim();
+    if target.is_empty()
+        || remainder.contains([';', '|', '&', '$', '\n', '\r'])
+        || !(remainder == "croncheck" || remainder.ends_with(" croncheck"))
+    {
+        return Err(());
+    }
+    Ok(PathBuf::from(target))
+}
 
 /// Render the canonical cron block for the given executable and config.
 ///
@@ -262,6 +323,14 @@ pub fn cron_uninstall_changed(existing: &str) -> Option<String> {
     }
 }
 
+/// Return the stripped crontab only when the managed block targets `exe`.
+/// Foreign and ambiguous blocks are preserved.
+#[must_use]
+pub fn cron_uninstall_changed_for(existing: &str, exe: &Path) -> Option<String> {
+    (cron_block_ownership(existing, exe) == ArtifactOwnership::Owned)
+        .then(|| remove_managed_cron_block(existing))
+}
+
 /// Remove only the Gregg managed watchdog block from the current
 /// account's crontab, preserving unrelated entries byte-for-byte where
 /// [`remove_managed_cron_block`] already guarantees that behavior.
@@ -298,6 +367,29 @@ pub fn uninstall_cron() -> Result<bool, InstallError> {
                 source: e,
             }
         }
+    })?;
+    println!("greggd cron watchdog removed");
+    Ok(true)
+}
+
+/// Remove the managed block only when its command targets `exe`.
+pub fn uninstall_cron_for(exe: &Path) -> Result<bool, InstallError> {
+    let existing = match run_crontab_list() {
+        Ok(content) => content,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(InstallError::Io {
+                path: PathBuf::from("crontab -l"),
+                source: e,
+            });
+        }
+    };
+    let Some(stripped) = cron_uninstall_changed_for(&existing, exe) else {
+        return Ok(false);
+    };
+    run_crontab_install(&stripped).map_err(|e| InstallError::Io {
+        path: PathBuf::from("crontab -"),
+        source: e,
     })?;
     println!("greggd cron watchdog removed");
     Ok(true)
@@ -411,5 +503,34 @@ mod tests {
         let cfg = Path::new("/etc/gregg/greggd.toml");
         let block = cron_block_with_config(exe, cfg).unwrap();
         assert_eq!(cron_uninstall_changed(&block), Some(String::new()));
+    }
+
+    #[test]
+    fn cron_ownership_requires_exact_executable_target() {
+        let current = Path::new("/tmp/current/greggd");
+        let foreign = Path::new("/usr/local/bin/greggd");
+        let block = cron_block_with_config(current, Path::new("/tmp/current/greggd.toml")).unwrap();
+        assert_eq!(
+            cron_block_ownership(&block, current),
+            ArtifactOwnership::Owned
+        );
+        assert_eq!(
+            cron_block_ownership(&block, foreign),
+            ArtifactOwnership::Foreign
+        );
+        assert_eq!(
+            cron_uninstall_changed_for(&block, foreign),
+            None,
+            "foreign cron blocks must be preserved"
+        );
+    }
+
+    #[test]
+    fn malformed_cron_ownership_is_not_guessed() {
+        let malformed = format!("{CRON_MANAGED_MARKER}\n@reboot '/tmp/greggd' croncheck\n");
+        assert_eq!(
+            cron_block_ownership(&malformed, Path::new("/tmp/greggd")),
+            ArtifactOwnership::Unknown
+        );
     }
 }

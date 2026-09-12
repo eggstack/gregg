@@ -424,7 +424,7 @@ library callers from async tasks must move the mutation to a blocking thread.
 | `edit` | Open config in editor |
 | `version` | Print client version |
 | `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings); full flow (`run_simple_update`) lives in `gregg-update` |
-| `uninstall [--dry-run] [--purge]` | Remove only the exact invoked client executable (sibling `greggd` survives; no directory recursion); config preserved by default, `--purge` removes only the resolved config file, `--dry-run` mutates nothing; Cargo-owned installs delegate (Unix) or print the handoff (Windows); never inits the TUI runtime |
+| `uninstall [--dry-run] [--purge]` | Remove only the exact invoked client executable (sibling `greggd` survives; no directory recursion); config preserved by default, `--purge` removes only the resolved config file after successful Unix Cargo package removal, `--dry-run` shows Cargo plus config intent without mutation; Windows Cargo-owned installs print the zero-mutation handoff; never inits the TUI runtime |
 | `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 
 ## EggPool

@@ -58,9 +58,9 @@ gregg uninstall --purge                      # also remove the client config fil
 `gregg uninstall` deletes only the exact invoked executable (a sibling
 `greggd` sharing the directory survives; directories are never removed
 recursively). Configuration is preserved by default; `--purge` removes only
-the resolved client config file. Cargo-owned installs keep Cargo
-bookkeeping (Unix delegates to `cargo uninstall`, Windows prints the exact
-handoff).
+the resolved client config file. Cargo-owned Unix installs delegate package
+removal to Cargo and apply `--purge` only after Cargo succeeds; Windows prints
+the exact zero-mutation handoff.
 
 `gregg add` requires an explicit port. Host-only input such as
 `gregg add 192.168.1.10` is rejected; supply `host:port`, an HTTP URL

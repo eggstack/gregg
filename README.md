@@ -131,11 +131,14 @@ macOS `~/Library/Application Support/gregg/gregg.toml`, Windows
 
 Rerunning a bootstrap installer at the same scope replaces that scope's
 component in place (first install vs update is reported; an unrelated
-executable at the canonical path is never overwritten). `gregg update` /
-`greggd update` instead update the exact invoked binary. `gregg uninstall` /
-`greggd uninstall` remove only the exact invoked binary plus (for the daemon)
-its Gregg-owned startup integration; configuration is preserved unless
-`--purge` is passed. See [Installation](docs/installation.md).
+executable at the canonical path is never overwritten). Prebuilt and Cargo
+fallback daemon installs use the same post-install startup finalization.
+`gregg update` / `greggd update` instead update the exact invoked binary.
+`gregg uninstall` / `greggd uninstall` remove only the exact invoked binary;
+daemon startup artifacts are removed only when their command targets that
+same executable. Foreign or ambiguous manager/cron artifacts are preserved.
+Configuration is preserved unless `--purge` is passed. See
+[Installation](docs/installation.md).
 
 ```bash
 gregg list                         # list configured endpoints

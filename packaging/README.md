@@ -84,9 +84,12 @@ The script:
   temporary cleanup on success/failure, and never silently invokes `sudo`;
 - on an unsupported/unknown host (or `armv7l`) skips the 404-prone download
   and tries `cargo install --locked` (with `--version "=X.Y.Z"` when pinned and
-  `--root` derived from the destination) if Cargo exists;
+  `--root` derived from the destination) if Cargo exists; a staged `greggd`
+  candidate then follows the same config and startup finalization as a
+  prebuilt candidate, including SCM-safe stop/replace/register/restart on
+  Windows;
 - treats a checksum or version mismatch as a hard error (no Cargo fallback);
-- after a verified `greggd` install, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary, not duplicated in shell: when privileged it runs `sudo greggd startup install` (systemd: `daemon-reload` + `enable` + `start`/`restart`; launchd: `bootstrap` + `kickstart -k`; cron: idempotent `# greggd managed watchdog` block). When unprivileged on a systemd/launchd host it prints the exact elevated `sudo <exe> startup install --method <...>` and does **not** silently fall back to cron; on a cron host it installs the user-local crontab without elevation. The client `gregg` has no startup behavior.
+- after a verified `greggd` install, whether prebuilt or Cargo-staged, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary, not duplicated in shell: when privileged it runs `sudo greggd startup install` (systemd: `daemon-reload` + `enable` + `start`/`restart`; launchd: `bootstrap` + `kickstart -k`; cron: idempotent `# greggd managed watchdog` block). When unprivileged on a systemd/launchd host it prints the exact elevated `sudo <exe> startup install --method <...>` and does **not** silently fall back to cron; on a cron host it installs the user-local crontab without elevation. The client `gregg` has no startup behavior.
 
 No-argument behaviour: attached to an interactive terminal, a tiny selector is
 shown; piped/noninteractive without a component prints concise usage and exits
@@ -111,7 +114,7 @@ hosts. `install-windows.ps1` remains a compatible local-build wrapper; `install.
 
 ## Startup integration (Plan 100)
 
-Unix startup registration is owned by `greggd startup install` (and `startup instructions` for manual operators). The binary embeds the canonical systemd unit and launchd plist via `include_str!` so `cargo install` works without a checkout; `packaging/systemd/greggd.service` and `packaging/launchd/com.eggstack.greggd.plist` remain the human-readable source and are kept synchronized by build. `cron` uses `croncheck` as the sole health/start primitive (`@reboot` + `* * * * *`), shell-quoted, idempotent, preserving unrelated crontab entries, never editing `/var/spool/cron` directly. `restart` is manager-aware (`systemctl restart greggd` / `launchctl kickstart -k` / SCM / direct stop+detached run) and factored for `update` reuse. No PID files, no process-name scanning, no public shutdown route, no competing supervisor fallback.
+Unix startup registration is owned by `greggd startup install` (and `startup instructions` for manual operators). The binary embeds the canonical systemd unit and launchd plist via `include_str!` so `cargo install` works without a checkout; `packaging/systemd/greggd.service` and `packaging/launchd/com.eggstack.greggd.plist` remain the human-readable source and are kept synchronized by build. `cron` uses `croncheck` as the sole health/start primitive (`@reboot` + `* * * * *`), shell-quoted, idempotent, preserving unrelated crontab entries, never editing `/var/spool/cron` directly. `restart` is manager-aware (`systemctl restart greggd` / `launchctl kickstart -k` / SCM / direct stop+detached run) and factored for `update` reuse. Uninstall compares each artifact's executable target with the exact invoked binary; foreign or ambiguous manager/cron artifacts are preserved. No PID files, no process-name scanning, no public shutdown route, no competing supervisor fallback.
 
 ## Legacy local-build helpers (developer / packaging path)
 

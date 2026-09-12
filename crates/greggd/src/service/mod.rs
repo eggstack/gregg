@@ -3,6 +3,7 @@
 //! Provides the Windows SCM abstraction used by the Windows-only CLI path.
 
 use std::fmt;
+use std::path::PathBuf;
 
 pub mod windows;
 
@@ -93,6 +94,16 @@ pub enum ServiceState {
     StopPending,
 }
 
+/// One bounded SCM observation, including the registered image path used for
+/// uninstall ownership. `None` is meaningful only for `NotInstalled`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceRegistration {
+    /// Current SCM state.
+    pub state: ServiceState,
+    /// Registered executable image path, when the service exists.
+    pub executable_path: Option<PathBuf>,
+}
+
 impl ServiceState {
     /// Returns `true` if the service is considered active (running or
     /// temporarily transitioning through a pending state that will
@@ -109,6 +120,9 @@ impl ServiceState {
 /// and provide a uniform interface for `start`/`stop`/`restart`/`is_active`
 /// operations.
 pub trait ServiceManager: Send + Sync {
+    /// Query state and registered executable path in one native observation.
+    fn query_registration(&self) -> Result<ServiceRegistration, ServiceError>;
+
     /// Start the greggd service.
     ///
     /// # Errors

@@ -15,7 +15,8 @@
 //! configuration/data removal lives in each application crate beside the
 //! existing owners of those artifacts.
 
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::UpdateError;
 use crate::stage::{check_write_permission_for, current_exe_path};
@@ -23,6 +24,46 @@ use crate::stage::{check_write_permission_for, current_exe_path};
 /// Re-exported resolution so both binaries remove the exact invoked
 /// executable rather than an assumed install prefix.
 pub use crate::stage::current_exe_path as resolve_uninstall_target;
+
+/// Compare two executable paths using filesystem identity when both paths
+/// exist, with a lexical absolute fallback for staged or already-removed
+/// targets. This is deliberately basename-independent: two `greggd` files
+/// in different installation scopes are different installations.
+#[must_use]
+pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
+    let left = fs::canonicalize(left).unwrap_or_else(|_| absolute_lexical(left));
+    let right = fs::canonicalize(right).unwrap_or_else(|_| absolute_lexical(right));
+    #[cfg(windows)]
+    {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn absolute_lexical(path: &Path) -> PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
+    };
+    let mut result = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if result.file_name().is_some() {
+                    result.pop();
+                }
+            }
+            other => result.push(other.as_os_str()),
+        }
+    }
+    result
+}
 
 /// Preflight that the install location of `exe_path` is writable before
 /// any teardown mutation.
@@ -374,6 +415,13 @@ mod tests {
             }
             std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
+    }
+
+    #[test]
+    fn paths_equivalent_normalizes_lexical_spellings() {
+        let path = std::env::temp_dir().join("gregg-path-identity");
+        assert!(paths_equivalent(&path, &path.join("child").join("..")));
+        assert!(!paths_equivalent(&path, &path.with_file_name("other")));
     }
 
     #[test]

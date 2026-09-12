@@ -36,7 +36,7 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 
 #[cfg(any(test, target_os = "windows"))]
-use super::{ServiceError, ServiceManager, ServiceState};
+use super::{ServiceError, ServiceManager, ServiceRegistration, ServiceState};
 
 #[cfg(target_os = "windows")]
 use std::path::{Path, PathBuf};
@@ -76,6 +76,9 @@ const STATE_POLL_INTERVAL_MS: u64 = 200;
 pub(crate) trait ScmAdapter: Send + Sync {
     /// Query the current service state from the SCM.
     fn query_state(&self) -> Result<ServiceState, ServiceError>;
+
+    /// Query state and the registered executable image path.
+    fn query_registration(&self) -> Result<ServiceRegistration, ServiceError>;
 
     /// Request the SCM to start the service.
     fn start_service(&self) -> Result<(), ServiceError>;
@@ -169,6 +172,33 @@ impl ScmAdapter for NativeScmAdapter {
         Ok(map_service_state(status.current_state))
     }
 
+    fn query_registration(&self) -> Result<ServiceRegistration, ServiceError> {
+        use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
+
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(native_query_error)?;
+        let service = match manager.open_service(
+            &self.service_name,
+            windows_service::service::ServiceAccess::QUERY_STATUS
+                | windows_service::service::ServiceAccess::QUERY_CONFIG,
+        ) {
+            Ok(service) => service,
+            Err(e) if is_missing_service(&e) => {
+                return Ok(ServiceRegistration {
+                    state: ServiceState::NotInstalled,
+                    executable_path: None,
+                });
+            }
+            Err(e) => return Err(native_query_error(e)),
+        };
+        let status = service.query_status().map_err(native_query_error)?;
+        let config = service.query_config().map_err(native_query_error)?;
+        Ok(ServiceRegistration {
+            state: map_service_state(status.current_state),
+            executable_path: Some(config.executable_path),
+        })
+    }
+
     fn start_service(&self) -> Result<(), ServiceError> {
         use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 
@@ -259,6 +289,17 @@ impl ScmAdapter for NativeScmAdapter {
                 command: format!("delete service `{}`", self.service_name),
                 source: std::io::Error::other(e),
             }),
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn native_query_error(error: windows_service::Error) -> ServiceError {
+    if is_access_denied_error(&error) {
+        ServiceError::AccessDenied
+    } else {
+        ServiceError::StateQueryFailed {
+            source: std::io::Error::other(error),
         }
     }
 }
@@ -507,6 +548,10 @@ impl WindowsServiceManager {
 
 #[cfg(any(test, target_os = "windows"))]
 impl ServiceManager for WindowsServiceManager {
+    fn query_registration(&self) -> Result<ServiceRegistration, ServiceError> {
+        self.adapter.query_registration()
+    }
+
     fn start(&self) -> Result<(), ServiceError> {
         let state = self.adapter.query_state()?;
 
@@ -621,6 +666,13 @@ mod tests {
             Ok(*self.state.lock().unwrap())
         }
 
+        fn query_registration(&self) -> Result<ServiceRegistration, ServiceError> {
+            Ok(ServiceRegistration {
+                state: self.query_state()?,
+                executable_path: None,
+            })
+        }
+
         fn start_service(&self) -> Result<(), ServiceError> {
             self.calls.lock().unwrap().push("start");
             if let Some(err) = self.start_error.lock().unwrap().take() {
@@ -659,6 +711,9 @@ mod tests {
     impl ScmAdapter for MockScmAdapterWrapper {
         fn query_state(&self) -> Result<ServiceState, ServiceError> {
             self.0.query_state()
+        }
+        fn query_registration(&self) -> Result<ServiceRegistration, ServiceError> {
+            self.0.query_registration()
         }
         fn start_service(&self) -> Result<(), ServiceError> {
             self.0.start_service()

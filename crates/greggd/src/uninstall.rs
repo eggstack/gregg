@@ -75,7 +75,7 @@ impl fmt::Display for UninstallError {
             Self::Cron { message } => write!(f, "cron teardown failed: {message}"),
             Self::CargoHandoff { command } => write!(
                 f,
-                "this installation is Cargo-owned; Gregg will not bypass Cargo bookkeeping. Run after this process exits:\n  {command}"
+                "this installation is Cargo-owned; Gregg will not bypass Cargo bookkeeping. No startup or config mutation will occur before the Cargo handoff completes. Run after this process exits:\n  {command}"
             ),
             Self::CargoFailed(detail) => write!(f, "cargo uninstall failed: {detail}"),
         }
@@ -129,7 +129,8 @@ pub enum ScmDiscovery {
 /// Each artifact is inspected independently so legacy/mixed states (a
 /// stale unit plus a managed cron block) are all found. Discovery
 /// performs no mutation: bounded health/crontab/manager queries only.
-/// The bools are independent presence flags, not a state machine.
+/// Presence, ownership, and manager state are retained independently so
+/// mixed installations cannot be collapsed into one host-global decision.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Discovery {
@@ -139,18 +140,32 @@ pub struct Discovery {
     pub systemd_unit_exists: bool,
     /// Manager reports `greggd` active (Linux).
     pub systemd_active: bool,
+    /// Ownership of the systemd unit target relative to `exe_path`.
+    pub systemd_ownership: crate::startup::ArtifactOwnership,
+    /// Config path used by the discovered systemd command, when parseable.
+    pub systemd_config_path: Option<PathBuf>,
     /// Canonical launchd plist exists (macOS).
     pub launchd_plist_exists: bool,
     /// Gregg launchd label is loaded (macOS).
     pub launchd_loaded: bool,
+    /// Ownership of the launchd program target relative to `exe_path`.
+    pub launchd_ownership: crate::startup::ArtifactOwnership,
+    /// Config path used by the discovered launchd command, when parseable.
+    pub launchd_config_path: Option<PathBuf>,
     /// Current account crontab contains the Gregg managed block.
     pub cron_has_block: bool,
+    /// Ownership of the managed cron block relative to `exe_path`.
+    pub cron_ownership: crate::startup::ArtifactOwnership,
     /// The `crontab` executable is available.
     pub crontab_available: bool,
     /// Bounded health classification of the configured local endpoint.
     pub daemon_probe: crate::cli::HealthProbe,
     /// Windows SCM state.
     pub scm: ScmDiscovery,
+    /// Ownership of the registered SCM image relative to `exe_path`.
+    pub scm_ownership: crate::startup::ArtifactOwnership,
+    /// Registered SCM executable path, when queryable.
+    pub scm_target: Option<PathBuf>,
     /// Positively identified Cargo ownership, if any.
     pub cargo: Option<gregg_update::CargoOwnership>,
 }
@@ -159,11 +174,43 @@ impl Discovery {
     /// Whether any native manager artifact owns (or may own) the daemon.
     #[must_use]
     pub fn has_manager_artifact(&self) -> bool {
-        self.systemd_unit_exists
-            || self.systemd_active
-            || self.launchd_plist_exists
-            || self.launchd_loaded
-            || matches!(self.scm, ScmDiscovery::Running | ScmDiscovery::Stopped)
+        self.systemd_ownership.is_present()
+            || self.launchd_ownership.is_present()
+            || self.cron_ownership.is_present()
+            || self.scm_ownership.is_present()
+    }
+
+    /// Whether an active manager is known to explain the selected endpoint.
+    #[must_use]
+    pub fn manager_explains_endpoint(&self, config_path: &Path) -> bool {
+        let systemd = self.systemd_active
+            && manager_config_matches(
+                self.systemd_ownership,
+                self.systemd_config_path.as_deref(),
+                config_path,
+            );
+        let launchd = self.launchd_loaded
+            && manager_config_matches(
+                self.launchd_ownership,
+                self.launchd_config_path.as_deref(),
+                config_path,
+            );
+        // The SCM query currently exposes the registered image, but not a
+        // safely parsed config argument. A foreign service therefore cannot
+        // be credited with explaining this endpoint; doing so could hide an
+        // unmanaged foreground daemon on Windows.
+        let scm = matches!(self.scm, ScmDiscovery::Running)
+            && self.scm_ownership == crate::startup::ArtifactOwnership::Owned;
+        systemd || launchd || scm
+    }
+
+    #[cfg(unix)]
+    #[must_use]
+    fn active_manager_is_unknown(&self) -> bool {
+        (self.systemd_active
+            && self.systemd_ownership == crate::startup::ArtifactOwnership::Unknown)
+            || (self.launchd_loaded
+                && self.launchd_ownership == crate::startup::ArtifactOwnership::Unknown)
     }
 
     /// Whether the configured endpoint proves a Gregg daemon is running.
@@ -182,8 +229,9 @@ impl Discovery {
 /// change or remove.
 ///
 /// The same plan drives `--dry-run` rendering and real execution so the
-/// preview cannot drift from the mutation. The bools are independent
-/// teardown selections, not a state machine.
+/// preview cannot drift from the mutation. Teardown flags are selected only
+/// from positively owned artifacts; foreign and unknown artifacts remain
+/// visible in the rendered plan but are never removed.
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct UninstallPlan {
@@ -211,6 +259,8 @@ pub struct UninstallPlan {
     /// Refuse deletion: a running daemon with no safe stop path
     /// (Windows unmanaged foreground instance).
     pub blocked_running: bool,
+    /// Refuse before mutation because SCM ownership could not be established.
+    pub blocked_scm_unknown: bool,
     /// Positively identified Cargo ownership, if any.
     pub cargo: Option<gregg_update::CargoOwnership>,
     /// Discovery detail retained for rendering.
@@ -225,11 +275,25 @@ impl UninstallPlan {
         let mut lines = Vec::new();
         lines.push(format!("uninstall {PROGRAM} (dry run)"));
         if let Some(ownership) = &self.cargo {
+            #[cfg(unix)]
             lines.push(format!(
-                "cargo-owned install (root {}); handoff: {}",
+                "cargo-owned install (root {}); Cargo removes the executable/package after Gregg-owned lifecycle work; handoff: {}",
                 ownership.root.display(),
                 ownership.uninstall_command()
             ));
+            #[cfg(not(unix))]
+            lines.push(format!(
+                "cargo-owned install (root {}); Windows uses a zero-mutation Cargo handoff before any startup/config change; handoff: {}",
+                ownership.root.display(),
+                ownership.uninstall_command()
+            ));
+        }
+        render_ownership(&mut lines, "systemd", self.discovery.systemd_ownership);
+        render_ownership(&mut lines, "launchd", self.discovery.launchd_ownership);
+        render_ownership(&mut lines, "cron", self.discovery.cron_ownership);
+        render_ownership(&mut lines, "scm", self.discovery.scm_ownership);
+        if self.blocked_scm_unknown {
+            lines.push("blocked: Windows SCM registration state or executable target is unknown; no mutation is safe".to_string());
             return lines.join("\n");
         }
         if self.blocked_running {
@@ -298,6 +362,40 @@ impl UninstallPlan {
     }
 }
 
+fn render_ownership(
+    lines: &mut Vec<String>,
+    artifact: &str,
+    ownership: crate::startup::ArtifactOwnership,
+) {
+    match ownership {
+        crate::startup::ArtifactOwnership::Foreign => {
+            lines.push(format!("{artifact}: foreign installation preserved"));
+        }
+        crate::startup::ArtifactOwnership::Unknown => {
+            lines.push(format!(
+                "{artifact}: ownership unknown; preserved for safety"
+            ));
+        }
+        crate::startup::ArtifactOwnership::Absent | crate::startup::ArtifactOwnership::Owned => {}
+    }
+}
+
+fn manager_config_matches(
+    ownership: crate::startup::ArtifactOwnership,
+    manager_config: Option<&Path>,
+    selected_config: &Path,
+) -> bool {
+    if !matches!(
+        ownership,
+        crate::startup::ArtifactOwnership::Owned | crate::startup::ArtifactOwnership::Foreign
+    ) {
+        return false;
+    }
+    manager_config.map_or(true, |config| {
+        gregg_update::uninstall::paths_equivalent(config, selected_config)
+    })
+}
+
 /// Build a plan from injected discovery (pure; shared by production and
 /// tests so `--dry-run` and unit tests exercise the same ownership
 /// decisions as the real command).
@@ -310,21 +408,28 @@ pub fn plan_from_discovery(
     purge: bool,
     discovery: Discovery,
 ) -> UninstallPlan {
-    let systemd_teardown = discovery.systemd_unit_exists || discovery.systemd_active;
-    let launchd_teardown = discovery.launchd_plist_exists || discovery.launchd_loaded;
-    let cron_teardown = discovery.cron_has_block;
-    let scm_teardown = matches!(discovery.scm, ScmDiscovery::Running | ScmDiscovery::Stopped);
+    let systemd_teardown = discovery.systemd_ownership.is_owned();
+    let launchd_teardown = discovery.launchd_ownership.is_owned();
+    let cron_teardown = discovery.cron_ownership.is_owned();
+    let scm_teardown = discovery.scm_ownership.is_owned()
+        && matches!(discovery.scm, ScmDiscovery::Running | ScmDiscovery::Stopped);
+    let blocked_scm_unknown = discovery.scm_ownership == crate::startup::ArtifactOwnership::Unknown;
     // The direct control path exists only on Unix. Elsewhere a running
     // daemon with no manager artifact cannot be stopped safely: block
     // deletion rather than orphaning it.
     #[cfg(unix)]
-    let direct_stop = !discovery.has_manager_artifact() && discovery.daemon_is_running();
+    let direct_stop = discovery.daemon_is_running()
+        && !discovery.manager_explains_endpoint(config_path)
+        && !blocked_scm_unknown
+        && !discovery.active_manager_is_unknown();
     #[cfg(not(unix))]
     let direct_stop = false;
     #[cfg(unix)]
-    let blocked_running = false;
+    let blocked_running = discovery.daemon_is_running()
+        && (blocked_scm_unknown || discovery.active_manager_is_unknown());
     #[cfg(not(unix))]
-    let blocked_running = !discovery.has_manager_artifact() && discovery.daemon_is_running();
+    let blocked_running =
+        discovery.daemon_is_running() && !discovery.manager_explains_endpoint(config_path);
     UninstallPlan {
         exe_path: exe_path.to_path_buf(),
         config_path: config_path.to_path_buf(),
@@ -337,6 +442,7 @@ pub fn plan_from_discovery(
         scm_teardown,
         direct_stop,
         blocked_running,
+        blocked_scm_unknown,
         cargo: discovery.cargo.clone(),
         discovery,
     }
@@ -354,35 +460,25 @@ pub fn discover(config_path: &Path, explicit: bool) -> Result<Discovery, Uninsta
 /// Discovery for an explicit executable path (production passes the
 /// real current exe; tests inject fakes).
 fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discovery {
-    #[cfg(target_os = "macos")]
-    use crate::startup::launchd::{launchd_is_loaded, launchd_plist_exists};
     #[cfg(target_os = "linux")]
-    use crate::startup::{
-        is_systemd_environment,
-        systemd::{systemd_is_active, systemd_unit_exists},
-    };
-
-    // Linux systemd state mirrors `startup_state()`: only probe the
-    // manager when the unit exists or the host is a systemd environment.
-    #[cfg(target_os = "linux")]
-    let (systemd_unit_exists, systemd_active) = {
-        let unit_exists = systemd_unit_exists();
-        let active = if unit_exists || is_systemd_environment() {
-            systemd_is_active()
-        } else {
-            false
-        };
-        (unit_exists, active)
+    let (systemd_ownership, systemd_active, systemd_config_path) = {
+        let (ownership, active, config) = crate::startup::systemd_artifact_ownership(exe_path);
+        (ownership, active, config)
     };
     #[cfg(not(target_os = "linux"))]
-    let (systemd_unit_exists, systemd_active) = (false, false);
+    let (systemd_ownership, systemd_active, systemd_config_path) =
+        (crate::startup::ArtifactOwnership::Absent, false, None);
+    let systemd_unit_exists = crate::startup::standard_systemd_unit_path().exists();
 
     #[cfg(target_os = "macos")]
-    let (launchd_plist_exists, launchd_loaded) = (launchd_plist_exists(), launchd_is_loaded());
+    let (launchd_ownership, launchd_loaded, launchd_config_path) =
+        crate::startup::launchd_artifact_ownership(exe_path);
     #[cfg(not(target_os = "macos"))]
-    let (launchd_plist_exists, launchd_loaded) = (false, false);
+    let (launchd_ownership, launchd_loaded, launchd_config_path) =
+        (crate::startup::ArtifactOwnership::Absent, false, None);
+    let launchd_plist_exists = crate::startup::standard_launchd_plist_path().exists();
 
-    let (cron_has_block, crontab_available) = read_cron_evidence();
+    let (cron_has_block, cron_ownership, crontab_available) = read_cron_evidence(exe_path);
 
     let daemon_probe = match crate::cli::load_config(config_path, explicit) {
         Ok(config) => crate::cli::probe_health(crate::cli::croncheck_target(&config)),
@@ -393,13 +489,40 @@ fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discover
     };
 
     #[cfg(target_os = "windows")]
-    let scm = match crate::service::platform_service_manager().is_active() {
-        Ok(true) => ScmDiscovery::Running,
-        Ok(false) => ScmDiscovery::Stopped,
-        Err(_) => ScmDiscovery::Unknown,
-    };
+    let (scm, scm_ownership, scm_target) =
+        match crate::service::platform_service_manager().query_registration() {
+            Ok(registration) => {
+                let state = match registration.state {
+                    crate::service::ServiceState::NotInstalled => ScmDiscovery::NotInstalled,
+                    crate::service::ServiceState::Stopped => ScmDiscovery::Stopped,
+                    crate::service::ServiceState::Running
+                    | crate::service::ServiceState::StartPending
+                    | crate::service::ServiceState::StopPending => ScmDiscovery::Running,
+                };
+                let ownership = registration.executable_path.as_deref().map_or(
+                    crate::startup::ArtifactOwnership::Absent,
+                    |target| {
+                        if gregg_update::uninstall::paths_equivalent(target, exe_path) {
+                            crate::startup::ArtifactOwnership::Owned
+                        } else {
+                            crate::startup::ArtifactOwnership::Foreign
+                        }
+                    },
+                );
+                (state, ownership, registration.executable_path)
+            }
+            Err(_) => (
+                ScmDiscovery::Unknown,
+                crate::startup::ArtifactOwnership::Unknown,
+                None,
+            ),
+        };
     #[cfg(not(target_os = "windows"))]
-    let scm = ScmDiscovery::NotApplicable;
+    let (scm, scm_ownership, scm_target) = (
+        ScmDiscovery::NotApplicable,
+        crate::startup::ArtifactOwnership::Absent,
+        None,
+    );
 
     let cargo = gregg_update::uninstall::detect_cargo_ownership(exe_path, PROGRAM, PACKAGE);
 
@@ -407,27 +530,37 @@ fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discover
         exe_path: exe_path.to_path_buf(),
         systemd_unit_exists,
         systemd_active,
+        systemd_ownership,
+        systemd_config_path,
         launchd_plist_exists,
         launchd_loaded,
+        launchd_ownership,
+        launchd_config_path,
         cron_has_block,
+        cron_ownership,
         crontab_available,
         daemon_probe,
         scm,
+        scm_ownership,
+        scm_target,
         cargo,
     }
 }
 
 /// Read-only cron evidence: whether the current account crontab holds
 /// the Gregg managed block, and whether `crontab` exists at all.
-fn read_cron_evidence() -> (bool, bool) {
+fn read_cron_evidence(exe_path: &Path) -> (bool, crate::startup::ArtifactOwnership, bool) {
     use std::io::ErrorKind;
     match crate::startup::cron::run_crontab_list() {
         Ok(content) => (
-            crate::startup::cron_uninstall_changed(&content).is_some(),
+            content.contains(crate::startup::CRON_MANAGED_MARKER),
+            crate::startup::cron_block_ownership(&content, exe_path),
             true,
         ),
-        Err(e) if e.kind() == ErrorKind::NotFound => (false, false),
-        Err(_) => (false, true),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            (false, crate::startup::ArtifactOwnership::Absent, false)
+        }
+        Err(_) => (false, crate::startup::ArtifactOwnership::Unknown, true),
     }
 }
 
@@ -439,12 +572,19 @@ fn test_discovery() -> Discovery {
         exe_path: PathBuf::from("/usr/local/bin/greggd"),
         systemd_unit_exists: false,
         systemd_active: false,
+        systemd_ownership: crate::startup::ArtifactOwnership::Absent,
+        systemd_config_path: None,
         launchd_plist_exists: false,
         launchd_loaded: false,
+        launchd_ownership: crate::startup::ArtifactOwnership::Absent,
+        launchd_config_path: None,
         cron_has_block: false,
+        cron_ownership: crate::startup::ArtifactOwnership::Absent,
         crontab_available: true,
         daemon_probe: crate::cli::HealthProbe::Unreachable,
         scm: ScmDiscovery::NotApplicable,
+        scm_ownership: crate::startup::ArtifactOwnership::Absent,
+        scm_target: None,
         cargo: None,
     }
 }
@@ -510,7 +650,7 @@ fn probe_dir_writable(dir: &Path, exe: &Path) -> Result<(), UninstallError> {
 fn preflight(plan: &UninstallPlan) -> Result<(), UninstallError> {
     use crate::startup::{standard_launchd_plist_path, standard_systemd_unit_path};
 
-    if plan.cargo.is_some() || plan.blocked_running {
+    if plan.blocked_running || plan.blocked_scm_unknown {
         // Cargo handoff and blocked-running fail before any mutation in
         // `run_uninstall`; preflight has nothing to check for them.
         return Ok(());
@@ -709,25 +849,21 @@ pub fn run_uninstall(
 /// Execute a fully resolved plan (production resolves via
 /// [`run_uninstall`]; tests inject plans directly).
 fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
+    #[cfg(not(unix))]
     if let Some(ownership) = &plan.cargo {
-        #[cfg(unix)]
-        {
-            gregg_update::uninstall::cargo_uninstall(ownership)
-                .map_err(|e| UninstallError::CargoFailed(e.to_string()))?;
-            eprintln!("uninstalled via {}", ownership.uninstall_command());
-            return Ok(());
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(UninstallError::CargoHandoff {
-                command: ownership.uninstall_command(),
-            });
-        }
+        return Err(UninstallError::CargoHandoff {
+            command: ownership.uninstall_command(),
+        });
     }
     if plan.blocked_running {
         return Err(UninstallError::UncertainStop {
             message: "a Gregg daemon is running on the configured endpoint with no managed stop path; stop the foreground daemon first, then rerun uninstall"
                 .to_string(),
+        });
+    }
+    if plan.blocked_scm_unknown {
+        return Err(UninstallError::Service {
+            message: "Windows SCM registration state or executable target could not be determined; refusing mutation".to_string(),
         });
     }
     // Every practical permission is proven before any teardown mutation.
@@ -740,7 +876,7 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
         crate::startup::uninstall_launchd(&plan.exe_path)?;
     }
     if plan.cron_teardown {
-        crate::startup::uninstall_cron()?;
+        crate::startup::uninstall_cron_for(&plan.exe_path)?;
     }
     #[cfg(target_os = "windows")]
     if plan.scm_teardown {
@@ -785,10 +921,27 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
         }
     }
 
-    if plan.purge {
-        purge_config(plan)?;
+    #[cfg(unix)]
+    if let Some(ownership) = &plan.cargo {
+        gregg_update::uninstall::cargo_uninstall(ownership)
+            .map_err(|e| UninstallError::CargoFailed(e.to_string()))?;
+        eprintln!("uninstalled via {}", ownership.uninstall_command());
+        if plan.purge {
+            purge_config(plan)?;
+        }
+    } else {
+        if plan.purge {
+            purge_config(plan)?;
+        }
+        gregg_update::self_delete_current_exe(plan.purge)?;
     }
-    gregg_update::self_delete_current_exe(plan.purge)?;
+    #[cfg(not(unix))]
+    {
+        if plan.purge {
+            purge_config(plan)?;
+        }
+        gregg_update::self_delete_current_exe(plan.purge)?;
+    }
     eprintln!("greggd uninstalled");
     if plan.purge {
         eprintln!("configuration purged");
@@ -811,6 +964,21 @@ mod tests {
     use super::*;
 
     fn plan_with(discovery: Discovery, purge: bool) -> UninstallPlan {
+        let mut discovery = discovery;
+        // Keep the older fixture shorthand readable while making production
+        // planning require explicit ownership evidence.
+        if discovery.systemd_unit_exists || discovery.systemd_active {
+            discovery.systemd_ownership = crate::startup::ArtifactOwnership::Owned;
+        }
+        if discovery.launchd_plist_exists || discovery.launchd_loaded {
+            discovery.launchd_ownership = crate::startup::ArtifactOwnership::Owned;
+        }
+        if discovery.cron_has_block {
+            discovery.cron_ownership = crate::startup::ArtifactOwnership::Owned;
+        }
+        if matches!(discovery.scm, ScmDiscovery::Running | ScmDiscovery::Stopped) {
+            discovery.scm_ownership = crate::startup::ArtifactOwnership::Owned;
+        }
         plan_from_discovery(
             Path::new("/usr/local/bin/greggd"),
             Path::new("/etc/gregg/greggd.toml"),
@@ -995,6 +1163,91 @@ mod tests {
     }
 
     #[test]
+    fn foreign_active_systemd_using_selected_config_is_preserved() {
+        let mut discovery = test_discovery();
+        discovery.systemd_unit_exists = true;
+        discovery.systemd_active = true;
+        discovery.systemd_ownership = crate::startup::ArtifactOwnership::Foreign;
+        discovery.systemd_config_path = Some(PathBuf::from("/etc/gregg/greggd.toml"));
+        discovery.daemon_probe = crate::cli::HealthProbe::Ready;
+        let plan = plan_from_discovery(
+            Path::new("/home/operator/bin/greggd"),
+            Path::new("/etc/gregg/greggd.toml"),
+            false,
+            true,
+            false,
+            discovery,
+        );
+        assert!(!plan.systemd_teardown);
+        assert!(!plan.direct_stop);
+        assert!(!plan.blocked_running);
+        assert!(plan.render().contains("foreign installation preserved"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn foreign_active_manager_on_other_config_does_not_hide_direct_stop() {
+        let mut discovery = test_discovery();
+        discovery.systemd_unit_exists = true;
+        discovery.systemd_active = true;
+        discovery.systemd_ownership = crate::startup::ArtifactOwnership::Foreign;
+        discovery.systemd_config_path = Some(PathBuf::from("/etc/gregg/foreign.toml"));
+        discovery.daemon_probe = crate::cli::HealthProbe::Ready;
+        let plan = plan_from_discovery(
+            Path::new("/home/operator/bin/greggd"),
+            Path::new("/tmp/operator/custom.toml"),
+            true,
+            true,
+            false,
+            discovery,
+        );
+        assert!(!plan.systemd_teardown);
+        assert!(plan.direct_stop);
+        assert!(!plan.blocked_running);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn windows_no_scm_running_endpoint_blocks_deletion() {
+        let mut discovery = test_discovery();
+        discovery.daemon_probe = crate::cli::HealthProbe::Ready;
+        let plan = plan_with(discovery, false);
+        assert_eq!(plan.discovery.scm, ScmDiscovery::NotApplicable);
+        assert!(plan.blocked_running);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn foreign_scm_registration_is_never_selected_for_teardown() {
+        let mut discovery = test_discovery();
+        discovery.scm = ScmDiscovery::Running;
+        discovery.scm_ownership = crate::startup::ArtifactOwnership::Foreign;
+        discovery.scm_target = Some(PathBuf::from(r"C:\Other\greggd.exe"));
+        discovery.daemon_probe = crate::cli::HealthProbe::Ready;
+        let plan = plan_from_discovery(
+            Path::new(r"C:\Gregg\greggd.exe"),
+            Path::new(r"C:\ProgramData\gregg\greggd.toml"),
+            false,
+            true,
+            false,
+            discovery,
+        );
+        assert!(!plan.scm_teardown);
+        assert!(plan.render().contains("foreign installation preserved"));
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn unknown_scm_ownership_blocks_before_mutation() {
+        let mut discovery = test_discovery();
+        discovery.scm = ScmDiscovery::Unknown;
+        discovery.scm_ownership = crate::startup::ArtifactOwnership::Unknown;
+        let plan = plan_with(discovery, true);
+        assert!(plan.blocked_scm_unknown);
+        assert!(plan.render().contains("no mutation is safe"));
+    }
+
+    #[test]
     fn cargo_owned_plan_renders_handoff() {
         let mut discovery = test_discovery();
         discovery.exe_path = PathBuf::from("/home/u/.cargo/bin/greggd");
@@ -1005,6 +1258,16 @@ mod tests {
         let plan = plan_with(discovery, false);
         assert!(plan.render().contains("cargo-owned"));
         assert!(plan.render().contains("cargo uninstall --root"));
+        assert!(plan.render().contains("preserve config"));
+        let purge = plan_from_discovery(
+            Path::new("/home/u/.cargo/bin/greggd"),
+            Path::new("/etc/gregg/greggd.toml"),
+            false,
+            true,
+            true,
+            plan.discovery.clone(),
+        );
+        assert!(purge.render().contains("remove config file"));
     }
 
     #[test]

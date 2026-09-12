@@ -49,7 +49,9 @@ How it works:
   `--version "=X.Y.Z"` when pinned) into a private staging root, verifies
   the staged binary exactly as a download, then copies only the executable
   to the destination. Staging is removed afterwards, so no Cargo ownership
-  metadata persists beside the bootstrap binary.
+  metadata persists beside the bootstrap binary. For `greggd`, the staged
+  candidate then follows the same startup/config finalization as a prebuilt
+  candidate, including safe SCM stop/replace/register/restart on Windows.
 - After a verified `greggd` install it delegates startup to
   `greggd startup install` (see [daemon](daemon.md)). A non-root install on
   a systemd/launchd host prints the exact elevated
@@ -70,9 +72,11 @@ selector; a piped run without a component prints usage and exits nonzero.
   scripts.
 - Removal: `gregg uninstall [--dry-run] [--purge]` and
   `greggd uninstall [--dry-run] [--purge]` remove only the exact invoked
-  binary plus (for the daemon) its Gregg-owned startup integration.
-  Configuration is preserved by default; `--purge` is destructive. There is
-  no `uninstall --all`: run both commands explicitly. See
+  binary plus (for the daemon) startup artifacts whose command targets that
+  exact binary. Foreign or ambiguous systemd/launchd/cron/SCM artifacts are
+  preserved; SCM query uncertainty blocks mutation. Configuration is
+  preserved by default; `--purge` is destructive. There is no
+  `uninstall --all`: run both commands explicitly. See
   [client](client.md) and [daemon](daemon.md).
 
 ## Windows (PowerShell)

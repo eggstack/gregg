@@ -147,7 +147,10 @@ preserving config by default.
 `$HOME/.local/bin` (`%ProgramFiles%\Gregg` vs `%LOCALAPPDATA%\Gregg`), and
 only fall back to `cargo install --locked` (with `="X.Y.Z"` when pinned) for
 `armv7l`/unknown hosts. A checksum/version mismatch is a hard error with no
-Cargo fallback; installers never silently invoke `sudo`.
+Cargo fallback; staged `greggd` acquisition converges with the prebuilt
+replacement and startup/config finalization path, including SCM-safe
+stop/replace/register/restart on Windows; installers never silently invoke
+`sudo`.
 
 ## Publication order
 

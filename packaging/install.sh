@@ -289,6 +289,8 @@ verify_candidate_version() {
 
 cargo_fallback() {
   local program="$1"
+  local scope="$2"
+  local existing_version="$3"
   if ! command -v cargo >/dev/null 2>&1; then
     echo "No prebuilt $program asset for ${TARGET:-unknown} (${OS}/${ARCH})" >&2
     if [[ "$TARGET" == "armv7-unknown-linux-gnueabihf" ]]; then
@@ -342,8 +344,41 @@ cargo_fallback() {
   fi
   rm -rf "$stage_root"
 
-  echo "$program installed via staged Cargo build to ${DEST_DIR}/${program}" >&2
+  if [[ "$scope" == "replace" ]]; then
+    echo "Updated ${program} at ${DEST_DIR}/${program} (${existing_version} -> $("$DEST_DIR/$program" version 2>&1 || echo "unverified"))" >&2
+  else
+    echo "Installed ${program} to ${DEST_DIR}/${program}" >&2
+  fi
   check_path_advice
+}
+
+finalize_greggd_install() {
+  # Acquisition (release asset versus staged Cargo) is deliberately complete
+  # before this shared daemon lifecycle runs.
+  if [[ "$1" != "greggd" ]]; then
+    return 0
+  fi
+  if [[ $EUID -eq 0 ]]; then
+    echo "Registering startup via ${DEST_DIR}/greggd startup install (auto)..." >&2
+    if ! "${DEST_DIR}/greggd" startup install; then
+      echo "warning: startup registration failed; rerun manually:" >&2
+      echo "  sudo ${DEST_DIR}/greggd startup install" >&2
+    fi
+  else
+    if ! "${DEST_DIR}/greggd" startup install 2>&1; then
+      echo "note: greggd installed to ${DEST_DIR}/greggd (user-local)." >&2
+      if [[ "${DEST_DIR}" != "/usr/local/bin" ]]; then
+        echo "note: system service expects /usr/local/bin/greggd; for a system service, install system-wide:" >&2
+        if [[ -n "$TAG" ]]; then
+          echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo bash -s -- greggd" >&2
+        else
+          echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo bash -s -- greggd" >&2
+        fi
+      fi
+    else
+      echo "Startup configured (cron) for ${DEST_DIR}/greggd." >&2
+    fi
+  fi
 }
 
 install_program() {
@@ -372,7 +407,8 @@ install_program() {
   # Source-only hosts go directly to Cargo fallback
   if [[ -z "$TARGET" || "$SUPPORTED_BINARY" != "true" ]]; then
     echo "Host ${OS}/${ARCH} (${TARGET:-unknown}) has no prebuilt $program asset; trying Cargo fallback..." >&2
-    cargo_fallback "$program"
+    cargo_fallback "$program" "$scope" "$existing_version"
+    finalize_greggd_install "$program"
     return 0
   fi
 
@@ -410,7 +446,8 @@ install_program() {
       echo "No prebuilt $program asset at $url (HTTP 404); trying Cargo fallback..." >&2
       rm -rf "$tmpdir"
       trap - EXIT
-      cargo_fallback "$program"
+      cargo_fallback "$program" "$scope" "$existing_version"
+      finalize_greggd_install "$program"
       return 0
     else
       echo "curl exit $curl_status, HTTP $http_code for $url" >&2
@@ -451,40 +488,7 @@ install_program() {
 
   # Destination advice
   check_path_advice
-
-  # Daemon startup delegation (Plan 100): privileged install delegates to
-  # `greggd startup install` (auto) so systemd/launchd/cron logic lives in the
-  # binary, not duplicated in the shell. Unprivileged installs attempt the same
-  # auto registration; on systemd/launchd hosts this will fail with an exact
-  # elevated command and will not silently create a cron duplicate.
-  if [[ "$program" == "greggd" ]]; then
-    if [[ $EUID -eq 0 ]]; then
-      echo "Registering startup via ${DEST_DIR}/greggd startup install (auto)..." >&2
-      if ! "${DEST_DIR}/greggd" startup install; then
-        echo "warning: startup registration failed; rerun manually:" >&2
-        echo "  sudo ${DEST_DIR}/greggd startup install" >&2
-      fi
-    else
-      # Unprivileged: attempt auto install. On systemd/launchd hosts this will
-      # print the exact `sudo ... startup install` needed and exit non-zero
-      # without creating a cron entry. On cron hosts it will install the
-      # user-local crontab without elevation.
-      if ! "${DEST_DIR}/greggd" startup install 2>&1; then
-        echo "note: greggd installed to ${DEST_DIR}/greggd (user-local)." >&2
-        if [[ "${DEST_DIR}" != "/usr/local/bin" ]]; then
-          echo "note: system service expects /usr/local/bin/greggd; for a system service, install system-wide:" >&2
-          if [[ -n "$TAG" ]]; then
-            echo "  curl -fsSL https://github.com/${REPO}/releases/download/${TAG}/install.sh | sudo bash -s -- greggd" >&2
-          else
-            echo "  curl -fsSL https://github.com/${REPO}/releases/latest/download/install.sh | sudo bash -s -- greggd" >&2
-          fi
-        fi
-        # The CLI already printed the exact elevated command when relevant.
-      else
-        echo "Startup configured (cron) for ${DEST_DIR}/greggd." >&2
-      fi
-    fi
-  fi
+  finalize_greggd_install "$program"
 }
 
 # --- main ------------------------------------------------------------------

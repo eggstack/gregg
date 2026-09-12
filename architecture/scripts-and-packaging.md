@@ -99,9 +99,9 @@ exits nonzero with a clear error when run under non-bash `sh`).
 - constructs `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or `.../download/vX.Y.Z/<asset>` for pinned; requires fixed `eggstack/gregg` prefix and `curl -fsSL`;
 - downloads into a fresh `mktemp -d` with `trap` cleanup, fetches `<asset>.sha256`, verifies via `sha256sum` (Linux) or `shasum -a 256` (macOS) before any `chmod +x` or execution, runs `<candidate> version` and requires the expected program name and exact version when pinned, never installs a partial download, never falls back to Cargo on checksum/version mismatch;
 - destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`, warns when the dest is not on `PATH`, never edits shell rc files, never silently invokes `sudo`;
-- unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned into a private staging root, verified exactly as a download, then only the executable is copied to the destination (staging removed; no Cargo metadata persists);
+- unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned into a private staging root, verified exactly as a download, then only the executable is copied to the destination (staging removed; no Cargo metadata persists); a staged `greggd` candidate follows the same config and startup finalization as a prebuilt candidate, including SCM-safe stop/replace/register/restart on Windows;
 - reruns classify the destination first (`absent`/`replace`/`foreign`) via the existing binary's `version` command: first install vs identified replacement is reported with versions, and a foreign executable is never overwritten (hard error, no `--force`); scope never crosses privilege boundaries;
-- after a verified `greggd` install, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary: privileged runs `daemon-reload`/`enable`/`start`/`restart` or `bootstrap`/`kickstart -k` or idempotent crontab; unprivileged on systemd/launchd prints exact `sudo <exe> startup install --method <...>` without silent cron fallback; on cron hosts installs user-local crontab without elevation.
+- after a verified `greggd` install, whether prebuilt or staged Cargo, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary: privileged runs `daemon-reload`/`enable`/`start`/`restart` or `bootstrap`/`kickstart -k` or idempotent crontab; unprivileged on systemd/launchd prints exact `sudo <exe> startup install --method <...>` without silent cron fallback; on cron hosts installs user-local crontab without elevation.
 
 **`install.ps1` contract (Windows):**
 
@@ -170,18 +170,20 @@ All install scripts (bootstrap and legacy):
 - `LocalService` account, `auto` start
 - Failure recovery: 3 restarts with 60s delays
 
-### Uninstall surface (Plan 112)
+### Uninstall surface (Plans 112-113)
 
 `gregg uninstall [--dry-run] [--purge]` and `greggd uninstall
 [--dry-run] [--purge]` remove only the exact invoked component executable;
-daemon uninstall additionally tears down only the Gregg-owned startup
-integration actually present (systemd unit, launchd plist, managed cron
-block, or `greggd` SCM registration via the native service abstraction's
-`unregister`). Configuration is preserved by default; `--purge` is
-destructive and removes only the resolved component config/data files.
-`--dry-run` mutates nothing. There is no `uninstall --all`, no prompt, no
-internal `sudo`, and no install receipt; Cargo-owned installs keep Cargo
-bookkeeping (Unix delegates, Windows prints the handoff).
+daemon uninstall additionally tears down only startup integration whose
+parsed executable target matches it (systemd `ExecStart`, launchd
+`ProgramArguments`, managed cron command, or SCM image path). Foreign or
+ambiguous artifacts are preserved, and unknown SCM state blocks mutation.
+Configuration is preserved by default; `--purge` is destructive and removes
+only resolved component config/data files. `--dry-run` mutates nothing and
+shows Cargo plus owned lifecycle intent. There is no `uninstall --all`, no
+prompt, no internal `sudo`, and no install receipt; Unix Cargo-owned daemon
+and client removal performs Gregg-owned work before Cargo and post-success
+purge, while Windows prints the zero-mutation handoff.
 
 | Script | Platform |
 |--------|----------|

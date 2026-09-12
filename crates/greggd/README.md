@@ -62,13 +62,17 @@ greggd uninstall                              # remove this binary + Gregg start
 greggd uninstall --purge                      # also remove the daemon config file (destructive)
 ```
 
-`greggd uninstall` removes only the exact invoked executable plus the
-Gregg-owned startup integration actually present (systemd unit, launchd
-plist, managed cron block, or the `greggd` SCM registration, each
-discovered independently). Configuration is preserved by default;
-`--purge` removes the resolved daemon config (and the macOS daemon log).
-Permissions are preflighted before teardown; an uncertain direct stop
-blocks deletion.
+`greggd uninstall` removes only the exact invoked executable plus startup
+integration whose command target matches that executable (systemd
+`ExecStart`, launchd `ProgramArguments`, the managed cron command, or the
+registered SCM image path). Foreign and ambiguous artifacts are reported and
+preserved; SCM query uncertainty blocks mutation. Discovery is independent per
+artifact, so multiple owned artifacts can be removed together. Configuration
+is preserved by default; `--purge` removes the resolved daemon config (and the
+macOS daemon log). Permissions are preflighted before teardown; an uncertain
+direct stop blocks deletion. On Unix, Cargo-owned removal completes owned
+startup/direct-stop work before delegating the executable to Cargo and applies
+`--purge` only after Cargo succeeds.
 
 `startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and factored for `update` reuse (systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, Windows via SCM, otherwise `stop` + detached `run`).
 

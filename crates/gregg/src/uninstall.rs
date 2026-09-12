@@ -95,12 +95,18 @@ impl UninstallPlan {
         let mut lines = Vec::new();
         lines.push(format!("uninstall {PROGRAM} (dry run)"));
         if let Some(ownership) = &self.cargo {
+            #[cfg(unix)]
             lines.push(format!(
-                "cargo-owned install (root {}); handoff: {}",
+                "cargo-owned install (root {}); Cargo removes the executable/package before post-success config cleanup; handoff: {}",
                 ownership.root.display(),
                 ownership.uninstall_command()
             ));
-            return lines.join("\n");
+            #[cfg(not(unix))]
+            lines.push(format!(
+                "cargo-owned install (root {}); Windows uses a zero-mutation Cargo handoff before any startup/config change; handoff: {}",
+                ownership.root.display(),
+                ownership.uninstall_command()
+            ));
         }
         lines.push(format!("remove executable: {}", self.exe_path.display()));
         if self.purge {
@@ -200,25 +206,33 @@ pub fn execute_plan(plan: &UninstallPlan, dry_run: bool) -> Result<(), Uninstall
     if dry_run {
         return Ok(());
     }
+    #[cfg(not(unix))]
     if let Some(ownership) = &plan.cargo {
-        #[cfg(unix)]
-        {
-            gregg_update::uninstall::cargo_uninstall(ownership)
-                .map_err(|e| UninstallError::CargoFailed(e.to_string()))?;
-            return Ok(());
-        }
-        #[cfg(not(unix))]
-        {
-            return Err(UninstallError::CargoHandoff {
-                command: ownership.uninstall_command(),
-            });
-        }
+        return Err(UninstallError::CargoHandoff {
+            command: ownership.uninstall_command(),
+        });
     }
     gregg_update::preflight_uninstall_writable(&plan.exe_path, &plan.exe_path, plan.purge)?;
-    if plan.purge {
-        purge_config(&plan.config_path)?;
+    #[cfg(unix)]
+    if let Some(ownership) = &plan.cargo {
+        gregg_update::uninstall::cargo_uninstall(ownership)
+            .map_err(|e| UninstallError::CargoFailed(e.to_string()))?;
+        if plan.purge {
+            purge_config(&plan.config_path)?;
+        }
+    } else {
+        if plan.purge {
+            purge_config(&plan.config_path)?;
+        }
+        gregg_update::self_delete_current_exe(plan.purge)?;
     }
-    gregg_update::self_delete_current_exe(plan.purge)?;
+    #[cfg(not(unix))]
+    {
+        if plan.purge {
+            purge_config(&plan.config_path)?;
+        }
+        gregg_update::self_delete_current_exe(plan.purge)?;
+    }
     Ok(())
 }
 
@@ -358,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn cargo_owned_plan_renders_handoff_and_blocks_mutation() {
+    fn cargo_owned_plan_renders_handoff_and_config_intent() {
         let dir = tmp_case("cargo_owned");
         let exe_name = if cfg!(windows) { "gregg.exe" } else { "gregg" };
         let exe = dir.join("bin").join(exe_name);
@@ -372,6 +386,9 @@ mod tests {
         let rendered = plan.render();
         assert!(rendered.contains("cargo-owned"));
         assert!(rendered.contains("cargo uninstall --root"));
+        assert!(rendered.contains("preserve config"));
+        let purge_plan = plan_uninstall_with(&exe, &config, true, |_, _| true);
+        assert!(purge_plan.render().contains("remove config file"));
         let _ = fs::remove_dir_all(&dir);
     }
 
