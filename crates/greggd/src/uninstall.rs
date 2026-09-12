@@ -970,8 +970,16 @@ mod tests {
         let mut discovery = test_discovery();
         discovery.daemon_probe = crate::cli::HealthProbe::Ready;
         let plan = plan_with(discovery, false);
-        assert!(plan.direct_stop);
         assert!(!plan.systemd_teardown);
+        // The direct control path exists only on Unix; elsewhere an
+        // unmanaged running daemon blocks deletion instead.
+        if cfg!(unix) {
+            assert!(plan.direct_stop);
+            assert!(!plan.blocked_running);
+        } else {
+            assert!(!plan.direct_stop);
+            assert!(plan.blocked_running);
+        }
     }
 
     #[test]
