@@ -974,10 +974,7 @@ mod tests {
 
     #[test]
     fn scm_command_parser_extracts_quoted_image() {
-        let command = format!(
-            r#""{}" service --config "C:\Gregg\greggd.toml""#,
-            SCM_TEST_IMAGE
-        );
+        let command = format!(r#""{SCM_TEST_IMAGE}" service --config "C:\Gregg\greggd.toml""#);
         assert_eq!(
             parse_service_executable(Path::new(&command)),
             Some(PathBuf::from(SCM_TEST_IMAGE))
