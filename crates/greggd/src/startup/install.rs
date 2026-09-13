@@ -589,6 +589,7 @@ fn wait_for_endpoint_absence(target: std::net::SocketAddr) -> Result<(), Install
 
 /// Manager-aware restart, factoring for Plan 101 reuse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 enum RestartRoute {
     Systemd,
     Launchd,
@@ -601,6 +602,7 @@ enum RestartRoute {
 /// targets the exact invoked binary. A foreign manager with a different,
 /// known config may coexist with a config-specific direct restart; same or
 /// unknown config identity fails closed.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn manager_restart_route(
     manager: StartupMethod,
     ownership: super::ArtifactOwnership,
