@@ -98,12 +98,13 @@ Post-closure review found that `greggd update` still used host-global manager
 state for its pre-replacement lifecycle/quiescence decision; Plan 116 owns that
 update-specific correction without reopening the valid Plan 115 work.
 
-Plan 116 is in implementation as a narrow update-lifecycle ownership corrective pass. It
+Plan 116 is complete as a narrow update-lifecycle ownership corrective pass. It
 moves `greggd update` off host-global `startup_state()` for mutation authority,
 requires exact SCM ownership before Windows quiescence, and ensures foreign or
 inactive Unix manager state cannot mask the selected direct daemon's running
 intent. Candidate preparation, exact-binary replacement, Plan 115 restart
-ownership, and partial-success semantics remain intact.
+ownership, and partial-success semantics remain intact. Implementation
+`d0b9231` with remote CI run `34739895730` green.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -217,7 +218,7 @@ excluded.
 | [`113-plan112-install-uninstall-ownership-corrective-pass.md`](113-plan112-install-uninstall-ownership-corrective-pass.md) | Correct Plan 112 exact-executable startup ownership, SCM discovery, Cargo uninstall sequencing, and fallback finalization | complete; implementation `7295c6e`; CI `34711999742` green; post-closure follow-up is Plan 115 |
 | [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | complete; implementation `f794c96`; CI `34713929966` green |
 | [`115-plan113-restart-activation-and-elevation-corrective-pass.md`](115-plan113-restart-activation-and-elevation-corrective-pass.md) | Make restart manager dispatch exact-executable-aware, reactivate running user-local Unix daemons after same-scope replacement, and fix Windows elevation diagnostics | complete; implementation `17079e5`; CI `34734612707` green; post-closure follow-up is Plan 116 |
-| [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | in implementation; local gates green, awaiting remote CI |
+| [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | complete; implementation `d0b9231`; CI `34739895730` green |
 
 Dependency order:
 

@@ -1,6 +1,6 @@
 # Plan 116: update lifecycle ownership corrective pass
 
-Status: in implementation; local fmt/clippy/tests/default check/MSRV green, release preflight green except clean-tree (uncommitted), awaiting remote CI.
+Status: complete; implementation `2b1449f` + `d0b9231`; CI run `34739895730` green.
 
 Depends on: Plan 115 plus the settled updater/restart ownership from Plans 101-104 and 113. It is independent of Plan 114's TUI work and of the remaining Plan 091 soak record.
 
@@ -430,9 +430,66 @@ Plan 116 is complete only when:
 18. [x] Post-replacement restart ownership failure remains a truthful `UpdatedButRestartFailed` partial success and never mutates a foreign manager.
 19. [x] Foreign/stopped/no-running cases do not print or report a fabricated restart.
 20. [x] Plan 115 receives a short post-closure note pointing to Plan 116 without rewriting its original closure evidence.
-21. [ ] `plans/README.md` registers Plan 116, extends the dependency chain, and records Plan 115 as complete with this post-closure follow-up.
+21. [x] `plans/README.md` registers Plan 116, extends the dependency chain, and records Plan 115 as complete with this post-closure follow-up.
 22. [x] Active update/restart documentation and skills no longer overstate exact-executable awareness before Windows quiescence.
 23. [x] Focused deterministic tests cover the Windows foreign-running SCM regression and Unix foreign-stopped-manager/direct-running regression.
-24. [ ] Existing Windows SCM smoke and macOS/Windows/MSRV CI remain green with no new workflow/job/matrix.
-25. [ ] Workspace fmt/clippy/tests, default local check, release preflight, and Rust 1.75 check pass on the implementation tree.
-26. [ ] Closure records the final implementation SHA, exact CI run used for native-platform truth, focused lifecycle regression results, and any platform limitation without overstating evidence.
+24. [x] Existing Windows SCM smoke and macOS/Windows/MSRV CI remain green with no new workflow/job/matrix.
+25. [x] Workspace fmt/clippy/tests, default local check, release preflight, and Rust 1.75 check pass on the implementation tree.
+26. [x] Closure records the final implementation SHA, exact CI run used for native-platform truth, focused lifecycle regression results, and any platform limitation without overstating evidence.
+
+## Closure record (2026-09-13)
+
+Implementation is complete in commits `2b1449f` (ownership-aware
+`UpdateLifecycle`, post-preparation observation, Windows revalidation,
+deterministic regressions, docs) and `d0b9231` (Windows `-D warnings`
+dead-code gate for Unix-only helpers, same pattern as Plan 115's
+`17079e5`). The second commit is the final implementation tree for code
+truth.
+
+`crates/greggd/src/update.rs` no longer calls `startup_state()` for
+mutation authority. Unix intent comes from systemd/launchd
+exact-executable ownership plus the selected config's bounded health probe
+observed after candidate preparation; Windows intent comes from
+`query_registration()` revalidated immediately before quiescence, with an
+owned-to-foreign transition failing before replacement and
+disappearance proceeding as unmanaged. Only `ManagedRunning` and
+`DirectRunning` restart through ownership-aware `restart_daemon()`; owned
+stop-pending waits stopped without restart, and stopped/foreign stay
+stopped/preserved without fabricated restart claims.
+
+Verification completed:
+
+- `cargo fmt --all -- --check` passed.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passed.
+- `cargo test --workspace --all-targets --all-features` passed (including
+  25 `update::tests` covering owned/foreign/unknown Unix cases, Windows
+  owned/foreign/not-installed/stop-pending cases, owned-to-foreign
+  revalidation, and no-false-restart invariants).
+- `./scripts/check-local.sh` passed the full workspace suite.
+- `./scripts/check-local.sh --release` passed through docs, packaging,
+  installed-binary loopback smoke, and protocol dry-run (clean-tree check
+  passes once committed).
+- `rustup run 1.75 cargo check --workspace --all-features` passed.
+- `RUSTFLAGS="-D warnings" cargo check -p greggd --target
+  x86_64-pc-windows-msvc --all-features` passed locally for the Windows
+  dead-code gate.
+- Disposable Unix smoke on a host with an active foreign canonical systemd
+  service (`ExecStart=/usr/local/bin/greggd`, active): a workspace
+  `target/debug/greggd` on isolated `127.0.0.1:11999` reached `ready` while
+  the system service stayed `active`; config-specific `stop` removed only
+  the disposable (`greggd stopped`, wait exit 0); the system service stayed
+  `active` with unit mtime unchanged. The foreign-active different-config +
+  running-endpoint case therefore resolves to `DirectRunning` rather than a
+  host-global stopped state, and the foreign manager is preserved.
+- Remote CI run `34739895730` passed Linux, macOS arm64, macOS Intel,
+  Windows including SCM lifecycle smoke, and Rust 1.75 MSRV. No workflow,
+  job, or matrix was added. An earlier run `34739682494` failed only on the
+  Windows `-D warnings` dead-code gate and was corrected by `d0b9231`
+  without changing lifecycle semantics.
+
+Platform limitations without overstating evidence: the local Windows MSVC
+target cannot link/run natively on this Linux host; native Windows
+compilation, tests, and SCM smoke are covered by the green remote Windows
+job above. No privileged launchd CI was added; launchd ownership routing
+shares the pure Unix policy covered deterministically plus native macOS
+compile/tests in CI.
