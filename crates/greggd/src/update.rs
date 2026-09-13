@@ -76,6 +76,7 @@ impl fmt::Display for UpdateLifecycle {
 /// `registered_config` is the manager's known config target when parsed;
 /// `None` means the foreign/active registration has unknown config identity
 /// and must fail closed.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn decide_unix_update_lifecycle(
     ownership: ArtifactOwnership,
     active: bool,
@@ -537,6 +538,7 @@ fn quiesce_windows_service_if_needed(
 /// Whether the selected config's endpoint currently answers as a Gregg
 /// daemon. A valid Ready/Warming/Failed health response means running
 /// intent; anything else (including an unreadable config) means absent.
+#[cfg_attr(target_os = "windows", allow(dead_code))]
 fn is_selected_daemon_running(config_path: &Path, explicit: bool) -> bool {
     let Ok(config) = crate::cli::load_config(config_path, explicit) else {
         return false;
