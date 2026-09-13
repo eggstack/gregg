@@ -121,7 +121,7 @@ One shared internal crate owns the mechanism; both binaries are thin adapters:
 
 - `crates/gregg-update` owns version/target/asset/download/checksum/staging/replacement plus the shared `UpdateError` / `UpdateOutcome` / `UpdateSpec` / `UpdatePlan` / `prepare_candidate` / `run_simple_update` surface. It knows nothing about service managers, TUI, EggPool, or the wire protocol.
 - `crates/gregg/src/update.rs` binds the client identity and delegates the full flow to `run_simple_update`, preserving exact outcome strings.
-- `crates/greggd/src/update.rs` binds the daemon identity, prepares via `prepare_candidate`, quiesces a running Windows SCM service only after full preparation, replaces, then restarts through exact-executable-aware manager ownership with `UpdatedButRestartFailed` partial-success (Plan 102 prepare-before-quiesce rule preserved).
+- `crates/greggd/src/update.rs` binds the daemon identity, prepares via `prepare_candidate`, observes exact-executable `UpdateLifecycle` after full preparation and revalidates Windows SCM ownership immediately before quiescence (owned running/start-pending only may stop; owned stop-pending waits stopped without restart; foreign/unknown/not-installed do zero SCM mutation), replaces, then restarts only `ManagedRunning`/`DirectRunning` through exact-executable-aware `restart_daemon()` with `UpdatedButRestartFailed` partial-success (Plan 102 prepare-before-quiesce rule preserved).
 
 Both binaries share the same binary-first contract:
 

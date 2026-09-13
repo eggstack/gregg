@@ -1,6 +1,6 @@
 # Plan 116: update lifecycle ownership corrective pass
 
-Status: planned; ready for implementation.
+Status: in implementation; local fmt/clippy/tests/default check/MSRV green, release preflight green except clean-tree (uncommitted), awaiting remote CI.
 
 Depends on: Plan 115 plus the settled updater/restart ownership from Plans 101-104 and 113. It is independent of Plan 114's TUI work and of the remaining Plan 091 soak record.
 
@@ -410,29 +410,29 @@ Do not add under Plan 116:
 
 Plan 116 is complete only when:
 
-1. [ ] `greggd update` no longer uses host-global `startup_state()` as authority for pre-replacement service mutation or restart intent.
-2. [ ] Update lifecycle classification is explicitly relative to the exact invoked executable and selected config.
-3. [ ] Windows SCM stop is authorized only after `query_registration()` proves the registration still targets the exact invoked executable.
-4. [ ] A foreign Windows SCM service can never be stopped/restarted by updating an unrelated `greggd.exe`.
-5. [ ] Windows SCM query/identity uncertainty blocks unsafe mutation before executable replacement.
-6. [ ] Candidate preparation still completes before any Windows service quiescence.
-7. [ ] Windows ownership/state is revalidated immediately before quiescence/replacement rather than relying on a stale pre-download snapshot.
-8. [ ] Owned Windows running/start-pending service updates stop safely, replace, and restart; owned stopped service updates remain stopped.
-9. [ ] Owned Windows stop-pending state reaches stopped before replacement and is not spuriously restarted.
-10. [ ] Windows `NotInstalled` and foreign registration paths perform zero SCM mutation.
-11. [ ] Owned active systemd/launchd installations preserve managed-running state through replacement using `restart_daemon()`.
-12. [ ] Owned inactive systemd/launchd installations remain stopped after replacement.
-13. [ ] A foreign active Unix manager using the selected config is preserved and cannot be direct-stopped/restarted by the unrelated update.
-14. [ ] A foreign inactive manager no longer masks a running selected direct daemon.
-15. [ ] A foreign active manager using a different known config does not suppress a running selected direct daemon's update/restart.
-16. [ ] Unknown active Unix manager ownership fails before replacement; unknown inactive ownership is allowed only when the selected endpoint is not running.
-17. [ ] Direct/cron running intent is captured immediately before replacement and uses the existing config-specific safe restart path afterward.
-18. [ ] Post-replacement restart ownership failure remains a truthful `UpdatedButRestartFailed` partial success and never mutates a foreign manager.
-19. [ ] Foreign/stopped/no-running cases do not print or report a fabricated restart.
-20. [ ] Plan 115 receives a short post-closure note pointing to Plan 116 without rewriting its original closure evidence.
+1. [x] `greggd update` no longer uses host-global `startup_state()` as authority for pre-replacement service mutation or restart intent.
+2. [x] Update lifecycle classification is explicitly relative to the exact invoked executable and selected config.
+3. [x] Windows SCM stop is authorized only after `query_registration()` proves the registration still targets the exact invoked executable.
+4. [x] A foreign Windows SCM service can never be stopped/restarted by updating an unrelated `greggd.exe`.
+5. [x] Windows SCM query/identity uncertainty blocks unsafe mutation before executable replacement.
+6. [x] Candidate preparation still completes before any Windows service quiescence.
+7. [x] Windows ownership/state is revalidated immediately before quiescence/replacement rather than relying on a stale pre-download snapshot.
+8. [x] Owned Windows running/start-pending service updates stop safely, replace, and restart; owned stopped service updates remain stopped.
+9. [x] Owned Windows stop-pending state reaches stopped before replacement and is not spuriously restarted.
+10. [x] Windows `NotInstalled` and foreign registration paths perform zero SCM mutation.
+11. [x] Owned active systemd/launchd installations preserve managed-running state through replacement using `restart_daemon()`.
+12. [x] Owned inactive systemd/launchd installations remain stopped after replacement.
+13. [x] A foreign active Unix manager using the selected config is preserved and cannot be direct-stopped/restarted by the unrelated update.
+14. [x] A foreign inactive manager no longer masks a running selected direct daemon.
+15. [x] A foreign active manager using a different known config does not suppress a running selected direct daemon's update/restart.
+16. [x] Unknown active Unix manager ownership fails before replacement; unknown inactive ownership is allowed only when the selected endpoint is not running.
+17. [x] Direct/cron running intent is captured immediately before replacement and uses the existing config-specific safe restart path afterward.
+18. [x] Post-replacement restart ownership failure remains a truthful `UpdatedButRestartFailed` partial success and never mutates a foreign manager.
+19. [x] Foreign/stopped/no-running cases do not print or report a fabricated restart.
+20. [x] Plan 115 receives a short post-closure note pointing to Plan 116 without rewriting its original closure evidence.
 21. [ ] `plans/README.md` registers Plan 116, extends the dependency chain, and records Plan 115 as complete with this post-closure follow-up.
-22. [ ] Active update/restart documentation and skills no longer overstate exact-executable awareness before Windows quiescence.
-23. [ ] Focused deterministic tests cover the Windows foreign-running SCM regression and Unix foreign-stopped-manager/direct-running regression.
+22. [x] Active update/restart documentation and skills no longer overstate exact-executable awareness before Windows quiescence.
+23. [x] Focused deterministic tests cover the Windows foreign-running SCM regression and Unix foreign-stopped-manager/direct-running regression.
 24. [ ] Existing Windows SCM smoke and macOS/Windows/MSRV CI remain green with no new workflow/job/matrix.
 25. [ ] Workspace fmt/clippy/tests, default local check, release preflight, and Rust 1.75 check pass on the implementation tree.
 26. [ ] Closure records the final implementation SHA, exact CI run used for native-platform truth, focused lifecycle regression results, and any platform limitation without overstating evidence.

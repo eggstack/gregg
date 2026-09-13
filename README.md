@@ -148,6 +148,18 @@ its registration targets the exact invoked daemon executable. Foreign or
 unknown ownership fails closed; Unix may use the config-specific direct path
 only when a foreign manager is known to target a different config.
 
+`greggd update` prepares the candidate fully before observing exact-executable
+lifecycle and before any stop: Unix combines systemd/launchd ownership with
+selected-config health after preparation (a foreign inactive manager cannot
+mask a running direct daemon; a foreign active manager using the selected
+config is preserved), Windows revalidates `query_registration()` immediately
+before quiescence (only an owned running/start-pending service may stop, owned
+stop-pending waits stopped without restart, foreign/unknown/not-installed do
+zero SCM mutation, owned-to-foreign fails before replacement). Only
+`ManagedRunning`/`DirectRunning` restart via `restart_daemon()`; stopped and
+foreign installations stay stopped/preserved without fabricated restart
+claims.
+
 ```bash
 gregg list                         # list configured endpoints
 gregg remove 192.168.1.10          # host-only remove is supported

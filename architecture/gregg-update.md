@@ -70,10 +70,14 @@ Both binaries share the same binary-first policy (see also
   strings (`AlreadyCurrent` / `UpdatedBinary` / `UpdatedFromCargo`).
 - `crates/greggd/src/update.rs` — lifecycle coordinator: binds the daemon
   identity, permission-probes before download, prepares via
-  `prepare_candidate`, quiesces a running Windows SCM service only after full
-  preparation (prepare-before-quiesce rule), replaces, then restarts through
-  exact-executable-aware manager policy. Restarts only when
-  running/managed; stopped services stay stopped. Successful replacement with
+  `prepare_candidate`, observes exact-executable `UpdateLifecycle` only after
+  full preparation (Unix manager ownership + selected health; Windows SCM
+  `query_registration()` revalidated immediately before quiescence, owned
+  running/start-pending only may stop, owned stop-pending waits stopped
+  without restart, foreign/unknown/not-installed do zero SCM mutation),
+  replaces, then restarts only `ManagedRunning`/`DirectRunning` through
+  exact-executable-aware `restart_daemon()`. Stopped/foreign stay
+  stopped/preserved without fabricated restart claims. Successful replacement with
   failed restart is `UpdatedButRestartFailed` with the exact restart command
   and nonzero exit.
 

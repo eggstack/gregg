@@ -382,3 +382,13 @@ The local Windows MSVC target could not be compiled on this Linux host because
 the MSVC C toolchain is unavailable; native Windows compilation, tests, and SCM
 smoke are covered by the green remote Windows job above. Rust 1.75 and all
 Linux-local gates passed here.
+
+## Post-closure note (Plan 116 follow-up)
+
+Post-closure review found that `greggd update` still used host-global
+`startup_state()` for its pre-replacement lifecycle/quiescence decision: a
+foreign Windows SCM service could be stopped while updating an unrelated
+`greggd.exe`, and a foreign/inactive Unix manager could mask the selected
+direct daemon's running intent. Plan 115's `restart_daemon()` ownership
+boundary was sound but was reached too late. Plan 116 owns the
+update-specific correction without reopening the valid Plan 115 work above.

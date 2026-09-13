@@ -117,12 +117,26 @@ Details:
   version, and if newer downloads the exact `vX.Y.Z` GitHub Release asset for
   the current host plus its `.sha256`, verifies SHA-256 and candidate
   `version` before any replacement, stages to a private temp dir, then
-  atomically replaces the current executable. A missing exact asset (HTTP
-  404) permits a staged `cargo install --locked --version "=X.Y.Z"`
+  observes exact-executable `UpdateLifecycle` after preparation and
+  immediately before mutation (never host-global `startup_state()`), quiesces
+  only where owned, and atomically replaces the current executable. Unix
+  combines systemd/launchd ownership with the selected config's bounded
+  health: owned active restarts, owned inactive stays stopped, foreign active
+  using the selected config is preserved without direct stop/restart, foreign
+  inactive/absent or foreign different-config plus running direct intent may
+  direct-restart, and unknown active (or unknown inactive with a running
+  endpoint) fails before replacement. Windows uses `query_registration()`
+  revalidated immediately before quiescence: owned running/start-pending may
+  stop then restart, owned stopped stays stopped, owned stop-pending waits
+  stopped without restart, `NotInstalled` and foreign do zero SCM mutation,
+  missing/ambiguous identity fails before replacement, and an
+  owned-to-foreign transition fails with zero mutation. A missing exact asset
+  (HTTP 404) permits a staged `cargo install --locked --version "=X.Y.Z"`
   fallback; checksum/version mismatch, transport failure, or 5xx never fall
-  back. Config and startup registration are preserved; only a
-  running/managed daemon is restarted, intentionally stopped services stay
-  stopped, and a replacement whose restart fails reports
+  back. Config and startup registration are preserved; only
+  `ManagedRunning`/`DirectRunning` restart via ownership-aware
+  `restart_daemon()`, stopped/foreign stay stopped/preserved, and a
+  replacement whose restart fails reports
   `Installed X.Y.Z but not activated` with the exact restart command. No
   background checks, package-manager integration, or automatic `sudo`.
   The download/verify/stage/replace mechanism is shared with `gregg update`

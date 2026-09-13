@@ -36,6 +36,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Plan 116 update-lifecycle ownership corrections**: `greggd update` no
+  longer uses host-global `startup_state()` for pre-replacement mutation. It
+  observes an exact-executable `UpdateLifecycle` after candidate preparation:
+  Unix combines systemd/launchd ownership with selected-config health (foreign
+  inactive no longer masks a running direct daemon; foreign active using the
+  selected config is preserved), Windows revalidates `query_registration()`
+  immediately before quiescence (only owned running/start-pending may stop,
+  owned stop-pending waits stopped without restart, foreign/unknown and
+  `NotInstalled` do zero SCM mutation, owned-to-foreign fails before
+  replacement). Only `ManagedRunning`/`DirectRunning` restart via
+  `restart_daemon()`; stopped/foreign stay stopped/preserved without
+  fabricated restart claims.
+
 - **Plan 115 restart, activation, and elevation corrections**: `greggd restart`
   now mutates only an exact-executable-owned systemd, launchd, or SCM
   registration and fails closed for foreign/unknown ownership. Same-scope
