@@ -48,11 +48,17 @@ mkdir -p "$FAKEBIN"
 FAKE_VERSION="9.9.9"
 # When set to 404, the fake curl fails asset downloads with HTTP 404.
 FAKE_CURL_MODE="ok"
+ACTIVATION_FAIL=""
+FAKE_DAEMON_RUNNING="0"
 # Log of fake-cargo invocations.
 CARGO_LOG="${SANDBOX}/cargo.log"
 : > "$CARGO_LOG"
 STARTUP_LOG="${SANDBOX}/startup.log"
 : > "$STARTUP_LOG"
+DAEMON_LOG="${SANDBOX}/daemon.log"
+: > "$DAEMON_LOG"
+RUNNING_MARKER="${SANDBOX}/greggd.running"
+rm -f "$RUNNING_MARKER"
 
 # Fake release-asset executable content: prints `<program> <version>`.
 make_fake_asset() {
@@ -66,7 +72,24 @@ if [[ "\${1:-}" == "version" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "startup" ]]; then
-  echo "${program}" >> "\${STARTUP_LOG:?}"
+  echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "status" ]]; then
+  echo "${program} status" >> "\${DAEMON_LOG:?}"
+  [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
+  exit \$?
+fi
+if [[ "\${1:-}" == "stop" ]]; then
+  echo "${program} stop" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "stop" ]]; then exit 1; fi
+  rm -f "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "croncheck" ]]; then
+  echo "${program} croncheck" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "croncheck" ]]; then exit 1; fi
+  touch "\${RUNNING_MARKER:?}"
   exit 0
 fi
 echo "fake ${program}" >&2
@@ -119,7 +142,24 @@ if [[ "\${1:-}" == "version" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "startup" ]]; then
-  echo "${program}" >> "\${STARTUP_LOG:?}"
+  echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "status" ]]; then
+  echo "${program} status" >> "\${DAEMON_LOG:?}"
+  [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
+  exit \$?
+fi
+if [[ "\${1:-}" == "stop" ]]; then
+  echo "${program} stop" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "stop" ]]; then exit 1; fi
+  rm -f "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "croncheck" ]]; then
+  echo "${program} croncheck" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "croncheck" ]]; then exit 1; fi
+  touch "\${RUNNING_MARKER:?}"
   exit 0
 fi
 exit 0
@@ -180,6 +220,27 @@ if [[ "\${1:-}" == "version" ]]; then
   exit 0
 fi
 if [[ "\${1:-}" == "startup" ]]; then
+  echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "status" ]]; then
+  echo "${program} status" >> "\${DAEMON_LOG:?}"
+  [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
+  exit \$?
+fi
+if [[ "\${1:-}" == "stop" ]]; then
+  echo "${program} stop" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "stop" ]]; then exit 1; fi
+  rm -f "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "croncheck" ]]; then
+  echo "${program} croncheck" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "croncheck" ]]; then exit 1; fi
+  touch "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "startup" ]]; then
   exit 0
 fi
 exit 0
@@ -199,7 +260,7 @@ EOF
 chmod +x "${FAKEBIN}/cargo"
 
 export PATH="${FAKEBIN}:${PATH}"
-export FAKE_VERSION FAKE_CURL_MODE CARGO_LOG STARTUP_LOG
+export FAKE_VERSION FAKE_CURL_MODE ACTIVATION_FAIL FAKE_DAEMON_RUNNING CARGO_LOG STARTUP_LOG DAEMON_LOG RUNNING_MARKER
 
 run_install() {
   # run_install <args...> — runs install.sh, captures output+status.
@@ -323,6 +384,7 @@ rm -f "${DEST_DIR}/gregg"
 
 FAKE_VERSION="9.9.9"
 export FAKE_VERSION
+rm -f "$RUNNING_MARKER"
 make_fake_asset greggd 1.0.0 "${DEST_DIR}/greggd"
 run_install greggd
 if [[ $STATUS -eq 0 ]]; then
@@ -331,6 +393,59 @@ else
   fail "greggd rerun (status=$STATUS, out=$OUT)"
 fi
 expect_contains "$OUT" "greggd 1.0.0" "greggd replacement names the existing version"
+
+STOP_COUNT_BEFORE="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_BEFORE="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+rm -f "$RUNNING_MARKER"
+run_install greggd
+STOP_COUNT_AFTER="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_AFTER="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+if [[ "$STOP_COUNT_AFTER" == "$STOP_COUNT_BEFORE" && "$CRONCHECK_COUNT_AFTER" == "$CRONCHECK_COUNT_BEFORE" ]]; then
+  ok "stopped same-scope replacement remains stopped and does not run activation commands"
+else
+  fail "stopped replacement ran activation commands (stop ${STOP_COUNT_BEFORE}->${STOP_COUNT_AFTER}, croncheck ${CRONCHECK_COUNT_BEFORE}->${CRONCHECK_COUNT_AFTER})"
+fi
+
+touch "$RUNNING_MARKER"
+FAKE_DAEMON_RUNNING="1"
+export FAKE_DAEMON_RUNNING
+STOP_COUNT_BEFORE="$STOP_COUNT_AFTER"
+CRONCHECK_COUNT_BEFORE="$CRONCHECK_COUNT_AFTER"
+run_install greggd
+STOP_COUNT_AFTER="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_AFTER="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+if [[ "$STOP_COUNT_AFTER" -eq $((STOP_COUNT_BEFORE + 1)) && "$CRONCHECK_COUNT_AFTER" -eq $((CRONCHECK_COUNT_BEFORE + 1)) && -e "$RUNNING_MARKER" ]]; then
+  ok "running prebuilt replacement performs one safe stop/croncheck activation"
+else
+  fail "running prebuilt replacement activation (status=$STATUS, out=$OUT)"
+fi
+
+touch "$RUNNING_MARKER"
+FAKE_DAEMON_RUNNING="1"
+export FAKE_DAEMON_RUNNING
+ACTIVATION_FAIL="croncheck"
+export ACTIVATION_FAIL
+run_install greggd
+unset ACTIVATION_FAIL
+if [[ "$STATUS" -ne 0 && "$OUT" == *"binary updated; daemon activation/restart failed"* && "$OUT" == *"Retry:"* ]]; then
+  ok "activation failure after replacement is reported nonzero with an exact retry"
+else
+  fail "activation failure diagnostic (status=$STATUS, out=$OUT)"
+fi
+
+rm -f "$DEST_DIR/greggd" "$RUNNING_MARKER"
+FAKE_DAEMON_RUNNING="0"
+export FAKE_DAEMON_RUNNING
+STOP_COUNT_BEFORE="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_BEFORE="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+run_install greggd
+STOP_COUNT_AFTER="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_AFTER="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+if [[ "$STATUS" -eq 0 && "$STOP_COUNT_AFTER" == "$STOP_COUNT_BEFORE" && "$CRONCHECK_COUNT_AFTER" == "$CRONCHECK_COUNT_BEFORE" ]]; then
+  ok "first daemon install does not run replacement-only activation"
+else
+  fail "first daemon install activation (status=$STATUS, out=$OUT)"
+fi
 
 # --- 7. Cargo fallback stages privately --------------------------------------------
 
@@ -372,12 +487,18 @@ else
   fail "staged binary version check"
 fi
 
-# A staged daemon candidate must use the same post-install startup path as a
-# downloaded candidate, not stop after copying the binary.
-rm -f "${DEST_DIR}/greggd"
+# A staged daemon candidate must use the same post-install startup and
+# replacement-only activation path as a downloaded candidate.
+touch "$RUNNING_MARKER"
+FAKE_DAEMON_RUNNING="1"
+export FAKE_DAEMON_RUNNING
+STOP_COUNT_BEFORE="$STOP_COUNT_AFTER"
+CRONCHECK_COUNT_BEFORE="$CRONCHECK_COUNT_AFTER"
 run_install greggd
-if [[ $STATUS -eq 0 && -x "${DEST_DIR}/greggd" && "$(grep -c '^greggd$' "$STARTUP_LOG")" -ge 1 ]]; then
-  ok "staged Cargo daemon reaches shared startup finalization"
+STOP_COUNT_AFTER="$(grep -c '^greggd stop$' "$DAEMON_LOG" || true)"
+CRONCHECK_COUNT_AFTER="$(grep -c '^greggd croncheck$' "$DAEMON_LOG" || true)"
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/greggd" && "$(grep -c '^greggd startup$' "$STARTUP_LOG")" -ge 1 && "$STOP_COUNT_AFTER" -eq $((STOP_COUNT_BEFORE + 1)) && "$CRONCHECK_COUNT_AFTER" -eq $((CRONCHECK_COUNT_BEFORE + 1)) && -e "$RUNNING_MARKER" ]]; then
+  ok "staged Cargo daemon reaches shared finalization and activation"
 else
   fail "staged Cargo daemon startup finalization (status=$STATUS, out=$OUT)"
 fi

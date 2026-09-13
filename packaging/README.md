@@ -258,7 +258,11 @@ requested/latest verified version:
 3. A foreign/unidentifiable destination fails with an actionable diagnostic
    instead of being overwritten; there is no `--force`.
 4. Replace the binary, preserve the existing configuration file, and
-   reload/restart the service.
+   reload/restart the service. For a non-root same-scope `greggd` replacement,
+   a previously healthy user-local daemon is transitioned through the new
+   binary's config-specific `stop` + `croncheck`; first installs and stopped
+   daemons remain stopped. Prebuilt and staged-Cargo candidates share this
+   path, and activation failure is reported nonzero with an exact retry.
 
 The installer never searches `PATH`, home directories, or other scopes, and
 never escalates privileges: a non-root rerun does not replace
@@ -272,6 +276,11 @@ root, verifies the staged binary exactly as a download, then copies only
 the final executable into the bootstrap destination. Staging is removed
 afterwards; no Cargo install metadata persists beside the binary. Direct
 operator `cargo install gregg[d]` remains Cargo-owned.
+
+Update/uninstall permission failures use platform-correct rerun guidance. Unix
+prints `sudo <exact-executable> <operation>`; Windows instructs the operator
+to rerun the exact executable and operation from an Administrator terminal or
+PowerShell and never prints `sudo`.
 
 On Windows, the install script preserves the existing config at `%ProgramData%\gregg\greggd.toml` unless you explicitly provide a different config path.
 

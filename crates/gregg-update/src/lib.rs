@@ -42,7 +42,7 @@ pub mod version;
 
 pub use error::UpdateError;
 pub use exec::DownloadOutcome;
-pub use stage::StagedCandidate;
+pub use stage::{elevated_rerun_hint, StagedCandidate};
 pub use target::{
     asset_name, detect_target, detect_target_for, github_urls, is_supported_binary_target,
     GITHUB_REPO, SUPPORTED_TARGETS,

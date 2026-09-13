@@ -210,6 +210,46 @@ check_path_advice() {
   esac
 }
 
+# A user-local same-scope daemon replacement must preserve whether the
+# selected default-config daemon was actually running. This is activation
+# intent only; manager ownership remains the daemon's responsibility.
+USER_LOCAL_REACTIVATE=false
+USER_LOCAL_DAEMON=""
+
+capture_user_local_running() {
+  local dest="$1"
+  local program="$2"
+  local scope="$3"
+  USER_LOCAL_REACTIVATE=false
+  USER_LOCAL_DAEMON="$dest"
+  if [[ "$program" != "greggd" || "$scope" != "replace" || $EUID -eq 0 ]]; then
+    return 0
+  fi
+  # `status` exits zero only for a valid Gregg health response. Do not use
+  # process discovery or a port-only probe here.
+  if "$dest" status >/dev/null 2>&1; then
+    USER_LOCAL_REACTIVATE=true
+  fi
+}
+
+activate_user_local_greggd() {
+  if [[ "$USER_LOCAL_REACTIVATE" != "true" ]]; then
+    return 0
+  fi
+  if ! "$USER_LOCAL_DAEMON" stop; then
+    echo "binary updated; daemon activation/restart failed: stop was not confirmed" >&2
+    echo "Retry: ${USER_LOCAL_DAEMON} stop && ${USER_LOCAL_DAEMON} croncheck" >&2
+    return 1
+  fi
+  if ! "$USER_LOCAL_DAEMON" croncheck; then
+    echo "binary updated; daemon activation/restart failed: croncheck did not activate the new binary" >&2
+    echo "Retry: ${USER_LOCAL_DAEMON} stop && ${USER_LOCAL_DAEMON} croncheck" >&2
+    return 1
+  fi
+  echo "Reactivated running user-local daemon with ${USER_LOCAL_DAEMON}." >&2
+  return 0
+}
+
 # Print `<dest> version` output when the destination already holds a
 # runnable executable, else print nothing. Never fails: an unrunnable or
 # missing destination is simply not an identified Gregg component.
@@ -379,6 +419,7 @@ finalize_greggd_install() {
       echo "Startup configured (cron) for ${DEST_DIR}/greggd." >&2
     fi
   fi
+  activate_user_local_greggd
 }
 
 install_program() {
@@ -403,6 +444,7 @@ install_program() {
     existing_version="$(existing_version_for "$dest")"
     echo "Found existing ${existing_version} at ${dest}; this rerun will replace it in place (same scope)." >&2
   fi
+  capture_user_local_running "$dest" "$program" "$scope"
 
   # Source-only hosts go directly to Cargo fallback
   if [[ -z "$TARGET" || "$SUPPORTED_BINARY" != "true" ]]; then

@@ -58,9 +58,7 @@ pub use cron::{
     cron_uninstall_changed_for, install_cron, merge_crontab, remove_managed_cron_block,
     shell_quote, uninstall_cron, uninstall_cron_for, ShellQuoteError, CRON_MANAGED_MARKER,
 };
-pub use install::{
-    install_startup, render_instructions, restart_daemon, restart_with_state, InstallError,
-};
+pub use install::{install_startup, render_instructions, restart_daemon, InstallError};
 pub use launchd::{
     install_launchd, launchd_artifact_ownership, launchd_plist_content, launchd_uninstall_steps,
     parse_program_arguments, uninstall_launchd,

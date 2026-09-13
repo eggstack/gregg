@@ -610,7 +610,7 @@ fn purge_empty_dir_for(config_path: &Path) -> Option<PathBuf> {
 
 /// Probe that `dir` accepts a temporary file (practical writability
 /// preflight for artifact removal).
-fn probe_dir_writable(dir: &Path, exe: &Path) -> Result<(), UninstallError> {
+fn probe_dir_writable(dir: &Path, exe: &Path, purge: bool) -> Result<(), UninstallError> {
     let probe = dir.join(format!(
         ".greggd-uninstall-probe-{}-{}.tmp",
         std::process::id(),
@@ -630,9 +630,16 @@ fn probe_dir_writable(dir: &Path, exe: &Path) -> Result<(), UninstallError> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             Err(UninstallError::Permission {
                 message: format!(
-                    "permission denied writing to {}; rerun as root: sudo {} uninstall",
+                    "permission denied writing to {}; rerun: {}",
                     dir.display(),
-                    exe.display()
+                    gregg_update::elevated_rerun_hint(
+                        exe,
+                        if purge {
+                            "uninstall --purge"
+                        } else {
+                            "uninstall"
+                        },
+                    )
                 ),
             })
         }
@@ -658,12 +665,12 @@ fn preflight(plan: &UninstallPlan) -> Result<(), UninstallError> {
     gregg_update::preflight_uninstall_writable(&plan.exe_path, &plan.exe_path, plan.purge)?;
     if plan.systemd_teardown {
         if let Some(parent) = standard_systemd_unit_path().parent() {
-            probe_dir_writable(parent, &plan.exe_path)?;
+            probe_dir_writable(parent, &plan.exe_path, plan.purge)?;
         }
     }
     if plan.launchd_teardown {
         if let Some(parent) = standard_launchd_plist_path().parent() {
-            probe_dir_writable(parent, &plan.exe_path)?;
+            probe_dir_writable(parent, &plan.exe_path, plan.purge)?;
         }
     }
     if plan.cron_teardown && !plan.discovery.crontab_available {
@@ -674,7 +681,7 @@ fn preflight(plan: &UninstallPlan) -> Result<(), UninstallError> {
     if plan.purge && plan.config_exists {
         if let Some(parent) = plan.config_path.parent() {
             if !parent.as_os_str().is_empty() {
-                probe_dir_writable(parent, &plan.exe_path)?;
+                probe_dir_writable(parent, &plan.exe_path, plan.purge)?;
             }
         }
     }
@@ -772,9 +779,9 @@ fn purge_config(plan: &UninstallPlan) -> Result<(), UninstallError> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             return Err(UninstallError::Permission {
                 message: format!(
-                    "permission denied removing {}; rerun as root: sudo {} uninstall --purge",
+                    "permission denied removing {}; rerun: {}",
                     plan.config_path.display(),
-                    plan.exe_path.display()
+                    gregg_update::elevated_rerun_hint(&plan.exe_path, "uninstall --purge")
                 ),
             });
         }
@@ -799,8 +806,8 @@ fn purge_config(plan: &UninstallPlan) -> Result<(), UninstallError> {
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(UninstallError::Permission {
                     message: format!(
-                        "permission denied removing {MACOS_DAEMON_LOG}; rerun as root: sudo {} uninstall --purge",
-                        plan.exe_path.display()
+                        "permission denied removing {MACOS_DAEMON_LOG}; rerun: {}",
+                        gregg_update::elevated_rerun_hint(&plan.exe_path, "uninstall --purge")
                     ),
                 });
             }

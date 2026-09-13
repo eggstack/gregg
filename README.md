@@ -133,12 +133,20 @@ Rerunning a bootstrap installer at the same scope replaces that scope's
 component in place (first install vs update is reported; an unrelated
 executable at the canonical path is never overwritten). Prebuilt and Cargo
 fallback daemon installs use the same post-install startup finalization.
+For a non-root same-scope `greggd` replacement, a daemon that was healthy
+before replacement is transitioned to the new process with the config-specific
+`stop` + `croncheck` path; stopped or first-install daemons remain stopped.
 `gregg update` / `greggd update` instead update the exact invoked binary.
 `gregg uninstall` / `greggd uninstall` remove only the exact invoked binary;
 daemon startup artifacts are removed only when their command targets that
 same executable. Foreign or ambiguous manager/cron artifacts are preserved.
 Configuration is preserved unless `--purge` is passed. See
 [Installation](docs/installation.md).
+
+`greggd restart` mutates a systemd, launchd, or Windows SCM manager only when
+its registration targets the exact invoked daemon executable. Foreign or
+unknown ownership fails closed; Unix may use the config-specific direct path
+only when a foreign manager is known to target a different config.
 
 ```bash
 gregg list                         # list configured endpoints

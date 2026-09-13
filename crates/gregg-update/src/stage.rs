@@ -19,6 +19,23 @@ use crate::error::UpdateError;
 /// a pre-epoch clock that always yields `0`) never share a name.
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Render the exact command an operator should rerun with the privilege level
+/// required by the host platform. The updater never performs elevation itself.
+#[must_use]
+pub fn elevated_rerun_hint(exe: &Path, operation: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "run from an Administrator terminal/PowerShell: \"{}\" {operation}",
+            exe.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!("sudo {} {operation}", exe.display())
+    }
+}
+
 /// Create an exclusive owner-private temp dir for update staging.
 /// On Unix the directory mode is `0o700`.
 pub fn create_temp_dir(prefix: &str) -> Result<TempDir, UpdateError> {
@@ -169,7 +186,7 @@ pub fn check_write_permission_for(
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(UpdateError::PermissionDenied {
                     message: format!(" permission denied writing to {}", parent.display()),
-                    elevated: format!("sudo {} {operation}", original_exe.display()),
+                    elevated: elevated_rerun_hint(original_exe, operation),
                 });
             }
             Err(e) => {
@@ -205,10 +222,9 @@ pub fn replace_current_exe(candidate: &Path, program: &str) -> Result<(), Update
         if e.kind() == io::ErrorKind::PermissionDenied {
             UpdateError::PermissionDenied {
                 message: format!("permission denied replacing executable: {e}"),
-                elevated: format!(
-                    "sudo {} update",
-                    std::env::current_exe()
-                        .map_or_else(|_| program.to_string(), |p| p.display().to_string())
+                elevated: elevated_rerun_hint(
+                    &std::env::current_exe().unwrap_or_else(|_| PathBuf::from(program)),
+                    "update",
                 ),
             }
         } else {
@@ -247,10 +263,30 @@ mod tests {
     fn permission_error_contains_elevated_command() {
         let err = UpdateError::PermissionDenied {
             message: "permission denied writing to /usr/local/bin".to_string(),
-            elevated: "sudo /usr/local/bin/gregg update".to_string(),
+            elevated: elevated_rerun_hint(Path::new("/usr/local/bin/gregg"), "update"),
         };
         let msg = err.to_string();
+        #[cfg(not(windows))]
         assert!(msg.contains("sudo /usr/local/bin/gregg update"));
+        #[cfg(windows)]
+        {
+            assert!(msg.contains("Administrator"));
+            assert!(msg.contains("update"));
+            assert!(!msg.contains("sudo"));
+        }
+    }
+
+    #[test]
+    fn elevated_hint_preserves_exact_operation() {
+        let hint = elevated_rerun_hint(Path::new("/tmp/greggd"), "uninstall --purge");
+        assert!(hint.contains("uninstall --purge"));
+        #[cfg(not(windows))]
+        assert!(hint.starts_with("sudo /tmp/greggd"));
+        #[cfg(windows)]
+        {
+            assert!(hint.contains("Administrator"));
+            assert!(!hint.contains("sudo"));
+        }
     }
 
     #[test]

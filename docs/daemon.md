@@ -86,11 +86,16 @@ Details:
   `sudo <exe> startup install --method <...>` command is printed and exit 4
   (`PermissionDenied`) is returned. No internal `sudo`. `startup
   instructions` never mutates state.
-- `restart` is manager-aware: systemd via `systemctl restart greggd`,
-  launchd via `launchctl kickstart -k`, Windows via SCM, otherwise via local
-  `stop` plus a detached `run`. Manager calls are bounded with stderr
-  preserved; privilege failures print the exact elevated command and return
-  `PermissionDenied` without a competing fallback.
+- `restart` is manager-aware and exact-executable-aware: systemd and launchd
+  receive restart mutation only when their parsed registration targets the
+  invoked executable. Foreign registrations using the selected config and
+  unknown active ownership fail closed; a foreign registration with a different
+  known config leaves the manager untouched and permits the config-specific
+  direct path. Windows queries the SCM image path and preserves foreign,
+  unknown, and not-installed states without a direct fallback. Otherwise Unix
+  uses local `stop` plus a detached `run`. Manager calls are bounded with
+  stderr preserved; privilege failures print the exact elevated command and
+  return `PermissionDenied` without a competing fallback.
 - `stop` (Linux/macOS) targets only the local instance matching the resolved
   config identity via one Unix-domain control socket (`STOP\n` → `OK\n`).
   Identity is a digest of the normalized config path, so two configs in one
@@ -132,7 +137,7 @@ Foreign or ambiguous artifacts are reported by `--dry-run` and preserved;
 SCM query uncertainty blocks mutation. Discovery is independent per artifact,
 so multiple owned artifacts can be removed together. Permissions are
 preflighted before any teardown mutation and nothing invokes `sudo`
-internally (rerun the printed `sudo <exe> uninstall` instead). An unmanaged
+internally (rerun the printed platform-correct elevated command instead). An unmanaged
 Unix daemon is stopped via the existing control-socket identity; an uncertain
 stop blocks deletion rather than orphaning a running process. The `greggd`
 system account is left in place. Unix Cargo-owned installs complete owned

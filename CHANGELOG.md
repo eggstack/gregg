@@ -36,6 +36,15 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Plan 115 restart, activation, and elevation corrections**: `greggd restart`
+  now mutates only an exact-executable-owned systemd, launchd, or SCM
+  registration and fails closed for foreign/unknown ownership. Same-scope
+  non-root Unix daemon bootstrap replacements reactivate only a daemon that was
+  healthy before replacement, using config-specific `stop` + `croncheck` for
+  both prebuilt and staged-Cargo candidates. Shared update/uninstall permission
+  hints now say to use an Administrator terminal/PowerShell on Windows instead
+  of emitting Unix `sudo` commands.
+
 - **Plan 113 install/uninstall ownership corrections**: daemon startup
   teardown is now bound to the exact invoked executable across systemd,
   launchd, cron, and Windows SCM. Windows SCM discovery preserves full

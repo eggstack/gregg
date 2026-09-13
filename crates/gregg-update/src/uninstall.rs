@@ -19,7 +19,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use crate::error::UpdateError;
-use crate::stage::{check_write_permission_for, current_exe_path};
+use crate::stage::{check_write_permission_for, current_exe_path, elevated_rerun_hint};
 
 /// Re-exported resolution so both binaries remove the exact invoked
 /// executable rather than an assumed install prefix.
@@ -101,7 +101,7 @@ pub fn self_delete_current_exe(purge: bool) -> Result<(), UpdateError> {
             };
             UpdateError::PermissionDenied {
                 message: format!("permission denied deleting executable: {e}"),
-                elevated: format!("sudo {} {operation}", exe.display()),
+                elevated: elevated_rerun_hint(&exe, operation),
             }
         } else {
             UpdateError::Replacement(format!("self-delete failed: {e}"))

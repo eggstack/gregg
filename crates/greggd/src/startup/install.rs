@@ -12,7 +12,6 @@ use super::method::{
 use super::process::DIRECT_RESTART_TIMEOUT;
 #[cfg(test)]
 use super::state::systemd_state_with;
-use super::state::{startup_state, StartupState};
 use super::systemd::{install_systemd, restart_systemd};
 use crate::config::Config;
 use std::fmt;
@@ -416,14 +415,14 @@ pub fn install_startup(
             // Report state and instructions rather than duplicating sc.exe logic.
             #[cfg(target_os = "windows")]
             {
-                let state = startup_state();
+                let state = super::state::startup_state();
                 println!("Windows Service (SCM) state: {state}");
                 println!(
                     "{}",
                     render_instructions(method, exe, config_path, explicit_config)
                 );
                 // If service is not installed, instruct to use installer.
-                if state == StartupState::UnmanagedOrCron {
+                if state == super::state::StartupState::UnmanagedOrCron {
                     println!(
                         "No greggd service found. Run as Administrator:\n  .\\packaging\\install.ps1 -Component Greggd"
                     );
@@ -589,18 +588,64 @@ fn wait_for_endpoint_absence(target: std::net::SocketAddr) -> Result<(), Install
 }
 
 /// Manager-aware restart, factoring for Plan 101 reuse.
-pub fn restart_with_state(
-    state: StartupState,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RestartRoute {
+    Systemd,
+    Launchd,
+    WindowsScm,
+    Direct,
+}
+
+/// Decide whether a discovered startup artifact may receive restart
+/// mutation. A manager is authoritative only when its registered executable
+/// targets the exact invoked binary. A foreign manager with a different,
+/// known config may coexist with a config-specific direct restart; same or
+/// unknown config identity fails closed.
+fn manager_restart_route(
+    manager: StartupMethod,
+    ownership: super::ArtifactOwnership,
+    active: bool,
+    registered_config: Option<&Path>,
+    selected_config: &Path,
+) -> Result<RestartRoute, String> {
+    match ownership {
+        super::ArtifactOwnership::Owned => Ok(match manager {
+            StartupMethod::Systemd => RestartRoute::Systemd,
+            StartupMethod::Launchd => RestartRoute::Launchd,
+            StartupMethod::WindowsScm => RestartRoute::WindowsScm,
+            StartupMethod::Cron | StartupMethod::Direct => RestartRoute::Direct,
+        }),
+        super::ArtifactOwnership::Absent if !active => Ok(RestartRoute::Direct),
+        super::ArtifactOwnership::Absent => Err(format!(
+            "{manager} is active but its executable registration is absent; refusing restart"
+        )),
+        super::ArtifactOwnership::Unknown => Err(format!(
+            "cannot determine {manager} executable ownership; refusing restart"
+        )),
+        super::ArtifactOwnership::Foreign => match registered_config {
+            Some(config) if !gregg_update::uninstall::paths_equivalent(config, selected_config) => {
+                Ok(RestartRoute::Direct)
+            }
+            Some(_) => Err(format!(
+                "foreign {manager} registration owns the selected config; refusing direct restart"
+            )),
+            None => Err(format!(
+                "foreign {manager} registration has unknown config ownership; refusing restart"
+            )),
+        },
+    }
+}
+
+fn execute_restart(
+    route: RestartRoute,
     exe: &Path,
     config_path: &Path,
     explicit: bool,
 ) -> Result<(), InstallError> {
-    match state {
-        StartupState::SystemdActive | StartupState::SystemdInstalledStopped => restart_systemd(exe),
-        StartupState::LaunchdLoaded | StartupState::LaunchdInstalledUnloaded => {
-            restart_launchd(exe)
-        }
-        StartupState::WindowsServiceRunning | StartupState::WindowsServiceStopped => {
+    match route {
+        RestartRoute::Systemd => restart_systemd(exe),
+        RestartRoute::Launchd => restart_launchd(exe),
+        RestartRoute::WindowsScm => {
             #[cfg(target_os = "windows")]
             {
                 crate::service::platform_service_manager()
@@ -626,16 +671,81 @@ pub fn restart_with_state(
                 ))
             }
         }
-        StartupState::UnmanagedOrCron => restart_cron_direct(exe, config_path, explicit),
+        RestartRoute::Direct => restart_cron_direct(exe, config_path, explicit),
     }
 }
+
+#[cfg(target_os = "windows")]
+fn windows_restart_registration_route(
+    registration: &crate::service::ServiceRegistration,
+    exe: &Path,
+) -> Result<RestartRoute, String> {
+    if registration.state == crate::service::ServiceState::NotInstalled {
+        return Err("Windows SCM service is not installed; direct restart is unsupported".into());
+    }
+    let target = registration.executable_path.as_deref().ok_or_else(|| {
+        "Windows SCM executable ownership is unknown; refusing restart".to_string()
+    })?;
+    if !gregg_update::uninstall::paths_equivalent(target, exe) {
+        return Err(format!(
+            "Windows SCM service targets foreign executable {}; refusing restart",
+            target.display()
+        ));
+    }
+    Ok(RestartRoute::WindowsScm)
+}
+
 pub fn restart_daemon(exe: &Path, config_path: &Path, explicit: bool) -> Result<(), InstallError> {
-    let state = startup_state();
-    restart_with_state(state, exe, config_path, explicit)
+    let route = {
+        #[cfg(target_os = "windows")]
+        {
+            let registration = crate::service::platform_service_manager()
+                .query_registration()
+                .map_err(|error| {
+                    InstallError::Other(format!(
+                        "cannot determine Windows SCM ownership; refusing restart: {error}"
+                    ))
+                })?;
+            windows_restart_registration_route(&registration, exe).map_err(InstallError::Other)?
+        }
+        #[cfg(all(unix, target_os = "linux"))]
+        {
+            let (ownership, active, registered_config) =
+                super::systemd::systemd_artifact_ownership(exe);
+            manager_restart_route(
+                StartupMethod::Systemd,
+                ownership,
+                active,
+                registered_config.as_deref(),
+                config_path,
+            )
+            .map_err(InstallError::Other)?
+        }
+        #[cfg(all(unix, target_os = "macos"))]
+        {
+            let (ownership, active, registered_config) =
+                super::launchd::launchd_artifact_ownership(exe);
+            manager_restart_route(
+                StartupMethod::Launchd,
+                ownership,
+                active,
+                registered_config.as_deref(),
+                config_path,
+            )
+            .map_err(InstallError::Other)?
+        }
+        #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+        {
+            RestartRoute::Direct
+        }
+    };
+    execute_restart(route, exe, config_path, explicit)
 }
 #[cfg(test)]
 mod tests {
+    use super::super::state::StartupState;
     use super::*;
+    use crate::startup::ArtifactOwnership;
 
     #[test]
     fn instructions_contain_standard_paths() {
@@ -697,12 +807,126 @@ mod tests {
         assert_eq!(spawn_count, 1);
     }
     #[test]
-    fn restart_with_state_systemd_calls_systemctl_when_mocked() {
+    fn systemd_state_maps_active_manager_for_restart() {
         // This test only verifies the helper maps correctly; it doesn't run systemctl.
         // We test that an unmanaged state would go to cron/direct path without panicking in pure helper.
         // Actual systemctl invocation is not mocked here; we just check state mapping.
         let state = systemd_state_with(true, true);
         assert_eq!(state, StartupState::SystemdActive);
+    }
+
+    #[test]
+    fn owned_manager_registration_is_the_only_manager_restart_route() {
+        let selected = Path::new("/etc/gregg/greggd.toml");
+        assert_eq!(
+            manager_restart_route(
+                StartupMethod::Systemd,
+                super::super::ArtifactOwnership::Owned,
+                true,
+                Some(selected),
+                selected,
+            ),
+            Ok(RestartRoute::Systemd)
+        );
+        assert_eq!(
+            manager_restart_route(
+                StartupMethod::Launchd,
+                super::super::ArtifactOwnership::Owned,
+                false,
+                Some(selected),
+                selected,
+            ),
+            Ok(RestartRoute::Launchd)
+        );
+    }
+
+    #[test]
+    fn foreign_manager_with_different_config_allows_config_specific_direct_restart() {
+        assert_eq!(
+            manager_restart_route(
+                StartupMethod::Systemd,
+                super::super::ArtifactOwnership::Foreign,
+                true,
+                Some(Path::new("/other/greggd.toml")),
+                Path::new("/selected/greggd.toml"),
+            ),
+            Ok(RestartRoute::Direct)
+        );
+    }
+
+    #[test]
+    fn foreign_launchd_with_different_config_allows_config_specific_direct_restart() {
+        assert_eq!(
+            manager_restart_route(
+                StartupMethod::Launchd,
+                ArtifactOwnership::Foreign,
+                true,
+                Some(Path::new("/tmp/foreign.toml")),
+                Path::new("/tmp/selected.toml"),
+            )
+            .unwrap(),
+            RestartRoute::Direct
+        );
+    }
+
+    #[test]
+    fn foreign_same_config_and_unknown_active_manager_fail_closed() {
+        let selected = Path::new("/etc/gregg/greggd.toml");
+        assert!(manager_restart_route(
+            StartupMethod::Launchd,
+            super::super::ArtifactOwnership::Foreign,
+            true,
+            Some(selected),
+            selected,
+        )
+        .is_err());
+        assert!(manager_restart_route(
+            StartupMethod::Systemd,
+            super::super::ArtifactOwnership::Unknown,
+            true,
+            None,
+            selected,
+        )
+        .is_err());
+        assert!(manager_restart_route(
+            StartupMethod::Systemd,
+            super::super::ArtifactOwnership::Foreign,
+            true,
+            None,
+            selected,
+        )
+        .is_err());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_restart_registration_preserves_scm_ownership_states() {
+        use crate::service::{ServiceRegistration, ServiceState};
+
+        let exe = Path::new(r"C:\Program Files\Gregg\greggd.exe");
+        let owned = ServiceRegistration {
+            state: ServiceState::Running,
+            executable_path: Some(exe.to_path_buf()),
+        };
+        assert_eq!(
+            windows_restart_registration_route(&owned, exe),
+            Ok(RestartRoute::WindowsScm)
+        );
+        let foreign = ServiceRegistration {
+            state: ServiceState::Stopped,
+            executable_path: Some(PathBuf::from(r"C:\Other\greggd.exe")),
+        };
+        assert!(windows_restart_registration_route(&foreign, exe).is_err());
+        let unknown = ServiceRegistration {
+            state: ServiceState::Running,
+            executable_path: None,
+        };
+        assert!(windows_restart_registration_route(&unknown, exe).is_err());
+        let missing = ServiceRegistration {
+            state: ServiceState::NotInstalled,
+            executable_path: None,
+        };
+        assert!(windows_restart_registration_route(&missing, exe).is_err());
     }
     #[test]
     fn manager_permission_text_is_classified() {

@@ -57,6 +57,13 @@ How it works:
   a systemd/launchd host prints the exact elevated
   `sudo <exe> startup install --method <...>` command instead of silently
   registering a cron duplicate.
+- On a non-root same-scope `greggd` replacement, the installer checks the
+  selected default-config daemon with `status` before overwriting it. If it was
+  healthy, the new binary is activated with config-specific `stop` followed by
+  `croncheck`; first installs and previously stopped daemons remain stopped.
+  Prebuilt and staged-Cargo candidates share this path. A post-replacement
+  activation failure returns nonzero and prints the exact retry command; the
+  verified new binary is not rolled back.
 
 Without a component argument, a terminal-attached run shows a small
 selector; a piped run without a component prints usage and exits nonzero.

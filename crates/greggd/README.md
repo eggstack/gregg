@@ -74,7 +74,7 @@ direct stop blocks deletion. On Unix, Cargo-owned removal completes owned
 startup/direct-stop work before delegating the executable to Cargo and applies
 `--purge` only after Cargo succeeds.
 
-`startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and factored for `update` reuse (systemd via `systemctl restart greggd`, launchd via `launchctl kickstart -k`, Windows via SCM, otherwise `stop` + detached `run`).
+`startup install` defaults to `auto`: Windows→SCM, macOS→launchd, Linux with running systemd→systemd, else cron. Systemd uses `/usr/local/bin/greggd`, `/etc/gregg/greggd.toml`, `greggd` user/group, `/etc/systemd/system/greggd.service` (atomic, `daemon-reload` + `enable` + `start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses an idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). An identified systemd/launchd host never silently falls back to cron on permission failure; the exact `sudo <exe> startup install --method <...>` is printed and exit 4 is returned. No internal `sudo`. `startup instructions` never mutates state. `restart` is manager-aware and exact-executable-aware: systemd and launchd are restarted only when their registration targets the invoked binary; foreign same-config or unknown registrations fail closed, while a foreign registration with a different known config may use the config-specific direct path. Windows queries the SCM image path and preserves foreign, unknown, and not-installed states without direct fallback. Otherwise Unix uses `stop` + detached `run`.
 
 `greggd update` queries the latest stable `greggd` crate on crates.io, downloads the exact `vX.Y.Z` GitHub asset plus `.sha256`, verifies checksum and candidate `version` before any replacement, then atomically replaces the current executable (same-filesystem rename on Unix, `self-replace` on Windows) and restarts only when the daemon was running/managed (systemd active, launchd loaded, SCM running, or direct/cron running); intentionally stopped services remain stopped and a successful replacement with failed restart reports `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and returns nonzero. No background checks or `sudo`. The shared download/verify/stage/replace mechanism lives in the internal `gregg-update` crate; `greggd` owns only activation/restart coordination.
 
@@ -86,6 +86,14 @@ responses all mean the daemon is running. Only a refused connection proves the
 endpoint absent and permits spawning `greggd run` as a detached child; unrelated,
 malformed, silent, or ambiguous peers return nonzero without spawning. No service
 manager is invoked.
+
+When a non-root bootstrap rerun replaces a same-scope user-local `greggd`, it
+records the default-config daemon's valid health before replacement. A healthy
+daemon is reactivated through the new binary's config-specific `stop` followed
+by `croncheck`; a stopped daemon and a first install remain stopped. Prebuilt
+and staged-Cargo candidates use this same finalization path. If activation
+fails after the binary is replaced, the installer returns nonzero and prints
+an exact retry command.
 
 ```sh
 greggd croncheck

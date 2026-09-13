@@ -248,7 +248,10 @@ fn purge_config(config_path: &Path) -> Result<(), UninstallError> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             return Err(UninstallError::Permission {
                 message: format!("permission denied removing {}", config_path.display()),
-                elevated: format!("sudo {} uninstall --purge", current_exe_hint()),
+                elevated: gregg_update::elevated_rerun_hint(
+                    Path::new(&current_exe_hint()),
+                    "uninstall --purge",
+                ),
             });
         }
         Err(e) => {

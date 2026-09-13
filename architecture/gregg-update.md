@@ -58,9 +58,10 @@ Both binaries share the same binary-first policy (see also
 5. Stage fully before touching the current exe (`current_exe()`-derived
    destination; symlinks replace the resolved target and are preserved).
    Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
-   the same helper for running-image semantics. Never `sudo` internally;
-   permission failures surface exit `4` with an exact `sudo <exe> update`
-   hint.
+   the same helper for running-image semantics. Never elevate internally;
+   permission failures surface exit `4` with an exact platform-correct rerun
+   hint: `sudo <exe> update` on Unix, or the exact executable/operation from
+   an Administrator terminal/PowerShell on Windows.
 
 ## Caller split
 
@@ -71,7 +72,7 @@ Both binaries share the same binary-first policy (see also
   identity, permission-probes before download, prepares via
   `prepare_candidate`, quiesces a running Windows SCM service only after full
   preparation (prepare-before-quiesce rule), replaces, then restarts through
-  detected-manager policy (`restart_with_state`). Restarts only when
+  exact-executable-aware manager policy. Restarts only when
   running/managed; stopped services stay stopped. Successful replacement with
   failed restart is `UpdatedButRestartFailed` with the exact restart command
   and nonzero exit.

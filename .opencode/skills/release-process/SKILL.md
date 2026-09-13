@@ -152,6 +152,16 @@ replacement and startup/config finalization path, including SCM-safe
 stop/replace/register/restart on Windows; installers never silently invoke
 `sudo`.
 
+On Unix, a non-root same-scope `greggd` bootstrap replacement captures valid
+default-config health before overwriting the destination. A previously running
+user-local daemon is reactivated through the new binary's config-specific
+`stop` + `croncheck`; first installs and stopped daemons remain stopped. The
+prebuilt and staged-Cargo paths share this finalization, and activation failure
+after replacement is reported nonzero with an exact retry command. Update and
+uninstall permission diagnostics use shared platform-aware guidance: Unix keeps
+`sudo`, while Windows names an Administrator terminal/PowerShell and never
+prints `sudo`.
+
 ## Publication order
 
 **Mandatory:** `gregg-protocol` → `gregg-update` → `greggd` → `gregg`

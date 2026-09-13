@@ -107,7 +107,7 @@ fn restart_after_update(
         | StartupState::LaunchdLoaded
         | StartupState::WindowsServiceRunning => {
             // Running managed -> restart via manager.
-            crate::startup::restart_with_state(state, exe, config_path, explicit)
+            crate::startup::restart_daemon(exe, config_path, explicit)
                 .map_err(|e| UpdateError::RestartFailed(format!("{e}")))
         }
         StartupState::SystemdInstalledStopped
@@ -120,7 +120,7 @@ fn restart_after_update(
         StartupState::UnmanagedOrCron => {
             if is_unmanaged_daemon_running(config_path, explicit) {
                 eprintln!("Restarting direct/cron daemon...");
-                crate::startup::restart_with_state(state, exe, config_path, explicit)
+                crate::startup::restart_daemon(exe, config_path, explicit)
                     .map_err(|e| UpdateError::RestartFailed(format!("{e}")))
             } else {
                 eprintln!("No daemon running; leaving binary updated without starting.");
