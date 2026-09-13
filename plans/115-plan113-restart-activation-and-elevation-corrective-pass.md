@@ -1,6 +1,6 @@
 # Plan 115: Plan 113 restart ownership, Unix installer activation, and elevation diagnostics corrective pass
 
-Status: planned; ready for implementation.
+Status: complete; implementation `d7cba02` + `17079e5`; CI run `34734612707` green.
 
 Depends on: Plan 113 and the settled startup/restart/update contracts from Plans 100-102. It is independent of Plan 114's TUI work and of the remaining Plan 091 soak record.
 
@@ -321,28 +321,64 @@ Do not add under Plan 115:
 
 Plan 115 is complete only when:
 
-1. [ ] `greggd restart` no longer treats host-global systemd/launchd/SCM presence as ownership of the invoked executable.
-2. [ ] Only a manager registration whose executable target matches the exact invoked `greggd` may receive restart mutation.
-3. [ ] Foreign systemd/launchd registrations are preserved and cannot be restarted by a user-local/Cargo/disposable executable.
-4. [ ] Unknown active Unix manager ownership fails closed rather than guessing or direct-stopping a potentially managed daemon.
-5. [ ] Windows restart preserves `NotInstalled`, `Foreign`, `Owned`, and query/parse-failure distinctions through the native SCM registration query.
-6. [ ] Foreign/unknown Windows SCM registration cannot be restarted by an unrelated executable.
-7. [ ] The existing Unix config-specific direct restart safety rules remain intact.
-8. [ ] Same-scope Unix user-local `greggd` replacement records prior running intent before overwriting the destination.
-9. [ ] A previously running user-local direct/cron daemon is transitioned to the newly installed executable after successful replacement/finalization.
-10. [ ] A previously stopped/unreachable user-local daemon is not started merely because the installer was rerun.
-11. [ ] First install behavior is unchanged by the replacement-only activation logic.
-12. [ ] Prebuilt and staged-Cargo candidates share the same active-daemon transition logic.
-13. [ ] Activation uncertainty/failure after successful binary replacement is reported nonzero and never presented as a fully successful running update.
-14. [ ] The activation correction never stops/restarts a foreign systemd/launchd service.
-15. [ ] Unix update/uninstall permission hints retain the existing exact `sudo` rerun command.
-16. [ ] Windows update/uninstall permission hints instruct rerun from an Administrator shell, preserve the exact operation/flags, and never contain `sudo`.
-17. [ ] Existing destination classification, sibling-component preservation, Cargo staging cleanup, and uninstall ownership behavior remain unchanged.
-18. [ ] The existing installer-rerun harness covers running/stopped/first-install activation and both prebuilt/Cargo acquisition paths.
-19. [ ] The disposable Unix user-local lifecycle smoke proves old PID -> new PID transition with health restored and no system manager mutation.
-20. [ ] Existing Windows SCM smoke and macOS/Windows/MSRV CI remain green with no new workflow/job/matrix.
-21. [ ] Plan 113 receives a short post-closure correction note pointing to Plan 115 without rewriting its historical closure evidence.
-22. [ ] `plans/README.md` marks Plan 113 complete, registers Plan 115, and records the correct dependency relationship.
-23. [ ] Active restart/install/update/uninstall documentation and skills match the implemented ownership/elevation behavior.
-24. [ ] `./scripts/check-local.sh`, release preflight, workspace fmt/clippy/tests, and Rust 1.75 check pass on the implementation tree.
-25. [ ] The Plan 115 closure record names the implementation SHA, exact CI run used for native-platform truth, Unix lifecycle-smoke result, and any platform limitation without overstating evidence.
+1. [x] `greggd restart` no longer treats host-global systemd/launchd/SCM presence as ownership of the invoked executable.
+2. [x] Only a manager registration whose executable target matches the exact invoked `greggd` may receive restart mutation.
+3. [x] Foreign systemd/launchd registrations are preserved and cannot be restarted by a user-local/Cargo/disposable executable.
+4. [x] Unknown active Unix manager ownership fails closed rather than guessing or direct-stopping a potentially managed daemon.
+5. [x] Windows restart preserves `NotInstalled`, `Foreign`, `Owned`, and query/parse-failure distinctions through the native SCM registration query.
+6. [x] Foreign/unknown Windows SCM registration cannot be restarted by an unrelated executable.
+7. [x] The existing Unix config-specific direct restart safety rules remain intact.
+8. [x] Same-scope Unix user-local `greggd` replacement records prior running intent before overwriting the destination.
+9. [x] A previously running user-local direct/cron daemon is transitioned to the newly installed executable after successful replacement/finalization.
+10. [x] A previously stopped/unreachable user-local daemon is not started merely because the installer was rerun.
+11. [x] First install behavior is unchanged by the replacement-only activation logic.
+12. [x] Prebuilt and staged-Cargo candidates share the same active-daemon transition logic.
+13. [x] Activation uncertainty/failure after successful binary replacement is reported nonzero and never presented as a fully successful running update.
+14. [x] The activation correction never stops/restarts a foreign systemd/launchd service.
+15. [x] Unix update/uninstall permission hints retain the existing exact `sudo` rerun command.
+16. [x] Windows update/uninstall permission hints instruct rerun from an Administrator shell, preserve the exact operation/flags, and never contain `sudo`.
+17. [x] Existing destination classification, sibling-component preservation, Cargo staging cleanup, and uninstall ownership behavior remain unchanged.
+18. [x] The existing installer-rerun harness covers running/stopped/first-install activation and both prebuilt/Cargo acquisition paths.
+19. [x] The disposable Unix user-local lifecycle smoke proves old PID -> new PID transition with health restored and no system manager mutation.
+20. [x] Existing Windows SCM smoke and macOS/Windows/MSRV CI remain green with no new workflow/job/matrix.
+21. [x] Plan 113 receives a short post-closure correction note pointing to Plan 115 without rewriting its historical closure evidence.
+22. [x] `plans/README.md` marks Plan 113 complete, registers Plan 115, and records the correct dependency relationship.
+23. [x] Active restart/install/update/uninstall documentation and skills match the implemented ownership/elevation behavior.
+24. [x] `./scripts/check-local.sh`, release preflight, workspace fmt/clippy/tests, and Rust 1.75 check pass on the implementation tree.
+25. [x] The Plan 115 closure record names the implementation SHA, exact CI run used for native-platform truth, Unix lifecycle-smoke result, and any platform limitation without overstating evidence.
+
+## Closure record (2026-09-13)
+
+Implementation is complete in commits `d7cba029307ff558e058a7cbb86608b272ade86b`
+and `17079e5834e67665729b4c8f7e2314ce7a24f7dc`. The second commit is the final
+implementation tree and corrects the Windows `-D warnings` dead-code failure
+found by the first remote CI run.
+
+The restart path now gates manager mutation on exact executable ownership,
+preserves foreign/unknown Unix and Windows registrations, and retains the
+config-specific direct restart safety primitive. Unix user-local daemon
+replacement captures valid health before overwrite and shares post-acquisition
+finalization for prebuilt and staged-Cargo candidates; a running daemon is
+transitioned with `stop` plus `croncheck`, while stopped and first-install
+cases remain stopped. Shared permission diagnostics now use the exact operation
+with Unix `sudo` or Windows Administrator-terminal guidance as appropriate.
+
+Verification completed:
+
+- `./scripts/check-local.sh` passed the full workspace test suite.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` passed.
+- `./scripts/check-local.sh --release` passed, including docs, packaging,
+  installed-binary loopback smoke, and protocol publish dry-run.
+- `rustup run 1.75 cargo check --workspace --all-features` passed.
+- `bash scripts/tests/test-install-rerun.sh` passed all 29 checks.
+- Disposable Unix lifecycle smoke passed: old PID `1060637` was replaced by
+  new PID `1060736`, and the new binary restored `health: ready` on the
+  temporary explicit config without invoking a service manager.
+- Remote CI run `34734612707` passed Linux, macOS arm64, macOS Intel, Windows
+  including SCM lifecycle smoke, and Rust 1.75 MSRV. No workflow, job, or
+  matrix was added.
+
+The local Windows MSVC target could not be compiled on this Linux host because
+the MSVC C toolchain is unavailable; native Windows compilation, tests, and SCM
+smoke are covered by the green remote Windows job above. Rust 1.75 and all
+Linux-local gates passed here.

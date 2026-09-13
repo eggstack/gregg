@@ -87,12 +87,13 @@ unmapped, and normal-view NET rows follow each online snapshot's network
 availability while the fleet-wide horizontal geometry and condensed NET-column
 policy remain intact.
 
-Plan 115 is planned as a narrow post-Plan-113 corrective pass. It makes
+Plan 115 is complete as a narrow post-Plan-113 corrective pass. It makes
 `greggd restart` honor exact-executable manager ownership, preserves the running
 state of a user-local direct/cron daemon across same-scope Unix bootstrap
 replacement, fixes Windows shared update/uninstall elevation guidance so it
 never emits Unix `sudo` instructions, and reconciles Plan 113's stale index
-status without rewriting its historical implementation evidence.
+status without rewriting its historical implementation evidence. Implementation
+commits are `d7cba02` and `17079e5`; remote CI run `34734612707` is green.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -205,7 +206,7 @@ excluded.
 | [`112-installer-upgrade-and-cross-platform-uninstall.md`](112-installer-upgrade-and-cross-platform-uninstall.md) | Same-scope installer upgrade semantics and component-safe cross-platform uninstall | complete historical record; post-closure lifecycle corrections are Plan 113 |
 | [`113-plan112-install-uninstall-ownership-corrective-pass.md`](113-plan112-install-uninstall-ownership-corrective-pass.md) | Correct Plan 112 exact-executable startup ownership, SCM discovery, Cargo uninstall sequencing, and fallback finalization | complete; implementation `7295c6e`; CI `34711999742` green; post-closure follow-up is Plan 115 |
 | [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | complete; implementation `f794c96`; CI `34713929966` green |
-| [`115-plan113-restart-activation-and-elevation-corrective-pass.md`](115-plan113-restart-activation-and-elevation-corrective-pass.md) | Make restart manager dispatch exact-executable-aware, reactivate running user-local Unix daemons after same-scope replacement, and fix Windows elevation diagnostics | planned; ready for implementation |
+| [`115-plan113-restart-activation-and-elevation-corrective-pass.md`](115-plan113-restart-activation-and-elevation-corrective-pass.md) | Make restart manager dispatch exact-executable-aware, reactivate running user-local Unix daemons after same-scope replacement, and fix Windows elevation diagnostics | complete; implementation `17079e5`; CI `34734612707` green |
 
 Dependency order:
 
