@@ -1294,7 +1294,10 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let outcome = EggpoolClient::new(Duration::from_secs(2))
+        // Use the same 5s deadline as the Systems poller so a slow
+        // Windows refusal surfaces as typed evidence instead of a
+        // whole-request timeout.
+        let outcome = EggpoolClient::new(Duration::from_secs(5))
             .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
             .await;
         assert!(
