@@ -106,11 +106,14 @@ intent. Candidate preparation, exact-binary replacement, Plan 115 restart
 ownership, and partial-success semantics remain intact. Implementation
 `d0b9231` with remote CI run `34739895730` green.
 
-Plan 117 is planned as the explicit Rust 1.89 transition. It supersedes only
-Plan 105's active decision to retain Rust 1.75, keeps Plan 105's historical
-record intact, removes compatibility-only resolver pins that no longer serve a
-1.89 workspace, moves the existing MSRV CI job in place, and makes source/Cargo
-fallback requirements truthful without changing runtime behavior.
+Plan 117 is complete at implementation `ee485cc` with remote CI run
+`35179950199` green across Linux, macOS arm64, macOS Intel, Windows SCM
+smoke, and MSRV Rust 1.89. It supersedes only Plan 105's active decision
+to retain Rust 1.75, keeps Plan 105's historical record intact, removes
+the ten transitive-only resolver pins (genuine `uuid`/`url`/`reqwest`
+deps keep ordinary ranges), moves the existing MSRV CI job in place,
+and makes source/Cargo fallback requirements truthful without changing
+runtime behavior.
 
 Plan 118 is planned after Plan 117. It replaces production client-side reqwest
 usage with feature-minimal `eggfetch-core` 0.1.5, preserving Systems polling
@@ -232,7 +235,7 @@ excluded.
 | [`114-drive-key-and-per-system-network-row.md`](114-drive-key-and-per-system-network-row.md) | Remap drive details to `d` and omit the normal NET row per-system when network telemetry is unavailable | complete; implementation `f794c96`; CI `34713929966` green |
 | [`115-plan113-restart-activation-and-elevation-corrective-pass.md`](115-plan113-restart-activation-and-elevation-corrective-pass.md) | Make restart manager dispatch exact-executable-aware, reactivate running user-local Unix daemons after same-scope replacement, and fix Windows elevation diagnostics | complete; implementation `17079e5`; CI `34734612707` green; post-closure follow-up is Plan 116 |
 | [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | complete; implementation `d0b9231`; CI `34739895730` green |
-| [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | planned |
+| [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | complete; implementation `ee485cc`; CI `35179950199` green |
 | [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | planned; depends on 117 |
 
 Dependency order:

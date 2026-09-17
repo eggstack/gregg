@@ -1,6 +1,8 @@
 # Plan 117: Rust 1.89 MSRV and dependency modernization
 
-Status: planned.
+Status: complete at `ee485cc` (implementation) plus plan-record closure;
+verified by CI run `35179950199` green across all five jobs (Linux,
+macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV Rust 1.89).
 
 Depends on: the settled workspace/dependency baseline from Plan 105. This plan deliberately supersedes only Plan 105's active decision to retain Rust 1.75 and its compatibility-pin policy; Plan 105 remains the historical record of the evidence and decision that were correct at that time. This plan is a prerequisite for Plan 118.
 
@@ -281,4 +283,62 @@ Plan 117 is complete only when:
 
 ## Closure record
 
-Pending implementation.
+Implementation `ee485cc` ("chore: raise MSRV to Rust 1.89 and retire 1.75
+resolver pins (Plan 117)"), verified by remote CI run `35179950199`
+(all five jobs green: Linux, macOS arm64, macOS Intel, Windows incl. SCM
+smoke, MSRV Rust 1.89). Local evidence on the implementation tree:
+`cargo +1.89 check` before and after dependency cleanup,
+`cargo +1.89 test --workspace --all-targets --all-features` (one
+environmental `gregg-update` curl-classification flake, green on rerun),
+stable `cargo test --workspace --all-targets --all-features` (1109
+passed, 0 failed), stable
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+clean, `cargo fmt --all -- --check` clean,
+`cargo doc --workspace --no-deps` (only pre-existing warnings, identical
+at base), `./scripts/check-local.sh` (default) and
+`./scripts/check-local.sh --release` both pass.
+
+Final dependency decisions under the 1.89 floor (source imports
+authoritative; `cargo tree` never retained a direct entry):
+
+```text
+REMOVE  gregg indexmap, greggd indexmap (transitive via toml_edit 2.14.2)
+REMOVE  instability (transitive via ratatui 0.3.13)
+REMOVE  unicode-segmentation (transitive via ratatui 1.13.3)
+REMOVE  idna / idna_adapter (transitive via url 2.5.8)
+REMOVE  hyper-rustls 0.27.9 (transitive via reqwest)
+REMOVE  quinn-proto 0.11.18 (transitive via reqwest HTTP/3)
+REMOVE  rustc-hash (transitive)
+REMOVE  zeroize 1.9.0 (transitive)
+REMOVE  thiserror-compat (transitive thiserror 2.x guard)
+KEEP    uuid = { version = "1", features = ["v4"] } (Uuid::new_v4)
+KEEP    url = "2" (eggpool.rs Url)
+KEEP    reqwest = { version = "0.12", ... } (Systems poller, EggPool,
+        endpoint URL adapter; resolved 0.12.28; Plan 118 owns removal)
+OTHER   none. Unrelated Clap / windows-service bounds untouched.
+```
+
+`cargo update` under the new floor produced only compatible minor/patch
+movement (url 2.5.4→2.5.8, uuid 1.20.0→1.26.1, quinn-proto→0.11.18,
+hyper-rustls→0.27.9, zeroize→1.9.0, unicode-segmentation→1.13.3) plus the
+icu chain via idna 1.1; remaining `--duplicates` (getrandom, hashbrown,
+heck, rustix, strsim, syn v2/v3, unicode-width) are ordinary unrelated
+family divergences, not new weight. A disposable no-lock fresh
+resolution under Rust 1.89 checked clean and produced a byte-identical
+lockfile (name/version set), so crates.io consumers share the committed
+resolution.
+
+Incidental corrective (required for green CI, enabled by the new floor):
+four pre-existing patterns newly flagged by stable clippy 1.98 were
+modernized with zero behavior change — `map_or(true, …)` →
+`is_none_or(…)` in `greggd` control/server/uninstall (1.82+ API),
+`count % 2 == 0` → `count.is_multiple_of(2)` in `gregg` scheduler test
+helper (1.87+ API). Both APIs predate the 1.89 floor. The pre-existing
+1.89-clippy `const_is_empty` warning in Windows-only service test code
+is warn-level, untouched, and CI-safe (MSRV/Windows jobs do not run
+clippy).
+
+Plan 105's historical record is unchanged; active policy
+(`architecture/workspace.md`, `AGENTS.md`, install/dev docs, installer
+diagnostics, crate READMEs, `CHANGELOG.md`) now states Rust 1.89+.
+`.opencode/skills/` carries no MSRV policy and needed no change.
