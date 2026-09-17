@@ -332,7 +332,7 @@ impl EndpointSpec {
             return Self::parse(trimmed);
         }
 
-        let url = reqwest::Url::parse(trimmed).map_err(|_| EndpointError::MalformedUrl {
+        let url = url::Url::parse(trimmed).map_err(|_| EndpointError::MalformedUrl {
             input: trimmed.to_string(),
         })?;
         let scheme = url.scheme();

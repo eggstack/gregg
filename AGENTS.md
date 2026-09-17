@@ -55,7 +55,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
-- **Deps are ordinary semver.** Plan 117 removed the 1.75-era transitive resolver pins; genuine direct deps (`uuid`, `url`, `reqwest`) carry normal ranges. Don't re-add transitive guard pins.
+- **Deps are ordinary semver.** Plan 117 removed the 1.75-era transitive resolver pins; genuine direct deps (`uuid`, `url`, `eggfetch-core`) carry normal ranges. Don't re-add transitive guard pins. Plan 118 replaced `reqwest` with feature-minimal `eggfetch-core` (`http1` + `tls-rustls`) in the `gregg` client only.
 
 ### Client polling/state (`architecture/gregg-client.md`)
 

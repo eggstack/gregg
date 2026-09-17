@@ -1,7 +1,7 @@
 [advisories]
 unmaintained = "workspace"
 yanked = "warn"
-# The only remaining advisory is in reqwest's disabled optional HTTP/3
+# The only remaining advisory is in eggfetch-core's disabled optional HTTP/3
 # dependency. The feature is not enabled by any workspace crate, so the
 # ignore stands regardless of the workspace MSRV (now Rust 1.89).
 ignore = ["RUSTSEC-2026-0185"]

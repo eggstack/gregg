@@ -47,15 +47,11 @@ fn spawn_eggpool_worker(
     config: &config::Config,
     timeout: Duration,
     cancel: tokio_util::sync::CancellationToken,
-) -> Result<Option<eggpool::EggpoolWorker>, reqwest::Error> {
-    config
-        .eggpool
-        .clone()
-        .map(|endpoint| {
-            eggpool::EggpoolClient::new(timeout)
-                .map(|client| eggpool::spawn_worker(client, endpoint, cancel))
-        })
-        .transpose()
+) -> Option<eggpool::EggpoolWorker> {
+    config.eggpool.clone().map(|endpoint| {
+        let client = eggpool::EggpoolClient::new(timeout);
+        eggpool::spawn_worker(client, endpoint, cancel)
+    })
 }
 
 use clap::Parser;
@@ -115,7 +111,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let mut app_state = state::AppState::from_config(&config);
 
     let timeout = Duration::from_millis(config.request_timeout_ms);
-    let client = poller::HttpClient::new(timeout)?;
+    let client = poller::HttpClient::new(timeout);
     let clock = clock::RealClock;
     let refresh = Duration::from_secs(config.refresh_seconds);
     let max_concurrent = config.max_concurrent_requests as usize;
@@ -139,7 +135,7 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     let scheduler = scheduler::PollScheduler::new(clock, client, refresh, max_concurrent);
     let mut batch_rx = Some(scheduler.run(endpoints, cancel.clone(), scheduler_rx));
 
-    let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone())?;
+    let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone());
     if app_state.active_pane == state::Pane::Eggpool {
         if let (Some((period, generation)), Some(worker)) =
             (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
@@ -941,11 +937,7 @@ mod tests {
     fn default_config_creates_no_eggpool_worker() {
         let config = Config::default();
         let cancel = tokio_util::sync::CancellationToken::new();
-        assert!(
-            spawn_eggpool_worker(&config, Duration::from_secs(1), cancel)
-                .unwrap()
-                .is_none()
-        );
+        assert!(spawn_eggpool_worker(&config, Duration::from_secs(1), cancel).is_none());
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
+use eggfetch_core::{AuthScheme, Error as EggfetchError, NetworkFailureKind, RequestFailure};
 use serde::Deserialize;
 use url::Url;
 
@@ -154,23 +154,35 @@ type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 /// Long-lived, bounded client for `EggPool`'s summary endpoint.
 #[derive(Clone)]
 pub struct EggpoolClient {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     env_lookup: EnvLookup,
+}
+
+fn eggfetch_timeout(timeout: Duration) -> eggfetch_core::Timeout {
+    eggfetch_core::Timeout {
+        pool: Some(timeout),
+        connect: Some(timeout),
+        write: Some(timeout),
+        read: Some(timeout),
+        total: Some(timeout),
+    }
 }
 
 impl EggpoolClient {
     /// Build a client with redirects disabled and a bounded idle pool.
-    pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
         Self::with_env_lookup(timeout, Arc::new(|name| env::var_os(name)))
     }
 
-    fn with_env_lookup(timeout: Duration, env_lookup: EnvLookup) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(2)
-            .build()?;
-        Ok(Self { client, env_lookup })
+    fn with_env_lookup(timeout: Duration, env_lookup: EnvLookup) -> Self {
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_timeout(timeout))
+            .follow_redirects(false)
+            .max_idle_connections_per_host(2)
+            .max_decoded_body_size(MAX_RESPONSE_BYTES)
+            .build();
+        Self { client, env_lookup }
     }
 
     /// Fetch one validated summary. No automatic retry or alternate endpoint
@@ -180,7 +192,7 @@ impl EggpoolClient {
         endpoint: &EggpoolEntry,
         period: EggpoolPeriod,
     ) -> EggpoolFetchOutcome {
-        let auth = match endpoint.api_key_env.as_deref() {
+        let auth_token = match endpoint.api_key_env.as_deref() {
             None => None,
             Some(name) => match (self.env_lookup)(name) {
                 Some(value) if !value.is_empty() => match value.into_string() {
@@ -194,23 +206,29 @@ impl EggpoolClient {
         let Ok(url) = summary_url(endpoint, period) else {
             return EggpoolFetchOutcome::InvalidEndpoint;
         };
-        let mut request = self.client.get(url);
-        if let Some(value) = auth {
-            let Ok(mut header) = reqwest::header::HeaderValue::from_str(&format!("Bearer {value}"))
-            else {
+        let url = url.as_str().to_string();
+        let Ok(mut builder) = self
+            .client
+            .get(&url)
+            .map(|b| b.max_decoded_body_size(MAX_RESPONSE_BYTES))
+        else {
+            return EggpoolFetchOutcome::InvalidEndpoint;
+        };
+        if let Some(token) = auth_token {
+            let Ok(auth) = AuthScheme::bearer(token) else {
                 // The configured secret is present but contains characters
                 // that cannot be encoded into a valid `Authorization` header
                 // value; surface it as an invalid summary rather than a
-                // missing-key misclassification.
+                // missing-key misclassification. The secret is dropped here
+                // and never retained in the outcome.
                 return EggpoolFetchOutcome::InvalidSummary;
             };
-            header.set_sensitive(true);
-            request = request.header(reqwest::header::AUTHORIZATION, header);
+            builder = builder.auth(auth);
         }
 
-        let response = match request.send().await {
+        let mut response = match builder.send_detailed().await {
             Ok(response) => response,
-            Err(error) => return classify_request_error(&error),
+            Err(failure) => return classify_request_error(&failure),
         };
         let status = response.status().as_u16();
         if !response.status().is_success() {
@@ -221,23 +239,15 @@ impl EggpoolClient {
                 status => EggpoolFetchOutcome::HttpStatus(status),
             };
         }
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
-        {
-            return EggpoolFetchOutcome::BodyTooLarge;
-        }
-        let mut stream = response.bytes_stream();
-        let mut body = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let Ok(chunk) = chunk else {
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                if matches!(error, EggfetchError::DecodedBodyTooLarge) {
+                    return EggpoolFetchOutcome::BodyTooLarge;
+                }
                 return EggpoolFetchOutcome::NetworkError;
-            };
-            if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
-                return EggpoolFetchOutcome::BodyTooLarge;
             }
-            body.extend_from_slice(&chunk);
-        }
+        };
         let Ok(wire) = serde_json::from_slice::<EggpoolSummaryWire>(&body) else {
             return EggpoolFetchOutcome::DecodeError;
         };
@@ -300,24 +310,18 @@ fn normalize_summary(
     })
 }
 
-fn classify_request_error(error: &reqwest::Error) -> EggpoolFetchOutcome {
-    if error.is_timeout() {
+fn classify_request_error(failure: &RequestFailure) -> EggpoolFetchOutcome {
+    if matches!(failure.error(), EggfetchError::DecodedBodyTooLarge) {
+        return EggpoolFetchOutcome::BodyTooLarge;
+    }
+    if failure.is_timeout() {
         return EggpoolFetchOutcome::Timeout;
     }
-    if error.is_connect() && crate::poller::is_dns_failure(error) {
-        return EggpoolFetchOutcome::DnsFailure;
+    match failure.network_failure_kind() {
+        Some(NetworkFailureKind::Dns) => EggpoolFetchOutcome::DnsFailure,
+        Some(NetworkFailureKind::ConnectionRefused) => EggpoolFetchOutcome::ConnectionRefused,
+        Some(NetworkFailureKind::Connect | _) | None => EggpoolFetchOutcome::NetworkError,
     }
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(error);
-    while let Some(error) = current {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
-        {
-            return EggpoolFetchOutcome::ConnectionRefused;
-        }
-        current = error.source();
-    }
-    EggpoolFetchOutcome::NetworkError
 }
 
 /// Commands accepted by the single optional `EggPool` worker.
@@ -646,7 +650,6 @@ mod tests {
         );
         let (port, task) = server(response).await;
         let result = EggpoolClient::new(Duration::from_secs(2))
-            .expect("test HTTP client construction")
             .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
             .await;
         assert!(
@@ -668,8 +671,7 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::from("secret-value"))),
-        )
-        .unwrap();
+        );
         let result = client
             .fetch(&endpoint(port, Some("KEY")), EggpoolPeriod::Day)
             .await;
@@ -686,8 +688,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_or_empty_key_does_not_send_request() {
-        let client =
-            EggpoolClient::with_env_lookup(Duration::from_secs(2), Arc::new(|_| None)).unwrap();
+        let client = EggpoolClient::with_env_lookup(Duration::from_secs(2), Arc::new(|_| None));
         let result = client
             .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
             .await;
@@ -698,8 +699,7 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::new())),
-        )
-        .unwrap();
+        );
         assert_eq!(
             client
                 .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
@@ -715,8 +715,7 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(2),
             Arc::new(|_| Some(OsString::from("bad\nvalue"))),
-        )
-        .unwrap();
+        );
         let result = client
             .fetch(&endpoint(1, Some("KEY")), EggpoolPeriod::Hour)
             .await;
@@ -735,7 +734,6 @@ mod tests {
             let (port, _) = server(response).await;
             assert_eq!(
                 EggpoolClient::new(Duration::from_secs(2))
-                    .expect("test HTTP client construction")
                     .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                     .await,
                 expected
@@ -745,7 +743,6 @@ mod tests {
         let (port, _) = server(response).await;
         assert_eq!(
             EggpoolClient::new(Duration::from_secs(2))
-                .expect("test HTTP client construction")
                 .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                 .await,
             EggpoolFetchOutcome::DecodeError
@@ -758,7 +755,6 @@ mod tests {
         let (port, _) = server(response).await;
         assert_eq!(
             EggpoolClient::new(Duration::from_secs(2))
-                .expect("test HTTP client construction")
                 .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
                 .await,
             EggpoolFetchOutcome::BodyTooLarge
@@ -777,7 +773,7 @@ mod tests {
         let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(10)),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -844,7 +840,7 @@ mod tests {
         let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(10)),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -949,7 +945,7 @@ mod tests {
             server_many(false, Duration::from_secs(5)).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(30)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(30)),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -998,7 +994,7 @@ mod tests {
         let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(600)),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -1026,7 +1022,7 @@ mod tests {
         let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(600)),
             endpoint(port, None),
             cancel.clone(),
         );
@@ -1075,8 +1071,7 @@ mod tests {
         let client = EggpoolClient::with_env_lookup(
             Duration::from_secs(10),
             Arc::new(|_name: &str| -> Option<OsString> { panic!("injected fetch panic") }),
-        )
-        .unwrap();
+        );
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(client, endpoint(1, Some("KEY")), cancel.clone());
         worker
@@ -1104,7 +1099,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let anchor = Instant::now();
         let mut worker = spawn_worker_with_clock(
-            EggpoolClient::new(Duration::from_secs(10)).expect("test HTTP client construction"),
+            EggpoolClient::new(Duration::from_secs(10)),
             endpoint(port, None),
             cancel.clone(),
             crate::clock::FakeClock::new(anchor),
@@ -1183,9 +1178,163 @@ mod tests {
             ..endpoint(11300, None)
         };
         let outcome = EggpoolClient::new(Duration::from_secs(1))
-            .expect("test HTTP client construction")
             .fetch(&endpoint, EggpoolPeriod::Hour)
             .await;
         assert_eq!(outcome, EggpoolFetchOutcome::InvalidEndpoint);
+    }
+
+    #[test]
+    fn eggfetch_timeout_preserves_whole_request_deadline() {
+        let timeout = Duration::from_millis(1500);
+        let configured = eggfetch_timeout(timeout);
+        assert_eq!(configured.pool, Some(timeout));
+        assert_eq!(configured.connect, Some(timeout));
+        assert_eq!(configured.write, Some(timeout));
+        assert_eq!(configured.read, Some(timeout));
+        assert_eq!(configured.total, Some(timeout));
+    }
+
+    #[test]
+    fn https_endpoint_url_is_representable() {
+        use crate::config::EggpoolScheme;
+        let endpoint = EggpoolEntry {
+            scheme: EggpoolScheme::Https,
+            host: "pool.example.com".into(),
+            port: 8443,
+            ..endpoint(8443, None)
+        };
+        let url = summary_url(&endpoint, EggpoolPeriod::Hour).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://pool.example.com:8443/api/stats/summary?period=1h"
+        );
+        // The shared HTTPS-capable client builds without disabling
+        // certificate verification; runtime TLS uses the packaged WebPKI roots.
+        let _client = EggpoolClient::new(Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn chunked_body_over_cap_is_body_too_large() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let mut used = 0;
+            loop {
+                let count = stream.read(&mut request[used..]).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                used += count;
+                if request[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            let first = vec![b'x'; MAX_RESPONSE_BYTES - 1024];
+            let second = vec![b'x'; 2048];
+            let header =
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            stream.write_all(header.as_bytes()).await.unwrap();
+            for chunk in [&first, &second] {
+                let size_line = format!("{:x}\r\n", chunk.len());
+                stream.write_all(size_line.as_bytes()).await.unwrap();
+                stream.write_all(chunk).await.unwrap();
+                stream.write_all(b"\r\n").await.unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+        let outcome = EggpoolClient::new(Duration::from_secs(2))
+            .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(outcome, EggpoolFetchOutcome::BodyTooLarge);
+    }
+
+    #[tokio::test]
+    async fn timeout_before_headers_is_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let mut used = 0;
+            loop {
+                let count = stream.read(&mut request[used..]).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                used += count;
+                if request[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .await;
+        });
+        let outcome = EggpoolClient::new(Duration::from_millis(50))
+            .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(outcome, EggpoolFetchOutcome::Timeout);
+    }
+
+    #[tokio::test]
+    async fn closed_port_is_refused_or_network_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let outcome = EggpoolClient::new(Duration::from_secs(2))
+            .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
+            .await;
+        assert!(
+            matches!(
+                outcome,
+                EggpoolFetchOutcome::ConnectionRefused | EggpoolFetchOutcome::NetworkError
+            ),
+            "expected ConnectionRefused or NetworkError, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_is_not_followed() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let response =
+            "HTTP/1.1 301 Moved Permanently\r\nContent-Length: 8\r\n\r\nredirect".to_string();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let mut used = 0;
+            loop {
+                let count = stream.read(&mut request[used..]).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                used += count;
+                if request[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let outcome = EggpoolClient::new(Duration::from_secs(2))
+            .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(outcome, EggpoolFetchOutcome::HttpStatus(301));
     }
 }

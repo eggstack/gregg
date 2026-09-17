@@ -83,6 +83,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Client HTTP transport consolidation** (Plan 118): the `gregg` client
+  replaces `reqwest 0.12` with feature-minimal `eggfetch-core 0.1.5`
+  (`http1` + `tls-rustls`). Systems polling and the EggPool summary client
+  keep their separate pools, explicit whole-request deadlines, body caps,
+  redirect rejection, protocol negotiation, and stable outcomes while
+  deleting Gregg's duplicated transport error and body-limit machinery.
+  No polling, scheduler, TUI, protocol, or CLI behavior changes.
+
 - **MSRV raised to Rust 1.89** (Plan 117): the workspace `rust-version` moves
   from 1.75 to 1.89 and the CI MSRV job moves with it. The ten
   transitive-only resolver pins (`indexmap`, `instability`,

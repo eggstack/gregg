@@ -154,7 +154,10 @@ design is retained intentionally.
 **Poller** (`poller.rs`):
 - v2-first, endpoint-bound schema parsing, v1 fallback only on 404
 - Accepts only the schema matching the requested endpoint; malformed, invalid, and wrong-version responses never trigger fallback
-- 64 KiB body cap, no redirects, bounded connection pool
+- Dedicated `eggfetch_core::Client` (HTTP/1 + Rustls, redirects disabled,
+  four idle per host, explicit five-field whole-request deadline, 64 KiB
+  decoded-body cap, no automatic retry); typed `NetworkFailureKind` drives
+  DNS/refused/connect mapping, never `Display` heuristics
 - `PollOutcome` classifies 12 outcome variants (2 success: `Online`/`OnlineV2`, 10 failure/cancellation)
 
 **Normalization** (`normalized.rs`):
@@ -432,9 +435,12 @@ library callers from async tasks must move the mutation to a blocking thread.
 Optional summary pane for EggPool API metrics. Separated from greggd polling.
 
 **Client** (`eggpool.rs`):
-- Reuses reqwest stack, disables redirects
+- Dedicated `eggfetch_core::Client` (HTTP/1 + Rustls, redirects disabled,
+  two idle per host, explicit five-field whole-request deadline, 16 KiB
+  decoded-body cap, no automatic retry), isolated from Systems polling
 - Sends `/api/stats/summary?period=...`
-- 16 KiB body cap
+- Request-local `AuthScheme::bearer` (invalid values map to
+  `InvalidSummary`; secrets never enter outcomes, logs, or URLs)
 - Bearer token from environment variable (never stored in outcomes)
 - Host normalization errors, including URL forms unsupported by the pinned URL
   parser, are reported as `InvalidEndpoint` rather than transport failures.

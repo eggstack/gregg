@@ -53,10 +53,10 @@ gregg eggpool remove <host>
 
 ## Client
 
-- Reuses reqwest stack, disables redirects
+- Dedicated `eggfetch-core` client (HTTP/1 + Rustls, redirects disabled, two idle per host, explicit whole-request deadline, no retry)
 - Sends `GET /api/stats/summary?period=...`
-- 16 KiB body cap
-- Bearer token from environment variable (never stored in outcomes)
+- 16 KiB decoded-body cap (eggfetch owns the limit; fixed, chunked, and close-delimited over-cap bodies map to `BodyTooLarge`)
+- Bearer token from environment variable via request-local `AuthScheme::bearer` (invalid values map to `InvalidSummary`; never stored in outcomes)
 - Fixed periods: `1h`, `24h`, `7d`, `30d`
 
 ## Worker

@@ -156,12 +156,13 @@ The polling engine lives in `crates/gregg/src/` and is composed of five modules:
 
 - `clock.rs` — `Clock` trait for time abstraction (enables deterministic testing
   with `FakeClock`).
-- `poller.rs` — `HttpClient` wrapping a long-lived `reqwest::Client` with
-  configurable timeout, 64 KiB body cap, redirect rejection, and bounded
-  connection pool. `PollOutcome` classifies every failure mode (timeout,
-  connection refused, DNS failure, HTTP status, body too large, decode error,
-  unsupported schema, invalid snapshot, cancelled). `PollBatch` carries a
-  generation counter and completed results.
+- `poller.rs` — `HttpClient` wrapping a long-lived `eggfetch_core::Client` with
+  explicit whole-request deadline, 64 KiB decoded-body cap, redirect
+  rejection, and bounded connection pool. `PollOutcome` classifies every
+  failure mode (timeout, connection refused, DNS failure, HTTP status,
+  body too large, decode error, unsupported schema, invalid snapshot,
+  cancelled). `PollBatch` carries a generation counter and completed
+  results.
 - `scheduler.rs` — `PollScheduler` produces `PollBatch`es on a configurable
   interval. Concurrency is bounded by a semaphore. Generation numbers increase
   monotonically; the state reducer rejects stale batches.
@@ -185,8 +186,8 @@ performing network or filesystem I/O.
 ### EggPool summary client
 
 The optional EggPool path lives in `crates/gregg/src/eggpool.rs` and is
-deliberately separate from greggd polling. `EggpoolClient` reuses the client's
-long-lived `reqwest` stack, disables redirects, sends only
+deliberately separate from greggd polling. `EggpoolClient` owns a separate
+long-lived `eggfetch_core::Client`, disables redirects, sends only
 `/api/stats/summary?period=...`, and caps response bodies at 16 KiB. It accepts
 only the four fixed periods (`1h`, `24h`, `7d`, `30d`) and normalizes the
 required fields into `EggpoolSummary`, treating a null cache ratio and zero
@@ -315,6 +316,27 @@ No direct dependency is retained merely because it appears in
 service-management) are untouched. `Cargo.lock` is intentionally
 re-resolved under the new floor and all `--locked` repository/install
 paths remain valid.
+
+### Dependency dispositions (Plan 118, eggfetch consolidation)
+
+Plan 118 replaces the Plan 117 `reqwest` transport with feature-minimal
+`eggfetch-core 0.1.5` (`http1` + `tls-rustls`, defaults off) in the
+`gregg` client only. `greggd` and `gregg-update` gain no `eggfetch-core`
+dependency.
+
+| Entry | Source use | Disposition |
+| --- | --- | --- |
+| `eggfetch-core` | yes (Systems poller, EggPool) | KEEP, `version = "0.1.5"` with only `http1` + `tls-rustls` |
+| `reqwest` | none (removed) | REMOVE, including lockfile entry |
+| `url` | yes (`endpoint.rs` URL adapter, `eggpool.rs` `Url`) | KEEP, ordinary `version = "2"` |
+| `futures-util` | yes (`input.rs` event stream, `main.rs` pending) | KEEP |
+| `tokio-util` | yes (scheduler, EggPool worker, `CancellationToken`) | KEEP |
+| `libc` | yes (`cli.rs` probe, config lock/store) | KEEP |
+
+`hyper`/`hyper-rustls`/`rustls` remain transitive via `eggfetch-core`
+(HTTP/1 + packaged WebPKI roots); no direct Hyper/Rustls/transitive pins
+are added around eggfetch. `serde_json` stays owned by Gregg for
+protocol decoding; eggfetch's optional `json` feature is not enabled.
 
 ### Compatibility-pin audit (Plan 105, historical)
 

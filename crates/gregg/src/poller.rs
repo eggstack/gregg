@@ -1,7 +1,7 @@
 //! HTTP client and poll types for fetching status snapshots from greggd
 //! endpoints.
 //!
-//! The [`HttpClient`] wraps a long-lived `reqwest::Client` with
+//! The [`HttpClient`] wraps a long-lived `eggfetch_core::Client` with
 //! configuration derived from the application config. Each poll returns
 //! a typed [`PollOutcome`] that classifies every failure mode without
 //! leaking error chains to the caller.
@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use futures_util::StreamExt;
+use eggfetch_core::{Error as EggfetchError, NetworkFailureKind, RequestFailure};
 use gregg_protocol::v2::{StatusPayloadV2, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
 
@@ -135,7 +135,7 @@ pub enum PollOutcome {
 ///
 /// Transport-specific details stay at the poller boundary: the renderer
 /// consumes only this category plus a short bounded detail string, never
-/// `reqwest::Error` or platform DNS error types.
+/// transport error types or platform DNS error types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OfflineKind {
     /// The request timed out.
@@ -256,34 +256,45 @@ pub struct PollBatch {
 
 /// Long-lived HTTP client for polling greggd endpoints.
 ///
-/// Wraps a `reqwest::Client` with sensible defaults: no redirects,
-/// bounded connection pool, configurable timeout, and a response size
-/// cap.
+/// Wraps an `eggfetch_core::Client` with sensible defaults: no redirects,
+/// bounded connection pool, explicit whole-request deadline, and a response
+/// size cap.
 #[derive(Clone)]
 pub struct HttpClient {
-    client: reqwest::Client,
+    client: eggfetch_core::Client,
     #[cfg(test)]
     observer: Option<PollActivityObserver>,
 }
 
+/// Build the explicit five-field timeout preserving reqwest whole-request
+/// semantics: every phase plus the total wall-clock cap uses the configured
+/// request deadline. `Timeout::from_secs` alone deliberately leaves `total`
+/// unset, so the struct literal is required.
+fn eggfetch_timeout(timeout: Duration) -> eggfetch_core::Timeout {
+    eggfetch_core::Timeout {
+        pool: Some(timeout),
+        connect: Some(timeout),
+        write: Some(timeout),
+        read: Some(timeout),
+        total: Some(timeout),
+    }
+}
+
 impl HttpClient {
     /// Create a new HTTP client with the given request timeout.
-    ///
-    /// # Errors
-    ///
-    /// Returns the builder error when the HTTP client cannot initialize its
-    /// TLS or connection backend.
-    pub fn new(timeout: Duration) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(4)
-            .build()?;
-        Ok(Self {
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_timeout(timeout))
+            .follow_redirects(false)
+            .max_idle_connections_per_host(4)
+            .max_decoded_body_size(MAX_RESPONSE_BYTES)
+            .build();
+        Self {
             client,
             #[cfg(test)]
             observer: None,
-        })
+        }
     }
 
     /// Create a test-only HTTP client with a concurrency observer.
@@ -293,19 +304,17 @@ impl HttpClient {
     /// and cancellation. This allows measuring observed peak concurrency
     /// around the production poll path.
     #[cfg(test)]
-    pub fn new_with_observer(
-        timeout: Duration,
-        observer: PollActivityObserver,
-    ) -> Result<Self, reqwest::Error> {
-        let client = reqwest::Client::builder()
-            .timeout(timeout)
-            .redirect(reqwest::redirect::Policy::none())
-            .pool_max_idle_per_host(4)
-            .build()?;
-        Ok(Self {
+    pub fn new_with_observer(timeout: Duration, observer: PollActivityObserver) -> Self {
+        let client = eggfetch_core::Client::builder()
+            .timeout(eggfetch_timeout(timeout))
+            .follow_redirects(false)
+            .max_idle_connections_per_host(4)
+            .max_decoded_body_size(MAX_RESPONSE_BYTES)
+            .build();
+        Self {
             client,
             observer: Some(observer),
-        })
+        }
     }
 
     /// Poll a single endpoint and return a [`PollResult`].
@@ -368,10 +377,21 @@ impl HttpClient {
         start: std::time::Instant,
         clock: &impl Clock,
     ) -> PollResult {
-        let response = match self.client.get(url).send().await {
-            Ok(r) => r,
-            Err(e) => {
-                return Self::make_result(endpoint, classify_reqwest_error(&e), start, clock.now());
+        let builder = match self.client.get(url) {
+            Ok(builder) => builder.max_decoded_body_size(MAX_RESPONSE_BYTES),
+            Err(_) => {
+                return Self::make_result(endpoint, PollOutcome::NetworkError, start, clock.now());
+            }
+        };
+        let mut response = match builder.send_detailed().await {
+            Ok(response) => response,
+            Err(failure) => {
+                return Self::make_result(
+                    endpoint,
+                    classify_eggfetch_failure(&failure),
+                    start,
+                    clock.now(),
+                );
             }
         };
 
@@ -385,33 +405,24 @@ impl HttpClient {
             );
         }
 
-        // Reject immediately if Content-Length is known to exceed the cap.
-        if let Some(content_length) = response.content_length() {
-            if content_length > MAX_RESPONSE_BYTES as u64 {
-                return Self::make_result(endpoint, PollOutcome::BodyTooLarge, start, clock.now());
+        // The eggfetch decoded-body limit is authoritative for valid,
+        // missing, underreported, and chunked bodies. No second
+        // caller-side accumulation loop is needed.
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let outcome = if matches!(error, EggfetchError::DecodedBodyTooLarge) {
+                    PollOutcome::BodyTooLarge
+                } else {
+                    // Preserve observable behavior: ordinary post-header
+                    // body failures surface as generic network errors.
+                    PollOutcome::NetworkError
+                };
+                return Self::make_result(endpoint, outcome, start, clock.now());
             }
-        }
-
-        let body = match Self::read_body(response).await {
-            Ok(body) => body,
-            Err(outcome) => return Self::make_result(endpoint, outcome, start, clock.now()),
         };
 
         Self::parse_response(&body, endpoint, expected_schema, start, clock)
-    }
-
-    /// Read the response body, enforcing size limits.
-    async fn read_body(response: reqwest::Response) -> Result<Vec<u8>, PollOutcome> {
-        let mut stream = response.bytes_stream();
-        let mut body = Vec::new();
-        while let Some(chunk_result) = stream.next().await {
-            let c = chunk_result.map_err(|_| PollOutcome::NetworkError)?;
-            if body.len().saturating_add(c.len()) > MAX_RESPONSE_BYTES {
-                return Err(PollOutcome::BodyTooLarge);
-            }
-            body.extend_from_slice(&c);
-        }
-        Ok(body)
     }
 
     /// Parse a response body against the schema required by its endpoint.
@@ -471,88 +482,22 @@ impl HttpClient {
     }
 }
 
-/// Classify a reqwest error into a [`PollOutcome`].
-fn classify_reqwest_error(e: &reqwest::Error) -> PollOutcome {
-    if e.is_timeout() {
+/// Classify an eggfetch detailed failure into a [`PollOutcome`].
+///
+/// Uses only typed evidence: body-limit, phase-aware timeout, and
+/// `NetworkFailureKind`. Never inspects `Display` strings. Unknown or
+/// absent network subtypes map to generic `NetworkError`.
+fn classify_eggfetch_failure(failure: &RequestFailure) -> PollOutcome {
+    if matches!(failure.error(), EggfetchError::DecodedBodyTooLarge) {
+        return PollOutcome::BodyTooLarge;
+    }
+    if failure.is_timeout() {
         return PollOutcome::Timeout;
     }
-
-    // Walk the error source chain for io::ErrorKind::ConnectionRefused.
-    if is_connection_refused(e) {
-        return PollOutcome::ConnectionRefused;
-    }
-
-    // Check for DNS resolution failure.
-    if e.is_connect() && is_dns_failure(e) {
-        return PollOutcome::DnsFailure;
-    }
-
-    PollOutcome::NetworkError
-}
-
-/// Walk the error source chain looking for `ConnectionRefused`.
-fn is_connection_refused(e: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(error) = current {
-        if error
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionRefused)
-        {
-            return true;
-        }
-        current = error.source();
-    }
-    false
-}
-
-/// Walk the error source chain looking for DNS-related errors.
-///
-/// `AddrNotAvailable` is deliberately excluded: it surfaces from
-/// `connect()` when no usable local interface or route exists, which is an
-/// unreachable-network condition rather than name resolution.
-pub(crate) fn is_dns_failure(e: &(dyn std::error::Error + 'static)) -> bool {
-    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
-    while let Some(error) = current {
-        if let Some(io) = error.downcast_ref::<std::io::Error>() {
-            if io.kind() == std::io::ErrorKind::NotFound || is_resolver_os_error(io) {
-                return true;
-            }
-        }
-        let message = error.to_string().to_ascii_lowercase();
-        if !message.contains("proxy")
-            && (message.contains("failed to lookup address")
-                || message.contains("name or service not known")
-                || message.contains("nodename nor servname")
-                || message.contains("temporary failure in name resolution")
-                || message.contains("no such host")
-                || message.contains("name does not resolve"))
-        {
-            return true;
-        }
-        current = error.source();
-    }
-
-    false
-}
-
-#[cfg(windows)]
-fn is_resolver_os_error(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(11001..=11004))
-}
-
-#[cfg(not(windows))]
-fn is_resolver_os_error(error: &std::io::Error) -> bool {
-    #[cfg(unix)]
-    {
-        matches!(
-            error.raw_os_error(),
-            Some(libc::EAI_NONAME | libc::EAI_AGAIN)
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = error;
-        false
+    match failure.network_failure_kind() {
+        Some(NetworkFailureKind::Dns) => PollOutcome::DnsFailure,
+        Some(NetworkFailureKind::ConnectionRefused) => PollOutcome::ConnectionRefused,
+        Some(NetworkFailureKind::Connect | _) | None => PollOutcome::NetworkError,
     }
 }
 
@@ -594,7 +539,6 @@ mod tests {
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use gregg_protocol::test_support::LinuxSnapshotV2Builder;
     use gregg_protocol::v2::{DriveMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES};
-    use std::io;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -789,8 +733,7 @@ mod tests {
         let body = valid_snapshot_json();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -804,8 +747,7 @@ mod tests {
         let body = valid_snapshot_json();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::FakeClock::new(
             Instant::now()
                 .checked_sub(Duration::from_secs(3600))
@@ -822,8 +764,7 @@ mod tests {
         let body = serde_json::to_string(&snap).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -858,8 +799,7 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_millis(50)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_millis(50));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -870,8 +810,7 @@ mod tests {
     async fn connection_refused() {
         let url = mock_server_closed_port().await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -892,8 +831,7 @@ mod tests {
     async fn non_2xx_status() {
         let url = mock_server(b"not ready".to_vec(), "503 Service Unavailable").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -906,8 +844,7 @@ mod tests {
         let body = vec![b'x'; 65 * 1024];
         let url = mock_server(body, "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -916,9 +853,8 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_body_chunked_delivery() {
-        // Send a body in two chunks via raw TCP: first a chunk under the
-        // cap, then a second chunk that pushes the total over. The
-        // check-before-append must reject before allocating beyond the cap.
+        // Two writes under one Content-Length that together cross the cap.
+        // The decoded-body limit must remain authoritative.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
@@ -948,8 +884,89 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(matches!(result.outcome, PollOutcome::BodyTooLarge));
+    }
+
+    #[tokio::test]
+    async fn oversized_body_chunked_encoding() {
+        // Chunked bodies have no Content-Length; the decoded-body limit
+        // must remain authoritative while chunks are consumed.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let first = vec![b'x'; 60 * 1024];
+            let second = vec![b'x'; 10 * 1024];
+            let header =
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+            stream.write_all(header.as_bytes()).await.unwrap();
+            for chunk in [&first, &second] {
+                let size_line = format!("{:x}\r\n", chunk.len());
+                stream.write_all(size_line.as_bytes()).await.unwrap();
+                stream.write_all(chunk).await.unwrap();
+                stream.write_all(b"\r\n").await.unwrap();
+            }
+            stream.write_all(b"0\r\n\r\n").await.unwrap();
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(matches!(result.outcome, PollOutcome::BodyTooLarge));
+    }
+
+    #[tokio::test]
+    async fn oversized_body_underreported_content_length() {
+        // A missing Content-Length (close-delimited body) must not bypass
+        // the decoded-body limit. Hyper truncates underdeclared
+        // Content-Length bodies to the declared length, so the authoritative
+        // guard is exercised here via the no-length framing instead.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = vec![b'x'; 70 * 1024];
+            let header = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -960,8 +977,7 @@ mod tests {
     async fn malformed_json() {
         let url = mock_server(b"not json at all".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -976,8 +992,7 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -994,8 +1009,7 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1056,13 +1070,12 @@ mod tests {
     async fn network_error_on_dropped_connection() {
         let url = mock_server_drop().await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
-        // When the connection is dropped mid-response, reqwest will
-        // return a network error (not a timeout or connection refused).
+        // When the connection is dropped mid-response, the transport
+        // returns a network error (not a timeout or connection refused).
         assert!(
             matches!(
                 result.outcome,
@@ -1079,60 +1092,24 @@ mod tests {
     }
 
     #[test]
-    fn classify_timeout() {
-        // We can't easily construct reqwest errors in unit tests,
-        // so just verify the function signature compiles.
-        let _ = classify_reqwest_error;
-    }
-
-    #[test]
-    fn is_connection_refused_returns_false_for_non_refused() {
-        let err = io::Error::other("some error");
-        assert!(!is_connection_refused(&err));
-    }
-
-    #[test]
-    fn is_connection_refused_returns_true_for_refused() {
-        let err = io::Error::new(io::ErrorKind::ConnectionRefused, "connection refused");
-        assert!(is_connection_refused(&err));
-    }
-
-    #[test]
-    fn is_dns_failure_matches_resolver_errors() {
-        // AddrNotAvailable comes from connect(), not name resolution.
-        let unreachable_network =
-            io::Error::new(io::ErrorKind::AddrNotAvailable, "address unavailable");
-        assert!(!is_dns_failure(&unreachable_network));
-        let gai =
-            io::Error::other("failed to lookup address information: Name or service not known");
-        assert!(is_dns_failure(&gai));
-        assert!(is_dns_failure(&io::Error::other(
-            "nodename nor servname provided"
-        )));
-        assert!(is_dns_failure(&io::Error::other(
-            "temporary failure in name resolution",
-        )));
-        let misleading = io::Error::other("failed to resolve proxy");
-        assert!(!is_dns_failure(&misleading));
-        assert!(is_dns_failure(&io::Error::other("Name does not resolve")));
-        let not_found = io::Error::new(io::ErrorKind::NotFound, "name not found");
-        assert!(is_dns_failure(&not_found));
-        #[cfg(unix)]
-        assert!(is_dns_failure(&io::Error::from_raw_os_error(
-            libc::EAI_NONAME
-        )));
-        #[cfg(unix)]
-        assert!(is_dns_failure(&io::Error::from_raw_os_error(
-            libc::EAI_AGAIN
-        )));
+    fn eggfetch_timeout_preserves_whole_request_deadline() {
+        let timeout = Duration::from_millis(1500);
+        let configured = eggfetch_timeout(timeout);
+        assert_eq!(configured.pool, Some(timeout));
+        assert_eq!(configured.connect, Some(timeout));
+        assert_eq!(configured.write, Some(timeout));
+        assert_eq!(configured.read, Some(timeout));
+        assert_eq!(configured.total, Some(timeout));
+        // `Timeout::from_secs` alone deliberately leaves `total` unset;
+        // the explicit five-field form above is required.
+        assert!(eggfetch_core::Timeout::from_secs(5).total.is_none());
     }
 
     #[tokio::test]
     async fn redirect_response_301() {
         let url = mock_server(b"redirect".to_vec(), "301 Moved Permanently").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1165,8 +1142,7 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1184,8 +1160,7 @@ mod tests {
     async fn empty_body_with_200() {
         let url = mock_server(Vec::new(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1228,8 +1203,7 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1250,8 +1224,7 @@ mod tests {
         assert!(body.len() < 64 * 1024);
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1270,8 +1243,7 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1286,8 +1258,7 @@ mod tests {
     async fn nested_invalid_json() {
         let url = mock_server(b"{\"nested\": {\"invalid\": true}}".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1306,8 +1277,7 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1322,8 +1292,7 @@ mod tests {
     async fn null_json() {
         let url = mock_server(b"null".to_vec(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1343,8 +1312,7 @@ mod tests {
         let body = serde_json::to_string(&json).unwrap();
         let url = mock_server(body.into_bytes(), "200 OK").await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1366,8 +1334,7 @@ mod tests {
 
         let ep1 = endpoint_for(&url1);
         let ep2 = endpoint_for(&url2);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         // First poll on ep1.
@@ -1413,8 +1380,7 @@ mod tests {
             port: addr.port(),
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         // Start a poll and cancel it quickly.
@@ -1428,8 +1394,7 @@ mod tests {
     #[tokio::test]
     async fn multiple_rapid_polls_same_result() {
         let body = valid_snapshot_json();
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let mut outcomes = Vec::new();
@@ -1506,8 +1471,7 @@ mod tests {
         let v1_body = serde_json::to_string(&v1_snap).unwrap();
         let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1524,8 +1488,7 @@ mod tests {
         let v1_body = serde_json::to_string(&v1_snap).unwrap();
         let url = mock_server_v1_v2(None, (v1_body.into_bytes(), "200 OK".to_string())).await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = SteppedClock::new();
 
         let result = client.poll(&ep, &clock).await;
@@ -1542,8 +1505,7 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1574,8 +1536,7 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
 
         let result = client.poll(&ep, &crate::clock::RealClock).await;
         assert!(matches!(result.outcome, PollOutcome::InvalidSnapshot));
@@ -1615,8 +1576,7 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1637,8 +1597,7 @@ mod tests {
         )
         .await;
         let ep = endpoint_for(&url);
-        let client =
-            HttpClient::new(Duration::from_secs(5)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_secs(5));
         let clock = crate::clock::RealClock;
 
         let result = client.poll(&ep, &clock).await;
@@ -1667,8 +1626,7 @@ mod tests {
             port,
             name: None,
         };
-        let client =
-            HttpClient::new(Duration::from_millis(1500)).expect("test HTTP client construction");
+        let client = HttpClient::new(Duration::from_millis(1500));
         let clock = crate::clock::RealClock;
 
         eprintln!("--- before poll ---");
