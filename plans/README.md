@@ -115,12 +115,15 @@ deps keep ordinary ranges), moves the existing MSRV CI job in place,
 and makes source/Cargo fallback requirements truthful without changing
 runtime behavior.
 
-Plan 118 is planned after Plan 117. It replaces production client-side reqwest
-usage with feature-minimal `eggfetch-core` 0.1.5, preserving Systems polling
-and EggPool deadlines, body caps, stable outcomes, protocol negotiation, and
-worker/scheduler ownership while deleting Gregg's duplicated transport error
-and body-limit machinery. Binary/dependency footprint changes are to be
-measured rather than assumed.
+Plan 118 is complete at implementation `66a0102` (plus Windows test-deadline
+fix `cda51a4`) with remote CI run `35184430460` green across Linux, macOS
+arm64, macOS Intel, Windows, and MSRV Rust 1.89. It replaces production
+client-side reqwest usage with feature-minimal `eggfetch-core` 0.1.5,
+preserving Systems polling and EggPool deadlines, body caps, stable
+outcomes, protocol negotiation, and worker/scheduler ownership while
+deleting Gregg's duplicated transport error and body-limit machinery.
+Binary/dependency footprint changes are measured rather than assumed
+(release `gregg` grows materially; see the Plan 118 closure).
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -236,7 +239,7 @@ excluded.
 | [`115-plan113-restart-activation-and-elevation-corrective-pass.md`](115-plan113-restart-activation-and-elevation-corrective-pass.md) | Make restart manager dispatch exact-executable-aware, reactivate running user-local Unix daemons after same-scope replacement, and fix Windows elevation diagnostics | complete; implementation `17079e5`; CI `34734612707` green; post-closure follow-up is Plan 116 |
 | [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | complete; implementation `d0b9231`; CI `34739895730` green |
 | [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | complete; implementation `ee485cc`; CI `35179950199` green |
-| [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | planned; depends on 117 |
+| [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | complete; implementation `66a0102` + fix `cda51a4`; CI `35184430460` green |
 
 Dependency order:
 

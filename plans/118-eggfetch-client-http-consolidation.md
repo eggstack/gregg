@@ -1,6 +1,6 @@
 # Plan 118: eggfetch client HTTP consolidation
 
-Status: planned.
+Status: complete at `66a0102` (plus `cda51a4`); CI `35184430460` green.
 
 Depends on: Plan 117's Rust 1.89 workspace/dependency baseline. The implementation target is `eggfetch-core` 0.1.5 from crates.io. This plan is independent of the remaining Plan 091 soak record.
 
@@ -459,4 +459,67 @@ Plan 118 is complete only when:
 
 ## Closure record
 
-Pending implementation.
+Implementation `66a0102810d9d313b372cd0e5be42077219208ec`
+("feat: replace gregg client reqwest with eggfetch-core 0.1.5 (Plan 118)")
+plus `cda51a45c65e902849002503bd98df7191696eb8`
+("fix: give EggPool closed-port test poller-scale deadline for Windows"),
+verified by remote CI run `35184430460` green across Linux, macOS arm64,
+macOS Intel, Windows, and MSRV Rust 1.89. The prior run `35183954733`
+failed only the new EggPool closed-port test on Windows (`Timeout` instead
+of `ConnectionRefused`/`NetworkError` under a 2s deadline); the fix gives
+that test the same 5s deadline as the Systems poller so a slow Windows
+refusal surfaces as typed evidence.
+
+Eggfetch version/features: `eggfetch-core 0.1.5` with
+`default-features = false, features = ["http1", "tls-rustls"]` in
+`crates/gregg/Cargo.toml`. No `tls-native-roots`, `http2`, `http3`,
+`proxy`, `cookies`, `json`, `compression-*`, `multipart`, or `tracing`.
+`serde_json` stays owned by Gregg. `ClientBuilder::build()` is infallible
+as reviewed, so `HttpClient::new` / `EggpoolClient::new` are infallible
+and `main.rs` reqwest-construction plumbing is removed. No
+`eggfetch-core` dependency in `greggd` or `gregg-update`
+(`cargo tree -p greggd -e normal` and `cargo tree -p gregg-update`
+show neither `eggfetch` nor `reqwest`).
+
+Measured footprint (same commands before/after, Plan-117 baseline):
+
+```text
+before: cargo build --release -p gregg -> 3609472 bytes (stripped)
+after:  cargo build --release -p gregg -> 4264912 bytes (stripped)
+delta:  +655440 bytes (+18.2%)
+cargo tree -p gregg -e normal: 377 lines -> 362 lines (-15)
+  before: reqwest v0.12.28 (+ hyper, hyper-rustls, hyper-util, rustls,
+    tokio-rustls, tower-http v0.6.11)
+  after:  eggfetch-core v0.1.5 (+ hyper, hyper-rustls, hyper-util, rustls,
+    tokio-rustls, dashmap; tower-http gone)
+cargo tree -p gregg --duplicates: 175 lines -> 188 lines
+Cargo.lock: reqwest and tower-http gone; eggfetch-core present
+```
+
+The binary grows materially despite fewer top-level tree lines. Source of
+the delta is the eggfetch engine itself (connection pool with `dashmap`,
+typed `Error`/`RequestFailure`/`NetworkFailureKind`, body-limit and
+phase-aware timeout machinery) replacing reqwest's leaner
+`rustls-tls` + `stream` profile; `tower-http` leaves while `dashmap` (via
+eggfetch) arrives. No footprint win is claimed. The primary acceptance
+criterion is met: duplicated transport/error/body-management code and the
+reqwest-specific maintenance surface are removed, with no `reqwest::`
+references and no direct reqwest dependency remaining.
+
+Focused coverage: poller redirect-not-followed, timeout-before-headers,
+closed-port refused-or-network, >64 KiB fixed-length, two-write over-cap,
+chunked over-cap, close-delimited over-cap, v2-404-only fallback and
+non-fallback cases; EggPool HTTP success, Bearer auth without leakage,
+invalid Bearer to `InvalidSummary`, 401/403/404/other mappings, 16 KiB
+fixed/chunked over-cap, timeout, closed-port, redirect-not-followed, and
+https URL representability. DNS relies on eggfetch's typed provenance;
+no textual heuristics were reintroduced and no flaky public-network DNS
+test was added.
+
+Local verification on the final tree: `cargo fmt --all -- --check` clean,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`
+clean, `cargo test --workspace --all-targets --all-features` green,
+`cargo doc --workspace --no-deps` (only pre-existing warnings),
+`./scripts/check-local.sh` green, `./scripts/check-local.sh --release`
+green except the expected clean-tree failure on the uncommitted tree,
+`cargo +1.89 test --workspace --all-targets --all-features` green.
