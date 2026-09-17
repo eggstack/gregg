@@ -262,26 +262,65 @@ operator-managed installs.
 
 ## MSRV
 
-The workspace declares `rust-version = "1.75"` in `[workspace.package]` and
+The workspace declares `rust-version = "1.89"` in `[workspace.package]` and
 inherits it in every member manifest. Nightly-only language or Cargo features
 must not be used. The Rust toolchain pinned in `rust-toolchain.toml` is the
 current stable release; CI installs the same channel so formatting and lint
 behaviour stay aligned with local development.
-Compatibility-only dependency bounds keep fresh workspace and package-source
-resolution within that MSRV; the local release preflight and the small MSRV CI
-job provide the compatibility checks.
+The local release preflight and the small MSRV CI job provide the
+compatibility checks.
 
-### MSRV decision (Plan 105, September 2026): retain 1.75
+### MSRV decision (Plan 117, September 2026): raise to 1.89
 
-Retaining Rust 1.75 remains worthwhile: prebuilt binaries cover the five
-primary targets, but ARMv7/unknown hosts and crates.io consumers still build
-from source, and the compatibility surface is 13 bounded pins, not a
-maintenance burden. Raising the floor would abandon source-build users for
-no product gain. Evidence: `cargo check --workspace --all-features` with
-Rust 1.75 passes on the consolidated tree (shared updater crate, split
-startup/config modules included).
+Plan 117 supersedes only Plan 105's active decision to retain Rust 1.75.
+Plan 105 remains the historical record of the evidence and decision that
+were correct at that time; its compatibility-pin table below is historical
+policy, not an active constraint.
 
-### Compatibility-pin audit (Plan 105)
+Raising the floor to Rust 1.89 removes the compatibility-only resolver
+policy that existed solely to keep fresh resolution on Rust 1.75.
+Prebuilt binaries still cover the five primary targets and need no
+compiler. Source-only/fallback hosts (Linux ARMv7, Windows ARM64),
+direct `cargo install` users, and downstream crates.io consumers now
+require Rust/Cargo 1.89 or newer. Evidence: `cargo check --workspace
+--all-targets --all-features` and the full workspace test suite pass
+under Rust 1.89 on the cleaned tree, plus a disposable no-lock fresh
+resolution check proving crates.io consumers are not protected only by
+repository lock state.
+
+### Dependency dispositions (Plan 117, under the 1.89 floor)
+
+Source imports/usages are authoritative for direct dependency ownership;
+`cargo tree` alone never justifies retaining a direct entry. Per-entry
+outcome (`gregg` manifest unless noted):
+
+| Entry | Source use | Disposition |
+| --- | --- | --- |
+| `indexmap` (+ `greggd`) | none (transitive via `toml_edit`) | REMOVE |
+| `instability` | none (transitive via `ratatui`) | REMOVE |
+| `unicode-segmentation` | none (transitive via `ratatui`) | REMOVE |
+| `uuid` | yes (`Uuid::new_v4`) | KEEP, normalized to ordinary `version = "1"` + `v4` |
+| `reqwest` | yes (Systems poller, EggPool, endpoint URL adapter) | KEEP, normalized to ordinary `version = "0.12"` (Plan 118 owns transport replacement) |
+| `url` | yes (`eggpool.rs` `Url`) | KEEP, normalized to ordinary `version = "2"` |
+| `idna` | none (transitive via `url`) | REMOVE |
+| `idna_adapter` | none (transitive via `url`) | REMOVE |
+| `hyper-rustls` | none (transitive via `reqwest`) | REMOVE |
+| `quinn-proto` | none (transitive via `reqwest` HTTP/3) | REMOVE |
+| `rustc-hash` | none (transitive) | REMOVE |
+| `zeroize` | none (transitive) | REMOVE |
+| `thiserror-compat` | none (transitive `thiserror` 2.x guard) | REMOVE |
+
+No direct dependency is retained merely because it appears in
+`Cargo.lock`. Unrelated deliberate API bounds (Clap, Windows
+service-management) are untouched. `Cargo.lock` is intentionally
+re-resolved under the new floor and all `--locked` repository/install
+paths remain valid.
+
+### Compatibility-pin audit (Plan 105, historical)
+
+Plan 105 audited the Rust-1.75 compatibility surface and intentionally
+retained 13 direct bounds/guards; that decision was correct under the
+earlier compatibility goals and is preserved here unchanged:
 
 Relaxing all upper bounds and re-resolving pulls requirements of Rust
 1.77–1.88 (measured September 2026), so the pins are load-bearing, not
@@ -304,9 +343,11 @@ cosmetic. Per-pin outcome (`gregg` manifest unless noted):
 | `thiserror-compat <2.0.13` | 2.0.20 (1.71, compatible) | KEEP as guard: the only bound on the transitive `thiserror` 2.x line required by `quinn` |
 
 `Cargo.lock` protects CI, but fresh source builds resolve bounds anew, so
-guard pins stay even when they are no-ops today. Re-audit with a relax +
-`cargo check` under Rust 1.75 before removing any bound; never raise the
-MSRV incidentally via a dependency update.
+guard pins stayed even when they were no-ops at the time. That paragraph
+states Plan 105's active policy under Rust 1.75 and is superseded by the
+Plan 117 decision above; it is preserved here as history. Under the
+current 1.89 floor, never lower the floor incidentally via a dependency
+update — raise it only through an explicit plan.
 
 ## Lints
 
@@ -367,7 +408,7 @@ cargo test --workspace
 The manual `check-local.sh --release` preflight adds full Clippy,
 documentation, package/version checks, installation smoke, and the protocol
 publish dry-run. Ordinary CI runs Linux fmt/Clippy/tests, native macOS and
-Windows checks, and one compile-only Rust 1.75 job; it does not build docs,
+Windows checks, and one compile-only Rust 1.89 job; it does not build docs,
 publish, or upload evidence.
 
 Platform-specific collector tests use deterministic fixtures and mock

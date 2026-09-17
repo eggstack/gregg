@@ -308,9 +308,7 @@ impl ServerState {
                 // (backward clock jump after sampling); treat a
                 // from-the-future snapshot as stale rather than fresh.
                 let age_ms = now_unix_ms.checked_sub(observed_at_unix_ms);
-                if age_ms.map_or(true, |age| {
-                    u128::from(age) >= self.max_snapshot_age.as_millis()
-                }) {
+                if age_ms.is_none_or(|age| u128::from(age) >= self.max_snapshot_age.as_millis()) {
                     return true;
                 }
             }

@@ -61,7 +61,8 @@ curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 ```
 
-Cargo fallback (source-only hosts such as ARMv7, or when no matching asset exists):
+Cargo fallback (source-only hosts such as ARMv7, or when no matching asset exists;
+requires Rust 1.89+):
 
 ```bash
 cargo install gregg --locked

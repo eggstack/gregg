@@ -43,19 +43,19 @@ cargo test -p greggd --all-features -- collector::macos     # macOS native
 cargo test -p greggd --all-targets -- collector::windows    # Windows native
 ```
 
-CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` build + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo check --workspace --all-features` on Rust 1.75.
+CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` build + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo check --workspace --all-features` on Rust 1.89.
 
 ## Key constraints
 
 ### Workspace (`architecture/workspace.md`)
 
-- **MSRV 1.75.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.75"`. Never raise MSRV incidentally.
+- **MSRV 1.89.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.89"`. Never change MSRV incidentally (see `architecture/workspace.md` Plan 117 decision).
 - **Clippy pedantic is warn, not error.** Don't add new warnings.
 - **Unsafe allowlist only, each block needs a safety comment:** `greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `greggd/src/startup/install.rs` (`geteuid`), `gregg/src/` (flock/LockFileEx, `cli.rs` executable probe).
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
-- **Dep upper bounds are load-bearing for 1.75** (see `architecture/workspace.md` Plan 105 audit). Re-audit with relax + 1.75 check before removing any bound.
+- **Deps are ordinary semver.** Plan 117 removed the 1.75-era transitive resolver pins; genuine direct deps (`uuid`, `url`, `reqwest`) carry normal ranges. Don't re-add transitive guard pins.
 
 ### Client polling/state (`architecture/gregg-client.md`)
 

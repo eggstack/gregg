@@ -629,15 +629,14 @@ fn make_bar_string(pct: Option<f32>, bar_width: u16) -> String {
             // `clamped` is in [0, 100] and `width_f` fits in u16, so the
             // scaled value is non-negative and bounded by `width_f`. We
             // explicitly clamp before converting to avoid lossy-cast
-            // lints (Rust 1.75 lacks `TryFrom<f32>` for integer targets).
+            // lints on float-to-integer conversion.
             let scaled = (clamped * width_f) / 100.0;
             let clamped_scaled = if scaled.is_finite() && scaled >= 0.0 {
                 scaled.min(f32::from(u16::MAX))
             } else {
                 0.0
             };
-            // The value is pre-clamped to [0, u16::MAX]; Rust 1.75 has no
-            // TryFrom<f32> for this conversion.
+            // The value is pre-clamped to [0, u16::MAX] before conversion.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let filled_u32 = clamped_scaled as u32;
             let filled = usize::try_from(filled_u32.min(u32::from(bar_width))).unwrap_or(0);

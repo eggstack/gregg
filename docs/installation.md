@@ -121,6 +121,10 @@ the README.
 
 ## Cargo (source installs and source-only hosts)
 
+Direct source builds require Rust/Cargo 1.89 or newer
+(`rust-version = "1.89"`); Cargo enforces the floor automatically.
+Prebuilt binary installs need no compiler.
+
 ```bash
 cargo install gregg --locked
 cargo install greggd --locked
@@ -133,4 +137,4 @@ cargo install greggd --locked
 - macOS binaries are unsigned; Gatekeeper may quarantine them until approved
   via System Settings or `xattr -d com.apple.quarantine`.
 - Linux ARMv7 (`armv7l`) and Windows ARM64 are source-build only; the
-  installers fall back to Cargo when available.
+  installers fall back to Cargo when available (requires Rust 1.89+).

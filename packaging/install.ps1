@@ -253,7 +253,7 @@ function Invoke-CargoFallback {
     $cargo = Get-Command cargo -ErrorAction SilentlyContinue
     if (-not $cargo) {
         Write-Error "No prebuilt $Program asset for $($Target ? $Target : 'unknown') ($Arch) and Cargo is not installed."
-        Write-Error "Install Rust from https://rustup.rs, then rerun:"
+        Write-Error "Install Rust 1.89+ from https://rustup.rs, then rerun:"
         if ($StrippedVersion) {
             Write-Error "  cargo install $Program --version `"=$StrippedVersion`" --locked"
         } else {

@@ -72,7 +72,7 @@ Windows (PowerShell):
 .\install.ps1 -Component Gregg
 ```
 
-Alternative (any platform with Rust, or source-only hosts such as ARMv7):
+Alternative (any platform with Rust 1.89+, or source-only hosts such as ARMv7):
 
 ```bash
 cargo install gregg --locked

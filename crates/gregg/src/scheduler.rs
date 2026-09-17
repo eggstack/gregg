@@ -924,7 +924,7 @@ mod tests {
                     continue;
                 }
                 let count = call_count.fetch_add(1, Ordering::SeqCst);
-                if count % 2 == 0 {
+                if count.is_multiple_of(2) {
                     let header =
                         format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
                     stream.write_all(header.as_bytes()).await.unwrap();

@@ -391,9 +391,8 @@ fn manager_config_matches(
     ) {
         return false;
     }
-    manager_config.map_or(true, |config| {
-        gregg_update::uninstall::paths_equivalent(config, selected_config)
-    })
+    manager_config
+        .is_none_or(|config| gregg_update::uninstall::paths_equivalent(config, selected_config))
 }
 
 /// Build a plan from injected discovery (pure; shared by production and

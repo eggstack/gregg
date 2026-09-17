@@ -214,7 +214,7 @@ own client, auth, cadence, and rendering — see
 | Release policy | `scripts/release-targets.txt`, `release-preflight.sh`, `release-check-assets.sh`, `release-install-zig.sh` | Single 5-target table + version/tag/registry preflight + asset validation | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | Loopback/SOAK smokes | `scripts/verify-installed-daemon.sh`, `smoke-windows.ps1` (SCM), `run-mixed-fleet-sustained.py` + `scripts/tests/` | Bounded daemon health smoke, Windows lifecycle proof, ignored sustained-workload driver | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | Installers | `packaging/install.sh` / `install.ps1` (bootstrap, binary-first) + legacy `install-linux.sh` / `install-macos.sh` / `install-windows.ps1`, `systemd/` unit, `launchd/` plist | Default install path; Cargo fallback for `armv7l`/unknown only | [scripts-and-packaging.md](scripts-and-packaging.md) |
-| CI / release workflows | `.github/workflows/ci.yml`, `release-binaries.yml` | Linux fmt/clippy/tests + native macOS/Windows + MSRV 1.75; tag-only 5-target draft release (glibc 2.17) | [scripts-and-packaging.md](scripts-and-packaging.md) |
+| CI / release workflows | `.github/workflows/ci.yml`, `release-binaries.yml` | Linux fmt/clippy/tests + native macOS/Windows + MSRV 1.89; tag-only 5-target draft release (glibc 2.17) | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | User docs | `docs/{installation,daemon,client,display,api,development}.md` | Behavior-facing manuals (install, daemon, client, rendering, API) | — |
 | Skills | `.opencode/skills/` (`rust-workspace`, `greggd-daemon`, `gregg-client`, `protocol-wire`, `platform-collectors`, `release-process`, `eggpool`, `architecture-docs`, `plans-workflow`) | Task-scoped agent guidance shadowing the architecture docs | matching deep dive |
 | Plans | `plans/` (index: `plans/README.md`) | Sequencing + acceptance criteria; completion rule lives there | [plans-workflow skill](../.opencode/skills/plans-workflow/SKILL.md) |
@@ -223,9 +223,10 @@ own client, auth, cadence, and rendering — see
 
 ## Cross-cutting rules (brief)
 
-- **Workspace** (`architecture/workspace.md`): MSRV 1.75, one shared version,
+- **Workspace** (`architecture/workspace.md`): MSRV 1.89, one shared version,
   clippy pedantic as warn, `unsafe` allowlist only with safety comments,
-  crates.io-only deps, load-bearing upper bounds (re-audit before removing).
+  crates.io-only deps, ordinary semver requirements (Plan 117 retired the
+  1.75-era resolver pins).
 - **Config**: TOML, `deny_unknown_fields`, structured violations, atomic
   temp→flush→rename→validate writes; daemon `name` → `system.name`,
   native call → `system.hostname`.

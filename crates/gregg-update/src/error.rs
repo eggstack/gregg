@@ -16,7 +16,7 @@ pub enum UpdateError {
     #[error("curl is not available: {0}. Install curl or update manually from https://github.com/eggstack/gregg/releases")]
     CurlMissing(String),
     /// `cargo` is not available in `PATH`.
-    #[error("cargo is not available: {0}. Install Rust from https://rustup.rs or download the release asset manually")]
+    #[error("cargo is not available: {0}. Install Rust 1.89+ from https://rustup.rs or download the release asset manually")]
     CargoMissing(String),
     /// Version lookup against crates.io failed.
     #[error("version lookup failed: {0}")]

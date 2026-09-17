@@ -17,7 +17,7 @@ is the default path and Cargo is the fallback for source-only hosts.
 # Default installation (Linux/macOS)
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
 
-# Source install / fallback
+# Source install / fallback (requires Rust 1.89+)
 cargo install gregg --locked
 ```
 

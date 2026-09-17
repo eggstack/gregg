@@ -239,7 +239,7 @@ pull requests:
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
 - **Windows** (`windows-2022`): all-target, all-feature workspace tests, a
   release `greggd` build, and the bounded SCM lifecycle smoke
-- **MSRV**: compilation check with Rust 1.75
+- **MSRV**: compilation check with Rust 1.89
 
 Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
 `v*` tags and manual dispatch:
@@ -273,7 +273,7 @@ release from prebuilt binaries.
 **`Cargo.toml`** (workspace root):
 - Four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`
 - One shared version from `[workspace.package]` (currently `1.0.12`),
-  edition 2021, MSRV 1.75
+   edition 2021, MSRV 1.89
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 
 **`deny.toml`** (cargo-deny):

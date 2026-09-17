@@ -334,9 +334,9 @@ cargo_fallback() {
   if ! command -v cargo >/dev/null 2>&1; then
     echo "No prebuilt $program asset for ${TARGET:-unknown} (${OS}/${ARCH})" >&2
     if [[ "$TARGET" == "armv7-unknown-linux-gnueabihf" ]]; then
-      echo "ARMv7 is source-build only in this phase; install Rust to build from source." >&2
+      echo "ARMv7 is source-build only in this phase; install Rust 1.89 or newer to build from source." >&2
     fi
-    echo "Install Rust from https://rustup.rs, then rerun:" >&2
+    echo "Install Rust 1.89+ from https://rustup.rs, then rerun:" >&2
     if [[ -n "$STRIPPED_VERSION" ]]; then
       echo "  cargo install $program --version \"=${STRIPPED_VERSION}\" --locked" >&2
     else

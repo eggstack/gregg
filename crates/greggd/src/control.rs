@@ -293,9 +293,10 @@ fn stop_error_severity(error: &std::io::Error) -> StopErrorSeverity {
 /// earlier `PermissionDenied` is not overwritten by, say, a later
 /// fallback candidate that simply has no socket.
 fn record_stop_error(slot: &mut Option<std::io::Error>, error: std::io::Error) {
-    if slot.as_ref().map_or(true, |previous| {
-        stop_error_severity(&error) > stop_error_severity(previous)
-    }) {
+    if slot
+        .as_ref()
+        .is_none_or(|previous| stop_error_severity(&error) > stop_error_severity(previous))
+    {
         *slot = Some(error);
     }
 }

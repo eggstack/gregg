@@ -6,6 +6,9 @@ operator-managed packaging.
 
 ## Local build and run
 
+Local builds require Rust/Cargo 1.89 or newer; normal development uses
+the stable toolchain (`rust-toolchain.toml`).
+
 ```bash
 cargo build --release -p greggd
 cargo build --release -p gregg

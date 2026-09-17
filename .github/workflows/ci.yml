@@ -115,16 +115,16 @@ jobs:
         run: ./scripts/smoke-windows.ps1 -ExePath ./target/release/greggd.exe -GreggExePath ./target/release/gregg.exe
 
   msrv:
-    name: MSRV (Rust 1.75)
+    name: MSRV (Rust 1.89)
     runs-on: ubuntu-latest
     steps:
       - name: Check out sources
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.75
+      - name: Install Rust 1.89
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.75"
+          toolchain: "1.89"
 
       - name: Cache cargo registry and git
         uses: actions/cache@v4

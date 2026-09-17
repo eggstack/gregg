@@ -81,6 +81,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Already-current invocations need no privilege and still exit `0` for any
   user; verified for both `greggd update` and `gregg update`.
 
+### Changed
+
+- **MSRV raised to Rust 1.89** (Plan 117): the workspace `rust-version` moves
+  from 1.75 to 1.89 and the CI MSRV job moves with it. The ten
+  transitive-only resolver pins (`indexmap`, `instability`,
+  `unicode-segmentation`, `idna`, `idna_adapter`, `hyper-rustls`,
+  `quinn-proto`, `rustc-hash`, `zeroize`, `thiserror-compat`) are removed;
+  genuine direct dependencies keep ordinary ranges (`uuid 1`, `url 2`,
+  `reqwest 0.12`). Prebuilt binary users are unaffected; direct
+  `cargo install` / Cargo-fallback source builds now require Rust 1.89+.
+  No runtime, protocol, TUI, service, or update behavior changes.
+
 ## [1.0.13] - 2026-09-12
 
 ### Added
