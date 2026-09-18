@@ -154,10 +154,14 @@ design is retained intentionally.
 **Poller** (`poller.rs`):
 - v2-first, endpoint-bound schema parsing, v1 fallback only on 404
 - Accepts only the schema matching the requested endpoint; malformed, invalid, and wrong-version responses never trigger fallback
-- Dedicated `eggfetch_core::Client` (HTTP/1 + Rustls, redirects disabled,
-  four idle per host, explicit five-field whole-request deadline, 64 KiB
-  decoded-body cap, no automatic retry); typed `NetworkFailureKind` drives
-  DNS/refused/connect mapping, never `Display` heuristics
+- Dedicated `eggfetch_core::Client` (lean `standard-http1` + Rustls profile:
+  standard DNS/TCP/TLS route only, redirect following not compiled so 3xx
+  passes through with no second hop, four idle per host, explicit
+  five-field whole-request deadline with absolute `total` through
+  response-body EOF, 64 KiB decoded-body cap, no automatic retry);
+  typed `NetworkFailureKind` drives DNS/refused/connect mapping, never
+  `Display` heuristics; body-stage typed timeouts map to `Timeout`
+  while ordinary post-header body failures stay `NetworkError`
 - `PollOutcome` classifies 12 outcome variants (2 success: `Online`/`OnlineV2`, 10 failure/cancellation)
 
 **Normalization** (`normalized.rs`):
@@ -435,15 +439,19 @@ library callers from async tasks must move the mutation to a blocking thread.
 Optional summary pane for EggPool API metrics. Separated from greggd polling.
 
 **Client** (`eggpool.rs`):
-- Dedicated `eggfetch_core::Client` (HTTP/1 + Rustls, redirects disabled,
-  two idle per host, explicit five-field whole-request deadline, 16 KiB
-  decoded-body cap, no automatic retry), isolated from Systems polling
+- Dedicated `eggfetch_core::Client` (lean `standard-http1` + Rustls
+  profile: redirect following not compiled, two idle per host, explicit
+  five-field whole-request deadline with absolute `total` through
+  response-body EOF, 16 KiB decoded-body cap, no automatic retry),
+  isolated from Systems polling
 - Sends `/api/stats/summary?period=...`
 - Request-local `AuthScheme::bearer` (invalid values map to
   `InvalidSummary`; secrets never enter outcomes, logs, or URLs)
 - Bearer token from environment variable (never stored in outcomes)
 - Host normalization errors, including URL forms unsupported by the pinned URL
   parser, are reported as `InvalidEndpoint` rather than transport failures.
+  Body-stage typed timeouts map to `Timeout`; ordinary post-header body
+  failures stay `NetworkError`.
 
 **Worker** (`spawn_worker`):
 - Background task with bounded command and result channels

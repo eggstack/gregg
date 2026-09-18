@@ -317,6 +317,37 @@ service-management) are untouched. `Cargo.lock` is intentionally
 re-resolved under the new floor and all `--locked` repository/install
 paths remain valid.
 
+### Dependency dispositions (Plan 119, eggfetch lean profile)
+
+Plan 119 tightens the Plan 118 `eggfetch-core 0.1.5` transport to the
+published `eggfetch-core 0.1.7` lean profile (`standard-http1` +
+`tls-rustls`, defaults off) in the `gregg` client only. `greggd` and
+`gregg-update` gain no `eggfetch-core` dependency.
+
+| Entry | Source use | Disposition |
+| --- | --- | --- |
+| `eggfetch-core` | yes (Systems poller, EggPool) | KEEP, `version = "0.1.7"` with only `standard-http1` + `tls-rustls` |
+| `dashmap` | none (removed from eggfetch pool/cache ownership) | GONE from Gregg's graph |
+| `eggfetch-http-connect` | none (proxy-owned, Gregg enables no proxy) | ABSENT from Gregg's non-proxy profile |
+| `url` | yes (`endpoint.rs` URL adapter, `eggpool.rs` `Url`) | KEEP, ordinary `version = "2"` |
+
+The lean profile compiles only the standard DNS → TCP/TLS → Hyper HTTP/1
+route plus the high-level URL client. It intentionally does not compile
+`advanced-routing`, `logical-retry`, `redirects`, `basic-auth`, `proxy`,
+`http2`/`http3`, cookies, JSON, compression, multipart, or tracing, so
+`ClientBuilder::follow_redirects()` no longer exists: 3xx responses pass
+through directly and Gregg never issues a second-hop request. The
+absolute `Timeout.total` deadline runs from logical request start through
+response-body EOF, so body-stage typed timeouts map to Gregg's existing
+`Timeout` outcomes. Gregg's stripped fat-LTO release `gregg` binary
+remeasured at 3,740,592 bytes versus the 4,264,912-byte Plan-118 0.1.5
+record (-524,320 / -12.3%; +131,120 / +3.6% above the 3,609,472-byte
+pre-eggfetch reqwest record).
+
+No direct Hyper/Rustls/transitive pins are added around eggfetch.
+`serde_json` stays owned by Gregg; eggfetch's optional `json` feature is
+not enabled.
+
 ### Dependency dispositions (Plan 118, eggfetch consolidation)
 
 Plan 118 replaces the Plan 117 `reqwest` transport with feature-minimal

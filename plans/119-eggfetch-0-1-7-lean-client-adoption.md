@@ -470,4 +470,62 @@ Do not expand this plan into:
 
 ## Closure record
 
-Pending implementation.
+Implementation complete; remote CI verification pending (run ID recorded
+below once green).
+
+- Baseline (Plan-118 tree, fresh measurement): stripped `gregg` release
+  binary 4,264,912 bytes (matches the Plan 118 closure record);
+  `eggfetch-core 0.1.5` with `http1` + `tls-rustls`; normal tree 362
+  lines; `dashmap` owned by eggfetch pool/cache closure; no
+  `eggfetch-core` in `greggd` or `gregg-update` (zero matches each).
+- Manifest change: `crates/gregg/Cargo.toml` now uses published
+  `eggfetch-core 0.1.7` with `default-features = false, features =
+  ["standard-http1", "tls-rustls"]`. `Cargo.lock` resolves 0.1.7; no
+  stale 0.1.5 eggfetch core remains. `cargo update -p eggfetch-core`
+  removed `dashmap`/`hashbrown`/`crossbeam-utils` edges.
+- Redirect configuration: removed all three `.follow_redirects(false)`
+  calls (`HttpClient::new`, `HttpClient::new_with_observer`,
+  `EggpoolClient::with_env_lookup`); the method no longer exists in the
+  lean profile. Existing `redirect_response_301` and
+  `redirect_is_not_followed` tests still prove 3xx passthrough with no
+  second hop.
+- Timeout semantics: five-field constructor retained verbatim (scalar
+  constructors still leave `total` unset). Body-consumption paths in
+  `poller.rs` and `eggpool.rs` now map `Error::Timeout { .. }` and
+  `Error::TransportIoTimeout { .. }` to the existing `Timeout`
+  outcomes via typed enum matching only; `DecodedBodyTooLarge` still
+  maps to `BodyTooLarge` and other post-header failures stay
+  `NetworkError`. Request-header/connect classification is unchanged.
+- New regressions (verified to fail as `NetworkError` with the mapping
+  neutered, pass with it live): Systems `body_stall_after_headers_is_timeout`,
+  Systems `slow_body_progress_beyond_total_is_timeout` (trickle every
+  50ms under a 300ms total; elapsed bound proves total fired during
+  progress), EggPool `body_stall_after_headers_is_timeout`.
+- Feature graph (`cargo tree -p gregg -e features -i eggfetch-core`):
+  `standard-http1` → `transport-http1` + `standard-route` +
+  `high-level-url`, plus `tls-rustls` → `hyper-rustls`. No
+  `http1`/`native-http1`/`advanced-routing`/`logical-retry`/`redirects`/`basic-auth`/`proxy`
+  edges. Normal tree 352 lines (-10); `dashmap` and
+  `eggfetch-http-connect` absent; `getrandom`/Base64 remnants belong to
+  Rustls/ring/PEM, not eggfetch capabilities.
+- Footprint (same fat-LTO release profile as Plan 118): stripped
+  `gregg` 3,740,592 bytes — delta -524,320 (-12.3%) versus the fresh
+  4,264,912 baseline and the Plan 118 record alike; +131,120 (+3.6%)
+  above the 3,609,472-byte pre-eggfetch reqwest record.
+- Docs: `architecture/workspace.md` gains a Plan 119 disposition
+  section; `architecture/gregg-client.md` and both client skills
+  describe the lean profile, compile-time no-redirect/no-retry policy
+  and total-through-body deadline; `AGENTS.md` dependency line updated.
+  `crates/gregg/README.md` needed no change (no transport wording).
+  Plan 118 history untouched.
+- Local validation: `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings`, `cargo test --workspace
+  --all-targets --all-features`, `cargo doc --workspace --no-deps`
+  (only pre-existing `greggd`/`gregg` intra-doc-link warnings, also
+  present on the base tree), `./scripts/check-local.sh`,
+  `cargo +1.89 test --workspace --all-targets --all-features` all green.
+  One transient `gregg-update` curl-timing failure under parallel load
+  passed in isolation and on every re-run. `./scripts/check-local.sh
+  --release` passed all gates up to the clean-tree check on the
+  pre-commit tree; re-run on the clean post-commit tree below.
+- Implementation SHA: pending commit. CI run: pending.

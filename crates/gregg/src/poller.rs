@@ -256,9 +256,10 @@ pub struct PollBatch {
 
 /// Long-lived HTTP client for polling greggd endpoints.
 ///
-/// Wraps an `eggfetch_core::Client` with sensible defaults: no redirects,
-/// bounded connection pool, explicit whole-request deadline, and a response
-/// size cap.
+/// Wraps an `eggfetch_core::Client` with sensible defaults: redirect
+/// following is not compiled in the lean `standard-http1` profile so 3xx
+/// responses pass through directly, plus a bounded connection pool, an
+/// explicit whole-request deadline, and a response size cap.
 #[derive(Clone)]
 pub struct HttpClient {
     client: eggfetch_core::Client,
@@ -286,7 +287,6 @@ impl HttpClient {
     pub fn new(timeout: Duration) -> Self {
         let client = eggfetch_core::Client::builder()
             .timeout(eggfetch_timeout(timeout))
-            .follow_redirects(false)
             .max_idle_connections_per_host(4)
             .max_decoded_body_size(MAX_RESPONSE_BYTES)
             .build();
@@ -307,7 +307,6 @@ impl HttpClient {
     pub fn new_with_observer(timeout: Duration, observer: PollActivityObserver) -> Self {
         let client = eggfetch_core::Client::builder()
             .timeout(eggfetch_timeout(timeout))
-            .follow_redirects(false)
             .max_idle_connections_per_host(4)
             .max_decoded_body_size(MAX_RESPONSE_BYTES)
             .build();
@@ -413,6 +412,15 @@ impl HttpClient {
             Err(error) => {
                 let outcome = if matches!(error, EggfetchError::DecodedBodyTooLarge) {
                     PollOutcome::BodyTooLarge
+                } else if matches!(
+                    error,
+                    EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
+                ) {
+                    // 0.1.7 enforces `Timeout.total` as one absolute
+                    // wall-clock deadline through response-body EOF, so a
+                    // body-stage timeout honors the configured
+                    // whole-request deadline category.
+                    PollOutcome::Timeout
                 } else {
                     // Preserve observable behavior: ordinary post-header
                     // body failures surface as generic network errors.
@@ -804,6 +812,106 @@ mod tests {
 
         let result = client.poll(&ep, &clock).await;
         assert!(matches!(result.outcome, PollOutcome::Timeout));
+    }
+
+    #[tokio::test]
+    async fn body_stall_after_headers_is_timeout() {
+        // Headers arrive immediately; the declared body then stalls past
+        // the absolute `Timeout.total` deadline. Under 0.1.7 total is
+        // enforced through response-body EOF, so the body-stage timeout
+        // must map to Timeout, not NetworkError.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // Headers complete at once; the declared 1 KiB body never
+            // arrives, so body consumption exceeds the total deadline.
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n";
+            let _ = stream.write_all(header.as_bytes()).await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_millis(200));
+        let clock = crate::clock::RealClock;
+
+        let result = client.poll(&ep, &clock).await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Timeout),
+            "expected Timeout, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_body_progress_beyond_total_is_timeout() {
+        // Chunks arrive every 50ms — well within the 300ms per-chunk read
+        // inactivity deadline — but aggregate request lifetime exceeds the
+        // absolute total deadline, so the result is still Timeout. The
+        // elapsed bound proves the total deadline fired while progress
+        // continued rather than read inactivity firing after a stall.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let mut total = 0;
+            loop {
+                let n = stream.read(&mut buf[total..]).await.unwrap();
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let header = "HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n";
+            if stream.write_all(header.as_bytes()).await.is_err() {
+                return;
+            }
+            // Trickle single bytes; the declared 1 MiB body never
+            // completes, so the absolute total deadline fires first.
+            for _ in 0..40 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if stream.write_all(b"x").await.is_err() {
+                    return;
+                }
+            }
+        });
+
+        let ep = Endpoint {
+            id: "test-id".into(),
+            host: "127.0.0.1".into(),
+            port: addr.port(),
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_millis(300));
+        let clock = crate::clock::RealClock;
+
+        let start = std::time::Instant::now();
+        let result = client.poll(&ep, &clock).await;
+        let elapsed = start.elapsed();
+        assert!(
+            matches!(result.outcome, PollOutcome::Timeout),
+            "expected Timeout, got {:?}",
+            result.outcome
+        );
+        assert!(
+            elapsed < Duration::from_millis(1500),
+            "total deadline should fire while progress continues, took {elapsed:?}"
+        );
     }
 
     #[tokio::test]

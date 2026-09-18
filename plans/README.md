@@ -125,18 +125,20 @@ deleting Gregg's duplicated transport error and body-limit machinery.
 Binary/dependency footprint changes are measured rather than assumed
 (release `gregg` grows materially; see the Plan 118 closure).
 
-Plan 119 is planned as the bounded follow-up to Plan 118. It adopts the
+Plan 119 is implemented. It adopts the
 published `eggfetch-core 0.1.7` lean client profile
 (`standard-http1 + tls-rustls`) instead of the broad `http1` compatibility
 profile, removes the now-unavailable runtime `follow_redirects(false)`
 configuration while preserving 3xx passthrough, and adopts 0.1.7's corrected
 absolute `Timeout.total` through response-body EOF by mapping body-stage
-typed timeout errors to Gregg's existing `Timeout` outcomes. It must preserve
+typed timeout errors to Gregg's existing `Timeout` outcomes. It preserves
 all other Systems/EggPool protocol, auth, body-limit, pool, scheduler and
-worker semantics, prove that advanced-routing/retry/redirect/Basic/proxy
-features are absent, and remeasure Gregg's actual fat-LTO release footprint
-rather than assuming the upstream thin-LTO result transfers exactly. See
-`119-eggfetch-0-1-7-lean-client-adoption.md`.
+worker semantics, proves that advanced-routing/retry/redirect/Basic/proxy
+features are absent, and remeasures Gregg's actual fat-LTO release footprint
+(stripped `gregg` 3,740,592 bytes: -524,320 / -12.3% versus the 4,264,912-byte
+Plan-118 record). See
+`119-eggfetch-0-1-7-lean-client-adoption.md`. Remote CI verification is
+pending; the closure record carries the implementation SHA and run ID.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -253,11 +255,12 @@ excluded.
 | [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | complete; implementation `d0b9231`; CI `34739895730` green |
 | [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | complete; implementation `ee485cc`; CI `35179950199` green |
 | [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | complete; implementation `66a0102` + fix `cda51a4`; CI `35184430460` green |
+| [`119-eggfetch-0-1-7-lean-client-adoption.md`](119-eggfetch-0-1-7-lean-client-adoption.md) | Adopt published eggfetch-core 0.1.7 lean `standard-http1` profile, drop redirect configuration, map body-stage timeouts to existing `Timeout` outcomes, remeasure release footprint | implemented; CI verification pending (see closure record) |
 
 Dependency order:
 
 ```text
-066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101 -> 102 -> 103 -> 104 -> 105 -> 106 -> 107 -> 108 -> 109 -> 110 -> 111 -> 112 -> 113 -> 114 -> 115 -> 116 -> 117 -> 118
+066 -> 067 -> 068 -> 069 -> 070 -> 071 -> 072 -> 073 -> 074 -> 075 -> 076 -> 077 -> 078 -> 079 -> 080 -> 081 -> 082 -> 083 -> 084 -> 085 -> 086 -> 087 -> 088 -> 089 -> 090 -> 091 -> 092 -> 093 -> 094 -> 095 -> 096 -> 097 -> 098 -> 099 -> 100 -> 101 -> 102 -> 103 -> 104 -> 105 -> 106 -> 107 -> 108 -> 109 -> 110 -> 111 -> 112 -> 113 -> 114 -> 115 -> 116 -> 117 -> 118 -> 119
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -270,7 +273,8 @@ Dependency order:
 115 depends on Plan 113 plus the settled restart/update contracts from Plans 100-102, is independent of completed Plan 114, and does not depend on the remaining Plan 091 soak record;
 116 depends on Plan 115 plus the settled self-update ownership/restart contracts from Plans 101-104 and 113, is independent of completed Plan 114, and does not depend on the remaining Plan 091 soak record;
 117 depends on the settled Plan 105 workspace/dependency baseline, deliberately supersedes only its active Rust-1.75 decision, and is independent of the remaining Plan 091 soak record;
-118 depends on Plan 117's Rust 1.89/dependency baseline and the published `eggfetch-core` 0.1.5 API, and is independent of the remaining Plan 091 soak record.
+ 118 depends on Plan 117's Rust 1.89/dependency baseline and the published `eggfetch-core` 0.1.5 API, and is independent of the remaining Plan 091 soak record.
++ 119 depends on Plan 118's eggfetch transport baseline and the published `eggfetch-core` 0.1.7 API, and is independent of the remaining Plan 091 soak record.
 ```
 
 Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record. Plan 112 is separately justified by the installer/uninstaller ownership gap it originally addressed. Plan 113 is separately justified by four concrete post-closure lifecycle defects in Plan 112's implementation: host-global startup ownership, lossy Windows SCM discovery, Cargo-owned early returns, and fallback finalization bypass. Plan 114 is separately justified by the current drive-key mnemonic mismatch and the fleet-wide normal NET-row policy that renders an unavailable bar for hosts whose own snapshot has no network telemetry. Plan 115 is separately justified by the residual host-global restart dispatch, the same-scope user-local Unix daemon activation gap after executable replacement, and platform-wrong Windows elevation guidance discovered after Plan 113 closure. Plan 116 is separately justified by the remaining host-global `greggd update` pre-replacement lifecycle decision, which can stop a foreign Windows SCM service and can suppress restart of a running selected Unix direct daemon. Plan 117 is separately justified by the explicit decision to adopt Rust 1.89 and retire the compatibility-only dependency policy that Plan 105 intentionally retained for Rust 1.75. Plan 118 is separately justified by eggfetch 0.1.5 now providing typed HTTP/HTTPS DNS/refused provenance and bounded body/auth/timeout primitives sufficient to remove Gregg's duplicated reqwest transport machinery without changing application policy.

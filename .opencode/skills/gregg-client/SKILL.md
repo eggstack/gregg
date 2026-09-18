@@ -99,8 +99,12 @@ malformed entry does not produce a misleading duplicate diagnostic.
 
 **Poller** (`poller.rs`):
 - v2-first, v1 fallback only on 404
-- Dedicated `eggfetch-core` client (HTTP/1 + Rustls, redirects disabled, four idle per host, explicit whole-request deadline, no retry)
+- Dedicated `eggfetch-core` client (lean `standard-http1` 0.1.7 + Rustls:
+  standard route only, redirect following not compiled so 3xx passes through
+  with no second hop, four idle per host, explicit whole-request deadline with
+  absolute `total` through response-body EOF, no retry)
 - 64 KiB decoded-body cap owned by eggfetch; typed `NetworkFailureKind` drives DNS/refused/connect mapping
+- Body-stage typed timeouts map to `Timeout`; ordinary post-header body failures stay `NetworkError`
 - `PollOutcome`: 2 success (`Online`/`OnlineV2`), 10 failure/cancellation
 
 **Normalization** (`normalized.rs`):

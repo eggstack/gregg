@@ -169,7 +169,10 @@ fn eggfetch_timeout(timeout: Duration) -> eggfetch_core::Timeout {
 }
 
 impl EggpoolClient {
-    /// Build a client with redirects disabled and a bounded idle pool.
+    /// Build a client with a bounded idle pool.
+    ///
+    /// Redirect following is not compiled in the lean `standard-http1`
+    /// profile, so 3xx responses pass through directly.
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self::with_env_lookup(timeout, Arc::new(|name| env::var_os(name)))
@@ -178,7 +181,6 @@ impl EggpoolClient {
     fn with_env_lookup(timeout: Duration, env_lookup: EnvLookup) -> Self {
         let client = eggfetch_core::Client::builder()
             .timeout(eggfetch_timeout(timeout))
-            .follow_redirects(false)
             .max_idle_connections_per_host(2)
             .max_decoded_body_size(MAX_RESPONSE_BYTES)
             .build();
@@ -244,6 +246,16 @@ impl EggpoolClient {
             Err(error) => {
                 if matches!(error, EggfetchError::DecodedBodyTooLarge) {
                     return EggpoolFetchOutcome::BodyTooLarge;
+                }
+                if matches!(
+                    error,
+                    EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
+                ) {
+                    // 0.1.7 enforces `Timeout.total` as one absolute
+                    // wall-clock deadline through response-body EOF, so a
+                    // body-stage timeout honors the configured
+                    // whole-request deadline category.
+                    return EggpoolFetchOutcome::Timeout;
                 }
                 return EggpoolFetchOutcome::NetworkError;
             }
@@ -1284,6 +1296,43 @@ mod tests {
                 .await;
         });
         let outcome = EggpoolClient::new(Duration::from_millis(50))
+            .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
+            .await;
+        assert_eq!(outcome, EggpoolFetchOutcome::Timeout);
+    }
+
+    #[tokio::test]
+    async fn body_stall_after_headers_is_timeout() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0; 8192];
+            let mut used = 0;
+            loop {
+                let count = stream.read(&mut request[used..]).await.unwrap();
+                if count == 0 {
+                    return;
+                }
+                used += count;
+                if request[..used]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            // Headers complete at once; the declared 1 KiB body never
+            // arrives, so body consumption exceeds the absolute total
+            // deadline and must map to Timeout, not NetworkError.
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n")
+                .await;
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+        let outcome = EggpoolClient::new(Duration::from_millis(200))
             .fetch(&endpoint(port, None), EggpoolPeriod::Hour)
             .await;
         assert_eq!(outcome, EggpoolFetchOutcome::Timeout);
