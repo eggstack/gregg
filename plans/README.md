@@ -125,6 +125,19 @@ deleting Gregg's duplicated transport error and body-limit machinery.
 Binary/dependency footprint changes are measured rather than assumed
 (release `gregg` grows materially; see the Plan 118 closure).
 
+Plan 119 is planned as the bounded follow-up to Plan 118. It adopts the
+published `eggfetch-core 0.1.7` lean client profile
+(`standard-http1 + tls-rustls`) instead of the broad `http1` compatibility
+profile, removes the now-unavailable runtime `follow_redirects(false)`
+configuration while preserving 3xx passthrough, and adopts 0.1.7's corrected
+absolute `Timeout.total` through response-body EOF by mapping body-stage
+typed timeout errors to Gregg's existing `Timeout` outcomes. It must preserve
+all other Systems/EggPool protocol, auth, body-limit, pool, scheduler and
+worker semantics, prove that advanced-routing/retry/redirect/Basic/proxy
+features are absent, and remeasure Gregg's actual fat-LTO release footprint
+rather than assuming the upstream thin-LTO result transfers exactly. See
+`119-eggfetch-0-1-7-lean-client-adoption.md`.
+
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
 never contain binary attachments and Actions never creates release artifacts,
