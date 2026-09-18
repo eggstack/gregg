@@ -470,8 +470,9 @@ Do not expand this plan into:
 
 ## Closure record
 
-Implementation complete; remote CI verification pending (run ID recorded
-below once green).
+Complete at implementation `8d7dfc2` with remote CI run `35393388956`
+green across Linux, macOS arm64, macOS Intel, Windows, and MSRV Rust
+1.89.
 
 - Baseline (Plan-118 tree, fresh measurement): stripped `gregg` release
   binary 4,264,912 bytes (matches the Plan 118 closure record);
@@ -528,4 +529,5 @@ below once green).
   passed in isolation and on every re-run. `./scripts/check-local.sh
   --release` passed all gates up to the clean-tree check on the
   pre-commit tree; re-run on the clean post-commit tree below.
-- Implementation SHA: pending commit. CI run: pending.
+- Implementation SHA: `8d7dfc2`. CI run: `35393388956` (success, all
+  five jobs).

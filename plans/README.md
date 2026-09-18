@@ -125,7 +125,9 @@ deleting Gregg's duplicated transport error and body-limit machinery.
 Binary/dependency footprint changes are measured rather than assumed
 (release `gregg` grows materially; see the Plan 118 closure).
 
-Plan 119 is implemented. It adopts the
+Plan 119 is complete at implementation `8d7dfc2` with remote CI run
+`35393388956` green across Linux, macOS arm64, macOS Intel, Windows, and
+MSRV Rust 1.89. It adopts the
 published `eggfetch-core 0.1.7` lean client profile
 (`standard-http1 + tls-rustls`) instead of the broad `http1` compatibility
 profile, removes the now-unavailable runtime `follow_redirects(false)`
@@ -137,8 +139,7 @@ worker semantics, proves that advanced-routing/retry/redirect/Basic/proxy
 features are absent, and remeasures Gregg's actual fat-LTO release footprint
 (stripped `gregg` 3,740,592 bytes: -524,320 / -12.3% versus the 4,264,912-byte
 Plan-118 record). See
-`119-eggfetch-0-1-7-lean-client-adoption.md`. Remote CI verification is
-pending; the closure record carries the implementation SHA and run ID.
+`119-eggfetch-0-1-7-lean-client-adoption.md`.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -255,7 +256,7 @@ excluded.
 | [`116-update-lifecycle-ownership-corrective-pass.md`](116-update-lifecycle-ownership-corrective-pass.md) | Make `greggd update` pre-replacement lifecycle/quiescence exact-executable-aware across Windows SCM and Unix managed/direct cases | complete; implementation `d0b9231`; CI `34739895730` green |
 | [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | complete; implementation `ee485cc`; CI `35179950199` green |
 | [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | complete; implementation `66a0102` + fix `cda51a4`; CI `35184430460` green |
-| [`119-eggfetch-0-1-7-lean-client-adoption.md`](119-eggfetch-0-1-7-lean-client-adoption.md) | Adopt published eggfetch-core 0.1.7 lean `standard-http1` profile, drop redirect configuration, map body-stage timeouts to existing `Timeout` outcomes, remeasure release footprint | implemented; CI verification pending (see closure record) |
+| [`119-eggfetch-0-1-7-lean-client-adoption.md`](119-eggfetch-0-1-7-lean-client-adoption.md) | Adopt published eggfetch-core 0.1.7 lean `standard-http1` profile, drop redirect configuration, map body-stage timeouts to existing `Timeout` outcomes, remeasure release footprint | complete; implementation `8d7dfc2`; CI `35393388956` green |
 
 Dependency order:
 
