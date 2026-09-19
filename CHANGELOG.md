@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.14] - 2026-09-19
+
 ### Added
 
 - **Per-system network rows and drive-key mnemonic** (Plan 114): normal-view
@@ -90,6 +92,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   redirect rejection, protocol negotiation, and stable outcomes while
   deleting Gregg's duplicated transport error and body-limit machinery.
   No polling, scheduler, TUI, protocol, or CLI behavior changes.
+
+- **Lean eggfetch client profile** (Plan 119): the `gregg` client adopts
+  published `eggfetch-core 0.1.7` with the lean `standard-http1` +
+  `tls-rustls` profile instead of the broad `http1` compatibility profile,
+  removes the now-unavailable runtime `follow_redirects(false)`
+  configuration while preserving 3xx passthrough, and adopts 0.1.7's
+  corrected absolute `Timeout.total` through response-body EOF by mapping
+  body-stage typed timeout errors to the existing `Timeout` outcomes.
+  Advanced-routing/retry/redirect/Basic/proxy features are absent.
+  Stripped release `gregg` shrinks 4,264,912 to 3,740,592 bytes
+  (-12.3% versus the Plan 118 record). No polling, scheduler, TUI,
+  protocol, or CLI behavior changes.
 
 - **MSRV raised to Rust 1.89** (Plan 117): the workspace `rust-version` moves
   from 1.75 to 1.89 and the CI MSRV job moves with it. The ten
