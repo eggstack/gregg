@@ -200,6 +200,12 @@ Use `d` for disk details, `n` for network/interface details, and `v` for the
 width-aware condensed view. See [Display](docs/display.md) for the mixed-fleet
 row and width policies.
 
+The client keeps the full-frame Ratatui renderer and redraws it only for
+render-visible poll, input, resize, configuration, EggPool, or highlight
+changes; unmapped input does not rebuild the frame. The daemon publishes typed
+snapshots and prepares compact v1/v2 status JSON once per successful sample,
+while stale/failure decisions remain live for every request.
+
 ## Docs
 
 - [Installation](docs/installation.md) — installer behavior, pinned versions, direct downloads, Cargo fallback

@@ -39,7 +39,14 @@ impl CounterBaselines {
             first,
             second,
         };
-        let previous = self.samples.insert(id.to_owned(), current)?;
+        let previous = if let Some(previous) = self.samples.get_mut(id) {
+            let previous_value = *previous;
+            *previous = current;
+            previous_value
+        } else {
+            self.samples.insert(id.to_owned(), current);
+            return None;
+        };
         let elapsed = observed_at.checked_duration_since(previous.observed_at)?;
         if elapsed.is_zero() || first < previous.first || second < previous.second {
             return None;
@@ -122,6 +129,17 @@ mod tests {
                 second_per_sec: 245,
             }
         );
+    }
+
+    #[test]
+    fn repeated_identity_updates_keep_one_baseline_entry() {
+        let mut baselines = CounterBaselines::default();
+        let start = instant(0, 0);
+        for sample in 0..100 {
+            let observed_at = start + Duration::from_secs(sample);
+            let _ = baselines.observe("eth0", observed_at, sample, sample * 2);
+        }
+        assert_eq!(baselines.len(), 1);
     }
 
     #[test]

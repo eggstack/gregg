@@ -221,10 +221,16 @@ impl MetricRow {
 pub(crate) struct MetricRows {
     rows: [MetricRow; 5],
     len: usize,
+    natural_suffixes: [String; 5],
+    percentage_suffixes: [String; 5],
 }
 
 pub(crate) trait MetricRowSet {
     fn rows(&self) -> &[MetricRow];
+
+    fn cached_suffixes(&self) -> Option<(&[String], &[String])> {
+        None
+    }
 }
 
 impl MetricRows {
@@ -250,6 +256,13 @@ fn base_height_for(has_net: bool) -> u16 {
 impl MetricRowSet for MetricRows {
     fn rows(&self) -> &[MetricRow] {
         self.as_slice()
+    }
+
+    fn cached_suffixes(&self) -> Option<(&[String], &[String])> {
+        Some((
+            &self.natural_suffixes[..self.len],
+            &self.percentage_suffixes[..self.len],
+        ))
     }
 }
 
@@ -358,9 +371,15 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> MetricRows {
         },
     };
 
+    let rows = [cpu, mem, third, disk, network];
+    let len = if snap.network.is_some() { 5 } else { 4 };
+    let natural_suffixes = std::array::from_fn(|index| rows[index].default_suffix());
+    let percentage_suffixes = std::array::from_fn(|index| rows[index].percentage_only_suffix());
     MetricRows {
-        rows: [cpu, mem, third, disk, network],
-        len: if snap.network.is_some() { 5 } else { 4 },
+        rows,
+        len,
+        natural_suffixes,
+        percentage_suffixes,
     }
 }
 
@@ -436,12 +455,7 @@ where
     // an already-truncated result of the suffix resolver.
     let mut max_natural_suffix: usize = 0;
     for system_rows in &collected {
-        let natural: Vec<String> = system_rows
-            .rows()
-            .iter()
-            .map(MetricRow::default_suffix)
-            .collect();
-        let w = max_suffix_display(&natural);
+        let w = max_natural_suffix_display(*system_rows);
         if w > max_natural_suffix {
             max_natural_suffix = w;
         }
@@ -547,8 +561,13 @@ fn resolve_metric_suffixes<T: MetricRowSet>(rows: &T, budget: usize) -> Vec<Stri
         return rows.rows().iter().map(|_| String::new()).collect();
     }
 
-    // First pass: full details.
-    let mut suffixes: Vec<String> = rows.rows().iter().map(MetricRow::default_suffix).collect();
+    // First pass: full details. Cached rows reuse the already formatted
+    // suffixes; the generic array implementations retain the test-only
+    // fallback behavior.
+    let mut suffixes: Vec<String> = rows.cached_suffixes().map_or_else(
+        || rows.rows().iter().map(MetricRow::default_suffix).collect(),
+        |(natural, _)| natural.to_vec(),
+    );
     if max_suffix_display(&suffixes) <= budget {
         return suffixes;
     }
@@ -556,11 +575,15 @@ fn resolve_metric_suffixes<T: MetricRowSet>(rows: &T, budget: usize) -> Vec<Stri
     // Second pass: drop optional details. Some metrics are unavailable
     // (no percentage) or have no detail field; those already collapsed
     // to the percentage-only form on the first pass.
-    suffixes = rows
-        .rows()
-        .iter()
-        .map(MetricRow::percentage_only_suffix)
-        .collect();
+    suffixes = rows.cached_suffixes().map_or_else(
+        || {
+            rows.rows()
+                .iter()
+                .map(MetricRow::percentage_only_suffix)
+                .collect()
+        },
+        |(_, percentage_only)| percentage_only.to_vec(),
+    );
     if max_suffix_display(&suffixes) <= budget {
         return suffixes;
     }
@@ -579,6 +602,20 @@ fn max_suffix_display(suffixes: &[String]) -> usize {
         .map(|s| UnicodeWidthStr::width(s.as_str()))
         .max()
         .unwrap_or(0)
+}
+
+fn max_natural_suffix_display<T: MetricRowSet>(rows: &T) -> usize {
+    rows.cached_suffixes().map_or_else(
+        || {
+            rows.rows()
+                .iter()
+                .map(MetricRow::default_suffix)
+                .map(|suffix| UnicodeWidthStr::width(suffix.as_str()))
+                .max()
+                .unwrap_or(0)
+        },
+        |(natural, _)| max_suffix_display(natural),
+    )
 }
 
 /// Render a single metric row using the shared fleet geometry.

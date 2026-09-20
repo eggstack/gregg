@@ -211,6 +211,7 @@ async fn run_event_loop(
     terminal.draw(|f| ui::render(f, app_state))?;
 
     loop {
+        let mut dirty = false;
         tokio::select! {
             biased;
 
@@ -221,7 +222,8 @@ async fn run_event_loop(
             maybe_batch = recv_poll_batch(batch_rx) => {
                 match maybe_batch {
                     Some(batch) => {
-                        app_state.apply_batch(&batch);
+                        app_state.apply_batch_owned(batch);
+                        dirty = true;
                     }
                     None => {
                         // An empty system list has no scheduler traffic. Keep
@@ -234,11 +236,13 @@ async fn run_event_loop(
             maybe_result = recv_eggpool_result(eggpool_results) => {
                 if let Some(result) = maybe_result {
                     app_state.apply_eggpool_result(&result);
+                    dirty = true;
                 } else {
                     // A worker channel closing is not a system-monitoring error.
                     // Mark only the optional pane unavailable and keep Systems responsive.
                     app_state.mark_eggpool_worker_unavailable();
                     *eggpool_results = None;
+                    dirty = true;
                 }
             }
 
@@ -250,6 +254,7 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
+                            dirty = true;
                             let before_pane = app_state.active_pane;
                             let before_highlight = app_state.selection_highlight_active;
                             let resets_highlight =
@@ -304,6 +309,7 @@ async fn run_event_loop(
                     .as_mut()
                     .reset(tokio::time::Instant::now() + HIGHLIGHT_DORMANT_DEADLINE);
                 app_state.apply_action(action::Action::ClearSelectionHighlight);
+                dirty = true;
             }
 
             result = async {
@@ -316,13 +322,16 @@ async fn run_event_loop(
                         if let Some(config) = pending.replacement {
                             app_state.reconcile_systems(&config);
                             app_state.clear_config_reload_error();
+                            dirty = true;
                         }
                     }
                 }
             }
         }
 
-        terminal.draw(|f| ui::render(f, app_state))?;
+        if dirty {
+            terminal.draw(|f| ui::render(f, app_state))?;
+        }
     }
 
     Ok(())

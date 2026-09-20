@@ -9,6 +9,7 @@ pub mod system_block;
 pub mod text;
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use ratatui::Frame;
@@ -19,6 +20,7 @@ use crate::state::{AppState, Pane, Reachability, SystemViewMode};
 use system_block::MetricRows;
 
 /// Render the full TUI into the current frame.
+#[allow(clippy::too_many_lines)]
 pub fn render(f: &mut Frame, state: &AppState) {
     let area = f.area();
 
@@ -56,8 +58,17 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
+    let condensed_values = if state.system_view_mode == SystemViewMode::Condensed {
+        condensed::preformat_fleet(&state.systems)
+    } else {
+        Vec::new()
+    };
     let condensed_layout = if state.system_view_mode == SystemViewMode::Condensed {
-        condensed::compute_condensed_table_layout(&state.systems, area.width)
+        condensed::compute_condensed_table_layout_with_values(
+            &state.systems,
+            area.width,
+            &condensed_values,
+        )
     } else {
         // The condensed layout is unused outside the condensed branch;
         // build a placeholder so the borrow checker is satisfied without
@@ -79,9 +90,9 @@ pub fn render(f: &mut Frame, state: &AppState) {
     // identical snapshots produce identical rows, so each system's rows are
     // rebuilt only when its snapshot content or membership changed.
     let (online_rows, fleet_layout) = if state.system_view_mode == SystemViewMode::Normal {
-        let online_rows: Vec<(usize, Rc<MetricRows>)> = metric_rows_for_fleet(state);
+        let online_rows = metric_rows_for_fleet(state);
         let fleet_layout = system_block::compute_fleet_metric_layout(
-            online_rows.iter().map(|(_, rows)| &**rows),
+            online_rows.iter().filter_map(|rows| rows.as_deref()),
             area.width,
         );
         (online_rows, fleet_layout)
@@ -100,15 +111,13 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 entry.is_visually_selected,
                 entry.drive_rows_visible,
                 entry.network_rows_visible,
+                condensed_values.get(entry.index).and_then(Option::as_ref),
             );
             continue;
         }
         match system.reachability {
             Reachability::Online => {
-                let rows = online_rows
-                    .iter()
-                    .find(|(index, _)| *index == entry.index)
-                    .map(|(_, rows)| &**rows);
+                let rows = online_rows.get(entry.index).and_then(Option::as_deref);
                 system_block::render_online(
                     f,
                     entry.rect,
@@ -139,13 +148,58 @@ pub fn render(f: &mut Frame, state: &AppState) {
 
 /// Per-system memo of formatted normal-view metric rows.
 struct CachedMetricRows {
-    system_id: String,
-    snapshot: NormalizedSnapshot,
+    key: MetricRenderKey,
     rows: Rc<MetricRows>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct MetricRenderKey {
+    usage_pct: f32,
+    logical_cores: u32,
+    cpu_frequency_hz: Option<u64>,
+    memory_usage_pct: f32,
+    memory_used_bytes: u64,
+    memory_total_bytes: u64,
+    swap: Option<crate::normalized::SwapMetrics>,
+    commit: Option<crate::normalized::CommitMetrics>,
+    drive_aggregate: Option<crate::normalized::DriveAggregate>,
+    network: Option<NetworkRenderKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NetworkRenderKey {
+    utilization_pct: Option<f32>,
+    aggregate_rx_bytes_per_sec: u64,
+    aggregate_tx_bytes_per_sec: u64,
+}
+
+impl MetricRenderKey {
+    fn from_snapshot(snapshot: &NormalizedSnapshot) -> Self {
+        Self {
+            usage_pct: snapshot.usage_pct,
+            logical_cores: snapshot.logical_cores,
+            cpu_frequency_hz: snapshot.cpu_frequency_hz,
+            memory_usage_pct: snapshot.memory.usage_pct,
+            memory_used_bytes: snapshot.memory.used_bytes,
+            memory_total_bytes: snapshot.memory.total_bytes,
+            swap: snapshot.swap,
+            commit: snapshot.commit,
+            drive_aggregate: snapshot
+                .drives
+                .as_deref()
+                .and_then(crate::normalized::aggregate_drives),
+            network: snapshot.network.as_ref().map(|network| NetworkRenderKey {
+                utilization_pct: network.aggregate_utilization_pct(),
+                aggregate_rx_bytes_per_sec: network.aggregate_rx_bytes_per_sec,
+                aggregate_tx_bytes_per_sec: network.aggregate_tx_bytes_per_sec,
+            }),
+        }
+    }
+}
+
 thread_local! {
-    static METRIC_ROWS_CACHE: RefCell<Vec<CachedMetricRows>> = const { RefCell::new(Vec::new()) };
+    static METRIC_ROWS_CACHE: RefCell<HashMap<String, CachedMetricRows>> =
+        RefCell::new(HashMap::new());
 }
 
 /// Build (or reuse) the metric rows of every online system with a snapshot.
@@ -155,8 +209,8 @@ thread_local! {
 /// system's formatted rows are rebuilt only when its snapshot content
 /// (compared by full value, immune to any mutation path) or membership
 /// changed. Returns `(system index, rows)` pairs in configured order.
-fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<MetricRows>)> {
-    let mut online_rows = Vec::new();
+fn metric_rows_for_fleet(state: &AppState) -> Vec<Option<Rc<MetricRows>>> {
+    let mut online_rows = vec![None; state.systems.len()];
     METRIC_ROWS_CACHE.with_borrow_mut(|cache| {
         for (index, system) in state.systems.iter().enumerate() {
             if system.reachability != Reachability::Online {
@@ -165,29 +219,32 @@ fn metric_rows_for_fleet(state: &AppState) -> Vec<(usize, Rc<MetricRows>)> {
             let Some(snapshot) = system.latest.as_ref() else {
                 continue;
             };
-            let rows = match cache.iter_mut().find(|entry| entry.system_id == system.id) {
-                Some(entry) if entry.snapshot == *snapshot => Rc::clone(&entry.rows),
+            let key = MetricRenderKey::from_snapshot(snapshot);
+            let rows = match cache.get_mut(&system.id) {
+                Some(entry) if entry.key == key => Rc::clone(&entry.rows),
                 Some(entry) => {
-                    entry.snapshot = snapshot.clone();
+                    entry.key = key;
                     entry.rows = Rc::new(system_block::build_metric_rows(snapshot));
                     Rc::clone(&entry.rows)
                 }
                 None => {
                     let rows: Rc<MetricRows> = Rc::new(system_block::build_metric_rows(snapshot));
-                    cache.push(CachedMetricRows {
-                        system_id: system.id.clone(),
-                        snapshot: snapshot.clone(),
-                        rows: Rc::clone(&rows),
-                    });
+                    cache.insert(
+                        system.id.clone(),
+                        CachedMetricRows {
+                            key,
+                            rows: Rc::clone(&rows),
+                        },
+                    );
                     rows
                 }
             };
-            online_rows.push((index, rows));
+            online_rows[index] = Some(rows);
         }
-        // Amortized prune of ids that left the configured fleet so the
-        // linear lookup stays bounded across config reload churn.
+        // Prune ids that left the configured fleet so the renderer cache
+        // remains bounded across config reload churn.
         if cache.len() > state.systems.len() * 4 + 16 {
-            cache.retain(|entry| state.systems.iter().any(|s| s.id == entry.system_id));
+            cache.retain(|id, _| state.systems.iter().any(|system| &system.id == id));
         }
     });
     online_rows

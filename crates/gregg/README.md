@@ -119,6 +119,11 @@ Systems pane or returning to it does not extend or re-trigger the
 highlight, and `d` continues to operate on the same logical system
 after the highlight fades.
 
+The event loop redraws only after render-visible poll, EggPool, action, resize,
+configuration, or highlight changes. Unmapped keys are ignored without
+rebuilding a full frame; the renderer still produces complete Ratatui frames
+and preserves the existing fleet-wide layout rules.
+
 ## Requirements
 
 Each monitored host must have `greggd` running and reachable on the

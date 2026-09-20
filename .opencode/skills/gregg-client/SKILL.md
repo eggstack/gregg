@@ -69,7 +69,12 @@ The main event loop uses `tokio::select!` biased to process:
 3. **User input events** from crossterm → translate to actions → apply to state
 4. **Highlight deadline** (`tokio::time::Sleep` arm; Plan 087) — when armed by a selection-changing Systems action, it dispatches `Action::ClearSelectionHighlight` roughly ten seconds later so the reverse-video styling disappears even when no other event fires.
 
-After every state change, the TUI renders. The highlight timer is parked at a far-future sleep when inactive; the select arm never fires spuriously.
+The loop draws the initial frame immediately and then gates complete-frame
+draws with a local dirty flag. Accepted poll/EggPool transitions, mapped
+render-visible actions, resize, highlight expiry, and successful config
+replacement set it; unmapped keys and no-op channel wakeups do not draw. The
+highlight timer is parked at a far-future sleep when inactive; the select arm
+never fires spuriously. Do not introduce partial-region rendering.
 
 ### Action/Reducer pattern
 
@@ -119,6 +124,13 @@ malformed entry does not produce a misleading duplicate diagnostic.
   raw throughput remains available
 - Formatting (`GHz`, `MiB/s`, and percentage strings) belongs to renderers,
   not normalization
+
+The production event loop uses owned normalization constructors for successful
+poll payloads, moving identity/detail strings and collections. Borrowed
+constructors and `AppState::apply_batch(&PollBatch)` remain compatibility paths.
+Ordered batches use positional stable-ID matching first and fall back to the
+existing ID search for reordered or synthetic batches; endpoint host/port
+validation remains mandatory.
 
 Compatibility is normalized without wire-version renderer branches. v1-only
 and pre-feature v2 daemons retain their historical core metrics and simply
@@ -280,6 +292,11 @@ is clipped. Plan 086 widens the HOST budget to include every visible
 system name (online/offline/pending) and decouples status-row width
 budgeting from the online numeric table so offline/pending rows never
 collapse to anonymous status text.
+
+Condensed layout preparation preformats each online system once per render and
+borrows configured names/hosts for width measurement. Normal metric rows use a
+renderer-local stable-ID cache with a compact render key, cached suffix forms,
+and an index-aligned per-render table for visible entries.
 
 ## Configuration
 

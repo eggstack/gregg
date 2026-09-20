@@ -107,11 +107,23 @@ does not panic inside reusable daemon code.
 | `GET /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
 | Other | `fallback_handler` | 404 |
 
-**Published state:** Snapshots, health bodies, observation time, and failure
-count are published under one state lock. Each handler takes one coherent
-generation, so its HTTP status and JSON body cannot describe different
-publications. Windows publishes v2 metrics and returns a v1 `not_serving`
-health response with `503` because v1 is structurally unavailable.
+**Published state:** Typed v1/v2 snapshots, compact successful status bytes,
+minimal health metadata, observation time, and failure count are published
+under one state lock. Sampler-owned `Arc` snapshots cross the publication
+boundary without deep cloning. Status JSON is serialized once per successful
+publication and repeated fresh requests clone `Bytes`; if preparation fails,
+the typed snapshot remains authoritative and the request path serializes it on
+demand. Each handler takes one coherent generation, so its HTTP status and
+JSON body cannot describe different publications. Windows publishes v2
+metrics and returns a v1 `not_serving` health response with `503` because v1
+is structurally unavailable.
+
+Health endpoints and public `ServerState::health()`/`health_v2()` getters
+reconstruct the existing typed envelopes on demand. Status handlers do not
+construct or clone a ready health envelope on the fresh path. Staleness and
+failure thresholds are evaluated for every request before cached bytes are
+served; stale data returns the existing collector-failure health response even
+when old successful bytes remain stored.
 
 **Staleness policy:** If `max_consecutive_failures > 0` and failures reach the
 threshold, or if `max_snapshot_age > 0` and the latest published observation is too old, the server
@@ -130,7 +142,7 @@ The sampler owns the clock and cadence. Key behaviors:
 
 - First `sample()` returns `Warming` — CPU percentages require two readings
 - Subsequent samples return `Ok(CollectedMetrics)` with delta-based percentages
-- Produces both v1 `StatusSnapshot` and v2 `StatusPayloadV2` from one collection
+- Produces both v1 `StatusSnapshot` and v2 `StatusPayloadV2` from one ownership-aware collection conversion; v2-only drives, disk-I/O, and network collections move into the v2 payload
 - Manages readiness lifecycle: `Warming` → `Ready` (on first delta) or `Failed`
   (on collector or identity error); identity failures preserve any previously
   published snapshot and never publish a blank identity

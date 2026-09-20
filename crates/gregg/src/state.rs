@@ -263,51 +263,132 @@ impl AppState {
     pub fn apply_batch(&mut self, batch: &PollBatch) {
         // The scheduler advances by exactly one and wraps only MAX -> 1;
         // do not accept a skipped-generation wrap as a fresh batch.
-        let wrapped_generation = self.last_applied_generation == u64::MAX && batch.generation == 1;
-        if batch.generation <= self.last_applied_generation && !wrapped_generation {
-            debug_assert!(batch.generation <= self.last_applied_generation);
+        if !self.accept_batch_generation(batch.generation) {
             return;
         }
 
         let was_initialized = self.last_applied_generation == 0;
 
-        for result in &batch.results {
-            if let Some(system) = self.systems.iter_mut().find(|s| s.id == result.system_id) {
-                // A stable ID may be retained while its configured target
-                // changes. Results from the superseded target are stale even
-                // when their scheduler generation is otherwise current.
-                if !equivalent_endpoint_host(&system.endpoint.host, &result.endpoint.host)
-                    || system.endpoint.port != result.endpoint.port
-                {
-                    continue;
+        for (result_index, result) in batch.results.iter().enumerate() {
+            let Some(system_index) = self.resolve_result_index(result_index, &result.system_id)
+            else {
+                continue;
+            };
+            let system = &mut self.systems[system_index];
+            // A stable ID may be retained while its configured target
+            // changes. Results from the superseded target are stale even
+            // when their scheduler generation is otherwise current.
+            if !equivalent_endpoint_host(&system.endpoint.host, &result.endpoint.host)
+                || system.endpoint.port != result.endpoint.port
+            {
+                continue;
+            }
+            match &result.outcome {
+                PollOutcome::Online(snapshot) => {
+                    system.reachability = Reachability::Online;
+                    system.latest = Some(NormalizedSnapshot::from_v1(snapshot));
+                    system.last_success_at = Some(batch.completed_at);
+                    system.last_attempt_at = Some(batch.completed_at);
+                    system.latency = Some(result.latency);
+                    system.offline_reason = None;
                 }
-                match &result.outcome {
-                    PollOutcome::Online(snapshot) => {
-                        system.reachability = Reachability::Online;
-                        system.latest = Some(NormalizedSnapshot::from_v1(snapshot));
-                        system.last_success_at = Some(batch.completed_at);
-                        system.last_attempt_at = Some(batch.completed_at);
-                        system.latency = Some(result.latency);
-                        system.offline_reason = None;
-                    }
-                    PollOutcome::OnlineV2(snapshot) => {
-                        system.reachability = Reachability::Online;
-                        system.latest = Some(NormalizedSnapshot::from_v2_payload(snapshot));
-                        system.last_success_at = Some(batch.completed_at);
-                        system.last_attempt_at = Some(batch.completed_at);
-                        system.latency = Some(result.latency);
-                        system.offline_reason = None;
-                    }
-                    _ => {
-                        system.reachability = Reachability::Offline;
-                        system.last_attempt_at = Some(batch.completed_at);
-                        system.offline_reason = result.outcome.offline_reason();
-                    }
+                PollOutcome::OnlineV2(snapshot) => {
+                    system.reachability = Reachability::Online;
+                    system.latest = Some(NormalizedSnapshot::from_v2_payload(snapshot));
+                    system.last_success_at = Some(batch.completed_at);
+                    system.last_attempt_at = Some(batch.completed_at);
+                    system.latency = Some(result.latency);
+                    system.offline_reason = None;
+                }
+                _ => {
+                    system.reachability = Reachability::Offline;
+                    system.last_attempt_at = Some(batch.completed_at);
+                    system.offline_reason = result.outcome.offline_reason();
                 }
             }
         }
 
-        self.last_applied_generation = batch.generation;
+        self.finish_batch(batch.generation, was_initialized);
+    }
+
+    /// Apply an owned poll batch, moving successful payload data into the
+    /// normalized state instead of cloning strings and collections.
+    pub fn apply_batch_owned(&mut self, batch: PollBatch) {
+        if !self.accept_batch_generation(batch.generation) {
+            return;
+        }
+
+        let was_initialized = self.last_applied_generation == 0;
+        let PollBatch {
+            generation,
+            completed_at,
+            results,
+            ..
+        } = batch;
+        for (result_index, result) in results.into_iter().enumerate() {
+            let Some(system_index) = self.resolve_result_index(result_index, &result.system_id)
+            else {
+                continue;
+            };
+            let system = &mut self.systems[system_index];
+            if !equivalent_endpoint_host(&system.endpoint.host, &result.endpoint.host)
+                || system.endpoint.port != result.endpoint.port
+            {
+                continue;
+            }
+            match result.outcome {
+                PollOutcome::Online(snapshot) => {
+                    system.reachability = Reachability::Online;
+                    system.latest = Some(NormalizedSnapshot::from_v1_owned(*snapshot));
+                    system.last_success_at = Some(completed_at);
+                    system.last_attempt_at = Some(completed_at);
+                    system.latency = Some(result.latency);
+                    system.offline_reason = None;
+                }
+                PollOutcome::OnlineV2(snapshot) => {
+                    system.reachability = Reachability::Online;
+                    system.latest = Some(NormalizedSnapshot::from_v2_payload_owned(*snapshot));
+                    system.last_success_at = Some(completed_at);
+                    system.last_attempt_at = Some(completed_at);
+                    system.latency = Some(result.latency);
+                    system.offline_reason = None;
+                }
+                outcome => {
+                    system.reachability = Reachability::Offline;
+                    system.last_attempt_at = Some(completed_at);
+                    system.offline_reason = outcome.offline_reason();
+                }
+            }
+        }
+
+        self.finish_batch(generation, was_initialized);
+    }
+
+    fn accept_batch_generation(&self, generation: u64) -> bool {
+        let wrapped_generation = self.last_applied_generation == u64::MAX && generation == 1;
+        if generation <= self.last_applied_generation && !wrapped_generation {
+            debug_assert!(generation <= self.last_applied_generation);
+            return false;
+        }
+        true
+    }
+
+    fn resolve_result_index(&self, result_index: usize, system_id: &str) -> Option<usize> {
+        if self
+            .systems
+            .get(result_index)
+            .is_some_and(|system| system.id == system_id)
+        {
+            Some(result_index)
+        } else {
+            self.systems
+                .iter()
+                .position(|system| system.id == system_id)
+        }
+    }
+
+    fn finish_batch(&mut self, generation: u64, was_initialized: bool) {
+        self.last_applied_generation = generation;
 
         let order = self.display_order();
 
@@ -948,6 +1029,51 @@ mod tests {
 
     fn make_snapshot() -> StatusSnapshot {
         LinuxSnapshotBuilder::default().build()
+    }
+
+    fn batch_for_indices(state: &AppState, indices: impl IntoIterator<Item = usize>) -> PollBatch {
+        let now = Instant::now();
+        PollBatch {
+            generation: 1,
+            started_at: now,
+            completed_at: now,
+            results: indices
+                .into_iter()
+                .map(|index| {
+                    let system = &state.systems[index];
+                    crate::poller::PollResult {
+                        system_id: system.id.clone(),
+                        endpoint: system.endpoint.clone(),
+                        outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                        latency: Duration::from_millis(1),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn owned_ordered_and_reordered_batches_use_safe_fast_path() {
+        let ids: Vec<String> = (0..500).map(|index| format!("system-{index}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+
+        let config = test_config_with_ids(&id_refs);
+        let mut ordered = AppState::from_config(&config);
+        ordered.apply_batch_owned(batch_for_indices(&ordered, 0..ordered.systems.len()));
+        assert!(ordered
+            .systems
+            .iter()
+            .all(|system| system.reachability == Reachability::Online));
+
+        let mut reordered = AppState::from_config(&config);
+        reordered.apply_batch_owned(batch_for_indices(
+            &reordered,
+            (0..reordered.systems.len()).rev(),
+        ));
+        assert!(reordered
+            .systems
+            .iter()
+            .all(|system| system.reachability == Reachability::Online));
     }
 
     #[test]

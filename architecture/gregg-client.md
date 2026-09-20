@@ -85,7 +85,13 @@ The main event loop in `main.rs` uses `tokio::select!` biased to process:
 3. **User input events** from crossterm → translate to actions → apply to state
 4. **Highlight deadline** (`tokio::time::Sleep` arm) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
 
-After every state change, the TUI renders.
+The loop keeps a local dirty flag. It draws the initial frame immediately,
+then redraws only after a poll batch, EggPool result/worker transition, mapped
+render-visible action, terminal resize, highlight expiry, or successful config
+replacement. Unmapped keys and channel wakeups that do not change visible
+state do not rebuild a frame. Gregg still submits complete frames to Ratatui;
+Ratatui remains responsible for cell diffing and there is no partial-render
+architecture.
 
 The highlight deadline is the only transient timer the loop owns.
 Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)
@@ -309,6 +315,19 @@ fabricating a `0.0%`. Plan 086 threads the fleet `MetricFleetLayout`
 through `resolve_system_suffixes` (via the shared `metric_prefix_width`
 helper) so mixed `SWP`/`COMMIT` fleets budget and render suffixes
 against the same structural prefix width.
+
+Normal metric rows are cached in a renderer-local map keyed by stable system ID
+and a compact render key containing only values that affect row text and NET
+presence. Cached rows retain natural and percentage-only suffix forms. Each
+render builds an index-aligned optional row table so visible entries do not
+search the fleet repeatedly. Condensed mode preformats each online system once
+per render and measures configured names/hosts by borrowing their strings.
+
+Production polling consumes owned `PollBatch` payloads through an internal
+reducer path, moving normalized identity/detail strings and collections. The
+borrowed `apply_batch(&PollBatch)` and normalization constructors remain the
+compatibility/reference paths. Ordered scheduler results use positional
+stable-ID matching with a safe fallback for reordered or synthetic batches.
 
 **Offline rendering** (`ui/system_block.rs::render_offline`): When the
 configured client name is set the row reads `name@host:port offline`;

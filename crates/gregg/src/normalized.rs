@@ -154,6 +154,46 @@ pub struct CommitMetrics {
 }
 
 impl NormalizedSnapshot {
+    /// Normalize an owned v1 wire snapshot without cloning its payload.
+    pub(crate) fn from_v1_owned(snap: gregg_protocol::StatusSnapshot) -> Self {
+        let gregg_protocol::StatusSnapshot {
+            observed_at_unix_ms,
+            sample_interval_ms,
+            capabilities,
+            system,
+            cpu,
+            load,
+            memory,
+            swap,
+            ..
+        } = snap;
+        Self {
+            wire_version: gregg_protocol::SCHEMA_VERSION_V1,
+            observed_at_unix_ms,
+            sample_interval_ms,
+            cpu_iowait_supported: capabilities.cpu_iowait,
+            load_supported: true,
+            swap_supported: true,
+            commit_supported: false,
+            system,
+            logical_cores: cpu.logical_cores,
+            usage_pct: cpu.usage_pct,
+            iowait_pct: cpu.iowait_pct,
+            cpu_frequency_hz: None,
+            load: Some(load),
+            memory,
+            swap: Some(SwapMetrics {
+                used_bytes: swap.used_bytes,
+                total_bytes: swap.total_bytes,
+                usage_pct: swap.usage_pct,
+            }),
+            commit: None,
+            drives: None,
+            disk_io: None,
+            network: None,
+        }
+    }
+
     /// Normalize a v1 wire snapshot into the internal representation.
     pub fn from_v1(snap: &gregg_protocol::StatusSnapshot) -> Self {
         Self {
@@ -210,6 +250,69 @@ impl NormalizedSnapshot {
             disk_io,
             network,
         )
+    }
+
+    /// Normalize an owned v2 status payload without cloning its strings or
+    /// optional collections.
+    pub(crate) fn from_v2_payload_owned(payload: gregg_protocol::v2::StatusPayloadV2) -> Self {
+        let gregg_protocol::v2::StatusPayloadV2 {
+            snapshot,
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        } = payload;
+        let gregg_protocol::v2::StatusSnapshotV2 {
+            observed_at_unix_ms,
+            sample_interval_ms,
+            capabilities,
+            system,
+            cpu,
+            load,
+            memory,
+            swap,
+            commit,
+            ..
+        } = snapshot;
+        Self {
+            wire_version: gregg_protocol::v2::SCHEMA_VERSION_V2,
+            observed_at_unix_ms,
+            sample_interval_ms,
+            cpu_iowait_supported: capabilities.cpu_iowait,
+            load_supported: capabilities.load_average,
+            swap_supported: capabilities.swap,
+            commit_supported: capabilities.memory_commit,
+            system,
+            logical_cores: cpu.logical_cores,
+            usage_pct: cpu.usage_pct,
+            iowait_pct: cpu.iowait_pct,
+            cpu_frequency_hz,
+            load,
+            memory,
+            swap: swap.map(|s| SwapMetrics {
+                used_bytes: s.used_bytes,
+                total_bytes: s.total_bytes,
+                usage_pct: s.usage_pct,
+            }),
+            commit: commit.map(|c| CommitMetrics {
+                used_bytes: c.used_bytes,
+                limit_bytes: c.limit_bytes,
+                usage_pct: c.usage_pct,
+            }),
+            drives: drives.map(|drives| {
+                drives
+                    .into_iter()
+                    .map(|drive| NormalizedDrive {
+                        name: drive.name,
+                        used_bytes: drive.used_bytes,
+                        total_bytes: drive.total_bytes,
+                        available_bytes: drive.available_bytes,
+                    })
+                    .collect()
+            }),
+            disk_io: disk_io.map(normalize_disk_io_owned),
+            network: network.map(normalize_network_owned),
+        }
     }
 
     fn from_v2_parts(
@@ -269,6 +372,24 @@ fn normalize_disk_io(payload: &gregg_protocol::v2::DiskIoPayload) -> NormalizedD
     }
 }
 
+fn normalize_disk_io_owned(payload: gregg_protocol::v2::DiskIoPayload) -> NormalizedDiskIo {
+    NormalizedDiskIo {
+        aggregate_read_bytes_per_sec: payload.aggregate_read_bytes_per_sec,
+        aggregate_write_bytes_per_sec: payload.aggregate_write_bytes_per_sec,
+        devices: payload
+            .devices
+            .into_iter()
+            .map(|device| NormalizedDiskIoDevice {
+                id: device.id,
+                name: device.name,
+                read_bytes_per_sec: device.read_bytes_per_sec,
+                write_bytes_per_sec: device.write_bytes_per_sec,
+                drive_name: device.drive_name,
+            })
+            .collect(),
+    }
+}
+
 fn normalize_network(payload: &gregg_protocol::v2::NetworkPayload) -> NormalizedNetwork {
     NormalizedNetwork {
         aggregate_rx_bytes_per_sec: payload.aggregate_rx_bytes_per_sec,
@@ -281,6 +402,29 @@ fn normalize_network(payload: &gregg_protocol::v2::NetworkPayload) -> Normalized
             .map(|interface| NormalizedNetworkInterface {
                 id: interface.id.clone(),
                 name: interface.name.clone(),
+                rx_bytes_per_sec: interface.rx_bytes_per_sec,
+                tx_bytes_per_sec: interface.tx_bytes_per_sec,
+                rx_capacity_bps: interface.rx_capacity_bps,
+                tx_capacity_bps: interface.tx_capacity_bps,
+                is_loopback: interface.is_loopback,
+                aggregate_member: interface.aggregate_member,
+            })
+            .collect(),
+    }
+}
+
+fn normalize_network_owned(payload: gregg_protocol::v2::NetworkPayload) -> NormalizedNetwork {
+    NormalizedNetwork {
+        aggregate_rx_bytes_per_sec: payload.aggregate_rx_bytes_per_sec,
+        aggregate_tx_bytes_per_sec: payload.aggregate_tx_bytes_per_sec,
+        aggregate_rx_capacity_bps: payload.aggregate_rx_capacity_bps,
+        aggregate_tx_capacity_bps: payload.aggregate_tx_capacity_bps,
+        interfaces: payload
+            .interfaces
+            .into_iter()
+            .map(|interface| NormalizedNetworkInterface {
+                id: interface.id,
+                name: interface.name,
                 rx_bytes_per_sec: interface.rx_bytes_per_sec,
                 tx_bytes_per_sec: interface.tx_bytes_per_sec,
                 rx_capacity_bps: interface.rx_capacity_bps,
@@ -420,6 +564,71 @@ mod tests {
         let norm = NormalizedSnapshot::from_v1(&snap);
         assert!(!norm.cpu_iowait_supported);
         assert!(norm.iowait_pct.is_none());
+    }
+
+    #[test]
+    fn owned_and_borrowed_normalization_are_identical() {
+        for snapshot in [
+            LinuxSnapshotBuilder::default().build(),
+            MacosSnapshotBuilder::default().build(),
+        ] {
+            assert_eq!(
+                NormalizedSnapshot::from_v1(&snapshot),
+                NormalizedSnapshot::from_v1_owned(snapshot),
+            );
+        }
+
+        let windows = gregg_protocol::test_support::WindowsSnapshotV2Builder::default().build();
+        assert_eq!(
+            NormalizedSnapshot::from_v2(&windows),
+            NormalizedSnapshot::from_v2_payload_owned(gregg_protocol::v2::StatusPayloadV2 {
+                snapshot: windows,
+                drives: None,
+                cpu_frequency_hz: None,
+                disk_io: None,
+                network: None,
+            }),
+        );
+
+        let payload = gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
+            .drives(Some(vec![gregg_protocol::v2::DriveMetrics {
+                name: "/data".into(),
+                used_bytes: 4,
+                total_bytes: 10,
+                available_bytes: Some(5),
+            }]))
+            .disk_io(Some(gregg_protocol::v2::DiskIoPayload {
+                aggregate_read_bytes_per_sec: 10,
+                aggregate_write_bytes_per_sec: 20,
+                devices: vec![gregg_protocol::v2::DiskIoMetrics {
+                    id: "nvme0".into(),
+                    name: "nvme0".into(),
+                    read_bytes_per_sec: 10,
+                    write_bytes_per_sec: 20,
+                    drive_name: Some("/data".into()),
+                }],
+            }))
+            .network(Some(gregg_protocol::v2::NetworkPayload {
+                aggregate_rx_bytes_per_sec: 100,
+                aggregate_tx_bytes_per_sec: 200,
+                aggregate_rx_capacity_bps: Some(800),
+                aggregate_tx_capacity_bps: Some(1_600),
+                interfaces: vec![gregg_protocol::v2::NetworkInterfaceMetrics {
+                    id: "eth0".into(),
+                    name: "eth0".into(),
+                    rx_bytes_per_sec: 100,
+                    tx_bytes_per_sec: 200,
+                    rx_capacity_bps: Some(800),
+                    tx_capacity_bps: Some(1_600),
+                    is_loopback: false,
+                    aggregate_member: true,
+                }],
+            }))
+            .build_payload();
+        assert_eq!(
+            NormalizedSnapshot::from_v2_payload(&payload),
+            NormalizedSnapshot::from_v2_payload_owned(payload),
+        );
     }
 
     #[test]

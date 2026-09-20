@@ -7,6 +7,7 @@ use gregg_protocol::test_support::{
 use gregg_protocol::v2::{DriveMetrics, HealthResponseV2};
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
 use http_body_util::BodyExt;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tower::ServiceExt;
@@ -67,6 +68,121 @@ async fn update_snapshot_makes_ready() {
     assert_eq!(*stored, snap);
     let health = state.health().await;
     assert_eq!(health.state, ReadinessState::Ready);
+}
+
+#[tokio::test]
+async fn internal_publication_retains_sampler_arc_identity() {
+    let state = ServerState::new();
+    let snapshot = Arc::new(LinuxSnapshotBuilder::default().build());
+    let payload = Arc::new(LinuxSnapshotV2Builder::default().build_payload());
+
+    state
+        .update_snapshot_arcs(Arc::clone(&snapshot), Arc::clone(&payload))
+        .await;
+
+    assert!(Arc::ptr_eq(&state.snapshot().await.unwrap(), &snapshot));
+    assert!(Arc::ptr_eq(&state.snapshot_v2().await.unwrap(), &payload));
+}
+
+#[tokio::test]
+async fn status_serialization_is_cached_per_publication() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v2_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    let app = build_test_router(state.clone());
+    for _ in 0..10 {
+        let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v2_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(2)
+            .build(),
+    )
+    .await;
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        state
+            .v2_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+}
+
+#[tokio::test]
+async fn v2_only_publication_does_not_prepare_v1_bytes() {
+    let state = ServerState::new();
+    state
+        .update_snapshot_v2_only(WindowsSnapshotV2Builder::default().build_payload())
+        .await;
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        state
+            .v2_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn missing_status_cache_falls_back_to_on_demand_serialization() {
+    let state = ServerState::new();
+    let snapshot = LinuxSnapshotBuilder::default().build();
+    update_both(&state, snapshot.clone()).await;
+    state.published.write().await.status_bytes = None;
+
+    let response = build_test_router(state.clone())
+        .oneshot(get("/v1/status"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let parsed: StatusSnapshot =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(parsed, snapshot);
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
 }
 
 #[tokio::test]

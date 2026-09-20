@@ -408,8 +408,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         now_ms: u64,
     ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
         // Clone the needed scalars under the lock, then drop the guard before
-        // the pure `into_snapshot`/`into_status_payload_v2` formatting so the
-        // mutex is not held across conversion.
+        // the ownership-aware conversion so the mutex is not held across
+        // formatting.
         let (identity, capabilities, capabilities_v2, supports_v1) = {
             let collector = self.lock_collector();
             (
@@ -419,27 +419,17 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
                 collector.supports_v1_snapshot(),
             )
         };
-        if supports_v1 {
-            let v1 = metrics.clone().into_snapshot(
+        metrics
+            .into_snapshot_pair(
                 SCHEMA_VERSION_V1,
                 now_ms,
                 self.interval_ms,
                 capabilities,
-                identity.clone(),
-            );
-            let v2 = metrics
-                .into_status_payload_v2(now_ms, self.interval_ms, capabilities_v2, identity)
-                .and_then(validate_v2_payload);
-            match (v1, v2) {
-                (Ok(v1), Ok(v2)) => Ok((Some(v1), v2)),
-                (Err(err), _) | (_, Err(err)) => Err(err),
-            }
-        } else {
-            metrics
-                .into_status_payload_v2(now_ms, self.interval_ms, capabilities_v2, identity)
-                .and_then(validate_v2_payload)
-                .map(|v2| (None, v2))
-        }
+                capabilities_v2,
+                identity,
+                supports_v1,
+            )
+            .and_then(|(v1, v2)| validate_v2_payload(v2).map(|v2| (v1, v2)))
     }
 
     /// Record one failure and move to the [`ReadinessState::Failed`] state.

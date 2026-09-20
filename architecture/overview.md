@@ -182,11 +182,15 @@ collector (native) → sampler (clock) → cached v1+v2 → HTTP server (axum)
 scheduler (timer) → PollBatch (generation) → AppState (reducer) → TUI (read-only)
 ```
 
-1. Collector reads kernel interfaces; sampler stamps `observed_at` and
-   caches both wire shapes. The server never triggers collection.
-2. The client scheduler polls each endpoint per cadence; batches carry a
-   generation so stale results are rejected; the reducer updates
-   reachability/selection; the TUI renders projections without I/O.
+1. Collector reads kernel interfaces; sampler stamps `observed_at`, converts
+   one owned sample into both wire shapes, and publishes typed `Arc` snapshots
+   plus one compact status body per available version. The server never
+   triggers collection and evaluates staleness live before serving cached
+   bytes.
+2. The client scheduler polls each endpoint per cadence; owned batches carry a
+   generation so stale results are rejected; the reducer uses positional
+   matching with stable-ID fallback and moves normalized payload data; the TUI
+   renders projections without I/O and redraws only after visible changes.
 
 Optional EggPool path (`eggpool.rs` worker → `AppState.eggpool` pane) has its
 own client, auth, cadence, and rendering — see

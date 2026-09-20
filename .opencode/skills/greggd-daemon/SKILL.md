@@ -28,7 +28,7 @@ service lifecycle. For platform metric collection itself, use the
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
 | `net` | `src/net.rs` | Wildcard-to-local-IP resolution for `configprint` (transient UDP `connect()`, no packets) |
 | `sampler` | `src/sampler.rs` | Cadence + readiness lifecycle (`Warming` → `Ready`/`Failed`), identity-safe snapshot publication; `SyntheticClock` |
-| `server` | `src/server/` | Axum HTTP server; one coherent published generation per response |
+| `server` | `src/server/` | Axum HTTP server; one coherent published generation per response, with shared immutable status bytes |
 | `startup/*` | `src/startup/*.rs` | Startup install/teardown/instructions/restart split by ownership (façade `src/startup.rs` re-exports `crate::startup::X`): method identity/paths/detection, bounded child execution, systemd unit/install/restart/uninstall, launchd plist/install/restart/uninstall, shell quoting + cron block/install/uninstall, `StartupState` detection, errors/atomic writes/privilege/install dispatch/instructions/restart coordination |
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Exact-executable-aware lifecycle coordinator over the shared `gregg-update` mechanism (binds identity, prepares via `prepare_candidate`, observes `UpdateLifecycle` after preparation — Unix ownership + selected health, Windows `query_registration()` revalidated before quiescence with owned-to-foreign failing pre-replacement — quiesces only owned Windows running, replaces, restarts only `ManagedRunning`/`DirectRunning` via `restart_daemon()`, `UpdatedButRestartFailed`); transport/staging/replacement live in `gregg-update` |
@@ -57,6 +57,14 @@ only rather than aggregate capacity. Reset, restart, hotplug, disappearance,
 or unsupported optional sources re-baseline or omit that family without
 blocking core readiness. Older v1 and pre-feature v2 peers remain supported;
 daemon-version transport is deferred.
+
+`Sampler` publishes existing typed `Arc` snapshots through internal
+`ServerState` handoff helpers. The server prepares compact v1/v2 status JSON
+once per successful publication and stores it as shared `Bytes`; public typed
+snapshot/health accessors remain source-compatible. Fresh status requests make
+the staleness/failure decision under the publication lock before serving the
+cached bytes, while health responses are reconstructed on demand. A failed
+cache preparation falls back to request-time serialization without panic.
 
 ## CLI subcommands
 

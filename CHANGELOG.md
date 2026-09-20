@@ -7,6 +7,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Performance
+
+- **Bounded runtime optimization campaign (Plans 121-123):** daemon samples
+  now move v2-only telemetry through one conversion and preserve `Arc`
+  publication; the client moves owned poll payloads through normalization,
+  uses O(1)-average renderer memo lookup and O(N) ordered reducer matching,
+  redraws only after visible changes, and preformats condensed rows once per
+  frame. Daemon v1/v2 status JSON is serialized once per successful
+  publication and served from shared immutable bytes while staleness and
+  health decisions remain request-time.
+
 ## [1.0.14] - 2026-09-19
 
 ### Added

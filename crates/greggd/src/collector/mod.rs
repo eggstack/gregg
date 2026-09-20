@@ -237,6 +237,105 @@ pub struct CollectedMetrics {
 }
 
 impl CollectedMetrics {
+    fn validate_cpu_values(
+        cpu_usage_pct: Option<f32>,
+        cpu_iowait_pct: Option<f32>,
+        cpu_iowait_supported: bool,
+    ) -> Result<(f32, Option<f32>), CollectError> {
+        let Some(cpu_usage_pct) = cpu_usage_pct.filter(|v| v.is_finite()) else {
+            return Err(CollectError::new(
+                CollectErrorKind::Numeric,
+                "cpu usage percentage is missing or non-finite",
+            ));
+        };
+        let cpu_iowait_pct = if cpu_iowait_supported {
+            let Some(iowait_pct) = cpu_iowait_pct.filter(|v| v.is_finite()) else {
+                return Err(CollectError::new(
+                    CollectErrorKind::Numeric,
+                    "cpu iowait percentage is missing or non-finite",
+                ));
+            };
+            Some(iowait_pct)
+        } else {
+            None
+        };
+        Ok((cpu_usage_pct, cpu_iowait_pct))
+    }
+
+    /// Convert one collected sample into the optional v1 snapshot and v2
+    /// payload in one ownership-aware pass.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn into_snapshot_pair(
+        self,
+        schema_version: u16,
+        observed_at_unix_ms: u64,
+        sample_interval_ms: u64,
+        capabilities: MetricCapabilities,
+        capabilities_v2: MetricCapabilitiesV2,
+        system: SystemIdentity,
+        supports_v1: bool,
+    ) -> Result<(Option<StatusSnapshot>, StatusPayloadV2), CollectError> {
+        let Self {
+            logical_cores,
+            cpu_usage_pct,
+            cpu_iowait_pct,
+            load,
+            memory,
+            swap,
+            commit,
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        } = self;
+        let (cpu_usage_pct, cpu_iowait_pct) =
+            Self::validate_cpu_values(cpu_usage_pct, cpu_iowait_pct, capabilities_v2.cpu_iowait)?;
+        let v1 = supports_v1.then(|| StatusSnapshot {
+            schema_version,
+            observed_at_unix_ms,
+            sample_interval_ms,
+            capabilities,
+            system: system.clone(),
+            cpu: CpuMetrics {
+                logical_cores,
+                usage_pct: cpu_usage_pct,
+                iowait_pct: cpu_iowait_pct,
+            },
+            load,
+            memory,
+            swap,
+        });
+        let v2_load = capabilities_v2.load_average.then_some(load);
+        let v2_swap = capabilities_v2.swap.then_some(SwapMetricsV2 {
+            used_bytes: swap.used_bytes,
+            total_bytes: swap.total_bytes,
+            usage_pct: clamped_usage_pct(swap.used_bytes, swap.total_bytes),
+        });
+        let v2 = StatusPayloadV2 {
+            snapshot: StatusSnapshotV2 {
+                schema_version: SCHEMA_VERSION_V2,
+                observed_at_unix_ms,
+                sample_interval_ms,
+                capabilities: capabilities_v2,
+                system,
+                cpu: CpuMetricsV2 {
+                    logical_cores,
+                    usage_pct: cpu_usage_pct,
+                    iowait_pct: cpu_iowait_pct,
+                },
+                load: v2_load,
+                memory,
+                swap: v2_swap,
+                commit,
+            },
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        };
+        Ok((v1, v2))
+    }
+
     /// Convert this sample into a wire [`StatusSnapshot`].
     ///
     /// The caller (the daemon sampler) is responsible for filling in
@@ -258,23 +357,11 @@ impl CollectedMetrics {
         capabilities: MetricCapabilities,
         system: SystemIdentity,
     ) -> Result<StatusSnapshot, CollectError> {
-        let Some(cpu_usage_pct) = self.cpu_usage_pct.filter(|v| v.is_finite()) else {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "cpu usage percentage is missing or non-finite",
-            ));
-        };
-        let cpu_iowait_pct = if capabilities.cpu_iowait {
-            let Some(iowait_pct) = self.cpu_iowait_pct.filter(|v| v.is_finite()) else {
-                return Err(CollectError::new(
-                    CollectErrorKind::Numeric,
-                    "cpu iowait percentage is missing or non-finite",
-                ));
-            };
-            Some(iowait_pct)
-        } else {
-            None
-        };
+        let (cpu_usage_pct, cpu_iowait_pct) = Self::validate_cpu_values(
+            self.cpu_usage_pct,
+            self.cpu_iowait_pct,
+            capabilities.cpu_iowait,
+        )?;
         Ok(StatusSnapshot {
             schema_version,
             observed_at_unix_ms,
@@ -311,23 +398,11 @@ impl CollectedMetrics {
         capabilities: MetricCapabilitiesV2,
         system: SystemIdentity,
     ) -> Result<StatusSnapshotV2, CollectError> {
-        let Some(cpu_usage_pct) = self.cpu_usage_pct.filter(|v| v.is_finite()) else {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "cpu usage percentage is missing or non-finite",
-            ));
-        };
-        let cpu_iowait_pct = if capabilities.cpu_iowait {
-            let Some(iowait_pct) = self.cpu_iowait_pct.filter(|v| v.is_finite()) else {
-                return Err(CollectError::new(
-                    CollectErrorKind::Numeric,
-                    "cpu iowait percentage is missing or non-finite",
-                ));
-            };
-            Some(iowait_pct)
-        } else {
-            None
-        };
+        let (cpu_usage_pct, cpu_iowait_pct) = Self::validate_cpu_values(
+            self.cpu_usage_pct,
+            self.cpu_iowait_pct,
+            capabilities.cpu_iowait,
+        )?;
 
         let load = if capabilities.load_average {
             Some(self.load)

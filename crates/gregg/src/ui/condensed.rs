@@ -134,7 +134,7 @@ const COLUMN_GAP_CELLS: usize = 2;
 /// Pre-format every online system's value cells so the layout can pick
 /// the widest value per column across the fleet.
 #[derive(Debug, Clone)]
-struct PreformattedValues {
+pub(crate) struct PreformattedValues {
     host: String,
     cpu: String,
     mem: String,
@@ -191,7 +191,19 @@ fn preformat_online(system: &SystemState) -> PreformattedValues {
     }
 }
 
-fn column_max(values: &[PreformattedValues], column: Column) -> usize {
+/// Pre-format each online system once for a condensed render. The vector is
+/// index-aligned with the configured fleet so viewport rendering can borrow
+/// the same values that drove layout measurement.
+pub(crate) fn preformat_fleet(systems: &[SystemState]) -> Vec<Option<PreformattedValues>> {
+    systems
+        .iter()
+        .map(|system| {
+            (system.reachability == Reachability::Online).then(|| preformat_online(system))
+        })
+        .collect()
+}
+
+fn column_max(values: &[&PreformattedValues], column: Column) -> usize {
     let from_values = values
         .iter()
         .map(|v| match column {
@@ -238,25 +250,26 @@ pub(crate) fn compute_condensed_table_layout(
     systems: &[SystemState],
     width: u16,
 ) -> CondensedTableLayout {
+    let values = preformat_fleet(systems);
+    compute_condensed_table_layout_with_values(systems, width, &values)
+}
+
+pub(crate) fn compute_condensed_table_layout_with_values(
+    systems: &[SystemState],
+    width: u16,
+    values: &[Option<PreformattedValues>],
+) -> CondensedTableLayout {
     let available = usize::from(width);
-    let online_values: Vec<PreformattedValues> = systems
-        .iter()
-        .filter(|s| s.reachability == Reachability::Online)
-        .map(preformat_online)
-        .collect();
+    let online_values: Vec<&PreformattedValues> =
+        values.iter().filter_map(Option::as_ref).collect();
     // Plan 086: the HOST width budget must include every visible
     // system name (online/offline/pending) so status rows do not get
     // their device identity erased when the online fleet happens to
     // have shorter nicknames.
     let host_max_value = systems
         .iter()
-        .map(|s| {
-            s.configured_name
-                .as_deref()
-                .unwrap_or(&s.endpoint.host)
-                .to_string()
-        })
-        .map(|name| cell_width(&name))
+        .map(|s| s.configured_name.as_deref().unwrap_or(&s.endpoint.host))
+        .map(cell_width)
         .max()
         .unwrap_or(0);
 
@@ -387,6 +400,7 @@ fn render_header_line(layout: &CondensedTableLayout) -> String {
 }
 
 /// Render one condensed online, offline, or pending entry.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_entry(
     f: &mut Frame,
     area: Rect,
@@ -395,6 +409,7 @@ pub(crate) fn render_entry(
     is_visually_selected: bool,
     drive_rows_visible: usize,
     network_rows_visible: usize,
+    preformatted: Option<&PreformattedValues>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -405,7 +420,7 @@ pub(crate) fn render_entry(
         Style::default()
     };
     let line = match system.reachability {
-        Reachability::Online => render_online_row(system, layout),
+        Reachability::Online => render_online_row_with_values(system, layout, preformatted),
         Reachability::Offline => status_line(system, layout, "offline"),
         Reachability::Pending => status_line(system, layout, "pending"),
     };
@@ -478,7 +493,21 @@ pub(crate) fn render_entry(
 }
 
 fn render_online_row(system: &SystemState, layout: &CondensedTableLayout) -> String {
-    let preformatted = preformat_online(system);
+    render_online_row_with_values(system, layout, None)
+}
+
+fn render_online_row_with_values(
+    system: &SystemState,
+    layout: &CondensedTableLayout,
+    preformatted: Option<&PreformattedValues>,
+) -> String {
+    let owned;
+    let preformatted = if let Some(preformatted) = preformatted {
+        preformatted
+    } else {
+        owned = preformat_online(system);
+        &owned
+    };
     let mut line = String::new();
     for (idx, column) in layout.tier.columns().iter().enumerate() {
         if idx > 0 {

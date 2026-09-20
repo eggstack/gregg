@@ -139,6 +139,11 @@ HTTP/1 JSON API on the configured port (default 11310) and is not hardened
 for public internet exposure. No firewall rules are created automatically.
 LAN exposure is operator-controlled and the daemon has no TLS or authentication.
 
+Successful v1/v2 status bodies are serialized once when a typed snapshot is
+published and then served from shared immutable response bytes. Typed snapshot
+and health getters remain available; stale age/failure policy is evaluated on
+each request, so an old cached body can never make a stale request return 200.
+
 `/v2/status` is the universal status endpoint and may include bounded `drives`
 capacity records plus additive live telemetry: current CPU frequency in raw
 Hz, daemon-selected disk read/write bytes per second, and directional network

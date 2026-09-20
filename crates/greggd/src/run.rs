@@ -455,19 +455,15 @@ async fn sync_sampler_state(
             match (snap, snap_v2) {
                 (Some(snap), Some(snap_v2)) => {
                     // Standard path: both v1 and v2 available.
-                    server_state
-                        .update_snapshot((*snap).clone(), (*snap_v2).clone())
-                        .await;
+                    server_state.update_snapshot_arcs(snap, snap_v2).await;
                 }
                 (None, Some(snap_v2)) => {
                     // Windows path: v2 only, no v1 snapshot.
-                    server_state
-                        .update_snapshot_v2_only((*snap_v2).clone())
-                        .await;
+                    server_state.update_snapshot_v2_only_arc(snap_v2).await;
                 }
                 (Some(snap), None) => {
                     // Fallback: v1 only (should not happen in normal operation).
-                    server_state.update_snapshot_v1_only((*snap).clone()).await;
+                    server_state.update_snapshot_v1_only_arc(snap).await;
                 }
                 (None, None) => {
                     // Unreachable by construction: `convert_sample` always
