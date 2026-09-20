@@ -143,6 +143,8 @@ Successful v1/v2 status bodies are serialized once when a typed snapshot is
 published and then served from shared immutable response bytes. Typed snapshot
 and health getters remain available; stale age/failure policy is evaluated on
 each request, so an old cached body can never make a stale request return 200.
+Failure-threshold responses preserve the latest collector-failure diagnostic,
+while age-only staleness reports `cached snapshot is stale`.
 
 `/v2/status` is the universal status endpoint and may include bounded `drives`
 capacity records plus additive live telemetry: current CPU frequency in raw
@@ -193,8 +195,9 @@ socket path is reserved by the kernel before its restrictive permissions are
 verified, so a concurrent path occupant is never replaced; the temp-directory
 fallback remains best effort when the config-adjacent directory is unavailable.
 
-If the system clock moves backward, a future-dated cached snapshot is not
-treated as stale solely because its timestamp is ahead of the current clock.
+If the system clock moves backward, a future-dated cached snapshot is treated
+as stale while age-based staleness is enabled because its age cannot be
+verified against the current clock.
 
 ## Links
 

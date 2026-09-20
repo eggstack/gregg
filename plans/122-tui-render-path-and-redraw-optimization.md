@@ -229,7 +229,7 @@ Record the final stripped gregg release size and explain any material growth.
 - [x] Existing normal/condensed rendered output, Unicode geometry, selection, expansions, and viewport behavior remain compatible.
 - [x] No partial-render architecture, dependency, scheduler, protocol, daemon, or product-scope change is introduced.
 - [x] Focused tests, workspace tests, strict clippy, and default local check pass.
-- [x] Closure records deterministic draw/cache proof, lightweight 10/50/100-system measurements, and final gregg release size.
+- [x] Closure records deterministic draw/cache proof, a descriptive release-mode render-loop comparison without retained timing values, and final gregg release size.
 
 ## Closure record
 

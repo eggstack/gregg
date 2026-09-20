@@ -224,6 +224,28 @@ impl HealthMetadata {
             ),
         }
     }
+
+    fn stale_v1_response(&self) -> HealthResponse {
+        if self.state == ReadinessState::Ready {
+            HealthResponse::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            )
+        } else {
+            self.v1_response(None)
+        }
+    }
+
+    fn stale_v2_response(&self) -> HealthResponseV2 {
+        if self.state == ReadinessState::Ready {
+            HealthResponseV2::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            )
+        } else {
+            self.v2_response(None)
+        }
+    }
 }
 
 enum StatusDataV1 {
@@ -419,10 +441,7 @@ impl ServerState {
         let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
         if let Some(snapshot) = &state.snapshot {
             if snapshot_is_stale {
-                return StatusDataV1::Unavailable(Box::new(HealthResponse::failed(
-                    gregg_protocol::HealthCategory::CollectorFailure,
-                    "cached snapshot is stale",
-                )));
+                return StatusDataV1::Unavailable(Box::new(state.health.stale_v1_response()));
             }
             return state.status_bytes.as_ref().map_or_else(
                 || StatusDataV1::FreshTyped(Arc::clone(snapshot)),
@@ -437,10 +456,7 @@ impl ServerState {
         let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
         if let Some(snapshot) = &state.snapshot_v2 {
             if snapshot_is_stale {
-                return StatusDataV2::Unavailable(Box::new(HealthResponseV2::failed(
-                    gregg_protocol::HealthCategory::CollectorFailure,
-                    "cached snapshot is stale",
-                )));
+                return StatusDataV2::Unavailable(Box::new(state.health_v2.stale_v2_response()));
             }
             return state.status_bytes_v2.as_ref().map_or_else(
                 || StatusDataV2::FreshTyped(Arc::clone(snapshot)),

@@ -204,7 +204,9 @@ The client keeps the full-frame Ratatui renderer and redraws it only for
 render-visible poll, input, resize, configuration, EggPool, or highlight
 changes; unmapped input does not rebuild the frame. The daemon publishes typed
 snapshots and prepares compact v1/v2 status JSON once per successful sample,
-while stale/failure decisions remain live for every request.
+while stale/failure decisions remain live for every request. A stale response
+preserves the latest collector-failure diagnostic; age-only staleness uses the
+explicit `cached snapshot is stale` message.
 
 ## Docs
 

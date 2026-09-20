@@ -261,7 +261,7 @@ Record final stripped greggd size. Investigate material growth and keep the impl
 - [x] Concurrent publication/read tests cannot observe torn status bodies.
 - [x] No protocol shape, content type, status code, route, runtime, synchronization dependency, or new HTTP feature is introduced.
 - [x] Focused tests, workspace tests, strict clippy, and default local check pass.
-- [x] Closure records deterministic serialization-count evidence, lightweight loopback before/after result, and final greggd release size.
+- [x] Closure records deterministic serialization-count evidence, a descriptive loopback comparison without retained timing values, and final greggd release size.
 
 ## Closure record
 

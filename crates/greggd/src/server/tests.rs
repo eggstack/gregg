@@ -301,7 +301,7 @@ async fn status_ready_returns_200_with_json() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap.clone()).await;
 
-    let app = build_test_router(state);
+    let app = build_test_router(state.clone());
     let response = app.oneshot(get("/v1/status")).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -431,6 +431,28 @@ async fn v2_only_failure_keeps_cached_status_but_fails_health() {
         serde_json::from_str(&response_body_string(response).await).unwrap();
     assert_eq!(body.state, ReadinessState::Failed);
     assert_eq!(body.category, Some(HealthCategory::CollectorFailure));
+    assert!(body.snapshot.is_none());
+}
+
+#[tokio::test]
+async fn v2_only_failure_keeps_v1_not_serving_after_stale_threshold() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    state
+        .update_snapshot_v2_only(WindowsSnapshotV2Builder::default().build_payload())
+        .await;
+    state.set_failed("failure 1").await;
+    state.set_failed("failure 2").await;
+    state.set_failed("failure 3").await;
+
+    let response = build_test_router(state)
+        .oneshot(get("/v1/status"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: HealthResponse = serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(body.state, ReadinessState::Failed);
+    assert_eq!(body.category, Some(HealthCategory::NotServing));
+    assert_eq!(body.message.as_deref(), Some(V1_UNAVAILABLE_MESSAGE));
     assert!(body.snapshot.is_none());
 }
 
@@ -650,13 +672,55 @@ async fn stale_snapshot_rejected_when_max_failures_exceeded() {
     state.set_failed("failure 3").await;
 
     let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
 
     // Snapshot is stale due to failure count.
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body_str = response_body_string(response).await;
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(parsed.message.as_deref(), Some("failure 3"));
+    assert!(parsed.snapshot.is_none());
+
+    let response = app.oneshot(get("/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let health: HealthResponse =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(health.state, ReadinessState::Failed);
+    assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(health.message.as_deref(), Some("failure 3"));
+    assert!(health.snapshot.is_none());
+}
+
+#[tokio::test]
+async fn stale_v2_snapshot_preserves_latest_failure_message() {
+    let state = ServerState::with_stale_policy(3, std::time::Duration::ZERO);
+    state
+        .update_snapshot_v2_only(WindowsSnapshotV2Builder::default().build_payload())
+        .await;
+    state.set_failed("failure 1").await;
+    state.set_failed("failure 2").await;
+    state.set_failed("failure 3").await;
+
+    let app = build_test_router(state);
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let status: HealthResponseV2 =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(status.state, ReadinessState::Failed);
+    assert_eq!(status.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(status.message.as_deref(), Some("failure 3"));
+    assert!(status.snapshot.is_none());
+
+    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let health: HealthResponseV2 =
+        serde_json::from_str(&response_body_string(response).await).unwrap();
+    assert_eq!(health.state, ReadinessState::Failed);
+    assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(health.message.as_deref(), Some("failure 3"));
+    assert!(health.snapshot.is_none());
 }
 
 #[tokio::test]
@@ -695,7 +759,7 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
 
     state.set_failed("failure 1").await;
 
-    let app = build_test_router(state);
+    let app = build_test_router(state.clone());
 
     // /v1/status still serves the snapshot (only 1 failure, threshold is 3).
     let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
@@ -703,6 +767,21 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
     let body_str = response_body_string(response).await;
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state
+            .v2_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
 
     // /healthz reports failed.
     let response = app.oneshot(get("/healthz")).await.unwrap();
@@ -736,6 +815,8 @@ async fn v2_only_snapshot_ages_out_on_status_and_health() {
     let body_str = response_body_string(response).await;
     let parsed: HealthResponseV2 = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
     let response = app.oneshot(get("/v2/healthz")).await.unwrap();
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body_str = response_body_string(response).await;
@@ -780,6 +861,7 @@ async fn stale_snapshot_by_age_returns_503() {
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
 
     // /healthz agrees: 503 with a failed body, never a ready body.
     let response = app.oneshot(get("/healthz")).await.unwrap();
@@ -821,6 +903,8 @@ async fn future_snapshot_is_stale_when_clock_goes_backward() {
     let body_str = response_body_string(response).await;
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
+    assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
 }
 
 #[tokio::test]

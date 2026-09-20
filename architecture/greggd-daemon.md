@@ -130,11 +130,10 @@ threshold, or if `max_snapshot_age > 0` and the latest published observation is 
 returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving. A 503 body is always a failed health response: if staleness trips while the stored health state still says `ready`, the handlers substitute a `CollectorFailure` failure ("cached snapshot is stale"), so the body can never contradict the status code.
 
 When the wall clock moves backward and a cached observation timestamp is in the
-future, the age check treats that snapshot as fresh; it does not classify a
-negative age as stale. If the clock is before the Unix epoch, the sampler
-pauses publication rather than emitting timestamp `0`, and an enabled
-age-based server policy treats any cached snapshot as stale until the clock is
-corrected.
+future, the age check treats that snapshot as stale rather than serving an
+unverifiable age. If the clock is before the Unix epoch, the sampler pauses
+publication rather than emitting timestamp `0`, and an enabled age-based
+server policy treats any cached snapshot as stale until the clock is corrected.
 
 ### Sampler
 

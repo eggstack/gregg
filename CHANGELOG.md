@@ -18,6 +18,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   publication and served from shared immutable bytes while staleness and
   health decisions remain request-time.
 
+### Fixed
+
+- **Stale status compatibility (Plan 124):** v1/v2 status responses that
+  cross the collector-failure threshold now preserve the latest stored failure
+  diagnostic, matching the health endpoints; ready snapshots that become stale
+  only by age retain the explicit `cached snapshot is stale` message.
+
 ## [1.0.14] - 2026-09-19
 
 ### Added

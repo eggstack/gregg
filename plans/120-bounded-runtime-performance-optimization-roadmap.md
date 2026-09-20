@@ -198,14 +198,16 @@ The roadmap is complete only when:
 - [x] No supported metric, platform, CLI operation, endpoint, protocol field, or TUI capability is removed.
 - [x] No scheduler architecture, collection cadence, dependency framework, or release-profile rewrite is introduced.
 - [x] Deterministic tests and the default local check pass.
-- [x] Final release binary sizes and lightweight before/after measurements are recorded in the implementation plans.
+- [x] Final release binary sizes and deterministic structural evidence are recorded in the implementation plans; descriptive release-mode comparisons are identified without retaining numerical timing gates.
 - [x] One ordinary existing CI run is green at the final source state.
 
 ## Closure record
 
 Implementation SHA: `45582ce`. Rust 1.98.1 on `x86_64-unknown-linux-gnu`.
 Plans 121-123 record the structural evidence, focused/full test results, local
-check, release-mode descriptive comparison, and final stripped sizes (`gregg`
-3,740,592 bytes; `greggd` 2,432,408 bytes). Ordinary CI run `35538999184` is
-green at final source state; the Windows job passed on rerun after one hosted
-runner readiness timeout.
+check, descriptive release-mode comparisons without retained timing values, and
+final stripped sizes (`gregg` 3,740,592 bytes; `greggd` 2,432,408 bytes).
+Plan 124 restores the stale-after-failure response-message compatibility edge
+and corrects this evidence wording. Ordinary CI run `35538999184` is green at
+the pre-correction source state; the Windows job passed on rerun after one
+hosted runner readiness timeout.
