@@ -199,12 +199,13 @@ The roadmap is complete only when:
 - [x] No scheduler architecture, collection cadence, dependency framework, or release-profile rewrite is introduced.
 - [x] Deterministic tests and the default local check pass.
 - [x] Final release binary sizes and lightweight before/after measurements are recorded in the implementation plans.
-- [ ] One ordinary existing CI run is green at the final source state.
+- [x] One ordinary existing CI run is green at the final source state.
 
 ## Closure record
 
 Implementation SHA: `45582ce`. Rust 1.98.1 on `x86_64-unknown-linux-gnu`.
 Plans 121-123 record the structural evidence, focused/full test results, local
 check, release-mode descriptive comparison, and final stripped sizes (`gregg`
-3,740,592 bytes; `greggd` 2,432,408 bytes). The hosted CI run is the only
-remaining checkbox and will be added with its exact run ID after push.
+3,740,592 bytes; `greggd` 2,432,408 bytes). Ordinary CI run `35538999184` is
+green at final source state; the Windows job passed on rerun after one hosted
+runner readiness timeout.

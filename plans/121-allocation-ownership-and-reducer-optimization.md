@@ -241,5 +241,6 @@ normalization, positional matching with stable-ID fallback, and one stable
 counter key (`len() == 1` after repeated observations). A release-mode fixed UI
 test loop was collected in an isolated baseline worktree for descriptive
 comparison; it is intentionally not a CI threshold. Final stripped sizes are
-`gregg` 3,740,592 bytes and `greggd` 2,432,408 bytes. Hosted CI is recorded in
-the roadmap/table after the final push.
+`gregg` 3,740,592 bytes and `greggd` 2,432,408 bytes. Ordinary CI run
+`35538999184` is green; its Windows job passed on rerun after one hosted-runner
+readiness timeout.

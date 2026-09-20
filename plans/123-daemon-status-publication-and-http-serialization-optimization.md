@@ -278,5 +278,6 @@ The lightweight loopback evidence is deterministic in-process HTTP coverage on
 the fixed published sample: repeated v1/v2 requests reuse cached immutable
 bytes, while an intentionally cleared cache serializes once on demand and
 returns identical JSON. The release loopback smoke is included in the local
-release preflight. Final stripped `greggd` size is 2,432,408 bytes. Hosted CI
-is recorded in the roadmap/table after the final push.
+release preflight. Final stripped `greggd` size is 2,432,408 bytes. Ordinary
+CI run `35538999184` is green; its Windows job passed on rerun after one
+hosted-runner readiness timeout.

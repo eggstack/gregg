@@ -247,5 +247,5 @@ suffix forms, and one-pass condensed values are exercised by the existing
 renderer/state test matrix. A release-mode fixed UI test loop was also run in an
 isolated pre-change worktree and on `45582ce` for descriptive before/after
 comparison; no noisy wall-clock result is used as a gate. Final stripped
-`gregg` size is 3,740,592 bytes. No follow-up micro-optimization plan was
-created.
+`gregg` size is 3,740,592 bytes. Ordinary CI run `35538999184` is green. No
+follow-up micro-optimization plan was created.
