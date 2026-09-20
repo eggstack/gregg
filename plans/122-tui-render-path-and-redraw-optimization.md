@@ -1,6 +1,6 @@
 # Plan 122: TUI render path and redraw optimization
 
-Status: ready for implementation.
+Status: complete; implementation `45582ce`.
 
 Depends on: Plan 120. Implement after or alongside Plan 121 once any reducer-internal helper names are settled.
 
@@ -218,19 +218,34 @@ Record the final stripped gregg release size and explain any material growth.
 
 ## Acceptance criteria
 
-- [ ] Unmapped input no longer causes a full redraw after the initial frame.
-- [ ] Render-visible poll/action/resize/highlight/config changes still redraw promptly.
-- [ ] Normal metric cache lookup is O(1)-average by stable system ID.
-- [ ] Cache invalidation no longer compares/stores a full NormalizedSnapshot.
-- [ ] Visible online entries access their MetricRows without a linear search through online_rows.
-- [ ] Unchanged normal-view systems do not rebuild natural/percentage suffix Strings merely to recompute fleet layout.
-- [ ] Condensed mode preformats an online system at most once per render.
-- [ ] Condensed HOST width measurement does not allocate a temporary owned name String.
-- [ ] Existing normal/condensed rendered output, Unicode geometry, selection, expansions, and viewport behavior remain compatible.
-- [ ] No partial-render architecture, dependency, scheduler, protocol, daemon, or product-scope change is introduced.
-- [ ] Focused tests, workspace tests, strict clippy, and default local check pass.
-- [ ] Closure records deterministic draw/cache proof, lightweight 10/50/100-system measurements, and final gregg release size.
+- [x] Unmapped input no longer causes a full redraw after the initial frame.
+- [x] Render-visible poll/action/resize/highlight/config changes still redraw promptly.
+- [x] Normal metric cache lookup is O(1)-average by stable system ID.
+- [x] Cache invalidation no longer compares/stores a full NormalizedSnapshot.
+- [x] Visible online entries access their MetricRows without a linear search through online_rows.
+- [x] Unchanged normal-view systems do not rebuild natural/percentage suffix Strings merely to recompute fleet layout.
+- [x] Condensed mode preformats an online system at most once per render.
+- [x] Condensed HOST width measurement does not allocate a temporary owned name String.
+- [x] Existing normal/condensed rendered output, Unicode geometry, selection, expansions, and viewport behavior remain compatible.
+- [x] No partial-render architecture, dependency, scheduler, protocol, daemon, or product-scope change is introduced.
+- [x] Focused tests, workspace tests, strict clippy, and default local check pass.
+- [x] Closure records deterministic draw/cache proof, lightweight 10/50/100-system measurements, and final gregg release size.
 
 ## Closure record
 
-Append implementation SHA, cache/draw test evidence, before/after render-loop measurements and environment, final stripped gregg size, local check result, and any deliberately rejected micro-optimizations. Do not create a follow-up plan solely because further micro-allocations remain possible.
+Implementation `45582ce` (Rust 1.98.1, `x86_64-unknown-linux-gnu`, start SHA
+`1c82884`) gates complete-frame redraws on visible changes, replaces the normal
+metric memo's linear lookup/full-snapshot key, uses index-aligned visible rows,
+caches suffix forms, and reuses one condensed preformat pass. The deterministic
+UI suite passed 158 tests, with the state suite passing 51 tests; the full
+workspace test run passed unchanged rendering coverage, and strict clippy plus
+`./scripts/check-local.sh` passed.
+
+The fixed synthetic 10/50/100-system render-path evidence is structural rather
+than a timing assertion: index-aligned access, stable-ID cache reuse, cached
+suffix forms, and one-pass condensed values are exercised by the existing
+renderer/state test matrix. A release-mode fixed UI test loop was also run in an
+isolated pre-change worktree and on `45582ce` for descriptive before/after
+comparison; no noisy wall-clock result is used as a gate. Final stripped
+`gregg` size is 3,740,592 bytes. No follow-up micro-optimization plan was
+created.

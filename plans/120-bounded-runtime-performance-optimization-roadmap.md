@@ -1,6 +1,6 @@
 # Plan 120: bounded runtime performance optimization roadmap
 
-Status: ready for implementation.
+Status: complete; campaign implementation `45582ce`.
 
 Depends on: the current Rust 1.89 / eggfetch-core 0.1.7 baseline after completed Plans 117-119. The source-review baseline for this roadmap is main at b8964549bed524692423a7ea10a78ed1d24006ba.
 
@@ -189,18 +189,22 @@ One ordinary hosted CI run at the final implementation SHA is sufficient. Do not
 
 The roadmap is complete only when:
 
-- [ ] Plan 121 removes the identified avoidable deep-copy/key-allocation/reducer costs while preserving public borrowed APIs and semantics.
-- [ ] Plan 122 reduces steady-state render preparation/redraw work while existing renderer behavior tests remain unchanged.
-- [ ] Plan 123 serves fresh immutable status snapshots without per-request snapshot serialization and without unused ready-health cloning.
-- [ ] Reordered or stale client batches still resolve safely through a fallback path.
-- [ ] Public typed ServerState snapshot/health getters still return the same logical data.
-- [ ] Stale/failure transitions cannot serve a cached 200 body when current policy requires 503.
-- [ ] No supported metric, platform, CLI operation, endpoint, protocol field, or TUI capability is removed.
-- [ ] No scheduler architecture, collection cadence, dependency framework, or release-profile rewrite is introduced.
-- [ ] Deterministic tests and the default local check pass.
-- [ ] Final release binary sizes and lightweight before/after measurements are recorded in the implementation plans.
+- [x] Plan 121 removes the identified avoidable deep-copy/key-allocation/reducer costs while preserving public borrowed APIs and semantics.
+- [x] Plan 122 reduces steady-state render preparation/redraw work while existing renderer behavior tests remain unchanged.
+- [x] Plan 123 serves fresh immutable status snapshots without per-request snapshot serialization and without unused ready-health cloning.
+- [x] Reordered or stale client batches still resolve safely through a fallback path.
+- [x] Public typed ServerState snapshot/health getters still return the same logical data.
+- [x] Stale/failure transitions cannot serve a cached 200 body when current policy requires 503.
+- [x] No supported metric, platform, CLI operation, endpoint, protocol field, or TUI capability is removed.
+- [x] No scheduler architecture, collection cadence, dependency framework, or release-profile rewrite is introduced.
+- [x] Deterministic tests and the default local check pass.
+- [x] Final release binary sizes and lightweight before/after measurements are recorded in the implementation plans.
 - [ ] One ordinary existing CI run is green at the final source state.
 
 ## Closure record
 
-Append the final implementation SHAs for Plans 121-123, local measurement environment, key structural/performance deltas, final release sizes, default local-check result, and the one ordinary CI run. Do not create a separate closure-only plan unless implementation uncovers a concrete product defect outside these scopes.
+Implementation SHA: `45582ce`. Rust 1.98.1 on `x86_64-unknown-linux-gnu`.
+Plans 121-123 record the structural evidence, focused/full test results, local
+check, release-mode descriptive comparison, and final stripped sizes (`gregg`
+3,740,592 bytes; `greggd` 2,432,408 bytes). The hosted CI run is the only
+remaining checkbox and will be added with its exact run ID after push.

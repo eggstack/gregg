@@ -1,6 +1,6 @@
 # Plan 121: allocation ownership and reducer optimization
 
-Status: ready for implementation.
+Status: complete; implementation `45582ce`.
 
 Depends on: Plan 120 and the settled Plan-119 transport baseline.
 
@@ -211,19 +211,35 @@ Record fresh stripped release sizes for gregg and greggd. Investigate unexplaine
 
 ## Acceptance criteria
 
-- [ ] Linux/macOS dual-version sample conversion no longer deep-clones v2-only drive/disk/network collections merely to construct v1.
-- [ ] into_status_payload_v2-compatible behavior is preserved while the new sampler path moves v2-only collections.
-- [ ] sync_sampler_state no longer deep-clones the full sampler v2 payload before ServerState publication.
-- [ ] Existing public ServerState update methods retain their signatures and behavior.
-- [ ] Production event-loop batch application can move owned payload data into normalized state.
-- [ ] Existing public borrowed normalization and AppState::apply_batch remain available and behavior-compatible.
-- [ ] Ordered normal batches resolve in O(N) through positional matching; reordered batches retain stable-ID fallback.
-- [ ] Superseded endpoint protection and generation semantics are unchanged.
-- [ ] Existing CounterBaselines identities do not allocate a replacement String key every sample.
-- [ ] No scheduler, HTTP cache, TUI layout, sample cadence, protocol, or dependency redesign is included.
-- [ ] Focused tests, workspace tests, strict clippy, and the default local check pass.
-- [ ] Closure records source SHA, measurement environment, structural proof, and final release sizes.
+- [x] Linux/macOS dual-version sample conversion no longer deep-clones v2-only drive/disk/network collections merely to construct v1.
+- [x] into_status_payload_v2-compatible behavior is preserved while the new sampler path moves v2-only collections.
+- [x] sync_sampler_state no longer deep-clones the full sampler v2 payload before ServerState publication.
+- [x] Existing public ServerState update methods retain their signatures and behavior.
+- [x] Production event-loop batch application can move owned payload data into normalized state.
+- [x] Existing public borrowed normalization and AppState::apply_batch remain available and behavior-compatible.
+- [x] Ordered normal batches resolve in O(N) through positional matching; reordered batches retain stable-ID fallback.
+- [x] Superseded endpoint protection and generation semantics are unchanged.
+- [x] Existing CounterBaselines identities do not allocate a replacement String key every sample.
+- [x] No scheduler, HTTP cache, TUI layout, sample cadence, protocol, or dependency redesign is included.
+- [x] Focused tests, workspace tests, strict clippy, and the default local check pass.
+- [x] Closure records source SHA, measurement environment, structural proof, and final release sizes.
 
 ## Closure record
 
-When implemented, append the implementation SHA, the exact Arc-sharing/owned-normalization tests added, ordered/reordered fleet test results, CounterBaselines result, before/after lightweight measurement, final gregg/greggd stripped sizes, and local-check result. Plan 123 may then build the HTTP serialization cache on the shared publication path.
+Implementation `45582ce` (Rust 1.98.1, `x86_64-unknown-linux-gnu`, start SHA
+`1c82884`) adds the Arc-preservation test, borrowed/owned normalization parity
+tests, ordered and reordered 500-system reducer coverage, and the repeated
+CounterBaselines identity test. Focused evidence passed: `greggd sampler` 31,
+`greggd server` 60, `greggd collector::rate` 5, `gregg state` 51, and
+`gregg normalized` 19 tests. The full workspace test run also passed (571
+`gregg` tests and all `greggd` targets), as did strict clippy and the default
+`./scripts/check-local.sh`.
+
+The structural before/after audit from `1c82884` to `45582ce` shows one-pass
+sample conversion, Arc pointer identity across publication, owned reducer
+normalization, positional matching with stable-ID fallback, and one stable
+counter key (`len() == 1` after repeated observations). A release-mode fixed UI
+test loop was collected in an isolated baseline worktree for descriptive
+comparison; it is intentionally not a CI threshold. Final stripped sizes are
+`gregg` 3,740,592 bytes and `greggd` 2,432,408 bytes. Hosted CI is recorded in
+the roadmap/table after the final push.

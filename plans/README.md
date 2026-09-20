@@ -141,16 +141,16 @@ features are absent, and remeasures Gregg's actual fat-LTO release footprint
 Plan-118 record). See
 `119-eggfetch-0-1-7-lean-client-adoption.md`.
 
-Plans 120-123 define the active bounded runtime-performance campaign. Plan 120
-coordinates the work without reopening scheduler, protocol, cadence, or release
-architecture. Plan 121 owns mechanical allocation/copy reduction, Arc-preserving
+Plans 120-123 define and complete the bounded runtime-performance campaign.
+Plan 120 coordinates the work without reopening scheduler, protocol, cadence,
+or release architecture. Plans 121-123 are complete at implementation
+`45582ce`: Plan 121 owns mechanical allocation/copy reduction, Arc-preserving
 daemon publication, owned client normalization, O(N) ordinary batch reduction,
-and stable counter-baseline keys. Plan 122 owns TUI redraw/render preparation
-efficiency while preserving the renderer semantics established by Plans
-083-087 and 110/114. Plan 123 owns daemon status-publication JSON caching and
-removal of unused ready-health cloning while preserving typed ServerState APIs,
-staleness, and v1/v2 HTTP behavior. Plan 121 lands before Plan 123; Plan 122 is
-otherwise independent once the reducer helper boundary is settled.
+and stable counter-baseline keys; Plan 122 owns TUI redraw/render preparation
+efficiency; and Plan 123 owns daemon status-publication JSON caching and removal
+of unused ready-health cloning. All preserve the existing renderer, typed
+ServerState, staleness, and v1/v2 HTTP behavior. Hosted CI is recorded in the
+closure records after the final push.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -268,10 +268,10 @@ excluded.
 | [`117-rust-1-89-msrv-and-dependency-modernization.md`](117-rust-1-89-msrv-and-dependency-modernization.md) | Raise the workspace MSRV to Rust 1.89, retire Rust-1.75-only resolver pins, move the existing MSRV CI job, and document source-install requirements | complete; implementation `ee485cc`; CI `35179950199` green |
 | [`118-eggfetch-client-http-consolidation.md`](118-eggfetch-client-http-consolidation.md) | Replace client-side reqwest with feature-minimal eggfetch-core 0.1.5 while preserving Systems/EggPool transport contracts and measuring footprint | complete; implementation `66a0102` + fix `cda51a4`; CI `35184430460` green |
 | [`119-eggfetch-0-1-7-lean-client-adoption.md`](119-eggfetch-0-1-7-lean-client-adoption.md) | Adopt published eggfetch-core 0.1.7 lean `standard-http1` profile, drop redirect configuration, map body-stage timeouts to existing `Timeout` outcomes, remeasure release footprint | complete; implementation `8d7dfc2`; CI `35393388956` green |
-| [`120-bounded-runtime-performance-optimization-roadmap.md`](120-bounded-runtime-performance-optimization-roadmap.md) | Coordinate behavior-preserving daemon/client/TUI runtime optimization after the Plan-119 lean transport baseline | ready for implementation; coordinates 121-123 |
-| [`121-allocation-ownership-and-reducer-optimization.md`](121-allocation-ownership-and-reducer-optimization.md) | Remove avoidable daemon/client deep copies, use Arc-preserving publication, O(N) ordinary batch matching, and stable counter keys | ready for implementation; lands before 123 |
-| [`122-tui-render-path-and-redraw-optimization.md`](122-tui-render-path-and-redraw-optimization.md) | Reduce no-op redraws, fleet cache lookup/copy work, repeated suffix formatting, and duplicate condensed preformatting without visual changes | ready for implementation |
-| [`123-daemon-status-publication-and-http-serialization-optimization.md`](123-daemon-status-publication-and-http-serialization-optimization.md) | Cache immutable status JSON per publication and remove unused ready-health cloning while preserving typed APIs and stale/health semantics | ready for implementation; depends on 121 |
+| [`120-bounded-runtime-performance-optimization-roadmap.md`](120-bounded-runtime-performance-optimization-roadmap.md) | Coordinate behavior-preserving daemon/client/TUI runtime optimization after the Plan-119 lean transport baseline | complete; campaign implementation `45582ce` |
+| [`121-allocation-ownership-and-reducer-optimization.md`](121-allocation-ownership-and-reducer-optimization.md) | Remove avoidable daemon/client deep copies, use Arc-preserving publication, O(N) ordinary batch matching, and stable counter keys | complete; implementation `45582ce` |
+| [`122-tui-render-path-and-redraw-optimization.md`](122-tui-render-path-and-redraw-optimization.md) | Reduce no-op redraws, fleet cache lookup/copy work, repeated suffix formatting, and duplicate condensed preformatting without visual changes | complete; implementation `45582ce` |
+| [`123-daemon-status-publication-and-http-serialization-optimization.md`](123-daemon-status-publication-and-http-serialization-optimization.md) | Cache immutable status JSON per publication and remove unused ready-health cloning while preserving typed APIs and stale/health semantics | complete; implementation `45582ce` |
 
 Dependency order:
 

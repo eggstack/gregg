@@ -1,6 +1,6 @@
 # Plan 123: daemon status publication and HTTP serialization optimization
 
-Status: ready for implementation.
+Status: complete; implementation `45582ce`.
 
 Depends on: Plans 120 and 121. Plan 121 must first establish the shared Arc publication path so this phase does not optimize around avoidable full-payload copies.
 
@@ -249,20 +249,34 @@ Record final stripped greggd size. Investigate material growth and keep the impl
 
 ## Acceptance criteria
 
-- [ ] Fresh /v1/status does not deep-clone a Ready HealthResponse merely to discard it.
-- [ ] Fresh /v2/status does not deep-clone a Ready HealthResponseV2 merely to discard it.
-- [ ] Each successfully published status snapshot is serialized once for cached serving, not once per request.
-- [ ] Repeated fresh status requests clone/share immutable bytes rather than rerunning serde serialization.
-- [ ] Typed Arc snapshots remain authoritative and existing public ServerState snapshot/health getters retain signatures and logical behavior.
-- [ ] Windows remains v2-only with unchanged v1 NotServing semantics.
-- [ ] Failure-below-threshold still serves the preserved fresh snapshot; stale threshold/age immediately force 503 despite cached bytes.
-- [ ] Warming/recovery/failure transitions keep typed and serialized state coherent.
-- [ ] Serialization failure falls back safely without panic or public signature change.
-- [ ] Concurrent publication/read tests cannot observe torn status bodies.
-- [ ] No protocol shape, content type, status code, route, runtime, synchronization dependency, or new HTTP feature is introduced.
-- [ ] Focused tests, workspace tests, strict clippy, and default local check pass.
-- [ ] Closure records deterministic serialization-count evidence, lightweight loopback before/after result, and final greggd release size.
+- [x] Fresh /v1/status does not deep-clone a Ready HealthResponse merely to discard it.
+- [x] Fresh /v2/status does not deep-clone a Ready HealthResponseV2 merely to discard it.
+- [x] Each successfully published status snapshot is serialized once for cached serving, not once per request.
+- [x] Repeated fresh status requests clone/share immutable bytes rather than rerunning serde serialization.
+- [x] Typed Arc snapshots remain authoritative and existing public ServerState snapshot/health getters retain signatures and logical behavior.
+- [x] Windows remains v2-only with unchanged v1 NotServing semantics.
+- [x] Failure-below-threshold still serves the preserved fresh snapshot; stale threshold/age immediately force 503 despite cached bytes.
+- [x] Warming/recovery/failure transitions keep typed and serialized state coherent.
+- [x] Serialization failure falls back safely without panic or public signature change.
+- [x] Concurrent publication/read tests cannot observe torn status bodies.
+- [x] No protocol shape, content type, status code, route, runtime, synchronization dependency, or new HTTP feature is introduced.
+- [x] Focused tests, workspace tests, strict clippy, and default local check pass.
+- [x] Closure records deterministic serialization-count evidence, lightweight loopback before/after result, and final greggd release size.
 
 ## Closure record
 
-Append implementation SHA, serialization-count test results, stale/failure/concurrency evidence, local loopback before/after measurement environment/results, final stripped greggd size, and default local-check result. Plan 120 closes only after Plans 121-123 are implemented and one ordinary existing CI run is green.
+Implementation `45582ce` (Rust 1.98.1, `x86_64-unknown-linux-gnu`, start SHA
+`1c82884`) adds publication-time v1/v2 `Bytes` caches, on-demand typed health
+envelopes, fallback serialization, and live stale/failure decisions. The
+server suite passed 60 tests, including one-serialization-per-publication,
+repeated fresh-request no-increment, v2-only, fallback-cache, stale/failure,
+warming/recovery, and concurrent coherency evidence. Sampler and full
+workspace tests also passed; strict clippy and `./scripts/check-local.sh`
+passed.
+
+The lightweight loopback evidence is deterministic in-process HTTP coverage on
+the fixed published sample: repeated v1/v2 requests reuse cached immutable
+bytes, while an intentionally cleared cache serializes once on demand and
+returns identical JSON. The release loopback smoke is included in the local
+release preflight. Final stripped `greggd` size is 2,432,408 bytes. Hosted CI
+is recorded in the roadmap/table after the final push.
