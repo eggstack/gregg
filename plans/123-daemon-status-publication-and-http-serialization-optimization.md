@@ -281,3 +281,7 @@ returns identical JSON. The release loopback smoke is included in the local
 release preflight. Final stripped `greggd` size is 2,432,408 bytes. Ordinary
 CI run `35538999184` is green; its Windows job passed on rerun after one
 hosted-runner readiness timeout.
+
+Plan 124 later restored the exact stored collector-failure message for stale
+retained snapshots while preserving this publication-time cache and its
+serialization-count behavior.

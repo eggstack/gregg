@@ -150,9 +150,9 @@ stable counter-baseline keys; Plan 122 owns TUI redraw/render preparation
 efficiency; and Plan 123 owns daemon status-publication JSON caching and removal
 of unused ready-health cloning. Post-closure review found one narrow observable
 compatibility regression in the stale-after-failure 503 message plus
-overstated timing-evidence wording. Plan 124 owns only those corrections; the
-performance architecture remains intact. Current main CI is green, including
-run `35539673299`.
+overstated timing-evidence wording. Plan 124 closed only those corrections at
+implementation `b8d72b2`; the performance architecture remains intact. Current
+main CI is green, including run `35541246292`.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -274,7 +274,7 @@ excluded.
 | [`121-allocation-ownership-and-reducer-optimization.md`](121-allocation-ownership-and-reducer-optimization.md) | Remove avoidable daemon/client deep copies, use Arc-preserving publication, O(N) ordinary batch matching, and stable counter keys | complete; implementation `45582ce`; CI `35538999184` green |
 | [`122-tui-render-path-and-redraw-optimization.md`](122-tui-render-path-and-redraw-optimization.md) | Reduce no-op redraws, fleet cache lookup/copy work, repeated suffix formatting, and duplicate condensed preformatting without visual changes | complete; implementation `45582ce`; CI `35538999184` green |
 | [`123-daemon-status-publication-and-http-serialization-optimization.md`](123-daemon-status-publication-and-http-serialization-optimization.md) | Cache immutable status JSON per publication and remove unused ready-health cloning while preserving typed APIs and stale/health semantics | complete; implementation `45582ce`; CI `35538999184` green |
-| [`124-runtime-optimization-compatibility-and-evidence-corrective-pass.md`](124-runtime-optimization-compatibility-and-evidence-corrective-pass.md) | Restore exact stale-after-failure response messages and reconcile unrecorded performance-evidence wording without reopening the optimization architecture | ready for implementation; corrective closeout for 120-123 |
+| [`124-runtime-optimization-compatibility-and-evidence-corrective-pass.md`](124-runtime-optimization-compatibility-and-evidence-corrective-pass.md) | Restore exact stale-after-failure response messages and reconcile unrecorded performance-evidence wording without reopening the optimization architecture | complete; implementation `b8d72b2`; CI `35541246292` green |
 
 Dependency order:
 

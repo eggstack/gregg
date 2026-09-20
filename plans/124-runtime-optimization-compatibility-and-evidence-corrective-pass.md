@@ -1,6 +1,6 @@
 # Plan 124: runtime optimization compatibility and evidence corrective pass
 
-Status: ready for implementation.
+Status: complete. Closing record below.
 
 Depends on: completed Plans 120-123 and their implementation at `45582ce`.
 
@@ -309,34 +309,34 @@ Run one ordinary existing CI workflow at the final source state.
 
 ## Acceptance criteria
 
-- [ ] Failure-threshold stale v1 status preserves the latest stored collector
+- [x] Failure-threshold stale v1 status preserves the latest stored collector
       failure message exactly.
-- [ ] Failure-threshold stale v2 status preserves the latest stored collector
+- [x] Failure-threshold stale v2 status preserves the latest stored collector
       failure message exactly.
-- [ ] Matching health endpoints return the same failed state/category/message.
-- [ ] Ready-but-age-stale responses retain exactly
+- [x] Matching health endpoints return the same failed state/category/message.
+- [x] Ready-but-age-stale responses retain exactly
       `"cached snapshot is stale"`.
-- [ ] Version-unavailable `NotServing` semantics remain unchanged through
+- [x] Version-unavailable `NotServing` semantics remain unchanged through
       later collector failures.
-- [ ] Failure-below-threshold status responses still serve cached 200 snapshot
+- [x] Failure-below-threshold status responses still serve cached 200 snapshot
       bytes without additional serialization.
-- [ ] Fresh status requests still avoid constructing/cloning a ready health
+- [x] Fresh status requests still avoid constructing/cloning a ready health
       envelope.
-- [ ] Publication-time v1/v2 `Bytes` caching and serialization-count behavior
+- [x] Publication-time v1/v2 `Bytes` caching and serialization-count behavior
       from Plan 123 remain intact.
-- [ ] No public protocol, route, status-code, content-type, typed
+- [x] No public protocol, route, status-code, content-type, typed
       `ServerState` API, scheduler, collector, or TUI behavior changes.
-- [ ] Plans 120/122/123 no longer claim unrecorded numerical before/after
+- [x] Plans 120/122/123 no longer claim unrecorded numerical before/after
       timing evidence.
-- [ ] No timing or throughput numbers are fabricated during record
+- [x] No timing or throughput numbers are fabricated during record
       reconciliation.
-- [ ] Focused tests, workspace tests, strict clippy, and the default local
+- [x] Focused tests, workspace tests, strict clippy, and the default local
       check pass.
-- [ ] One ordinary existing CI run is green at the final implementation SHA.
-- [ ] Plan 120 and Plan 123 closure wording points to Plan 124 as the bounded
+- [x] One ordinary existing CI run is green at the final implementation SHA.
+- [x] Plan 120 and Plan 123 closure wording points to Plan 124 as the bounded
       corrective closeout.
 
-## Closure record
+## Closure checklist
 
 When implemented, append:
 
@@ -349,3 +349,27 @@ When implemented, append:
 - one ordinary CI run.
 
 Do not create a Plan 125 solely to restate closure.
+
+## Closure record
+
+Implementation `b8d72b2` restores the pre-Plan-123 stale-after-failure
+response-envelope behavior without changing the publication-time status-byte
+cache or fresh status fast path. Failed retained snapshots now reconstruct the
+stored collector-failure category/message for both v1 and v2 status handlers;
+ready snapshots that become stale by age, pre-epoch time, or a backward clock
+jump still use `cached snapshot is stale`. Version-unavailable metadata remains
+authoritative.
+
+The `greggd` server suite passed 62 tests, including exact v1/v2 stale-failure
+status/health message parity, v2-only v1 `NotServing` preservation, age-stale
+message checks, below-threshold cached-byte serialization counts, and the
+existing pre-epoch/backward-clock coverage. The full workspace test suite,
+strict clippy, and `./scripts/check-local.sh` passed. Plans 120, 122, and 123
+now describe the retained evidence truthfully: deterministic structural and
+serialization-count evidence, exact release sizes, and descriptive release
+loops without fabricated numerical timing gates. The daemon README, root
+README, architecture deep dive, and `CHANGELOG.md` record the corrected
+user-visible stale-response behavior.
+
+Ordinary CI run `35541246292` passed at implementation SHA `b8d72b2` across
+Linux, macOS arm64, macOS Intel, Windows SCM smoke, and MSRV Rust 1.89.
