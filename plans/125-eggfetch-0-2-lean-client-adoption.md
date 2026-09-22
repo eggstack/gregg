@@ -215,7 +215,7 @@ Finally run one ordinary existing CI workflow. Do not add a new workflow, matrix
 - [x] Bearer-auth handling remains unchanged and secrets remain redacted.
 - [x] Current-main and post-upgrade stripped `gregg` sizes are recorded under the same build conditions.
 - [x] Any material binary-size change is attributed before closure.
-- [ ] Full workspace tests, strict clippy, Rust 1.89 tests, local checks, and one ordinary CI run are green.
+- [x] Full workspace tests, strict clippy, Rust 1.89 tests, local checks, and one ordinary CI run are green.
 - [x] Current-state docs refer to eggfetch 0.2 while Plan 119 remains truthful historical evidence.
 - [x] No `gregg-update` transport change is mixed into this plan.
 
@@ -254,3 +254,5 @@ upstream API-preserving record for every Gregg-used surface
   no compression feature).
 - `gregg-update` untouched (still external `curl`); transport consolidation
   is Plan 126.
+- Remote CI run `35736793227` green across all five jobs (Linux, macOS
+  arm64, macOS Intel, Windows, MSRV Rust 1.89).

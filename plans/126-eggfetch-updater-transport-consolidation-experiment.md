@@ -325,7 +325,7 @@ Run one ordinary existing CI workflow after the final chosen state. Do not add a
 - [x] Any material daemon footprint increase receives an explicit adoption/rejection rationale.
 - [ ] ~~If ADOPT, curl-only process/discovery/status machinery and docs are removed without touching Cargo/candidate subprocess bounds.~~ N/A — closed RETAIN CURL.
 - [x] If RETAIN CURL, the candidate is reverted cleanly and the measured reason is recorded.
-- [ ] Full local checks, Rust 1.89 checks, and one ordinary CI run pass at the final chosen state.
+- [x] Full local checks, Rust 1.89 checks, and one ordinary CI run pass at the final chosen state.
 - [x] The closure record states one explicit result: ADOPT or RETAIN CURL.
 
 ## Explicit non-goals
@@ -440,3 +440,5 @@ single-build measurements; any staleness there could only understate growth
 `+1.89` (41 `gregg-update` tests green), `cargo doc --no-deps`, and
 `./scripts/check-local.sh` all green at the final state; daemon graph
 contains zero eggfetch/rustls; release sizes reproduce baselines exactly.
+Remote CI run `35736793227` green across all five jobs (Linux, macOS arm64,
+macOS Intel, Windows, MSRV Rust 1.89).
