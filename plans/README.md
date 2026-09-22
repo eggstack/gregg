@@ -177,19 +177,15 @@ transport; the kept transport-neutral parse/fixture regressions and the
 measured rationale are recorded in
 `126-eggfetch-updater-transport-consolidation-experiment.md`.
 
-Plan 127 is ready for implementation once two upstream EggServe direct-runtime
-gates are satisfied. It targets replacement of the Axum-only `greggd` HTTP
-facade with published `eggserve-server` + `eggserve-primitives` 0.2.x while
-preserving the five-route wire contract, Plan-123 publication-time status-byte
-cache, Plan-124 stale/failure semantics, bind-before-ready behavior, and
-critical-task supervision. Exact EggServe 0.2.0 lacks an independently
-awaitable direct-server termination/error channel while retaining shutdown
-authority and requires a nonzero total connection lifetime (default 60s);
-Plan 127 forbids weakening Gregg's supervisor or silently forcing pooled
-Eggfetch reconnects to work around those gaps. It also requires raw-wire
-compatibility tests, zero-payload-copy cached responses, feature/footprint
-review, and ordinary cross-platform CI before Axum is removed. See
-`127-eggserve-0-2-daemon-http-transport-adoption.md`.
+Plan 127 is upstream-blocked after a 2026-09-22 review of the published
+`eggserve-server` 0.2.x line (currently 0.2.0). Its `ServerHandle` cannot
+preserve independent shutdown authority while exposing a critical-task
+completion/error signal: `wait(self)` consumes the non-cloneable handle and
+discards the internal join result. Its required nonzero total connection
+lifetime also prevents parity with Gregg's reusable healthy keep-alive
+connections. The Axum production path remains in place; no dependency or
+runtime change was made. Recheck when upstream publishes an API that satisfies
+both gates. See `127-eggserve-0-2-daemon-http-transport-adoption.md`.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -314,7 +310,7 @@ excluded.
 | [`124-runtime-optimization-compatibility-and-evidence-corrective-pass.md`](124-runtime-optimization-compatibility-and-evidence-corrective-pass.md) | Restore exact stale-after-failure response messages and reconcile unrecorded performance-evidence wording without reopening the optimization architecture | complete; implementation `b8d72b2`; CI `35541246292` green |
 | [`125-eggfetch-0-2-lean-client-adoption.md`](125-eggfetch-0-2-lean-client-adoption.md) | Upgrade the existing lean Gregg polling transport to published eggfetch-core 0.2.0 without widening capabilities or changing observable behavior | complete; dependency-only change, lockfile 0.2.0, stripped `gregg` 3,740,592 bytes (delta 0) |
 | [`126-eggfetch-updater-transport-consolidation-experiment.md`](126-eggfetch-updater-transport-consolidation-experiment.md) | Benchmark-gated experiment to replace gregg-update's external curl transport with eggfetch 0.2 while preserving update semantics and small-binary goals | complete with RETAIN CURL; parity candidate doubled stripped `greggd` (+105%), reverted cleanly |
-| [`127-eggserve-0-2-daemon-http-transport-adoption.md`](127-eggserve-0-2-daemon-http-transport-adoption.md) | Replace greggd's Axum HTTP facade with direct EggServe 0.2.x while preserving wire, cached-body, supervision, keep-alive, and footprint contracts | ready; upstream-gated on direct-server completion/error observation and unlimited healthy connection lifetime |
+| [`127-eggserve-0-2-daemon-http-transport-adoption.md`](127-eggserve-0-2-daemon-http-transport-adoption.md) | Replace greggd's Axum HTTP facade with direct EggServe 0.2.x while preserving wire, cached-body, supervision, keep-alive, and footprint contracts | upstream-blocked; published 0.2.0 fails both lifecycle/error-observation and unlimited healthy connection-lifetime gates |
 
 Dependency order:
 
@@ -341,7 +337,7 @@ Dependency order:
 124 depends on the completed 120-123 implementation and owns only stale/failure response-envelope compatibility plus truthful evidence-record reconciliation.
 125 depends on Plan 119's settled lean eggfetch client contract and the current post-124 main state; it upgrades only the client-side eggfetch dependency to published 0.2.0 and remains independent of the remaining Plan 091 soak record.
 126 depends on completed Plan 125 plus the settled self-update ownership/lifecycle contracts from 101-104, 115, and 116; it is a reversible updater-transport experiment and may close with RETAIN CURL if behavioral parity or footprint gates do not justify adoption.
-127 depends on the settled daemon publication/HTTP compatibility baseline from Plans 123-124 and the current post-126 workspace state; it may proceed independently of the remaining Plan 091 soak record, but production migration is gated on a published EggServe 0.2.x direct-server lifecycle/error-observation seam and an explicit unlimited healthy total connection lifetime.
+127 depends on the settled daemon publication/HTTP compatibility baseline from Plans 123-124 and the current post-126 workspace state; it may proceed independently of the remaining Plan 091 soak record, but production migration is gated on a published EggServe 0.2.x direct-server lifecycle/error-observation seam and an explicit unlimited healthy total connection lifetime. The 2026-09-22 review found both gates still fail in 0.2.0, so the existing Axum implementation remains authoritative pending an upstream release.
 ```
 
 Plan 076 is concrete product-correctness work, not a closure-only record. Plan 077 corrected the remaining bounded `croncheck` issues. Plan 078 added separate live-tested product functionality. Plan 079 is justified by a concrete runtime divergence edge found in source review. Plan 080 is separately justified by the observed daemon refusal and direct-stop product requirement. Plan 081 is separately justified by native Windows breakage and a reproducible cross-config Unix stop-targeting defect. Plan 082 is separately justified by a remaining same-file path-spelling identity edge plus contradictory closure/provenance wording; it is not a closure-only record. Plan 083 is separately justified by six concrete client UI/CLI correctness defects enumerated in its own scope decisions; Plan 084 is separately justified by four concrete post-closure findings and is now closed. Plan 085 is separately justified by four narrow client-renderer defects enumerated in its own scope decisions; it is not a closure-only record. Plan 086 is separately justified by three narrow boundary defects found in Plan 085 post-implementation review and is not a closure-only record. Plan 087 is separately justified by the three bounded client-only visual polish behaviors enumerated in its own scope decisions and is not a closure-only record. Plan 112 is separately justified by the installer/uninstaller ownership gap it originally addressed. Plan 113 is separately justified by four concrete post-closure lifecycle defects in Plan 112's implementation: host-global startup ownership, lossy Windows SCM discovery, Cargo-owned early returns, and fallback finalization bypass. Plan 114 is separately justified by the current drive-key mnemonic mismatch and the fleet-wide normal NET-row policy that renders an unavailable bar for hosts whose own snapshot has no network telemetry. Plan 115 is separately justified by the residual host-global restart dispatch, the same-scope user-local Unix daemon activation gap after executable replacement, and platform-wrong Windows elevation guidance discovered after Plan 113 closure. Plan 116 is separately justified by the remaining host-global `greggd update` pre-replacement lifecycle decision, which can stop a foreign Windows SCM service and can suppress restart of a running selected Unix direct daemon. Plan 117 is separately justified by the explicit decision to adopt Rust 1.89 and retire the compatibility-only dependency policy that Plan 105 intentionally retained for Rust 1.75. Plan 118 is separately justified by eggfetch 0.1.5 now providing typed HTTP/HTTPS DNS/refused provenance and bounded body/auth/timeout primitives sufficient to remove Gregg's duplicated reqwest transport machinery without changing application policy. Plan 119 is separately justified by eggfetch-core 0.1.7's lean standard-http1 profile and corrected whole-request timeout behavior. Plan 120 is separately justified by the current source audit identifying repeated deep copies, O(N squared) reducer lookup, repeated render formatting, and per-request immutable snapshot serialization after the transport footprint work settled. Plans 121-123 divide those concrete costs by ownership/risk boundary rather than creating closure-only phases. Plan 124 is separately justified by the post-Plan-123 regression that replaces an already-failed collector message with `cached snapshot is stale` on the status 503 path, plus the need to correct closure wording that claims numerical timing evidence not actually recorded; it does not reopen the valid performance implementation.

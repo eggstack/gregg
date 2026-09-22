@@ -1,6 +1,6 @@
 # Plan 127: EggServe 0.2 daemon HTTP transport adoption
 
-Status: ready for implementation once the upstream runtime gates below are satisfied.
+Status: upstream-blocked; implementation must not start until both hard gates below are satisfied by a published EggServe 0.2.x release.
 
 Depends on: completed Plans 123-126, the current post-Plan-126 daemon/runtime baseline, and a published EggServe 0.2.x direct-server API that satisfies the lifecycle and connection-lifetime gates in this plan. This work is independent of the remaining Plan 091 soak record.
 
@@ -455,3 +455,12 @@ At the Plan-127 creation baseline, Gregg main is `5b2c7e8c67616f872070e2acdcce90
 The exact EggServe 0.2.0 direct server already supplies the desired application-service, pre-bound-listener, limits, canonical response, connection driver, observability, and shutdown primitives. The two unresolved adoption gates are the independently observable critical-task lifecycle/error channel and an explicit way to disable the hard total connection lifetime.
 
 Check the currently published EggServe 0.2.x API first. If those capabilities have landed upstream, proceed with the migration. If not, stop cleanly and report the upstream requirements rather than weakening Gregg's current guarantees.
+
+### Upstream gate review (2026-09-22)
+
+The published `eggserve-server` 0.2.x line currently resolves to 0.2.0 (`cargo search eggserve-server --limit 10`; `cargo info eggserve-server@0.2`). Inspection of the downloaded crate source confirms that both gates remain unsatisfied:
+
+- **Gate A fails:** `ServerHandle` owns a private `JoinHandle<()>`; it is not `Clone`. `shutdown(&self)` is available, but `wait(self)` consumes the only handle and discards the join result (`let _ = join.await`). Gregg therefore cannot retain shutdown authority while independently awaiting runtime completion, and cannot observe an accept-task panic through EggServe's public handle.
+- **Gate B fails:** `RuntimeConfig::connection_total_timeout` defaults to 60 seconds, the connection driver applies it as a hard total lifetime, and shared runtime validation rejects zero. There is no supported unlimited setting in 0.2.0.
+
+Pre-bound `TcpListener` adoption is available through `ServerBuilder::from_listener`, but it does not address either failed gate. No production dependency, server source, wire tests, or current-state transport documentation was changed. Plan 127 remains open and blocked upstream; retry the gate review when a new 0.2.x release is published. The migration, compatibility tests, footprint comparison, and runtime comparison remain unstarted and are not claimed complete.
