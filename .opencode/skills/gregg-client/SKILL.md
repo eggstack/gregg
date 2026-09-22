@@ -104,7 +104,7 @@ malformed entry does not produce a misleading duplicate diagnostic.
 
 **Poller** (`poller.rs`):
 - v2-first, v1 fallback only on 404
-- Dedicated `eggfetch-core` client (lean `standard-http1` 0.1.7 + Rustls:
+- Dedicated `eggfetch-core` client (lean `standard-http1` 0.2 + Rustls:
   standard route only, redirect following not compiled so 3xx passes through
   with no second hop, four idle per host, explicit whole-request deadline with
   absolute `total` through response-body EOF, no retry)

@@ -153,6 +153,11 @@ pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
 /// Uses `max_stable_version` which is the highest non-yanked,
 /// non-prerelease version. One bounded HTTPS request with a
 /// program-specific User-Agent.
+///
+/// Plan 126 experiment closed RETAIN CURL: the external-`curl` transport
+/// below is the production path. Response parsing lives in the
+/// transport-neutral [`parse_stable_version_response`] helper so it stays
+/// unit-tested without network access.
 pub fn fetch_latest_stable_version(
     crate_name: &str,
     program: &str,
@@ -178,12 +183,20 @@ pub fn fetch_latest_stable_version(
         )),
         other => other,
     })?;
-    if stdout.len() > MAX_CRATES_IO_BYTES {
+    parse_stable_version_response(&stdout)
+}
+
+/// Parse and validate a crates.io metadata body.
+///
+/// Transport-neutral extraction of the inline logic above (kept from the
+/// Plan 126 experiment): unit-tested without network access.
+fn parse_stable_version_response(body: &[u8]) -> Result<String, UpdateError> {
+    if body.len() > MAX_CRATES_IO_BYTES {
         return Err(UpdateError::VersionLookup(
             "crates.io response too large".to_string(),
         ));
     }
-    let json: serde_json::Value = serde_json::from_slice(&stdout)
+    let json: serde_json::Value = serde_json::from_slice(body)
         .map_err(|e| UpdateError::VersionLookup(format!("crates.io JSON parse failed: {e}")))?;
     let version = json
         .get("crate")
@@ -434,6 +447,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stable_version_response_parses_valid() {
+        let body = br#"{"crate":{"max_stable_version":"1.2.3"}}"#;
+        assert_eq!(parse_stable_version_response(body).unwrap(), "1.2.3");
+    }
+
+    #[test]
+    fn stable_version_response_rejects_missing_field() {
+        let body = br#"{"crate":{}}"#;
+        let error = parse_stable_version_response(body).expect_err("must fail");
+        assert!(
+            error.to_string().contains("max_stable_version"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn stable_version_response_rejects_empty() {
+        let body = br#"{"crate":{"max_stable_version":""}}"#;
+        let error = parse_stable_version_response(body).expect_err("must fail");
+        assert!(
+            error.to_string().contains("empty"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn stable_version_response_rejects_non_stable() {
+        let body = br#"{"crate":{"max_stable_version":"2.0.0-beta.1"}}"#;
+        let error = parse_stable_version_response(body).expect_err("must fail");
+        assert!(
+            error.to_string().contains("non-stable"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn stable_version_response_rejects_invalid_json() {
+        let error = parse_stable_version_response(b"not json").expect_err("must fail");
+        assert!(
+            error.to_string().contains("parse failed"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn stable_version_response_rejects_oversized() {
+        let mut body = b"{\"crate\":{\"max_stable_version\":\"1.2.3\",\"pad\":\"".to_vec();
+        body.extend(std::iter::repeat_n(b'x', MAX_CRATES_IO_BYTES));
+        body.extend_from_slice(b"\"}}");
+        let error = parse_stable_version_response(&body).expect_err("must fail");
+        assert!(
+            error.to_string().contains("too large"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
     fn download_not_found_vs_failed_classification() {
         // Pure logic: 404 permits fallback, 5xx does not. This test locks the invariant.
         let not_found = DownloadOutcome::NotFound;
@@ -543,5 +613,253 @@ mod tests {
         assert!(error.to_string().contains("timed out"));
         thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "timed-out child continued after return");
+    }
+
+    // Plan 126 closed RETAIN CURL and kept these end-to-end fixtures for
+    // the retained external-curl transport: they drive the real `curl`
+    // binary against local deterministic servers and lock the redirect,
+    // exact-final-404, hard-failure, and metadata-capture contract that
+    // stub-`curl`-script tests cannot prove (those fake curl's output).
+    // Skipped when curl is absent.
+    #[cfg(test)]
+    mod curl_baseline {
+        use super::*;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        fn have_curl() -> Option<String> {
+            find_curl().ok()
+        }
+
+        /// Proxy environment keys honored by `curl`.
+        const PROXY_ENV_KEYS: [&str; 8] = [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "NO_PROXY",
+            "no_proxy",
+        ];
+
+        /// Serializes proxy-environment sanitizing across baseline tests.
+        /// Tests share one process, so clearing ambient proxy variables for
+        /// the `curl` child requires a static lock; the guard restores every
+        /// key on drop.
+        static PROXY_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+        /// Cleared proxy environment held for one baseline test.
+        struct ProxyEnvGuard {
+            _lock: std::sync::MutexGuard<'static, ()>,
+            saved: Vec<(&'static str, Option<String>)>,
+        }
+
+        impl Drop for ProxyEnvGuard {
+            fn drop(&mut self) {
+                for (key, value) in std::mem::take(&mut self.saved) {
+                    match value {
+                        Some(previous) => {
+                            std::env::set_var(key, previous);
+                        }
+                        None => {
+                            std::env::remove_var(key);
+                        }
+                    }
+                }
+            }
+        }
+
+        /// Clear ambient proxy variables so the `curl` child always talks to
+        /// the fixture directly. Hold the guard for the whole test.
+        fn lock_proxy_env() -> ProxyEnvGuard {
+            let lock = PROXY_ENV_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let saved = PROXY_ENV_KEYS
+                .iter()
+                .map(|key| (*key, std::env::var(key).ok()))
+                .collect();
+            for key in PROXY_ENV_KEYS {
+                std::env::remove_var(key);
+            }
+            ProxyEnvGuard { _lock: lock, saved }
+        }
+
+        /// Run `serve` on a background thread with its own current-thread
+        /// runtime and return the bound loopback port. Fixtures must live
+        /// off the test thread: `download_file`/`run_curl_capture` block
+        /// their caller, which would starve a same-thread `#[tokio::test]`
+        /// executor holding the only server task.
+        fn spawn_server<F, Fut>(serve: F) -> u16
+        where
+            F: FnOnce(TcpListener) -> Fut + Send + 'static,
+            Fut: std::future::Future<Output = ()> + Send + 'static,
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                    let port = listener.local_addr().unwrap().port();
+                    tx.send(port).unwrap();
+                    serve(listener).await;
+                    std::future::pending::<()>().await;
+                });
+            });
+            rx.recv().unwrap()
+        }
+
+        /// Serve one canned `response` on a background thread; return its port.
+        fn spawn_response(response: Vec<u8>) -> u16 {
+            spawn_server(|listener| serve_once(listener, response))
+        }
+
+        /// Serve one connection: read the head, write `response`, close.
+        async fn serve_once(listener: TcpListener, response: Vec<u8>) {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let mut total = 0;
+            while let Ok(n) = stream.read(&mut buf[total..]).await {
+                if n == 0 || total + n >= buf.len() {
+                    break;
+                }
+                total += n;
+                if buf[..total].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = stream.write_all(&response).await;
+        }
+
+        fn static_response(status: &str, body: &[u8]) -> Vec<u8> {
+            let mut out = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .into_bytes();
+            out.extend_from_slice(body);
+            out
+        }
+
+        #[test]
+        fn baseline_download_direct_200() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let port = spawn_response(static_response("200 OK", b"baseline-asset"));
+            let temp = crate::stage::create_temp_dir("gregg-update-test-base200").unwrap();
+            let dest = temp.path().join("asset");
+            let outcome = download_file(&curl, &format!("http://127.0.0.1:{port}/asset"), &dest);
+            assert_eq!(outcome, DownloadOutcome::Success);
+            assert_eq!(std::fs::read(&dest).unwrap(), b"baseline-asset");
+        }
+
+        #[test]
+        fn baseline_download_follows_redirect_to_200() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let target_port = spawn_response(static_response("200 OK", b"baseline-redirected"));
+            let front_port = spawn_response(
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target_port}/asset\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+                .into_bytes(),
+            );
+            let temp = crate::stage::create_temp_dir("gregg-update-test-baseredir").unwrap();
+            let dest = temp.path().join("asset");
+            let outcome = download_file(
+                &curl,
+                &format!("http://127.0.0.1:{front_port}/asset"),
+                &dest,
+            );
+            assert_eq!(outcome, DownloadOutcome::Success);
+            assert_eq!(std::fs::read(&dest).unwrap(), b"baseline-redirected");
+        }
+
+        #[test]
+        fn baseline_download_404_permits_fallback() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let port = spawn_response(static_response("404 Not Found", b"gone"));
+            let temp = crate::stage::create_temp_dir("gregg-update-test-base404").unwrap();
+            let dest = temp.path().join("asset");
+            let outcome = download_file(&curl, &format!("http://127.0.0.1:{port}/asset"), &dest);
+            assert_eq!(outcome, DownloadOutcome::NotFound);
+            assert!(!dest.exists());
+        }
+
+        #[test]
+        fn baseline_download_500_is_hard_failure() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let port = spawn_response(static_response(
+                "500 Internal Server Error",
+                b"see /404-docs",
+            ));
+            let temp = crate::stage::create_temp_dir("gregg-update-test-base500").unwrap();
+            let dest = temp.path().join("asset");
+            let outcome = download_file(&curl, &format!("http://127.0.0.1:{port}/asset"), &dest);
+            assert!(matches!(outcome, DownloadOutcome::Failed(_)));
+            assert!(!dest.exists());
+        }
+
+        #[test]
+        fn baseline_metadata_capture_200_within_limit() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let body = br#"{"crate":{"max_stable_version":"9.9.9"}}"#;
+            let port = spawn_response(static_response("200 OK", body));
+            let args = [
+                "-fsSL",
+                "--max-time",
+                "10",
+                &format!("http://127.0.0.1:{port}/api/v1/crates/foo"),
+            ];
+            let captured = run_curl_capture(&curl, &args).unwrap();
+            assert_eq!(captured, body);
+            assert_eq!(parse_stable_version_response(&captured).unwrap(), "9.9.9");
+        }
+
+        #[test]
+        fn baseline_metadata_capture_rejects_oversized() {
+            let _proxy_guard = lock_proxy_env();
+            let Some(curl) = have_curl() else {
+                eprintln!("skipping: curl not in PATH");
+                return;
+            };
+            let big = vec![b'x'; MAX_CRATES_IO_BYTES + 1024];
+            let port = spawn_response(static_response("200 OK", &big));
+            let args = [
+                "-fsSL",
+                "--max-time",
+                "10",
+                &format!("http://127.0.0.1:{port}/api/v1/crates/foo"),
+            ];
+            let error = run_curl_capture(&curl, &args).expect_err("must reject oversized");
+            assert!(
+                error.to_string().contains("too large"),
+                "unexpected error: {error}"
+            );
+        }
     }
 }

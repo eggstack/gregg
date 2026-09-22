@@ -200,6 +200,9 @@ pub fn prepare_candidate(
         spec.program_name
     );
 
+    // Plan 126 experiment closed RETAIN CURL: the external-curl transport
+    // below is the production path. The measured eggfetch candidate
+    // (+105% stripped `greggd`) was reverted; see the plan closure record.
     let curl = exec::find_curl()?;
     let temp_dir = stage::create_temp_dir(&format!("{}-update", spec.program_name))?;
 

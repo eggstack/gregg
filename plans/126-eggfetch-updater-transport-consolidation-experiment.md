@@ -1,6 +1,6 @@
 # Plan 126: eggfetch updater transport consolidation experiment
 
-Status: ready for implementation after Plan 125.
+Status: complete with result **RETAIN CURL**.
 
 Depends on: completed Plan 125 and the settled self-update contracts from Plans 101-104, 115, and 116.
 
@@ -310,23 +310,23 @@ Run one ordinary existing CI workflow after the final chosen state. Do not add a
 
 ## Acceptance criteria
 
-- [ ] A private eggfetch 0.2 updater adapter is exercised against deterministic local fixtures before any curl code is deleted.
-- [ ] Existing synchronous `gregg-update` public APIs remain synchronous and source-compatible.
-- [ ] No nested-runtime path is introduced.
-- [ ] crates.io metadata authority, User-Agent, stable-version validation, and 256 KiB cap are preserved.
-- [ ] GitHub release/checksum redirects work.
-- [ ] Exact final HTTP 404 remains the only asset result permitting Cargo fallback.
-- [ ] Checksum 404 and all transport/TLS/DNS/timeout/5xx failures remain hard failures.
-- [ ] Release downloads remain capped at 64 MiB while streaming and leave no partial file on failure.
-- [ ] Platform/native trust behavior is documented and tested where deterministic.
-- [ ] Environment proxy / NO_PROXY behavior is preserved explicitly or the experiment closes RETAIN CURL rather than silently regressing it.
-- [ ] Baseline and candidate dependency graphs are recorded.
-- [ ] Baseline and candidate stripped `gregg` and `greggd` sizes are recorded under the same conditions.
-- [ ] Any material daemon footprint increase receives an explicit adoption/rejection rationale.
-- [ ] If ADOPT, curl-only process/discovery/status machinery and docs are removed without touching Cargo/candidate subprocess bounds.
-- [ ] If RETAIN CURL, the candidate is reverted cleanly and the measured reason is recorded.
+- [x] A private eggfetch 0.2 updater adapter is exercised against deterministic local fixtures before any curl code is deleted.
+- [x] Existing synchronous `gregg-update` public APIs remain synchronous and source-compatible.
+- [x] No nested-runtime path is introduced.
+- [x] crates.io metadata authority, User-Agent, stable-version validation, and 256 KiB cap are preserved.
+- [x] GitHub release/checksum redirects work.
+- [x] Exact final HTTP 404 remains the only asset result permitting Cargo fallback.
+- [x] Checksum 404 and all transport/TLS/DNS/timeout/5xx failures remain hard failures.
+- [x] Release downloads remain capped at 64 MiB while streaming and leave no partial file on failure.
+- [x] Platform/native trust behavior is documented and tested where deterministic.
+- [x] Environment proxy / NO_PROXY behavior is preserved explicitly or the experiment closes RETAIN CURL rather than silently regressing it.
+- [x] Baseline and candidate dependency graphs are recorded.
+- [x] Baseline and candidate stripped `gregg` and `greggd` sizes are recorded under the same conditions.
+- [x] Any material daemon footprint increase receives an explicit adoption/rejection rationale.
+- [ ] ~~If ADOPT, curl-only process/discovery/status machinery and docs are removed without touching Cargo/candidate subprocess bounds.~~ N/A — closed RETAIN CURL.
+- [x] If RETAIN CURL, the candidate is reverted cleanly and the measured reason is recorded.
 - [ ] Full local checks, Rust 1.89 checks, and one ordinary CI run pass at the final chosen state.
-- [ ] The closure record states one explicit result: ADOPT or RETAIN CURL.
+- [x] The closure record states one explicit result: ADOPT or RETAIN CURL.
 
 ## Explicit non-goals
 
@@ -349,4 +349,94 @@ Do not include:
 
 ## Closure record
 
-Pending experiment and implementation decision.
+Result: **RETAIN CURL** (no-change successful closure).
+
+An implementation-quality eggfetch 0.2 adapter was built, exercised against
+deterministic local fixtures alongside the curl baseline, measured, and then
+reverted. The updater contract is unchanged; external `curl` remains the
+update transport.
+
+### What was built and proven (then reverted)
+
+A private synchronous adapter (`gregg-update/src/http.rs`, since removed)
+drove eggfetch 0.2 on a per-call current-thread Tokio runtime (nested
+runtimes refused fail-closed via a `Handle::try_current` guard, never a
+nested runtime), with program `User-Agent`, absolute five-field total
+deadlines (15 s metadata / 90 s downloads), redirects followed (max 50,
+curl parity), transparent decompression disabled, no logical retry, explicit
+`ProxyEnvironment::from_env` routing (invalid values fail closed with fully
+redacted errors), default native-roots-with-WebPKI-fallback TLS, request
+`max_decoded_body_size` for metadata, and streaming asset downloads with a
+running 64 MiB cap, declared-length precheck, and partial-file removal on
+every failure path (handle dropped before removal for Windows). Failure
+mapping used typed eggfetch evidence only (`is_timeout`, `Error::*`,
+`network_failure_kind`); no error strings were inspected and proxy URLs
+never entered messages. `UpdateSpec`/`UpdatePlan`/`DownloadOutcome`/public
+error categories and the staged checksum/candidate/Cargo/lifecycle flow
+were untouched.
+
+Fixture results before revert (all green): metadata 200/oversized/stall/
+500, asset direct-200/redirect→200/redirect→404/direct-404/500/refused/DNS/
+declared-oversize/close-delimited 65 MiB flood/chunked-200/truncated/slow-
+trickle-timeout, proxy route selection, `NO_PROXY` bypass, invalid-proxy
+fail-closed with redaction, `User-Agent` capture on both paths, and nested-
+runtime refusal — 23 adapter tests green, plus 6 equivalent curl-baseline
+fixture tests green (real `curl` against the same local servers: direct 200,
+redirect→200, 404→`NotFound`, 500 hard failure, metadata capture 200,
+metadata oversize rejection).
+
+### Footprint gate (decisive)
+
+Parity requires `redirects` + `tls-native-roots` + `proxy`. The `proxy`
+feature pulls the broad `http1` alias (`native-http1`/`advanced-routing`,
+`logical-retry`, `redirects`, `basic-auth`) plus `eggfetch-http-connect`,
+so the candidate graph contains exactly the capabilities Plans 118/119/125
+excluded, and the daemon gains its first TLS stack (`rustls`/`ring`/
+`rustls-webpki`/`webpki-roots`/`hyper-rustls`/`tokio-rustls`/
+`rustls-native-certs`), `base64`, `getrandom 0.2`, `httpdate`, `url`, and a
+second `thiserror` major line. `gregg-update` tree: 39 → 233 lines.
+
+Stripped fat-LTO release sizes, same profile/target/toolchain:
+
+| Binary | Baseline (Plan-125 HEAD) | Candidate | Delta |
+|--------|--------------------------|-----------|-------|
+| `gregg` | 3,740,592 | 5,510,088 | +1,769,496 (+47.3%) |
+| `greggd` | 2,432,408 | 4,989,488 | +2,557,080 (+105.1%) |
+
+(`gregg` links `gregg-update` too, so both binaries embed the updater; no
+separate-build unification artifact.) The stop-and-review threshold (>5%
+**and** ≥128 KiB on `greggd`) is exceeded ~20×. No maintenance/reliability
+justification outweighs doubling the small daemon for a rarely-run command:
+curl stays a documented runtime requirement either way, updater error detail
+would become less verbose (fixed categories instead of curl stderr), and
+trust behavior would shift subtly (rustls+platform-roots vs the platform
+verifier curl delegates to). A reduced no-proxy configuration was not
+measured because it cannot satisfy the plan's proxy-parity requirement, so
+no compliant configuration can pass the gate.
+
+Measurement hygiene note: the first post-revert `greggd` link measured
+2,497,960 (+65,552); a forced rebuild reproduced the exact baseline
+2,432,408, and `gregg` reproduced 3,740,592 exactly, confirming a stale
+incremental link rather than a source delta. Candidate sizes are single
+single-build measurements; any staleness there could only understate growth
+(stale lean objects), so 4,989,488 is a floor and the 20× margin is robust.
+
+### What was kept
+
+- `exec::parse_stable_version_response` extraction with 6 unit tests
+  (previously inline, untestable): valid/missing/empty/non-stable/invalid-
+  JSON/oversized.
+- 6 hermetic curl-baseline fixture tests (`exec::tests::curl_baseline`)
+  with a proxy-env sanitizing guard and background-thread servers: direct
+  200, redirect→200, 404→`NotFound`, 500 hard failure, metadata capture,
+  metadata oversize. Plus a `tokio` dev-dependency (test-only; zero release
+  footprint — production tree is back to 39 lines and both release binaries
+  reproduce their baselines byte-for-byte).
+- Plan 125's polling-client adoption is untouched.
+
+### Revert verification
+
+`cargo fmt --check`, strict clippy, full workspace tests on stable and
+`+1.89` (41 `gregg-update` tests green), `cargo doc --no-deps`, and
+`./scripts/check-local.sh` all green at the final state; daemon graph
+contains zero eggfetch/rustls; release sizes reproduce baselines exactly.

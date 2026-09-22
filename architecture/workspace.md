@@ -317,6 +317,21 @@ service-management) are untouched. `Cargo.lock` is intentionally
 re-resolved under the new floor and all `--locked` repository/install
 paths remain valid.
 
+### Dependency dispositions (Plan 125, eggfetch 0.2 adoption)
+
+Plan 125 moves the Plan 119 lean transport to published `eggfetch-core 0.2.0`
+with the exact same feature selection (`standard-http1` + `tls-rustls`,
+defaults off) in the `gregg` client only. No application source change was
+needed: the 0.2.0 Rust surface used by Gregg is unchanged, 3xx responses
+still pass through with no second hop, the absolute `Timeout.total`
+body-stage mapping is unchanged, and the resolved feature graph still owns
+only `standard-http1` (→ `transport-http1`, `standard-route`,
+`high-level-url`) plus `tls-rustls`. The stripped fat-LTO release `gregg`
+binary remeasured at 3,740,592 bytes, identical to the Plan 119/124 baseline
+(delta 0). Plan 119 remains the historical 0.1.7 adoption record.
+`gregg-update` still uses external `curl`; Plan 126 measured the eggfetch
+in-process candidate and closed RETAIN CURL (+105% stripped `greggd`).
+
 ### Dependency dispositions (Plan 119, eggfetch lean profile)
 
 Plan 119 tightens the Plan 118 `eggfetch-core 0.1.5` transport to the

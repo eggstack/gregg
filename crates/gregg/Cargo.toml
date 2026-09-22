@@ -40,7 +40,7 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 thiserror = { version = "1.0", default-features = false }
 tokio = { version = "1", features = ["rt", "macros", "time", "sync", "signal", "net"] }
-eggfetch-core = { version = "0.1.7", default-features = false, features = ["standard-http1", "tls-rustls"] }
+eggfetch-core = { version = "0.2", default-features = false, features = ["standard-http1", "tls-rustls"] }
 url = "2"
 tokio-util = "0.7"
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }

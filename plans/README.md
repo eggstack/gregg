@@ -154,22 +154,28 @@ overstated timing-evidence wording. Plan 124 closed only those corrections at
 implementation `b8d72b2`; the performance architecture remains intact. Current
 main CI is green, including run `35541246292`.
 
-Plan 125 is ready for implementation as the narrow adoption of published
-`eggfetch-core 0.2.0` for the existing Gregg Systems/EggPool client. It keeps
-Plan 119's `standard-http1 + tls-rustls` feature boundary, preserves the
-single-dispatch/no-redirect/no-retry transport contract, re-runs the existing
-timeout/body/network classification regressions, proves the lean feature graph
-did not widen, and remeasures the current 3,740,592-byte stripped `gregg`
-baseline. It explicitly does not change `gregg-update`.
+Plan 125 is complete as the narrow adoption of published `eggfetch-core 0.2.0`
+for the existing Gregg Systems/EggPool client. It kept Plan 119's
+`standard-http1 + tls-rustls` feature boundary with a dependency-only change
+(no application source change), preserved the single-dispatch/no-redirect/
+no-retry transport contract, re-ran the timeout/body/network classification
+regressions, proved the lean feature graph did not widen, and remeasured the
+stripped `gregg` baseline at 3,740,592 bytes (delta 0). It did not change
+`gregg-update`. See `125-eggfetch-0-2-lean-client-adoption.md`.
 
-Plan 126 follows Plan 125 and is a benchmark/footprint-gated updater transport
-consolidation experiment. It tests whether `gregg-update` can replace external
-`curl` with an internal eggfetch 0.2 adapter while preserving redirects,
-native trust, environment-proxy behavior, exact-final-404 Cargo fallback,
-metadata/download bounds, partial-file cleanup, and the current synchronous
-update API. The experiment must measure both client and daemon release
-footprints and may close successfully with either ADOPT or RETAIN CURL; a
-no-change result is preferred over a material small-daemon regression.
+Plan 126 is complete with result RETAIN CURL. The benchmark-gated updater
+transport consolidation experiment built an implementation-quality private
+eggfetch 0.2 adapter (sync API, absolute deadlines, redirects, native roots,
+explicit environment-proxy routing, streaming 64 MiB cap, partial cleanup,
+typed error mapping) and exercised it against deterministic local fixtures
+alongside the curl baseline (23 adapter + 6 baseline tests green). The
+parity-complete feature set (`redirects` + `tls-native-roots` + `proxy`,
+which pulls the broad `http1` alias) grew stripped `greggd` 2,432,408 →
+4,989,488 bytes (+105%, ~20× the 5%/128 KiB gate) and `gregg` +47%, so the
+candidate was reverted cleanly. External `curl` remains the update
+transport; the kept transport-neutral parse/fixture regressions and the
+measured rationale are recorded in
+`126-eggfetch-updater-transport-consolidation-experiment.md`.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -292,8 +298,8 @@ excluded.
 | [`122-tui-render-path-and-redraw-optimization.md`](122-tui-render-path-and-redraw-optimization.md) | Reduce no-op redraws, fleet cache lookup/copy work, repeated suffix formatting, and duplicate condensed preformatting without visual changes | complete; implementation `45582ce`; CI `35538999184` green |
 | [`123-daemon-status-publication-and-http-serialization-optimization.md`](123-daemon-status-publication-and-http-serialization-optimization.md) | Cache immutable status JSON per publication and remove unused ready-health cloning while preserving typed APIs and stale/health semantics | complete; implementation `45582ce`; CI `35538999184` green |
 | [`124-runtime-optimization-compatibility-and-evidence-corrective-pass.md`](124-runtime-optimization-compatibility-and-evidence-corrective-pass.md) | Restore exact stale-after-failure response messages and reconcile unrecorded performance-evidence wording without reopening the optimization architecture | complete; implementation `b8d72b2`; CI `35541246292` green |
-| [`125-eggfetch-0-2-lean-client-adoption.md`](125-eggfetch-0-2-lean-client-adoption.md) | Upgrade the existing lean Gregg polling transport to published eggfetch-core 0.2.0 without widening capabilities or changing observable behavior | ready for implementation |
-| [`126-eggfetch-updater-transport-consolidation-experiment.md`](126-eggfetch-updater-transport-consolidation-experiment.md) | Benchmark-gated experiment to replace gregg-update's external curl transport with eggfetch 0.2 while preserving update semantics and small-binary goals | ready after 125; closure may ADOPT or RETAIN CURL |
+| [`125-eggfetch-0-2-lean-client-adoption.md`](125-eggfetch-0-2-lean-client-adoption.md) | Upgrade the existing lean Gregg polling transport to published eggfetch-core 0.2.0 without widening capabilities or changing observable behavior | complete; dependency-only change, lockfile 0.2.0, stripped `gregg` 3,740,592 bytes (delta 0) |
+| [`126-eggfetch-updater-transport-consolidation-experiment.md`](126-eggfetch-updater-transport-consolidation-experiment.md) | Benchmark-gated experiment to replace gregg-update's external curl transport with eggfetch 0.2 while preserving update semantics and small-binary goals | complete with RETAIN CURL; parity candidate doubled stripped `greggd` (+105%), reverted cleanly |
 
 Dependency order:
 

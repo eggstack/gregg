@@ -1,6 +1,6 @@
 # Plan 125: eggfetch 0.2.0 lean client adoption
 
-Status: ready for implementation.
+Status: complete.
 
 Depends on: completed Plan 119's lean eggfetch client baseline and the current post-Plan-124 main branch.
 
@@ -205,20 +205,52 @@ Finally run one ordinary existing CI workflow. Do not add a new workflow, matrix
 
 ## Acceptance criteria
 
-- [ ] `crates/gregg/Cargo.toml` uses published `eggfetch-core 0.2` and the lockfile resolves 0.2.0.
-- [ ] The selected features remain exactly the lean `standard-http1 + tls-rustls` capability set needed by Gregg.
-- [ ] No advanced-routing/retry/redirect/Basic/proxy/compression/HTTP2/HTTP3 capability enters the Gregg graph.
-- [ ] Existing Systems and EggPool source compiles without behavior-expanding refactors.
-- [ ] 3xx responses remain unfollowed.
-- [ ] Absolute total-deadline/body-stall/trickle regressions remain green.
-- [ ] Body-limit and typed network classifications remain unchanged.
-- [ ] Bearer-auth handling remains unchanged and secrets remain redacted.
-- [ ] Current-main and post-upgrade stripped `gregg` sizes are recorded under the same build conditions.
-- [ ] Any material binary-size change is attributed before closure.
+- [x] `crates/gregg/Cargo.toml` uses published `eggfetch-core 0.2` and the lockfile resolves 0.2.0.
+- [x] The selected features remain exactly the lean `standard-http1 + tls-rustls` capability set needed by Gregg.
+- [x] No advanced-routing/retry/redirect/Basic/proxy/compression/HTTP2/HTTP3 capability enters the Gregg graph.
+- [x] Existing Systems and EggPool source compiles without behavior-expanding refactors.
+- [x] 3xx responses remain unfollowed.
+- [x] Absolute total-deadline/body-stall/trickle regressions remain green.
+- [x] Body-limit and typed network classifications remain unchanged.
+- [x] Bearer-auth handling remains unchanged and secrets remain redacted.
+- [x] Current-main and post-upgrade stripped `gregg` sizes are recorded under the same build conditions.
+- [x] Any material binary-size change is attributed before closure.
 - [ ] Full workspace tests, strict clippy, Rust 1.89 tests, local checks, and one ordinary CI run are green.
-- [ ] Current-state docs refer to eggfetch 0.2 while Plan 119 remains truthful historical evidence.
-- [ ] No `gregg-update` transport change is mixed into this plan.
+- [x] Current-state docs refer to eggfetch 0.2 while Plan 119 remains truthful historical evidence.
+- [x] No `gregg-update` transport change is mixed into this plan.
 
 ## Closure record
 
-Pending implementation.
+Complete. Dependency-only change: `crates/gregg/Cargo.toml` now requires
+`eggfetch-core 0.2` (lockfile resolves 0.2.0, checksum
+`6cd254b8...`); no application source change was needed, confirming the
+upstream API-preserving record for every Gregg-used surface
+(`Client::builder/get`, `max_idle_connections_per_host`,
+`max_decoded_body_size`, `RequestBuilder::send`, `Response::status/bytes`,
+`AuthScheme::bearer`, `Error::DecodedBodyTooLarge/Timeout/TransportIoTimeout`,
+`RequestFailure::network_failure_kind/NetworkFailureKind`).
+
+- Feature graph stayed lean: `cargo tree -p gregg -e features -i
+  eggfetch-core` shows only `standard-http1` (→ `transport-http1`,
+  `standard-route`, `high-level-url`) plus `tls-rustls`; no
+  advanced-routing/retry/redirect/Basic/proxy/compression/HTTP2/HTTP3
+  capability entered the graph (only `base64ct` via `tls-rustls`'s
+  `pem-rfc7468`, not Basic-auth `base64`).
+- Plan-119 semantic regressions green: 46 poller tests plus EggPool tests,
+  including redirect-301 passthrough, header/body stall → `Timeout`, slow
+  trickle beyond total → `Timeout`, 64 KiB/60+10 KiB/chunked/close-delimited
+  body caps → `BodyTooLarge`, refused/DNS classifications, and
+  malformed/wrong-version handling.
+- Footprint: stripped fat-LTO `cargo build --release -p gregg` measured
+  3,740,592 bytes both at pre-change HEAD (separate worktree, same
+  environment) and post-change — delta 0, no attribution needed.
+- Gates: `cargo fmt --check`, `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings`, `cargo test --workspace --all-targets
+  --all-features` (stable 1.98.1 and `+1.89`), `cargo doc --workspace
+  --no-deps`, and `./scripts/check-local.sh` (default) all green.
+- Docs: `AGENTS.md`, `architecture/workspace.md` (new Plan 125 disposition,
+  Plan 119 kept historical), `gregg-client` skill, `CHANGELOG.md`, and
+  `plans/README.md` updated; no compression-fix release notes (Gregg enables
+  no compression feature).
+- `gregg-update` untouched (still external `curl`); transport consolidation
+  is Plan 126.

@@ -92,6 +92,12 @@ target in all consumers at once, never in one place alone.
 ## Key constraints
 
 - No dependency on app crates, service managers, TUI, EggPool, or protocol.
+- External `curl` remains the update transport (Plan 126 experiment closed
+  RETAIN CURL: the parity-complete eggfetch 0.2 candidate required the broad
+  `http1` alias plus a first TLS stack in the daemon and grew stripped
+  `greggd` 2,432,408 → 4,989,488 bytes, ~20× the adoption gate, so it was
+  reverted; `exec::tests::curl_baseline` now locks the curl
+  redirect/404/hard-failure/capture contract against local fixtures).
 - Uninstall stays in the same boundary: the shared crate owns only generic
   executable operations (resolution, path equivalence, preflight, self-delete,
   Cargo ownership). Startup teardown and config/data removal live beside their

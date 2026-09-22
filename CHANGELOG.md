@@ -7,6 +7,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **eggfetch 0.2 lean client adoption (Plan 125):** the `gregg` client now
+  builds on published `eggfetch-core 0.2.0` with the unchanged lean
+  `standard-http1` + `tls-rustls` profile. No polling, redirect, timeout,
+  body-limit, auth, or outcome behavior changes; the stripped fat-LTO
+  release `gregg` binary is unchanged at 3,740,592 bytes.
+
+- **Updater transport experiment closed (Plan 126, RETAIN CURL):** an
+  implementation-quality in-process eggfetch 0.2 updater candidate was
+  built, fixture-tested, measured, and reverted — the parity-complete
+  feature set doubled the stripped `greggd` binary, so external `curl`
+  remains the update transport with no behavior change. Kept from the
+  experiment: a unit-tested crates.io response parser and hermetic
+  end-to-end `curl` regression fixtures (redirect, exact-404 fallback,
+  hard failures, metadata capture/bounds).
+
 ### Performance
 
 - **Bounded runtime optimization campaign (Plans 121-123):** daemon samples
