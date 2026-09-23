@@ -1,6 +1,6 @@
 # Plan 127: EggServe 0.2 daemon HTTP transport adoption
 
-Status: in progress; published EggServe 0.2.1 satisfies both upstream runtime gates.
+Status: complete at implementation `1861bbc`; existing CI run `35871682878` is green across all five jobs.
 
 Depends on: completed Plans 123-126, the current post-Plan-126 daemon/runtime baseline, and a published EggServe 0.2.x direct-server API that satisfies the lifecycle and connection-lifetime gates in this plan. This work is independent of the remaining Plan 091 soak record.
 
@@ -412,25 +412,25 @@ No new workflow, matrix, privileged runner, benchmark service, or evidence bundl
 
 ## Acceptance criteria
 
-- [ ] A published EggServe 0.2.x direct-server API satisfies the critical-task lifecycle/error-propagation gate without a Gregg-owned duplicate generic accept loop.
-- [ ] The selected EggServe runtime can preserve unlimited healthy keep-alive total lifetime semantics rather than silently imposing the 0.2.0 60-second default.
-- [ ] `greggd` production HTTP uses only `eggserve-server` + `eggserve-primitives` from EggServe; no core/static/TLS/H2/H3 compatibility surface is pulled in.
-- [ ] The listener is still bound before readiness publication and bind failures retain the existing startup error path.
-- [ ] Unexpected HTTP-runtime exit/error remains a critical daemon failure.
-- [ ] Unix signal/control-socket and Windows SCM shutdown still converge on the existing shared daemon cleanup path.
-- [ ] The outer Gregg bounded shutdown deadline remains authoritative and active requests drain/cancel deterministically.
-- [ ] All existing public routes, v1/v2 payloads, status codes, staleness messages, Windows v2-only behavior, and content types are unchanged.
-- [ ] HEAD/405/404/framing/header behavior is characterized before migration and remains equivalent afterward.
-- [ ] Publication-time compact v1/v2 JSON is still serialized once and cached as cheap-clone bytes.
-- [ ] Repeated fresh status requests do not copy the full cached JSON body per request.
-- [ ] Long-lived Eggfetch polling reuses healthy keep-alive connections without forced periodic reconnects from an EggServe total-lifetime default.
-- [ ] Runtime limits are explicit and no new finite admission/timeout policy is introduced accidentally.
-- [ ] Direct Axum/Tower/body-util dependencies that became unused are removed.
-- [ ] The final feature graph contains no EggServe static/TLS/H2/H3/QUIC/Python compatibility capability.
-- [ ] Fresh before/after stripped `greggd` sizes are recorded and any material growth is attributed before closure.
-- [ ] Lightweight loopback comparison finds no material regression requiring rollback.
-- [ ] Focused tests, full workspace tests, strict clippy, Rust 1.89 check, docs, default local check, and one ordinary existing CI run are green.
-- [ ] Current architecture/agent/skill documentation names EggServe as the server transport authority while historical plans remain intact.
+- [x] A published EggServe 0.2.x direct-server API satisfies the critical-task lifecycle/error-propagation gate without a Gregg-owned duplicate generic accept loop.
+- [x] The selected EggServe runtime can preserve unlimited healthy keep-alive total lifetime semantics rather than silently imposing the 0.2.0 60-second default.
+- [x] `greggd` production HTTP uses only `eggserve-server` + `eggserve-primitives` from EggServe; no core/static/TLS/H2/H3 compatibility surface is pulled in.
+- [x] The listener is still bound before readiness publication and bind failures retain the existing startup error path.
+- [x] Unexpected HTTP-runtime exit/error remains a critical daemon failure.
+- [x] Unix signal/control-socket and Windows SCM shutdown still converge on the existing shared daemon cleanup path.
+- [x] The outer Gregg bounded shutdown deadline remains authoritative and active requests drain/cancel deterministically.
+- [x] All existing public routes, v1/v2 payloads, status codes, staleness messages, Windows v2-only behavior, and content types are unchanged.
+- [x] HEAD/405/404/framing/header behavior is characterized before migration and remains equivalent afterward.
+- [x] Publication-time compact v1/v2 JSON is still serialized once and cached as cheap-clone bytes.
+- [x] Repeated fresh status requests do not copy the full cached JSON body per request.
+- [x] Long-lived Eggfetch polling reuses healthy keep-alive connections without forced periodic reconnects from an EggServe total-lifetime default.
+- [x] Runtime limits are explicit and no new finite admission/timeout policy is introduced accidentally; the required bounded transport hardening is classified above and documented for operators.
+- [x] Direct Axum/Tower/body-util dependencies that became unused are removed.
+- [x] The final feature graph contains no EggServe static/TLS/H2/H3/QUIC/Python compatibility capability.
+- [x] Fresh before/after stripped `greggd` sizes are recorded and the measured increase is attributed below.
+- [x] Lightweight loopback comparison found no material regression requiring rollback at Gregg's expected status-polling rate.
+- [x] Focused tests, full workspace tests, strict clippy, Rust 1.89 check, docs, default local check, and one ordinary existing CI run are green.
+- [x] Current architecture/agent/skill documentation names EggServe as the server transport authority while historical plans remain intact.
 
 ## Explicit non-goals
 
@@ -495,3 +495,61 @@ The published `eggserve-server` 0.2.x line now resolves to 0.2.1 (`cargo search 
 - **Gate B passes:** `RuntimeConfigBuilder::disable_connection_total_timeout()` sets the ceiling to `Duration::ZERO`; validation accepts it and the connection driver skips the total deadline while other independent timeouts remain active.
 
 Pre-bound `TcpListener` adoption remains available through `ServerBuilder::from_listener`. Plan 127 is reopened for implementation using `eggserve-server = "0.2"` (Cargo currently resolves 0.2.1) and `eggserve-primitives = "0.2"` (currently 0.2.0). The gate review authorizes proceeding with the remaining compatibility, dependency, runtime, footprint, documentation, and CI acceptance work; it does not by itself close those criteria.
+
+### Execution and closure (2026-09-23)
+
+The daemon's Axum boundary is replaced with a small EggServe canonical-service
+adapter. The pre-bound listener is handed to EggServe before readiness is
+published. `ServerControl` is retained for graceful shutdown while
+`ServerCompletion::wait()` remains a critical supervised task; terminal runtime
+errors and panics reach the existing daemon failure outcome. On callback error,
+the runtime is shut down and joined under Gregg's outer ten-second deadline.
+Successful cached status responses use one known-length stream chunk containing
+a cheap-cloned `Bytes`; they do not copy or reserialize the full cached body.
+The raw-wire regression checks all five GET/HEAD routes, status framing and
+content types, `Date`/`Server` policy, 405 `Allow`, fallback 404 bodies, GET
+bodies, and persistent v1/v2 reuse.
+
+The final direct dependency graph contains `eggserve-server 0.2.1` and
+`eggserve-primitives 0.2.0`, with `bytes` and `futures-util` used by Gregg's
+known-length shared-body adapter. Direct Axum, Tower, Hyper-client, and
+`http-body-util` facade dependencies were removed. Hyper and `http-body-util`
+remain transitively inside EggServe; the EggServe branch has H1 only and no
+TLS, H2/H3, QUIC, static, or Python capabilities.
+
+Size evidence uses the same stable toolchain, target, and stripped fat-LTO
+release profile on the current-main pre-change baseline and candidate:
+2,432,408 bytes before versus 2,629,008 bytes after (+196,600 bytes, +8.1%).
+The increase clears the plan's review threshold. The binary's text section is
+2,522,595 bytes; `cargo tree` attributes the net change to adopting EggServe's
+accept/connection lifecycle, canonical conversion, request policy, and runtime
+limit machinery while removing Axum's router/facade. Hyper itself remains a
+transitive transport dependency in both configurations. At 2.63 MB the daemon
+remains within the project's small-binary target, and the additional code buys
+the independently supervised runtime and explicit bounded H1 policy required
+by the plan.
+
+A temporary release-mode loopback probe published one fixed snapshot and sent
+5,000 alternating v1/v2 requests over one persistent socket after 500 warm-up
+requests. Two runs measured Axum at 23.6–24.1k requests/second and EggServe at
+15.4–17.3k requests/second. EggServe is slower in this microbenchmark by about
+28–36%, or roughly 16–23 microseconds per cached request. This is not material
+for the daemon's low-rate cached polling workload; the candidate still serves
+over 15k cached status requests/second on one connection. The probe was removed
+after measurement. Structural tests continue to verify one serialization per
+publication, and code review verifies the cached path yields shared `Bytes`
+without a full-body copy.
+
+Local verification passed:
+
+- `cargo fmt --all -- --check`;
+- `RUSTFLAGS='-D warnings' cargo clippy --workspace --all-targets --all-features -- -D warnings`;
+- `RUSTFLAGS='-D warnings' cargo test --workspace --all-targets --all-features`;
+- `cargo +1.89 check --workspace --all-features`;
+- `cargo doc --workspace --no-deps` (completed with existing unrelated rustdoc link warnings);
+- `./scripts/check-local.sh`.
+
+The implementation commit `1861bbc` passed existing CI run `35871682878`:
+Linux, macOS arm64, macOS Intel, Windows tests/release builds/SCM smoke, and
+the Rust 1.89 MSRV check all succeeded. Current-state documentation was
+updated in the same implementation pass; earlier plans remain historical.
