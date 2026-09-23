@@ -14,6 +14,10 @@ GET /v2/healthz # v2 health
 Clients request `/v2/status` first and fall back to `/v1/status` only on
 404. `/v2/status` is the universal cross-platform endpoint.
 
+The HTTP/1 API supports GET and HEAD on the documented routes. Other methods on
+known routes return 405 with `Allow: GET,HEAD`; unknown routes return 404.
+Request bodies are ignored up to 64 KiB and larger bodies are rejected.
+
 If the system clock moves backward, a snapshot timestamp that is temporarily
 in the future is treated as fresh rather than stale; age-based staleness
 resumes once the clock catches up.

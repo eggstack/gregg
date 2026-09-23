@@ -60,7 +60,10 @@ defined in `collector/mod.rs`. Only one platform module is compiled per target.
 
 ## HTTP server module
 
-The daemon's HTTP server lives under `crates/greggd/src/server/`. It serves five
+The daemon uses EggServe's direct H1 runtime through `eggserve-server` and
+canonical transport values from `eggserve-primitives`; it does not depend on
+EggServe core/static compatibility crates or direct Hyper. The server lives
+under `crates/greggd/src/server/` and serves five
 read-only endpoints:
 
 - `/` and `/v1/status` — return the cached v1 `StatusSnapshot` as JSON on

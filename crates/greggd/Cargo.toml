@@ -24,7 +24,10 @@ path = "src/lib.rs"
 [dependencies]
 gregg-protocol = { version = "1.0.14", path = "../gregg-protocol" }
 gregg-update = { version = "1.0.14", path = "../gregg-update" }
-axum = { version = "0.7", default-features = false, features = ["http1", "tokio"] }
+eggserve-primitives = { version = "0.2", default-features = false }
+eggserve-server = { version = "0.2", default-features = false }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -42,10 +45,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
-tower = { version = "0.4", features = ["util"] }
-hyper = { version = "1.0", features = ["client"] }
 gregg-protocol = { version = "1.0.14", path = "../gregg-protocol", features = ["test_support"] }
-http-body-util = "0.1"
 
 [lints]
 workspace = true

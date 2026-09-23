@@ -256,10 +256,19 @@ where
         .await
         .map_err(|e| Box::new(ServerError::Bind(e)) as Box<dyn std::error::Error>)?;
 
-    // The caller may publish an external readiness state now that binding
-    // has succeeded. No daemon tasks have been spawned before this point, so
-    // a readiness publication failure cannot leave a serving daemon behind.
-    on_ready()?;
+    // Start EggServe on the caller-bound listener before publishing external
+    // readiness. The returned control/completion pair preserves independent
+    // shutdown and terminal-result supervision.
+    let (server_control, mut server_completion) =
+        crate::server::start(listener, server_state.clone()).await?;
+
+    // If external readiness publication fails, stop the already-bound
+    // runtime and wait under the same outer cleanup bound.
+    if let Err(error) = on_ready() {
+        server_control.shutdown();
+        let _ = tokio::time::timeout(SHUTDOWN_DEADLINE, server_completion.wait()).await;
+        return Err(error);
+    }
 
     // Spawn the sampler task.
     let sampler_handle = {
@@ -279,11 +288,15 @@ where
         })
     };
 
-    // Spawn the HTTP server task with the pre-bound listener.
-    let server_handle = {
-        let shutdown_rx = shutdown_tx.subscribe();
-        tokio::spawn(crate::server::serve(listener, server_state, shutdown_rx))
-    };
+    // Keep the typed EggServe completion future under the existing task
+    // supervisor so clean unexpected exit, terminal error, or panic fails run.
+    let server_handle = tokio::spawn(async move {
+        server_completion
+            .wait()
+            .await
+            .map(|_| ())
+            .map_err(|error| ServerError::Runtime(std::io::Error::other(error)))
+    });
 
     // Supervise: wait for shutdown signal, server failure, or sampler failure.
     // The select produces an outcome; common cleanup runs after the select
@@ -295,6 +308,7 @@ where
 
     // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());
+    server_control.shutdown();
 
     // Join surviving tasks within a single bounded deadline.
     join_remaining_tasks(server_handle, sampler_handle).await;

@@ -9,6 +9,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Daemon HTTP runtime consolidation (Plan 127):** `greggd` now uses EggServe 0.2.1's direct HTTP/1 server and canonical request/response types. The existing routes, schemas, staleness decisions, cached status bytes, and wire headers remain covered by transport-neutral and raw-wire tests. EggServe's independent server-completion signal remains under daemon supervision, and total connection lifetime is disabled for pooled clients. No protocol change.
+
 - **eggfetch 0.2 lean client adoption (Plan 125):** the `gregg` client now
   builds on published `eggfetch-core 0.2.0` with the unchanged lean
   `standard-http1` + `tls-rustls` profile. No polling, redirect, timeout,

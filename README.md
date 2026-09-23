@@ -8,7 +8,7 @@
 A compact terminal monitor for observing CPU, memory, swap, load, disk usage,
 and optional live throughput across multiple machines over LAN.
 
-A lightweight daemon (`greggd`) runs on each machine you want to monitor and exposes a read-only JSON API on port `11310`. The `gregg` client polls configured daemons and renders a live TUI.
+A lightweight daemon (`greggd`) runs on each machine you want to monitor and exposes a read-only HTTP/1 JSON API on port `11310`, served by EggServe's direct H1 runtime. The `gregg` client polls configured daemons and renders a live TUI.
 
 Schema-v2 status responses may include best-effort native live telemetry: current
 CPU frequency, de-duplicated disk read/write bytes per second, and directional

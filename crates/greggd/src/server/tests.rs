@@ -1,38 +1,129 @@
 use super::*;
-use axum::body::Body;
-use axum::http::{Method, Request, StatusCode};
+use eggserve_primitives::canonical::{ResponseBody, StatusCode};
+use eggserve_primitives::connection_info::{ConnectionInfo, Scheme};
+use eggserve_primitives::header_block::HeaderBlock;
+use eggserve_primitives::method::Method;
+use eggserve_primitives::request::Request;
+use eggserve_primitives::request_body::RequestBody;
+use eggserve_primitives::request_head::RequestHead;
+use eggserve_primitives::request_target::RequestTarget;
+use eggserve_primitives::version::HttpVersion;
+use futures_util::StreamExt;
 use gregg_protocol::test_support::{
     LinuxSnapshotBuilder, LinuxSnapshotV2Builder, WindowsSnapshotV2Builder,
 };
 use gregg_protocol::v2::{DriveMetrics, HealthResponseV2};
 use gregg_protocol::{HealthCategory, ReadinessState, StatusSnapshot};
-use http_body_util::BodyExt;
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tower::ServiceExt;
 
-fn build_test_router(state: ServerState) -> Router {
-    Router::new()
-        .route("/", axum::routing::get(status_handler))
-        .route("/v1/status", axum::routing::get(status_handler))
-        .route("/v2/status", axum::routing::get(status_handler_v2))
-        .route("/healthz", axum::routing::get(health_handler))
-        .route("/v2/healthz", axum::routing::get(health_handler_v2))
-        .fallback(fallback_handler)
-        .with_state(state)
+#[test]
+fn eggserve_runtime_keeps_unlimited_lifetime_and_explicit_bounds() {
+    let config = runtime_config().unwrap();
+
+    assert_eq!(config.connection_total_timeout, Duration::ZERO);
+    assert_eq!(config.max_connections, Semaphore::MAX_PERMITS);
+    assert_eq!(config.max_in_flight_requests, Semaphore::MAX_PERMITS);
+    assert_eq!(config.max_headers, 100);
+    assert_eq!(config.max_buf_size, 417_792);
+    assert_eq!(config.max_header_bytes, 417_792);
+    assert_eq!(config.max_request_target_bytes, 65_536);
+    assert_eq!(config.max_request_body_bytes, MAX_REQUEST_BODY_BYTES);
+    assert_eq!(config.max_requests_per_connection, None);
+    assert_eq!(config.graceful_shutdown_timeout, Duration::from_secs(8));
+    assert_eq!(config.header_read_timeout, Duration::from_secs(10));
+    assert_eq!(config.handler_timeout, Duration::from_secs(30));
+    assert_eq!(config.body_read_timeout, Duration::from_secs(30));
+    assert_eq!(config.keep_alive_idle_timeout, Duration::from_secs(60));
+    assert_eq!(config.response_write_timeout, Duration::from_secs(30));
+    assert_eq!(config.response_policy.server_identification, None);
 }
 
-fn get(path: &str) -> Request<Body> {
-    Request::builder().uri(path).body(Body::from("")).unwrap()
+#[derive(Clone)]
+struct TestRequest {
+    method: String,
+    target: String,
 }
 
-fn post(path: &str) -> Request<Body> {
-    Request::builder()
-        .method(Method::POST)
-        .uri(path)
-        .body(Body::from(""))
-        .unwrap()
+struct TestResponse {
+    status: StatusCode,
+    headers: HashMap<String, String>,
+    body: Vec<u8>,
+}
+
+impl TestResponse {
+    fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    fn headers(&self) -> &HashMap<String, String> {
+        &self.headers
+    }
+}
+
+fn request(method: &str, target: &str) -> TestRequest {
+    TestRequest {
+        method: method.to_owned(),
+        target: target.to_owned(),
+    }
+}
+
+fn get(path: &str) -> TestRequest {
+    request("GET", path)
+}
+
+fn post(path: &str) -> TestRequest {
+    request("POST", path)
+}
+
+async fn call(state: &ServerState, request: TestRequest) -> TestResponse {
+    let method = Method::new(request.method).unwrap();
+    let target = RequestTarget::parse(request.target).unwrap();
+    let head = RequestHead::new(method, target, HttpVersion::Http11, HeaderBlock::new());
+    let connection = ConnectionInfo::with_socket_addrs(
+        "127.0.0.1:11310".parse().unwrap(),
+        "127.0.0.1:12345".parse().unwrap(),
+        Scheme::Http,
+        None,
+    );
+    let request = Request::new(head, RequestBody::empty(), connection);
+    let service = http_service(state.clone());
+    let mut response = service.call(request).await.unwrap();
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|header| {
+            (
+                header.name.as_str().to_ascii_lowercase(),
+                header.value.to_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let body = match response.take_body().unwrap_or(ResponseBody::Empty) {
+        ResponseBody::Empty | ResponseBody::EmptyWithLength(_) => Vec::new(),
+        ResponseBody::Bytes(bytes) => bytes,
+        ResponseBody::Stream(stream) => {
+            let (mut stream, _) = stream.into_parts();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                bytes.extend_from_slice(&chunk.unwrap());
+            }
+            bytes
+        }
+        ResponseBody::File(_) => panic!("Gregg service does not produce file bodies"),
+    };
+    TestResponse {
+        status,
+        headers,
+        body,
+    }
+}
+
+fn response_body_string(response: TestResponse) -> String {
+    String::from_utf8(response.body).unwrap()
 }
 
 /// Test helper: update snapshot with both v1 and v2 from a v1 snapshot.
@@ -41,9 +132,187 @@ async fn update_both(state: &ServerState, snap: StatusSnapshot) {
     state.update_snapshot(snap, snap_v2).await;
 }
 
-async fn response_body_string(response: axum::response::Response) -> String {
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    String::from_utf8(bytes.to_vec()).unwrap()
+async fn read_raw_response(
+    reader: &mut BufReader<TcpStream>,
+) -> (String, std::collections::HashMap<String, String>, Vec<u8>) {
+    let mut status_line = Vec::new();
+    reader.read_until(b'\n', &mut status_line).await.unwrap();
+    let status_line = String::from_utf8(status_line).unwrap();
+    let mut headers = std::collections::HashMap::new();
+    loop {
+        let mut line = Vec::new();
+        reader.read_until(b'\n', &mut line).await.unwrap();
+        if line == b"\r\n" || line.is_empty() {
+            break;
+        }
+        let line = String::from_utf8(line).unwrap();
+        let (name, value) = line.trim_end().split_once(':').unwrap();
+        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+    }
+    let body_len = headers
+        .get("content-length")
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mut body = vec![0; body_len];
+    reader.read_exact(&mut body).await.unwrap();
+    (status_line, headers, body)
+}
+
+fn parse_raw_response(
+    response: &[u8],
+) -> (String, std::collections::HashMap<String, String>, &[u8]) {
+    let separator = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap();
+    let (head, body) = response.split_at(separator);
+    let body = &body[4..];
+    let head = std::str::from_utf8(head).unwrap();
+    let mut lines = head.split("\r\n");
+    let status_line = lines.next().unwrap().to_owned();
+    let headers = lines
+        .map(|line| {
+            let (name, value) = line.split_once(':').unwrap();
+            (name.to_ascii_lowercase(), value.trim().to_owned())
+        })
+        .collect();
+    (status_line, headers, body)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(clippy::too_many_lines)]
+async fn raw_wire_contract_preserved_by_eggserve_transport() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (control, mut completion) = start(listener, state).await.unwrap();
+
+    let routes = ["/", "/v1/status", "/v2/status", "/healthz", "/v2/healthz"];
+    let mut get_lengths = std::collections::HashMap::new();
+    for route in routes {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                format!("GET {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let (status_line, headers, body) = parse_raw_response(&response);
+        assert!(status_line.contains("200"), "{route}: {status_line}");
+        assert_eq!(headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            headers
+                .get("content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            body.len()
+        );
+        assert!(!headers.contains_key("transfer-encoding"));
+        assert!(headers.contains_key("date"));
+        assert!(!headers.contains_key("server"));
+        get_lengths.insert(route, body.len());
+    }
+
+    for route in routes {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                format!("HEAD {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                    .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let (status_line, headers, body) = parse_raw_response(&response);
+        assert!(status_line.contains("200"), "{route}: {status_line}");
+        assert_eq!(headers.get("content-type").unwrap(), "application/json");
+        assert_eq!(
+            headers
+                .get("content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            get_lengths[route]
+        );
+        assert!(body.is_empty(), "HEAD {route} returned a body");
+    }
+
+    for (method, route, expected_status, expected_body) in [
+        ("POST", "/v1/status", "405", ""),
+        ("GET", "/unknown", "404", "GET /unknown not found"),
+        ("BREW", "/unknown", "404", "BREW /unknown not found"),
+    ] {
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "{method} {route} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
+        let (status_line, headers, body) = parse_raw_response(&response);
+        assert!(status_line.contains(expected_status), "{status_line}");
+        assert_eq!(body, expected_body.as_bytes());
+        assert_eq!(
+            headers
+                .get("content-length")
+                .unwrap()
+                .parse::<usize>()
+                .unwrap(),
+            body.len()
+        );
+        if expected_status == "405" {
+            assert_eq!(headers.get("allow").map(String::as_str), Some("GET,HEAD"));
+            assert_eq!(headers.get("content-length").map(String::as_str), Some("0"));
+        } else {
+            assert_eq!(
+                headers.get("content-type").map(String::as_str),
+                Some("text/plain; charset=utf-8")
+            );
+        }
+    }
+
+    let mut body_request = TcpStream::connect(addr).await.unwrap();
+    body_request
+        .write_all(
+            b"GET /v1/status HTTP/1.1\r\nHost: localhost\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    body_request.read_to_end(&mut response).await.unwrap();
+    let (status_line, _, _) = parse_raw_response(&response);
+    assert!(status_line.contains("200"), "GET with body: {status_line}");
+
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let mut stream = BufReader::new(stream);
+    for route in ["/v1/status", "/v2/status"] {
+        stream
+            .get_mut()
+            .write_all(format!("GET {route} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let (status_line, headers, _) = read_raw_response(&mut stream).await;
+        assert!(
+            status_line.contains("200"),
+            "keep-alive {route}: {status_line}"
+        );
+        assert!(!headers.contains_key("connection"));
+    }
+
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 // ===== State Tests =====
@@ -101,11 +370,11 @@ async fn status_serialization_is_cached_per_publication() {
         1
     );
 
-    let app = build_test_router(state.clone());
+    let app = state.clone();
     for _ in 0..10 {
-        let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+        let response = call(&app, get("/v1/status")).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+        let response = call(&app, get("/v2/status")).await;
         assert_eq!(response.status(), StatusCode::OK);
     }
     assert_eq!(
@@ -169,13 +438,9 @@ async fn missing_status_cache_falls_back_to_on_demand_serialization() {
     update_both(&state, snapshot.clone()).await;
     state.published.write().await.status_bytes = None;
 
-    let response = build_test_router(state.clone())
-        .oneshot(get("/v1/status"))
-        .await
-        .unwrap();
+    let response = call(&state, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let parsed: StatusSnapshot =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+    let parsed: StatusSnapshot = serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(parsed, snapshot);
     assert_eq!(
         state
@@ -301,8 +566,8 @@ async fn status_ready_returns_200_with_json() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap.clone()).await;
 
-    let app = build_test_router(state.clone());
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state.clone();
+    let response = call(&app, get("/v1/status")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -310,7 +575,7 @@ async fn status_ready_returns_200_with_json() {
         "application/json"
     );
 
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
 }
@@ -329,14 +594,14 @@ async fn v2_status_serializes_synthetic_drives_without_changing_v1() {
         .build_payload();
     state.update_snapshot(v1.clone(), payload).await;
 
-    let app = build_test_router(state);
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
-    let body = response_body_string(response).await;
+    let app = state;
+    let response = call(&app, get("/v2/status")).await;
+    let body = response_body_string(response);
     let parsed: gregg_protocol::v2::StatusPayloadV2 = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed.drives.as_ref().unwrap()[0].name, "/");
 
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
-    let body = response_body_string(response).await;
+    let response = call(&app, get("/v1/status")).await;
+    let body = response_body_string(response);
     let parsed_v1: StatusSnapshot = serde_json::from_str(&body).unwrap();
     assert_eq!(parsed_v1, v1);
 }
@@ -344,12 +609,12 @@ async fn v2_status_serializes_synthetic_drives_without_changing_v1() {
 #[tokio::test]
 async fn status_warming_returns_503() {
     let state = ServerState::new();
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Warming);
 }
@@ -361,13 +626,13 @@ async fn v1_status_v2_only_returns_503_with_health() {
     let snap_v2 = LinuxSnapshotV2Builder::default().build_payload();
     state.update_snapshot_v2_only(snap_v2).await;
 
-    let app = build_test_router(state);
+    let app = state;
 
     // /v1/status should return 503 because no v1 snapshot was provided.
-    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::NotServing));
@@ -377,9 +642,9 @@ async fn v1_status_v2_only_returns_503_with_health() {
     );
 
     // /v2/status should return 200 with the v2 snapshot.
-    let response = app.oneshot(get("/v2/status")).await.unwrap();
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed_v2: gregg_protocol::v2::StatusPayloadV2 = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed_v2.snapshot.schema_version, 2);
 }
@@ -390,13 +655,12 @@ async fn v2_only_state_keeps_all_v1_routes_not_serving_and_v2_ready() {
     state
         .update_snapshot_v2_only(LinuxSnapshotV2Builder::default().build_payload())
         .await;
-    let app = build_test_router(state);
+    let app = state;
 
     for path in ["/", "/v1/status", "/healthz"] {
-        let response = app.clone().oneshot(get(path)).await.unwrap();
+        let response = call(&app, get(path)).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
-        let body: HealthResponse =
-            serde_json::from_str(&response_body_string(response).await).unwrap();
+        let body: HealthResponse = serde_json::from_str(&response_body_string(response)).unwrap();
         assert_eq!(body.schema_version, 1);
         assert_eq!(body.state, ReadinessState::Failed);
         assert_eq!(body.category, Some(HealthCategory::NotServing));
@@ -404,12 +668,12 @@ async fn v2_only_state_keeps_all_v1_routes_not_serving_and_v2_ready() {
         assert_eq!(body.message.as_deref(), Some(V1_UNAVAILABLE_MESSAGE));
     }
 
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    let response = call(&app, get("/v2/healthz")).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: gregg_protocol::v2::HealthResponseV2 =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+        serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(body.state, ReadinessState::Ready);
     assert!(body.snapshot.is_some());
 }
@@ -421,14 +685,14 @@ async fn v2_only_failure_keeps_cached_status_but_fails_health() {
         .update_snapshot_v2_only(LinuxSnapshotV2Builder::default().build_payload())
         .await;
     state.set_failed("collector crashed").await;
-    let app = build_test_router(state);
+    let app = state;
 
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    let response = call(&app, get("/v2/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body: gregg_protocol::v2::HealthResponseV2 =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+        serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(body.state, ReadinessState::Failed);
     assert_eq!(body.category, Some(HealthCategory::CollectorFailure));
     assert!(body.snapshot.is_none());
@@ -444,12 +708,9 @@ async fn v2_only_failure_keeps_v1_not_serving_after_stale_threshold() {
     state.set_failed("failure 2").await;
     state.set_failed("failure 3").await;
 
-    let response = build_test_router(state)
-        .oneshot(get("/v1/status"))
-        .await
-        .unwrap();
+    let response = call(&state, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body: HealthResponse = serde_json::from_str(&response_body_string(response).await).unwrap();
+    let body: HealthResponse = serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(body.state, ReadinessState::Failed);
     assert_eq!(body.category, Some(HealthCategory::NotServing));
     assert_eq!(body.message.as_deref(), Some(V1_UNAVAILABLE_MESSAGE));
@@ -462,11 +723,11 @@ async fn root_returns_same_as_status() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.system.name, "deadpool");
 }
@@ -477,11 +738,11 @@ async fn healthz_ready_returns_200() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/healthz")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Ready);
     assert!(parsed.snapshot.is_some());
@@ -490,11 +751,11 @@ async fn healthz_ready_returns_200() {
 #[tokio::test]
 async fn healthz_warming_returns_503() {
     let state = ServerState::new();
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/healthz")).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Warming);
 }
@@ -502,8 +763,8 @@ async fn healthz_warming_returns_503() {
 #[tokio::test]
 async fn post_status_returns_405() {
     let state = ServerState::new();
-    let app = build_test_router(state);
-    let response = app.oneshot(post("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, post("/v1/status")).await;
 
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
@@ -511,17 +772,8 @@ async fn post_status_returns_405() {
 #[tokio::test]
 async fn post_unknown_route_returns_404() {
     let state = ServerState::new();
-    let app = build_test_router(state);
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method(Method::POST)
-                .uri("/nonexistent")
-                .body(Body::from(""))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let app = state;
+    let response = call(&app, request("POST", "/nonexistent")).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
@@ -529,8 +781,8 @@ async fn post_unknown_route_returns_404() {
 #[tokio::test]
 async fn nonexistent_path_returns_404() {
     let state = ServerState::new();
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/nonexistent")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/nonexistent")).await;
 
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
@@ -541,15 +793,15 @@ async fn response_content_type_is_json() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
 
-    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(
         response.headers().get("content-type").unwrap(),
         "application/json"
     );
 
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let response = call(&app, get("/healthz")).await;
     assert_eq!(
         response.headers().get("content-type").unwrap(),
         "application/json"
@@ -562,10 +814,10 @@ async fn json_body_is_valid_and_parseable() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: serde_json::Value = serde_json::from_str(&body_str).unwrap();
     assert!(parsed.is_object());
     assert_eq!(parsed["schema_version"], 1);
@@ -579,13 +831,11 @@ async fn concurrent_requests_return_same_snapshot() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap.clone()).await;
 
-    let app = build_test_router(state);
+    let app = state;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -625,7 +875,8 @@ async fn concurrent_requests_return_same_snapshot() {
         assert_eq!(parsed, snap);
     }
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 // ===== Stale Snapshot Tests =====
@@ -650,12 +901,12 @@ async fn stale_snapshot_served_when_within_age() {
     // Simulate a failure — snapshot is preserved.
     state.set_failed("collector error").await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     // Snapshot is within the max age, so it should be served.
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
 }
@@ -671,22 +922,21 @@ async fn stale_snapshot_rejected_when_max_failures_exceeded() {
     state.set_failed("failure 2").await;
     state.set_failed("failure 3").await;
 
-    let app = build_test_router(state);
-    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     // Snapshot is stale due to failure count.
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(parsed.message.as_deref(), Some("failure 3"));
     assert!(parsed.snapshot.is_none());
 
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let response = call(&app, get("/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let health: HealthResponse =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+    let health: HealthResponse = serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(health.state, ReadinessState::Failed);
     assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(health.message.as_deref(), Some("failure 3"));
@@ -703,20 +953,18 @@ async fn stale_v2_snapshot_preserves_latest_failure_message() {
     state.set_failed("failure 2").await;
     state.set_failed("failure 3").await;
 
-    let app = build_test_router(state);
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let status: HealthResponseV2 =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+    let status: HealthResponseV2 = serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(status.state, ReadinessState::Failed);
     assert_eq!(status.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(status.message.as_deref(), Some("failure 3"));
     assert!(status.snapshot.is_none());
 
-    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    let response = call(&app, get("/v2/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let health: HealthResponseV2 =
-        serde_json::from_str(&response_body_string(response).await).unwrap();
+    let health: HealthResponseV2 = serde_json::from_str(&response_body_string(response)).unwrap();
     assert_eq!(health.state, ReadinessState::Failed);
     assert_eq!(health.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(health.message.as_deref(), Some("failure 3"));
@@ -742,11 +990,11 @@ async fn healthz_reflects_stale_snapshot() {
     state.set_failed("failure 2").await;
     state.set_failed("failure 3").await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/healthz")).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
 }
@@ -759,12 +1007,12 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
 
     state.set_failed("failure 1").await;
 
-    let app = build_test_router(state.clone());
+    let app = state.clone();
 
     // /v1/status still serves the snapshot (only 1 failure, threshold is 3).
-    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
     assert_eq!(
@@ -774,7 +1022,7 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
         1
     );
 
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         state
@@ -784,7 +1032,7 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
     );
 
     // /healthz reports failed.
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let response = call(&app, get("/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
@@ -792,11 +1040,11 @@ async fn snapshot_preserved_after_single_failure_not_stale() {
 async fn warming_state_serves_503_regardless_of_stale_policy() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(3600));
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Warming);
 }
@@ -809,17 +1057,17 @@ async fn v2_only_snapshot_ages_out_on_status_and_health() {
         .observed_at_unix_ms(1)
         .build_payload();
     state.update_snapshot_v2_only(payload).await;
-    let app = build_test_router(state);
-    let response = app.clone().oneshot(get("/v2/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v2/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponseV2 = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
-    let response = app.oneshot(get("/v2/healthz")).await.unwrap();
+    let response = call(&app, get("/v2/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponseV2 = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
 }
@@ -852,21 +1100,21 @@ async fn stale_snapshot_by_age_returns_503() {
     update_both(&state, snap).await;
 
     // Sleep briefly so the snapshot exceeds max_snapshot_age.
-    let app = build_test_router(state);
-    let response = app.clone().oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     // HTTP status is 503 and the body must not claim `ready`.
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
     assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
 
     // /healthz agrees: 503 with a failed body, never a ready body.
-    let response = app.oneshot(get("/healthz")).await.unwrap();
+    let response = call(&app, get("/healthz")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
 }
@@ -877,11 +1125,11 @@ async fn fresh_snapshot_returns_200() {
     let snap = fresh_snapshot();
     update_both(&state, snap.clone()).await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
 }
@@ -897,10 +1145,10 @@ async fn future_snapshot_is_stale_when_clock_goes_backward() {
     // `observed_at` lies in the future relative to the current clock
     // (backward jump after sampling): the snapshot must not be served
     // as fresh.
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: HealthResponse = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed.state, ReadinessState::Failed);
     assert_eq!(parsed.category, Some(HealthCategory::CollectorFailure));
@@ -932,18 +1180,18 @@ async fn recovery_after_stale_by_age_returns_200() {
     update_both(&state, stale_snap).await;
 
     // Should be stale now.
-    let app = build_test_router(state.clone());
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state.clone();
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     // Recovery: publish a fresh snapshot.
     let fresh_snap = fresh_snapshot();
     update_both(&state, fresh_snap.clone()).await;
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, fresh_snap);
 }
@@ -964,8 +1212,8 @@ async fn failure_count_resets_on_recovery() {
     state.set_failed("failure 1").await;
     assert_eq!(state.consecutive_failures().await, 1);
 
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
 }
 
@@ -977,13 +1225,11 @@ async fn malformed_request_line_does_not_crash() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1012,7 +1258,8 @@ async fn malformed_request_line_does_not_crash() {
         "Expected 200 after malformed request, got: {status_line}"
     );
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1021,13 +1268,11 @@ async fn oversized_request_headers_are_bounded() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1058,7 +1303,8 @@ async fn oversized_request_headers_are_bounded() {
         "Server should still respond, got: {status_line}"
     );
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 #[tokio::test]
@@ -1067,24 +1313,14 @@ async fn put_patch_delete_options_return_405_or_404() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
 
-    let methods = [Method::PUT, Method::DELETE, Method::PATCH, Method::OPTIONS];
+    let methods = ["PUT", "DELETE", "PATCH", "OPTIONS"];
     let routes = ["/", "/v1/status", "/healthz"];
 
     for method in &methods {
         for route in &routes {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method(method.clone())
-                        .uri(*route)
-                        .body(Body::from(""))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
+            let response = call(&app, request(method, route)).await;
 
             assert!(
                 response.status() == StatusCode::METHOD_NOT_ALLOWED
@@ -1102,13 +1338,11 @@ async fn get_with_body_does_not_crash() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1131,20 +1365,19 @@ async fn get_with_body_does_not_crash() {
         "Unexpected status for GET with body: {status_line}"
     );
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_requests_during_state_transition() {
     let state = ServerState::new();
 
-    let app = build_test_router(state.clone());
+    let app = state.clone();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1190,7 +1423,8 @@ async fn concurrent_requests_during_state_transition() {
         );
     }
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1214,10 +1448,10 @@ async fn rapid_state_updates_are_consistent() {
     assert_eq!(health.state, ReadinessState::Ready);
 
     // Verify the server serves correctly after rapid cycling.
-    let app = build_test_router(state);
-    let response = app.oneshot(get("/v1/status")).await.unwrap();
+    let app = state;
+    let response = call(&app, get("/v1/status")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    let body_str = response_body_string(response).await;
+    let body_str = response_body_string(response);
     let parsed: StatusSnapshot = serde_json::from_str(&body_str).unwrap();
     assert_eq!(parsed, snap);
 }
@@ -1234,11 +1468,9 @@ async fn ipv6_loopback_if_available() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap.clone()).await;
 
-    let app = build_test_router(state);
+    let app = state;
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1261,7 +1493,8 @@ async fn ipv6_loopback_if_available() {
     let parsed: StatusSnapshot = serde_json::from_str(body).unwrap();
     assert_eq!(parsed, snap);
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1270,13 +1503,11 @@ async fn malformed_http_version_is_handled_gracefully() {
     let snap = LinuxSnapshotBuilder::default().build();
     update_both(&state, snap).await;
 
-    let app = build_test_router(state);
+    let app = state;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
+    let (control, mut completion) = start(listener, app).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
@@ -1302,5 +1533,6 @@ async fn malformed_http_version_is_handled_gracefully() {
         "Expected valid response after malformed HTTP version, got: {status_line}"
     );
 
-    server.abort();
+    control.shutdown();
+    completion.wait().await.unwrap();
 }

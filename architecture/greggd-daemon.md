@@ -26,7 +26,7 @@ available through the Windows-only service path.
 | `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
-| `server/mod` | `src/server/mod.rs` | Axum HTTP server, endpoints, staleness; `ServerState`, `PublishedState`, module-local `Config` (with `ServerConfigError`) |
+| `server/mod` | `src/server/mod.rs` | EggServe direct H1 service, endpoints, staleness; `ServerState`, `PublishedState`, module-local `Config` (with `ServerConfigError`) |
 | `server/error` | `src/server/error.rs` | Server error types |
 | `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()`, optional live telemetry publication |
 | `collector/rate` | `src/collector/rate.rs` | Monotonic counter baselines, reset/hotplug handling, checked rate arithmetic |
@@ -51,7 +51,7 @@ The `run()` function in `run.rs` wires everything together:
 │                                                  │
 │  ┌──────────┐  ┌─────────┐  ┌────────────────┐ │
 │  │ Collector │  │ Sampler │  │  HTTP Server   │ │
-│  │ (native)  │  │ (timer) │  │  (axum)        │ │
+│  │ (native)  │  │ (timer) │  │ (EggServe H1)  │ │
 │  └─────┬────┘  └────┬────┘  └───────┬────────┘ │
 │        │             │               │           │
 │        └──────┬──────┘               │           │
@@ -70,6 +70,19 @@ The `run()` function in `run.rs` wires everything together:
 
 Graceful shutdown with a 10-second deadline. Tasks that don't finish are
 aborted.
+
+The bound listener is handed to EggServe before the readiness callback. Gregg
+keeps EggServe's `ServerControl` and `ServerCompletion` separate: shutdown is
+requested through the control handle while completion remains a critical task
+whose clean exit, error, or panic is supervised. Its eight-second drain window
+fits inside Gregg's outer ten-second cleanup deadline. The H1 runtime explicitly
+keeps connection and request admission at semaphore maximums, sets 100 header
+fields and a 417,792-byte parser/header ceiling, and disables the total
+connection lifetime so healthy pooled clients are not forced to reconnect.
+EggServe requires finite header, handler, body, idle-keepalive, and response
+write deadlines; the selected values are 10, 30, 30, 60, and 30 seconds. GET
+bodies are ignored up to 64 KiB. These limits bound stalled or oversized
+transport work and do not change the status protocol.
 
 ### Runtime ownership and Windows SCM shutdown
 

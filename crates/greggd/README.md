@@ -135,9 +135,13 @@ restarts, installs, mutates config, or invokes `sudo`.
 ## Network
 
 This daemon is designed for private networks only. It exposes a read-only
-HTTP/1 JSON API on the configured port (default 11310) and is not hardened
+HTTP/1 JSON API through EggServe's direct H1 runtime on the configured port
+(default 11310) and is not hardened
 for public internet exposure. No firewall rules are created automatically.
 LAN exposure is operator-controlled and the daemon has no TLS or authentication.
+GET request bodies are ignored up to 64 KiB; larger bodies are rejected by the
+bounded transport policy. The application API supports GET and HEAD on its five
+documented routes.
 
 Successful v1/v2 status bodies are serialized once when a typed snapshot is
 published and then served from shared immutable response bytes. Typed snapshot

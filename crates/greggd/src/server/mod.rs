@@ -6,7 +6,8 @@
 //! - `GET /v2/status` — latest flat v2 status payload, including optional drives.
 //! - `GET /healthz` — readiness and health information.
 //!
-//! All other methods or paths return `404`. No TLS, cookies, sessions,
+//! Unsupported methods on a known path return `405`; unknown paths return
+//! `404`. No TLS, cookies, sessions,
 //! multipart handling, WebSocket upgrade, compression, or static-file serving
 //! is supported.
 
@@ -14,16 +15,18 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::body::Bytes;
-use axum::extract::State;
-use axum::http::{Method, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::Router;
+use bytes::Bytes;
+use eggserve_primitives::canonical::{Response, ResponseBody, ResponseStream, StatusCode};
+use eggserve_primitives::request::Request;
+use eggserve_primitives::request_body_policy::RequestBodyPolicy;
+use eggserve_server::{
+    service_fn_with_policy, RuntimeConfig, Server, ServerCompletion, ServerControl, Service,
+    ServiceError,
+};
 use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2};
 use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot};
 use tokio::net::TcpListener;
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{RwLock, Semaphore};
 use tracing::info;
 
 use crate::server::error::{ServerConfigError, ServerError};
@@ -31,6 +34,7 @@ use crate::server::error::{ServerConfigError, ServerError};
 pub mod error;
 
 const V1_UNAVAILABLE_MESSAGE: &str = "schema v1 status is unavailable on this platform";
+const MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024;
 
 fn serialize_status_v1(snapshot: &StatusSnapshot) -> Result<Bytes, serde_json::Error> {
     serde_json::to_vec(snapshot).map(Bytes::from)
@@ -551,168 +555,203 @@ impl ServerState {
     }
 }
 
-/// Run the HTTP server until `shutdown` fires.
+/// Start `EggServe` on the listener already bound by Gregg.
 ///
-/// The caller must provide an already-bound [`TcpListener`] so that bind
-/// failures are surfaced before any tasks are spawned.
-///
-/// # Errors
-///
-/// Returns [`ServerError::Runtime`] if the server encounters an I/O error
-/// while running.
-pub async fn serve(
+/// The split control/completion pair lets the daemon supervisor observe
+/// terminal errors while retaining a separate graceful-shutdown capability.
+pub(crate) async fn start(
     listener: TcpListener,
     state: ServerState,
-    mut shutdown: broadcast::Receiver<()>,
-) -> Result<(), ServerError> {
-    let addr = listener.local_addr().map_err(ServerError::Runtime)?;
-
-    let app = Router::new()
-        .route("/", get(status_handler))
-        .route("/v1/status", get(status_handler))
-        .route("/v2/status", get(status_handler_v2))
-        .route("/healthz", get(health_handler))
-        .route("/v2/healthz", get(health_handler_v2))
-        .fallback(fallback_handler)
-        .with_state(state);
-
-    info!("greggd listening on {addr}");
-
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown.recv().await;
-            info!("shutdown signal received, stopping HTTP server");
-        })
+) -> Result<(ServerControl, ServerCompletion), ServerError> {
+    let addr = listener.local_addr().map_err(ServerError::Bind)?;
+    let config =
+        runtime_config().map_err(|error| ServerError::Runtime(std::io::Error::other(error)))?;
+    let server = Server::builder()
+        .runtime(config)
+        .from_listener(listener)
+        .build()
+        .map_err(|error| ServerError::Runtime(std::io::Error::other(error)))?;
+    let handle = server
+        .start_with_service(http_service(state))
         .await
-        .map_err(ServerError::Runtime)
+        .map_err(|error| ServerError::Runtime(std::io::Error::other(error)))?;
+    let (control, completion) = handle.into_parts();
+    info!("greggd listening on {addr}");
+    Ok((control, completion))
 }
 
-/// GET `/` and `/v1/status` — returns the latest snapshot as compact JSON.
-///
-/// When the server is still warming up, returns `503` with the health
-/// response so clients can surface readiness diagnostics.
-///
-/// When a collector failure has occurred but the last valid snapshot is not
-/// yet stale according to the policy, the snapshot is served with its
-/// original `observed_at_unix_ms` timestamp (200 OK). Once the snapshot is
-/// stale, `503` is returned.
-async fn status_handler(State(state): State<ServerState>) -> Response {
-    let now = now_unix_ms();
-    match state.v1_status_data(now).await {
-        StatusDataV1::FreshCached(body) => cached_status_response(body),
+/// `EggServe` limits are selected explicitly so a future default change cannot
+/// silently change Gregg's wire or lifecycle contract.
+fn runtime_config() -> Result<RuntimeConfig, eggserve_server::ServerError> {
+    RuntimeConfig::builder()
+        // Preserve practical parity with Hyper's unbounded accepted
+        // connection/request concurrency; this is the semaphore's maximum,
+        // not EggServe's small default of 64.
+        .max_connections(Semaphore::MAX_PERMITS)
+        .max_in_flight_requests(Semaphore::MAX_PERMITS)
+        // Hyper's H1 parser defaults to 100 fields and a 417,792-byte read
+        // buffer. EggServe applies these bounds explicitly.
+        .max_headers(100)
+        .max_buf_size(417_792)
+        .max_header_bytes(417_792)
+        .max_request_target_bytes(65_536)
+        // Gregg accepts and ignores ordinary GET bodies today. Keep that
+        // behavior for bodies up to a bounded 64 KiB ceiling.
+        .max_request_body_bytes(MAX_REQUEST_BODY_BYTES)
+        // Match Axum/Hyper's observed Date header and lack of Server header.
+        .response_policy(eggserve_server::response_policy::ResponsePolicy::standard())
+        .header_read_timeout(Duration::from_secs(10))
+        .handler_timeout(Duration::from_secs(30))
+        .body_read_timeout(Duration::from_secs(30))
+        .keep_alive_idle_timeout(Duration::from_secs(60))
+        .disable_connection_total_timeout()
+        .max_requests_per_connection(None)
+        .response_write_timeout(Duration::from_secs(30))
+        // Gregg's outer 10-second cleanup deadline remains authoritative.
+        .graceful_shutdown_timeout(Duration::from_secs(8))
+        .build()
+}
+
+fn http_service(state: ServerState) -> impl Service {
+    service_fn_with_policy(
+        move |request: Request| {
+            let state = state.clone();
+            async move { dispatch_request(&state, request).await }
+        },
+        RequestBodyPolicy::Buffer {
+            max_bytes: MAX_REQUEST_BODY_BYTES,
+        },
+    )
+}
+
+async fn dispatch_request(state: &ServerState, request: Request) -> Result<Response, ServiceError> {
+    let (head, _body) = request.into_head_and_body();
+    let method = head.method().as_str().to_owned();
+    let raw_target = head.target().raw().to_owned();
+    let path = head.target().path();
+    let known_route = matches!(
+        path,
+        "/" | "/v1/status" | "/v2/status" | "/healthz" | "/v2/healthz"
+    );
+
+    if known_route && !matches!(method.as_str(), "GET" | "HEAD") {
+        return method_not_allowed_response();
+    }
+
+    match (method.as_str(), path) {
+        ("GET" | "HEAD", "/" | "/v1/status") => v1_status_response(state).await,
+        ("GET" | "HEAD", "/v2/status") => v2_status_response(state).await,
+        ("GET" | "HEAD", "/healthz") => health_response(state).await,
+        ("GET" | "HEAD", "/v2/healthz") => health_response_v2(state).await,
+        _ => not_found_response(&method, &raw_target),
+    }
+}
+
+async fn v1_status_response(state: &ServerState) -> Result<Response, ServiceError> {
+    match state.v1_status_data(now_unix_ms()).await {
+        StatusDataV1::FreshCached(body) => json_response(StatusCode::OK, body),
         StatusDataV1::FreshTyped(snapshot) => match state.serialize_v1_status(&snapshot) {
-            Ok(body) => cached_status_response(body),
+            Ok(body) => json_response(StatusCode::OK, body),
             Err(error) => serialization_error_response(&error),
         },
         StatusDataV1::Unavailable(health) => {
-            health_response(&health, StatusCode::SERVICE_UNAVAILABLE)
+            json_response(StatusCode::SERVICE_UNAVAILABLE, serialize_health(&health)?)
         }
     }
 }
 
-/// GET `/healthz` — returns readiness/health as compact JSON.
-///
-/// Returns `200` when ready and the snapshot is fresh. Returns `503` when
-/// warming, failed, or when the snapshot is stale.
-async fn health_handler(State(state): State<ServerState>) -> Response {
-    let now = now_unix_ms();
-
-    let (health_state, snapshot_is_stale) = state.v1_health_data(now).await;
-    let status =
-        if health_state.state == gregg_protocol::ReadinessState::Ready && !snapshot_is_stale {
-            StatusCode::OK
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-    health_response(&health_state, status)
-}
-
-/// Any non-matched route returns `404`.
-async fn fallback_handler(method: Method, uri: axum::http::Uri) -> (StatusCode, String) {
-    (StatusCode::NOT_FOUND, format!("{method} {uri} not found"))
-}
-
-fn health_response(health: &HealthResponse, status: StatusCode) -> Response {
-    let body = match serde_json::to_vec(&health) {
-        Ok(body) => body,
-        Err(e) => {
-            let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
-                .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "application/json")],
-                error_body,
-            )
-                .into_response();
-        }
-    };
-    (status, [("content-type", "application/json")], body).into_response()
-}
-
-/// GET `/v2/status` — returns the latest v2 snapshot as compact JSON.
-///
-/// When the server is still warming up, returns `503` with the v2 health
-/// response. When a collector failure has occurred but the last valid
-/// snapshot is not yet stale, the snapshot is served (200 OK). Once stale,
-/// `503` is returned.
-async fn status_handler_v2(State(state): State<ServerState>) -> Response {
-    let now = now_unix_ms();
-    match state.v2_status_data(now).await {
-        StatusDataV2::FreshCached(body) => cached_status_response(body),
+async fn v2_status_response(state: &ServerState) -> Result<Response, ServiceError> {
+    match state.v2_status_data(now_unix_ms()).await {
+        StatusDataV2::FreshCached(body) => json_response(StatusCode::OK, body),
         StatusDataV2::FreshTyped(snapshot) => match state.serialize_v2_status(&snapshot) {
-            Ok(body) => cached_status_response(body),
+            Ok(body) => json_response(StatusCode::OK, body),
             Err(error) => serialization_error_response(&error),
         },
-        StatusDataV2::Unavailable(health) => {
-            health_response_v2(&health, StatusCode::SERVICE_UNAVAILABLE)
-        }
+        StatusDataV2::Unavailable(health) => json_response(
+            StatusCode::SERVICE_UNAVAILABLE,
+            serialize_health_v2(&health)?,
+        ),
     }
 }
 
-/// GET `/v2/healthz` — returns v2 readiness/health as compact JSON.
-async fn health_handler_v2(State(state): State<ServerState>) -> Response {
+async fn health_response(state: &ServerState) -> Result<Response, ServiceError> {
     let now = now_unix_ms();
-
-    let (health_state, snapshot_is_stale) = state.v2_health_data(now).await;
-    let status =
-        if health_state.state == gregg_protocol::ReadinessState::Ready && !snapshot_is_stale {
-            StatusCode::OK
-        } else {
-            StatusCode::SERVICE_UNAVAILABLE
-        };
-    health_response_v2(&health_state, status)
+    let (health, snapshot_is_stale) = state.v1_health_data(now).await;
+    let status = if health.state == ReadinessState::Ready && !snapshot_is_stale {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    json_response(status, serialize_health(&health)?)
 }
 
-fn cached_status_response(body: Bytes) -> Response {
-    (StatusCode::OK, [("content-type", "application/json")], body).into_response()
+async fn health_response_v2(state: &ServerState) -> Result<Response, ServiceError> {
+    let now = now_unix_ms();
+    let (health, snapshot_is_stale) = state.v2_health_data(now).await;
+    let status = if health.state == ReadinessState::Ready && !snapshot_is_stale {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    json_response(status, serialize_health_v2(&health)?)
 }
 
-fn serialization_error_response(error: &serde_json::Error) -> Response {
+fn json_response(status: StatusCode, body: Bytes) -> Result<Response, ServiceError> {
+    let length = u64::try_from(body.len())
+        .map_err(|error| ServiceError::internal(format!("status body length: {error}")))?;
+    let stream = ResponseStream::with_known_length(
+        futures_util::stream::iter([Ok::<_, eggserve_primitives::ResponseStreamError>(body)]),
+        length,
+    );
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .map_err(|error| ServiceError::internal(error.to_string()))?
+        .body(ResponseBody::Stream(stream))
+        .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+fn method_not_allowed_response() -> Result<Response, ServiceError> {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header("allow", "GET,HEAD")
+        .map_err(|error| ServiceError::internal(error.to_string()))?
+        .empty()
+        .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+fn not_found_response(method: &str, target: &str) -> Result<Response, ServiceError> {
+    let body = Bytes::from(format!("{method} {target} not found"));
+    let length = u64::try_from(body.len())
+        .map_err(|error| ServiceError::internal(format!("fallback body length: {error}")))?;
+    let stream = ResponseStream::with_known_length(
+        futures_util::stream::iter([Ok::<_, eggserve_primitives::ResponseStreamError>(body)]),
+        length,
+    );
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header("content-type", "text/plain; charset=utf-8")
+        .map_err(|error| ServiceError::internal(error.to_string()))?
+        .body(ResponseBody::Stream(stream))
+        .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+fn serialization_error_response(error: &serde_json::Error) -> Result<Response, ServiceError> {
     let error_body = serde_json::to_vec(&serde_json::json!({"error": error.to_string()}))
         .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        [("content-type", "application/json")],
-        error_body,
-    )
-        .into_response()
+    json_response(StatusCode::INTERNAL_SERVER_ERROR, Bytes::from(error_body))
 }
 
-fn health_response_v2(health: &HealthResponseV2, status: StatusCode) -> Response {
-    let body = match serde_json::to_vec(&health) {
-        Ok(body) => body,
-        Err(e) => {
-            let error_body = serde_json::to_vec(&serde_json::json!({"error": e.to_string()}))
-                .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                [("content-type", "application/json")],
-                error_body,
-            )
-                .into_response();
-        }
-    };
-    (status, [("content-type", "application/json")], body).into_response()
+fn serialize_health(health: &HealthResponse) -> Result<Bytes, ServiceError> {
+    serde_json::to_vec(health)
+        .map(Bytes::from)
+        .map_err(|error| ServiceError::internal(error.to_string()))
+}
+
+fn serialize_health_v2(health: &HealthResponseV2) -> Result<Bytes, ServiceError> {
+    serde_json::to_vec(health)
+        .map(Bytes::from)
+        .map_err(|error| ServiceError::internal(error.to_string()))
 }
 
 #[cfg(test)]

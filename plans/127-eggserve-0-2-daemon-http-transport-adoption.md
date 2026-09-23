@@ -1,6 +1,6 @@
 # Plan 127: EggServe 0.2 daemon HTTP transport adoption
 
-Status: upstream-blocked; implementation must not start until both hard gates below are satisfied by a published EggServe 0.2.x release.
+Status: in progress; published EggServe 0.2.1 satisfies both upstream runtime gates.
 
 Depends on: completed Plans 123-126, the current post-Plan-126 daemon/runtime baseline, and a published EggServe 0.2.x direct-server API that satisfies the lifecycle and connection-lifetime gates in this plan. This work is independent of the remaining Plan 091 soak record.
 
@@ -312,9 +312,9 @@ The target runtime ownership remains:
 ~~~text
 greggd run
   -> bind TcpListener
+  -> start EggServe on that bound listener
   -> publish readiness callback
   -> start sampler critical task
-  -> start EggServe HTTP critical runtime
   -> supervise shutdown/server/sampler
   -> request EggServe graceful shutdown
   -> join under one bounded outer deadline
@@ -456,11 +456,42 @@ The exact EggServe 0.2.0 direct server already supplies the desired application-
 
 Check the currently published EggServe 0.2.x API first. If those capabilities have landed upstream, proceed with the migration. If not, stop cleanly and report the upstream requirements rather than weakening Gregg's current guarantees.
 
-### Upstream gate review (2026-09-22)
+### Selected runtime limit classification
 
-The published `eggserve-server` 0.2.x line currently resolves to 0.2.0 (`cargo search eggserve-server --limit 10`; `cargo info eggserve-server@0.2`). Inspection of the downloaded crate source confirms that both gates remain unsatisfied:
+The implementation keeps EggServe defaults from silently defining Gregg's
+policy. `runtime_config()` pins the selected values and the server unit test
+asserts the core lifetime/admission settings.
 
-- **Gate A fails:** `ServerHandle` owns a private `JoinHandle<()>`; it is not `Clone`. `shutdown(&self)` is available, but `wait(self)` consumes the only handle and discards the join result (`let _ = join.await`). Gregg therefore cannot retain shutdown authority while independently awaiting runtime completion, and cannot observe an accept-task panic through EggServe's public handle.
-- **Gate B fails:** `RuntimeConfig::connection_total_timeout` defaults to 60 seconds, the connection driver applies it as a hard total lifetime, and shared runtime validation rejects zero. There is no supported unlimited setting in 0.2.0.
+| Field | Selected value | Classification |
+|-------|----------------|----------------|
+| `max_connections` | `Semaphore::MAX_PERMITS` | Parity in practical use; no small finite admission ceiling |
+| `max_in_flight_requests` | `Semaphore::MAX_PERMITS` | Parity in practical use; no small finite admission ceiling |
+| `max_headers` | 100 | Hyper parser parity |
+| `max_buf_size` | 417,792 bytes | Hyper H1 parser-buffer parity |
+| `max_header_bytes` | 417,792 bytes | Matches the parser-buffer ceiling; explicit aggregate bound |
+| `max_request_target_bytes` | 65,536 bytes | EggServe hardening; tighter than Hyper's parser buffer for pathological targets |
+| `header_read_timeout` | 10 seconds | New bounded transport hardening; prevents indefinitely incomplete headers |
+| `handler_timeout` | 30 seconds | New bounded transport hardening; Gregg handlers only read in-memory publication state and serialize small health envelopes |
+| `max_request_body_bytes` and service policy | 64 KiB buffered | New bounded transport hardening; preserves ignored GET bodies within the limit |
+| `body_read_timeout` | 30 seconds | New bounded transport hardening for accepted bodies |
+| `keep_alive_idle_timeout` | 60 seconds | New idle bound; independent from total lifetime and healthy active clients retain reuse |
+| `connection_total_timeout` | Disabled (`Duration::ZERO`) | Exact required parity for healthy connection lifetime |
+| `max_requests_per_connection` | Unlimited (`None`) | Exact keep-alive request-count parity |
+| `response_write_timeout` | 30 seconds | New bounded transport hardening for stalled readers |
+| `graceful_shutdown_timeout` | 8 seconds | Inside Gregg's existing 10-second outer deadline |
+| Response policy | Standard: `Date` enabled, `Server` absent | Raw-wire parity with the Axum baseline |
 
-Pre-bound `TcpListener` adoption is available through `ServerBuilder::from_listener`, but it does not address either failed gate. No production dependency, server source, wire tests, or current-state transport documentation was changed. Plan 127 remains open and blocked upstream; retry the gate review when a new 0.2.x release is published. The migration, compatibility tests, footprint comparison, and runtime comparison remain unstarted and are not claimed complete.
+EggServe requires nonzero deadlines for header reads, handler calls, body reads,
+idle keep-alive, response writes, and graceful shutdown. These are intentional
+resource bounds for the direct runtime, not copied defaults; ordinary route,
+status, health, and pooled-request behavior remains unchanged. Request bodies
+over 64 KiB and request targets over 64 KiB are new bounded rejection cases.
+
+### Upstream gate review (2026-09-23)
+
+The published `eggserve-server` 0.2.x line now resolves to 0.2.1 (`cargo search eggserve-server --limit 5`; `cargo info eggserve-server@0.2.1`). The matching direct dependency is `eggserve-primitives 0.2.0`, as required by `eggserve-server 0.2.1`'s published manifest (`cargo info eggserve-primitives@0.2.0`; the primitives crate has no 0.2.1 release). Inspection of the downloaded 0.2.1 source confirms both hard gates now pass:
+
+- **Gate A passes:** `ServerHandle::into_parts()` returns a cloneable `ServerControl` and a separate `ServerCompletion`. `ServerCompletion::wait(&mut self)` can be polled/cancelled by Gregg's supervisor while the control remains available. It returns the typed terminal result, maps top-level task panic/cancellation into `ServerError::Terminal`, and does not request shutdown; dropping an unobserved completion requests graceful shutdown.
+- **Gate B passes:** `RuntimeConfigBuilder::disable_connection_total_timeout()` sets the ceiling to `Duration::ZERO`; validation accepts it and the connection driver skips the total deadline while other independent timeouts remain active.
+
+Pre-bound `TcpListener` adoption remains available through `ServerBuilder::from_listener`. Plan 127 is reopened for implementation using `eggserve-server = "0.2"` (Cargo currently resolves 0.2.1) and `eggserve-primitives = "0.2"` (currently 0.2.0). The gate review authorizes proceeding with the remaining compatibility, dependency, runtime, footprint, documentation, and CI acceptance work; it does not by itself close those criteria.

@@ -42,7 +42,7 @@ contract and the shared self-update mechanism.
                              ▼
 ┌─────────────────────────────────────────────────────────┐
 │ greggd (daemon)                                         │
-│ native collectors + sampler + axum server + service mgmt│
+│ native collectors + sampler + EggServe H1 + service mgmt│
 └────────────────────────────┬────────────────────────────┘
                              │ uses wire types from
                              ▼
@@ -133,7 +133,7 @@ are a binary-boundary concern).
   (6 `CollectErrorKind`s). First sample is `Warming`; gaps re-baseline or
   omit — never fabricate zeroes.
 - `sampler.rs` (cadence, readiness, `Warming→Ready/Failed`), `server/`
-  (axum, `/`, `/v1/status`, `/v2/status`, `/healthz`, `/v2/healthz`,
+  (EggServe H1, `/`, `/v1/status`, `/v2/status`, `/healthz`, `/v2/healthz`,
   staleness policy), `run.rs` (supervision, 10s graceful shutdown).
 - `cli.rs` (`run`, `stop`, `croncheck`, `configprint`, `status`, `host`,
   `port`, `startup install/instructions`, `restart`, `update`), `control.rs`
@@ -176,7 +176,7 @@ pure state reducer, Ratatui TUI, plus an isolated optional EggPool pane.
 Primary (polling):
 
 ```
-collector (native) → sampler (clock) → cached v1+v2 → HTTP server (axum)
+collector (native) → sampler (clock) → cached v1+v2 → HTTP server (EggServe H1)
                                                           │ JSON
                                                           ▼
 scheduler (timer) → PollBatch (generation) → AppState (reducer) → TUI (read-only)
