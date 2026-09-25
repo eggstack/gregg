@@ -1,6 +1,6 @@
 # Plan 128: macOS Intel disk/network collector corrective pass
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plans 109-111 and 114, the current post-Plan-127 daemon baseline, and the existing native macOS arm64 + Intel CI jobs. This work is independent of the remaining Plan 091 soak record.
 
@@ -324,3 +324,36 @@ Do not begin by changing the TUI. The client already renders the existing v2 fie
 First prove the raw native records on macOS Intel and arm64, then prove the MacOsCollector publishes the existing v2 payload. Only after those are correct should diagnostics or any startup-transient polish be considered.
 
 The key compatibility rule is to let libc own Darwin ABI selection wherever it already provides the binding instead of duplicating architecture-sensitive C layouts/symbol names in Gregg.
+
+## Closure record
+
+Implemented at `0f134b0`, verified by existing CI run `36170917401` green
+across all five jobs (Linux fmt/clippy/tests, macOS arm64, macOS Intel,
+Windows incl. SCM smoke, MSRV Rust 1.89). Both native macOS jobs ran the
+widened `collector::macos` suite: deterministic `iflist2`/`statfs`/`if_data`
+parser and conversion tests, mock-collector filtering/overflow/wrap tests,
+and the bounded-warmup native v2 proof of nonempty drive capacity plus
+network telemetry with protocol validation on each architecture. Disk I/O
+remained optional per the plan. Local `./scripts/check-local.sh` and strict
+Linux clippy passed; `cargo check --target x86_64-apple-darwin` passed for
+the Intel collector path. No older-Intel host smoke was available, so closure
+rests on native Intel CI per the plan's non-blocking rule. No external
+metrics command, privilege escalation, new dependency, protocol change, or
+TUI semantic change was introduced. Docs reconciled in the same pass:
+`architecture/collectors.md`, `architecture/macos-collector-notes.md`,
+`architecture/greggd-daemon.md`, the `platform-collectors` skill,
+`crates/greggd/README.md`, and `CHANGELOG.md`. Plans 109-111 are untouched
+as historical records. No future plan depends on Plan 128 (it is terminal in
+the dependency chain and independent of the remaining Plan 091 soak record),
+so no downstream status changes were required.
+
+Acceptance: all boxes hold at the implementation SHA — private `StatFs` and
+the unsuffixed `getmntinfo` binding are removed, enumeration uses
+`libc::getmntinfo`/`libc::statfs`, local/dontbrowse/filesystem filtering and
+capacity semantics are preserved and tested, `AF_LINK` data is never cast to
+`if_data64`, the preferred path parses `NET_RT_IFLIST2`/`if_msghdr2` with
+bounded length checks plus a typed `if_data` fallback, wraps re-baseline
+without spikes, interface identity/flags/capacity stay native-derived and
+deterministic, IOKit collection is unchanged, optional failures preserve
+readiness without fabricated zeroes, diagnostics are transition-bounded with
+family and error context, and native arm64+Intel CI proves the v2 families.
