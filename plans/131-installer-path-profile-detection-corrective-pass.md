@@ -1,6 +1,6 @@
 # Plan 131: installer PATH profile detection corrective pass
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plan 130 and its settled user-local PATH persistence/activation contract. This work is independent of the remaining Plan 091 soak record.
 
@@ -179,20 +179,20 @@ When Plan 131 closes, update `plans/README.md` to show Plan 130 complete with a 
 
 ## Acceptance criteria
 
-- [ ] Existing-profile classification no longer treats arbitrary `.local/bin` text as proof of PATH integration.
-- [ ] Full-line and leading-whitespace comments containing `.local/bin` cannot suppress the managed block.
-- [ ] A commented-out former PATH assignment cannot suppress integration.
-- [ ] Unrelated `echo`, prose, alias/function text, or non-PATH variable references cannot suppress integration.
-- [ ] Common active user-authored PATH assignment/prepend/append forms containing `$HOME/.local/bin`, `${HOME}/.local/bin`, or `~/.local/bin` remain recognized without duplication.
-- [ ] The existing Gregg-managed block remains idempotently recognized on rerun.
-- [ ] Detection remains static/read-only: profile contents are never sourced, evaluated, executed, or command-substituted.
-- [ ] Unusual/unrecognized shell metaprogramming fails conservative: the installer may append its safe managed block rather than falsely claiming persistence.
-- [ ] Existing profile content is preserved except for the same bounded append already introduced by Plan 130.
-- [ ] False-positive fixtures now produce truthful `Added ... for future shells` output and the exact current-shell export guidance.
-- [ ] All existing Plan-130 destination, profile-selection, opt-out, system-install, `both`, update/uninstall, and platform boundaries remain unchanged.
-- [ ] Deterministic installer regressions and the ordinary local/CI gates pass without new infrastructure.
-- [ ] Plan 130 receives an appended post-closure correction note rather than rewritten historical closure evidence.
-- [ ] Plan 131 closure records the implementation SHA and exact CI run used.
+- [x] Existing-profile classification no longer treats arbitrary `.local/bin` text as proof of PATH integration.
+- [x] Full-line and leading-whitespace comments containing `.local/bin` cannot suppress the managed block.
+- [x] A commented-out former PATH assignment cannot suppress integration.
+- [x] Unrelated `echo`, prose, alias/function text, or non-PATH variable references cannot suppress integration.
+- [x] Common active user-authored PATH assignment/prepend/append forms containing `$HOME/.local/bin`, `${HOME}/.local/bin`, or `~/.local/bin` remain recognized without duplication.
+- [x] The existing Gregg-managed block remains idempotently recognized on rerun.
+- [x] Detection remains static/read-only: profile contents are never sourced, evaluated, executed, or command-substituted.
+- [x] Unusual/unrecognized shell metaprogramming fails conservative: the installer may append its safe managed block rather than falsely claiming persistence.
+- [x] Existing profile content is preserved except for the same bounded append already introduced by Plan 130.
+- [x] False-positive fixtures now produce truthful `Added ... for future shells` output and the exact current-shell export guidance.
+- [x] All existing Plan-130 destination, profile-selection, opt-out, system-install, `both`, update/uninstall, and platform boundaries remain unchanged.
+- [x] Deterministic installer regressions and the ordinary local/CI gates pass without new infrastructure.
+- [x] Plan 130 receives an appended post-closure correction note rather than rewritten historical closure evidence.
+- [x] Plan 131 closure records the implementation SHA and exact CI run used.
 
 ## Explicit non-goals
 
@@ -218,3 +218,49 @@ Do not include:
 Start with `profile_contains_local_bin()` in `packaging/install.sh` and the Plan-130 PATH fixtures in `scripts/tests/test-install-rerun.sh`.
 
 The intended bias is conservative: only suppress Gregg's managed append when there is strong static evidence that the selected profile already provides the canonical user-local bin directory through PATH integration. A harmless duplicate managed block on an exotic configuration is preferable to a false positive that leaves future shells unable to resolve `gregg`.
+
+## Closure record
+
+Implemented at `3aade95`, verified by existing CI run `36193308083` green
+across all five jobs (Linux fmt/clippy/tests, macOS arm64, macOS Intel,
+Windows incl. SCM smoke, MSRV Rust 1.89). `packaging/install.sh` replaces
+the over-broad `profile_contains_local_bin()` substring probe with the
+explicit `profile_has_active_path_integration()` predicate
+(`line_has_canonical_bin_entry()` + `profile_has_managed_block()` +
+`profile_has_user_path_integration()`): success requires either an intact
+Gregg-managed block (exact `added by gregg installer` marker plus an active
+functional `export PATH=` line carrying the canonical entry, so marker text
+alone or a manually disabled block never claims persistence) or a supported
+non-commented `export PATH=`/`PATH=`/`export path=`/`path=` (zsh tied array)
+assignment carrying `$HOME/.local/bin`, `${HOME}/.local/bin`,
+`~/.local/bin`, or the expanded `$HOME/.local/bin` as a discrete PATH entry
+(trailing boundary excludes subpaths such as `.local/bin/tool` and longer
+names). Full-line and leading-whitespace comments are skipped, inline
+comments after an active assignment are accepted via prefix-anchored
+matching, and `echo`/`printf`/alias/function/non-PATH-variable/other-path
+lines are ignored because they never match the assignment anchor. Detection
+is static/read-only (line scans plus fixed-string marker grep; never
+sourced, evaluated, executed, or command-substituted) and fails closed on
+exotic metaprogramming by appending the safe managed block. The
+already-integrated output now reads `already integrates` instead of the
+broader `already references`. Deterministic regressions added 32 assertions
+(100 total, `pass=100 fail=0`) to the existing
+`scripts/tests/test-install-rerun.sh` harness covering active prepend/append
+(no-export, `${HOME}`, `~`, tied-array) suppression, managed-block
+idempotency, commented/indented/prose/`echo`/unrelated-var/subpath/
+disabled-managed non-suppression with byte-for-byte preservation and
+truthful `Added ... for future shells` plus exact export guidance, all with
+isolated `HOME`/`PATH`/`SHELL`; `cargo test -p greggd --test
+installer_rerun`, `./scripts/check-local.sh`, and ShellCheck
+(`packaging/install.sh`, `test-install-rerun.sh`) are clean. Docs reconciled
+in the same pass: `docs/installation.md`, `packaging/README.md`,
+`architecture/scripts-and-packaging.md`, and `CHANGELOG.md` now state the
+truthful rule (recognizable active integration or intact managed block;
+comments and unrelated mentions do not suppress). All Plan-130 destination,
+profile-selection, `ZDOTDIR`, opt-out, system-install, `both`,
+update/uninstall, and platform boundaries are unchanged. Plan 130's
+post-closure correction note is preserved, not rewritten. Plan 131 is
+terminal in the dependency chain and independent of the remaining Plan 091
+soak record, so no downstream plan status changes were required.
+
+Acceptance: all boxes hold at the implementation SHA.

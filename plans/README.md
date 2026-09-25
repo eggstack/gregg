@@ -226,10 +226,14 @@ unchanged. See `130-user-local-installer-path-activation.md`.
 Post-closure review found one narrow Plan-130 classifier defect:
 `profile_contains_local_bin()` treats any textual `.local/bin` occurrence
 as proof of active PATH integration, so comments or unrelated references can
-suppress the managed block. Plan 131 is planned to correct only that static
-classification boundary and its deterministic tests while preserving the
-settled Plan-130 install/profile/activation/ownership behavior. Plan 130
-remains complete with a Plan-131 corrective follow-up.
+suppress the managed block. Plan 131 is complete at implementation `3aade95`
+with remote CI run `36193308083` green across Linux, macOS arm64, macOS
+Intel, Windows SCM smoke, and MSRV Rust 1.89. It corrects only that static
+classification boundary (recognizable active PATH integration or intact
+Gregg-managed block suppresses a duplicate; comments and unrelated mentions
+do not) and its deterministic tests while preserving the settled Plan-130
+install/profile/activation/ownership behavior. Plan 130 remains complete
+with a Plan-131 corrective follow-up.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -358,7 +362,7 @@ excluded.
 | [`128-macos-intel-disk-network-collector-corrective-pass.md`](128-macos-intel-disk-network-collector-corrective-pass.md) | Correct Darwin filesystem/network ABI handling and prove macOS Intel+arm64 v2 drive/network telemetry | complete; implementation `0f134b0`; CI `36170917401` green; route-message parser follow-up owned by Plan 129 |
 | [`129-macos-route-message-parser-corrective-pass.md`](129-macos-route-message-parser-corrective-pass.md) | Correct heterogeneous `NET_RT_IFLIST2` message walking, strengthen native interface-completeness proof, and reconcile Plan 128 closure | complete; implementation `30df587`; CI `36176134555` green |
 | [`130-user-local-installer-path-activation.md`](130-user-local-installer-path-activation.md) | Persist user-local `~/.local/bin` for supported shells and document same-shell activation without changing install ownership | complete; implementation `d4f2843`; CI `36186493797` green |
-| [`131-installer-path-profile-detection-corrective-pass.md`](131-installer-path-profile-detection-corrective-pass.md) | Correct false-positive existing-profile detection so comments/unrelated `.local/bin` text cannot suppress user-local PATH persistence | planned; narrow Plan-130 corrective pass |
+| [`131-installer-path-profile-detection-corrective-pass.md`](131-installer-path-profile-detection-corrective-pass.md) | Correct false-positive existing-profile detection so comments/unrelated `.local/bin` text cannot suppress user-local PATH persistence | complete; implementation `3aade95`; CI `36193308083` green |
 
 Dependency order:
 
