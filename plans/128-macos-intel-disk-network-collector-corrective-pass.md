@@ -357,3 +357,25 @@ without spikes, interface identity/flags/capacity stay native-derived and
 deterministic, IOKit collection is unchanged, optional failures preserve
 readiness without fabricated zeroes, diagnostics are transition-bounded with
 family and error context, and native arm64+Intel CI proves the v2 families.
+
+
+## Post-closure correction
+
+A post-closure review found one narrow defect in the Plan-128 `NET_RT_IFLIST2`
+parser. Darwin emits heterogeneous routing messages in the interface-list
+buffer: `RTM_IFINFO2` records are interleaved with shorter message layouts
+such as `RTM_NEWADDR` and multicast-address records. The landed parser checks
+every message against `size_of::<libc::if_msghdr2>()` before examining the
+message type, so a valid shorter unrelated record can terminate the walk and
+hide later interfaces.
+
+This does not invalidate the Plan-128 filesystem ABI correction, typed
+`getifaddrs`/`if_data` fallback, counter-wrap behavior, diagnostics, or the
+expanded native Intel/arm64 collector CI. It does mean the closure statement
+that all acceptance boxes held was too broad for the preferred-network-parser
+criterion. The plan file also retained its acceptance boxes unchecked despite
+the closure narrative; that historical inconsistency is preserved here rather
+than retroactively rewriting the closed checklist.
+
+Plan 129 owns the heterogeneous route-message parser correction, stronger
+native interface-completeness proof, and final registry reconciliation.
