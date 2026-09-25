@@ -503,6 +503,321 @@ else
   fail "staged Cargo daemon startup finalization (status=$STATUS, out=$OUT)"
 fi
 
+# --- 8. Plan 130 user-local PATH activation ---------------------------------------
+#
+# Bounded post-install shell persistence with isolated HOME/PATH/SHELL.
+# Never touches the runner's real dotfiles. Retains the fake curl/Cargo
+# strategy; no network access.
+
+fresh_path_home() {
+  # fresh_path_home <name> — new isolated HOME under SANDBOX, DEST_DIR synced.
+  HOME="${SANDBOX}/home-$1"
+  mkdir -p "$HOME"
+  export HOME
+  DEST_DIR="${HOME}/.local/bin"
+  export DEST_DIR
+}
+
+path_without_dest() {
+  # Minimal deterministic PATH without DEST_DIR, retaining fakebin + tools.
+  PATH="${FAKEBIN}:/usr/bin:/bin"
+  export PATH
+}
+
+path_with_dest() {
+  PATH="${FAKEBIN}:${DEST_DIR}:/usr/bin:/bin"
+  export PATH
+}
+
+count_occurrences() {
+  # count_occurrences <haystack> <needle> — prints integer count.
+  local haystack="$1"
+  local needle="$2"
+  printf '%s' "$haystack" | grep -o -F "$needle" | wc -l | tr -d ' '
+}
+
+# Reset download fakes altered by section 7; PATH tests use prebuilt assets.
+FAKE_CURL_MODE="ok"
+FAKE_VERSION="9.9.9"
+FAKE_DAEMON_RUNNING="0"
+unset ACTIVATION_FAIL || true
+unset GREGG_TEST_OS || true
+unset GREGG_TEST_FORCE_SYSTEM || true
+unset ZDOTDIR || true
+export FAKE_CURL_MODE FAKE_VERSION FAKE_DAEMON_RUNNING
+
+# 8.1 zsh: absent PATH -> bounded profile entry added.
+fresh_path_home "zsh"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "zsh PATH integration installs the binary successfully"
+else
+  fail "zsh PATH integration install (status=$STATUS, out=$OUT)"
+fi
+if [[ -f "${HOME}/.zshrc" ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc" && grep -Fq "\$HOME/.local/bin" "${HOME}/.zshrc"; then
+  ok "zsh install adds a bounded profile entry with stable HOME expression"
+else
+  fail "zsh profile entry missing or expanded (home=$HOME)"
+fi
+expect_contains "$OUT" "for future shells" "zsh install reports future-shell persistence"
+expect_contains "$OUT" "For this shell, run:" "zsh install reports current-shell activation separately"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "zsh install prints the exact manual export"
+if grep -Fq "${HOME}/.local/bin" "${HOME}/.zshrc" 2>/dev/null && ! grep -Fq "\$HOME/.local/bin" "${HOME}/.zshrc"; then
+  fail "zsh profile persisted an expanded home path instead of the stable expression"
+else
+  ok "zsh profile does not persist an expanded absolute home path"
+fi
+
+# 8.2 rerun -> no duplicate entry.
+ZSH_COUNT_BEFORE="$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)"
+run_install gregg
+ZSH_COUNT_AFTER="$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)"
+if [[ $STATUS -eq 0 && "$ZSH_COUNT_AFTER" == "$ZSH_COUNT_BEFORE" && "$ZSH_COUNT_AFTER" == "1" ]]; then
+  ok "zsh rerun is idempotent with no duplicate profile entry"
+else
+  fail "zsh rerun duplicated the profile entry (before=$ZSH_COUNT_BEFORE after=$ZSH_COUNT_AFTER status=$STATUS out=$OUT)"
+fi
+if [[ "$OUT" == *"Added "* && "$OUT" == *"for future shells"* ]]; then
+  fail "zsh rerun must not report a fresh profile addition (out=$OUT)"
+else
+  ok "zsh rerun does not claim a fresh profile addition"
+fi
+
+# 8.3 existing user-authored entry -> no redundant Gregg entry.
+fresh_path_home "zsh-user"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "export PATH=\"\$HOME/.local/bin:\$PATH\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]]; then
+  ok "user-authored entry install exits 0"
+else
+  fail "user-authored entry install (status=$STATUS, out=$OUT)"
+fi
+if [[ "$(grep -c -F ".local/bin" "${HOME}/.zshrc" || true)" == "1" ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "existing user-authored entry is not redundantly duplicated"
+else
+  fail "user-authored entry was duplicated"
+fi
+expect_contains "$OUT" "is not on the current PATH" "user-authored case still reports current-shell state truthfully"
+
+# 8.4 bash on Linux -> ~/.bashrc integration.
+fresh_path_home "bash-linux"
+path_without_dest
+export SHELL="/bin/bash"
+unset ZDOTDIR || true
+unset GREGG_TEST_OS || true
+export GREGG_TEST_OS
+rm -f "${HOME}/.bashrc" "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile"
+run_install gregg
+if [[ $STATUS -eq 0 && -f "${HOME}/.bashrc" ]] && grep -Fq "added by gregg installer" "${HOME}/.bashrc"; then
+  ok "bash Linux install persists to ~/.bashrc"
+else
+  fail "bash Linux profile target (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" ".bashrc" "bash Linux output names the touched profile"
+
+# 8.5 bash profile content is preserved byte-for-byte except the append.
+fresh_path_home "bash-preserve"
+path_without_dest
+export SHELL="/bin/bash"
+unset GREGG_TEST_OS || true
+printf '%s\n' '# my config' 'alias ll="ls -l"' > "${HOME}/.bashrc"
+cp "${HOME}/.bashrc" "${SANDBOX}/orig-bashrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && head -n 2 "${HOME}/.bashrc" | diff - "${SANDBOX}/orig-bashrc" >/dev/null; then
+  ok "bash profile preserves existing content byte-for-byte"
+else
+  fail "bash profile did not preserve existing content (status=$STATUS, out=$OUT)"
+fi
+
+# 8.6 macOS bash selection via deterministic helper input (no real Darwin host).
+fresh_path_home "bash-macos-fresh"
+path_without_dest
+export SHELL="/bin/bash"
+export GREGG_TEST_OS="Darwin"
+rm -f "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.profile" "${HOME}/.bashrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -f "${HOME}/.bash_profile" ]] && grep -Fq "added by gregg installer" "${HOME}/.bash_profile"; then
+  ok "macOS bash fresh install creates ~/.bash_profile"
+else
+  fail "macOS bash fresh target (status=$STATUS, out=$OUT)"
+fi
+if [[ -e "${HOME}/.bashrc" ]]; then
+  fail "macOS bash must not touch Linux ~/.bashrc"
+else
+  ok "macOS bash leaves Linux ~/.bashrc untouched"
+fi
+
+fresh_path_home "bash-macos-login"
+path_without_dest
+export SHELL="/bin/bash"
+export GREGG_TEST_OS="Darwin"
+printf '%s\n' '# login config' > "${HOME}/.bash_login"
+rm -f "${HOME}/.bash_profile" "${HOME}/.profile" "${HOME}/.bashrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -f "${HOME}/.bash_login" ]] && grep -Fq "added by gregg installer" "${HOME}/.bash_login" && [[ ! -e "${HOME}/.bash_profile" ]]; then
+  ok "macOS bash honors an existing ~/.bash_login"
+else
+  fail "macOS bash login selection (status=$STATUS, out=$OUT)"
+fi
+
+fresh_path_home "bash-macos-profile"
+path_without_dest
+export SHELL="/bin/bash"
+export GREGG_TEST_OS="Darwin"
+printf '%s\n' '# profile config' > "${HOME}/.profile"
+rm -f "${HOME}/.bash_profile" "${HOME}/.bash_login" "${HOME}/.bashrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -f "${HOME}/.profile" ]] && grep -Fq "added by gregg installer" "${HOME}/.profile"; then
+  ok "macOS bash honors an existing ~/.profile"
+else
+  fail "macOS bash profile selection (status=$STATUS, out=$OUT)"
+fi
+unset GREGG_TEST_OS || true
+
+# 8.7 ZDOTDIR is honored for zsh when safe.
+fresh_path_home "zsh-zdotdir"
+path_without_dest
+export SHELL="/bin/zsh"
+mkdir -p "${HOME}/.config/zsh"
+export ZDOTDIR="${HOME}/.config/zsh"
+rm -f "${ZDOTDIR}/.zshrc" "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -f "${ZDOTDIR}/.zshrc" ]] && grep -Fq "added by gregg installer" "${ZDOTDIR}/.zshrc" && [[ ! -e "${HOME}/.zshrc" ]]; then
+  ok "zsh honors a safe exported ZDOTDIR"
+else
+  fail "zsh ZDOTDIR selection (status=$STATUS, out=$OUT)"
+fi
+unset ZDOTDIR || true
+
+# 8.8 --no-shell-profile -> zero mutation plus exact manual guidance.
+fresh_path_home "no-profile"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc" "${HOME}/.bashrc"
+run_install --no-shell-profile gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "--no-shell-profile still installs the binary successfully"
+else
+  fail "--no-shell-profile install (status=$STATUS, out=$OUT)"
+fi
+if [[ ! -e "${HOME}/.zshrc" && ! -e "${HOME}/.bashrc" ]]; then
+  ok "--no-shell-profile performs zero profile mutation"
+else
+  fail "--no-shell-profile mutated a profile"
+fi
+expect_contains "$OUT" "is not on the current PATH" "--no-shell-profile reports PATH absence"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "--no-shell-profile prints the exact manual export"
+
+# 8.9 unsupported shell -> zero mutation plus exact manual guidance.
+fresh_path_home "unsupported"
+path_without_dest
+export SHELL="/bin/fish"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc" "${HOME}/.bashrc" "${HOME}/.bash_profile"
+run_install gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "unsupported shell still installs the binary successfully"
+else
+  fail "unsupported shell install (status=$STATUS, out=$OUT)"
+fi
+if [[ ! -e "${HOME}/.zshrc" && ! -e "${HOME}/.bashrc" && ! -e "${HOME}/.bash_profile" ]]; then
+  ok "unsupported shell performs zero profile mutation"
+else
+  fail "unsupported shell guessed a profile file"
+fi
+expect_contains "$OUT" "is not on the current PATH" "unsupported shell reports PATH absence truthfully"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "unsupported shell prints the exact manual export"
+
+# 8.10 destination already on PATH -> no unnecessary mutation.
+fresh_path_home "on-path"
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc"
+path_with_dest
+run_install gregg
+if [[ $STATUS -eq 0 ]]; then
+  ok "on-PATH install exits 0"
+else
+  fail "on-PATH install (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "is available on the current PATH" "on-PATH install reports current-shell availability"
+if [[ ! -e "${HOME}/.zshrc" ]]; then
+  ok "on-PATH install performs no unnecessary profile mutation"
+else
+  fail "on-PATH install mutated a profile unnecessarily"
+fi
+
+# 8.11 invalid profile target -> install succeeds, failure reported truthfully.
+fresh_path_home "invalid-profile"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc"
+mkdir -p "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "invalid profile target still installs the binary successfully"
+else
+  fail "invalid profile install (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "is not on the current PATH" "invalid profile reports PATH absence"
+expect_contains "$OUT" "Could not update" "invalid profile reports the integration failure separately"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "invalid profile prints the exact manual export"
+rm -rf "${HOME}/.zshrc"
+
+# 8.12 system installs never mutate profiles (forced without real root).
+fresh_path_home "system"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+export GREGG_TEST_FORCE_SYSTEM="1"
+rm -f "${HOME}/.zshrc" "${HOME}/.bashrc" "${HOME}/.bash_profile"
+run_install gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "system-mode install exits 0"
+else
+  fail "system-mode install (status=$STATUS, out=$OUT)"
+fi
+if [[ ! -e "${HOME}/.zshrc" && ! -e "${HOME}/.bashrc" && ! -e "${HOME}/.bash_profile" ]]; then
+  ok "system install performs zero user-profile mutation"
+else
+  fail "system install mutated a user profile"
+fi
+unset GREGG_TEST_FORCE_SYSTEM || true
+
+# 8.13 `both` performs exactly one PATH integration action.
+fresh_path_home "both"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+unset GREGG_TEST_OS || true
+rm -f "${HOME}/.zshrc"
+run_install both
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" && -x "${DEST_DIR}/greggd" ]]; then
+  ok "both installs both binaries successfully"
+else
+  fail "both install (status=$STATUS, out=$OUT)"
+fi
+if [[ "$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)" == "1" ]]; then
+  ok "both writes exactly one profile entry"
+else
+  fail "both profile entry count is not one"
+fi
+FUTURE_COUNT="$(count_occurrences "$OUT" "for future shells")"
+if [[ "$FUTURE_COUNT" == "1" ]]; then
+  ok "both reports exactly one PATH integration action"
+else
+  fail "both reported $FUTURE_COUNT PATH integrations (out=$OUT)"
+fi
+
 # --- summary -----------------------------------------------------------------------
 
 echo ""

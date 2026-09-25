@@ -123,14 +123,18 @@ gh release create "$TAG" \
 Binary installation (binary-bearing releases, starting with `v1.0.12`):
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | bash -s -- gregg \
+  && export PATH="$HOME/.local/bin:$PATH"
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 ```
 
 Pipe to `bash`, never `sh` (`install.sh` needs bash; `sh` is dash on
-Debian/Ubuntu). Do not present a source-only release tag as an available
-installer asset. Cargo remains the fallback for source-only hosts
-(`armv7l`/unknown).
+Debian/Ubuntu). The trailing parent-shell `export` makes the rootless client
+immediately resolvable (a piped child installer cannot change its parent's
+environment); the profile edit persists only for future shells. Do not present
+a source-only release tag as an available installer asset. Cargo remains the
+fallback for source-only hosts (`armv7l`/unknown).
 
 Rerunning an installer at the same scope replaces that scope's component
 in place (install vs update is reported; foreign destinations are never
@@ -150,7 +154,10 @@ only fall back to `cargo install --locked` (with `="X.Y.Z"` when pinned) for
 Cargo fallback; staged `greggd` acquisition converges with the prebuilt
 replacement and startup/config finalization path, including SCM-safe
 stop/replace/register/restart on Windows; installers never silently invoke
-`sudo`.
+`sudo`. On Unix, a non-root install whose `$HOME/.local/bin` is absent from
+`PATH` persists it to the user profile for future shells (idempotent,
+`--no-shell-profile` opts out, system installs never touch profiles);
+uninstall never removes that generic PATH entry.
 
 On Unix, a non-root same-scope `greggd` bootstrap replacement captures valid
 default-config health before overwriting the destination. A previously running

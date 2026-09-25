@@ -37,10 +37,11 @@ BASE_URL="https://github.com/${REPO}/releases"
 
 VERSION=""
 COMPONENT=""
+NO_SHELL_PROFILE=false
 
 usage() {
   cat <<'EOF'
-usage: install.sh [--version X.Y.Z] gregg|greggd|both
+usage: install.sh [--version X.Y.Z] [--no-shell-profile] gregg|greggd|both
 
 Install prebuilt gregg and/or greggd binaries for the current OS/architecture.
 Downloads the matching GitHub Release asset (latest or pinned version), verifies
@@ -56,8 +57,10 @@ arguments:
   both           install both
 
 options:
-  --version X.Y.Z  install pinned release vX.Y.Z instead of latest
-  --help, -h       show this help
+  --version X.Y.Z    install pinned release vX.Y.Z instead of latest
+  --no-shell-profile suppress user shell-profile PATH persistence
+                     (binary install is unchanged; manual export guidance is printed)
+  --help, -h         show this help
 
 examples:
   curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
@@ -94,6 +97,10 @@ while [[ $# -gt 0 ]]; do
       fi
       VERSION="$2"
       shift 2
+      ;;
+    --no-shell-profile)
+      NO_SHELL_PROFILE=true
+      shift
       ;;
     --help|-h)
       usage
@@ -144,7 +151,14 @@ fi
 
 # --- host mapping ----------------------------------------------------------
 
-OS="$(uname -s 2>/dev/null || echo "unknown")"
+# GREGG_TEST_OS is a deterministic test seam for the installer harness only
+# (exercises macOS profile selection on Linux without a real Darwin host).
+# Unset in normal use; production detection is plain `uname -s`.
+if [[ -n "${GREGG_TEST_OS:-}" ]]; then
+  OS="$GREGG_TEST_OS"
+else
+  OS="$(uname -s 2>/dev/null || echo "unknown")"
+fi
 ARCH="$(uname -m 2>/dev/null || echo "unknown")"
 
 TARGET=""
@@ -192,23 +206,210 @@ else
   DEST_DIR="${HOME}/.local/bin"
 fi
 
+# GREGG_TEST_FORCE_SYSTEM=1 is a deterministic test seam for the installer
+# harness only (proves system installs never mutate profiles without requiring
+# real root privileges). Unset in normal use.
+is_system_install() {
+  if [[ "${GREGG_TEST_FORCE_SYSTEM:-0}" == "1" ]]; then
+    return 0
+  fi
+  [[ $EUID -eq 0 ]]
+}
+
 # --- requirement checks ----------------------------------------------------
 
 if ! command -v curl >/dev/null 2>&1; then
   die "curl is required but not found; install curl and rerun"
 fi
 
-# --- helpers ---------------------------------------------------------------
+# --- user-local PATH persistence (Plan 130) ----------------------------------
+#
+# Post-install user experience only, never installation identity. Destinations
+# stay canonical (root -> /usr/local/bin, non-root -> $HOME/.local/bin).
+# A piped child installer cannot export into its parent shell, so profile
+# edits persist for future shells while the documented trailing parent-shell
+# `export PATH="$HOME/.local/bin:$PATH"` activates the current shell.
 
-check_path_advice() {
+dest_on_path() {
   case ":${PATH:-}:" in
-    *":${DEST_DIR}:"*) ;;
-    *)
-      echo "note: ${DEST_DIR} is not in PATH; add it to your shell profile:" >&2
-      echo "  export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
-      ;;
+    *":${DEST_DIR}:"*) return 0 ;;
+    *) return 1 ;;
   esac
 }
+
+# Conservative "already integrated" probe: any existing startup line that
+# already references the user-local bin directory (Gregg-managed or
+# user-authored, `$HOME`-relative or expanded) suppresses a redundant entry.
+profile_contains_local_bin() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  if grep -Fq ".local/bin" "$file" 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+zsh_profile_path() {
+  local zdot="${ZDOTDIR:-}"
+  if [[ -n "$zdot" && "$zdot" == /* && "$zdot" != *$'\n'* ]]; then
+    printf '%s/.zshrc' "$zdot"
+  else
+    printf '%s/.zshrc' "${HOME}"
+  fi
+}
+
+# Deterministic bash startup target: Linux centers on ~/.bashrc; macOS honors
+# login-shell behavior (existing ~/.bash_profile, ~/.bash_login, or ~/.profile
+# wins, otherwise ~/.bash_profile is created). Takes explicit inputs so tests
+# can exercise macOS selection without a real interactive shell.
+bash_profile_path() {
+  local os_name="${1:-$OS}"
+  local home_dir="${2:-$HOME}"
+  if [[ "$os_name" == "Darwin" ]]; then
+    if [[ -f "${home_dir}/.bash_profile" ]]; then
+      printf '%s/.bash_profile' "$home_dir"
+    elif [[ -f "${home_dir}/.bash_login" ]]; then
+      printf '%s/.bash_login' "$home_dir"
+    elif [[ -f "${home_dir}/.profile" ]]; then
+      printf '%s/.profile' "$home_dir"
+    else
+      printf '%s/.bash_profile' "$home_dir"
+    fi
+  else
+    printf '%s/.bashrc' "$home_dir"
+  fi
+}
+
+# Prints the supported profile path, or returns nonzero for unsupported shells.
+# Only zsh and bash are integrated; anything else falls back to manual advice.
+select_shell_profile() {
+  local shell_name=""
+  if [[ -z "${SHELL:-}" ]]; then
+    return 1
+  fi
+  shell_name="$(basename "${SHELL}" 2>/dev/null || true)"
+  case "$shell_name" in
+    zsh) zsh_profile_path ;;
+    bash) bash_profile_path "$OS" "$HOME" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Appends one bounded, idempotent PATH block. Never evaluates or sources the
+# profile, never rewrites it, never touches system shell policy. Returns
+# nonzero when the target is malformed, inaccessible, or outside the expected
+# user home/config location; callers report that separately without rolling
+# back the already successful binary install.
+append_profile_entry() {
+  local file="$1"
+  local parent
+  parent="$(dirname "$file")"
+  if [[ ! -d "$parent" ]]; then
+    return 1
+  fi
+  if [[ -e "$file" && ! -f "$file" ]]; then
+    return 1
+  fi
+  if [[ -e "$file" ]]; then
+    if [[ ! -w "$file" && $EUID -ne 0 ]]; then
+      return 1
+    fi
+  else
+    local expected_parent_ok=false
+    if [[ "$parent" == "$HOME" ]]; then
+      expected_parent_ok=true
+    elif [[ -n "${ZDOTDIR:-}" && "$parent" == "${ZDOTDIR}" && "${ZDOTDIR}" == /* ]]; then
+      expected_parent_ok=true
+    fi
+    if [[ "$expected_parent_ok" != "true" ]]; then
+      return 1
+    fi
+    if [[ ! -w "$parent" ]]; then
+      return 1
+    fi
+  fi
+  {
+    echo ""
+    echo "# added by gregg installer: ensure user-local binaries are on PATH"
+    echo "case \":\$PATH:\" in"
+    echo "  *\":\$HOME/.local/bin:\"*) ;;"
+    echo "  *) export PATH=\"\$HOME/.local/bin:\$PATH\" ;;"
+    echo "esac"
+  } >>"$file" 2>/dev/null || return 1
+  return 0
+}
+
+print_manual_path_guidance() {
+  echo "  export PATH=\"\$HOME/.local/bin:\$PATH\"" >&2
+}
+
+PATH_INTEGRATION_DONE=false
+
+# Runs at most once per installer invocation, after all verified installs.
+run_path_integration_once() {
+  if [[ "$PATH_INTEGRATION_DONE" == "true" ]]; then
+    return 0
+  fi
+  PATH_INTEGRATION_DONE=true
+
+  # System installs never mutate user or global shell startup files.
+  if is_system_install; then
+    if dest_on_path; then
+      echo "${DEST_DIR} is available on the current PATH." >&2
+    else
+      if [[ "$DEST_DIR" == "/usr/local/bin" ]]; then
+        echo "note: /usr/local/bin is not in PATH; add it to your shell configuration:" >&2
+        echo "  export PATH=\"/usr/local/bin:\$PATH\"" >&2
+      else
+        echo "note: ${DEST_DIR} is not in PATH; add it to your shell profile:" >&2
+        print_manual_path_guidance
+      fi
+    fi
+    return 0
+  fi
+
+  # Non-root user-local installs.
+  if dest_on_path; then
+    echo "${DEST_DIR} is available on the current PATH." >&2
+    return 0
+  fi
+
+  if [[ "$NO_SHELL_PROFILE" == "true" ]]; then
+    echo "${DEST_DIR} is not on the current PATH." >&2
+    echo "Add it to your shell configuration, or run for this shell:" >&2
+    print_manual_path_guidance
+    return 0
+  fi
+
+  local profile=""
+  if ! profile="$(select_shell_profile)"; then
+    echo "${DEST_DIR} is not on the current PATH." >&2
+    echo "Add it to your shell configuration, or run for this shell:" >&2
+    print_manual_path_guidance
+    return 0
+  fi
+
+  if profile_contains_local_bin "$profile"; then
+    echo "${DEST_DIR} is not on the current PATH." >&2
+    echo "Your shell profile already references ${DEST_DIR}; for this shell, run:" >&2
+    print_manual_path_guidance
+    return 0
+  fi
+
+  if append_profile_entry "$profile"; then
+    echo "Added ${DEST_DIR} to ${profile} for future shells." >&2
+    echo "For this shell, run:" >&2
+    print_manual_path_guidance
+    return 0
+  else
+    echo "${DEST_DIR} is not on the current PATH." >&2
+    echo "Could not update ${profile}; add it to your shell configuration, or run for this shell:" >&2
+    print_manual_path_guidance
+    return 0
+  fi
+}
+
+# --- helpers ---------------------------------------------------------------
 
 # A user-local same-scope daemon replacement must preserve whether the
 # selected default-config daemon was actually running. This is activation
@@ -389,7 +590,8 @@ cargo_fallback() {
   else
     echo "Installed ${program} to ${DEST_DIR}/${program}" >&2
   fi
-  check_path_advice
+  # PATH persistence is deferred to run_path_integration_once after all
+  # verified installs, so `both` integrates once, not once per component.
 }
 
 finalize_greggd_install() {
@@ -528,8 +730,6 @@ install_program() {
   rm -rf "$tmpdir"
   trap - EXIT
 
-  # Destination advice
-  check_path_advice
   finalize_greggd_install "$program"
 }
 
@@ -547,6 +747,10 @@ case "$COMPONENT" in
     ;;
   *) die "internal: unknown component $COMPONENT" ;;
 esac
+
+# PATH integration is post-install UX, not installation identity: it runs once
+# after every selected candidate has been verified and installed successfully.
+run_path_integration_once
 
 echo "Done. Installed $COMPONENT to ${DEST_DIR}" >&2
 if [[ "$COMPONENT" == "both" ]]; then

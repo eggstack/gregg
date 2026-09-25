@@ -7,10 +7,22 @@ source-only hosts.
 ## Linux / macOS
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | bash -s -- gregg \
+  && export PATH="$HOME/.local/bin:$PATH"
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- both
 ```
+
+The rootless client form carries a trailing parent-shell
+`export PATH="$HOME/.local/bin:$PATH"` so `gregg` is immediately resolvable
+without restarting the terminal. A piped installer runs as a child process
+and cannot mutate its parent's environment, so the `export` must run in the
+invoking shell after the pipeline succeeds. The shorter pipeline without the
+trailing `export` remains valid when `~/.local/bin` is already on `PATH` or
+when the operator will open a later shell after profile persistence. The
+privileged `greggd` command needs no trailing export: it installs to
+`/usr/local/bin`, which is usually already on `PATH`.
 
 Pinned version:
 
@@ -34,10 +46,23 @@ How it works:
   any execution, then requires `<candidate> version` to print the expected
   program name (and the exact version when pinned). A checksum or version
   mismatch is a hard error with no Cargo fallback.
-- Installs to `/usr/local/bin` when root, otherwise `$HOME/.local/bin`,
-  and warns when the destination is not on `PATH` (add
-  `export PATH="$HOME/.local/bin:$PATH"` to your shell profile). It never
-  edits shell rc files and never silently invokes `sudo`.
+- Installs to `/usr/local/bin` when root, otherwise `$HOME/.local/bin`.
+  A non-root install whose destination is absent from the current `PATH`
+  persists `$HOME/.local/bin` to the user's shell profile for future shells
+  by default: zsh uses `${ZDOTDIR:-$HOME}/.zshrc` (a safe absolute `ZDOTDIR`
+  is honored), bash uses `~/.bashrc` on Linux and login-aware selection on
+  macOS (existing `~/.bash_profile`, then `~/.bash_login`, then `~/.profile`,
+  otherwise `~/.bash_profile`). The edit is idempotent (an existing
+  Gregg-managed or user-authored `.local/bin` line is never duplicated),
+  append-only (the rest of the profile is preserved byte-for-byte, never
+  evaluated or sourced), and skippable with `--no-shell-profile`. Output
+  distinguishes current-shell availability from future-shell persistence and
+  always prints the exact `export PATH="$HOME/.local/bin:$PATH"` needed for
+  the current shell. Root/system installs never edit user or global shell
+  startup files (`/etc/profile`, `/etc/paths`, `/etc/zprofile`, and similar
+  are untouched); when `/usr/local/bin` is unexpectedly absent from `PATH`
+  only bounded advice is printed. The installer never silently invokes
+  `sudo`.
 - Rerunning at the same scope replaces that scope's component in place:
   output distinguishes a first install from an identified existing-Gregg
   replacement (showing existing and candidate versions). A destination that
@@ -83,7 +108,11 @@ selector; a piped run without a component prints usage and exits nonzero.
   exact binary. Foreign or ambiguous systemd/launchd/cron/SCM artifacts are
   preserved; SCM query uncertainty blocks mutation. Configuration is
   preserved by default; `--purge` is destructive. There is no
-  `uninstall --all`: run both commands explicitly. See
+  `uninstall --all`: run both commands explicitly. Uninstall never removes
+  the generic `$HOME/.local/bin` shell-profile PATH entry: that directory is
+  a standard user executable location that may hold unrelated tools or a
+  sibling Gregg component, so the profile entry is user-environment
+  integration, not component-owned binary state. See
   [client](client.md) and [daemon](daemon.md).
 
 ## Windows (PowerShell)

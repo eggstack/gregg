@@ -56,10 +56,18 @@ fallback, and Windows ARM64 is likewise source-only.
 Use the bootstrap installer (binary-first, Cargo fallback for source-only hosts):
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | bash -s -- gregg \
+  && export PATH="$HOME/.local/bin:$PATH"
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 curl --proto '=https' --tlsv1.2 -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 ```
+
+The trailing parent-shell `export` makes the rootless client immediately
+resolvable: a piped installer is a child process and cannot change its
+parent's environment, while the profile edit below persists only for future
+shells. The shorter pipeline without the trailing `export` remains valid when
+`~/.local/bin` is already on `PATH` or a later shell is acceptable.
 
 Cargo fallback (source-only hosts such as ARMv7, or when no matching asset exists;
 requires Rust 1.89+):
@@ -80,9 +88,16 @@ The script:
   `shasum -a 256` (macOS) before any execution, requires
   `<candidate> version` to print the expected program name (and exact version
   when pinned), `chmod +x`, then installs;
-- installs to `/usr/local/bin` when root, otherwise `$HOME/.local/bin`, warns
-  when the destination is not on `PATH` (never edits shell rc files), traps
-  temporary cleanup on success/failure, and never silently invokes `sudo`;
+- installs to `/usr/local/bin` when root, otherwise `$HOME/.local/bin`;
+  a non-root install whose destination is absent from the current `PATH`
+  persists `$HOME/.local/bin` to the user profile for future shells (zsh
+  `${ZDOTDIR:-$HOME}/.zshrc`, bash `~/.bashrc` on Linux and login-aware
+  `~/.bash_profile` / `~/.bash_login` / `~/.profile` on macOS; idempotent
+  append-only, never evaluated or sourced, `--no-shell-profile` opts out,
+  `both` integrates once). System installs never touch shell profiles and
+  only print bounded advice when `/usr/local/bin` is absent from `PATH`.
+  Traps temporary cleanup on success/failure, and never silently invokes
+  `sudo`;
 - on an unsupported/unknown host (or `armv7l`) skips the 404-prone download
   and tries `cargo install --locked` (with `--version "=X.Y.Z"` when pinned and
   `--root` derived from the destination) if Cargo exists; a staged `greggd`
@@ -289,7 +304,10 @@ On Windows, the install script preserves the existing config at `%ProgramData%\g
 
 Prefer the component-safe CLI commands, which remove only the exact invoked
 binary plus Gregg-owned startup integration and preserve configuration by
-default (`--purge` is destructive; `--dry-run` previews without mutating):
+default (`--purge` is destructive; `--dry-run` previews without mutating).
+Uninstall never removes the generic `$HOME/.local/bin` shell-profile PATH
+entry (standard user location, possibly shared with unrelated tools or a
+sibling component):
 
 ```bash
 gregg uninstall --dry-run

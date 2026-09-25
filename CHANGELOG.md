@@ -7,6 +7,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **User-local installer PATH activation (Plan 130):** non-root Unix
+  bootstrap installs whose `$HOME/.local/bin` destination is absent from the
+  current `PATH` now persist it to the user shell profile for future shells
+  by default (zsh `${ZDOTDIR:-$HOME}/.zshrc`, bash `~/.bashrc` on Linux and
+  login-aware `~/.bash_profile` / `~/.bash_login` / `~/.profile` on macOS;
+  idempotent append-only with a recognizable marker, never evaluated or
+  sourced, `--no-shell-profile` opts out, `both` integrates once). Output
+  distinguishes current-shell availability from future-shell persistence and
+  always prints the exact `export PATH="$HOME/.local/bin:$PATH"` for the
+  current shell; the documented rootless client quick-install now carries a
+  trailing parent-shell `export` (a piped child installer cannot change its
+  parent's environment). System installs never touch shell profiles, profile
+  failures never roll back a successful binary install, and uninstall never
+  removes the generic `$HOME/.local/bin` PATH entry. Same-scope replacement,
+  foreign-destination refusal, staged Cargo fallback, daemon finalization,
+  update, and uninstall ownership from Plans 112-116 are unchanged.
+
 ### Changed
 
 - **Daemon HTTP runtime consolidation (Plan 127):** `greggd` now uses EggServe 0.2.1's direct HTTP/1 server and canonical request/response types. The existing routes, schemas, staleness decisions, cached status bytes, and wire headers remain covered by transport-neutral and raw-wire tests. EggServe's independent server-completion signal remains under daemon supervision, and total connection lifetime is disabled for pooled clients. No protocol change.

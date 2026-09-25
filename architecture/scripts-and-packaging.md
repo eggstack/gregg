@@ -102,7 +102,7 @@ exits nonzero with a clear error when run under non-bash `sh`).
 - maps `uname -s`/`uname -m` to `x86_64-unknown-linux-gnu` (Linux x86_64/amd64), `aarch64-unknown-linux-gnu` (Linux aarch64/arm64), `x86_64-apple-darwin` (Darwin x86_64), `aarch64-apple-darwin` (Darwin arm64), `armv7l` → `armv7-unknown-linux-gnueabihf` source-only;
 - constructs `https://github.com/eggstack/gregg/releases/latest/download/<asset>` or `.../download/vX.Y.Z/<asset>` for pinned; requires fixed `eggstack/gregg` prefix and `curl -fsSL`;
 - downloads into a fresh `mktemp -d` with `trap` cleanup, fetches `<asset>.sha256`, verifies via `sha256sum` (Linux) or `shasum -a 256` (macOS) before any `chmod +x` or execution, runs `<candidate> version` and requires the expected program name and exact version when pinned, never installs a partial download, never falls back to Cargo on checksum/version mismatch;
-- destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`, warns when the dest is not on `PATH`, never edits shell rc files, never silently invokes `sudo`;
+- destination `/usr/local/bin` when `EUID=0` else `$HOME/.local/bin`; a non-root install whose destination is absent from the current `PATH` persists `$HOME/.local/bin` to the user profile for future shells (zsh `${ZDOTDIR:-$HOME}/.zshrc` honoring a safe absolute `ZDOTDIR`, bash `~/.bashrc` on Linux and login-aware `~/.bash_profile` / `~/.bash_login` / `~/.profile` on macOS; idempotent append-only with a recognizable marker, never evaluated or sourced, `--no-shell-profile` opts out, `both` integrates once, failures report separately without rolling back the install). System installs never mutate user or global shell startup files and only print bounded advice when `/usr/local/bin` is absent from `PATH`. Never silently invokes `sudo`. Uninstall never removes the generic `$HOME/.local/bin` PATH entry;
 - unsupported hosts and ARMv7 go to Cargo fallback: `cargo install --locked` with `--version "=X.Y.Z"` when pinned into a private staging root, verified exactly as a download, then only the executable is copied to the destination (staging removed; no Cargo metadata persists); a staged `greggd` candidate follows the same config and startup finalization as a prebuilt candidate, including SCM-safe stop/replace/register/restart on Windows;
 - reruns classify the destination first (`absent`/`replace`/`foreign`) via the existing binary's `version` command: first install vs identified replacement is reported with versions, and a foreign executable is never overwritten (hard error, no `--force`); scope never crosses privilege boundaries;
 - after a verified `greggd` install, whether prebuilt or staged Cargo, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary: privileged runs `daemon-reload`/`enable`/`start`/`restart` or `bootstrap`/`kickstart -k` or idempotent crontab; unprivileged on systemd/launchd prints exact `sudo <exe> startup install --method <...>` without silent cron fallback; on cron hosts installs user-local crontab without elevation.
@@ -188,7 +188,9 @@ only resolved component config/data files. `--dry-run` mutates nothing and
 shows Cargo plus owned lifecycle intent. There is no `uninstall --all`, no
 prompt, no internal `sudo`, and no install receipt; Unix Cargo-owned daemon
 and client removal performs Gregg-owned work before Cargo and post-success
-purge, while Windows prints the zero-mutation handoff.
+purge, while Windows prints the zero-mutation handoff. Neither uninstall
+removes the generic `$HOME/.local/bin` shell-profile PATH entry (Plan 130
+user-environment integration, not component-owned state).
 
 | Script | Platform |
 |--------|----------|

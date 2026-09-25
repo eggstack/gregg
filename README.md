@@ -63,8 +63,16 @@ curl -fsS http://127.0.0.1:11310/v2/healthz
 Linux / macOS:
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- gregg
+curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh \
+  | bash -s -- gregg \
+  && export PATH="$HOME/.local/bin:$PATH"
 ```
+
+The trailing `export` runs in your invoking shell (a piped installer is a
+child process and cannot change its parent's environment), so `gregg` is
+immediately resolvable without restarting the terminal. The shorter pipeline
+without the trailing `export` remains valid when `~/.local/bin` is already on
+`PATH` or when opening a later shell after profile persistence.
 
 Windows (PowerShell):
 
@@ -79,9 +87,15 @@ cargo install gregg --locked
 cargo install greggd --locked
 ```
 
-Make sure the install directory is on your `PATH` (`$HOME/.local/bin` for
-user-local Unix installs). See [docs/installation.md](docs/installation.md)
-for pinned versions, direct downloads, and installer details.
+Non-root Unix installs land in `$HOME/.local/bin` and persist that directory
+to your user shell profile for future shells (zsh `~/.zshrc` honoring a safe
+`ZDOTDIR`, bash `~/.bashrc` on Linux and login-aware `~/.bash_profile` /
+`~/.bash_login` / `~/.profile` selection on macOS; idempotent, never
+evaluated or sourced, `--no-shell-profile` opts out). System installs to
+`/usr/local/bin` never touch shell profiles. Uninstall never removes the
+generic `$HOME/.local/bin` PATH entry. See
+[docs/installation.md](docs/installation.md) for pinned versions, direct
+downloads, and installer details.
 
 ### 3. Add endpoints and launch
 
