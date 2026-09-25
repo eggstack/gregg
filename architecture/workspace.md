@@ -93,7 +93,7 @@ On collector error the sampler transitions to `Failed`.
 ## Daemon entry point
 
 The `run()` entry point in `crates/greggd/src/run.rs` wires together the collector,
-sampler, HTTP server, and signal handlers (SIGTERM/SIGINT). It starts the sampler
+sampler, HTTP server, Unix control socket, Windows SCM entry, and signal handlers (SIGTERM/SIGINT with a 10s shutdown deadline). It starts the sampler
 loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 
 ## CLI and configuration
@@ -101,8 +101,10 @@ loop, binds the HTTP listener, and performs graceful shutdown on signal receipt.
 The daemon CLI lives in `crates/greggd/src/cli.rs` and uses `clap` derive macros
 for structured argument parsing. Subcommands include `run`, `stop`, `croncheck` (a bounded /v2/healthz watchdog that spawns `run` only on refusal),
 `configprint`, `status`, `host`, `port`, `version`, `update` (daemon lifecycle
-coordination over `gregg-update`), `startup install`/`instructions`, and
-`restart` (manager-aware, factored for `update` reuse). Windows also exposes
+coordination over `gregg-update`), `uninstall [--dry-run] [--purge]`,
+`startup install`/`instructions`, and
+`restart` (manager-aware, factored for `update` reuse). Global `--config/-c`
+selects the config file. Windows also exposes
 `start` and the internal SCM `service` entry through native SCM. Unix config mutations only persist atomically; Unix service
 lifecycle is owned by `src/startup/` (systemd/launchd/cron) with legacy
 packaging helpers under `packaging/`.
@@ -117,8 +119,9 @@ write-flush-rename-verify pattern.
 
 The client CLI lives in `crates/gregg/src/cli.rs` and uses `clap` derive macros.
 Subcommands include `add`, `list`, `remove`, `refresh`, `edit`, `version`,
-`update` (thin adapter over `gregg-update`), and `eggpool add/list/remove`. Running
-`gregg` without a subcommand starts the TUI entry point.
+`update` (thin adapter over `gregg-update`), `uninstall [--dry-run] [--purge]`,
+and `eggpool add/list/remove`. Running
+`gregg` without a subcommand starts the TUI entry point (`main.rs`).
 
 Client configuration lives in `crates/gregg/src/config/` (`model`, `store`,
 `validation`, `lock`, behind the `src/config.rs` façade). It stores monitored
@@ -155,7 +158,8 @@ for the `remove` command.
 
 ## Client polling and state engine
 
-The polling engine lives in `crates/gregg/src/` and is composed of five modules:
+The polling engine lives in `crates/gregg/src/` and is composed of five core modules
+plus normalization (`normalized.rs` for the v1/v2 UI type; `event.rs` maps keys):
 
 - `clock.rs` — `Clock` trait for time abstraction (enables deterministic testing
   with `FakeClock`).
@@ -222,6 +226,7 @@ use the normal read-edit-write path.
 
 The TUI lives in `crates/gregg/src/` and is composed of these modules:
 
+- `event.rs` — key-to-action mapping consumed by `main.rs`
 - `terminal.rs` — Terminal lifecycle (raw mode, alternate screen, cursor hiding)
   with panic-hook restoration on all exit paths.
 - `input.rs` — Crossterm event stream adapter reading events on a dedicated
@@ -262,7 +267,8 @@ binary. Legacy local-build packaging helpers remain under `packaging/` for
 operator-managed installs.
 
 - `service/windows.rs` — wraps the Windows SCM through the `windows-service`
-  crate with `start_service`, `stop_service`, and `service_control_handler`.
+  crate with `start_service`, `stop_service`, `delete_service`, plus a
+  nonblocking one-shot Stop/Shutdown control handler.
 
 ## MSRV
 
@@ -465,25 +471,28 @@ and dependency bans:
   ISC, Zlib, and CDLA-Permissive-2.0 are allowed.
 - **Bans:** multiple versions of the same crate produce warnings.
 - **Sources:** only crates.io is permitted; unknown registries and git sources
-  are denied.
+  are denied (`wildcards = "allow"`; `RUSTSEC-2026-0185` ignored as a disabled
+  optional HTTP/3 dependency with the feature off).
 
 ## Testing strategy
 
-The short local loop enforces these checks:
+The short local loop enforces these checks (`check-local.sh` uses
+`--all-targets --all-features`):
 
 ```text
 cargo fmt --all -- --check
-cargo test --workspace
+cargo test --workspace --all-targets --all-features
 ```
 
 The manual `check-local.sh --release` preflight adds full Clippy,
 documentation, package/version checks, installation smoke, and the protocol
 publish dry-run. Ordinary CI runs Linux fmt/Clippy/tests, native macOS and
-Windows checks, and one compile-only Rust 1.89 job; it does not build docs,
+Windows checks, and one Rust 1.89 job running the full workspace tests; it does not build docs,
 publish, or upload evidence.
 
 Platform-specific collector tests use deterministic fixtures and mock
-collectors (`MockNativeQueries`) so they run on any platform. Native FFI
+seams (`FileSource` on Linux, `MacNativeQueries`/`MockNativeQueries` on macOS,
+`WindowsSource`/`MockWindowsSource` on Windows) so they run on any platform. Native FFI
 tests run only on macOS runners. TUI buffer tests cover narrow, medium, wide,
 mixed online/offline, and resize cases without sleeping for production refresh
 intervals.

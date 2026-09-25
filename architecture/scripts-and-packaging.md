@@ -11,9 +11,9 @@ definitions, and packaging infrastructure.
 
 Primary local validation scripts. Two modes:
 
-**Default mode (short routine loop):**
+**Default mode (short routine loop, `check-local.sh` uses `--all-targets --all-features`):**
 1. `cargo fmt --all -- --check`
-2. `cargo test --workspace`
+2. `cargo test --workspace --all-targets --all-features` (`check-local.ps1` default is bare `cargo test --workspace`)
 
 **`--release` mode** (adds):
 1. Full workspace Clippy and documentation
@@ -50,7 +50,9 @@ Unit tests for the verifier script. Exercises against a fake daemon
 ### smoke-windows.ps1
 
 Full Windows service lifecycle smoke test, run by the existing Windows CI job
-on `windows-2022` with Administrator privileges:
+on `windows-2022` with Administrator privileges (invoked as
+`smoke-windows.ps1 -ExePath <greggd.exe> [-GreggExePath <gregg.exe>]`;
+non-default ports `11399`/`11398`):
 - install → native SCM start → health/status → stop → start → restart;
 - config mutation and custom config-path persistence;
 - bind failure on an occupied ephemeral loopback port and recovery;
@@ -67,7 +69,9 @@ Administrator privileges.
 
 ### run-mixed-fleet-sustained.py
 
-Diagnostic tool for sustained mixed-fleet workloads:
+Diagnostic tool for sustained mixed-fleet workloads (`scripts/tests/` holds
+`fake-greggd.py`, `fleet-fixture.py`, `test-install-rerun.sh`,
+`test_sustained_runner.py`):
 - Builds the `gregg` test binary
 - Launches as child process, samples `/proc/<pid>/status`
 - Validates written summary JSON against strict contract
@@ -79,7 +83,7 @@ Diagnostic tool for sustained mixed-fleet workloads:
 
 ### Bootstrap installers (binary-first, Plan 099)
 
-The `v1.0.12` release publishes these assets, so the bootstrap installer is
+The `v1.0.14` release publishes these assets, so the bootstrap installer is
 the default installation path and Cargo is the fallback for source-only
 hosts. The `latest/download` and pinned-release installer URLs below are the
 working contract. `install.sh` requires bash: pipe to `bash -s --`, not
@@ -188,7 +192,7 @@ purge, while Windows prints the zero-mutation handoff.
 
 | Script | Platform |
 |--------|----------|
-| `uninstall-windows.ps1` | Windows |
+| `uninstall-windows.ps1` (`-RemoveConfig` maps to `--purge`) | Windows |
 
 Thin compatibility wrapper around the installed `greggd.exe uninstall`
 (`-RemoveConfig` maps to `--purge`). It owns no independent SCM teardown
@@ -198,7 +202,7 @@ survives. Config preserved by default.
 ### Service definitions
 
 **systemd** (`packaging/systemd/greggd.service`):
-- Runs as `greggd` user/group
+- Runs as `greggd` user/group, `ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml`
 - Security hardening: `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `ReadOnlyPaths=/proc /sys`, `PrivateTmp`,
   `ProtectKernelTunables/Modules/ControlGroups`, `RestrictNamespaces`,
@@ -207,7 +211,7 @@ survives. Config preserved by default.
 - Restart on failure with 5s delay, burst limit 5 in 60s
 
 **launchd** (`packaging/launchd/com.eggstack.greggd.plist`):
-- Runs `greggd run --config <path>`
+- Label `com.eggstack.greggd`, runs `greggd run --config <path>`
 - `RunAtLoad=true`
 - `KeepAlive` on crash and non-clean-exit
 - `ThrottleInterval=10`
@@ -237,9 +241,9 @@ pull requests:
 
 - **Linux**: fmt, clippy, and full workspace tests
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
-- **Windows** (`windows-2022`): all-target, all-feature workspace tests, a
-  release `greggd` build, and the bounded SCM lifecycle smoke
-- **MSRV**: compilation check with Rust 1.89
+- **Windows** (`windows-2022`): all-target, all-feature workspace tests, release
+  `greggd` **and** `gregg` builds (component-safety uninstall proof), and the bounded SCM lifecycle smoke
+- **MSRV**: full workspace test run with Rust 1.89
 
 Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
 `v*` tags and manual dispatch:
@@ -247,7 +251,7 @@ Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
 - mandatory preflight via `scripts/release-preflight.sh`: workspace/member
   version equality (including the `gregg-update` internal dependency),
   tag points at HEAD, clean checkout, crates.io visibility for
-  `gregg`/`greggd`;
+  `gregg-protocol`/`gregg-update`/`gregg`/`greggd`;
 - five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig
   installed by `scripts/release-install-zig.sh`, macOS Intel/ARM64 native,
   Windows x86_64 native) each build both binaries, run `version`/`--help`,
@@ -272,14 +276,14 @@ release from prebuilt binaries.
 
 **`Cargo.toml`** (workspace root):
 - Four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`
-- One shared version from `[workspace.package]` (currently `1.0.12`),
+- One shared version from `[workspace.package]` (currently `1.0.14`),
    edition 2021, MSRV 1.89
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 
 **`deny.toml`** (cargo-deny):
 - Advisory checking, license auditing, dependency bans
 - Allowed licenses: MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CDLA-Permissive-2.0
-- Sources: only crates.io
+- Sources: only crates.io (`wildcards = "allow"`, git denied)
 
 **`rust-toolchain.toml`**:
 - Pinned to `stable` channel with the `minimal` profile plus `rustfmt` and `clippy` components

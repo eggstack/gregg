@@ -19,12 +19,12 @@ depends on nothing from either.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1`, `MAX_IDENTITY_FIELD_BYTES = 512`, `#![forbid(unsafe_code)]` |
-| `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities` |
-| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `CommitMetrics`, `DiskIoPayload`, `NetworkPayload`, `HealthResponseV2`; constants for schema and bounded collections/strings |
-| `validate` | `src/validate.rs` | V1 validation: 9 violation kinds; re-exports `validate()` |
+| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1` (`SCHEMA_VERSION_V2` lives in `v2.rs`), `MAX_IDENTITY_FIELD_BYTES = 512`, `MAX_SAMPLE_INTERVAL_MS = 86_400_000`, `#![forbid(unsafe_code)]` |
+| `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities`; public entry is `StatusSnapshot::validate()` |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `DiskIoMetrics`, `DiskIoPayload`, `NetworkInterfaceMetrics`, `NetworkPayload`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES`, `MAX_DISK_IO_ENTRIES`, `MAX_NETWORK_INTERFACE_ENTRIES`, `MAX_LIVE_METRIC_ID_BYTES`, `MAX_LIVE_METRIC_NAME_BYTES`, `MAX_RATE_BYTES_PER_SEC` |
+| `validate` | `src/validate.rs` | V1 validation: 9 violation kinds (`validate()` is `pub(crate)`; callers use `StatusSnapshot::validate()`) |
 | `validate_v2` | `src/validate_v2.rs` | V2 validation: base and live-metrics violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
-| `health` | `src/health.rs` | V1 health types: `HealthResponse`, `ReadinessState`, `HealthCategory` |
+| `health` | `src/health.rs` | `HealthResponse` (V1-only) plus shared `ReadinessState` / `HealthCategory` (`Warming`, `CollectorFailure`, `NotServing`) also used by V2 |
 | `test_support` | `src/test_support.rs` | Feature-gated builder fixtures for tests |
 
 ## Wire format
@@ -91,14 +91,14 @@ additive JSON changes from silently loosening invariants.
 | Kind | What it catches |
 |------|----------------|
 | `UnsupportedSchemaVersion` | `schema_version` != 1 |
-| `ZeroNotAllowed` | Timestamps or logical_cores = 0 |
+| `ZeroNotAllowed` | Timestamps, `logical_cores`, or byte totals = 0 (`memory`/`swap.total_bytes == 0` with nonzero used/usage, `drives[].total_bytes == 0`, `commit.limit_bytes == 0`) |
 | `SampleIntervalOutOfRange` | `sample_interval_ms` exceeds 24-hour protocol maximum |
 | `PercentageNotFinite` | NaN or infinity in percentage fields |
 | `PercentageOutOfRange` | Percentage outside `0.0..=100.0` |
 | `LoadValueOutOfRange` | Load average non-finite or negative |
 | `UsedExceedsTotal` | `used_bytes > total_bytes` |
 | `IowaitCapabilityMismatch` | iowait presence disagrees with capability |
-| `InvalidIdentityField` | Identity string empty, NUL-padded, or over 512 UTF-8 bytes |
+| `InvalidIdentityField` | Identity string empty, whitespace-only, NUL-padded, or over 512 UTF-8 bytes |
 
 ### V2 additional violation kinds
 
@@ -113,8 +113,9 @@ additive JSON changes from silently loosening invariants.
 | `TooManyDrives` | More than 32 drive entries |
 
 Live telemetry adds bounded validation for positive CPU frequency/capacities,
-disk-I/O and network collection sizes, non-empty NUL-free bounded IDs and
-names, unique IDs within each detail list, plausible aggregate throughput
+disk-I/O and network collection sizes, non-empty bounded IDs and
+names (disk/net IDs and names reject NUL; drive names check length only),
+unique IDs within each detail list, plausible aggregate throughput
 (`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s; above it is rejected as a buggy daemon,
 never silently clamped), and the rule that loopback cannot
 be an aggregate network-capacity member. `Some(0)` capacities are rejected;
@@ -123,17 +124,24 @@ The daemon-provided disk/network aggregates are intentionally not checked
 against detail-record sums because their accounting sets may differ.
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 16 structured kinds.
+live-metrics validation adds 16 structured kinds (`CpuFrequencyZero`,
+`TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`, `DiskIoNameInvalid`/`TooLong`,
+`DuplicateDiskIoId`, `TooManyNetworkInterfaces`, `NetworkInterfaceIdInvalid`/`TooLong`,
+`NetworkInterfaceNameInvalid`/`TooLong`, `DuplicateNetworkInterfaceId`,
+`ZeroCapacity`, `LoopbackAggregateMember`, `RateExceedsMaximum`, plus
+identity/collection bounds), for 32 `ViolationKindV2` variants total.
 
 ## Health responses
 
-Three states:
+Three states (non-ready responses carry their machine-readable category in
+both v1 and v2; ready responses omit the category and include the snapshot;
+`HealthCategory` is `Warming` / `CollectorFailure` / `NotServing`):
 - **Ready** — daemon has a valid cached snapshot; includes the snapshot
 - **Warming** — daemon alive but first counter delta not yet available
 - **Failed** — collector error; carries category + message (no paths/chains)
 
 Non-ready health responses must include their machine-readable category in both
-v1 and v2; ready responses omit the category and include the snapshot.
+v1 and v2 (`Warming` included); ready responses omit the category and include the snapshot.
 
 Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
 v2 status and health remain independently ready after a valid sample.
@@ -154,6 +162,9 @@ defaults:
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
 | `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry and `build_payload()` |
 | `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit, optional live telemetry, and `build_payload()` |
+
+There is no `MacosSnapshotV2Builder`; macOS V2 coverage uses the
+`macos-v2.json` fixture plus manual construction.
 
 `IdentityFixture` provides `linux()`, `macos()`, and `windows()` const
 constructors for shared identity defaults across all builders.
@@ -176,8 +187,8 @@ Located in `tests/fixtures/`:
 - `health-ready-v1.json`, `health-warming-v1.json`, `health-collector-failure-v1.json`
 - `health-ready-v2.json`
 
-Fixtures deserialize, validate, and re-serialize byte-stably. Integration
-tests round-trip every fixture.
+Fixtures deserialize, validate, and re-serialize value-stable (key-order-independent
+JSON equality). Integration tests round-trip every fixture.
 
 ## Key constraints
 

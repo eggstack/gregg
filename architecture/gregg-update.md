@@ -42,22 +42,24 @@ Both binaries share the same binary-first policy (see also
 
 1. Local version is `env!("CARGO_PKG_VERSION")`; crates.io
    `max_stable_version` (bounded `curl -fsSL --max-time`) is the authority.
-   GitHub `latest` is never authoritative. Equal version exits `0` without
-   mutating files.
+   GitHub `latest` is never authoritative. Equal or newer local versions
+   (`current >= latest`) exit `0` as `AlreadyCurrent` without mutating files.
 2. Host mapping resolves to one of five prebuilt targets
    (`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`,
    `x86_64-apple-darwin`, `aarch64-apple-darwin`,
    `x86_64-pc-windows-msvc`); `armv7l`/unknown go straight to Cargo fallback.
 3. Exact URLs `.../releases/download/vX.Y.Z/<program>-<target>[.exe]` +
-   `.sha256`; only HTTP 404 falls back to
+   `.sha256`; only an exact asset-URL HTTP 404 falls back to
    `cargo install --locked --version "=X.Y.Z"` staged under a private root.
-   Transport/5xx/checksum/`version` mismatches are hard errors.
+   Checksum-URL 404, transport/5xx, and checksum/`version` mismatches are hard errors.
 4. Download to an exclusive owner-private temp dir, verify SHA-256 (via the
    `sha2` crate) before any `chmod +x` or execution, then require the staged
    candidate's `version` output to equal `"<program> X.Y.Z"`.
-5. Stage fully before touching the current exe (`current_exe()`-derived
-   destination; symlinks replace the resolved target and are preserved).
-   Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
+5. Stage fully before touching the current exe (preflight resolves via
+   `current_exe_path()`; replacement is `self_replace(candidate)` against the
+   implicit current exe — Unix same-filesystem atomic rename where practical,
+   Windows running-image semantics — preserving symlink targets, never
+   overwriting the symlink file itself). Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
    the same helper for running-image semantics. Never elevate internally;
    permission failures surface exit `4` with an exact platform-correct rerun
    hint: `sudo <exe> update` on Unix, or the exact executable/operation from
@@ -99,11 +101,16 @@ target in all consumers at once, never in one place alone.
   reverted; `exec::tests::curl_baseline` now locks the curl
   redirect/404/hard-failure/capture contract against local fixtures).
 - Uninstall stays in the same boundary: the shared crate owns only generic
-  executable operations (resolution, path equivalence, preflight, self-delete,
-  Cargo ownership). Startup teardown and config/data removal live beside their
-  existing owners in each application crate. No install receipt is kept;
-  provenance is exact `current_exe()` identity plus parsed canonical artifact
-  targets plus Cargo confirmation.
-- Bounded execution everywhere: `curl --max-time`, build deadlines with
+  executable operations (resolution, path-equivalence, preflight, self-delete,
+  bin-layout candidate + `cargo install --list` Cargo confirmation — pathnames
+  only select the candidate root, never ownership alone). Startup teardown
+  (systemd `ExecStart`, launchd `ProgramArguments`, cron, SCM image-path
+  parsing) and config/data removal live beside their existing owners in each
+  application crate. No install receipt is kept.
+- Bounded execution everywhere: crates.io 15s / 256 KiB, download 90s
+  (100s wall) / 64 MiB, capture/probe/candidate 20s/20s/5s, Cargo 600s,
+  `cargo --list` 30s, owner-private `TempDir 0700`, partial-file removal,
   kill/reap (no orphaned compilers), no predictable shared-temp pathnames.
+  `exit 4` mapping is caller-owned; the shared crate returns
+  `PermissionDenied` with a platform-correct hint.
 - Publish order: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.

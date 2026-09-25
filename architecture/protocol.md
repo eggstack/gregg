@@ -174,13 +174,16 @@ The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
 live-metrics validation adds 16 structured kinds.
 
 The additive live-metrics validation extends this with bounded collection and
-string checks, duplicate-ID checks, positive CPU frequency/capacity checks,
+string checks (disk/net IDs and names reject NUL; drive names check length
+only), duplicate-ID checks, positive CPU frequency/capacity checks,
 plausible aggregate throughput (`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s, rejected
 as `RateExceedsMaximum` instead of clamped), and the loopback
 aggregate-member invariant. It does not require aggregate
 rates to equal the sum of detail records.
 
-V2 validation rejects capability/value contradictions:
+V2 validation rejects capability/value contradictions in both directions
+(`false` requires `None`, `true` requires `Some`; `None` + `true` is rejected —
+warming uses the health endpoints, not a status `None`):
 - `cpu_iowait == false` requires `iowait_pct == None`
 - `load_average == false` requires `load == None`
 - `swap == false` requires `swap == None`

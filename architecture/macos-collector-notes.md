@@ -33,7 +33,7 @@ values are not comparable across tools and are intentionally omitted.
 |------|--------|-------------------|-------------------|
 | Activity Monitor | "Memory Used" | `memory.used_bytes` | greggd reports **less** used memory (see below) |
 | Activity Monitor | "Memory Pressure" (color) | Not exposed | No equivalent; greggd does not model page-in/compression pressure |
-| Activity Monitor | "App Memory", "Wired", "Compressed" | Not exposed | Diagnostic-only categories; not in version-1 protocol |
+| Activity Monitor | "App Memory", "Wired", "Compressed" | Not exposed | Diagnostic-only categories; not in the wire protocol (v1 or v2) |
 | `vm_stat` | Raw page counts | `memory.used_bytes`, `memory.total_bytes` | Same source data; greggd normalizes to bytes |
 
 ### Why greggd's memory differs from Activity Monitor
@@ -42,7 +42,8 @@ Activity Monitor's "Memory Used" sums **active + inactive + wired + compressed**
 pages, which represents all memory that the kernel considers "in use" even if
 some of it could be reclaimed.
 
-greggd's version-1 normalization uses an **availability-oriented** definition:
+greggd's normalization uses an **availability-oriented** definition
+(same bytes in v1 and v2):
 
 ```text
 available_pages = free_count + inactive_count
@@ -72,8 +73,8 @@ compressed-memory accounting.
 ### Speculative pages
 
 `host_statistics64` exposes speculative page counts in some kernel versions.
-greggd's version-1 normalization does **not** include speculative pages in
-`available` or `used` because their accounting is kernel-internal and may
+greggd's normalization reads only the first four `vm_info64` fields and does
+**not** include speculative pages in `available` or `used` because their accounting is kernel-internal and may
 double-count pages already reflected in `free_count`. This is a deliberate
 conservative choice; a future version may include them if validation shows they
 are distinct.
@@ -153,9 +154,10 @@ memory categorization as documented above.
 ## Mounted filesystems
 
 Drive capacity uses the existing contained FFI seam and `getmntinfo`. Only
-local, ready, non-helper mounts with positive capacity are candidates;
-network, `devfs`, `autofs`, and `MNT_DONTBROWSE` views are omitted. Repeated
-views with the same native filesystem identity are emitted once, and results
+`MNT_LOCAL` mounts with `MNT_DONTBROWSE` clear, non-empty mount points,
+non-`devfs`/`autofs` types, and positive capacity (`total > 0 &&
+free ≤ total && avail ≤ total`) are candidates; identity is `fsid.0:fsid.1`.
+Repeated views with the same native filesystem identity are emitted once, and results
 are sorted and bounded by the v2 protocol limits. Used bytes are derived from
 total blocks minus total free blocks, not caller-specific available blocks.
 
@@ -164,5 +166,5 @@ displayed mounted volumes and is not a unique physical-device capacity.
 Container and volume-role topology is deliberately out of scope.
 
 Drive enumeration is best-effort: an individual disappearing or inaccessible
-volume is skipped, while top-level enumeration failure leaves drive data
-unavailable without failing CPU, memory, or swap collection.
+volume is skipped, while top-level enumeration failure retains the last
+successful list via `DriveRefreshCache::poll` without failing CPU, memory, or swap collection.

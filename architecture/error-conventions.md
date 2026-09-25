@@ -1,15 +1,15 @@
 # Error conventions
 
-Each binary crate (`greggd`, `gregg`) establishes a crate-local typed error
-boundary using `thiserror`. Internal errors stay internal: application code
+Each crate (`gregg-protocol`, `gregg-update`, `greggd`, `gregg`) owns a
+crate-local typed error boundary using `thiserror` (the protocol crate never
+exposes application errors). Internal errors stay internal: application code
 returns the typed error, command entry points render concise diagnostics, and
 `std::error::Error` chains remain available for tracing/debug logs.
 
-Wire-protocol errors are a separate concern. The protocol crate does not
-expose application errors. Public wire responses carry structured, safe
+Wire-protocol errors are a separate concern. Public wire responses carry structured, safe
 information only:
 
-- A machine-readable category (e.g. `warming`, `collector_failure`).
+- A machine-readable category (Rust `HealthCategory::CollectorFailure` ↔ wire `"collector_failure"`; variants `Warming` / `CollectorFailure` / `NotServing` with `snake_case` serde).
 - A short human-readable message that does not embed filesystem paths,
   platform-private structures, or internal error chains.
 
@@ -17,8 +17,9 @@ Command entry points follow these rules:
 
 - Human-readable output goes to `stdout`.
 - Diagnostics, warnings, and recoverable errors go to `stderr`.
-- Exit codes are meaningful and scriptable: success, configuration error,
-  runtime error, etc. Exact codes are defined per command in their phase plan.
+- Exit codes are meaningful and scriptable: exact codes live in each
+  `src/cli.rs` (`ExitCode`) plus the `src/main.rs` classifier (`greggd`
+  `0`/`1`/`2`/`3`/`4`, `gregg` `0`–`5`).
 - Configuration writes are atomic and validated/reloaded after persistence.
 
 `greggd` keeps process termination at `src/main.rs`. Its reusable CLI and
@@ -45,8 +46,10 @@ bounded channel before committing the corresponding `AppState` reconciliation;
 channel pressure therefore waits for capacity instead of silently allowing the
 displayed endpoint set and scheduler endpoint set to diverge.
 
-The protocol crate's own validation surface is structured: a `validate()`
-method returns a list of violations rather than panicking or wrapping serde
+The protocol crate's own validation surface is structured: `StatusSnapshot::validate()`,
+`StatusSnapshotV2::validate()`, `validate_v2()`, and `validate_payload_v2()`
+each return a list of violations (V1: 9 kinds; V2: 32 `ViolationKindV2`
+variants) rather than panicking or wrapping serde
 deserialization with opaque checks. This keeps forward compatibility
 manageable when additive fields appear in future schema versions.
 
@@ -68,4 +71,4 @@ The collector module (`crates/greggd/src/collector/error.rs`) defines
 
 These are crate-local typed errors that never appear on the wire. Wire
 responses carry the coarse `HealthCategory` (`Warming`,
-`CollectorFailure`, `NotServing`) defined in `gregg-protocol`.
+`CollectorFailure`, `NotServing`; wire `snake_case`) defined in `gregg-protocol`.

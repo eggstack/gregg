@@ -10,19 +10,20 @@ native kernel interfaces. No external commands are executed for metric collectio
 ### SystemCollector trait
 
 ```rust
-pub trait SystemCollector {
+pub trait SystemCollector: Send {
     fn identity(&self) -> Result<SystemIdentity, CollectError>;
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError>;
     fn capabilities(&self) -> MetricCapabilities;      // v1
-    fn capabilities_v2(&self) -> MetricCapabilitiesV2; // v2
-    fn supports_v1_snapshot(&self) -> bool;             // false on Windows
+    fn capabilities_v2(&self) -> MetricCapabilitiesV2; // v2 (all three platforms override explicitly; Linux/macOS mirror the default)
+    fn supports_v1_snapshot(&self) -> bool;             // default true, false on Windows
 }
 ```
 
 ### CollectedMetrics
 
-Daemon-internal normalized sample. Converts to both v1 `StatusSnapshot` and
-v2 `StatusPayloadV2` with one call to `sample()`. No duplicate collection.
+Daemon-internal normalized sample. One native `sample()` returns
+`CollectedMetrics`; a separate `into_snapshot_pair()` conversion yields both
+v1 `StatusSnapshot` and v2 `StatusPayloadV2` without duplicate collection.
 All collector byte-ratio percentages use the shared
 `collector::clamped_usage_pct` helper so v1 and v2 platform paths have the
 same zero, clamp, and non-finite behavior.
@@ -38,11 +39,11 @@ fresh baseline. Rates never use the nominal sampler interval.
 | Kind | Meaning |
 |------|---------|
 | `Warming` | First sample; no delta available yet |
-| `SourceUnavailable` | Kernel interface missing or unreadable |
+| `SourceUnavailable` | Kernel interface missing or unreadable (also used for unreadable identity fields) |
 | `Parse` | Content present but unparseable |
-| `CounterReset` | Kernel counter decreased (wrap or reset) |
+| `CounterReset` | Kernel counter wrapped, decreased, or produced a zero delta (identical counters / suspend) since the last sample, invalidating the delta |
 | `Numeric` | Arithmetic error (division by zero, overflow) |
-| `IdentityFallback` | Identity field unreadable; sampling fails without publishing a fabricated identity |
+| `IdentityFallback` | Reserved; currently unconstructed — identity failures surface as `SourceUnavailable`/`Parse` and sampling fails without publishing a fabricated identity |
 
 ### Common patterns
 
@@ -62,14 +63,15 @@ filesystem call cannot extend critical daemon shutdown.
 
 ### Drive normalization
 
-`collector/drives.rs` provides shared normalization:
-- Validate candidates (positive total, non-empty name)
-- Deduplicate by identity
+`collector/drives.rs` provides shared normalization (46 `test_fixtures/` files;
+39 tests in `linux/tests.rs` plus source/drive helpers):
+- Validate candidates (non-empty identity/name, name ≤512 bytes, positive total, `free ≤ total`, `available ≤ total`)
+- Deduplicate by identity (`sort_by(identity,name)` → `dedup_by(identity)`, keeping the smallest name)
 
 Capacity candidates retain total filesystem free space and caller-available
 space separately. Linux and macOS use `f_bfree`/`f_bavail`; Windows retains
-both free values from `GetDiskFreeSpaceExW`. Used space is based on total free
-space, so reservations or quotas may make used plus available less than total.
+both free values from `GetDiskFreeSpaceExW`. Used space is `total − total_free`
+(not available), so reservations or quotas may make used plus available less than total.
 - Sort and truncate to `MAX_DRIVE_ENTRIES` (32)
 
 ---
@@ -81,7 +83,7 @@ space, so reservations or quotas may make used plus available less than total.
 | Module | File | Purpose |
 |--------|------|---------|
 | `mod` | `mod.rs` | `LinuxCollector` struct, `SystemCollector` impl |
-| `source` | `source.rs` | `FileSource` trait, `ProcSource` (prod), `MemorySource` (test) |
+| `source` | `source.rs` | `FileSource` trait, `HostSource` (prod inner), `ProcSource` wrapper, `MemorySource` (test) |
 | `cpu` | `cpu.rs` | `/proc/stat` parsing, delta percentages |
 | `memory` | `memory.rs` | `/proc/meminfo` parsing, memory + swap |
 | `identity` | `identity.rs` | hostname, kernel, `/etc/os-release` |
@@ -116,11 +118,11 @@ Swap uses same formula with `SwapTotal` and `SwapFree`.
 
 ### Identity
 
-- hostname: `gethostname()` or `/proc/sys/kernel/hostname`
+- hostname: `/proc/sys/kernel/hostname` (empty → `SourceUnavailable`; no `gethostname()` fallback)
 - kernel: `/proc/sys/kernel/osrelease`
 - architecture: `/proc/sys/kernel/arch`, falling back to the `machine` field in `/proc/cpuinfo`
 - OS: `/etc/os-release` (handles quoted/escaped values)
-- All identifiers clipped to 128 bytes
+- All identifiers clipped to 128 bytes (protocol cap is 512)
 
 ### Drives
 
@@ -234,8 +236,10 @@ From `getloadavg()` — same source as `top`. Values match exactly.
 
 ### Drives
 
-From `getmntinfo()`. Excludes network, devfs, autofs, `MNT_DONTBROWSE`.
-APFS container free space is shared, not unique per volume.
+From `getmntinfo()`. Requires `MNT_LOCAL` (implicit network exclusion) plus
+`MNT_DONTBROWSE == 0`, non-empty mount, `fstype != devfs/autofs`, positive
+block size, and `total > 0 && free ≤ total && avail ≤ total`; identity is
+`fsid.0:fsid.1`. APFS container free space is shared, not unique per volume.
 
 ### Capabilities
 
@@ -244,9 +248,9 @@ MetricCapabilities { cpu_iowait: false }
 MetricCapabilitiesV2 { cpu_iowait: false, load_average: true, swap: true, memory_commit: false }
 ```
 
-Swap comes from `vm.swapusage`, so the default v2 derivation reports
-`swap: true` (meaningful native swap accounting); only Windows overrides
-`capabilities_v2()`.
+Swap comes from `vm.swapusage`, so the explicit v2 override reports
+`swap: true` (meaningful native swap accounting); Linux/macOS mirror the
+`capabilities_v2()` default values with explicit overrides, only Windows differs.
 
 ### Tests
 
@@ -334,7 +338,7 @@ exceed the reported limit.
 - os_name: hardcoded `"windows"`
 - os_version: `RtlGetVersion`
 - kernel_name: hardcoded `"Windows NT"`
-- architecture: from processor topology
+- architecture: compile target (`x86_64`/`aarch64`); processor topology only guards multi-group / >64-processor configurations
 
 The successful `GetComputerNameExW` call reports the number of UTF-16 code
 units written. The native source truncates its allocated buffer to that length

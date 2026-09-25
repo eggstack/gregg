@@ -516,7 +516,7 @@ pub trait SystemCollector: Send {
     /// requires non-optional `load` and `swap` fields that have no
     /// meaningful representation on Windows. The sampler skips v1 snapshot
     /// production when this returns `false`, causing `/v1/status` to
-    /// return 404.
+    /// return 503 with a `NotServing` health response.
     fn supports_v1_snapshot(&self) -> bool {
         true
     }

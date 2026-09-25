@@ -2,8 +2,8 @@
 
 The daemon crate is the metrics collection agent that runs on each monitored
 host. It collects system metrics, samples them on a timer, serves them over
-HTTP. On Unix it runs natively in the foreground; Windows SCM support remains
-available through the Windows-only service path.
+HTTP. Foreground `run` works on every OS; Windows additionally supports the
+SCM `service` / `start` path.
 
 **Source:** `crates/greggd/`
 
@@ -20,20 +20,20 @@ available through the Windows-only service path.
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
-| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (auto systemd/launchd/cron/Windows SCM), `restart` (manager-aware); Windows adds SCM `start`/`restart`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
-| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline |
+| `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall [--dry-run] [--purge]` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (`--method auto|systemd|launchd|cron`), `restart` (universal manager-aware; SCM on Windows / direct on Unix); Windows adds `start` and hidden `service` SCM entry; global `--config/-c`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline, Unix control-socket + Windows SCM entry alongside SIGTERM/SIGINT |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` for cleanup on SIGTERM/SIGINT |
+| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest), config-adjacent primary + temp-dir fallback paths; private RAII guard owned by the stop task ensures socket-file removal even if the runtime is dropped |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
-| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `SyntheticClock` |
-| `server/mod` | `src/server/mod.rs` | EggServe direct H1 service, endpoints, staleness; `ServerState`, `PublishedState`, module-local `Config` (with `ServerConfigError`) |
+| `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `Clock`/`RealClock` (`SyntheticClock` is test-only) |
+| `server/mod` | `src/server/mod.rs` | EggServe direct H1 service, endpoints, staleness; `ServerState`, public `Config`, private `PublishedState` (`ServerConfigError` in `server/error`); `server/tests.rs` holds the handler tests |
 | `server/error` | `src/server/error.rs` | Server error types |
-| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, `into_status_payload_v2()`, optional live telemetry publication |
+| `collector/mod` | `src/collector/mod.rs` | `SystemCollector` trait, `CollectedMetrics`, authoritative `into_snapshot_pair()` (plus `into_snapshot` / `into_snapshot_v2` / `into_status_payload_v2`, `clamped_usage_pct` / `finalize_percentage`, `DriveRefreshCache`), optional live telemetry publication |
 | `collector/rate` | `src/collector/rate.rs` | Monotonic counter baselines, reset/hotplug handling, checked rate arithmetic |
 | `collector/error` | `src/collector/error.rs` | `CollectErrorKind` taxonomy (6 kinds) |
 | `collector/drives` | `src/collector/drives.rs` | Shared drive normalization: `DriveCandidate`, dedup, sort, truncate to `MAX_DRIVE_ENTRIES` |
-| `startup/method` … `startup/install` | `src/startup/*.rs` | Startup installation, teardown, and restart split by ownership (Plan 105, behavior-preserving): method identity/paths/detection (`method`), bounded child execution (`process`), systemd unit/install/restart/uninstall plus narrow `ExecStart` ownership parsing (`systemd`), launchd plist/install/restart/uninstall plus `ProgramArguments` ownership parsing (`launchd`), shell quoting + cron block/install/uninstall plus command-target ownership parsing (`cron`), `ArtifactOwnership` and `StartupState` detection (`state`), errors/atomic writes/privilege/install dispatch/instructions/restart coordination (`install`). `src/startup.rs` is a façade re-exporting the historical `crate::startup::X` paths |
-| `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
+| `startup/method` … `startup/install` | `src/startup/*.rs` | Startup installation, teardown, and restart split by ownership (Plan 105, behavior-preserving): method identity/paths/detection (`method`), bounded child execution (`process`), systemd unit/install/restart/uninstall plus narrow `ExecStart` ownership parsing (`systemd`), launchd plist/install/restart/uninstall plus `ProgramArguments` ownership parsing (`launchd`), shell quoting + cron block/install/uninstall plus command-target ownership parsing (`cron`), `StartupState` detection (`state`; `ArtifactOwnership` lives in the `src/startup.rs` façade), errors/atomic writes/privilege/install dispatch/instructions/restart coordination (`install`). `src/startup.rs` is a façade re-exporting the historical `crate::startup::X` paths |
+| `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, `health_token`, `status_outcome`, `Display`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Exact-executable-aware lifecycle coordinator over the shared `gregg-update` mechanism: binds daemon identity, prepares the candidate via `prepare_candidate`, observes `UpdateLifecycle` after preparation (Unix systemd/launchd ownership + selected-config health; Windows `query_registration()` revalidated immediately before quiescence with owned-to-foreign failing before replacement), quiesces only an owned Windows SCM running service (owned stop-pending waits stopped without restart; foreign/unknown/not-installed perform zero SCM mutation), replaces, then restarts only `ManagedRunning`/`DirectRunning` through `restart_daemon()` with `UpdatedButRestartFailed` partial-success; preserves the Plan 102 prepare-before-quiesce transaction rule |
 | `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent read-only discovery per artifact, pure `plan_from_discovery` shared by `--dry-run` and execution, preflight before teardown, manager teardown via the startup owners + SCM `unregister`, direct control-stop with uncertain-stop blocking deletion, config preserved by default with `--purge` removing only resolved files |
 | `service/mod` | `src/service/mod.rs` | `ServiceManager` trait and bounded `ServiceRegistration` observations |
@@ -113,12 +113,13 @@ does not panic inside reusable daemon code.
 
 | Route | Handler | Response |
 |-------|---------|----------|
-| `GET /` | `status_handler` | v1 snapshot (200) or health (503) |
-| `GET /v1/status` | `status_handler` | Same as `/` |
-| `GET /v2/status` | `status_handler_v2` | v2 payload (200) or v2 health (503) |
-| `GET /healthz` | `health_handler` | v1 health (200 if ready, 503 otherwise) |
-| `GET /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
-| Other | `fallback_handler` | 404 |
+| `GET`/`HEAD /` | `status_handler` | v1 snapshot (200) or health (503) |
+| `GET`/`HEAD /v1/status` | `status_handler` | Same as `/` |
+| `GET`/`HEAD /v2/status` | `status_handler_v2` | v2 payload (200) or v2 health (503) |
+| `GET`/`HEAD /healthz` | `health_handler` | v1 health (200 if ready, 503 otherwise) |
+| `GET`/`HEAD /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
+| Known route, other method | — | 405 + `Allow: GET, HEAD` |
+| Other | `fallback_handler` | 404 `text/plain` |
 
 **Published state:** Typed v1/v2 snapshots, compact successful status bytes,
 minimal health metadata, observation time, and failure count are published
@@ -138,8 +139,10 @@ failure thresholds are evaluated for every request before cached bytes are
 served; stale data returns the existing collector-failure health response even
 when old successful bytes remain stored.
 
-**Staleness policy:** If `max_consecutive_failures > 0` and failures reach the
-threshold, or if `max_snapshot_age > 0` and the latest published observation is too old, the server
+**Staleness policy:** The daemon wires `max_consecutive_failures = 0`
+(disabled), so only the age-based path is live in production; the
+failure-count policy remains test-only. If `max_snapshot_age > 0` and the
+latest published observation is too old, the server
 returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving. A 503 body is always a failed health response: if staleness trips while the stored health state still says `ready`, the handlers substitute a `CollectorFailure` failure ("cached snapshot is stale"), so the body can never contradict the status code.
 
 When the wall clock moves backward and a cached observation timestamp is in the
@@ -159,7 +162,7 @@ The sampler owns the clock and cadence. Key behaviors:
   (on collector or identity error); identity failures preserve any previously
   published snapshot and never publish a blank identity
 - `Clock` trait for deterministic testing with `SyntheticClock`
-- The runtime loop runs each core collection cycle on Tokio.s blocking thread pool
+- The runtime loop runs each core collection cycle on Tokio's blocking thread pool
   (`spawn_blocking`). Optional drive capacity runs in one collector-owned
   standard thread with a bounded result channel and a 30-second cadence, so a
   slow native filesystem call cannot stall fresh CPU/memory/load snapshots or
@@ -184,7 +187,7 @@ The sampler owns the clock and cadence. Key behaviors:
 ### Configuration
 
 ```toml
-name = "greggd"           # display name, max 128 chars
+name = "greggd"           # display name, max 128 bytes
 host = "0.0.0.0"          # bind address
 port = 11310              # TCP port (1-65535)
 sample_interval_ms = 1000 # 250-60000
@@ -199,8 +202,8 @@ override. `system.hostname` is collected independently from the native host
 interface and is never replaced by the configured name.
 
 Validation produces structured `ConfigViolation` values. Atomic writes use
-write-flush-rename-verify: the temp file is `0600` during the write, then
-the final daemon config is relaxed to `0644` because it carries no secrets
+write-flush-verify-rename: serialize to a `0600` temp file, `fsync`, load back
+and compare, then rename; the final daemon config is relaxed to `0644` because it carries no secrets
 and read-only `croncheck`/`status`/`configprint` must work for unprivileged
 operators and cron. Systemd/launchd installs repair older `0600` system
 configs to `0644` with a traversable (`0755`) parent; the Unix control
@@ -224,13 +227,13 @@ configuration error and is neither written nor followed by process management.
 | `croncheck` | Watchdog for cron and other non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured local bind (wildcards normalized to loopback); valid Gregg Ready/Warming/Failed means running, refusal alone permits a detached `<current_exe> run` spawn, and unrelated/malformed/silent/ambiguous peers return nonzero without spawning |
 | `configprint` | Read configured bind address and print one canonical `host:port` line; bind wildcards (`0.0.0.0`, `::`) are resolved to the host's primary local IP so the output is a usable address, and the original wildcard is preserved if the local IP cannot be resolved; no network I/O beyond a local route lookup, no listener bind, no service, no config mutation |
 | `status` | Read-only local diagnostics: version, config path, canonical bind `host:port`, bounded `/v2/healthz` classification (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority as `croncheck`), detected startup-manager state. Exit 0 only when a valid Gregg endpoint answered; never starts/stops/restarts/installs, never infers process ownership from port occupancy, never invokes `sudo` |
-| `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
+| `startup install` | Install and enable automatic startup (`auto` default; `--method auto|systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab, never edits `/var/spool/cron`). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron on permission failure; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Exact-executable-aware manager restart: only an owned systemd/launchd/SCM registration may receive manager mutation; foreign same-config and unknown Unix ownership fail closed, foreign different-known-config registrations permit only the selected config's direct path, and Windows has no direct fallback for missing/foreign/unknown SCM. Owned managers use `systemctl restart greggd`, `launchctl kickstart -k`, or SCM; otherwise Unix uses config-specific `stop` + detached `run`. Permission failures print exact elevated command and return `PermissionDenied` without competing fallback |
 | `update` | Daemon lifecycle coordination over the shared `gregg-update` mechanism (version/target/asset/download/checksum/staging/replacement): exact `vX.Y.Z` asset + `.sha256`, staged temp, candidate `version` check, Cargo `=X.Y.Z` fallback only on 404; fully prepares before observing exact-executable `UpdateLifecycle` and before any stop (Windows SCM stop only when `query_registration()` still proves owned running/start-pending, owned stop-pending waits stopped without restart, foreign/unknown/not-installed do zero SCM mutation, owned-to-foreign fails before replacement; Unix owned/foreign/unknown + selected health decide managed/direct/stopped/preserved); preserves config/registration and restarts only `ManagedRunning`/`DirectRunning` via `restart_daemon()`, leaves stopped/foreign untouched; `UpdatedButRestartFailed` partial-success with exact restart command and nonzero exit |
 | `uninstall [--dry-run] [--purge]` | Remove only the exact invoked daemon executable plus independently discovered startup artifacts whose parsed command target matches it (systemd `ExecStart`, launchd `ProgramArguments`, managed cron command, SCM image path); foreign/ambiguous artifacts are preserved, SCM query uncertainty blocks mutation, preflights permissions first, never `sudo`s internally, blocks deletion on uncertain direct stop, preserves config by default, `--purge` removes only resolved config/data files, and Unix Cargo-owned installs complete owned lifecycle before Cargo removal and post-success purge (Windows prints the zero-mutation handoff) |
-| `host` | Atomically mutate bind host; applies on next start |
-| `port` | Atomically mutate port; applies on next start |
+| `host` | Atomically mutate bind host; applies on next start (Windows also restarts the SCM service via config-intent dispatch) |
+| `port` | Atomically mutate port; applies on next start (Windows also restarts the SCM service via config-intent dispatch) |
 | `version` | Print compile-time daemon version |
 
 The binary boundary owns logging initialization and error presentation. The
@@ -243,13 +246,15 @@ permission denied.
 ### Optional drive refresh
 
 Drive capacity is deliberately outside the critical sampler path. Each native
-collector creates at most one private standard-thread worker after core sampling
-starts; its first request is immediate and later requests use a 30-second cadence.
-The sampler polls a capacity-one result channel without waiting, retains the most
+collector lazily creates at most one private standard-thread worker
+(`DriveRefreshCache`) on its first `sample()`; its first request is immediate
+and later requests use a 30-second cadence.
+The collector polls a capacity-one result channel without waiting, retains the most
 recent successful drive list through failures, and publishes `drives: null` until
 a first result exists. A contained collection panic is reported and retried
 with bounded backoff. Dropping the collector does not join a worker that may be
-inside an uninterruptible filesystem syscall.
+inside an uninterruptible filesystem syscall. The sampler only converts the
+collector-owned `CollectedMetrics.drives` into the wire payloads.
 
 ### Unix control socket
 
@@ -364,7 +369,8 @@ discarded at the collector boundary and does not fabricate a zero value.
 
 ### Unit tests
 
-Every module has inline `#[cfg(test)]` tests:
+Most modules have inline `#[cfg(test)]` tests (`server` keeps its handler
+tests in the separate `server/tests.rs` file):
 
 | Module | ~Test lines | Coverage |
 |--------|--------|----------|
@@ -382,11 +388,12 @@ Every module has inline `#[cfg(test)]` tests:
 
 - `tests/linux_collector.rs` — live `/proc` smoke test
 - `tests/windows_smoke.rs` — binary help + foreground daemon + v2 health polling
+- `tests/installer_rerun.rs` — installer rerun / upgrade contract
 
 ### Test infrastructure
 
 - 46 JSON/text fixture files in `src/collector/test_fixtures/`
-- `MemorySource` (Linux) — in-memory file map for deterministic tests
+- `FileSource`/`MemorySource` (Linux) — file seam plus in-memory map for deterministic tests
 - `MockNativeQueries` (macOS) — injectable FFI with auto-increment CPU
 - `MockWindowsSource` (Windows) — injectable API with auto-increment CPU
 - `MockScmAdapter` (Windows SCM) — injectable service state

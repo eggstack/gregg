@@ -20,8 +20,11 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop, TUI wiring (update is synchronous, before Tokio) |
-| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
+| `main` | `src/main.rs` | Entry point, event loop (6 `select!` arms: shutdown, poll batches, EggPool results, input events, highlight deadline, pending refresh backpressure), TUI wiring (update is synchronous, before Tokio) |
+| `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
+| `update` | `src/update.rs` | Thin `run_simple_update` adapter binding the client identity |
+| `uninstall` | `src/uninstall.rs` | Exact-exe client removal plan/execution (`purge_empty_dir_for` only the standard parent) |
+| `config` | `src/config.rs` | Façade re-exporting `config/{model,store,validation,lock}` |
 | `config/model` | `src/config/model.rs` | Config model: entries, limits, defaults, load/validate/write primitives |
 | `config/store` | `src/config/store.rs` | `ConfigStore` coordination, atomic persistence, staging I/O, `ConfigError`, `AtomicWriteError` |
 | `config/validation` | `src/config/validation.rs` | `ConfigViolation` kinds and field checks |
@@ -35,7 +38,7 @@ renders a Ratatui-based terminal UI.
 |--------|------|---------|
 | `poller` | `src/poller.rs` | HTTP client, v2-first/v1-fallback, PollOutcome classification; `OfflineKind`/`OfflineReason` stable failure provenance (`PollOutcome::offline_reason`) |
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, generation-based concurrency |
-| `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing plus HTTP URL adaptation for `add` |
+| `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing (`parse_add_input`); HTTP-URL/nickname adaptation lives in `cli.rs::parse_add_target` |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption |
 
@@ -108,14 +111,14 @@ select branch never fires spuriously.
 All state changes go through the `Action` enum:
 
 ```rust
-enum Action {
+pub enum Action {
     MoveDown, MoveUp, PageDown, PageUp,
     SelectFirst, SelectLast,
     PreviousPane, NextPane,
     ToggleSystemView, ToggleDrives, ToggleNetwork,
     RefreshNow,
     ClearSelectionHighlight,   // Plan 087: dispatched by the highlight timer
-    Resize, Quit,
+    Resize { width: u16, height: u16 }, Quit,
 }
 ```
 
@@ -199,7 +202,8 @@ struct AppState {
     selected_id: Option<SystemId>,       // current selection
     viewport_top_id: Option<SystemId>,   // scroll position (first visible)
     last_applied_generation: u64,        // stale batch rejection
-    refresh_status: RefreshStatus,       // idle or polling
+    refresh_status: RefreshStatus,       // currently always `Idle`; generations tracked via `last_applied_generation`
+    config_reload_error: Option<String>, // last rejected `Ctrl-R` diagnostic
     terminal_size: Option<(u16, u16)>,   // terminal dimensions
     active_pane: Pane,                   // Systems or Eggpool
     system_view_mode: SystemViewMode,    // Normal or Condensed
@@ -247,22 +251,22 @@ reappear when the operator comes back.
 
 | Key | Action |
 |-----|--------|
-| `j`/`k` | Move down/up |
-| `h`/`l` | Previous/next pane |
+| `j`/`k` (or `Up`/`Down`) | Move down/up |
+| `h`/`l` (or `Left`/`Right`) | Previous/next pane |
 | `v` | Toggle normal/condensed view |
 | `d` | Toggle drive expansion |
 | `n` | Toggle network detail expansion (legacy systems are a no-op) |
 | `g`/`G` | First/last system |
-| `f`/`b` | Page forward/back |
+| `f`/`b` (or `PageDown`/`PageUp`) | Page forward/back |
 | `Ctrl-R` | Reload Systems config and reliably replace/poll endpoints, or refresh EggPool |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 
 ### Width degradation
 
 The header line drops lower-priority segments as width decreases:
-- < 32 cols: no load
+- < 32 cols: no load/cores
 - < 50 cols: no OS
-- < 80 cols: no architecture
+- < 80 cols: no kernel/arch
 
 Plan 087 adds a strict integer-safe compact-mode policy for the normal
 metric rows: when the longest *natural* suffix across the entire
@@ -302,7 +306,7 @@ The active metric rows share one fleet-wide label width and one
 fleet-wide `bar_width`; their opening `[` and closing `]` always occupy
 the same terminal column across every online system. Geometry is
 computed once per render via `build_metric_rows`,
-`compute_fleet_metric_layout`, and `resolve_system_suffixes`; the
+`compute_fleet_metric_layout`, and the private `resolve_system_suffixes` helper; the
 layout population includes every online system with a current
 normalized snapshot, not only the entries returned by `compute_viewport`,
 so scrolling does not cause horizontal reflow. Metric rows are indented
@@ -358,7 +362,8 @@ Compact fallback so Compact considers a truncated name before falling to
 Minimal.
 
 When v2 disk-I/O telemetry is present, `d` adds a table heading, optional
-`R/s`/`W/s` columns, and an `I/O TOTAL` line. A drive receives a rate only
+`R/s`/`W/s` columns (including the `Throughput` fallback tier: name + rates),
+and an `I/O TOTAL` line. A drive receives a rate only
 when exactly one daemon device record names that mount; ambiguous or missing
 associations render `—`. The aggregate line is always taken from the daemon's
 aggregate and is never recomputed from visible drive rows.
@@ -445,7 +450,7 @@ library callers from async tasks must move the mutation to a blocking thread.
 |---------|---------|
 | `add <host:port or http://host:port/> or nickname@host:port>` | Add endpoint with required explicit port; `--name` and an inline `nickname@` are mutually exclusive; persisted fields are normalized `host`/`port` and optional `name` |
 | `list` | List configured endpoints |
-| `remove <host>` | Host-only remove is still supported |
+| `remove <host\|host:port>` | Host-only removes all endpoints on that host; `host:port` removes one exact endpoint |
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |

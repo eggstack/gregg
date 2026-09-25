@@ -76,7 +76,7 @@ managers, TUI, EggPool, or the wire protocol.
 | `gregg-protocol` | `crates/gregg-protocol/` | lib | JSON wire contract (v1/v2, capabilities, validation, health) | [gregg-protocol.md](gregg-protocol.md) |
 | `gregg-update` | `crates/gregg-update/` | lib (internal) | Shared binary-first self-update mechanics | [gregg-update.md](gregg-update.md) |
 | `greggd` | `crates/greggd/` | bin+lib | Metrics daemon: collect, sample, serve, manage lifecycle | [greggd-daemon.md](greggd-daemon.md) |
-| `gregg` | `crates/gregg/` | bin (+ `lock_helper` test helper) | Fleet client: manage endpoints, poll, reduce state, render TUI | [gregg-client.md](gregg-client.md) |
+| `gregg` | `crates/gregg/` | lib + bin (+ `lock_helper` test helper) | Fleet client: manage endpoints, poll, reduce state, render TUI | [gregg-client.md](gregg-client.md) |
 
 ---
 
@@ -93,7 +93,8 @@ platform dependencies (`serde`, `serde_json`, `thiserror` only;
 - Schema v2: cross-platform shape with capability flags (`load_average`,
   `swap`, `memory_commit`, `cpu_iowait`), optional drives (≤32 entries),
   and additive live telemetry (CPU Hz, disk R/s/W/s, net Rx/s/Tx/s)
-  (`v2.rs`, `validate_v2.rs` — 16 base kinds + telemetry bounds).
+  (`v2.rs`, `validate_v2.rs` — 32 `ViolationKindV2` variants: 16 base
+  + 16 live-telemetry/identity bounds).
 - Health: `Ready` / `Warming` / `Failed` with coarse wire-safe categories
   (`health.rs`); validation returns `Vec<Violation>`, never serde errors.
 - Test fixtures: `test_support` builders + `tests/fixtures/` JSON payloads.
@@ -136,7 +137,8 @@ are a binary-boundary concern).
   (EggServe H1, `/`, `/v1/status`, `/v2/status`, `/healthz`, `/v2/healthz`,
   staleness policy), `run.rs` (supervision, 10s graceful shutdown).
 - `cli.rs` (`run`, `stop`, `croncheck`, `configprint`, `status`, `host`,
-  `port`, `startup install/instructions`, `restart`, `update`), `control.rs`
+  `port`, `version`, `startup install/instructions`, `restart`, `update`,
+  `uninstall`; Windows adds SCM `start` and hidden `service`), `control.rs`
   (Unix `STOP\n→OK\n` socket, FNV-1a config identity, `0600`), `startup/`
   (systemd/launchd/cron + Windows SCM), `status.rs`/`net.rs` (read-only
   diagnostics, wildcard→local-IP resolution).
@@ -161,8 +163,8 @@ pure state reducer, Ratatui TUI, plus an isolated optional EggPool pane.
   `ui/text.rs`, `event.rs`/`input.rs`/`terminal.rs` (keys, thread, lifecycle).
 - Config/CLI: `config/{model,store,validation,lock}` (atomic writes,
   `flock`/`LockFileEx`), `endpoint.rs` (explicit port required for `add`;
-  HTTPS never accepted), `cli.rs` (`add/list/remove/refresh/edit/update`,
-  `eggpool add/list/remove`).
+  HTTPS never accepted), `cli.rs` (`add/list/remove/refresh/edit/version/update`,
+  `uninstall`, `eggpool add/list/remove`).
 - EggPool: separate `eggpool.rs` client/worker (60s passive cadence,
   Bearer from env-var name only) + `ui/eggpool.rs`; never shares greggd
   polling paths.
@@ -216,8 +218,8 @@ own client, auth, cadence, and rendering — see
 |------|----------|---------|-----------|
 | Local check | `scripts/check-local.sh` / `.ps1` | Routine fmt + tests; `--release` adds clippy/docs/version/smoke/protocol dry-run | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | Release policy | `scripts/release-targets.txt`, `release-preflight.sh`, `release-check-assets.sh`, `release-install-zig.sh` | Single 5-target table + version/tag/registry preflight + asset validation | [scripts-and-packaging.md](scripts-and-packaging.md) |
-| Loopback/SOAK smokes | `scripts/verify-installed-daemon.sh`, `smoke-windows.ps1` (SCM), `run-mixed-fleet-sustained.py` + `scripts/tests/` | Bounded daemon health smoke, Windows lifecycle proof, ignored sustained-workload driver | [scripts-and-packaging.md](scripts-and-packaging.md) |
-| Installers | `packaging/install.sh` / `install.ps1` (bootstrap, binary-first) + legacy `install-linux.sh` / `install-macos.sh` / `install-windows.ps1`, `systemd/` unit, `launchd/` plist | Default install path; Cargo fallback for `armv7l`/unknown only | [scripts-and-packaging.md](scripts-and-packaging.md) |
+| Loopback/SOAK smokes | `scripts/verify-installed-daemon.sh`, `test-verify-installed-daemon.sh`, `smoke-windows.ps1` (SCM), `run-mixed-fleet-sustained.py` + `scripts/tests/` (`fake-greggd.py`, `fleet-fixture.py`, `test-install-rerun.sh`, `test_sustained_runner.py`) | Bounded daemon health smoke, Windows lifecycle proof, ignored sustained-workload driver | [scripts-and-packaging.md](scripts-and-packaging.md) |
+| Installers | `packaging/install.sh` / `install.ps1` (bootstrap, binary-first) + legacy `install-linux.sh` / `install-macos.sh` / `install-windows.ps1`, `uninstall-windows.ps1` (`greggd uninstall` wrapper), `systemd/` unit, `launchd/` plist | Default install path; Cargo fallback for `armv7l`/unknown only | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | CI / release workflows | `.github/workflows/ci.yml`, `release-binaries.yml` | Linux fmt/clippy/tests + native macOS/Windows + MSRV 1.89; tag-only 5-target draft release (glibc 2.17) | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | User docs | `docs/{installation,daemon,client,display,api,development}.md` | Behavior-facing manuals (install, daemon, client, rendering, API) | — |
 | Skills | `.opencode/skills/` (`rust-workspace`, `greggd-daemon`, `gregg-client`, `protocol-wire`, `platform-collectors`, `release-process`, `eggpool`, `architecture-docs`, `plans-workflow`) | Task-scoped agent guidance shadowing the architecture docs | matching deep dive |

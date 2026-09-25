@@ -58,10 +58,10 @@ use std::process::{Command, Stdio};
 
 /// Identity of one updatable program.
 ///
-/// Conceptually the caller provides `crate_name`, `program_name`,
-/// `current_version`, and the release repository, and receives a
-/// prepared/replaced result without the shared crate knowing anything
-/// about service managers or UI state.
+/// Conceptually the caller provides `crate_name`, `program_name`, and
+/// `current_version` (the release repository is the const `GITHUB_REPO`),
+/// and receives a prepared/replaced result without the shared crate knowing
+/// anything about service managers or UI state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateSpec {
     /// crates.io crate name (the version authority key).
