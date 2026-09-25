@@ -200,10 +200,15 @@ Linux/Windows sources stay unchanged. See
 
 Post-closure review found one narrow Plan-128 network-parser defect: Darwin's
 `NET_RT_IFLIST2` stream interleaves `RTM_IFINFO2` with shorter heterogeneous
-routing messages, but the current parser applies the full `if_msghdr2` size
-requirement before type discrimination and can stop before later interfaces.
-Plan 129 is planned to correct only that message-walk boundary, strengthen the
-native non-loopback-interface proof, and reconcile Plan 128's closure record.
+routing messages, but the landed parser applied the full `if_msghdr2` size
+requirement before type discrimination and could stop before later interfaces.
+Plan 129 is complete at implementation `30df587` with remote CI run
+`36176134555` green across Linux, macOS arm64, macOS Intel, Windows SCM
+smoke, and MSRV Rust 1.89. It corrects only that message-walk boundary
+(common-prefix framing first, `if_msghdr2` size only for `RTM_IFINFO2`),
+strengthens the native non-loopback-interface proof, and reconciles Plan 128's
+closure record via its preserved post-closure correction note. Plan 128
+remains complete with a Plan-129 corrective follow-up.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -330,7 +335,7 @@ excluded.
 | [`126-eggfetch-updater-transport-consolidation-experiment.md`](126-eggfetch-updater-transport-consolidation-experiment.md) | Benchmark-gated experiment to replace gregg-update's external curl transport with eggfetch 0.2 while preserving update semantics and small-binary goals | complete with RETAIN CURL; parity candidate doubled stripped `greggd` (+105%), reverted cleanly |
 | [`127-eggserve-0-2-daemon-http-transport-adoption.md`](127-eggserve-0-2-daemon-http-transport-adoption.md) | Replace greggd's Axum HTTP facade with direct EggServe 0.2.x while preserving wire, cached-body, supervision, keep-alive, and footprint contracts | complete at `1861bbc`; CI `35871682878` green across five jobs; EggServe 0.2.1 gates, wire tests, size review, and loopback check recorded |
 | [`128-macos-intel-disk-network-collector-corrective-pass.md`](128-macos-intel-disk-network-collector-corrective-pass.md) | Correct Darwin filesystem/network ABI handling and prove macOS Intel+arm64 v2 drive/network telemetry | complete; implementation `0f134b0`; CI `36170917401` green; route-message parser follow-up owned by Plan 129 |
-| [`129-macos-route-message-parser-corrective-pass.md`](129-macos-route-message-parser-corrective-pass.md) | Correct heterogeneous `NET_RT_IFLIST2` message walking, strengthen native interface-completeness proof, and reconcile Plan 128 closure | planned |
+| [`129-macos-route-message-parser-corrective-pass.md`](129-macos-route-message-parser-corrective-pass.md) | Correct heterogeneous `NET_RT_IFLIST2` message walking, strengthen native interface-completeness proof, and reconcile Plan 128 closure | complete; implementation `30df587`; CI `36176134555` green |
 
 Dependency order:
 

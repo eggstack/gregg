@@ -1,6 +1,6 @@
 # Plan 129: macOS route-message parser corrective pass
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plan 128 and the current post-Plan-128 macOS collector baseline. This work is independent of the remaining Plan 091 soak record.
 
@@ -179,20 +179,20 @@ Linux, Windows, and MSRV Rust 1.89 must remain green because the ordinary workfl
 
 ## Acceptance criteria
 
-- [ ] The route-message parser no longer requires unrelated messages to be `if_msghdr2`-sized before type discrimination.
-- [ ] A bounded common-prefix validation step safely obtains `msglen` and message type before any type-specific cast/read.
-- [ ] `RTM_IFINFO2` alone requires `size_of::<libc::if_msghdr2>()` before the full header is read.
-- [ ] Valid shorter unrelated messages advance by their own `msglen` and do not terminate parsing.
-- [ ] Zero-length, undersized-common-prefix, oversized/truncated, and truncated-`RTM_IFINFO2` cases remain bounded and out-of-bounds safe.
-- [ ] Deterministic tests interleave a realistically short `RTM_NEWADDR` between two `RTM_IFINFO2` records and prove both interfaces are returned.
-- [ ] Deterministic tests cover at least one additional unrelated routing-message shape or repeated unrelated records between interfaces.
-- [ ] The misleading full-`if_msghdr2` unrelated-message fixture is removed, renamed, or supplemented so it cannot mask this defect.
-- [ ] Native macOS verification proves at least one non-loopback interface reaches the raw/native result and complete v2 payload, or records an equally strong architecture-neutral invariant if hosted topology requires it.
-- [ ] Both existing macOS arm64 and Intel CI jobs pass the corrected parser/native-v2 suite.
-- [ ] Plan-128 filesystem-capacity ABI handling, typed `if_data` fallback, IOKit disk-I/O behavior, diagnostics, protocol, TUI, cadence, and readiness semantics are unchanged.
-- [ ] No new dependency, external metrics command, privilege requirement, protocol field, or workflow is introduced.
-- [ ] Plan 128 receives an appended correction note rather than rewritten historical closure evidence.
-- [ ] Plan 129 closure records the implementation SHA and exact existing CI run used.
+- [x] The route-message parser no longer requires unrelated messages to be `if_msghdr2`-sized before type discrimination.
+- [x] A bounded common-prefix validation step safely obtains `msglen` and message type before any type-specific cast/read.
+- [x] `RTM_IFINFO2` alone requires `size_of::<libc::if_msghdr2>()` before the full header is read.
+- [x] Valid shorter unrelated messages advance by their own `msglen` and do not terminate parsing.
+- [x] Zero-length, undersized-common-prefix, oversized/truncated, and truncated-`RTM_IFINFO2` cases remain bounded and out-of-bounds safe.
+- [x] Deterministic tests interleave a realistically short `RTM_NEWADDR` between two `RTM_IFINFO2` records and prove both interfaces are returned.
+- [x] Deterministic tests cover at least one additional unrelated routing-message shape or repeated unrelated records between interfaces.
+- [x] The misleading full-`if_msghdr2` unrelated-message fixture is removed, renamed, or supplemented so it cannot mask this defect.
+- [x] Native macOS verification proves at least one non-loopback interface reaches the raw/native result and complete v2 payload, or records an equally strong architecture-neutral invariant if hosted topology requires it.
+- [x] Both existing macOS arm64 and Intel CI jobs pass the corrected parser/native-v2 suite.
+- [x] Plan-128 filesystem-capacity ABI handling, typed `if_data` fallback, IOKit disk-I/O behavior, diagnostics, protocol, TUI, cadence, and readiness semantics are unchanged.
+- [x] No new dependency, external metrics command, privilege requirement, protocol field, or workflow is introduced.
+- [x] Plan 128 receives an appended correction note rather than rewritten historical closure evidence.
+- [x] Plan 129 closure records the implementation SHA and exact existing CI run used.
 
 ## Explicit non-goals
 
@@ -220,3 +220,39 @@ Start in `crates/greggd/src/collector/macos/ffi.rs`.
 The important boundary is simple: route-message framing is common, but message bodies are heterogeneous. Read and validate the framing first, then apply `if_msghdr2` size/layout requirements only to `RTM_IFINFO2`.
 
 Do not treat current green native CI as proof that all interfaces were parsed. The Plan-128 smoke proved that at least one network payload could materialize; Plan 129 must prove that valid interleaved Darwin route messages do not prevent later interfaces from reaching the collector.
+
+## Closure record
+
+Implemented at `30df587`, verified by existing CI run `36176134555` green
+across all five jobs (Linux fmt/clippy/tests, macOS arm64, macOS Intel,
+Windows incl. SCM smoke, MSRV Rust 1.89). The `parse_iflist2_buffer()`
+walker now validates the common four-byte route-message prefix
+(`msglen`/`version`/`type` per `bsd/net/route.h` and the libc bindings for
+`rt_msghdr`/`if_msghdr2`/`ifa_msghdr`/`ifma_msghdr2`) before type
+discrimination, requires `size_of::<libc::if_msghdr2>()` only for
+`RTM_IFINFO2`, advances valid shorter unrelated records by their own
+`msglen`, and truncates zero-length, undersized-prefix,
+oversized/truncated, and truncated-`RTM_IFINFO2` tails without over-reads
+while preserving earlier records. Deterministic macOS tests prove both
+interfaces survive a realistically short interleaved `RTM_NEWADDR`
+(`ifa_msghdr` framing, asserted shorter than `if_msghdr2`), multiple
+unrelated records (`RTM_NEWADDR` + `RTM_NEWMADDR2`) between interfaces, an
+explicit oversized-unrelated case under a non-masking name, prefix framing,
+and all malformed-tail bounds; the misleading full-`if_msghdr2`
+`RTM_NEWADDR` fixture was replaced by the renamed oversized helper plus
+short fixtures. Native macOS verification now requires at least one
+non-loopback interface in both the preferred `NET_RT_IFLIST2` enumeration
+and the complete v2 payload after bounded warmup (zero rates and unknown
+capacity still allowed, no specific interface name required); both
+`macos-15` and `macos-15-intel` jobs pass. Plan-128 filesystem ABI handling,
+typed `if_data` fallback, IOKit behavior, diagnostics, protocol, TUI,
+cadence, and readiness are unchanged; no new dependency, external command,
+privilege, protocol field, or workflow was introduced. Plan 128's appended
+post-closure correction note is preserved as the historical record and meets
+the reconciliation criterion without rewriting its closure evidence. Docs
+reconciled in the same pass: `architecture/collectors.md`,
+`architecture/macos-collector-notes.md`, and `CHANGELOG.md`. Plan 129 is
+terminal in the dependency chain and independent of the remaining Plan 091
+soak record, so no downstream plan status changes were required.
+
+Acceptance: all boxes hold at the implementation SHA.
