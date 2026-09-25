@@ -77,7 +77,7 @@ jobs:
         run: cargo check --workspace --all-targets --all-features
 
       - name: Native macOS collector smoke
-        run: cargo test -p greggd --all-features -- collector::macos::ffi::native_tests
+        run: cargo test -p greggd --all-features -- collector::macos
 
   windows:
     name: Windows

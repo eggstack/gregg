@@ -9,7 +9,8 @@ use gregg_protocol::{MetricCapabilities, StatusSnapshot};
 
 use super::cpu::compute_cpu_percentages;
 use super::ffi::{
-    MockNativeQueries, RawCpuTicks, RawDiskIo, RawNetworkInterface, RawSwapUsage, RawVmStats,
+    MockNativeQueries, RawCpuTicks, RawDiskIo, RawMountedFilesystem, RawNetworkInterface,
+    RawSwapUsage, RawVmStats, MNT_DONTBROWSE, MNT_LOCAL,
 };
 use super::identity::collect_identity;
 use super::memory::compute_memory;
@@ -703,4 +704,166 @@ fn sleep_wake_recovery_after_counter_reset() {
         .expect("snapshot validates after wake recovery");
     assert!(snap.cpu.usage_pct.is_finite());
     assert!((0.0..=100.0).contains(&snap.cpu.usage_pct));
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+fn mounted_record(
+    mount: &str,
+    fstype: &str,
+    flags: u32,
+    block_size: u64,
+    total: u64,
+    free: u64,
+    avail: u64,
+) -> RawMountedFilesystem {
+    RawMountedFilesystem {
+        mount_point: mount.to_string(),
+        filesystem_type: fstype.to_string(),
+        fsid: (mount.len() as i32, fstype.len() as i32),
+        flags,
+        total_blocks: total,
+        free_blocks: free,
+        available_blocks: avail,
+        block_size,
+    }
+}
+
+#[test]
+fn drive_filtering_retains_local_and_rejects_dontbrowse_devfs_autofs() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.mounted = vec![
+        mounted_record("/", "apfs", MNT_LOCAL, 4096, 100, 25, 20),
+        mounted_record(
+            "/hidden",
+            "apfs",
+            MNT_LOCAL | MNT_DONTBROWSE,
+            4096,
+            100,
+            25,
+            20,
+        ),
+        mounted_record("/dev", "devfs", MNT_LOCAL, 4096, 100, 25, 20),
+        mounted_record("/auto", "autofs", MNT_LOCAL, 4096, 100, 25, 20),
+        mounted_record("/net", "nfs", 0, 4096, 100, 25, 20),
+    ];
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = sample_until_drives(&mut collector);
+    let drives = metrics.drives.expect("drives");
+    assert_eq!(drives.len(), 1);
+    assert_eq!(drives[0].name, "/");
+    assert_eq!(drives[0].total_bytes, 100 * 4096);
+}
+
+#[test]
+fn drive_overflow_and_zero_capacity_rejected_without_failure() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.mounted = vec![
+        mounted_record("/", "apfs", MNT_LOCAL, 2, u64::MAX, 0, 0),
+        mounted_record("/zero", "apfs", MNT_LOCAL, 0, 100, 25, 20),
+    ];
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let metrics = sample_until_drives(&mut collector);
+    // Checked multiplication rejects the overflowing and zero-sized records;
+    // successful empty enumeration stays `Some(empty)`, distinct from `None`.
+    assert_eq!(metrics.drives, Some(Vec::new()));
+}
+
+#[test]
+fn network_down_interface_retained_but_excluded_from_capacity() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.network = vec![
+        RawNetworkInterface {
+            id: "lo0".to_string(),
+            name: "lo0".to_string(),
+            rx_bytes: 10_000,
+            tx_bytes: 20_000,
+            rx_capacity_bps: Some(1_000_000_000),
+            tx_capacity_bps: Some(1_000_000_000),
+            is_loopback: true,
+            operational: true,
+            aggregate_member: false,
+        },
+        RawNetworkInterface {
+            id: "en0".to_string(),
+            name: "en0".to_string(),
+            rx_bytes: 30_000,
+            tx_bytes: 40_000,
+            rx_capacity_bps: Some(10_000_000_000),
+            tx_capacity_bps: Some(8_000_000_000),
+            is_loopback: false,
+            operational: false,
+            aggregate_member: true,
+        },
+    ];
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let baseline = collector
+        .sample()
+        .expect("second sample warms live baselines");
+    assert!(baseline.network.is_none());
+
+    collector.source_mut().network[0].rx_bytes += 1_000;
+    collector.source_mut().network[0].tx_bytes += 2_000;
+    collector.source_mut().network[1].rx_bytes += 3_000;
+    collector.source_mut().network[1].tx_bytes += 4_000;
+    let metrics = collector.sample().expect("third sample publishes");
+    let network = metrics.network.expect("network");
+    // Down interface is retained in detail but contributes no capacity.
+    assert!(network.interfaces.iter().any(|i| i.id == "en0"));
+    assert_eq!(network.aggregate_rx_capacity_bps, None);
+    assert_eq!(network.aggregate_tx_capacity_bps, None);
+    // Loopback stays detail-only and never joins aggregate capacity.
+    let loopback = network
+        .interfaces
+        .iter()
+        .find(|i| i.is_loopback)
+        .expect("loopback detail");
+    assert!(!loopback.aggregate_member);
+}
+
+#[test]
+fn network_counter_wrap_rebaselines_without_spike() {
+    let mut mock = MockNativeQueries::success();
+    mock.auto_increment_cpu = true;
+    mock.network = vec![RawNetworkInterface {
+        id: "en0".to_string(),
+        name: "en0".to_string(),
+        rx_bytes: 10_000,
+        tx_bytes: 20_000,
+        rx_capacity_bps: Some(1_000_000_000),
+        tx_capacity_bps: Some(1_000_000_000),
+        is_loopback: false,
+        operational: true,
+        aggregate_member: true,
+    }];
+    let mut collector = MacOsCollector::with_source(mock, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    let _ = collector.sample().expect("baseline warms");
+    collector.source_mut().network[0].rx_bytes += 1_000;
+    collector.source_mut().network[0].tx_bytes += 2_000;
+    let published = collector.sample().expect("publishes rates");
+    assert!(published.network.is_some());
+
+    // Legacy 32-bit wrap (or reset) decreases the cumulative counter. The
+    // shared baseline helper must re-baseline and omit the interval rather
+    // than synthesize bytes across the wrap.
+    collector.source_mut().network[0].rx_bytes = 100;
+    collector.source_mut().network[0].tx_bytes = 200;
+    let wrapped = collector.sample().expect("core sample still succeeds");
+    assert!(
+        wrapped.network.is_none(),
+        "wrapped counters must re-baseline without publishing a spike"
+    );
+
+    collector.source_mut().network[0].rx_bytes += 1_000;
+    collector.source_mut().network[0].tx_bytes += 1_000;
+    let recovered = collector.sample().expect("recovers after wrap");
+    let network = recovered.network.expect("rates resume");
+    assert!(network.aggregate_rx_bytes_per_sec > 0);
+    assert!(network.aggregate_tx_bytes_per_sec > 0);
 }

@@ -39,6 +39,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **macOS Intel drive/network collector correctness (Plan 128):** filesystem
+  enumeration now uses `libc::getmntinfo` with `libc::statfs` so Intel hosts
+  receive the correct `INODE64` ABI instead of a private unsuffixed layout;
+  network counters prefer `NET_RT_IFLIST2` / `if_msghdr2` 64-bit statistics
+  with a correctly typed `getifaddrs` / `if_data` fallback (never an
+  `if_data64` cast). Legacy wraps re-baseline without spikes, optional
+  drive/network/disk-I/O failures use bounded transition logging, and native
+  macOS CI now proves nonempty v2 drive/network telemetry on arm64 and Intel.
+  No protocol, TUI, cadence, or readiness changes.
+
 - **Stale status compatibility (Plan 124):** v1/v2 status responses that
   cross the collector-failure threshold now preserve the latest stored failure
   diagnostic, matching the health endpoints; ready snapshots that become stale

@@ -173,7 +173,8 @@ Live rates use cumulative native counters and the actual monotonic elapsed time
 between observations. Counter reset, daemon restart, device hotplug, and link
 disappearance re-establish a baseline before a rate is published. Linux uses
 CPUFreq policy files, `/sys/block/*/stat`, `/proc/net/dev`, and sysfs link
-metadata; macOS uses public AF_LINK records and IOKit storage statistics; and
+metadata; macOS uses `NET_RT_IFLIST2` 64-bit interface counters with a
+correctly typed `getifaddrs` fallback and IOKit storage statistics; and
 Windows uses `CallNtPowerInformation`, `IOCTL_DISK_PERFORMANCE`, and IP Helper.
 Optional source failures never make an otherwise valid core sample unready.
 

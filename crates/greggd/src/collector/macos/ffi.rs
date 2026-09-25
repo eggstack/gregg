@@ -414,38 +414,27 @@ const KERN_SUCCESS: kern_return_t = 0;
 const HOST_CPU_LOAD_INFO: i32 = 3;
 #[allow(non_camel_case_types)]
 const HOST_VM_INFO64: i32 = 4;
-pub(crate) const MNT_LOCAL: u32 = 0x0000_1000;
-pub(crate) const MNT_DONTBROWSE: u32 = 0x0010_0000;
+// Filesystem mount flags. Values mirror the Darwin headers; libc remains the
+// authority for the `statfs`/`getmntinfo` ABI itself (see below).
+pub(crate) const MNT_LOCAL: u32 = libc::MNT_LOCAL as u32;
+pub(crate) const MNT_DONTBROWSE: u32 = libc::MNT_DONTBROWSE as u32;
 
-#[cfg(target_os = "macos")]
-#[allow(clippy::struct_field_names)]
-#[repr(C)]
-struct StatFs {
-    f_bsize: i32,
-    f_iosize: i32,
-    f_blocks: u64,
-    f_bfree: u64,
-    f_bavail: u64,
-    f_files: u64,
-    f_ffree: u64,
-    f_fsid: [i32; 2],
-    f_owner: u32,
-    f_type: u32,
-    f_flags: u32,
-    f_fssubtype: u32,
-    f_fstypename: [i8; 16],
-    f_mntonname: [i8; 1024],
-    f_mntfromname: [i8; 1024],
-    f_reserved: [u32; 8],
-}
+// ---------------------------------------------------------------------------
+// Darwin filesystem ABI
+// ---------------------------------------------------------------------------
+//
+// Filesystem enumeration uses `libc::getmntinfo` with `libc::statfs` directly.
+// libc selects the architecture-sensitive `getmntinfo$INODE64` symbol on
+// non-aarch64 macOS, matching the modern 64-bit inode ABI. Gregg must not
+// duplicate this layout or symbol selection: a private unsuffixed binding can
+// misinterpret block counts, flags, and mount points on Intel and collapse a
+// real local filesystem set to an empty drive list.
 
 // ---------------------------------------------------------------------------
 // Extern function declarations
 // ---------------------------------------------------------------------------
 
 extern "C" {
-    #[cfg(target_os = "macos")]
-    fn getmntinfo(stat: *mut *mut StatFs, flags: i32) -> i32;
     /// Canonical Mach host-self interface. Returns a send right to the
     /// host port. Unlike the legacy `host_self()` compatibility symbol,
     /// `mach_host_self()` is the documented Mach trap for obtaining the
@@ -527,15 +516,13 @@ extern "C" {
     fn CFRelease(object: *const std::ffi::c_void);
 }
 
-fn native_c_string(bytes: &[i8]) -> Result<String, CollectError> {
+#[allow(clippy::cast_sign_loss)]
+fn native_c_string(bytes: &[libc::c_char]) -> Result<String, CollectError> {
     let length = bytes
         .iter()
         .position(|byte| *byte == 0)
         .unwrap_or(bytes.len());
-    let bytes: Vec<u8> = bytes[..length]
-        .iter()
-        .map(|byte| byte.to_ne_bytes()[0])
-        .collect();
+    let bytes: Vec<u8> = bytes[..length].iter().map(|byte| *byte as u8).collect();
     String::from_utf8(bytes).map_err(|_| {
         CollectError::new(
             CollectErrorKind::Parse,
@@ -544,92 +531,374 @@ fn native_c_string(bytes: &[i8]) -> Result<String, CollectError> {
     })
 }
 
-fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
-    let mut pointer: *mut StatFs = std::ptr::null_mut();
-    // Safety: getmntinfo writes a pointer to an OS-owned array and returns its
-    // element count. The array remains valid for this call; values are copied
-    // into owned Rust records before returning.
-    let count = unsafe { getmntinfo(&mut pointer, 0) };
-    let count = mounted_filesystem_count(count, pointer)?;
-    let mut result = Vec::with_capacity(count);
-    for index in 0..count {
-        // Safety: index is bounded by the count returned by getmntinfo and the
-        // pointer targets an array owned by the kernel for this call.
-        let stat = unsafe { &*pointer.add(index) };
-        result.push(RawMountedFilesystem {
-            mount_point: native_c_string(&stat.f_mntonname)?,
-            filesystem_type: native_c_string(&stat.f_fstypename)?,
-            fsid: (stat.f_fsid[0], stat.f_fsid[1]),
-            flags: stat.f_flags,
-            total_blocks: stat.f_blocks,
-            free_blocks: stat.f_bfree,
-            available_blocks: stat.f_bavail,
-            block_size: u64::try_from(stat.f_bsize).map_err(|_| {
-                CollectError::new(CollectErrorKind::Numeric, "negative macOS block size")
-            })?,
-        });
-    }
-    Ok(result)
+/// Read the opaque Darwin `fsid_t` as its two native `i32` components.
+///
+/// `libc::fsid_t` exposes no public fields; on Darwin it is two `i32` values
+/// (8 bytes total). The copy below reads exactly those bytes through the
+/// public type without assuming any wider layout.
+#[cfg(target_os = "macos")]
+fn fsid_pair(fsid: &libc::fsid_t) -> (i32, i32) {
+    debug_assert_eq!(std::mem::size_of::<libc::fsid_t>(), 8);
+    // Safety: `fsid` is a valid, aligned `fsid_t`; Darwin defines it as
+    // `[i32; 2]`, so reading 8 bytes as two native-endian `i32` values is
+    // layout-correct. No reference to the private field escapes.
+    let pair: [i32; 2] = unsafe { std::ptr::addr_of!(*fsid).cast::<[i32; 2]>().read() };
+    (pair[0], pair[1])
 }
 
-/// Query `AF_LINK` records. The `if_data64` record is the native 64-bit
-/// interface counter seam; it avoids the truncation of legacy `if_data`.
+/// Convert one `libc::statfs` record into the owned collector seam.
+///
+/// `f_bsize` is `u32` in the libc ABI so the widening to `u64` is infallible;
+/// zero sizes and overflowing `blocks * size` products are rejected later by
+/// the shared drive-capacity filter (`total > 0`, `free <= total`,
+/// `available <= total` with checked multiplication), preserving truthful
+/// capacity semantics without fabricating zeroes.
+#[cfg(target_os = "macos")]
+fn raw_from_statfs(stat: &libc::statfs) -> Result<RawMountedFilesystem, CollectError> {
+    Ok(RawMountedFilesystem {
+        mount_point: native_c_string(&stat.f_mntonname)?,
+        filesystem_type: native_c_string(&stat.f_fstypename)?,
+        fsid: fsid_pair(&stat.f_fsid),
+        flags: stat.f_flags,
+        total_blocks: stat.f_blocks,
+        free_blocks: stat.f_bfree,
+        available_blocks: stat.f_bavail,
+        block_size: u64::from(stat.f_bsize),
+    })
+}
+
+fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut pointer: *mut libc::statfs = std::ptr::null_mut();
+        // Safety: libc::getmntinfo writes a pointer to a kernel-owned array
+        // and returns its element count, selecting the architecture-correct
+        // INODE64 symbol. The array remains valid for this call; every
+        // accepted record is copied into an owned Rust value before returning.
+        let count = unsafe { libc::getmntinfo(&mut pointer, 0) };
+        let count = mounted_filesystem_count(count, pointer)?;
+        let mut result = Vec::with_capacity(count);
+        for index in 0..count {
+            // Safety: index is bounded by the count returned by getmntinfo and
+            // the pointer targets a kernel-owned array valid for this call.
+            let stat = unsafe { &*pointer.add(index) };
+            result.push(raw_from_statfs(stat)?);
+        }
+        Ok(result)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "macOS filesystem API unavailable",
+        ))
+    }
+}
+
+/// Darwin interface-counter sources.
+///
+/// The preferred source is `NET_RT_IFLIST2` (`if_msghdr2` + embedded
+/// `if_data64`), which exposes true 64-bit `ifi_ibytes`/`ifi_obytes`.
+/// Darwin's `getifaddrs(3)` associates `AF_LINK` `ifa_data` with the legacy
+/// 32-bit `struct if_data` — never `if_data64` — so the `getifaddrs` path is
+/// kept only as a compatibility fallback for older/unsupported hosts.
+#[cfg(target_os = "macos")]
+const MAX_IFLIST2_BYTES: usize = 16 * 1024 * 1024;
+
+/// One parsed `RTM_IFINFO2` record: native index, flags, and 64-bit counters.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct IfList2Record {
+    index: u32,
+    flags: i32,
+    rx_bytes: u64,
+    tx_bytes: u64,
+    baudrate_bps: u64,
+}
+
+/// Parse a raw `NET_RT_IFLIST2` sysctl buffer without invoking syscalls.
+///
+/// Walks variable-length routing messages by `ifm_msglen`, validates every
+/// length before reading an `if_msghdr2`, accepts only `RTM_IFINFO2`, skips
+/// unrelated route messages, and truncates (rather than over-reading) on a
+/// malformed or truncated tail. Buffer alignment is not assumed; the header
+/// is copied with `read_unaligned`.
+#[cfg(target_os = "macos")]
+fn parse_iflist2_buffer(buffer: &[u8]) -> Vec<IfList2Record> {
+    let mut records = Vec::new();
+    let header_len = std::mem::size_of::<libc::if_msghdr2>();
+    let mut offset = 0usize;
+    while offset + 2 <= buffer.len() {
+        let msglen = u16::from_ne_bytes([buffer[offset], buffer[offset + 1]]) as usize;
+        if msglen < header_len || msglen == 0 || offset + msglen > buffer.len() {
+            break;
+        }
+        // Safety: `msglen >= header_len` and `offset + msglen <= len` were
+        // validated above, so `[offset, offset + header_len)` is in bounds.
+        // The parser offset carries no alignment guarantee, hence the
+        // unaligned copy into an owned (aligned) header value.
+        let header: libc::if_msghdr2 = unsafe {
+            std::ptr::read_unaligned(buffer[offset..].as_ptr().cast::<libc::if_msghdr2>())
+        };
+        if i32::from(header.ifm_type) == libc::RTM_IFINFO2 && header.ifm_index != 0 {
+            // `header` is an owned aligned copy, so field access is safe.
+            records.push(IfList2Record {
+                index: u32::from(header.ifm_index),
+                flags: header.ifm_flags,
+                rx_bytes: header.ifm_data.ifi_ibytes,
+                tx_bytes: header.ifm_data.ifi_obytes,
+                baudrate_bps: header.ifm_data.ifi_baudrate,
+            });
+        }
+        offset += msglen;
+        if records.len() > 4096 {
+            break;
+        }
+    }
+    records
+}
+
+/// Build a collector record from a parsed `RTM_IFINFO2` entry and its native
+/// display name. Identity comes from the resolved name; loopback and
+/// operational state come from native flags, never from naming conventions.
+#[cfg(target_os = "macos")]
+fn build_iflist2_interface(record: &IfList2Record, name: &str) -> RawNetworkInterface {
+    let is_loopback = record.flags & libc::IFF_LOOPBACK != 0;
+    let operational = record.flags & libc::IFF_UP != 0 && record.flags & libc::IFF_RUNNING != 0;
+    let capacity = (record.baudrate_bps > 0).then_some(record.baudrate_bps);
+    RawNetworkInterface {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        rx_bytes: record.rx_bytes,
+        tx_bytes: record.tx_bytes,
+        rx_capacity_bps: capacity,
+        tx_capacity_bps: capacity,
+        is_loopback,
+        operational,
+        aggregate_member: !is_loopback,
+    }
+}
+
+/// Convert one legacy `getifaddrs`/`if_data` entry. Counters are 32-bit here;
+/// widening to `u64` preserves the value but never synthesizes bytes across a
+/// wrap — the shared `CounterBaselines` helper re-baselines on any decrease.
+/// A zero or unrepresentable legacy baud rate publishes `None` capacity.
+#[cfg(target_os = "macos")]
+fn raw_from_if_data(name: &str, flags: u32, data: &libc::if_data) -> RawNetworkInterface {
+    let is_loopback = flags & libc::IFF_LOOPBACK as u32 != 0;
+    let operational = flags & libc::IFF_UP as u32 != 0 && flags & libc::IFF_RUNNING as u32 != 0;
+    let capacity = (data.ifi_baudrate > 0).then(|| u64::from(data.ifi_baudrate));
+    RawNetworkInterface {
+        id: name.to_owned(),
+        name: name.to_owned(),
+        rx_bytes: u64::from(data.ifi_ibytes),
+        tx_bytes: u64::from(data.ifi_obytes),
+        rx_capacity_bps: capacity,
+        tx_capacity_bps: capacity,
+        is_loopback,
+        operational,
+        aggregate_member: !is_loopback,
+    }
+}
+
+/// Resolve a native interface index to its display name via `if_indextoname`.
+#[cfg(target_os = "macos")]
+fn resolve_interface_name(index: u32) -> Option<String> {
+    let mut buffer = [0 as libc::c_char; 16];
+    // Safety: `buffer` is `IFNAMSIZ` bytes; `if_indextoname` writes a
+    // NUL-terminated name on success and returns null on failure.
+    let result = unsafe { libc::if_indextoname(index as libc::c_uint, buffer.as_mut_ptr()) };
+    if result.is_null() {
+        return None;
+    }
+    // Safety: the buffer is NUL-terminated per the successful-call contract.
+    let name = unsafe { std::ffi::CStr::from_ptr(buffer.as_ptr()) }
+        .to_str()
+        .ok()?;
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// Fetch the raw `NET_RT_IFLIST2` sysctl buffer with the standard size-query +
+/// data-query sequence, tolerating a size race with a small bounded retry.
+#[cfg(target_os = "macos")]
+fn sysctl_iflist2_buffer() -> Result<Vec<u8>, CollectError> {
+    let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
+    // Safety: size query with null `oldp` fills `len` with the required size.
+    let mut len: libc::size_t = 0;
+    let sized = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            6,
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if sized != 0 {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "NET_RT_IFLIST2 size query failed",
+        )
+        .with_source(std::io::Error::last_os_error()));
+    }
+    if len == 0 {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "NET_RT_IFLIST2 returned an empty interface list",
+        ));
+    }
+    if len as usize > MAX_IFLIST2_BYTES {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "NET_RT_IFLIST2 interface list exceeds bounded size",
+        ));
+    }
+    for _ in 0..3 {
+        let mut buffer = vec![0u8; len as usize];
+        let mut out_len = len;
+        // Safety: `buffer` has `out_len` bytes; the kernel writes at most
+        // that many and updates `out_len` to the actual size.
+        let fetched = unsafe {
+            libc::sysctl(
+                mib.as_mut_ptr(),
+                6,
+                buffer.as_mut_ptr().cast::<libc::c_void>(),
+                &mut out_len,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        if fetched == 0 {
+            if out_len == 0 {
+                return Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "NET_RT_IFLIST2 returned an empty interface list",
+                ));
+            }
+            buffer.truncate(out_len as usize);
+            return Ok(buffer);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ENOMEM) {
+            // Size race: re-query the required length and retry boundedly.
+            len = 0;
+            // Safety: size re-query with null `oldp`.
+            let resized = unsafe {
+                libc::sysctl(
+                    mib.as_mut_ptr(),
+                    6,
+                    std::ptr::null_mut(),
+                    &mut len,
+                    std::ptr::null_mut(),
+                    0,
+                )
+            };
+            if resized != 0 {
+                return Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "NET_RT_IFLIST2 size re-query failed",
+                )
+                .with_source(std::io::Error::last_os_error()));
+            }
+            if len == 0 || len as usize > MAX_IFLIST2_BYTES {
+                return Err(CollectError::new(
+                    CollectErrorKind::SourceUnavailable,
+                    "NET_RT_IFLIST2 interface list size is invalid",
+                ));
+            }
+            continue;
+        }
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "NET_RT_IFLIST2 data query failed",
+        )
+        .with_source(error));
+    }
+    Err(CollectError::new(
+        CollectErrorKind::SourceUnavailable,
+        "NET_RT_IFLIST2 size race did not settle",
+    ))
+}
+
+/// Sort and deduplicate interface records deterministically by stable identity.
+#[cfg(target_os = "macos")]
+fn sort_dedup_interfaces(mut records: Vec<RawNetworkInterface>) -> Vec<RawNetworkInterface> {
+    records.sort_by(|left, right| left.id.cmp(&right.id));
+    records.dedup_by(|left, right| left.id == right.id);
+    records
+}
+
+/// Preferred 64-bit interface counters from `NET_RT_IFLIST2`/`if_msghdr2`.
+#[cfg(target_os = "macos")]
+fn network_interfaces_iflist2() -> Result<Vec<RawNetworkInterface>, CollectError> {
+    let buffer = sysctl_iflist2_buffer()?;
+    let mut interfaces = Vec::new();
+    for record in parse_iflist2_buffer(&buffer) {
+        if let Some(name) = resolve_interface_name(record.index) {
+            interfaces.push(build_iflist2_interface(&record, &name));
+        }
+    }
+    Ok(sort_dedup_interfaces(interfaces))
+}
+
+/// Compatibility fallback: `getifaddrs` with correctly typed `if_data`.
+///
+/// Darwin documents `AF_LINK` `ifa_data` as `struct if_data` (32-bit
+/// counters). This must never be cast to `if_data64`.
+#[cfg(target_os = "macos")]
+fn network_interfaces_getifaddrs() -> Result<Vec<RawNetworkInterface>, CollectError> {
+    let mut head = std::ptr::null_mut();
+    // Safety: getifaddrs initializes an owned linked list on success;
+    // every returned list is released exactly once below.
+    let result = unsafe { libc::getifaddrs(&mut head) };
+    if result != 0 {
+        return Err(
+            CollectError::new(CollectErrorKind::SourceUnavailable, "getifaddrs failed")
+                .with_source(std::io::Error::last_os_error()),
+        );
+    }
+    let mut records = Vec::new();
+    let mut current = head;
+    while !current.is_null() {
+        // Safety: current is a node in the list owned by getifaddrs and
+        // remains valid until freeifaddrs after this traversal.
+        let item = unsafe { &*current };
+        if !item.ifa_name.is_null()
+            && !item.ifa_addr.is_null()
+            && unsafe { i32::from((*item.ifa_addr).sa_family) } == libc::AF_LINK
+            && !item.ifa_data.is_null()
+        {
+            // Safety: per getifaddrs(3), AF_LINK ifa_data points at the
+            // legacy `if_data` record for this interface. Copy scalar fields
+            // only; never interpret these bytes as `if_data64`.
+            let data = unsafe { &*(item.ifa_data.cast::<libc::if_data>()) };
+            let name = unsafe { std::ffi::CStr::from_ptr(item.ifa_name) }
+                .to_str()
+                .map_err(|_| {
+                    CollectError::new(CollectErrorKind::Parse, "interface name is not UTF-8")
+                })?;
+            records.push(raw_from_if_data(name, item.ifa_flags, data));
+        }
+        // Safety: traversal remains within the list returned by getifaddrs.
+        current = unsafe { (*current).ifa_next };
+    }
+    // Safety: head was returned by getifaddrs and has not been freed yet.
+    unsafe { libc::freeifaddrs(head) };
+    Ok(sort_dedup_interfaces(records))
+}
+
+/// Query native interface counters, preferring 64-bit `NET_RT_IFLIST2`.
+///
+/// Falls back to the correctly typed `getifaddrs`/`if_data` path only when
+/// the preferred source is unavailable or unsupported on the running host.
 fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
     #[cfg(target_os = "macos")]
     {
-        let mut head = std::ptr::null_mut();
-        // Safety: getifaddrs initializes an owned linked list on success;
-        // every returned list is released exactly once below.
-        let result = unsafe { libc::getifaddrs(&mut head) };
-        if result != 0 {
-            return Err(CollectError::new(
-                CollectErrorKind::SourceUnavailable,
-                "getifaddrs failed",
-            ));
+        match network_interfaces_iflist2() {
+            Ok(interfaces) => Ok(interfaces),
+            Err(_) => network_interfaces_getifaddrs(),
         }
-        let mut records = Vec::new();
-        let mut current = head;
-        while !current.is_null() {
-            // Safety: current is a node in the list owned by getifaddrs and
-            // remains valid until freeifaddrs after this traversal.
-            let item = unsafe { &*current };
-            if !item.ifa_name.is_null()
-                && !item.ifa_addr.is_null()
-                // AF_LINK is the only address family with if_data64 here.
-                && unsafe { i32::from((*item.ifa_addr).sa_family) } == libc::AF_LINK
-                && !item.ifa_data.is_null()
-            {
-                // Safety: AF_LINK ifa_data points at the Darwin if_data64
-                // record for this interface. Copy only scalar fields.
-                let data = unsafe { &*(item.ifa_data.cast::<libc::if_data64>()) };
-                let name = unsafe { std::ffi::CStr::from_ptr(item.ifa_name) }
-                    .to_str()
-                    .map_err(|_| {
-                        CollectError::new(CollectErrorKind::Parse, "interface name is not UTF-8")
-                    })?;
-                let is_loopback = item.ifa_flags & libc::IFF_LOOPBACK as u32 != 0;
-                let operational = item.ifa_flags & libc::IFF_UP as u32 != 0
-                    && item.ifa_flags & libc::IFF_RUNNING as u32 != 0;
-                records.push(RawNetworkInterface {
-                    id: name.to_owned(),
-                    name: name.to_owned(),
-                    rx_bytes: data.ifi_ibytes,
-                    tx_bytes: data.ifi_obytes,
-                    rx_capacity_bps: (data.ifi_baudrate > 0).then_some(data.ifi_baudrate),
-                    tx_capacity_bps: (data.ifi_baudrate > 0).then_some(data.ifi_baudrate),
-                    is_loopback,
-                    operational,
-                    aggregate_member: !is_loopback,
-                });
-            }
-            // Safety: traversal remains within the list returned by getifaddrs.
-            current = unsafe { (*current).ifa_next };
-        }
-        // Safety: head was returned by getifaddrs and has not been freed yet.
-        unsafe { libc::freeifaddrs(head) };
-        records.sort_by(|left, right| left.id.cmp(&right.id));
-        records.dedup_by(|left, right| left.id == right.id);
-        Ok(records)
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -754,7 +1023,7 @@ fn cf_string(value: &str) -> Result<CfMutableRef, CollectError> {
 }
 
 #[cfg(target_os = "macos")]
-fn mounted_filesystem_count(count: i32, pointer: *mut StatFs) -> Result<usize, CollectError> {
+fn mounted_filesystem_count(count: i32, pointer: *mut libc::statfs) -> Result<usize, CollectError> {
     if count <= 0 || pointer.is_null() {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
@@ -767,12 +1036,16 @@ fn mounted_filesystem_count(count: i32, pointer: *mut StatFs) -> Result<usize, C
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use super::{mounted_filesystem_count, StatFs};
+    use super::{
+        build_iflist2_interface, mounted_filesystem_count, parse_iflist2_buffer, raw_from_if_data,
+        raw_from_statfs, sort_dedup_interfaces, IfList2Record, RawMountedFilesystem,
+        RawNetworkInterface,
+    };
     use crate::collector::error::CollectErrorKind;
 
     #[test]
     fn zero_mount_count_is_source_failure() {
-        let error = mounted_filesystem_count(0, std::ptr::dangling_mut::<StatFs>())
+        let error = mounted_filesystem_count(0, std::ptr::dangling_mut::<libc::statfs>())
             .expect_err("zero getmntinfo count must fail");
         assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
     }
@@ -782,6 +1055,260 @@ mod tests {
         let error = mounted_filesystem_count(1, std::ptr::null_mut())
             .expect_err("positive count with null pointer must fail");
         assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn test_statfs(
+        mount: &str,
+        fstype: &str,
+        flags: u32,
+        block_size: u32,
+        blocks: u64,
+        bfree: u64,
+        bavail: u64,
+    ) -> libc::statfs {
+        // Safety: integer/C-char record; zeroed bytes are a valid initial state
+        // before individual fields are assigned below.
+        let mut stat: libc::statfs = unsafe { std::mem::zeroed() };
+        stat.f_bsize = block_size;
+        stat.f_blocks = blocks;
+        stat.f_bfree = bfree;
+        stat.f_bavail = bavail;
+        stat.f_flags = flags;
+        for (slot, byte) in stat.f_mntonname.iter_mut().zip(
+            mount
+                .as_bytes()
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(0))
+                .take(1024),
+        ) {
+            *slot = byte as libc::c_char;
+        }
+        for (slot, byte) in stat.f_fstypename.iter_mut().zip(
+            fstype
+                .as_bytes()
+                .iter()
+                .copied()
+                .chain(std::iter::repeat(0))
+                .take(16),
+        ) {
+            *slot = byte as libc::c_char;
+        }
+        stat
+    }
+
+    #[test]
+    fn libc_statfs_conversion_preserves_nonzero_capacity() {
+        let stat = test_statfs("/", "apfs", super::MNT_LOCAL, 4096, 100, 25, 20);
+        let raw: RawMountedFilesystem = raw_from_statfs(&stat).expect("converts");
+        assert_eq!(raw.mount_point, "/");
+        assert_eq!(raw.filesystem_type, "apfs");
+        assert_eq!(raw.block_size, 4096);
+        assert_eq!(raw.total_blocks, 100);
+        assert_eq!(raw.free_blocks, 25);
+        assert_eq!(raw.available_blocks, 20);
+        assert_eq!(raw.flags & super::MNT_LOCAL, super::MNT_LOCAL);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_wrap)]
+    fn libc_statfs_conversion_rejects_non_utf8() {
+        let mut stat = test_statfs("/", "apfs", super::MNT_LOCAL, 4096, 100, 25, 20);
+        stat.f_mntonname[0] = 0xFFu8 as libc::c_char;
+        stat.f_mntonname[1] = 0xFEu8 as libc::c_char;
+        let error = raw_from_statfs(&stat).expect_err("non-UTF8 mount must fail");
+        assert_eq!(error.kind, CollectErrorKind::Parse);
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn encode_ifinfo2(index: u16, flags: i32, rx: u64, tx: u64, baudrate: u64) -> Vec<u8> {
+        // Safety: integer record; zeroed bytes are valid before fields are set.
+        let mut data: libc::if_data64 = unsafe { std::mem::zeroed() };
+        data.ifi_ibytes = rx;
+        data.ifi_obytes = tx;
+        data.ifi_baudrate = baudrate;
+        // Safety: integer record; zeroed bytes are valid before fields are set.
+        let mut header: libc::if_msghdr2 = unsafe { std::mem::zeroed() };
+        header.ifm_msglen = std::mem::size_of::<libc::if_msghdr2>() as u16;
+        header.ifm_version = libc::RTM_VERSION as u8;
+        header.ifm_type = libc::RTM_IFINFO2 as u8;
+        header.ifm_flags = flags;
+        header.ifm_index = index;
+        header.ifm_data = data;
+        // Safety: `header` is an aligned owned value; copying its bytes into a
+        // fresh `Vec<u8>` never reads past the struct.
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::addr_of!(header).cast::<u8>(),
+                std::mem::size_of::<libc::if_msghdr2>(),
+            )
+            .to_vec()
+        }
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn encode_unrelated_route_message() -> Vec<u8> {
+        // Safety: integer record; zeroed bytes are valid before fields are set.
+        let mut header: libc::if_msghdr2 = unsafe { std::mem::zeroed() };
+        header.ifm_msglen = std::mem::size_of::<libc::if_msghdr2>() as u16;
+        header.ifm_version = libc::RTM_VERSION as u8;
+        header.ifm_type = libc::RTM_NEWADDR as u8;
+        header.ifm_index = 99;
+        // Safety: aligned owned copy to bytes as above.
+        unsafe {
+            std::slice::from_raw_parts(
+                std::ptr::addr_of!(header).cast::<u8>(),
+                std::mem::size_of::<libc::if_msghdr2>(),
+            )
+            .to_vec()
+        }
+    }
+
+    #[test]
+    fn iflist2_parser_accepts_multiple_ifinfo2_records() {
+        let mut buffer = encode_ifinfo2(1, libc::IFF_UP | libc::IFF_RUNNING, 100, 200, 1_000);
+        buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 0, 0, 0));
+        let records = parse_iflist2_buffer(&buffer);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].index, 1);
+        assert_eq!(records[0].rx_bytes, 100);
+        assert_eq!(records[0].tx_bytes, 200);
+        assert_eq!(records[0].baudrate_bps, 1_000);
+        // Zero-byte counters are preserved, not dropped.
+        assert_eq!(records[1].rx_bytes, 0);
+        assert_eq!(records[1].tx_bytes, 0);
+    }
+
+    #[test]
+    fn iflist2_parser_skips_unrelated_messages() {
+        let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        buffer.extend(encode_unrelated_route_message());
+        buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let records = parse_iflist2_buffer(&buffer);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].index, 1);
+        assert_eq!(records[1].index, 2);
+    }
+
+    #[test]
+    fn iflist2_parser_truncates_malformed_tail_without_overread() {
+        let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let truncated = buffer.len() - 3;
+        buffer.truncate(truncated);
+        let records = parse_iflist2_buffer(&buffer);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].index, 1);
+
+        assert!(parse_iflist2_buffer(&[]).is_empty());
+        assert!(parse_iflist2_buffer(&[0u8]).is_empty());
+        // Declared length shorter than one header is malformed.
+        assert!(parse_iflist2_buffer(&[4u8, 0u8, 0u8, 0u8]).is_empty());
+    }
+
+    #[test]
+    fn iflist2_builder_derives_loopback_operational_and_capacity() {
+        let loopback = IfList2Record {
+            index: 1,
+            flags: libc::IFF_LOOPBACK | libc::IFF_UP | libc::IFF_RUNNING,
+            rx_bytes: 10,
+            tx_bytes: 20,
+            baudrate_bps: 1_000,
+        };
+        let record = build_iflist2_interface(&loopback, "lo0");
+        assert!(record.is_loopback);
+        assert!(!record.aggregate_member);
+        assert!(record.operational);
+
+        let down = IfList2Record {
+            index: 2,
+            flags: 0,
+            rx_bytes: 30,
+            tx_bytes: 40,
+            baudrate_bps: 5_000,
+        };
+        let record = build_iflist2_interface(&down, "en0");
+        assert!(!record.is_loopback);
+        assert!(record.aggregate_member);
+        assert!(!record.operational);
+        // Down interfaces are retained in detail; capacity exclusion happens
+        // at the aggregation layer, not by dropping the record.
+        assert_eq!(record.rx_capacity_bps, Some(5_000));
+
+        let no_capacity = IfList2Record {
+            index: 3,
+            flags: libc::IFF_UP | libc::IFF_RUNNING,
+            rx_bytes: 0,
+            tx_bytes: 0,
+            baudrate_bps: 0,
+        };
+        let record = build_iflist2_interface(&no_capacity, "en1");
+        assert_eq!(record.rx_capacity_bps, None);
+        assert_eq!(record.tx_capacity_bps, None);
+    }
+
+    #[test]
+    fn interface_dedup_is_deterministic_by_stable_id() {
+        let make = |id: &str| RawNetworkInterface {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            rx_bytes: 1,
+            tx_bytes: 2,
+            rx_capacity_bps: None,
+            tx_capacity_bps: None,
+            is_loopback: false,
+            operational: true,
+            aggregate_member: true,
+        };
+        let sorted = sort_dedup_interfaces(vec![make("en1"), make("en0"), make("en0")]);
+        let ids: Vec<&str> = sorted.iter().map(|record| record.id.as_str()).collect();
+        assert_eq!(ids, vec!["en0", "en1"]);
+    }
+
+    #[test]
+    fn fallback_if_data_widens_32bit_counters_without_if_data64() {
+        // Safety: integer record; zeroed bytes are valid before fields are set.
+        let mut data: libc::if_data = unsafe { std::mem::zeroed() };
+        data.ifi_ibytes = u32::MAX;
+        data.ifi_obytes = 123;
+        data.ifi_baudrate = 1_000;
+        let record = raw_from_if_data("en0", libc::IFF_UP as u32 | libc::IFF_RUNNING as u32, &data);
+        // Widening preserves the 32-bit value exactly; the legacy path never
+        // interprets these bytes as the wider `if_data64` layout.
+        assert_eq!(record.rx_bytes, u64::from(u32::MAX));
+        assert_eq!(record.tx_bytes, 123);
+        assert_eq!(record.rx_capacity_bps, Some(1_000));
+        assert!(!record.is_loopback);
+        assert!(record.operational);
+
+        data.ifi_baudrate = 0;
+        let record = raw_from_if_data("en0", 0, &data);
+        assert_eq!(record.rx_capacity_bps, None);
+        assert!(!record.operational);
+    }
+
+    #[test]
+    fn legacy_counter_decrease_rebaselines_without_spike() {
+        use crate::collector::rate::CounterBaselines;
+        use std::time::{Duration, Instant};
+        let mut baselines = CounterBaselines::default();
+        let start = Instant::now();
+        assert_eq!(baselines.observe("en0", start, 1_000, 2_000), None);
+        let first = baselines
+            .observe("en0", start + Duration::from_secs(1), 2_000, 4_000)
+            .expect("valid interval produces a rate");
+        assert_eq!(first.first_per_sec, 1_000);
+        // 32-bit wrap/decrease re-baselines: no rate, no spike.
+        assert_eq!(
+            baselines.observe("en0", start + Duration::from_secs(2), 100, 200),
+            None
+        );
+        let recovered = baselines
+            .observe("en0", start + Duration::from_secs(3), 1_100, 1_200)
+            .expect("post-wrap interval recovers");
+        assert_eq!(recovered.first_per_sec, 1_000);
+        assert_eq!(recovered.second_per_sec, 1_000);
     }
 }
 
@@ -1329,6 +1856,134 @@ mod native_tests {
 
         // Total size must be 8 + 8 + 8 + 4 + 4 = 32 bytes.
         assert_eq!(std::mem::size_of::<DarwinXswusage>(), 32);
+    }
+
+    #[test]
+    fn native_filesystems_provide_eligible_capacity() {
+        let query = FfiNativeQueries;
+        let mounted = query
+            .mounted_filesystems()
+            .expect("mounted_filesystems succeeds");
+        assert!(
+            !mounted.is_empty(),
+            "expected at least one mounted filesystem on the hosted Mac image"
+        );
+        let eligible: Vec<&RawMountedFilesystem> = mounted
+            .iter()
+            .filter(|record| {
+                record.flags & super::MNT_LOCAL != 0
+                    && record.flags & super::MNT_DONTBROWSE == 0
+                    && !record.mount_point.is_empty()
+                    && record.filesystem_type != "devfs"
+                    && record.filesystem_type != "autofs"
+            })
+            .collect();
+        assert!(
+            !eligible.is_empty(),
+            "expected at least one eligible local filesystem on the hosted image"
+        );
+        for record in &eligible {
+            let total = record.total_blocks.saturating_mul(record.block_size);
+            let free = record.free_blocks.saturating_mul(record.block_size);
+            let available = record.available_blocks.saturating_mul(record.block_size);
+            assert!(
+                total > 0,
+                "eligible {} must have nonzero total",
+                record.mount_point
+            );
+            assert!(
+                free <= total,
+                "eligible {} free ({free}) must not exceed total ({total})",
+                record.mount_point
+            );
+            assert!(
+                available <= total,
+                "eligible {} available ({available}) must not exceed total ({total})",
+                record.mount_point
+            );
+        }
+    }
+
+    #[test]
+    fn native_preferred_network_source_provides_interfaces() {
+        let interfaces = super::network_interfaces_iflist2()
+            .expect("preferred NET_RT_IFLIST2 source succeeds on the hosted image");
+        assert!(
+            !interfaces.is_empty(),
+            "expected at least one interface from the preferred source"
+        );
+        for interface in &interfaces {
+            assert!(!interface.id.is_empty(), "interface id must not be empty");
+            assert!(
+                !interface.name.is_empty(),
+                "interface name must not be empty"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn native_collector_publishes_v2_drives_and_network() {
+        use crate::collector::macos::MacOsCollector;
+        use crate::collector::SystemCollector;
+
+        let mut collector = MacOsCollector::new(None).expect("collector constructs");
+        let identity = collector.identity().expect("identity");
+        let warm_err = collector.sample().expect_err("first sample warms");
+        assert_eq!(warm_err.kind, CollectErrorKind::Warming);
+
+        // Bounded warmup: CPU baselines need one interval, disk/network
+        // baselines need two observations, and drives arrive asynchronously
+        // from the refresh worker. Poll without sleeping production intervals.
+        let start = std::time::Instant::now();
+        let deadline = std::time::Duration::from_secs(15);
+        let payload = loop {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let elapsed = start.elapsed();
+            let metrics = match collector.sample() {
+                Ok(metrics) => metrics,
+                Err(error) if error.kind == CollectErrorKind::CounterReset => {
+                    if elapsed >= deadline {
+                        panic!("counter reset persisted past bounded warmup: {error:?}");
+                    }
+                    continue;
+                }
+                Err(error) => panic!("native v2 warmup sample fails: {error:?}"),
+            };
+            let payload = metrics
+                .clone()
+                .into_status_payload_v2(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis()
+                        .try_into()
+                        .unwrap(),
+                    1000,
+                    collector.capabilities_v2(),
+                    identity.clone(),
+                )
+                .expect("v2 conversion succeeds");
+            let drives_ready = payload
+                .drives
+                .as_ref()
+                .is_some_and(|drives| !drives.is_empty());
+            let network_ready = payload.network.is_some();
+            if drives_ready && network_ready {
+                break payload;
+            }
+            if elapsed >= deadline {
+                panic!(
+                    "bounded warmup expired without v2 drives+network: drives={:?} network_present={}",
+                    payload.drives.as_ref().map(Vec::len),
+                    payload.network.is_some(),
+                );
+            }
+        };
+        payload.validate().expect("native v2 payload validates");
+        // Disk I/O stays optional: hosted/virtualized Macs may genuinely
+        // expose no usable IOKit block-driver counters.
+        let _ = payload.disk_io;
     }
 
     /// Complete production collector smoke test.

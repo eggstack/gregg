@@ -59,6 +59,63 @@ fn collect_drives<S: ffi::MacNativeQueries>(
 #[cfg(test)]
 mod tests;
 
+/// Bounded availability tracker for optional macOS telemetry families.
+///
+/// Records only the last known source state per family so stable
+/// unsupported conditions do not warn once per sample. Transitions log once:
+/// `available -> unavailable` warns with family plus `CollectErrorKind` and
+/// message context, while `unavailable -> available` (and the initial
+/// availability observation) logs at debug level. Successful empty
+/// enumeration (`Some(empty)` for drives) remains distinct from source
+/// failure (`None`); no zero-valued metric is ever fabricated for diagnostics.
+#[derive(Debug, Default)]
+struct OptionalFamilyAvailability {
+    drives: Option<bool>,
+    disk_io: Option<bool>,
+    network: Option<bool>,
+}
+
+impl OptionalFamilyAvailability {
+    fn observe(&mut self, family: &'static str, available: bool, error: Option<&CollectError>) {
+        let slot = match family {
+            "drives" => &mut self.drives,
+            "disk_io" => &mut self.disk_io,
+            _ => &mut self.network,
+        };
+        let previous = *slot;
+        *slot = Some(available);
+        if previous == Some(available) {
+            return;
+        }
+        if available {
+            tracing::debug!(family, "macOS optional telemetry available");
+        } else if previous.is_none() {
+            // Initial unknown -> unavailable (for example the transient
+            // `drives: null` before the refresh worker completes) is debug,
+            // not a warning, so startup does not warn spuriously.
+            if let Some(error) = error {
+                tracing::debug!(
+                    family,
+                    kind = ?error.kind,
+                    error = %error.message,
+                    "macOS optional telemetry unavailable"
+                );
+            } else {
+                tracing::debug!(family, "macOS optional telemetry unavailable");
+            }
+        } else if let Some(error) = error {
+            tracing::warn!(
+                family,
+                kind = ?error.kind,
+                error = %error.message,
+                "macOS optional telemetry unavailable"
+            );
+        } else {
+            tracing::warn!(family, "macOS optional telemetry unavailable");
+        }
+    }
+}
+
 /// A macOS native collector.
 ///
 /// Constructed once per daemon process. Identity and static fields are read
@@ -74,6 +131,7 @@ pub struct MacOsCollector<S: ffi::MacNativeQueries = ffi::FfiNativeQueries> {
     drive_refresh: Option<DriveRefreshCache>,
     disk_baselines: CounterBaselines,
     network_baselines: CounterBaselines,
+    optional_availability: OptionalFamilyAvailability,
 }
 
 impl MacOsCollector<ffi::FfiNativeQueries> {
@@ -106,6 +164,7 @@ impl<S: ffi::MacNativeQueries + Clone> MacOsCollector<S> {
             drive_refresh: None,
             disk_baselines: CounterBaselines::default(),
             network_baselines: CounterBaselines::default(),
+            optional_availability: OptionalFamilyAvailability::default(),
         })
     }
 
@@ -125,15 +184,30 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
                 collect_drives::<S>,
             ));
         }
-        self.drive_refresh
+        let drives = self
+            .drive_refresh
             .as_mut()
-            .and_then(DriveRefreshCache::poll)
+            .and_then(DriveRefreshCache::poll);
+        // Availability tracks source presence (`Some`, including empty) versus
+        // transient absence (`None`); `Some(empty)` stays distinct from `None`.
+        // The initial transient `None` logs at debug, never as a warning.
+        self.optional_availability
+            .observe("drives", drives.is_some(), None);
+        drives
     }
 
     fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
-        let Ok(records) = self.source.disk_io() else {
-            self.disk_baselines.clear();
-            return None;
+        let records = match self.source.disk_io() {
+            Ok(records) => {
+                self.optional_availability.observe("disk_io", true, None);
+                records
+            }
+            Err(error) => {
+                self.optional_availability
+                    .observe("disk_io", false, Some(&error));
+                self.disk_baselines.clear();
+                return None;
+            }
         };
         self.disk_baselines
             .retain_ids(records.iter().map(|r| r.id.as_str()));
@@ -174,9 +248,17 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
     }
 
     fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
-        let Ok(records) = self.source.network_interfaces() else {
-            self.network_baselines.clear();
-            return None;
+        let records = match self.source.network_interfaces() {
+            Ok(records) => {
+                self.optional_availability.observe("network", true, None);
+                records
+            }
+            Err(error) => {
+                self.optional_availability
+                    .observe("network", false, Some(&error));
+                self.network_baselines.clear();
+                return None;
+            }
         };
         self.network_baselines
             .retain_ids(records.iter().map(|r| r.id.as_str()));

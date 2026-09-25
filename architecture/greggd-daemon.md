@@ -362,7 +362,7 @@ discarded at the collector boundary and does not fabricate a zero value.
 | Platform | Source | Key interfaces |
 |----------|--------|---------------|
 | Linux | `collector/linux/` | `/proc/stat`, CPUFreq sysfs, `/sys/block/*/stat`, `/proc/net/dev`, network sysfs, mounts, `statvfs` |
-| macOS | `collector/macos/` | Mach/sysctl, `getloadavg`, `getmntinfo`, AF_LINK, IOKit block statistics |
+| macOS | `collector/macos/` | Mach/sysctl, `getloadavg`, `libc::getmntinfo`/`statfs`, `NET_RT_IFLIST2`/`if_msghdr2` with `getifaddrs`/`if_data` fallback, IOKit block statistics |
 | Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, processor power, disk IOCTL, IP Helper |
 
 ## Tests

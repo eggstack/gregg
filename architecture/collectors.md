@@ -187,7 +187,9 @@ do not add capacity, and loopback is detail-only for capacity.
 - `host_page_size()` — page size
 - `sysctlbyname()` — kernel parameters
 - `getloadavg()` — load averages
-- `getmntinfo()` — mounted filesystems
+- `libc::getmntinfo` with `libc::statfs` — mounted filesystems (libc owns the
+  Darwin ABI and selects the architecture-correct `INODE64` symbol; Gregg keeps
+  no private `StatFs` layout)
 - `SystemVersion.plist` — marketing version
 
 `MockNativeQueries` provides `auto_increment_cpu` for successive-sample testing.
@@ -236,10 +238,12 @@ From `getloadavg()` — same source as `top`. Values match exactly.
 
 ### Drives
 
-From `getmntinfo()`. Requires `MNT_LOCAL` (implicit network exclusion) plus
-`MNT_DONTBROWSE == 0`, non-empty mount, `fstype != devfs/autofs`, positive
-block size, and `total > 0 && free ≤ total && avail ≤ total`; identity is
-`fsid.0:fsid.1`. APFS container free space is shared, not unique per volume.
+From `libc::getmntinfo()` with `libc::statfs`. Requires `MNT_LOCAL` (implicit
+network exclusion) plus `MNT_DONTBROWSE == 0`, non-empty mount,
+`fstype != devfs/autofs`, positive block size, and
+`total > 0 && free ≤ total && avail ≤ total`; identity is `fsid.0:fsid.1`
+read from the opaque `fsid_t` value. APFS container free space is shared, not
+unique per volume.
 
 ### Capabilities
 
@@ -261,9 +265,14 @@ Swap comes from `vm.swapusage`, so the explicit v2 override reports
 ---
 
 Live disk records use IOKit block-storage statistics and stable registry-entry
-identities. Network records use AF_LINK if_data64 counters and ifi_baudrate.
-Current CPU frequency remains unavailable because no supported public
-unprivileged source was found.
+identities. Network records prefer `NET_RT_IFLIST2` / `if_msghdr2` 64-bit
+counters and `ifi_baudrate`, with a correctly typed `getifaddrs` / `if_data`
+32-bit fallback for older or unsupported hosts; legacy counter wraps
+re-baseline through the shared rate helper without spikes. Optional
+drive/network/disk-I/O source failures log once per availability transition
+with family and error context instead of warning per sample. Current CPU
+frequency remains unavailable because no supported public unprivileged source
+was found.
 
 ## Windows collector
 

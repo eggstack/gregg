@@ -89,14 +89,18 @@ collector/rate.rs.
 - Swap: `sysctl vm.swapusage`
 - Load: `getloadavg()`
 - Identity: `kern.hostname` sysctl, `SystemVersion.plist`, `kern.osrelease` sysctl
-- Drives: `getmntinfo()` — excludes devfs, autofs, `MNT_DONTBROWSE`; retain
-  both `f_bfree` and `f_bavail`
+- Drives: `libc::getmntinfo()` with `libc::statfs` (libc owns the Darwin
+  `INODE64` ABI; no private `StatFs` layout) — excludes devfs, autofs,
+  `MNT_DONTBROWSE`; retain both `f_bfree` and `f_bavail`
 
 Current CPU frequency remains unavailable because no supported public
 unprivileged source was found. Disk counters come from IOKit block-storage
-driver statistics and network counters/capacity from AF_LINK if_data64.
+driver statistics and network counters/capacity prefer `NET_RT_IFLIST2` /
+`if_msghdr2` 64-bit counters with a correctly typed `getifaddrs` / `if_data`
+fallback (never `if_data64` from `getifaddrs`).
 Malformed storage records are skipped independently; loopback is retained only
-as detail and never contributes aggregate capacity.
+as detail and never contributes aggregate capacity. Optional drive/network/
+disk-I/O failures use bounded transition logging with family and error context.
 
 Capabilities: `cpu_iowait: false`, `load_average: true`, `swap: true`, `memory_commit: false`
 

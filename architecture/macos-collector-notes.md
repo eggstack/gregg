@@ -124,12 +124,27 @@ The product version from `SystemVersion.plist` is the marketing version (e.g.,
 `14.5`). If the plist is unavailable (e.g., restricted container), the version
 falls back to `"unknown"` rather than fabricating a value.
 
+## Network interfaces
+
+**Source:** preferred `NET_RT_IFLIST2` sysctl (`if_msghdr2` with embedded
+`if_data64` 64-bit `ifi_ibytes`/`ifi_obytes` and `ifi_baudrate`), resolved to
+display names via `if_indextoname`. The buffer is size-queried, bounded
+(16 MiB), walked by `ifm_msglen` with length validation, and restricted to
+`RTM_IFINFO2`; unrelated route messages are skipped and malformed tails are
+truncated. A correctly typed `getifaddrs` / `if_data` (32-bit) fallback covers
+older or unsupported hosts; Darwin documents `AF_LINK` `ifa_data` as
+`if_data`, never `if_data64`. Loopback and operational state come from native
+flags, identity from resolved names with deterministic sort/dedup, and
+32-bit wraps re-baseline through the shared rate helper without spikes.
+
 ## CI validation
 
 CI runs on both Intel (`macos-15-intel`) and Apple Silicon (`macos-15`). All
 collector tests use `MockNativeQueries` for deterministic arithmetic; native FFI
 tests run only on macOS runners and validate that real Mach and sysctl calls
-succeed.
+succeed. The macOS job runs the full `collector::macos` suite (parser, mock,
+and native tests), including a bounded-warmup v2 check that proves nonempty
+drive capacity and network telemetry on both architectures.
 
 For manual validation on a developer machine, compare sampled values with:
 
@@ -153,13 +168,19 @@ memory categorization as documented above.
 
 ## Mounted filesystems
 
-Drive capacity uses the existing contained FFI seam and `getmntinfo`. Only
-`MNT_LOCAL` mounts with `MNT_DONTBROWSE` clear, non-empty mount points,
+Drive capacity uses `libc::getmntinfo` with `libc::statfs` through the
+contained FFI seam; libc selects the architecture-correct `INODE64` symbol so
+Intel and Apple Silicon share one truthful layout (Plan 128 corrective pass).
+Only `MNT_LOCAL` mounts with `MNT_DONTBROWSE` clear, non-empty mount points,
 non-`devfs`/`autofs` types, and positive capacity (`total > 0 &&
 free ≤ total && avail ≤ total`) are candidates; identity is `fsid.0:fsid.1`.
 Repeated views with the same native filesystem identity are emitted once, and results
 are sorted and bounded by the v2 protocol limits. Used bytes are derived from
 total blocks minus total free blocks, not caller-specific available blocks.
+Optional drive/network/disk-I/O failures use bounded transition logging
+(available ↔ unavailable with family and error context) rather than per-sample
+warnings; successful empty enumeration stays `Some(empty)`, distinct from
+source-error `None`, and no zero-valued metric is fabricated.
 
 APFS volumes can share container free space, so the aggregate describes the
 displayed mounted volumes and is not a unique physical-device capacity.
