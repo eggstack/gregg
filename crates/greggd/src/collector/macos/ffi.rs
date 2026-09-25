@@ -616,41 +616,90 @@ struct IfList2Record {
     baudrate_bps: u64,
 }
 
+/// Minimal Darwin routing-message framing prefix.
+///
+/// Every message in a `NET_RT_IFLIST2` buffer shares the same first four
+/// bytes (see `bsd/net/route.h` and the libc bindings for `rt_msghdr`,
+/// `if_msghdr2`, `ifa_msghdr`, and `ifma_msghdr2`):
+///
+/// - offset 0: message length (`rtm_msglen` / `ifm_msglen` / ...) as native-endian `u16`;
+/// - offset 2: version (`RTM_VERSION`) as `u8`;
+/// - offset 3: message type (for example `RTM_IFINFO2`, `RTM_NEWADDR`) as `u8`.
+///
+/// Only these four bytes may be inspected before the message type is known.
+/// Full `if_msghdr2` size and layout requirements apply solely to
+/// `RTM_IFINFO2`. No private routing-message ABI is introduced; the helper
+/// reads the documented common prefix directly from bytes.
+#[cfg(target_os = "macos")]
+const ROUTE_MESSAGE_PREFIX_LEN: usize = 4;
+
+/// Read the common routing-message framing prefix at the start of `bytes`.
+///
+/// Returns `(msglen, message type)` when at least [`ROUTE_MESSAGE_PREFIX_LEN`]
+/// bytes are available. The version byte is required to be present so the
+/// caller never reads a partial prefix, but its value is not gated here.
+#[cfg(target_os = "macos")]
+fn route_message_prefix(bytes: &[u8]) -> Option<(usize, u8)> {
+    if bytes.len() < ROUTE_MESSAGE_PREFIX_LEN {
+        return None;
+    }
+    let msglen = u16::from_ne_bytes([bytes[0], bytes[1]]) as usize;
+    let message_type = bytes[3];
+    Some((msglen, message_type))
+}
+
 /// Parse a raw `NET_RT_IFLIST2` sysctl buffer without invoking syscalls.
 ///
-/// Walks variable-length routing messages by `ifm_msglen`, validates every
-/// length before reading an `if_msghdr2`, accepts only `RTM_IFINFO2`, skips
-/// unrelated route messages, and truncates (rather than over-reading) on a
-/// malformed or truncated tail. Buffer alignment is not assumed; the header
-/// is copied with `read_unaligned`.
+/// Darwin's interface-list stream is heterogeneous: each `RTM_IFINFO2` record
+/// is followed by variable-length address and multicast records (for example
+/// `RTM_NEWADDR` / `RTM_NEWMADDR2`) with their own layouts and lengths.
+/// Framing is validated in two stages: first the common four-byte prefix
+/// yields `msglen` and the message type, then only `RTM_IFINFO2` must satisfy
+/// `size_of::<libc::if_msghdr2>()` before the full header is read. Valid
+/// shorter unrelated messages advance by their own `msglen` and never
+/// terminate parsing. Zero-length, undersized-prefix, oversized/truncated, and
+/// truncated-`RTM_IFINFO2` tails truncate (rather than over-reading) while
+/// preserving records parsed before the malformed tail. Buffer alignment is
+/// not assumed; the header is copied with `read_unaligned`.
 #[cfg(target_os = "macos")]
 fn parse_iflist2_buffer(buffer: &[u8]) -> Vec<IfList2Record> {
     let mut records = Vec::new();
     let header_len = std::mem::size_of::<libc::if_msghdr2>();
     let mut offset = 0usize;
-    while offset + 2 <= buffer.len() {
-        let msglen = u16::from_ne_bytes([buffer[offset], buffer[offset + 1]]) as usize;
-        if msglen < header_len || msglen == 0 || offset + msglen > buffer.len() {
+    while offset + ROUTE_MESSAGE_PREFIX_LEN <= buffer.len() {
+        let Some((msglen, message_type)) = route_message_prefix(&buffer[offset..]) else {
+            break;
+        };
+        if msglen == 0 || msglen < ROUTE_MESSAGE_PREFIX_LEN {
             break;
         }
-        // Safety: `msglen >= header_len` and `offset + msglen <= len` were
-        // validated above, so `[offset, offset + header_len)` is in bounds.
-        // The parser offset carries no alignment guarantee, hence the
-        // unaligned copy into an owned (aligned) header value.
-        let header: libc::if_msghdr2 = unsafe {
-            std::ptr::read_unaligned(buffer[offset..].as_ptr().cast::<libc::if_msghdr2>())
+        let end = match offset.checked_add(msglen) {
+            Some(end) if end <= buffer.len() => end,
+            _ => break,
         };
-        if i32::from(header.ifm_type) == libc::RTM_IFINFO2 && header.ifm_index != 0 {
-            // `header` is an owned aligned copy, so field access is safe.
-            records.push(IfList2Record {
-                index: u32::from(header.ifm_index),
-                flags: header.ifm_flags,
-                rx_bytes: header.ifm_data.ifi_ibytes,
-                tx_bytes: header.ifm_data.ifi_obytes,
-                baudrate_bps: header.ifm_data.ifi_baudrate,
-            });
+        if i32::from(message_type) == libc::RTM_IFINFO2 {
+            if msglen < header_len {
+                break;
+            }
+            // Safety: `msglen >= header_len` and `offset + msglen <= len` were
+            // validated above, so `[offset, offset + header_len)` is in bounds.
+            // The parser offset carries no alignment guarantee, hence the
+            // unaligned copy into an owned (aligned) header value.
+            let header: libc::if_msghdr2 = unsafe {
+                std::ptr::read_unaligned(buffer[offset..].as_ptr().cast::<libc::if_msghdr2>())
+            };
+            if i32::from(header.ifm_type) == libc::RTM_IFINFO2 && header.ifm_index != 0 {
+                // `header` is an owned aligned copy, so field access is safe.
+                records.push(IfList2Record {
+                    index: u32::from(header.ifm_index),
+                    flags: header.ifm_flags,
+                    rx_bytes: header.ifm_data.ifi_ibytes,
+                    tx_bytes: header.ifm_data.ifi_obytes,
+                    baudrate_bps: header.ifm_data.ifi_baudrate,
+                });
+            }
         }
-        offset += msglen;
+        offset = end;
         if records.len() > 4096 {
             break;
         }
@@ -1038,8 +1087,8 @@ fn mounted_filesystem_count(count: i32, pointer: *mut libc::statfs) -> Result<us
 mod tests {
     use super::{
         build_iflist2_interface, mounted_filesystem_count, parse_iflist2_buffer, raw_from_if_data,
-        raw_from_statfs, sort_dedup_interfaces, IfList2Record, RawMountedFilesystem,
-        RawNetworkInterface,
+        raw_from_statfs, route_message_prefix, sort_dedup_interfaces, IfList2Record,
+        RawMountedFilesystem, RawNetworkInterface, ROUTE_MESSAGE_PREFIX_LEN,
     };
     use crate::collector::error::CollectErrorKind;
 
@@ -1147,8 +1196,56 @@ mod tests {
         }
     }
 
+    /// Encode a framing-realistic short unrelated route message.
+    ///
+    /// Only the documented common prefix is populated: native-endian `u16`
+    /// `msglen` at offset 0, `RTM_VERSION` at offset 2, and `message_type` at
+    /// offset 3. Remaining bytes are opaque payload (for example trailing
+    /// `sockaddr` data in a real `RTM_NEWADDR` / `RTM_NEWMADDR2` record). The
+    /// parser must skip such messages by their own `msglen` without requiring
+    /// `size_of::<libc::if_msghdr2>()`.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn encode_short_route_message(message_type: i32, len: usize) -> Vec<u8> {
+        assert!(
+            len >= ROUTE_MESSAGE_PREFIX_LEN,
+            "message must hold the prefix"
+        );
+        let msglen = u16::try_from(len).expect("test message fits in u16");
+        let mut buffer = vec![0u8; len];
+        buffer[0..2].copy_from_slice(&msglen.to_ne_bytes());
+        buffer[2] = libc::RTM_VERSION as u8;
+        buffer[3] = message_type as u8;
+        buffer
+    }
+
+    /// Realistically short `RTM_NEWADDR` framing (`ifa_msghdr` plus trailing
+    /// address bytes), always shorter than `if_msghdr2`.
+    fn encode_short_newaddr() -> Vec<u8> {
+        let len = std::mem::size_of::<libc::ifa_msghdr>() + 32;
+        assert!(
+            len < std::mem::size_of::<libc::if_msghdr2>(),
+            "NEWADDR fixture must stay shorter than if_msghdr2"
+        );
+        encode_short_route_message(libc::RTM_NEWADDR, len)
+    }
+
+    /// Second unrelated shape actually emitted by `sysctl_iflist2()`:
+    /// `RTM_NEWMADDR2` (`ifma_msghdr2` plus trailing address bytes).
+    fn encode_short_newmaddr2() -> Vec<u8> {
+        let len = std::mem::size_of::<libc::ifma_msghdr2>() + 32;
+        assert!(
+            len < std::mem::size_of::<libc::if_msghdr2>(),
+            "NEWMADDR2 fixture must stay shorter than if_msghdr2"
+        );
+        encode_short_route_message(libc::RTM_NEWMADDR2, len)
+    }
+
+    /// Oversized unrelated message that advertises a full `if_msghdr2` length.
+    /// Kept only to prove oversized unrelated records are also skipped; it
+    /// must never be the sole unrelated-message coverage because it cannot
+    /// expose the short-message truncation defect.
     #[allow(clippy::cast_possible_truncation)]
-    fn encode_unrelated_route_message() -> Vec<u8> {
+    fn encode_oversized_unrelated_route_message() -> Vec<u8> {
         // Safety: integer record; zeroed bytes are valid before fields are set.
         let mut header: libc::if_msghdr2 = unsafe { std::mem::zeroed() };
         header.ifm_msglen = std::mem::size_of::<libc::if_msghdr2>() as u16;
@@ -1181,9 +1278,45 @@ mod tests {
     }
 
     #[test]
-    fn iflist2_parser_skips_unrelated_messages() {
+    fn route_message_prefix_reads_framing_before_type() {
+        let encoded = encode_short_newaddr();
+        let (msglen, message_type) = route_message_prefix(&encoded).expect("prefix is readable");
+        assert_eq!(msglen, encoded.len());
+        assert_eq!(i32::from(message_type), libc::RTM_NEWADDR);
+        assert!(route_message_prefix(&[]).is_none());
+        assert!(route_message_prefix(&[0u8, 1u8, 2u8]).is_none());
+    }
+
+    #[test]
+    fn iflist2_parser_survives_short_interleaved_newaddr() {
+        // Key Plan-129 regression: a valid shorter `RTM_NEWADDR` immediately
+        // after the first interface must not hide the second interface.
+        let short = encode_short_newaddr();
+        assert!(
+            short.len() < std::mem::size_of::<libc::if_msghdr2>(),
+            "fixture must be shorter than if_msghdr2 to expose the defect"
+        );
         let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
-        buffer.extend(encode_unrelated_route_message());
+        buffer.extend(short);
+        buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let records = parse_iflist2_buffer(&buffer);
+        assert_eq!(records.len(), 2, "both interfaces survive a short NEWADDR");
+        assert_eq!(records[0].index, 1);
+        assert_eq!(records[0].rx_bytes, 10);
+        assert_eq!(records[0].tx_bytes, 20);
+        assert_eq!(records[1].index, 2);
+        assert_eq!(records[1].rx_bytes, 30);
+        assert_eq!(records[1].tx_bytes, 40);
+    }
+
+    #[test]
+    fn iflist2_parser_skips_multiple_unrelated_between_interfaces() {
+        // Two distinct short shapes (`RTM_NEWADDR` + `RTM_NEWMADDR2`) between
+        // two interfaces, mirroring Darwin's IFINFO2/NEWADDR/NEWMADDR2/IFINFO2
+        // emission order.
+        let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        buffer.extend(encode_short_newaddr());
+        buffer.extend(encode_short_newmaddr2());
         buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
         let records = parse_iflist2_buffer(&buffer);
         assert_eq!(records.len(), 2);
@@ -1192,6 +1325,21 @@ mod tests {
     }
 
     #[test]
+    fn iflist2_parser_skips_oversized_unrelated_message() {
+        // Explicit oversized case: a full-`if_msghdr2`-length unrelated record
+        // is also skipped. This preserves the old coverage under a name that
+        // cannot be mistaken for the short-message regression.
+        let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        buffer.extend(encode_oversized_unrelated_route_message());
+        buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let records = parse_iflist2_buffer(&buffer);
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].index, 1);
+        assert_eq!(records[1].index, 2);
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
     fn iflist2_parser_truncates_malformed_tail_without_overread() {
         let mut buffer = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
         buffer.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
@@ -1203,8 +1351,48 @@ mod tests {
 
         assert!(parse_iflist2_buffer(&[]).is_empty());
         assert!(parse_iflist2_buffer(&[0u8]).is_empty());
-        // Declared length shorter than one header is malformed.
-        assert!(parse_iflist2_buffer(&[4u8, 0u8, 0u8, 0u8]).is_empty());
+        // A lone prefix-sized buffer advertising a longer message is a
+        // truncated tail: prior records are kept, nothing is over-read.
+        assert!(parse_iflist2_buffer(&[16u8, 0u8, 5u8, 18u8]).is_empty());
+
+        // Zero `msglen` terminates safely, preserving earlier interfaces.
+        let mut zero_len = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        zero_len.extend([0u8, 0u8, libc::RTM_VERSION as u8, libc::RTM_NEWADDR as u8]);
+        zero_len.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let records = parse_iflist2_buffer(&zero_len);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].index, 1);
+
+        // `msglen` shorter than the common prefix terminates safely.
+        let mut undersized = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        undersized.extend([2u8, 0u8, libc::RTM_VERSION as u8, libc::RTM_NEWADDR as u8]);
+        undersized.extend(encode_ifinfo2(2, libc::IFF_UP, 30, 40, 0));
+        let records = parse_iflist2_buffer(&undersized);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].index, 1);
+
+        // Oversized `msglen` reaching past the buffer terminates safely.
+        let mut oversized = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        oversized.extend([
+            0xFFu8,
+            0x7Fu8,
+            libc::RTM_VERSION as u8,
+            libc::RTM_NEWADDR as u8,
+        ]);
+        let records = parse_iflist2_buffer(&oversized);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].index, 1);
+
+        // Truncated `RTM_IFINFO2` (valid prefix, shorter than the full header)
+        // must never be read as a full header.
+        let mut truncated_ifinfo2 = encode_ifinfo2(1, libc::IFF_UP, 10, 20, 0);
+        truncated_ifinfo2.extend(encode_short_route_message(
+            libc::RTM_IFINFO2,
+            ROUTE_MESSAGE_PREFIX_LEN,
+        ));
+        let records = parse_iflist2_buffer(&truncated_ifinfo2);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].index, 1);
     }
 
     #[test]
@@ -1919,6 +2107,14 @@ mod native_tests {
                 "interface name must not be empty"
             );
         }
+        // A partial walk that stops at the first short heterogeneous record
+        // could return only loopback. Requiring a non-loopback interface
+        // proves later interfaces were reached on the hosted image. No
+        // specific name (such as `en0`) is required.
+        assert!(
+            interfaces.iter().any(|interface| !interface.is_loopback),
+            "expected at least one non-loopback interface from the preferred source"
+        );
     }
 
     #[test]
@@ -1968,19 +2164,42 @@ mod native_tests {
                 .drives
                 .as_ref()
                 .is_some_and(|drives| !drives.is_empty());
-            let network_ready = payload.network.is_some();
+            // Require a non-loopback interface in the complete payload, not
+            // merely `network.is_some()`: a truncated walk could otherwise
+            // publish loopback-only detail while hiding the traffic-bearing
+            // interface. Zero byte rates and unknown capacity remain valid;
+            // no specific interface name is required.
+            let network_ready = payload.network.as_ref().is_some_and(|network| {
+                !network.interfaces.is_empty()
+                    && network
+                        .interfaces
+                        .iter()
+                        .any(|interface| !interface.is_loopback)
+            });
             if drives_ready && network_ready {
                 break payload;
             }
             if elapsed >= deadline {
                 panic!(
-                    "bounded warmup expired without v2 drives+network: drives={:?} network_present={}",
+                    "bounded warmup expired without v2 drives+non-loopback network: drives={:?} network_interfaces={:?}",
                     payload.drives.as_ref().map(Vec::len),
-                    payload.network.is_some(),
+                    payload.network.as_ref().map(|network| network
+                        .interfaces
+                        .iter()
+                        .map(|interface| (interface.id.clone(), interface.is_loopback))
+                        .collect::<Vec<_>>()),
                 );
             }
         };
         payload.validate().expect("native v2 payload validates");
+        let network = payload.network.as_ref().expect("v2 network present");
+        assert!(
+            network
+                .interfaces
+                .iter()
+                .any(|interface| !interface.is_loopback),
+            "v2 payload must contain at least one non-loopback interface"
+        );
         // Disk I/O stays optional: hosted/virtualized Macs may genuinely
         // expose no usable IOKit block-driver counters.
         let _ = payload.disk_io;

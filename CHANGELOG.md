@@ -39,6 +39,16 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **macOS route-message parser correction (Plan 129):** the `NET_RT_IFLIST2`
+  walker now validates the common four-byte route-message prefix
+  (`msglen`/`version`/`type`) before type discrimination and applies the full
+  `if_msghdr2` size requirement only to `RTM_IFINFO2`, so valid shorter
+  `RTM_NEWADDR` / `RTM_NEWMADDR2` records no longer truncate enumeration
+  before later interfaces. Malformed tails still truncate safely without
+  over-reads, and native macOS CI now requires a non-loopback interface in
+  both the raw enumeration and the complete v2 payload. No protocol, TUI,
+  cadence, readiness, fallback, or IOKit changes.
+
 - **macOS Intel drive/network collector correctness (Plan 128):** filesystem
   enumeration now uses `libc::getmntinfo` with `libc::statfs` so Intel hosts
   receive the correct `INODE64` ABI instead of a private unsuffixed layout;

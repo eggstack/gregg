@@ -266,7 +266,10 @@ Swap comes from `vm.swapusage`, so the explicit v2 override reports
 
 Live disk records use IOKit block-storage statistics and stable registry-entry
 identities. Network records prefer `NET_RT_IFLIST2` / `if_msghdr2` 64-bit
-counters and `ifi_baudrate`, with a correctly typed `getifaddrs` / `if_data`
+counters and `ifi_baudrate` with heterogeneous message walking (common
+route-message prefix first, `if_msghdr2` size only for `RTM_IFINFO2`, shorter
+unrelated records skipped by their own length), plus a correctly typed
+`getifaddrs` / `if_data`
 32-bit fallback for older or unsupported hosts; legacy counter wraps
 re-baseline through the shared rate helper without spikes. Optional
 drive/network/disk-I/O source failures log once per availability transition

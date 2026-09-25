@@ -129,9 +129,12 @@ falls back to `"unknown"` rather than fabricating a value.
 **Source:** preferred `NET_RT_IFLIST2` sysctl (`if_msghdr2` with embedded
 `if_data64` 64-bit `ifi_ibytes`/`ifi_obytes` and `ifi_baudrate`), resolved to
 display names via `if_indextoname`. The buffer is size-queried, bounded
-(16 MiB), walked by `ifm_msglen` with length validation, and restricted to
-`RTM_IFINFO2`; unrelated route messages are skipped and malformed tails are
-truncated. A correctly typed `getifaddrs` / `if_data` (32-bit) fallback covers
+(16 MiB), and walked heterogeneously: the common four-byte route-message
+prefix (`msglen`/`version`/`type`) is validated first, `if_msghdr2` size and
+layout apply only to `RTM_IFINFO2`, and valid shorter unrelated records
+(`RTM_NEWADDR`, `RTM_NEWMADDR2`) advance by their own `msglen` without
+terminating the walk; malformed tails truncate. A correctly typed
+`getifaddrs` / `if_data` (32-bit) fallback covers
 older or unsupported hosts; Darwin documents `AF_LINK` `ifa_data` as
 `if_data`, never `if_data64`. Loopback and operational state come from native
 flags, identity from resolved names with deterministic sort/dedup, and
