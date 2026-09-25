@@ -210,12 +210,14 @@ strengthens the native non-loopback-interface proof, and reconciles Plan 128's
 closure record via its preserved post-closure correction note. Plan 128
 remains complete with a Plan-129 corrective follow-up.
 
-Plan 130 is planned as a bounded Unix bootstrap activation pass. It preserves
-the settled root/system versus user-local destination contract from Plans
-112-116, but replaces advisory-only user-local PATH handling with idempotent
-supported-shell persistence, a narrow opt-out, and truthful distinction between
+Plan 130 is complete at implementation `d4f2843` with remote CI run
+`36186493797` green across Linux, macOS arm64, macOS Intel, Windows SCM
+smoke, and MSRV Rust 1.89. It preserves the settled root/system versus
+user-local destination contract from Plans 112-116, but replaces
+advisory-only user-local PATH handling with idempotent supported-shell
+persistence, a narrow opt-out, and truthful distinction between
 future-shell persistence and current-parent-shell activation. The documented
-rootless client quick-install path will include a trailing parent-shell
+rootless client quick-install path includes a trailing parent-shell
 `export PATH="$HOME/.local/bin:$PATH"` so `gregg` is immediately resolvable
 without a terminal restart; system installs, arbitrary PATH destinations,
 uninstall ownership, Windows PATH policy, and release workflows remain
@@ -347,7 +349,7 @@ excluded.
 | [`127-eggserve-0-2-daemon-http-transport-adoption.md`](127-eggserve-0-2-daemon-http-transport-adoption.md) | Replace greggd's Axum HTTP facade with direct EggServe 0.2.x while preserving wire, cached-body, supervision, keep-alive, and footprint contracts | complete at `1861bbc`; CI `35871682878` green across five jobs; EggServe 0.2.1 gates, wire tests, size review, and loopback check recorded |
 | [`128-macos-intel-disk-network-collector-corrective-pass.md`](128-macos-intel-disk-network-collector-corrective-pass.md) | Correct Darwin filesystem/network ABI handling and prove macOS Intel+arm64 v2 drive/network telemetry | complete; implementation `0f134b0`; CI `36170917401` green; route-message parser follow-up owned by Plan 129 |
 | [`129-macos-route-message-parser-corrective-pass.md`](129-macos-route-message-parser-corrective-pass.md) | Correct heterogeneous `NET_RT_IFLIST2` message walking, strengthen native interface-completeness proof, and reconcile Plan 128 closure | complete; implementation `30df587`; CI `36176134555` green |
-| [`130-user-local-installer-path-activation.md`](130-user-local-installer-path-activation.md) | Persist user-local `~/.local/bin` for supported shells and document same-shell activation without changing install ownership | planned; bounded Unix bootstrap PATH/activation UX pass |
+| [`130-user-local-installer-path-activation.md`](130-user-local-installer-path-activation.md) | Persist user-local `~/.local/bin` for supported shells and document same-shell activation without changing install ownership | complete; implementation `d4f2843`; CI `36186493797` green |
 
 Dependency order:
 

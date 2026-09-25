@@ -1,6 +1,6 @@
 # Plan 130: user-local installer PATH activation and shell persistence
 
-Status: planned.
+Status: complete.
 
 Depends on: the completed installer ownership work in Plans 112-116 and the current post-Plan-129 repository baseline. This work is independent of the remaining Plan 091 soak record.
 
@@ -254,24 +254,24 @@ Do not rewrite closed Plan 112's historical record. Plan 130 supersedes only its
 
 ## Acceptance criteria
 
-- [ ] Non-root `gregg` installation still uses `$HOME/.local/bin`; root installation still uses `/usr/local/bin`.
-- [ ] Same-scope replacement, foreign-destination refusal, staged Cargo fallback, daemon finalization, update, and uninstall ownership semantics from Plans 112-116 remain unchanged.
-- [ ] When `$HOME/.local/bin` is absent from current PATH, supported user shells receive a bounded persistent PATH integration by default.
-- [ ] zsh and bash profile selection are deterministic, documented, and covered without touching the operator's real dotfiles.
-- [ ] Profile integration is idempotent across repeated installer runs.
-- [ ] An existing user-authored `~/.local/bin` PATH entry is not redundantly duplicated.
-- [ ] `--no-shell-profile` suppresses all startup-file mutation while preserving successful installation and precise manual guidance.
-- [ ] Unknown/unsupported shells do not guess a profile file and do not turn a successful binary install into a failure.
-- [ ] Root/system installs never mutate user or global shell startup files.
-- [ ] Profile-write failure is reported separately and does not erase or misreport the successful binary installation.
-- [ ] Installer output distinguishes current-shell availability from persistence for future shells.
-- [ ] The documented client quick-install form includes a parent-shell trailing `export` path that makes `gregg` immediately resolvable after a successful install without restarting the terminal.
-- [ ] Documentation explicitly states that a piped child installer cannot directly change its parent's environment.
-- [ ] `both` performs at most one PATH/profile integration action.
-- [ ] Uninstall does not remove the generic `$HOME/.local/bin` PATH integration.
-- [ ] Installer/profile regressions run through the existing deterministic harness and ordinary CI; no new workflow or privileged profile smoke is introduced.
-- [ ] Current docs and architecture no longer claim that user-local Unix bootstrap categorically never edits shell rc files.
-- [ ] Plan 130 closure records the implementation SHA and exact CI run used.
+- [x] Non-root `gregg` installation still uses `$HOME/.local/bin`; root installation still uses `/usr/local/bin`.
+- [x] Same-scope replacement, foreign-destination refusal, staged Cargo fallback, daemon finalization, update, and uninstall ownership semantics from Plans 112-116 remain unchanged.
+- [x] When `$HOME/.local/bin` is absent from current PATH, supported user shells receive a bounded persistent PATH integration by default.
+- [x] zsh and bash profile selection are deterministic, documented, and covered without touching the operator's real dotfiles.
+- [x] Profile integration is idempotent across repeated installer runs.
+- [x] An existing user-authored `~/.local/bin` PATH entry is not redundantly duplicated.
+- [x] `--no-shell-profile` suppresses all startup-file mutation while preserving successful installation and precise manual guidance.
+- [x] Unknown/unsupported shells do not guess a profile file and do not turn a successful binary install into a failure.
+- [x] Root/system installs never mutate user or global shell startup files.
+- [x] Profile-write failure is reported separately and does not erase or misreport the successful binary installation.
+- [x] Installer output distinguishes current-shell availability from persistence for future shells.
+- [x] The documented client quick-install form includes a parent-shell trailing `export` path that makes `gregg` immediately resolvable after a successful install without restarting the terminal.
+- [x] Documentation explicitly states that a piped child installer cannot directly change its parent's environment.
+- [x] `both` performs at most one PATH/profile integration action.
+- [x] Uninstall does not remove the generic `$HOME/.local/bin` PATH integration.
+- [x] Installer/profile regressions run through the existing deterministic harness and ordinary CI; no new workflow or privileged profile smoke is introduced.
+- [x] Current docs and architecture no longer claim that user-local Unix bootstrap categorically never edits shell rc files.
+- [x] Plan 130 closure records the implementation SHA and exact CI run used.
 
 ## Explicit non-goals
 
@@ -298,3 +298,50 @@ Start in `packaging/install.sh` and `scripts/tests/test-install-rerun.sh`.
 Keep the ownership boundary simple: the binary still has one canonical destination per privilege scope. PATH integration is a post-install user-experience step, not installation identity.
 
 The most important correctness rule is to separate persistence from current-process activation. Editing `.zshrc` or a bash profile helps later shells; it does not change the already-running parent that launched a piped installer. The quick-install documentation should therefore use a trailing parent-shell `&& export PATH="$HOME/.local/bin:$PATH"` when immediate same-session command resolution is desired.
+
+## Closure record
+
+Implemented at `d4f2843`, verified by existing CI run `36186493797` green
+across all five jobs (Linux fmt/clippy/tests, macOS arm64, macOS Intel,
+Windows incl. SCM smoke, MSRV Rust 1.89). `packaging/install.sh` keeps the
+Plan-112 destination rule and same-scope ownership untouched
+(root `-> /usr/local/bin`, non-root `-> $HOME/.local/bin`) and runs PATH work
+only after every selected candidate is verified and installed. Non-root
+installs whose destination is absent from the invoking `PATH` persist the
+stable `$HOME/.local/bin` expression to one supported profile by default
+(zsh `${ZDOTDIR:-$HOME}/.zshrc` honoring a safe absolute `ZDOTDIR`, bash
+`~/.bashrc` on Linux and login-aware `~/.bash_profile` / `~/.bash_login` /
+`~/.profile` on macOS via explicit helper inputs including the
+`GREGG_TEST_OS` seam); unknown shells fall back to exact manual guidance and
+never guess a file. Integration is append-only and idempotent (existing
+Gregg-managed or user-authored `.local/bin` lines are recognized via the
+shared helper and never duplicated), never evaluates or sources profiles,
+creates a missing file only when its parent is the expected home/config
+location, and reports inaccessible targets separately without rolling back
+the install. `--no-shell-profile` suppresses all mutation while preserving
+install success and guidance; `is_system_install()` (with the
+`GREGG_TEST_FORCE_SYSTEM` seam proving the branch without real root)
+guarantees system installs only print bounded advice and never touch user or
+global startup policy. Output distinguishes `is available on the current
+PATH` from `Added ... for future shells` + `For this shell, run:` plus the
+exact `export PATH="$HOME/.local/bin:$PATH"`, and `both` integrates exactly
+once. Deterministic regressions added 39 assertions (68 total,
+`pass=68 fail=0`) to the existing `scripts/tests/test-install-rerun.sh`
+harness covering zsh rerun idempotency, user-authored entries, Linux/macOS
+bash selection, `ZDOTDIR`, opt-out, unsupported shells, on-PATH no-op,
+invalid targets, forced system mode, content preservation, and single-`both`
+integration, all with isolated `HOME`/`PATH`/`SHELL` and the fake
+curl/Cargo strategy; `cargo test -p greggd --test installer_rerun`,
+`./scripts/check-local.sh`, and ShellCheck (`packaging/install.sh`,
+`test-install-rerun.sh`) are clean. Docs reconciled in the same pass:
+`README.md`, `docs/installation.md`, `packaging/README.md`,
+`architecture/scripts-and-packaging.md`, `CHANGELOG.md`,
+`.opencode/skills/release-process/SKILL.md`, and the `AGENTS.md` narrow
+truth (only non-root user-local persistence may edit a profile). Plan 112's
+historical record is preserved; Plan 130 supersedes only its advisory-only
+PATH behavior. Uninstall ownership is unchanged and explicitly documented to
+preserve the generic PATH entry. Plan 130 is terminal in the dependency
+chain and independent of the remaining Plan 091 soak record, so no
+downstream plan status changes were required.
+
+Acceptance: all boxes hold at the implementation SHA.
