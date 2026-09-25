@@ -345,3 +345,28 @@ chain and independent of the remaining Plan 091 soak record, so no
 downstream plan status changes were required.
 
 Acceptance: all boxes hold at the implementation SHA.
+
+
+## Post-closure correction
+
+A post-closure review found one narrow defect in Plan 130's existing-profile
+classification. `profile_contains_local_bin()` currently treats any textual
+occurrence of `.local/bin` in the selected startup file as proof that the
+profile already activates the user-local binary directory. A commented-out
+PATH assignment, prose comment, `echo`/other unrelated command, or non-PATH
+variable can therefore suppress Gregg's managed PATH block even though a
+future shell will not actually place `$HOME/.local/bin` on `PATH`.
+
+This does not invalidate Plan 130's canonical install destinations,
+zsh/bash profile selection, safe `ZDOTDIR` handling, append-only managed
+block, `--no-shell-profile`, system-install exclusion, current-parent-shell
+export guidance, single integration for `both`, or update/uninstall
+ownership. The defect is limited to deciding whether an existing user profile
+already provides PATH integration.
+
+Plan 131 owns the corrective work: replace the broad substring test with a
+bounded static predicate for recognizable active PATH integration, add
+regressions for commented and unrelated `.local/bin` references, preserve
+managed-block idempotency, and reconcile the registry. Plan 130 remains a
+complete historical implementation record with this Plan-131 corrective
+follow-up.
