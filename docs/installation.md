@@ -52,9 +52,10 @@ How it works:
   by default: zsh uses `${ZDOTDIR:-$HOME}/.zshrc` (a safe absolute `ZDOTDIR`
   is honored), bash uses `~/.bashrc` on Linux and login-aware selection on
   macOS (existing `~/.bash_profile`, then `~/.bash_login`, then `~/.profile`,
-  otherwise `~/.bash_profile`). The edit is idempotent (an existing
-  Gregg-managed or user-authored `.local/bin` line is never duplicated),
-  append-only (the rest of the profile is preserved byte-for-byte, never
+  otherwise `~/.bash_profile`). The edit is idempotent (a recognizable active
+  PATH integration or an intact Gregg-managed block is never duplicated;
+  comments, commented-out assignments, and unrelated `.local/bin` mentions do
+  not suppress integration), append-only (the rest of the profile is preserved byte-for-byte, never
   evaluated or sourced), and skippable with `--no-shell-profile`. Output
   distinguishes current-shell availability from future-shell persistence and
   always prints the exact `export PATH="$HOME/.local/bin:$PATH"` needed for

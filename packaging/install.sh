@@ -237,13 +237,116 @@ dest_on_path() {
   esac
 }
 
-# Conservative "already integrated" probe: any existing startup line that
-# already references the user-local bin directory (Gregg-managed or
-# user-authored, `$HOME`-relative or expanded) suppresses a redundant entry.
-profile_contains_local_bin() {
+# Active-integration predicate (Plan 131 corrective pass): success means the
+# selected startup file contains a recognizable active PATH integration for
+# the canonical user-local bin directory — either Gregg's intact managed
+# block (exact marker plus an active functional PATH line) or a supported,
+# non-commented user-authored PATH (or zsh tied `path` array) assignment
+# containing `$HOME/.local/bin`, `${HOME}/.local/bin`, `~/.local/bin`, or the
+# expanded `$HOME/.local/bin` as a discrete PATH entry. Arbitrary `.local/bin`
+# text (comments, commented-out assignments, prose, echo/printf, aliases,
+# functions, non-PATH variables, subpaths, or longer names) is not sufficient.
+# Read-only: profile contents are never sourced, evaluated, executed, or
+# command-substituted. Conservative: exotic shell metaprogramming fails closed
+# (returns nonzero) so the installer appends its safe managed block rather
+# than falsely claiming persistence.
+line_has_canonical_bin_entry() {
+  local code="$1"
+  if [[ $code =~ \$HOME/\.local/bin([^/A-Za-z0-9_.-]|$) ]]; then
+    return 0
+  fi
+  if [[ $code =~ \$\{HOME\}/\.local/bin([^/A-Za-z0-9_.-]|$) ]]; then
+    return 0
+  fi
+  if [[ $code =~ \~/\.local/bin([^/A-Za-z0-9_.-]|$) ]]; then
+    return 0
+  fi
+  # Expanded `$HOME/.local/bin` (deterministic, read-only): the installer
+  # knows `$HOME`, so an explicit absolute user-authored entry for this home
+  # counts when it appears as a discrete PATH entry. Boundary-checked with
+  # fixed-string matching to avoid regex-escaping the home path.
+  if [[ -n "${HOME:-}" ]]; then
+    local expanded="${HOME}/.local/bin"
+    if [[ "$code" == *"$expanded"* ]]; then
+      local rest="$code"
+      while [[ "$rest" == *"$expanded"* ]]; do
+        rest="${rest#*"$expanded"}"
+        local next="${rest:0:1}"
+        if [[ -z "$next" ]]; then
+          return 0
+        fi
+        # shellcheck disable=SC2053
+        if [[ "$next" =~ [^/A-Za-z0-9_.-] ]]; then
+          return 0
+        fi
+        [[ "$rest" == *"$expanded"* ]] || break
+      done
+    fi
+  fi
+  return 1
+}
+
+# Intact Gregg-managed block: the exact marker plus at least one active
+# (non-commented) functional `export PATH=` line carrying the canonical entry.
+# Marker text alone — including an unrelated comment that happens to match it,
+# or a block whose functional line was manually commented out — is not enough.
+profile_has_managed_block() {
+  local file="$1"
+  grep -Fq "added by gregg installer" "$file" 2>/dev/null || return 1
+  local line trimmed code
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" ]] && continue
+    [[ "$trimmed" == \#* ]] && continue
+    code="$trimmed"
+    # The managed export lives on a case-branch line (`*) export ... ;;`);
+    # strip one leading branch prefix before matching the functional part.
+    if [[ "$code" == '*)'* ]]; then
+      code="${code#\*\)}"
+      code="${code#"${code%%[![:space:]]*}"}"
+    fi
+    if [[ "$code" == *'export PATH='* ]] && line_has_canonical_bin_entry "$code"; then
+      return 0
+    fi
+  done < "$file"
+  return 1
+}
+
+# Supported user-authored integration: a non-commented line that starts (after
+# leading whitespace) with `export PATH=`, `PATH=`, `export path=`, or `path=`
+# (zsh tied array) and carries the canonical entry discretely. `echo`,
+# `printf`, aliases, functions, non-PATH variables, and other paths that
+# merely contain the substring are ignored. Full-line and leading-whitespace
+# comments are skipped; inline comments after an active assignment are
+# accepted because matching is prefix-anchored, not full-line.
+profile_has_user_path_integration() {
+  local file="$1"
+  local line trimmed code
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    [[ -z "$trimmed" ]] && continue
+    [[ "$trimmed" == \#* ]] && continue
+    code="$trimmed"
+    if [[ "$code" =~ ^export[[:space:]]+PATH= ]] || [[ "$code" =~ ^PATH= ]]; then
+      if line_has_canonical_bin_entry "$code"; then
+        return 0
+      fi
+    elif [[ "$code" =~ ^export[[:space:]]+path= ]] || [[ "$code" =~ ^path= ]]; then
+      if line_has_canonical_bin_entry "$code"; then
+        return 0
+      fi
+    fi
+  done < "$file"
+  return 1
+}
+
+profile_has_active_path_integration() {
   local file="$1"
   [[ -f "$file" ]] || return 1
-  if grep -Fq ".local/bin" "$file" 2>/dev/null; then
+  if profile_has_managed_block "$file"; then
+    return 0
+  fi
+  if profile_has_user_path_integration "$file"; then
     return 0
   fi
   return 1
@@ -389,9 +492,9 @@ run_path_integration_once() {
     return 0
   fi
 
-  if profile_contains_local_bin "$profile"; then
+  if profile_has_active_path_integration "$profile"; then
     echo "${DEST_DIR} is not on the current PATH." >&2
-    echo "Your shell profile already references ${DEST_DIR}; for this shell, run:" >&2
+    echo "Your shell profile already integrates ${DEST_DIR}; for this shell, run:" >&2
     print_manual_path_guidance
     return 0
   fi

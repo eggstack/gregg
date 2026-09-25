@@ -7,6 +7,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installer profile detection (Plan 131):** the user-local bootstrap now
+  suppresses its managed PATH block only for a recognizable active PATH
+  integration (`$HOME/.local/bin`, `${HOME}/.local/bin`, `~/.local/bin`, or
+  the expanded home as a discrete `PATH`/`path` entry) or an intact
+  Gregg-managed block (exact marker plus an active functional PATH line).
+  Comments, commented-out assignments, prose, `echo`/`printf`, aliases,
+  functions, non-`PATH` variables, subpaths, and longer names no longer
+  suppress persistence; exotic shell constructs fail closed by appending the
+  safe managed block. Destinations, profile selection, opt-out,
+  system-install, activation, `both`, update/uninstall, and platform behavior
+  from Plan 130 are unchanged.
+
 ### Added
 
 - **User-local installer PATH activation (Plan 130):** non-root Unix

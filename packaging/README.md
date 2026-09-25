@@ -93,7 +93,9 @@ The script:
   persists `$HOME/.local/bin` to the user profile for future shells (zsh
   `${ZDOTDIR:-$HOME}/.zshrc`, bash `~/.bashrc` on Linux and login-aware
   `~/.bash_profile` / `~/.bash_login` / `~/.profile` on macOS; idempotent
-  append-only, never evaluated or sourced, `--no-shell-profile` opts out,
+  append-only (only a recognizable active PATH integration or an intact
+  Gregg-managed block suppresses a duplicate; comments and unrelated
+  `.local/bin` mentions do not), never evaluated or sourced, `--no-shell-profile` opts out,
   `both` integrates once). System installs never touch shell profiles and
   only print bounded advice when `/usr/local/bin` is absent from `PATH`.
   Traps temporary cleanup on success/failure, and never silently invokes

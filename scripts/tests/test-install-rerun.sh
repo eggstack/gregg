@@ -818,6 +818,243 @@ else
   fail "both reported $FUTURE_COUNT PATH integrations (out=$OUT)"
 fi
 
+# --- 9. Plan 131 active-integration corrective pass ---------------------------------
+#
+# The Plan-130 detector treated any `.local/bin` substring as proof of PATH
+# integration. Plan 131 requires a recognizable active PATH integration (or an
+# intact Gregg-managed block) before suppressing the managed append. Comments,
+# commented-out assignments, prose, echo/printf, aliases/functions, non-PATH
+# variables, subpaths, and longer names must not suppress. All HOME/PATH/SHELL
+# state stays isolated; the runner's real dotfiles are never touched.
+
+# 9.1 active PATH= without export suppresses duplication.
+fresh_path_home "131-active-path-assign"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "PATH=\"\$HOME/.local/bin:\$PATH\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]]; then
+  ok "131 active PATH= install exits 0"
+else
+  fail "131 active PATH= install (status=$STATUS, out=$OUT)"
+fi
+if [[ "$(grep -c -F ".local/bin" "${HOME}/.zshrc" || true)" == "1" ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 active PATH= suppresses a duplicate managed block"
+else
+  fail "131 active PATH= was duplicated"
+fi
+expect_contains "$OUT" "already integrates" "131 active PATH= reports existing integration truthfully"
+if [[ "$OUT" == *"for future shells"* ]]; then
+  fail "131 active PATH= must not report a fresh future-shell addition (out=$OUT)"
+else
+  ok "131 active PATH= does not claim a fresh profile addition"
+fi
+
+# 9.2 active append form suppresses duplication.
+fresh_path_home "131-active-append"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "export PATH=\"\$PATH:\$HOME/.local/bin\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 active append form suppresses a duplicate managed block"
+else
+  fail "131 active append form (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "already integrates" "131 active append reports existing integration truthfully"
+
+# 9.3 braced ${HOME} form suppresses duplication.
+fresh_path_home "131-active-braced"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "export PATH=\"\${HOME}/.local/bin:\${PATH}\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 braced HOME form suppresses a duplicate managed block"
+else
+  fail "131 braced HOME form (status=$STATUS, out=$OUT)"
+fi
+
+# 9.4 simple supported ~/.local/bin assignment suppresses duplication.
+fresh_path_home "131-active-tilde"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "export PATH=~/.local/bin:\$PATH" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 tilde PATH assignment suppresses a duplicate managed block"
+else
+  fail "131 tilde PATH assignment (status=$STATUS, out=$OUT)"
+fi
+
+# 9.5 zsh tied-array form suppresses duplication.
+fresh_path_home "131-active-zsh-array"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "path=(\$HOME/.local/bin \$path)" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && ! grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 zsh tied-array form suppresses a duplicate managed block"
+else
+  fail "131 zsh tied-array form (status=$STATUS, out=$OUT)"
+fi
+
+# 9.6 exact Gregg-managed block remains idempotent on rerun.
+fresh_path_home "131-managed-idempotent"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+rm -f "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 managed block setup installs with a managed entry"
+else
+  fail "131 managed block setup (status=$STATUS, out=$OUT)"
+fi
+MANAGED_COUNT_BEFORE="$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)"
+run_install gregg
+MANAGED_COUNT_AFTER="$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)"
+if [[ $STATUS -eq 0 && "$MANAGED_COUNT_AFTER" == "$MANAGED_COUNT_BEFORE" && "$MANAGED_COUNT_AFTER" == "1" ]]; then
+  ok "131 exact managed block remains idempotent on rerun"
+else
+  fail "131 managed block rerun duplicated (before=$MANAGED_COUNT_BEFORE after=$MANAGED_COUNT_AFTER status=$STATUS out=$OUT)"
+fi
+
+# 9.7 commented-out PATH assignment does not suppress integration.
+fresh_path_home "131-commented"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "# export PATH=\"\$HOME/.local/bin:\$PATH\"" > "${HOME}/.zshrc"
+cp "${HOME}/.zshrc" "${SANDBOX}/orig-131-commented"
+run_install gregg
+if [[ $STATUS -eq 0 && -x "${DEST_DIR}/gregg" ]]; then
+  ok "131 commented assignment still installs the binary successfully"
+else
+  fail "131 commented assignment install (status=$STATUS, out=$OUT)"
+fi
+if grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 commented-out PATH assignment does not suppress integration"
+else
+  fail "131 commented-out PATH suppressed the managed block"
+fi
+if head -n 1 "${HOME}/.zshrc" | diff - "${SANDBOX}/orig-131-commented" >/dev/null; then
+  ok "131 commented fixture preserves unrelated content before the append"
+else
+  fail "131 commented fixture did not preserve existing content"
+fi
+expect_contains "$OUT" "Added " "131 commented fixture truthfully reports a new future-shell integration"
+expect_contains "$OUT" "for future shells" "131 commented fixture reports future-shell persistence"
+expect_contains "$OUT" "For this shell, run:" "131 commented fixture prints current-shell guidance"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "131 commented fixture prints the exact manual export"
+
+# 9.8 whitespace-indented commented PATH assignment does not suppress.
+fresh_path_home "131-indented-comment"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "   # export PATH=\"\$HOME/.local/bin:\$PATH\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 indented commented PATH does not suppress integration"
+else
+  fail "131 indented commented PATH (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "Added " "131 indented comment truthfully reports a new integration"
+
+# 9.9 prose comment mentioning ~/.local/bin does not suppress.
+fresh_path_home "131-prose"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "# My local tools live under ~/.local/bin" > "${HOME}/.zshrc"
+cp "${HOME}/.zshrc" "${SANDBOX}/orig-131-prose"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 prose comment does not suppress integration"
+else
+  fail "131 prose comment (status=$STATUS, out=$OUT)"
+fi
+if head -n 1 "${HOME}/.zshrc" | diff - "${SANDBOX}/orig-131-prose" >/dev/null; then
+  ok "131 prose fixture preserves unrelated content before the append"
+else
+  fail "131 prose fixture did not preserve existing content"
+fi
+expect_contains "$OUT" "Added " "131 prose fixture truthfully reports a new future-shell integration"
+
+# 9.10 echo reference does not suppress integration.
+fresh_path_home "131-echo"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "echo \"\$HOME/.local/bin\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 echo reference does not suppress integration"
+else
+  fail "131 echo reference (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "for future shells" "131 echo fixture truthfully reports a new integration"
+
+# 9.11 unrelated variable with a .local/bin subpath does not suppress.
+fresh_path_home "131-unrelated-var"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "TOOLS=\"\$HOME/.local/bin/tool\"" > "${HOME}/.zshrc"
+cp "${HOME}/.zshrc" "${SANDBOX}/orig-131-unrelated"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 unrelated variable does not suppress integration"
+else
+  fail "131 unrelated variable (status=$STATUS, out=$OUT)"
+fi
+if head -n 1 "${HOME}/.zshrc" | diff - "${SANDBOX}/orig-131-unrelated" >/dev/null; then
+  ok "131 unrelated-var fixture preserves content before the append"
+else
+  fail "131 unrelated-var fixture did not preserve existing content"
+fi
+expect_contains "$OUT" "Added " "131 unrelated-var fixture truthfully reports a new integration"
+expect_contains "$OUT" "export PATH=\"\$HOME/.local/bin:\$PATH\"" "131 unrelated-var fixture prints the exact manual export"
+
+# 9.12 PATH subpath entry does not suppress integration.
+fresh_path_home "131-subpath"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+printf '%s\n' "export PATH=\"\$HOME/.local/bin/tool:\$PATH\"" > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && grep -Fq "added by gregg installer" "${HOME}/.zshrc"; then
+  ok "131 PATH subpath entry does not suppress integration"
+else
+  fail "131 PATH subpath entry (status=$STATUS, out=$OUT)"
+fi
+
+# 9.13 disabled managed block (marker survives, functional line commented) does not suppress.
+fresh_path_home "131-disabled-managed"
+path_without_dest
+export SHELL="/bin/zsh"
+unset ZDOTDIR || true
+{
+  printf '%s\n' "# added by gregg installer: ensure user-local binaries are on PATH"
+  printf '%s\n' "case \":\$PATH:\" in"
+  printf '%s\n' "  *\":\$HOME/.local/bin:\"*) ;;"
+  printf '%s\n' "#  *) export PATH=\"\$HOME/.local/bin:\$PATH\" ;;"
+  printf '%s\n' "esac"
+} > "${HOME}/.zshrc"
+run_install gregg
+if [[ $STATUS -eq 0 ]] && [[ "$(grep -c "added by gregg installer" "${HOME}/.zshrc" || true)" == "2" ]]; then
+  ok "131 disabled managed block does not falsely claim persistence"
+else
+  fail "131 disabled managed block (status=$STATUS, out=$OUT)"
+fi
+expect_contains "$OUT" "Added " "131 disabled managed block truthfully reports a new integration"
+
 # --- summary -----------------------------------------------------------------------
 
 echo ""
