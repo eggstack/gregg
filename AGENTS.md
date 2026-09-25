@@ -17,8 +17,8 @@ gregg-update    ◄── gregg       (shared self-update mechanics)
 
 - `gregg-protocol`: wire types only (`serde`, `serde_json`, `thiserror`). No runtime/HTTP/terminal/platform deps. `#![forbid(unsafe_code)]`
 - `gregg-update`: internal binary-first self-update (version/target policy, bounded curl/Cargo, SHA-256, staging, replace). Knows nothing about service managers, TUI, EggPool, or wire protocol. Publishable; order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
-- `greggd`: bin+lib daemon. Collectors `src/collector/{linux,macos,windows}/`; shared rate math `src/collector/rate.rs`; startup `src/startup/`; read-only diagnostics `src/status.rs`.
-- `gregg`: TUI client (ratatui+crossterm). Event loop `src/main.rs`; UI `src/ui/`; config `src/config/`; offline provenance `src/poller.rs`.
+- `greggd`: bin+lib daemon. Collectors `crates/greggd/src/collector/{linux,macos,windows}/`; shared rate math `crates/greggd/src/collector/rate.rs`; startup `crates/greggd/src/startup/`; read-only diagnostics `crates/greggd/src/status.rs`.
+- `gregg`: TUI client (ratatui+crossterm). Event loop `crates/gregg/src/main.rs`; UI `crates/gregg/src/ui/`; config `crates/gregg/src/config/`; offline provenance `crates/gregg/src/poller.rs`.
 - `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-update` never depends on app crates, service managers, or the protocol.
 → `architecture/workspace.md`
 
@@ -35,15 +35,15 @@ Routine loop (fmt + tests only; no clippy/docs/release checks):
 Single / focused tests (mirror CI flags when touching that area):
 
 ```bash
-cargo test -p gregg-protocol -- <test_name>
-cargo test -p greggd --all-features -- <test_name>
-cargo test -p gregg -- <test_name>
+cargo test -p gregg-protocol --all-targets --all-features -- <test_name>
+cargo test -p greggd --all-targets --all-features -- <test_name>
+cargo test -p gregg --all-targets --all-features -- <test_name>
 cargo test -p greggd --all-features -- collector::linux     # Linux native
 cargo test -p greggd --all-features -- collector::macos     # macOS native
-cargo test -p greggd --all-targets -- collector::windows    # Windows native
+cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows native
 ```
 
-CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` build + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo check --workspace --all-features` on Rust 1.89.
+CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` and `gregg` builds + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo test --workspace --all-targets --all-features` on Rust 1.89.
 
 ## Key constraints
 
@@ -51,11 +51,11 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 
 - **MSRV 1.89.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.89"`. Never change MSRV incidentally (see `architecture/workspace.md` Plan 117 decision).
 - **Clippy pedantic is warn, not error.** Don't add new warnings.
-- **Unsafe allowlist only, each block needs a safety comment:** `greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `greggd/src/startup/install.rs` (`geteuid`), `gregg/src/` (flock/LockFileEx, `cli.rs` executable probe).
+- **Unsafe allowlist only, each block needs a safety comment:** `crates/greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `crates/greggd/src/startup/install.rs` (`geteuid`), `crates/gregg/src/config/lock.rs` (flock/LockFileEx) + `crates/gregg/src/cli.rs` (executable probe).
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
-- **Deps are ordinary semver.** Plan 117 removed the 1.75-era transitive resolver pins; genuine direct deps (`uuid`, `url`, `eggfetch-core`) carry normal ranges. Don't re-add transitive guard pins. Plan 118 replaced `reqwest` with feature-minimal `eggfetch-core` in the `gregg` client only; Plan 119 tightened it to the lean profile (`standard-http1` + `tls-rustls`, no redirect/retry/Basic/proxy features), now on `eggfetch-core 0.2` via Plan 125 (same lean feature set, no behavior change).
+- **Deps are ordinary semver.** Plan 117 removed the 1.75-era transitive resolver pins; genuine direct deps (`uuid`, `url`, `eggfetch-core`, `eggserve-server`/`eggserve-primitives`) carry normal ranges. Don't re-add transitive guard pins. Plan 118 replaced `reqwest` with feature-minimal `eggfetch-core` in the `gregg` client only (never re-add `reqwest`/`axum`); Plan 119 tightened it to the lean profile (`standard-http1` + `tls-rustls`, no redirect/retry/Basic/proxy features), now on `eggfetch-core 0.2` via Plan 125 (same lean feature set, no behavior change).
 
 ### Client polling/state (`architecture/gregg-client.md`)
 

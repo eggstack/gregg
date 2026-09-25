@@ -20,7 +20,7 @@ Use this when making code changes, adding features, or fixing bugs in any of the
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
-Runs `cargo fmt --all -- --check` followed by `cargo test --workspace`. Does not repeat native collector tests, build docs, or run release checks.
+Runs `cargo fmt --all -- --check` followed by `cargo test --workspace --all-targets --all-features`. Does not build docs or run release checks.
 
 **Release preflight (non-publishing, manual only):**
 
@@ -35,21 +35,21 @@ Adds: Clippy, documentation, clean-tree check, version consistency, per-crate `c
 ```bash
 cargo test -p greggd --all-features -- collector::linux     # Linux
 cargo test -p greggd --all-features -- collector::macos     # macOS
-cargo test -p greggd --all-targets -- collector::windows    # Windows
+cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows
 ```
 
 **Running a single test:**
 
 ```bash
-cargo test -p gregg-protocol -- <test_name>
-cargo test -p greggd --all-features -- <test_name>
-cargo test -p gregg -- <test_name>
+cargo test -p gregg-protocol --all-targets --all-features -- <test_name>
+cargo test -p greggd --all-targets --all-features -- <test_name>
+cargo test -p gregg --all-targets --all-features -- <test_name>
 ```
 
 For Systems endpoint-reload changes, include the production-path bounded
 command-pressure and sequential replacement tests in `cargo test -p gregg
---bin gregg` (they live in `src/main.rs`; the offline-retry scheduler
-invariants live in `src/scheduler.rs` under plain `cargo test -p gregg`).
+--all-targets --all-features --bin gregg` (they live in `crates/gregg/src/main.rs`; the offline-retry scheduler
+invariants live in `crates/gregg/src/scheduler.rs`).
 A successful reload must await the existing bounded scheduler
 sender; do not make the channel unbounded or discard replacement-send errors.
 

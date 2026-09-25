@@ -53,7 +53,7 @@ gregg eggpool remove <host>
 
 ## Client
 
-- Dedicated `eggfetch-core` client (lean `standard-http1` 0.1.7 + Rustls: redirect following not compiled, two idle per host, explicit whole-request deadline with absolute `total` through response-body EOF, no retry)
+- Dedicated `eggfetch-core` client (lean `standard-http1` 0.2 + Rustls: redirect following not compiled, two idle per host, explicit whole-request deadline with absolute `total` through response-body EOF, no retry)
 - Sends `GET /api/stats/summary?period=...`
 - 16 KiB decoded-body cap (eggfetch owns the limit; fixed, chunked, and close-delimited over-cap bodies map to `BodyTooLarge`)
 - Bearer token from environment variable via request-local `AuthScheme::bearer` (invalid values map to `InvalidSummary`; never stored in outcomes)
