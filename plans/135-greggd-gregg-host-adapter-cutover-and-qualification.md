@@ -342,7 +342,7 @@ publication was performed, as permitted.
 Local verification: workspace fmt/clippy/tests/check-local green;
 strict `RUSTFLAGS="-D warnings"` cross-checks for
 `x86_64-apple-darwin` and `x86_64-pc-windows-msvc` (both crates) clean.
-Remote CI run `36219678790` green across all jobs. Docs reconciled:
+Remote CI run `36220930632` green across all jobs. Docs reconciled:
 `architecture/collectors.md` (ownership + boundary),
 `architecture/greggd-daemon.md` (module table), `CHANGELOG.md`.
 

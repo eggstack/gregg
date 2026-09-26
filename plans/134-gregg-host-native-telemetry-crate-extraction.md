@@ -339,7 +339,7 @@ Local verification: `cargo test -p gregg-host --all-targets --all-features`
 (24 tests green on Linux), `cargo check -p gregg-host --target
 x86_64-apple-darwin` and `--target x86_64-pc-windows-msvc` clean,
 `RUSTFLAGS="-D warnings"` strict checks clean, plus the full workspace
-fmt/clippy/tests/check-local suite green. Remote CI run `36219678790`
+fmt/clippy/tests/check-local suite green. Remote CI run `36220930632`
 green including the macOS arm64/Intel native suites exercising the moved
 macOS code and the Windows suite exercising the moved Windows code.
 

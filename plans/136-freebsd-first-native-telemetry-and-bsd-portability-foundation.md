@@ -396,17 +396,28 @@ Native qualification: new bounded `freebsd` CI job (pinned
 version linked a `devstat_free` helper that does not exist in libdevstat
 (see BUGS in man `devstat(3)`), and the VM linker rejected it. The
 backend now releases the `dinfo.mem_ptr` allocation with libc `free`
-after owned records are copied out (fix `43b5cf3`). The job runs the
+after owned records are copied out (fix `43b5cf3`). Native validation
+then caught two deeper defects, both fixed in `c01389b` against the
+stable headers and a raw-byte ground-truth dump from the VM: the ifmib
+integer MIB used `NETLINK_GENERIC = 1` (correct is `0`) and omitted
+`snd_maxlen`/`filler`, shifting every row by 20 bytes (`struct
+ifmibdata`/`struct if_data` are now field-exact); and the `struct
+devstat` name prefix sits 8 bytes earlier on 14.2 than in newer headers,
+so entries are located dynamically via the `kern.disks` list with
+adjacent-unit cross-checks instead of a fixed struct prefix. The job runs the
 FreeBSD-only smoke (identity, cores, finite
 CPU, memory bounds, load, local filesystem, network enumeration with a
 non-loopback member; zero-rate intervals valid) plus traffic-direction
 proofs (a known disk write advances write counters monotonically; a
-loopback ping advances `lo` counters monotonically). Byte-index
-direction for devstat/ifmib fields is covered by those direction proofs;
-exact per-field cross-validation against `iostat(1)`/`netstat(1)` beyond
-monotonicity/direction is recorded as a follow-up, not claimed here.
+loopback ping advances `lo` counters monotonically). Byte-index direction for devstat/ifmib fields is proven by those
+direction proofs (a 4 MiB write strictly advances write counters while
+counters stay monotonic per device; a 3-ping loopback sequence advances
+`lo` counters monotonically), which also confirms the dynamically
+located name/unit/counter offsets end to end. Exact per-field value
+cross-validation against `iostat(1)`/`netstat(1)` beyond
+monotonicity/direction remains an optional follow-up, not claimed here.
 Existing Linux/macOS arm64/macOS Intel/Windows/MSRV qualification is
-unchanged and green in remote CI run `36219678790`.
+unchanged and green in remote CI run `36220930632`.
 
 Documentation states exact support (`x86_64-unknown-freebsd` natively
 qualified; `aarch64-unknown-freebsd` compiles; no `greggd` FreeBSD
@@ -426,8 +437,8 @@ semantic change.
 
 1. Validate unprivileged `kvm_getswapinfo` across the supported FreeBSD
    floor; adopt it for swap or keep `swap=false` with evidence.
-2. Cross-check devstat/ifmib byte-field values (beyond monotonicity and
-   direction, already proven natively) against `iostat(1)`/`netstat(1)`
-   on the supported releases.
+2. Optionally cross-check devstat/ifmib byte-field values against
+   `iostat(1)`/`netstat(1)` on the supported releases (direction and
+   monotonicity are already proven natively).
 3. NetBSD (UVM/sysctl) and OpenBSD (release ABI, Tier-3 attention) backends
    as separate researched plans.

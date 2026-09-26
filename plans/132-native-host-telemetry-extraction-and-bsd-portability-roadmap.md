@@ -211,9 +211,19 @@ facade with exact native/v1/v2/MSRV equivalence (stripped release
 `greggd` byte-identical at 2,629,008 bytes); 136 proved the boundary with
 a native FreeBSD backend. Linux, macOS arm64, macOS Intel, Windows, MSRV
 Rust 1.89, and the new FreeBSD native qualification are green in remote
-CI run `36219678790`. No external metrics command, privilege, async
+CI run `36220930632`. No external metrics command, privilege, async
 runtime, or system-information dependency was introduced; `greggd`
 retains exact v1/v2 semantics including Windows v2-only behavior; the
 extracted crate is not coupled to `gregg-protocol`; NetBSD/OpenBSD remain
 explicit future backends. Independent of the remaining Plan 091 soak
 record; no downstream plan status changes required.
+
+## Record correction
+
+Intermediate pushes referenced CI runs that did not go green
+(`36218462798`: macOS facade visibility; `36218809375`/`36219175605`:
+FreeBSD `devstat_free` link plus return-code/buffer issues;
+`36219678790`/`36220179829`: devstat/ifmib layout ground-truth round).
+Each was fixed in its own commit (`a5624a9`, `43b5cf3`, `d928950`,
+`a2d8bd2`, `c01389b`) and the claims above point at the first fully
+green run (`36220930632`). No closed history was rewritten.
