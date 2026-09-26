@@ -311,12 +311,10 @@ fn deterministic_ordering_and_bounds() {
     let sample = collector.sample().expect("publishes");
     let disk = sample.disk_io.expect("disk");
     assert_eq!(disk.devices.len(), limits.max_disk_io_entries);
-    let mut ids: Vec<_> = disk.devices.iter().map(|d| d.id.clone()).collect();
+    let ids: Vec<_> = disk.devices.iter().map(|d| d.id.clone()).collect();
     let mut sorted = ids.clone();
     sorted.sort();
     assert_eq!(ids, sorted);
-    // Identity validation: empty/NUL names never surface.
-    let _ = ids;
 }
 
 // --- Native FreeBSD qualification (FreeBSD hosts only) -----------------------

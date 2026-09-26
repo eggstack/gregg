@@ -723,9 +723,9 @@ fn fsid_pair(fsid: &libc::fsid_t) -> (i32, i32) {
 // &statinfo)` reads through sysctl when passed a null kvm handle.
 // `statinfo` carries `cp_time`, `dinfo` (devices/generation/numdevs), and a
 // snapshot time. `devstat_checkversion(NULL)` gates userland/kernel version
-// drift. `devstat_free()` releases library memory (see BUGS note in the man
-// page about deallocation helpers; `devstat_free` is the documented
-// release for the getdevs allocation).
+// drift. The library allocates into `dinfo.mem_ptr`; there is no public
+// release helper (see BUGS in the man page), so owned records are copied
+// out and the allocation is released with libc `free`.
 //
 // `struct devstat` leading layout (sys/sys/devicestat.h): `sequence0`
 // (u32), `allocated` (int), `device_number` (u_int), `device_name[16]`,
@@ -742,8 +742,10 @@ fn fsid_pair(fsid: &libc::fsid_t) -> (i32, i32) {
 extern "C" {
     fn devstat_checkversion(kd: *mut std::ffi::c_void) -> libc::c_int;
     fn devstat_getdevs(kd: *mut std::ffi::c_void, stats: *mut StatInfo) -> libc::c_int;
-    fn devstat_free(stats: *mut StatInfo);
 }
+// NOTE: libdevstat provides no public release helper (see BUGS in man
+// `devstat(3)`); the `dinfo.mem_ptr` allocation is released with libc
+// `free` after owned records are copied out.
 
 /// CPU states count for `statinfo.cp_time` (matches `kern.cp_time`).
 #[cfg(target_os = "freebsd")]
@@ -788,9 +790,9 @@ struct DevstatEntry {
 #[cfg(target_os = "freebsd")]
 fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
     // Safety: version gate first; statinfo/devinfo zeroed and locally owned;
-    // devstat_getdevs allocates library memory released by devstat_free;
-    // entries are read only within numdevs bounds and validated for
-    // plausibility before use.
+    // devstat_getdevs allocates library memory into dinfo.mem_ptr, released
+    // below with libc free after owned records are copied out; entries are
+    // read only within numdevs bounds and validated for plausibility.
     if unsafe { devstat_checkversion(std::ptr::null_mut()) } != 0 {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
@@ -818,7 +820,13 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
         ));
     }
     let result = read_devstat_entries(&dinfo);
-    unsafe { devstat_free(&raw mut stats) };
+    // Safety: mem_ptr was allocated by devstat_getdevs; records were copied
+    // out above; freeing here keeps per-sample collection leak-free.
+    unsafe {
+        if !dinfo.mem_ptr.is_null() {
+            libc::free(dinfo.mem_ptr.cast());
+        }
+    }
     result
 }
 
