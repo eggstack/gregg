@@ -11,9 +11,11 @@
 //! - Swap: unsupported in the first backend (see `swap()`); `kvm_getswapinfo`
 //!   needs unprivileged validation across the supported floor first.
 //! - Filesystems: `getmntinfo`/`statfs` via libc.
-//! - Disk I/O: base `libdevstat` (`devstat_getdevs` with a null kvm handle,
-//!   per man `devstat(3)`); generation changes and counter decreases
-//!   re-baseline; any ABI/length validation failure reports absence.
+//! - Disk I/O: base `libdevstat` version gate plus the `kern.devstat.all`
+//!   sysctl payload parsed with dynamically located name/unit/counter
+//!   fields (robust across `struct devstat` prefix drift); generation
+//!   changes and counter decreases re-baseline; any validation failure
+//!   reports absence.
 //! - Network: `ifmib(4)` sysctl table (`net.link.ifmib.ifcount` plus
 //!   `net.link.ifmib.ifdata.<idx>` rows, tolerating sparse rows).
 //! - Frequency: unsupported (no validated unprivileged source yet).
@@ -717,181 +719,229 @@ fn fsid_pair(fsid: &libc::fsid_t) -> (i32, i32) {
     (raw[0], raw[1])
 }
 
-// --- Disk I/O via libdevstat ---------------------------------------------------
+// --- Disk I/O via the devstat sysctl -------------------------------------------------
 //
-// Documented API (man `devstat(3)`, FreeBSD 13-15): `devstat_getdevs(NULL,
-// &statinfo)` reads through sysctl when passed a null kvm handle.
-// `statinfo` carries `cp_time`, `dinfo` (devices/generation/numdevs), and a
-// snapshot time. `devstat_checkversion(NULL)` gates userland/kernel version
-// drift. The library allocates into `dinfo.mem_ptr`; there is no public
-// release helper (see BUGS in the man page), so owned records are copied
-// out and the allocation is released with libc `free`.
+// Design (validated against FreeBSD 14.2 ground truth plus the stable
+// headers sys/sys/devicestat.h and the man `devstat(3)` page):
 //
-// `struct devstat` leading layout (sys/sys/devicestat.h): `sequence0`
-// (u32), `allocated` (int), `device_number` (u_int), `device_name[16]`,
-// `unit_number` (int), then cumulative `bytes[]` indexed by transaction
-// type (read = 0, write = 1). Only this prefix is mapped; the entry is
-// accepted only when the name is printable ASCII, the unit is sane, and
-// `sequence0 == sequence1` (consistent snapshot). A layout mismatch therefore
-// degrades to absence, never to fabricated counters. Byte-index direction is
-// covered by the native traffic-direction smoke in CI (known write/read
-// traffic must advance the matching family).
+// - `devstat_checkversion(NULL)` gates userland/kernel version drift.
+// - Data comes from the `kern.devstat.all` sysctl directly: an 8-byte
+//   generation head followed by the device array. This is the same buffer
+//   `devstat_getdevs(NULL, ...)` would return, without binding the
+//   version-sensitive `STAILQ`/`devinfo` traversal.
+// - Entry stride and the name field are located dynamically because the
+//   `struct devstat` prefix differs across releases (observed: the device
+//   name sits 44 bytes into the entry on 14.2 but 52 bytes into the
+//   newer stable header, exactly the removed `start_count`/`end_count`
+//   pair). The name/unit/bytes adjacency itself
+//   (`device_name[16]`, `unit_number`, `bytes[READ]`/`bytes[WRITE]`) is
+//   stable across versions, with transaction indices from the stable
+//   `devstat_trans_flags` enum (`READ = 1`, `WRITE = 2`).
+// - Expected devices come from the `kern.disks` name list. Each entry is
+//   accepted only when its name field matches a listed disk and the
+//   adjacent unit number matches the listed unit. Anything else degrades
+//   to absence, never to fabricated counters.
+// - Byte-index direction is covered by the native traffic-direction smoke
+//   in CI (a known write must advance the write family).
+// - Aggregate membership excludes `pass*` passthrough duplicates; every
+//   other enumerated disk joins the aggregate. Detail records are bounded
+//   and sorted; generation changes and counter decreases re-baseline
+//   through the shared helpers in the collector.
 
 #[cfg(target_os = "freebsd")]
 #[link(name = "devstat")]
 extern "C" {
     fn devstat_checkversion(kd: *mut std::ffi::c_void) -> libc::c_int;
-    fn devstat_getdevs(kd: *mut std::ffi::c_void, stats: *mut StatInfo) -> libc::c_int;
 }
 // NOTE: libdevstat provides no public release helper (see BUGS in man
-// `devstat(3)`); the `dinfo.mem_ptr` allocation is released with libc
-// `free` after owned records are copied out.
+// `devstat(3)`); the sysctl-direct read below needs no release at all.
 
-/// CPU states count for `statinfo.cp_time` (matches `kern.cp_time`).
+/// Transaction indices from `devstat_trans_flags` (stable ABI).
 #[cfg(target_os = "freebsd")]
-const CPUSTATES: usize = 5;
-
-/// Library device-info state (man `devstat(3)`).
+const DEVSTAT_READ_INDEX: usize = 1;
+/// Transaction indices from `devstat_trans_flags` (stable ABI).
 #[cfg(target_os = "freebsd")]
-#[repr(C)]
-struct DevInfo {
-    devices: *const DevstatEntry,
-    mem_ptr: *mut u8,
-    generation: libc::c_long,
-    numdevs: libc::c_int,
-}
-
-/// Library snapshot (man `devstat(3)`).
-#[cfg(target_os = "freebsd")]
-#[repr(C)]
-struct StatInfo {
-    cp_time: [libc::c_long; CPUSTATES],
-    tk_nin: libc::c_long,
-    tk_nout: libc::c_long,
-    dinfo: *mut DevInfo,
-    snap_time: f64,
-}
-
-/// Minimal `struct devstat` prefix (see note above).
-#[cfg(target_os = "freebsd")]
-#[repr(C)]
-struct DevstatEntry {
-    sequence0: u32,
-    allocated: libc::c_int,
-    device_number: libc::c_uint,
-    device_name: [libc::c_char; 16],
-    unit_number: libc::c_int,
-    bytes_read: u64,
-    bytes_write: u64,
-    bytes_free: u64,
-    sequence1: u32,
-}
+const DEVSTAT_WRITE_INDEX: usize = 2;
 
 #[cfg(target_os = "freebsd")]
 fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
-    // Safety: version gate first; statinfo/devinfo zeroed and locally owned;
-    // devstat_getdevs allocates library memory into dinfo.mem_ptr, released
-    // below with libc free after owned records are copied out; entries are
-    // read only within numdevs bounds and validated for plausibility.
+    // Safety: version gate first; sysctl buffers are length-queried, then
+    // read into exactly sized storage; only validated bytes are interpreted.
     if unsafe { devstat_checkversion(std::ptr::null_mut()) } != 0 {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
             "devstat userland/kernel version mismatch",
         ));
     }
-    let mut dinfo = DevInfo {
-        devices: std::ptr::null(),
-        mem_ptr: std::ptr::null_mut(),
-        generation: 0,
-        numdevs: 0,
-    };
-    let mut stats = StatInfo {
-        cp_time: [0; CPUSTATES],
-        tk_nin: 0,
-        tk_nout: 0,
-        dinfo: &raw mut dinfo,
-        snap_time: 0.0,
-    };
-    let fetched = unsafe { devstat_getdevs(std::ptr::null_mut(), &raw mut stats) };
-    // Man `devstat(3)`: -1 is an error, 0 means no error, and 1 means the
-    // device list changed (expected on the first call). Only -1 fails.
-    if fetched < 0 {
-        return Err(CollectError::new(
-            CollectErrorKind::SourceUnavailable,
-            "devstat_getdevs failed",
-        ));
-    }
-    let result = read_devstat_entries(&dinfo);
-    // Safety: mem_ptr was allocated by devstat_getdevs; records were copied
-    // out above; freeing here keeps per-sample collection leak-free.
-    unsafe {
-        if !dinfo.mem_ptr.is_null() {
-            libc::free(dinfo.mem_ptr.cast());
-        }
-    }
-    result
-}
-
-#[cfg(target_os = "freebsd")]
-fn read_devstat_entries(dinfo: &DevInfo) -> Result<Vec<RawDiskIo>, CollectError> {
-    if dinfo.numdevs <= 0 || dinfo.numdevs > 4096 || dinfo.devices.is_null() {
-        return Err(CollectError::new(
-            CollectErrorKind::SourceUnavailable,
-            "devstat device list is empty or unbounded",
-        ));
-    }
-    let count = dinfo.numdevs as usize;
-    // Safety: devices points to numdevs library-owned entries; each entry is
-    // copied out after plausibility validation; no pointers escape.
-    let entries = unsafe { std::slice::from_raw_parts(dinfo.devices, count) };
+    let disks = kernel_disk_list()?;
+    let payload = read_devstat_payload()?;
     let mut out = Vec::new();
-    for entry in entries {
-        let Some(record) = devstat_record(entry) else {
+    for (prefix, unit) in &disks {
+        if prefix == "pass" {
             continue;
-        };
-        out.push(record);
+        }
+        if let Some(record) = find_devstat_entry(&payload, prefix, *unit) {
+            out.push(record);
+        }
     }
     if out.is_empty() {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
-            "no plausible devstat entries",
+            "no devstat entries matched the disk list",
         ));
     }
     out.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(out)
 }
 
+/// Read the `kern.disks` name list as `(prefix, unit)` pairs.
 #[cfg(target_os = "freebsd")]
-fn devstat_record(entry: &DevstatEntry) -> Option<RawDiskIo> {
-    if entry.sequence0 != entry.sequence1 || entry.allocated == 0 {
+fn kernel_disk_list() -> Result<Vec<(String, i32)>, CollectError> {
+    let raw = sysctl_string("kern.disks")?;
+    let mut disks = Vec::new();
+    for token in raw.split_whitespace().take(1024) {
+        let split = token
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_ascii_digit())
+            .last()
+            .map(|(i, _)| i);
+        let Some(at) = split else { continue };
+        if at == 0 {
+            continue;
+        }
+        let (prefix, digits) = token.split_at(at);
+        if prefix.is_empty()
+            || prefix.len() > 15
+            || !prefix.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            continue;
+        }
+        let Ok(unit) = digits.parse::<i32>() else {
+            continue;
+        };
+        if unit < 0 || unit > 65535 {
+            continue;
+        }
+        disks.push((prefix.to_string(), unit));
+    }
+    if disks.is_empty() {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "kern.disks has no parseable devices",
+        ));
+    }
+    Ok(disks)
+}
+
+/// Read the raw `kern.devstat.all` payload after the generation head.
+#[cfg(target_os = "freebsd")]
+fn read_devstat_payload() -> Result<Vec<u8>, CollectError> {
+    use std::ffi::CString;
+    let name = CString::new("kern.devstat.all").expect("static name");
+    let mut len: libc::size_t = 0;
+    // Safety: length query with a null buffer; return checked.
+    let queried = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if queried != 0 || len <= 8 || len > 10_000_000 {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "kern.devstat.all length query failed",
+        ));
+    }
+    let mut buf = vec![0u8; len];
+    let mut got = len;
+    // Safety: buffer sized from the length query; return checked.
+    let fetched = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut got,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if fetched != 0 || got <= 8 || got > buf.len() {
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "kern.devstat.all read failed",
+        ));
+    }
+    buf.truncate(got);
+    Ok(buf[8..].to_vec())
+}
+
+/// Locate one disk entry by name/unit and copy out its byte counters.
+///
+/// The name field is found by scanning for the NUL-padded prefix; the unit
+/// (`int`) immediately follows the 16-byte name, and the four `u64` byte
+/// counters follow the unit. Every step is validated; mismatches skip the
+/// disk rather than fabricating counters.
+#[cfg(target_os = "freebsd")]
+fn find_devstat_entry(payload: &[u8], prefix: &str, unit: i32) -> Option<RawDiskIo> {
+    if payload.len() < 32 || prefix.len() > 15 {
         return None;
     }
-    let name_len = entry
-        .device_name
-        .iter()
-        .position(|&c| c == 0)
-        .unwrap_or(entry.device_name.len());
-    if name_len == 0 || name_len > 15 {
-        return None;
+    // Byte-wise scan: the name offset differs across releases (observed 44
+    // on 14.2 versus 52 in newer headers), so no alignment is assumed.
+    // Payloads are small (bounded by the sysctl length cap above). On a
+    // unit mismatch the scan continues: several same-prefix disks (vtbd0,
+    // vtbd1, ...) share one prefix window each.
+    let mut offset = 0;
+    while offset + 16 <= payload.len() {
+        if payload[offset..offset + prefix.len()] == *prefix.as_bytes()
+            && payload[offset + prefix.len()] == 0
+            && payload[offset..offset + 16]
+                .iter()
+                .skip(prefix.len() + 1)
+                .all(|b| *b == 0)
+        {
+            let unit_bytes: [u8; 4] = match payload
+                .get(offset + 16..offset + 20)
+                .and_then(|w| w.try_into().ok())
+            {
+                Some(words) => words,
+                None => return None,
+            };
+            if i32::from_ne_bytes(unit_bytes) == unit {
+                let bytes_off = offset + 20;
+                let read = u64::from_ne_bytes(
+                    payload
+                        .get(
+                            bytes_off + DEVSTAT_READ_INDEX * 8
+                                ..bytes_off + DEVSTAT_READ_INDEX * 8 + 8,
+                        )?
+                        .try_into()
+                        .ok()?,
+                );
+                let write = u64::from_ne_bytes(
+                    payload
+                        .get(
+                            bytes_off + DEVSTAT_WRITE_INDEX * 8
+                                ..bytes_off + DEVSTAT_WRITE_INDEX * 8 + 8,
+                        )?
+                        .try_into()
+                        .ok()?,
+                );
+                let id = format!("{prefix}{unit}");
+                return Some(RawDiskIo {
+                    id: id.clone(),
+                    name: id,
+                    read_bytes: read,
+                    write_bytes: write,
+                });
+            }
+        }
+        offset += 1;
     }
-    let name_bytes: Vec<u8> = entry.device_name[..name_len]
-        .iter()
-        .map(|&c| c as u8)
-        .collect();
-    if !name_bytes.iter().all(|b| b.is_ascii_alphanumeric()) {
-        return None;
-    }
-    let name = String::from_utf8(name_bytes).ok()?;
-    if entry.unit_number < 0 || entry.unit_number > 65535 {
-        return None;
-    }
-    let id = format!("{name}{}", entry.unit_number);
-    Some(RawDiskIo {
-        id: id.clone(),
-        name: id,
-        read_bytes: entry.bytes_read,
-        write_bytes: entry.bytes_write,
-    })
+    None
 }
 
 #[cfg(not(target_os = "freebsd"))]
@@ -922,9 +972,9 @@ const CTL_NET: libc::c_int = 4;
 /// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
 #[cfg(target_os = "freebsd")]
 const PF_LINK: libc::c_int = 18;
-/// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
+/// sysctl MIB branch for type-independent interfaces (net/if_mib.h).
 #[cfg(target_os = "freebsd")]
-const NETLINK_GENERIC: libc::c_int = 1;
+const NETLINK_GENERIC: libc::c_int = 0;
 /// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
 #[cfg(target_os = "freebsd")]
 const IFMIB_IFDATA: libc::c_int = 2;
@@ -943,15 +993,21 @@ const IFT_LOOP_TYPE: u8 = 24;
 #[cfg(target_os = "freebsd")]
 const IFNAMSIZ: usize = 16;
 
-/// Minimal `struct if_data` prefix through the byte counters and baudrate.
-/// Later kernel fields are not mapped; length is validated before use.
+/// `struct if_data` prefix through the byte counters, field-for-field
+/// from sys/net/if.h (stable ABI): six `u8` (type, physical, addrlen,
+/// hdrlen, link_state, vhid), `u16` datalen, `u32` mtu/metric, then `u64`
+/// baudrate and counters. Later kernel fields are not mapped; the row
+/// length is validated before the prefix is interpreted.
 #[cfg(target_os = "freebsd")]
 #[repr(C)]
 struct IfDataPrefix {
     ifi_type: u8,
+    ifi_physical: u8,
     ifi_addrlen: u8,
     ifi_hdrlen: u8,
     ifi_link_state: u8,
+    ifi_vhid: u8,
+    ifi_datalen: u16,
     ifi_mtu: u32,
     ifi_metric: u32,
     ifi_baudrate: u64,
@@ -964,7 +1020,9 @@ struct IfDataPrefix {
     ifi_obytes: u64,
 }
 
-/// Minimal `struct ifmibdata` through `ifmd_data` (see note above).
+/// `struct ifmibdata` through `ifmd_data`, field-for-field from
+/// sys/net/if_mib.h (stable ABI): name, pcount, flags, snd_len,
+/// snd_maxlen, snd_drops, four filler ints, then `if_data`.
 #[cfg(target_os = "freebsd")]
 #[repr(C)]
 struct IfmibData {
@@ -972,7 +1030,9 @@ struct IfmibData {
     ifmd_pcount: libc::c_int,
     ifmd_flags: libc::c_int,
     ifmd_snd_len: libc::c_int,
+    ifmd_snd_maxlen: libc::c_int,
     ifmd_snd_drops: libc::c_int,
+    ifmd_filler: [libc::c_int; 4],
     ifmd_data: IfDataPrefix,
 }
 
@@ -1003,7 +1063,7 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
         let mut len = buffer.len() as libc::size_t;
         // Safety: buffer is valid for its length; MIB addresses a single
         // sparse-tolerant row; ENOENT rows are skipped; only the validated
-        // prefix is interpreted below.
+        // prefix (through the byte counters) is interpreted below.
         let fetched = unsafe {
             libc::sysctl(
                 mib.as_ptr(),
@@ -1111,120 +1171,6 @@ fn normalize_ifmib_row(
         operational,
         aggregate_member: !is_loopback,
     })
-}
-
-/// TEMPORARY native layout diagnostic (removed before closure).
-/// Dumps raw kernel bytes for devstat/ifmib so field offsets can be fixed
-/// against ground truth instead of headers. Panics to surface output.
-#[cfg(all(test, target_os = "freebsd"))]
-#[test]
-fn native_debug_dump_layouts() {
-    use std::ffi::CString;
-    let mut dump = String::new();
-    // devstat sysctl: generation (long) + numdevs * sizeof(devstat).
-    let name = CString::new("kern.devstat.all").unwrap();
-    let mut len: libc::size_t = 0;
-    let queried = unsafe {
-        libc::sysctlbyname(
-            name.as_ptr(),
-            std::ptr::null_mut(),
-            &mut len,
-            std::ptr::null(),
-            0,
-        )
-    };
-    dump.push_str(&format!("devstat.all len-query rc={queried} len={len}\n"));
-    if queried == 0 && len > 8 && len < 10_000_000 {
-        let mut buf = vec![0u8; len];
-        let mut got = len;
-        let fetched = unsafe {
-            libc::sysctlbyname(
-                name.as_ptr(),
-                buf.as_mut_ptr().cast(),
-                &mut got,
-                std::ptr::null(),
-                0,
-            )
-        };
-        dump.push_str(&format!("devstat.all fetch rc={fetched} got={got}\n"));
-        if fetched == 0 && got >= 8 {
-            let generation = u64::from_ne_bytes(buf[0..8].try_into().unwrap());
-            dump.push_str(&format!("devstat generation={generation}\n"));
-            let rest = &buf[8..got];
-            dump.push_str(&format!("devstat payload bytes={}\n", rest.len()));
-            // Scan for printable device-name candidates (runs of 2+ alnum).
-            let text: String = rest
-                .iter()
-                .map(|b| {
-                    if b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\0' {
-                        *b as char
-                    } else {
-                        '.'
-                    }
-                })
-                .collect();
-            for (i, window) in text.as_bytes().windows(64).enumerate().step_by(128) {
-                if i > 2048 {
-                    break;
-                }
-                dump.push_str(&format!(
-                    "devstat[{i:04}]: {}\n",
-                    String::from_utf8_lossy(window)
-                ));
-            }
-            // First 128 bytes hex.
-            dump.push_str("devstat first128 hex:");
-            for b in rest.iter().take(128) {
-                dump.push_str(&format!(" {b:02x}"));
-            }
-            dump.push_str("\n");
-        }
-    }
-    // ifmib row 1 raw bytes.
-    let count = sysctl_u32("net.link.generic.system.ifcount").unwrap_or(0);
-    dump.push_str(&format!("ifcount={count}\n"));
-    if count > 0 {
-        let mib = [
-            CTL_NET,
-            PF_LINK,
-            NETLINK_GENERIC,
-            IFMIB_IFDATA,
-            1,
-            IFDATA_GENERAL,
-        ];
-        let mut buffer = vec![0u8; 1024];
-        let mut row_len = buffer.len() as libc::size_t;
-        let fetched = unsafe {
-            libc::sysctl(
-                mib.as_ptr(),
-                mib.len() as libc::c_uint,
-                buffer.as_mut_ptr().cast(),
-                &mut row_len,
-                std::ptr::null(),
-                0,
-            )
-        };
-        dump.push_str(&format!("ifmib row1 rc={fetched} len={row_len}\n"));
-        if fetched == 0 && row_len > 0 && row_len <= 1024 {
-            let printable: String = buffer[..row_len as usize]
-                .iter()
-                .map(|b| {
-                    if b.is_ascii_graphic() || *b == b' ' || *b == 0 {
-                        (*b as char).to_string()
-                    } else {
-                        ".".to_string()
-                    }
-                })
-                .collect();
-            dump.push_str(&format!("ifmib row1 text: {printable}\n"));
-            dump.push_str("ifmib row1 hex:");
-            for b in buffer.iter().take(row_len as usize) {
-                dump.push_str(&format!(" {b:02x}"));
-            }
-            dump.push_str("\n");
-        }
-    }
-    panic!("NATIVE LAYOUT DUMP:\n{dump}");
 }
 
 #[cfg(test)]
