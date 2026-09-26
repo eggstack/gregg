@@ -1,0 +1,8 @@
+Very large uptime counters (near u64::MAX range): first sample.
+cpu  18446744073700000000 0 50 8000 30 5 2 1 0 0
+intr 12345 0 0 0 0
+ctxt 23456789
+btime 1716460800
+processes 12345
+procs_running 1
+procs_blocked 0

@@ -1,399 +1,212 @@
-//! macOS collector entry point.
+//! macOS collector compatibility facade (Plan 135).
 //!
-//! Gathers identity, CPU, memory, swap, and load-average samples from
-//! Mach host statistics and sysctl APIs. Platform-specific code lives
-//! in this module; the shared collector contract is defined in
-//! [`crate::collector`].
+//! Production telemetry comes from [`gregg_host::macos`]. This module
+//! preserves the `greggd::collector::macos::*` paths and adapts the
+//! protocol-neutral host sample into [`CollectedMetrics`](crate::collector::CollectedMetrics).
 
-use std::time::Instant;
+use gregg_host::model::CollectionLimits;
 
+use crate::collector::error::CollectError;
+use crate::collector::{CollectedMetrics, SystemCollector};
+use gregg_host::HostCollector;
 use gregg_protocol::v2::{
-    DiskIoMetrics, DiskIoPayload, MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload,
-    MAX_DISK_IO_ENTRIES, MAX_NETWORK_INTERFACE_ENTRIES,
+    DiskIoMetrics, DiskIoPayload, DriveMetrics, MetricCapabilitiesV2, NetworkInterfaceMetrics,
+    NetworkPayload,
 };
-use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
+use gregg_protocol::{LoadAverage, MemoryMetrics, MetricCapabilities, SwapMetrics, SystemIdentity};
 
-use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::rate::CounterBaselines;
-use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
+// --- Re-exports ---------------------------------------------------------------
 
-pub mod cpu;
-pub mod ffi;
-pub mod identity;
-pub mod memory;
-pub mod normalize;
-pub mod swap;
-
-fn collect_drives<S: ffi::MacNativeQueries>(
-    source: &S,
-) -> Result<Vec<gregg_protocol::v2::DriveMetrics>, CollectError> {
-    let mounted = source.mounted_filesystems()?;
-    let candidates = mounted
-        .into_iter()
-        .filter(|record| {
-            record.flags & ffi::MNT_LOCAL != 0
-                && record.flags & ffi::MNT_DONTBROWSE == 0
-                && !record.mount_point.is_empty()
-                && record.filesystem_type != "devfs"
-                && record.filesystem_type != "autofs"
-        })
-        .filter_map(|record| {
-            let unit = (record.block_size > 0).then_some(record.block_size)?;
-            let total = record.total_blocks.checked_mul(unit)?;
-            let free = record.free_blocks.checked_mul(unit)?;
-            let available = record.available_blocks.checked_mul(unit)?;
-            (total > 0 && free <= total && available <= total).then_some(
-                crate::collector::drives::DriveCandidate {
-                    identity: format!("{}:{}", record.fsid.0, record.fsid.1),
-                    name: record.mount_point,
-                    total_bytes: total,
-                    total_free_bytes: free,
-                    available_bytes: available,
-                },
-            )
-        })
-        .collect();
-    Ok(crate::collector::drives::normalize(candidates))
-}
+pub use gregg_host::macos::ffi::{MacNativeQueries, MockNativeQueries};
+pub use gregg_host::macos::MacOsCollector as HostMacOsCollector;
+pub use gregg_host::macos::{cpu, ffi, identity, memory, normalize, swap};
 
 #[cfg(test)]
 mod tests;
 
-/// Bounded availability tracker for optional macOS telemetry families.
-///
-/// Records only the last known source state per family so stable
-/// unsupported conditions do not warn once per sample. Transitions log once:
-/// `available -> unavailable` warns with family plus `CollectErrorKind` and
-/// message context, while `unavailable -> available` (and the initial
-/// availability observation) logs at debug level. Successful empty
-/// enumeration (`Some(empty)` for drives) remains distinct from source
-/// failure (`None`); no zero-valued metric is ever fabricated for diagnostics.
-#[derive(Debug, Default)]
-struct OptionalFamilyAvailability {
-    drives: Option<bool>,
-    disk_io: Option<bool>,
-    network: Option<bool>,
-}
+// --- Conversion -----------------------------------------------------------------
 
-impl OptionalFamilyAvailability {
-    fn observe(&mut self, family: &'static str, available: bool, error: Option<&CollectError>) {
-        let slot = match family {
-            "drives" => &mut self.drives,
-            "disk_io" => &mut self.disk_io,
-            _ => &mut self.network,
-        };
-        let previous = *slot;
-        *slot = Some(available);
-        if previous == Some(available) {
-            return;
-        }
-        if available {
-            tracing::debug!(family, "macOS optional telemetry available");
-        } else if previous.is_none() {
-            // Initial unknown -> unavailable (for example the transient
-            // `drives: null` before the refresh worker completes) is debug,
-            // not a warning, so startup does not warn spuriously.
-            if let Some(error) = error {
-                tracing::debug!(
-                    family,
-                    kind = ?error.kind,
-                    error = %error.message,
-                    "macOS optional telemetry unavailable"
-                );
-            } else {
-                tracing::debug!(family, "macOS optional telemetry unavailable");
-            }
-        } else if let Some(error) = error {
-            tracing::warn!(
-                family,
-                kind = ?error.kind,
-                error = %error.message,
-                "macOS optional telemetry unavailable"
-            );
-        } else {
-            tracing::warn!(family, "macOS optional telemetry unavailable");
-        }
+fn convert_identity(identity: gregg_host::model::HostIdentity) -> SystemIdentity {
+    SystemIdentity {
+        name: identity.name,
+        hostname: identity.hostname,
+        os_name: identity.os_name,
+        os_version: identity.os_version,
+        kernel_name: identity.kernel_name,
+        kernel_release: identity.kernel_release,
+        architecture: identity.architecture,
     }
 }
 
-/// A macOS native collector.
-///
-/// Constructed once per daemon process. Identity and static fields are read
-/// eagerly during construction so the first [`Self::sample`] returns a
-/// warming error rather than blocking on identity I/O.
-pub struct MacOsCollector<S: ffi::MacNativeQueries = ffi::FfiNativeQueries> {
-    source: S,
-    identity: SystemIdentity,
-    capabilities: MetricCapabilities,
-    previous_cpu: Option<ffi::RawCpuTicks>,
-    logical_cores: u32,
-    physical_memory_bytes: u64,
-    drive_refresh: Option<DriveRefreshCache>,
-    disk_baselines: CounterBaselines,
-    network_baselines: CounterBaselines,
-    optional_availability: OptionalFamilyAvailability,
+fn convert_drive(drive: gregg_host::model::DriveMetrics) -> DriveMetrics {
+    DriveMetrics {
+        name: drive.name,
+        used_bytes: drive.used_bytes,
+        total_bytes: drive.total_bytes,
+        available_bytes: drive.available_bytes,
+    }
 }
 
-impl MacOsCollector<ffi::FfiNativeQueries> {
+fn convert_disk_io(payload: gregg_host::model::DiskIoPayload) -> DiskIoPayload {
+    DiskIoPayload {
+        aggregate_read_bytes_per_sec: payload.aggregate_read_bytes_per_sec,
+        aggregate_write_bytes_per_sec: payload.aggregate_write_bytes_per_sec,
+        devices: payload
+            .devices
+            .into_iter()
+            .map(|device| DiskIoMetrics {
+                id: device.id,
+                name: device.name,
+                read_bytes_per_sec: device.read_bytes_per_sec,
+                write_bytes_per_sec: device.write_bytes_per_sec,
+                drive_name: device.drive_name,
+            })
+            .collect(),
+    }
+}
+
+fn convert_network(payload: gregg_host::model::NetworkPayload) -> NetworkPayload {
+    NetworkPayload {
+        aggregate_rx_bytes_per_sec: payload.aggregate_rx_bytes_per_sec,
+        aggregate_tx_bytes_per_sec: payload.aggregate_tx_bytes_per_sec,
+        aggregate_rx_capacity_bps: payload.aggregate_rx_capacity_bps,
+        aggregate_tx_capacity_bps: payload.aggregate_tx_capacity_bps,
+        interfaces: payload
+            .interfaces
+            .into_iter()
+            .map(|interface| NetworkInterfaceMetrics {
+                id: interface.id,
+                name: interface.name,
+                rx_bytes_per_sec: interface.rx_bytes_per_sec,
+                tx_bytes_per_sec: interface.tx_bytes_per_sec,
+                rx_capacity_bps: interface.rx_capacity_bps,
+                tx_capacity_bps: interface.tx_capacity_bps,
+                is_loopback: interface.is_loopback,
+                aggregate_member: interface.aggregate_member,
+            })
+            .collect(),
+    }
+}
+
+fn convert_sample(sample: gregg_host::model::HostSample) -> Result<CollectedMetrics, CollectError> {
+    use crate::collector::error::CollectErrorKind;
+    let load = sample.load.ok_or_else(|| {
+        CollectError::new(
+            CollectErrorKind::Numeric,
+            "macos host sample missing load averages",
+        )
+    })?;
+    let swap = sample.swap.ok_or_else(|| {
+        CollectError::new(CollectErrorKind::Numeric, "macos host sample missing swap")
+    })?;
+    Ok(CollectedMetrics {
+        logical_cores: sample.logical_cores,
+        cpu_usage_pct: sample.cpu_usage_pct,
+        cpu_iowait_pct: None,
+        load: LoadAverage {
+            one: load.one,
+            five: load.five,
+            fifteen: load.fifteen,
+        },
+        memory: MemoryMetrics {
+            used_bytes: sample.memory.used_bytes,
+            total_bytes: sample.memory.total_bytes,
+            usage_pct: sample.memory.usage_pct,
+        },
+        swap: SwapMetrics {
+            used_bytes: swap.used_bytes,
+            total_bytes: swap.total_bytes,
+            usage_pct: swap.usage_pct,
+        },
+        commit: None,
+        drives: sample
+            .drives
+            .map(|drives| drives.into_iter().map(convert_drive).collect()),
+        cpu_frequency_hz: sample.cpu_frequency_hz,
+        disk_io: sample.disk_io.map(convert_disk_io),
+        network: sample.network.map(convert_network),
+    })
+}
+
+fn gregg_limits() -> CollectionLimits {
+    CollectionLimits {
+        max_drive_entries: gregg_protocol::v2::MAX_DRIVE_ENTRIES,
+        max_drive_name_bytes: gregg_protocol::v2::MAX_DRIVE_NAME_BYTES,
+        max_disk_io_entries: gregg_protocol::v2::MAX_DISK_IO_ENTRIES,
+        max_disk_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_disk_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+        max_network_interface_entries: gregg_protocol::v2::MAX_NETWORK_INTERFACE_ENTRIES,
+        max_network_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_network_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+    }
+}
+
+// --- Compatibility collector -----------------------------------------------------
+
+/// macOS collector facade: production sampling delegates to `gregg-host`.
+pub struct MacOsCollector<S: MacNativeQueries = gregg_host::macos::ffi::FfiNativeQueries> {
+    inner: gregg_host::macos::MacOsCollector<S>,
+}
+
+impl MacOsCollector<gregg_host::macos::ffi::FfiNativeQueries> {
     /// Create a collector using the production FFI implementation.
-    ///
-    /// `display_name` overrides the user-facing `name` field only; the actual
-    /// `hostname` continues to come from the host.
     pub fn new(display_name: Option<&str>) -> Result<Self, CollectError> {
-        Self::with_source(ffi::FfiNativeQueries, display_name)
+        let inner = gregg_host::macos::MacOsCollector::with_source_and_limits(
+            gregg_host::macos::ffi::FfiNativeQueries,
+            display_name,
+            gregg_limits(),
+        )?;
+        Ok(Self { inner })
     }
 }
 
-impl<S: ffi::MacNativeQueries + Clone> MacOsCollector<S> {
-    /// Create a collector with an injected source. Intended for tests so
-    /// synthetic values can be exercised without touching the host.
+impl<S: MacNativeQueries + Clone> MacOsCollector<S> {
+    /// Create a collector with an injected source.
     pub fn with_source(source: S, display_name: Option<&str>) -> Result<Self, CollectError> {
-        let raw_identity = source.identity()?;
-        let logical_cores = raw_identity.logical_cores.max(1);
-        let physical_memory_bytes = raw_identity.physical_memory_bytes;
-
-        let system_identity = identity::collect_identity(&source, display_name)?;
-
-        Ok(Self {
+        let inner = gregg_host::macos::MacOsCollector::with_source_and_limits(
             source,
-            identity: system_identity,
-            capabilities: MetricCapabilities { cpu_iowait: false },
-            previous_cpu: None,
-            logical_cores,
-            physical_memory_bytes,
-            drive_refresh: None,
-            disk_baselines: CounterBaselines::default(),
-            network_baselines: CounterBaselines::default(),
-            optional_availability: OptionalFamilyAvailability::default(),
-        })
+            display_name,
+            gregg_limits(),
+        )?;
+        Ok(Self { inner })
     }
 
-    /// Borrow the underlying source mutably. Tests use this to swap values
-    /// between samples; production code does not need it.
+    /// Borrow the underlying source mutably.
     #[must_use]
     pub fn source_mut(&mut self) -> &mut S {
-        &mut self.source
+        self.inner.source_mut()
     }
 }
 
-impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
-    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
-        if self.drive_refresh.is_none() {
-            self.drive_refresh = Some(DriveRefreshCache::new(
-                self.source.clone(),
-                collect_drives::<S>,
-            ));
-        }
-        let drives = self
-            .drive_refresh
-            .as_mut()
-            .and_then(DriveRefreshCache::poll);
-        // Availability tracks source presence (`Some`, including empty) versus
-        // transient absence (`None`); `Some(empty)` stays distinct from `None`.
-        // The initial transient `None` logs at debug, never as a warning.
-        self.optional_availability
-            .observe("drives", drives.is_some(), None);
-        drives
-    }
-
-    fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
-        let records = match self.source.disk_io() {
-            Ok(records) => {
-                self.optional_availability.observe("disk_io", true, None);
-                records
-            }
-            Err(error) => {
-                self.optional_availability
-                    .observe("disk_io", false, Some(&error));
-                self.disk_baselines.clear();
-                return None;
-            }
-        };
-        self.disk_baselines
-            .retain_ids(records.iter().map(|r| r.id.as_str()));
-        let mut devices = Vec::new();
-        let mut read_total = 0u64;
-        let mut write_total = 0u64;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.disk_baselines
-                    .observe(&record.id, now, record.read_bytes, record.write_bytes)
-            else {
-                continue;
-            };
-            read_total = read_total.saturating_add(rate.first_per_sec);
-            write_total = write_total.saturating_add(rate.second_per_sec);
-            if devices.len() < MAX_DISK_IO_ENTRIES {
-                devices.push(DiskIoMetrics {
-                    id: record.id,
-                    name: record.name,
-                    read_bytes_per_sec: rate.first_per_sec,
-                    write_bytes_per_sec: rate.second_per_sec,
-                    drive_name: None,
-                });
-            }
-        }
-        (!devices.is_empty()).then_some(DiskIoPayload {
-            aggregate_read_bytes_per_sec: read_total,
-            aggregate_write_bytes_per_sec: write_total,
-            devices,
-        })
-    }
-
-    fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
-        let records = match self.source.network_interfaces() {
-            Ok(records) => {
-                self.optional_availability.observe("network", true, None);
-                records
-            }
-            Err(error) => {
-                self.optional_availability
-                    .observe("network", false, Some(&error));
-                self.network_baselines.clear();
-                return None;
-            }
-        };
-        self.network_baselines
-            .retain_ids(records.iter().map(|r| r.id.as_str()));
-        let mut interfaces = Vec::new();
-        let mut rx_total = 0u64;
-        let mut tx_total = 0u64;
-        let mut rx_capacity: Option<u64> = None;
-        let mut tx_capacity: Option<u64> = None;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.network_baselines
-                    .observe(&record.id, now, record.rx_bytes, record.tx_bytes)
-            else {
-                continue;
-            };
-            let aggregate_member = record.aggregate_member && !record.is_loopback;
-            if aggregate_member {
-                rx_total = rx_total.saturating_add(rate.first_per_sec);
-                tx_total = tx_total.saturating_add(rate.second_per_sec);
-                if record.operational && !record.is_loopback {
-                    if let Some(capacity) = record.rx_capacity_bps {
-                        rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));
-                    }
-                    if let Some(capacity) = record.tx_capacity_bps {
-                        tx_capacity = Some(tx_capacity.unwrap_or(0).saturating_add(capacity));
-                    }
-                }
-            }
-            if interfaces.len() < MAX_NETWORK_INTERFACE_ENTRIES {
-                interfaces.push(NetworkInterfaceMetrics {
-                    id: record.id,
-                    name: record.name,
-                    rx_bytes_per_sec: rate.first_per_sec,
-                    tx_bytes_per_sec: rate.second_per_sec,
-                    rx_capacity_bps: record.rx_capacity_bps,
-                    tx_capacity_bps: record.tx_capacity_bps,
-                    is_loopback: record.is_loopback,
-                    aggregate_member,
-                });
-            }
-        }
-        (!interfaces.is_empty()).then_some(NetworkPayload {
-            aggregate_rx_bytes_per_sec: rx_total,
-            aggregate_tx_bytes_per_sec: tx_total,
-            aggregate_rx_capacity_bps: rx_capacity,
-            aggregate_tx_capacity_bps: tx_capacity,
-            interfaces,
-        })
-    }
-}
-
-impl<S: ffi::MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollector<S> {
+impl<S: MacNativeQueries + Clone + 'static> SystemCollector for MacOsCollector<S> {
     fn identity(&self) -> Result<SystemIdentity, CollectError> {
-        Ok(self.identity.clone())
+        self.inner.identity().map(convert_identity)
     }
 
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
-        let raw_cpu = self.source.cpu_load_info()?;
-        let raw_vm = self.source.vm_info64()?;
-        let raw_swap = self.source.swap_usage()?;
-        let raw_load = self.source.load_averages()?;
-        let now = Instant::now();
-
-        let cpu_sample = if let Some(prev) = self.previous_cpu.as_ref() {
-            match cpu::compute_cpu_percentages(prev, &raw_cpu) {
-                Ok(sample) => Some(sample),
-                Err(CollectError {
-                    kind: CollectErrorKind::CounterReset,
-                    ..
-                }) => {
-                    self.previous_cpu = Some(raw_cpu);
-                    return Err(CollectError::counter_reset(
-                        "CPU counters reset; baseline re-established",
-                    ));
-                }
-                Err(other) => return Err(other),
-            }
-        } else {
-            self.previous_cpu = Some(raw_cpu);
-            return Err(CollectError::warming(
-                "first CPU sample establishes the counter baseline",
-            ));
-        };
-
-        self.previous_cpu = Some(raw_cpu);
-
-        let load = parse_loadavgs(&raw_load)?;
-        let memory = memory::compute_memory(&raw_vm, self.physical_memory_bytes)?;
-        let swap = swap::compute_swap(&raw_swap);
-
-        let cpu = cpu_sample.ok_or_else(|| {
-            CollectError::new(
-                CollectErrorKind::Numeric,
-                "cpu_sample should be Some after baseline established",
-            )
-        })?;
-
-        Ok(CollectedMetrics {
-            logical_cores: self.logical_cores,
-            cpu_usage_pct: Some(cpu.usage_pct),
-            cpu_iowait_pct: None,
-            load,
-            memory: memory.into_metrics(),
-            swap: swap.into_metrics(),
-            commit: None,
-            drives: self.refresh_drives(),
-            cpu_frequency_hz: self.source.cpu_frequency_hz(),
-            disk_io: self.collect_disk_io(now),
-            network: self.collect_network(now),
-        })
+        self.inner.sample().and_then(convert_sample)
     }
 
     fn capabilities(&self) -> MetricCapabilities {
-        self.capabilities
+        MetricCapabilities {
+            cpu_iowait: self.inner.capabilities().cpu_iowait,
+        }
     }
 
     fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
+        let caps = self.inner.capabilities();
         MetricCapabilitiesV2 {
-            cpu_iowait: false,
-            load_average: true,
-            swap: true,
-            memory_commit: false,
+            cpu_iowait: caps.cpu_iowait,
+            load_average: caps.load_average,
+            swap: caps.swap,
+            memory_commit: caps.memory_commit,
         }
     }
 }
 
-/// Parse a `[f64; 3]` load average into the protocol [`LoadAverage`].
-fn parse_loadavgs(raw: &[f64; 3]) -> Result<LoadAverage, CollectError> {
+/// Parse `[f64; 3]` load averages (host parser, protocol-typed result).
+pub fn parse_loadavgs(raw: &[f64; 3]) -> Result<LoadAverage, CollectError> {
+    use crate::collector::error::CollectErrorKind;
     let parse_one = |value: f64, label: &str| -> Result<f32, CollectError> {
         if !value.is_finite() || value < 0.0 {
             return Err(CollectError::new(
@@ -404,7 +217,6 @@ fn parse_loadavgs(raw: &[f64; 3]) -> Result<LoadAverage, CollectError> {
         #[allow(clippy::cast_possible_truncation)]
         Ok(value as f32)
     };
-
     Ok(LoadAverage {
         one: parse_one(raw[0], "1")?,
         five: parse_one(raw[1], "5")?,

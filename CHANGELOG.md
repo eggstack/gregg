@@ -23,6 +23,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Native host telemetry crate and FreeBSD foundation (Plans 132-136):**
+  native Linux/macOS/Windows acquisition moved without semantic change into
+  the protocol-neutral, runtime-neutral `gregg-host` workspace crate
+  (`HostSample`/`HostIdentity`/`HostCapabilities`/`CollectionLimits`,
+  shared counter baselines, drive normalization, slow-probe isolation, and
+  the per-OS collectors with their source seams and mocks; only `std` plus
+  target-scoped `libc`, `thiserror`, and `tracing`). `greggd` consumes it
+  through a `greggd::collector` compatibility facade preserving all public
+  paths, `CollectedMetrics`/v1/v2 conversion, readiness mapping, Windows
+  v2-only behavior, and exact collection limits; the stripped release
+  `greggd` binary is unchanged (2,629,008 bytes before/after). FreeBSD
+  joins as the first post-extraction backend (`kern.cp_time` CPU,
+  `getloadavg`, `hw.physmem`/VM-counter memory, `getmntinfo` filesystems,
+  `libdevstat` disk I/O, `ifmib` network; swap/frequency truthfully
+  unsupported with recorded follow-ups; no generic Unix/BSD abstraction).
+  No protocol, cadence, readiness, privilege, or external-command changes;
+  NetBSD/OpenBSD remain explicit future backends.
+
+
 - **User-local installer PATH activation (Plan 130):** non-root Unix
   bootstrap installs whose `$HOME/.local/bin` destination is absent from the
   current `PATH` now persist it to the user shell profile for future shells

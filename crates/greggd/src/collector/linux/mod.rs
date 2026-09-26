@@ -1,331 +1,256 @@
-//! Linux collector entry point.
+//! Linux collector compatibility facade (Plan 135).
 //!
-//! Gathers identity, CPU, memory, swap, and load-average samples from
-//! procfs and kernel interfaces. Platform-specific code lives in this
-//! module; the shared collector contract is defined in
-//! [`crate::collector`].
+//! Production telemetry comes from [`gregg_host::linux`]. This module
+//! preserves the `greggd::collector::linux::*` paths used by the sampler,
+//! `run`, and tests, and adapts the protocol-neutral host sample into the
+//! Gregg-owned [`CollectedMetrics`](crate::collector::CollectedMetrics).
 
-use std::time::Instant;
-
-use gregg_protocol::v2::{
-    DiskIoMetrics, DiskIoPayload, MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload,
-    MAX_DISK_IO_ENTRIES, MAX_NETWORK_INTERFACE_ENTRIES,
-};
-use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
+use gregg_host::linux::LinuxCollector as HostLinuxCollector;
+use gregg_host::model::CollectionLimits;
 
 use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::rate::CounterBaselines;
-use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
+use crate::collector::{CollectedMetrics, SystemCollector};
+use gregg_host::HostCollector;
+use gregg_protocol::v2::{
+    DiskIoMetrics, DiskIoPayload, DriveMetrics, MetricCapabilitiesV2, NetworkInterfaceMetrics,
+    NetworkPayload,
+};
+use gregg_protocol::{LoadAverage, MemoryMetrics, MetricCapabilities, SwapMetrics, SystemIdentity};
 
-mod cpu;
-mod drives;
+// --- Re-exports: protocol-neutral items with identical semantics ------------
+
+pub use gregg_host::linux::{
+    collect_identity as collect_host_identity, os_release_sample,
+    synthetic_identity as synthetic_host_identity,
+};
+pub use gregg_host::linux::{
+    compute_percentages, parse_proc_stat, CpuCounters, CpuSampleView, FileSource, MemorySource,
+    ParsedMeminfo, ParsedProcStat, ProcSource, RawDiskIo, RawNetworkInterface,
+};
+pub use gregg_host::linux::{
+    parse_meminfo as compute_memory, parse_meminfo_raw as parse_meminfo, parse_swap as compute_swap,
+};
+pub use gregg_host::linux::{MeminfoSample, SwapInfoSample};
+
+#[cfg(test)]
 mod fixtures;
-mod identity;
-mod memory;
-mod source;
-
-/// Sane upper bound on the reported core count. Far above any real or
-/// planned Linux machine, so a bogus sysinfo read cannot surface a
-/// sentinel-scale value to clients.
-const MAX_LOGICAL_CORES: usize = 8192;
-
 #[cfg(test)]
 mod tests;
 
-pub use cpu::{compute_percentages, parse_proc_stat, CpuCounters, CpuSample as CpuSampleView};
-pub use identity::{collect_identity, os_release_sample, synthetic_identity};
-pub use memory::{
-    compute_memory as parse_meminfo, compute_swap as parse_swap,
-    parse_meminfo as parse_meminfo_raw, MemorySample as MeminfoSample,
-    SwapSample as SwapInfoSample,
-};
-pub use source::{
-    FileSource, MemorySource, ParsedMeminfo, ParsedProcStat, ProcSource, RawDiskIo,
-    RawNetworkInterface,
-};
+// --- Identity / metric conversion --------------------------------------------
 
-/// A Linux native collector.
-///
-/// Constructed once per daemon process. Identity and static fields are read
-/// eagerly during [`LinuxCollector::new`] so the first [`Self::sample`]
-/// returns a warming error rather than blocking on identity I/O.
+fn convert_identity(identity: gregg_host::model::HostIdentity) -> SystemIdentity {
+    SystemIdentity {
+        name: identity.name,
+        hostname: identity.hostname,
+        os_name: identity.os_name,
+        os_version: identity.os_version,
+        kernel_name: identity.kernel_name,
+        kernel_release: identity.kernel_release,
+        architecture: identity.architecture,
+    }
+}
+
+fn convert_drive(drive: gregg_host::model::DriveMetrics) -> DriveMetrics {
+    DriveMetrics {
+        name: drive.name,
+        used_bytes: drive.used_bytes,
+        total_bytes: drive.total_bytes,
+        available_bytes: drive.available_bytes,
+    }
+}
+
+fn convert_disk_io(payload: gregg_host::model::DiskIoPayload) -> DiskIoPayload {
+    DiskIoPayload {
+        aggregate_read_bytes_per_sec: payload.aggregate_read_bytes_per_sec,
+        aggregate_write_bytes_per_sec: payload.aggregate_write_bytes_per_sec,
+        devices: payload
+            .devices
+            .into_iter()
+            .map(|device| DiskIoMetrics {
+                id: device.id,
+                name: device.name,
+                read_bytes_per_sec: device.read_bytes_per_sec,
+                write_bytes_per_sec: device.write_bytes_per_sec,
+                drive_name: device.drive_name,
+            })
+            .collect(),
+    }
+}
+
+fn convert_network(payload: gregg_host::model::NetworkPayload) -> NetworkPayload {
+    NetworkPayload {
+        aggregate_rx_bytes_per_sec: payload.aggregate_rx_bytes_per_sec,
+        aggregate_tx_bytes_per_sec: payload.aggregate_tx_bytes_per_sec,
+        aggregate_rx_capacity_bps: payload.aggregate_rx_capacity_bps,
+        aggregate_tx_capacity_bps: payload.aggregate_tx_capacity_bps,
+        interfaces: payload
+            .interfaces
+            .into_iter()
+            .map(|interface| NetworkInterfaceMetrics {
+                id: interface.id,
+                name: interface.name,
+                rx_bytes_per_sec: interface.rx_bytes_per_sec,
+                tx_bytes_per_sec: interface.tx_bytes_per_sec,
+                rx_capacity_bps: interface.rx_capacity_bps,
+                tx_capacity_bps: interface.tx_capacity_bps,
+                is_loopback: interface.is_loopback,
+                aggregate_member: interface.aggregate_member,
+            })
+            .collect(),
+    }
+}
+
+fn convert_sample(sample: gregg_host::model::HostSample) -> Result<CollectedMetrics, CollectError> {
+    let load = sample.load.ok_or_else(|| {
+        CollectError::new(
+            CollectErrorKind::Numeric,
+            "linux host sample missing load averages",
+        )
+    })?;
+    let swap = sample.swap.ok_or_else(|| {
+        CollectError::new(CollectErrorKind::Numeric, "linux host sample missing swap")
+    })?;
+    Ok(CollectedMetrics {
+        logical_cores: sample.logical_cores,
+        cpu_usage_pct: sample.cpu_usage_pct,
+        cpu_iowait_pct: sample.cpu_iowait_pct,
+        load: LoadAverage {
+            one: load.one,
+            five: load.five,
+            fifteen: load.fifteen,
+        },
+        memory: MemoryMetrics {
+            used_bytes: sample.memory.used_bytes,
+            total_bytes: sample.memory.total_bytes,
+            usage_pct: sample.memory.usage_pct,
+        },
+        swap: SwapMetrics {
+            used_bytes: swap.used_bytes,
+            total_bytes: swap.total_bytes,
+            usage_pct: swap.usage_pct,
+        },
+        commit: None,
+        drives: sample
+            .drives
+            .map(|drives| drives.into_iter().map(convert_drive).collect()),
+        cpu_frequency_hz: sample.cpu_frequency_hz,
+        disk_io: sample.disk_io.map(convert_disk_io),
+        network: sample.network.map(convert_network),
+    })
+}
+
+// --- Compatibility collector --------------------------------------------------
+
+/// Linux collector facade: production sampling delegates to `gregg-host`.
 pub struct LinuxCollector {
-    source: ProcSource,
-    identity: SystemIdentity,
-    capabilities: MetricCapabilities,
-    previous_cpu: Option<cpu::CpuCounters>,
-    drive_refresh: Option<DriveRefreshCache>,
-    disk_baselines: CounterBaselines,
-    network_baselines: CounterBaselines,
+    inner: HostLinuxCollector,
+}
+
+/// Collection limits matching the current `gregg-protocol` constants exactly.
+fn gregg_limits() -> CollectionLimits {
+    CollectionLimits {
+        max_drive_entries: gregg_protocol::v2::MAX_DRIVE_ENTRIES,
+        max_drive_name_bytes: gregg_protocol::v2::MAX_DRIVE_NAME_BYTES,
+        max_disk_io_entries: gregg_protocol::v2::MAX_DISK_IO_ENTRIES,
+        max_disk_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_disk_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+        max_network_interface_entries: gregg_protocol::v2::MAX_NETWORK_INTERFACE_ENTRIES,
+        max_network_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_network_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+    }
 }
 
 impl LinuxCollector {
     /// Create a collector that reads from the production procfs paths.
-    ///
-    /// `display_name` overrides the user-facing `name` field only; the actual
-    /// `hostname` continues to come from the host.
     pub fn new(display_name: Option<&str>) -> Result<Self, CollectError> {
-        let source = ProcSource::production();
-        Self::with_source(source, display_name)
+        let inner = HostLinuxCollector::with_source_and_limits(
+            ProcSource::production(),
+            display_name,
+            gregg_limits(),
+        )?;
+        Ok(Self { inner })
     }
 
-    /// Create a collector with an injected source. Intended for tests so
-    /// fixtures can be replayed without touching the host `/proc` filesystem.
+    /// Create a collector with an injected source.
     pub fn with_source(
         source: ProcSource,
         display_name: Option<&str>,
     ) -> Result<Self, CollectError> {
-        let identity = identity::collect_identity(&source, display_name)?;
-        Ok(Self {
-            source,
-            identity,
-            capabilities: MetricCapabilities { cpu_iowait: true },
-            previous_cpu: None,
-            drive_refresh: None,
-            disk_baselines: CounterBaselines::default(),
-            network_baselines: CounterBaselines::default(),
-        })
+        let inner =
+            HostLinuxCollector::with_source_and_limits(source, display_name, gregg_limits())?;
+        Ok(Self { inner })
     }
 
-    /// Borrow the underlying [`ProcSource`] mutably. Tests use this to swap
-    /// fixture content between samples; production code does not need it.
+    /// Borrow the underlying source mutably.
     #[must_use]
     pub fn source_mut(&mut self) -> &mut ProcSource {
-        &mut self.source
-    }
-}
-
-impl LinuxCollector {
-    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
-        if self.drive_refresh.is_none() {
-            self.drive_refresh = Some(DriveRefreshCache::new(self.source.clone(), drives::collect));
-        }
-        self.drive_refresh
-            .as_mut()
-            .and_then(DriveRefreshCache::poll)
-    }
-
-    fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
-        let Ok(records) = self.source.disk_io() else {
-            self.disk_baselines.clear();
-            return None;
-        };
-        self.disk_baselines
-            .retain_ids(records.iter().map(|record| record.id.as_str()));
-        let mut devices = Vec::new();
-        let mut aggregate_read = 0u64;
-        let mut aggregate_write = 0u64;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.disk_baselines
-                    .observe(&record.id, now, record.read_bytes, record.write_bytes)
-            else {
-                continue;
-            };
-            aggregate_read = aggregate_read.saturating_add(rate.first_per_sec);
-            aggregate_write = aggregate_write.saturating_add(rate.second_per_sec);
-            if devices.len() < MAX_DISK_IO_ENTRIES {
-                devices.push(DiskIoMetrics {
-                    id: record.id,
-                    name: record.name,
-                    read_bytes_per_sec: rate.first_per_sec,
-                    write_bytes_per_sec: rate.second_per_sec,
-                    drive_name: None,
-                });
-            }
-        }
-        (!devices.is_empty()).then_some(DiskIoPayload {
-            aggregate_read_bytes_per_sec: aggregate_read,
-            aggregate_write_bytes_per_sec: aggregate_write,
-            devices,
-        })
-    }
-
-    fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
-        let Ok(records) = self.source.network_interfaces() else {
-            self.network_baselines.clear();
-            return None;
-        };
-        self.network_baselines
-            .retain_ids(records.iter().map(|record| record.id.as_str()));
-        let mut interfaces = Vec::new();
-        let mut aggregate_rx = 0u64;
-        let mut aggregate_tx = 0u64;
-        let mut rx_capacity_total: Option<u64> = None;
-        let mut tx_capacity_total: Option<u64> = None;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.network_baselines
-                    .observe(&record.id, now, record.rx_bytes, record.tx_bytes)
-            else {
-                continue;
-            };
-            let aggregate_member = record.aggregate_member && !record.is_loopback;
-            if aggregate_member {
-                aggregate_rx = aggregate_rx.saturating_add(rate.first_per_sec);
-                aggregate_tx = aggregate_tx.saturating_add(rate.second_per_sec);
-                if record.operational && !record.is_loopback {
-                    if let Some(capacity) = record.rx_capacity_bps {
-                        rx_capacity_total =
-                            Some(rx_capacity_total.unwrap_or(0).saturating_add(capacity));
-                    }
-                    if let Some(capacity) = record.tx_capacity_bps {
-                        tx_capacity_total =
-                            Some(tx_capacity_total.unwrap_or(0).saturating_add(capacity));
-                    }
-                }
-            }
-            if interfaces.len() < MAX_NETWORK_INTERFACE_ENTRIES {
-                interfaces.push(NetworkInterfaceMetrics {
-                    id: record.id,
-                    name: record.name,
-                    rx_bytes_per_sec: rate.first_per_sec,
-                    tx_bytes_per_sec: rate.second_per_sec,
-                    rx_capacity_bps: record.rx_capacity_bps,
-                    tx_capacity_bps: record.tx_capacity_bps,
-                    is_loopback: record.is_loopback,
-                    aggregate_member,
-                });
-            }
-        }
-        (!interfaces.is_empty()).then_some(NetworkPayload {
-            aggregate_rx_bytes_per_sec: aggregate_rx,
-            aggregate_tx_bytes_per_sec: aggregate_tx,
-            aggregate_rx_capacity_bps: rx_capacity_total,
-            aggregate_tx_capacity_bps: tx_capacity_total,
-            interfaces,
-        })
+        self.inner.source_mut()
     }
 }
 
 impl SystemCollector for LinuxCollector {
     fn identity(&self) -> Result<SystemIdentity, CollectError> {
-        Ok(self.identity.clone())
+        self.inner.identity().map(convert_identity)
     }
 
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
-        let stat = self.source.read_proc_stat()?;
-        let loadavg = self.source.read_proc_loadavg()?;
-        let meminfo = self.source.read_proc_meminfo()?;
-
-        let cpu_sample = if let (Some(prev), Some(curr)) =
-            (self.previous_cpu.as_ref(), stat.aggregate.as_ref())
-        {
-            match cpu::compute_percentages(prev, curr) {
-                Ok(sample) => sample,
-                Err(CollectError {
-                    kind: CollectErrorKind::CounterReset,
-                    ..
-                }) => {
-                    self.previous_cpu = stat.aggregate;
-                    return Err(CollectError::counter_reset(
-                        "aggregate CPU counters reset; baseline re-established",
-                    ));
-                }
-                Err(other) => return Err(other),
-            }
-        } else {
-            self.previous_cpu = stat.aggregate;
-            return Err(CollectError::warming(
-                "first CPU sample establishes the counter baseline",
-            ));
-        };
-
-        let memory_sample = memory::compute_memory(&meminfo)?;
-        let swap_sample = memory::compute_swap(&meminfo)?;
-        let load = parse_loadavg(&loadavg)?;
-        let now = Instant::now();
-
-        self.previous_cpu = stat.aggregate;
-
-        // Re-read the core count on every sample so CPU hotplug events are
-        // reflected instead of freezing the count from construction time.
-        let logical_cores = u32::try_from(
-            self.source
-                .logical_core_count()
-                .unwrap_or(1)
-                .clamp(1, MAX_LOGICAL_CORES),
-        )
-        .unwrap_or(1);
-
-        Ok(CollectedMetrics {
-            logical_cores,
-            cpu_usage_pct: Some(cpu_sample.usage_pct),
-            cpu_iowait_pct: Some(cpu_sample.iowait_pct),
-            load,
-            memory: memory_sample.into_metrics(),
-            swap: swap_sample.into_metrics(),
-            commit: None,
-            drives: self.refresh_drives(),
-            cpu_frequency_hz: self.source.cpu_frequency_hz(),
-            disk_io: self.collect_disk_io(now),
-            network: self.collect_network(now),
-        })
+        self.inner.sample().and_then(convert_sample)
     }
 
     fn capabilities(&self) -> MetricCapabilities {
-        self.capabilities
+        MetricCapabilities {
+            cpu_iowait: self.inner.capabilities().cpu_iowait,
+        }
     }
 
     fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
+        let caps = self.inner.capabilities();
         MetricCapabilitiesV2 {
-            cpu_iowait: true,
-            load_average: true,
-            swap: true,
-            memory_commit: false,
+            cpu_iowait: caps.cpu_iowait,
+            load_average: caps.load_average,
+            swap: caps.swap,
+            memory_commit: caps.memory_commit,
         }
     }
 }
 
-fn parse_loadavg(raw: &str) -> Result<LoadAverage, CollectError> {
-    let trimmed = raw.trim();
-    let mut parts = trimmed.split_whitespace();
-    let one = parts
-        .next()
-        .ok_or_else(|| CollectError::new(CollectErrorKind::Parse, "missing load.1 field"))?;
-    let five = parts
-        .next()
-        .ok_or_else(|| CollectError::new(CollectErrorKind::Parse, "missing load.5 field"))?;
-    let fifteen = parts
-        .next()
-        .ok_or_else(|| CollectError::new(CollectErrorKind::Parse, "missing load.15 field"))?;
+/// Collect identity through the host backend and adapt to [`SystemIdentity`].
+pub fn collect_identity(
+    source: &ProcSource,
+    display_name: Option<&str>,
+) -> Result<SystemIdentity, CollectError> {
+    collect_host_identity(source, display_name).map(convert_identity)
+}
 
-    let parse_one = |s: &str, label: &str| {
-        let parsed: f64 = s.parse().map_err(|e: std::num::ParseFloatError| {
-            CollectError::new(
-                CollectErrorKind::Parse,
-                format!("loadavg {label} not a float"),
-            )
-            .with_source(e)
-        })?;
-        if !parsed.is_finite() || parsed < 0.0 {
-            return Err(CollectError::new(
-                CollectErrorKind::Parse,
-                format!("loadavg {label} is not finite/non-negative"),
-            ));
-        }
-        #[allow(clippy::cast_possible_truncation)]
-        let as_f32 = parsed as f32;
-        Ok(as_f32)
-    };
-
+/// Parse `/proc/loadavg` content (host parser, protocol-typed result).
+pub fn parse_loadavg(raw: &str) -> Result<LoadAverage, CollectError> {
+    let host = gregg_host::linux::parse_loadavg(raw)?;
     Ok(LoadAverage {
-        one: parse_one(one, "1")?,
-        five: parse_one(five, "5")?,
-        fifteen: parse_one(fifteen, "15")?,
+        one: host.one,
+        five: host.five,
+        fifteen: host.fifteen,
     })
+}
+
+/// Synthetic identity helper preserved for tests.
+pub fn synthetic_identity(
+    name: &str,
+    hostname: &str,
+    os_name: &str,
+    os_version: &str,
+    kernel_name: &str,
+    kernel_release: &str,
+    architecture: &str,
+) -> SystemIdentity {
+    let host = synthetic_host_identity(
+        name,
+        hostname,
+        os_name,
+        os_version,
+        kernel_name,
+        kernel_release,
+        architecture,
+    );
+    convert_identity(host)
 }

@@ -1,0 +1,9 @@
+Initial sample.
+
+cpu  1000 0 500 80000 300 50 20 10 0 0
+intr 12345 0 0 0 0
+ctxt 23456789
+btime 1716460800
+processes 12345
+procs_running 1
+procs_blocked 0

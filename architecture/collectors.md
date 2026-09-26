@@ -3,7 +3,7 @@
 Each platform collector implements the `SystemCollector` trait and reads only
 native kernel interfaces. No external commands are executed for metric collection.
 
-**Source:** `crates/greggd/src/collector/`
+**Sources:** `crates/gregg-host/src/` (native acquisition and sampling state; Plans 134-136) with the `greggd::collector` compatibility facade at `crates/greggd/src/collector/` (Gregg-owned `SystemCollector` trait, `CollectedMetrics`, v1/v2 conversion, readiness mapping).
 
 ## Shared contract
 
@@ -389,6 +389,32 @@ Network uses GetIfTable2 rows for InOctets, OutOctets, directional speeds,
 operational state, and native loopback type. Failed optional queries are
 omitted without changing core readiness.
 
+## FreeBSD backend (Plan 136)
+
+**Source:** `crates/gregg-host/src/freebsd/`
+
+Explicit first post-extraction backend with its own `FreeBsdSource` /
+`NativeFreeBsdSource` / `MockFreeBsdSource` seam. No generic Unix/BSD
+abstraction; NetBSD/OpenBSD remain separate future backends.
+
+| Area | Native source |
+|------|---------------|
+| CPU | `kern.cp_time` (user/nice/sys/intr/idle); busy excludes idle; no `iowait` mapping |
+| Load | `getloadavg(3)` via libc |
+| Memory | `hw.physmem` + `hw.pagesize` + `vm.stats.vm.v_{free,inactive,cache,laundry}_count`; `available = (free+inactive+cache+laundry) * page_size` |
+| Swap | Unsupported (truthful absence); `kvm_getswapinfo` unprivileged validation is a recorded follow-up |
+| Frequency | Unsupported (no validated unprivileged source); recorded follow-up |
+| Drives | `getmntinfo`/`statfs` via libc with `MNT_LOCAL` selection + shared normalization/slow-probe isolation |
+| Disk I/O | Base `libdevstat` (`devstat_checkversion` gate, null-kvm `devstat_getdevs`, generation-aware, plausibility-gated entries, shared reset-safe baselines) |
+| Network | `ifmib(4)` integer-MIB rows (`net.link.generic.system.ifcount` + `IFMIB_IFDATA` rows, sparse-tolerant, plausibility-gated, loopback detail-only) |
+
+Capabilities: `cpu_iowait=false`, `load_average=true`, `swap=false`,
+`memory_commit=false`, `drives/disk_io/network=true`, `cpu_frequency=false`.
+Native CI proves identity/cores/CPU/memory/load/drives/network enumeration
+plus disk-write and loopback traffic-direction advancement; zero-rate
+intervals remain valid. Full `greggd` FreeBSD service/install/release
+support is a later product plan, not implied.
+
 ## Fixture files
 
 Located in `crates/greggd/src/collector/test_fixtures/`:
@@ -401,3 +427,39 @@ Located in `crates/greggd/src/collector/test_fixtures/`:
 - Malformed inputs (for parse error testing)
 - CPU hotplug and suspend/resume scenarios
 - Counter reset and swap change scenarios
+
+## Extraction boundary (Plans 133-135 freeze and cutover)
+
+Native collection, daemon sampling, and wire protocol have distinct owners:
+
+- **Native collection** (`crates/greggd/src/collector/`): acquisition,
+  delta arithmetic, `CounterBaselines` rates with actual monotonic elapsed
+  time, drive normalization/bounding, slow-probe isolation, and the typed
+  `Warming`/`CounterReset`/source/parse/numeric taxonomy. No clock, cadence,
+  HTTP, or schema-version decisions live here.
+- **Daemon sampler** (`crates/greggd/src/sampler.rs`): cadence, wall-clock
+  timestamps, readiness (`Warming`/`CounterReset` never fail; hard failures
+  fail and preserve the last snapshot), v1/v2 conversion dispatch, and
+  publication. It never triggers collection outside its cadence.
+- **`gregg-protocol`**: schema types, JSON shapes, validation, and status
+  codes. The collector never imports wire constants for behavior; v1/v2
+  mapping stays in `greggd`.
+
+Frozen by Plan 133 and preserved through the Plan 135 cutover (see
+`crates/greggd/src/collector/compat_freeze.rs` for the characterization suite
+and `crates/gregg-host/` for the reusable implementation):
+
+- `SystemCollector`, `CollectedMetrics` (+ `into_snapshot*` pair) stay
+  Gregg-owned in `greggd`; `CollectError`/`CollectErrorKind`,
+  `clamped_usage_pct`/`finalize_percentage`, `CounterBaselines`,
+  `DriveCandidate`/`normalize`, and `DriveRefreshCache` are re-exported
+  from `gregg-host` at the same `greggd::collector` paths. Platform
+  `linux`/`macos`/`windows` modules are compatibility facades: production
+  sampling delegates to `gregg-host`, with Gregg-owned v1/v2/capability
+  mapping in the adapter.
+- Linux/macOS v1+v2 with `cpu_iowait`/`load`/`swap` flags as documented
+  above; Windows v2-only with `memory_commit`.
+- `drives: None` (unavailable) vs `Some(empty)` (successful empty) vs
+  last-success retention; optional disk/network/frequency absence never
+  fails core readiness; `Instant::now()` stays at the existing
+  disk/network collection boundary until Plan 135 qualification.

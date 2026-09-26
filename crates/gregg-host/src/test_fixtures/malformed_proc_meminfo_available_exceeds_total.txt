@@ -1,0 +1,9 @@
+Garbled /proc/meminfo: available memory reported as larger than total,
+indicating kernel counter races or corruption. The collector must surface
+a normalization error.
+
+MemTotal:       16384000 kB
+MemAvailable:   32768000 kB
+Buffers:         500000 kB
+Cached:          3000000 kB
+SReclaimable:    200000 kB

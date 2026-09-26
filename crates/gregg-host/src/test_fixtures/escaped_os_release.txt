@@ -1,0 +1,5 @@
+# os-release with a quoted PRETTY_NAME containing escaped quotes.
+
+NAME="ExoticOS"
+PRETTY_NAME="ExoticOS \"Hardened\" Edition"
+VERSION_ID="3.14"

@@ -508,6 +508,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gregg-host"
+version = "1.0.14"
+dependencies = [
+ "libc",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "gregg-protocol"
 version = "1.0.14"
 dependencies = [
@@ -537,6 +546,7 @@ dependencies = [
  "eggserve-primitives",
  "eggserve-server",
  "futures-util",
+ "gregg-host",
  "gregg-protocol",
  "gregg-update",
  "libc",

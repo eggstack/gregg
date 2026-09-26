@@ -1,0 +1,13 @@
+Second sample, 1000 ms after the first.
+
+cpu  150 0 60 8050 50 6 3 1 0 0
+cpu0 38 0 15 2010 12 1 0 0 0 0
+cpu1 37 0 15 2010 12 1 1 0 0 0
+cpu2 37 0 15 2015 13 2 1 0 0 0
+cpu3 38 0 15 2015 13 2 1 1 0 0
+intr 12500 0 0 0 0
+ctxt 23460000
+btime 1716460800
+processes 12346
+procs_running 1
+procs_blocked 0

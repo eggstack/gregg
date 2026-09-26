@@ -1,0 +1,14 @@
+Typical Raspberry Pi OS ARM64 host: first sample of a paired CPU reading.
+4 logical cores, modest activity.
+
+cpu  200 0 80 4000 40 4 2 1 0 0
+cpu0 50 0 20 1000 10 1 0 0 0 0
+cpu1 50 0 20 1000 10 1 0 0 0 0
+cpu2 50 0 20 1000 10 1 1 0 0 0
+cpu3 50 0 20 1000 10 1 1 1 0 0
+intr 5678 0 0 0 0
+ctxt 123456
+btime 1716460800
+processes 4567
+procs_running 1
+procs_blocked 0

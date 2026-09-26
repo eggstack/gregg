@@ -1,0 +1,11 @@
+Second sample taken after a counter reset: every counter is smaller than
+the baseline. The collector must discard the baseline and surface a
+typed counter-reset error rather than reporting a nonsense delta.
+
+cpu  100 0 50 8000 30 5 2 1 0 0
+intr 12500 0 0 0 0
+ctxt 23460000
+btime 1716460800
+processes 12346
+procs_running 1
+procs_blocked 0

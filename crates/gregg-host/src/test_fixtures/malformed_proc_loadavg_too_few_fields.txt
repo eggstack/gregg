@@ -1,0 +1,3 @@
+Garbled /proc/loadavg: only two fields present.
+
+1.32 0.91

@@ -1,0 +1,4 @@
+Garbled /proc/meminfo: MemTotal missing; only swap fields present.
+
+SwapTotal:       4096000 kB
+SwapFree:        4096000 kB

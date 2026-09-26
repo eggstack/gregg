@@ -9,14 +9,14 @@
 
 use std::path::Path;
 
-use gregg_protocol::{MemoryMetrics, MetricCapabilities, StatusSnapshot};
+use gregg_protocol::{MetricCapabilities, StatusSnapshot};
 
-use super::cpu::{parse_proc_stat, CpuCounters};
+use super::collect_identity;
 use super::fixtures::read_fixture;
-use super::identity::collect_identity;
-use super::memory::{compute_memory, compute_swap, parse_meminfo};
-use super::source::{MemorySource, ProcSource};
+use super::{compute_memory, compute_swap, parse_meminfo};
 use super::{compute_percentages, parse_loadavg, LinuxCollector};
+use super::{parse_proc_stat, CpuCounters};
+use super::{MemorySource, ProcSource};
 use crate::collector::error::CollectErrorKind;
 use crate::collector::SystemCollector;
 
@@ -682,7 +682,7 @@ fn used_memory_never_exceeds_total_after_normalization() {
         let parsed = parse_meminfo(&raw).expect("parses");
         let mem = compute_memory(&parsed).expect("computes");
         assert!(mem.used_bytes <= mem.total_bytes, "fixture {name}");
-        let metrics: MemoryMetrics = mem.into_metrics();
+        let metrics = mem.into_metrics();
         assert!(metrics.used_bytes <= metrics.total_bytes);
     }
 }

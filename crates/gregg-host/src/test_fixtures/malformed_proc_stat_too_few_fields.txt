@@ -1,0 +1,3 @@
+Garbled /proc/stat: aggregate row has too few fields.
+
+cpu 100 50 30

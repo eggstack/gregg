@@ -1,0 +1,10 @@
+CPU hotplug: system started with 2 cores, will change to 4.
+cpu  100 0 50 4000 20 3 1 0 0 0
+cpu0 50 0 25 2000 10 1 0 0 0 0
+cpu1 50 0 25 2000 10 2 1 0 0 0
+intr 5000 0 0 0 0
+ctxt 1000000
+btime 1716460800
+processes 500
+procs_running 1
+procs_blocked 0

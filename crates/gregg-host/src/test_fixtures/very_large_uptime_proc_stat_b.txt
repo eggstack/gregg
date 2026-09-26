@@ -1,0 +1,8 @@
+Very large uptime counters: second sample (incremented by ~100 ticks).
+cpu  18446744073700000100 0 60 8050 50 6 3 1 0 0
+intr 12346 0 0 0 0
+ctxt 23456790
+btime 1716460800
+processes 12346
+procs_running 1
+procs_blocked 0

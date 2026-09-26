@@ -1,0 +1,4 @@
+# Minimal os-release missing PRETTY_NAME; the parser must fall back to NAME.
+
+NAME="TinyLinux"
+VERSION_ID="0.1"

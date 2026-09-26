@@ -1,0 +1,11 @@
+High-memory Linux server: first sample.
+Uses large counters near u64::MAX / 8 to exercise wide arithmetic
+without saturating the saturating_add total.
+
+cpu  2305843009213693951 0 2305843009213693951 2305843009213693951 2305843009213693951 2305843009213693951 2305843009213693951 2305843009213693951 0 0
+intr 12345 0 0 0 0
+ctxt 23456789
+btime 1716460800
+processes 12345
+procs_running 1
+procs_blocked 0

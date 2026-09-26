@@ -1,337 +1,208 @@
-//! Windows collector entry point.
+//! Windows collector compatibility facade (Plan 135).
 //!
-//! Gathers identity, CPU, memory, commit, and logical processor count
-//! from native Windows APIs. Platform-specific code lives in this
-//! module; the shared collector contract is defined in
-//! [`crate::collector`].
+//! Production telemetry comes from [`gregg_host::windows`]. This module
+//! preserves the `greggd::collector::windows::*` paths and adapts the
+//! protocol-neutral host sample into [`CollectedMetrics`](crate::collector::CollectedMetrics).
 //!
 //! Windows does not expose Unix load average, Unix swap, or CPU I/O-wait
-//! state. These are reported as unsupported with explicit capability
-//! flags.
+//! state. These are reported as unsupported with explicit capability flags.
 
-use std::time::Instant;
+use gregg_host::model::CollectionLimits;
 
+use crate::collector::error::CollectError;
+use crate::collector::{CollectedMetrics, SystemCollector};
+use gregg_host::windows::source::WindowsSource;
+use gregg_host::HostCollector;
 use gregg_protocol::v2::{
-    DiskIoMetrics, DiskIoPayload, MetricCapabilitiesV2, NetworkInterfaceMetrics, NetworkPayload,
-    MAX_DISK_IO_ENTRIES, MAX_NETWORK_INTERFACE_ENTRIES,
+    DiskIoMetrics, DiskIoPayload, DriveMetrics, MetricCapabilitiesV2, NetworkInterfaceMetrics,
+    NetworkPayload,
 };
-use gregg_protocol::{LoadAverage, MetricCapabilities, SystemIdentity};
+use gregg_protocol::{LoadAverage, MetricCapabilities, SwapMetrics, SystemIdentity};
 
-use crate::collector::error::{CollectError, CollectErrorKind};
-use crate::collector::rate::CounterBaselines;
-use crate::collector::windows::source::{RawCpuTimes, WindowsSource};
-use crate::collector::{CollectedMetrics, DriveRefreshCache, SystemCollector};
+pub use gregg_host::windows::source::{
+    MockWindowsSource, NativeWindowsSource, RawCommit, RawCpuTimes, RawDiskIo, RawIdentity,
+    RawLogicalDrive, RawNetworkInterface, RawPhysicalMemory, RawProcessorTopology,
+    WindowsSource as HostWindowsSource,
+};
+pub use gregg_host::windows::WindowsCollector as HostWindowsCollector;
+pub use gregg_host::windows::{commit, cpu, identity, memory, source};
 
-pub mod commit;
-pub mod cpu;
-pub mod identity;
-pub mod memory;
-pub mod source;
+// --- Conversion -----------------------------------------------------------------
 
-fn collect_drives<S: WindowsSource>(
-    source: &S,
-) -> Result<Vec<gregg_protocol::v2::DriveMetrics>, CollectError> {
-    let raw = source.logical_drives()?;
-    let candidates = raw
-        .into_iter()
-        .filter(|drive| {
-            (drive.drive_type == source::DRIVE_FIXED || drive.drive_type == source::DRIVE_REMOVABLE)
-                && !drive.root.is_empty()
-        })
-        .map(|drive| crate::collector::drives::DriveCandidate {
-            identity: drive.root.clone(),
-            name: drive.root,
-            total_bytes: drive.total_bytes,
-            total_free_bytes: drive.total_free_bytes,
-            available_bytes: drive.available_bytes,
-        })
-        .collect();
-    Ok(crate::collector::drives::normalize(candidates))
+fn convert_identity(identity: gregg_host::model::HostIdentity) -> SystemIdentity {
+    SystemIdentity {
+        name: identity.name,
+        hostname: identity.hostname,
+        os_name: identity.os_name,
+        os_version: identity.os_version,
+        kernel_name: identity.kernel_name,
+        kernel_release: identity.kernel_release,
+        architecture: identity.architecture,
+    }
 }
 
-/// A Windows native collector.
-///
-/// Constructed once per daemon process. Identity and static fields are read
-/// eagerly during construction so the first [`Self::sample`] returns a
-/// warming error rather than blocking on identity I/O.
+fn convert_drive(drive: gregg_host::model::DriveMetrics) -> DriveMetrics {
+    DriveMetrics {
+        name: drive.name,
+        used_bytes: drive.used_bytes,
+        total_bytes: drive.total_bytes,
+        available_bytes: drive.available_bytes,
+    }
+}
+
+fn convert_disk_io(payload: gregg_host::model::DiskIoPayload) -> DiskIoPayload {
+    DiskIoPayload {
+        aggregate_read_bytes_per_sec: payload.aggregate_read_bytes_per_sec,
+        aggregate_write_bytes_per_sec: payload.aggregate_write_bytes_per_sec,
+        devices: payload
+            .devices
+            .into_iter()
+            .map(|device| DiskIoMetrics {
+                id: device.id,
+                name: device.name,
+                read_bytes_per_sec: device.read_bytes_per_sec,
+                write_bytes_per_sec: device.write_bytes_per_sec,
+                drive_name: device.drive_name,
+            })
+            .collect(),
+    }
+}
+
+fn convert_network(payload: gregg_host::model::NetworkPayload) -> NetworkPayload {
+    NetworkPayload {
+        aggregate_rx_bytes_per_sec: payload.aggregate_rx_bytes_per_sec,
+        aggregate_tx_bytes_per_sec: payload.aggregate_tx_bytes_per_sec,
+        aggregate_rx_capacity_bps: payload.aggregate_rx_capacity_bps,
+        aggregate_tx_capacity_bps: payload.aggregate_tx_capacity_bps,
+        interfaces: payload
+            .interfaces
+            .into_iter()
+            .map(|interface| NetworkInterfaceMetrics {
+                id: interface.id,
+                name: interface.name,
+                rx_bytes_per_sec: interface.rx_bytes_per_sec,
+                tx_bytes_per_sec: interface.tx_bytes_per_sec,
+                rx_capacity_bps: interface.rx_capacity_bps,
+                tx_capacity_bps: interface.tx_capacity_bps,
+                is_loopback: interface.is_loopback,
+                aggregate_member: interface.aggregate_member,
+            })
+            .collect(),
+    }
+}
+
+fn convert_sample(sample: gregg_host::model::HostSample) -> Result<CollectedMetrics, CollectError> {
+    let commit = sample.commit.ok_or_else(|| {
+        CollectError::new(
+            crate::collector::error::CollectErrorKind::Numeric,
+            "windows host sample missing commit",
+        )
+    })?;
+    Ok(CollectedMetrics {
+        logical_cores: sample.logical_cores,
+        cpu_usage_pct: sample.cpu_usage_pct,
+        cpu_iowait_pct: None,
+        load: LoadAverage {
+            one: 0.0,
+            five: 0.0,
+            fifteen: 0.0,
+        },
+        memory: gregg_protocol::MemoryMetrics {
+            used_bytes: sample.memory.used_bytes,
+            total_bytes: sample.memory.total_bytes,
+            usage_pct: sample.memory.usage_pct,
+        },
+        swap: SwapMetrics {
+            used_bytes: 0,
+            total_bytes: 0,
+            usage_pct: 0.0,
+        },
+        commit: Some(gregg_protocol::v2::CommitMetrics {
+            used_bytes: commit.used_bytes,
+            limit_bytes: commit.limit_bytes,
+            usage_pct: commit.usage_pct,
+        }),
+        drives: sample
+            .drives
+            .map(|drives| drives.into_iter().map(convert_drive).collect()),
+        cpu_frequency_hz: sample.cpu_frequency_hz,
+        disk_io: sample.disk_io.map(convert_disk_io),
+        network: sample.network.map(convert_network),
+    })
+}
+
+fn gregg_limits() -> CollectionLimits {
+    CollectionLimits {
+        max_drive_entries: gregg_protocol::v2::MAX_DRIVE_ENTRIES,
+        max_drive_name_bytes: gregg_protocol::v2::MAX_DRIVE_NAME_BYTES,
+        max_disk_io_entries: gregg_protocol::v2::MAX_DISK_IO_ENTRIES,
+        max_disk_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_disk_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+        max_network_interface_entries: gregg_protocol::v2::MAX_NETWORK_INTERFACE_ENTRIES,
+        max_network_id_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_ID_BYTES,
+        max_network_name_bytes: gregg_protocol::v2::MAX_LIVE_METRIC_NAME_BYTES,
+    }
+}
+
+// --- Compatibility collector -----------------------------------------------------
+
+/// Windows collector facade: production sampling delegates to `gregg-host`.
 #[derive(Debug)]
-pub struct WindowsCollector<S: WindowsSource = source::NativeWindowsSource> {
-    source: S,
-    identity: SystemIdentity,
-    capabilities: MetricCapabilities,
-    capabilities_v2: MetricCapabilitiesV2,
-    previous_cpu: Option<RawCpuTimes>,
-    logical_cores: u32,
-    drive_refresh: Option<DriveRefreshCache>,
-    disk_baselines: CounterBaselines,
-    network_baselines: CounterBaselines,
+pub struct WindowsCollector<S: WindowsSource = NativeWindowsSource> {
+    inner: gregg_host::windows::WindowsCollector<S>,
 }
 
-impl WindowsCollector<source::NativeWindowsSource> {
+impl WindowsCollector<NativeWindowsSource> {
     /// Create a collector using the production FFI implementation.
-    ///
-    /// `display_name` overrides the user-facing `name` field only; the actual
-    /// `hostname` continues to come from the host.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CollectError`] if identity or topology cannot be read.
     pub fn new(display_name: Option<&str>) -> Result<Self, CollectError> {
-        Self::with_source(source::NativeWindowsSource, display_name)
+        let inner = gregg_host::windows::WindowsCollector::with_source_and_limits(
+            NativeWindowsSource,
+            display_name,
+            gregg_limits(),
+        )?;
+        Ok(Self { inner })
     }
 }
 
 impl<S: WindowsSource + Clone> WindowsCollector<S> {
-    /// Create a collector with an injected source. Intended for tests so
-    /// synthetic values can be exercised without touching the host.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CollectError`] if identity or topology cannot be read.
+    /// Create a collector with an injected source.
     pub fn with_source(source: S, display_name: Option<&str>) -> Result<Self, CollectError> {
-        let raw_identity = source.identity()?;
-        let topology = source.processor_topology()?;
-
-        // Guard: reject multi-group topologies or single-group counts above
-        // the supported limit for `GetSystemTimes` aggregation.
-        if topology.group_count > 1 {
-            return Err(CollectError::new(
-                CollectErrorKind::SourceUnavailable,
-                "multiple processor groups are not supported; \
-                 GetSystemTimes only covers one group",
-            ));
-        }
-        if topology.active_logical_processors > cpu::MAX_SINGLE_GROUP_LOGICAL_PROCESSORS {
-            return Err(CollectError::new(
-                CollectErrorKind::SourceUnavailable,
-                format!(
-                    "logical processor count {} exceeds supported limit of {}",
-                    topology.active_logical_processors,
-                    cpu::MAX_SINGLE_GROUP_LOGICAL_PROCESSORS
-                ),
-            ));
-        }
-
-        let logical_cores = raw_identity.logical_cores.max(1);
-        let system_identity = identity::collect_identity(&source, display_name)?;
-
-        Ok(Self {
+        let inner = gregg_host::windows::WindowsCollector::with_source_and_limits(
             source,
-            identity: system_identity,
-            capabilities: MetricCapabilities { cpu_iowait: false },
-            capabilities_v2: MetricCapabilitiesV2 {
-                cpu_iowait: false,
-                load_average: false,
-                swap: false,
-                memory_commit: true,
-            },
-            previous_cpu: None,
-            logical_cores,
-            drive_refresh: None,
-            disk_baselines: CounterBaselines::default(),
-            network_baselines: CounterBaselines::default(),
-        })
+            display_name,
+            gregg_limits(),
+        )?;
+        Ok(Self { inner })
     }
 
-    /// Borrow the underlying source mutably. Tests use this to swap values
-    /// between samples; production code does not need it.
+    /// Borrow the underlying source mutably.
     #[must_use]
     pub fn source_mut(&mut self) -> &mut S {
-        &mut self.source
-    }
-}
-
-impl<S: WindowsSource + Clone + 'static> WindowsCollector<S> {
-    fn refresh_drives(&mut self) -> Option<Vec<gregg_protocol::v2::DriveMetrics>> {
-        if self.drive_refresh.is_none() {
-            self.drive_refresh = Some(DriveRefreshCache::new(
-                self.source.clone(),
-                collect_drives::<S>,
-            ));
-        }
-        self.drive_refresh
-            .as_mut()
-            .and_then(DriveRefreshCache::poll)
-    }
-
-    fn collect_disk_io(&mut self, now: Instant) -> Option<DiskIoPayload> {
-        let Ok(records) = self.source.disk_io() else {
-            self.disk_baselines.clear();
-            return None;
-        };
-        self.disk_baselines
-            .retain_ids(records.iter().map(|r| r.id.as_str()));
-        let mut devices = Vec::new();
-        let mut read_total = 0u64;
-        let mut write_total = 0u64;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.disk_baselines
-                    .observe(&record.id, now, record.read_bytes, record.write_bytes)
-            else {
-                continue;
-            };
-            read_total = read_total.saturating_add(rate.first_per_sec);
-            write_total = write_total.saturating_add(rate.second_per_sec);
-            if devices.len() < MAX_DISK_IO_ENTRIES {
-                devices.push(DiskIoMetrics {
-                    id: record.id,
-                    name: record.name,
-                    read_bytes_per_sec: rate.first_per_sec,
-                    write_bytes_per_sec: rate.second_per_sec,
-                    drive_name: None,
-                });
-            }
-        }
-        (!devices.is_empty()).then_some(DiskIoPayload {
-            aggregate_read_bytes_per_sec: read_total,
-            aggregate_write_bytes_per_sec: write_total,
-            devices,
-        })
-    }
-
-    fn collect_network(&mut self, now: Instant) -> Option<NetworkPayload> {
-        let Ok(records) = self.source.network_interfaces() else {
-            self.network_baselines.clear();
-            return None;
-        };
-        self.network_baselines
-            .retain_ids(records.iter().map(|r| r.id.as_str()));
-        let mut interfaces = Vec::new();
-        let mut rx_total = 0u64;
-        let mut tx_total = 0u64;
-        let mut rx_capacity: Option<u64> = None;
-        let mut tx_capacity: Option<u64> = None;
-        for record in records {
-            if record.id.is_empty()
-                || record.name.is_empty()
-                || record.id.contains('\0')
-                || record.name.contains('\0')
-            {
-                continue;
-            }
-            let Some(rate) =
-                self.network_baselines
-                    .observe(&record.id, now, record.rx_bytes, record.tx_bytes)
-            else {
-                continue;
-            };
-            let aggregate_member = record.aggregate_member && !record.is_loopback;
-            if aggregate_member {
-                rx_total = rx_total.saturating_add(rate.first_per_sec);
-                tx_total = tx_total.saturating_add(rate.second_per_sec);
-                if record.operational && !record.is_loopback {
-                    if let Some(capacity) = record.rx_capacity_bps {
-                        rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));
-                    }
-                    if let Some(capacity) = record.tx_capacity_bps {
-                        tx_capacity = Some(tx_capacity.unwrap_or(0).saturating_add(capacity));
-                    }
-                }
-            }
-            if interfaces.len() < MAX_NETWORK_INTERFACE_ENTRIES {
-                interfaces.push(NetworkInterfaceMetrics {
-                    id: record.id,
-                    name: record.name,
-                    rx_bytes_per_sec: rate.first_per_sec,
-                    tx_bytes_per_sec: rate.second_per_sec,
-                    rx_capacity_bps: record.rx_capacity_bps,
-                    tx_capacity_bps: record.tx_capacity_bps,
-                    is_loopback: record.is_loopback,
-                    aggregate_member,
-                });
-            }
-        }
-        (!interfaces.is_empty()).then_some(NetworkPayload {
-            aggregate_rx_bytes_per_sec: rx_total,
-            aggregate_tx_bytes_per_sec: tx_total,
-            aggregate_rx_capacity_bps: rx_capacity,
-            aggregate_tx_capacity_bps: tx_capacity,
-            interfaces,
-        })
+        self.inner.source_mut()
     }
 }
 
 impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S> {
     fn identity(&self) -> Result<SystemIdentity, CollectError> {
-        Ok(self.identity.clone())
+        self.inner.identity().map(convert_identity)
     }
 
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
-        let raw_cpu = self.source.cpu_times()?;
-        let raw_memory = self.source.physical_memory()?;
-        let raw_commit = self.source.commit()?;
-        let now = Instant::now();
-
-        let cpu_sample = if let Some(prev) = self.previous_cpu.as_ref() {
-            match cpu::compute_cpu_percentages(prev, &raw_cpu) {
-                Ok(sample) => Some(sample),
-                Err(CollectError {
-                    kind: CollectErrorKind::CounterReset,
-                    ..
-                }) => {
-                    self.previous_cpu = Some(raw_cpu);
-                    return Err(CollectError::counter_reset(
-                        "CPU counters reset; baseline re-established",
-                    ));
-                }
-                Err(other) => return Err(other),
-            }
-        } else {
-            self.previous_cpu = Some(raw_cpu);
-            return Err(CollectError::warming(
-                "first CPU sample establishes the counter baseline",
-            ));
-        };
-
-        self.previous_cpu = Some(raw_cpu);
-
-        let mem_sample = memory::compute_memory(&raw_memory)?;
-        let commit_sample = commit::compute_commit(&raw_commit)?;
-
-        let cpu = cpu_sample.ok_or_else(|| {
-            CollectError::new(
-                CollectErrorKind::Numeric,
-                "cpu_sample should be Some after baseline established",
-            )
-        })?;
-
-        Ok(CollectedMetrics {
-            logical_cores: self.logical_cores,
-            cpu_usage_pct: Some(cpu.usage_pct),
-            cpu_iowait_pct: None,
-            load: LoadAverage {
-                one: 0.0,
-                five: 0.0,
-                fifteen: 0.0,
-            },
-            memory: mem_sample.into_metrics(),
-            swap: gregg_protocol::SwapMetrics {
-                used_bytes: 0,
-                total_bytes: 0,
-                usage_pct: 0.0,
-            },
-            commit: Some(commit_sample.into_metrics()),
-            drives: self.refresh_drives(),
-            cpu_frequency_hz: self.source.cpu_frequency_hz().ok().flatten(),
-            disk_io: self.collect_disk_io(now),
-            network: self.collect_network(now),
-        })
+        self.inner.sample().and_then(convert_sample)
     }
 
     fn capabilities(&self) -> MetricCapabilities {
-        self.capabilities
+        MetricCapabilities { cpu_iowait: false }
     }
 
     fn capabilities_v2(&self) -> MetricCapabilitiesV2 {
-        self.capabilities_v2
+        let caps = self.inner.capabilities();
+        MetricCapabilitiesV2 {
+            cpu_iowait: caps.cpu_iowait,
+            load_average: caps.load_average,
+            swap: caps.swap,
+            memory_commit: caps.memory_commit,
+        }
     }
 
     fn supports_v1_snapshot(&self) -> bool {
@@ -342,9 +213,6 @@ impl<S: WindowsSource + Clone + 'static> SystemCollector for WindowsCollector<S>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collector::windows::source::{
-        MockWindowsSource, RawDiskIo, RawIdentity, RawNetworkInterface, RawProcessorTopology,
-    };
     use crate::collector::SystemCollector;
 
     fn default_identity() -> RawIdentity {
@@ -382,8 +250,6 @@ mod tests {
         panic!("drive refresh did not complete");
     }
 
-    // --- Topology guard tests (Workstream C) ---
-
     #[test]
     fn single_group_within_limit_succeeds() {
         let mut mock = mock_source();
@@ -391,22 +257,7 @@ mod tests {
             active_logical_processors: 64,
             group_count: 1,
         };
-        let result = WindowsCollector::with_source(mock, None);
-        assert!(
-            result.is_ok(),
-            "64 processors in 1 group should be accepted"
-        );
-    }
-
-    #[test]
-    fn single_group_exceeding_limit_rejected() {
-        let mut mock = mock_source();
-        mock.topology = RawProcessorTopology {
-            active_logical_processors: 65,
-            group_count: 1,
-        };
-        let err = WindowsCollector::with_source(mock, None).expect_err("65 should be rejected");
-        assert!(err.message.contains("exceeds supported limit"));
+        assert!(WindowsCollector::with_source(mock, None).is_ok());
     }
 
     #[test]
@@ -416,311 +267,43 @@ mod tests {
             active_logical_processors: 8,
             group_count: 2,
         };
-        let err = WindowsCollector::with_source(mock, None).expect_err("2 groups should fail");
+        let err = WindowsCollector::with_source(mock, None).expect_err("2 groups fail");
         assert!(err.message.contains("multiple processor groups"));
     }
 
     #[test]
-    fn single_processor_accepted() {
-        let mut mock = mock_source();
-        mock.topology = RawProcessorTopology {
-            active_logical_processors: 1,
-            group_count: 1,
-        };
-        assert!(WindowsCollector::with_source(mock, None).is_ok());
-    }
-
-    #[test]
-    fn boundary_sixty_four_accepted() {
-        let mut mock = mock_source();
-        mock.topology = RawProcessorTopology {
-            active_logical_processors: 64,
-            group_count: 1,
-        };
-        assert!(WindowsCollector::with_source(mock, None).is_ok());
-    }
-
-    #[test]
-    fn boundary_sixty_five_rejected() {
-        let mut mock = mock_source();
-        mock.topology = RawProcessorTopology {
-            active_logical_processors: 65,
-            group_count: 1,
-        };
-        assert!(WindowsCollector::with_source(mock, None).is_err());
-    }
-
-    #[test]
-    fn topology_error_propagated() {
-        let mut mock = mock_source();
-        mock.topology_error = true;
-        let err = WindowsCollector::with_source(mock, None).expect_err("topology error");
-        assert_eq!(
-            err.kind,
-            crate::collector::error::CollectErrorKind::SourceUnavailable
-        );
-    }
-
-    #[test]
-    fn identity_error_propagated() {
-        let mut mock = mock_source();
-        mock.identity_error = true;
-        let err = WindowsCollector::with_source(mock, None).expect_err("identity error");
-        assert_eq!(
-            err.kind,
-            crate::collector::error::CollectErrorKind::SourceUnavailable
-        );
-    }
-
-    // --- Structural invariant tests (Workstream I) ---
-
-    #[test]
-    fn identity_fields_are_nonempty() {
-        let mock = mock_source();
-        let collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let identity = collector.identity().expect("identity");
-        assert!(!identity.hostname.is_empty());
-        assert!(!identity.os_name.is_empty());
-        assert_eq!(identity.os_name, "windows");
-        assert!(!identity.kernel_name.is_empty());
-        assert!(!identity.architecture.is_empty());
-    }
-
-    #[test]
-    fn logical_cores_is_positive() {
-        let mock = mock_source();
-        let collector = WindowsCollector::with_source(mock, None).expect("collector");
-        assert!(collector.logical_cores > 0);
-    }
-
-    #[test]
-    fn memory_total_positive_used_not_exceeding_total() {
-        let mock = mock_source();
-        let collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let mut collector = collector;
-        // First sample warms
-        let _ = collector.sample();
-        // Second sample produces metrics
-        let metrics = collector.sample().expect("second sample");
-        assert!(metrics.memory.total_bytes > 0);
-        assert!(metrics.memory.used_bytes <= metrics.memory.total_bytes);
-    }
-
-    #[test]
-    fn drive_capacity_preserves_total_free_and_caller_available() {
-        let mut collector = WindowsCollector::with_source(mock_source(), None).expect("collector");
-        let _ = collector.sample();
-        let metrics = sample_until_drives(&mut collector);
-        let drive = &metrics.drives.expect("drives")[0];
-
-        assert_eq!(drive.used_bytes, 75);
-        assert_eq!(drive.total_bytes, 100);
-        assert_eq!(drive.available_bytes, Some(20));
-    }
-
-    #[test]
-    fn live_metrics_publish_frequency_rates_capacities_and_loopback_detail() {
-        let mut mock = mock_source();
-        mock.cpu_frequency = Some(2_400_000_000);
-        mock.disk = vec![RawDiskIo {
-            id: "physical-0".to_string(),
-            name: "PhysicalDrive0".to_string(),
-            read_bytes: 1_000,
-            write_bytes: 2_000,
-        }];
-        mock.network = vec![
-            RawNetworkInterface {
-                id: "loopback".to_string(),
-                name: "Loopback".to_string(),
-                rx_bytes: 10_000,
-                tx_bytes: 20_000,
-                rx_capacity_bps: Some(1_000_000_000),
-                tx_capacity_bps: Some(1_000_000_000),
-                is_loopback: true,
-                operational: true,
-                aggregate_member: false,
-            },
-            RawNetworkInterface {
-                id: "ethernet".to_string(),
-                name: "Ethernet".to_string(),
-                rx_bytes: 30_000,
-                tx_bytes: 40_000,
-                rx_capacity_bps: Some(10_000_000_000),
-                tx_capacity_bps: Some(8_000_000_000),
-                is_loopback: false,
-                operational: true,
-                aggregate_member: true,
-            },
-        ];
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-
-        let _ = collector.sample().expect_err("first sample warms");
-        let baseline = collector
-            .sample()
-            .expect("second sample establishes live baselines");
-        assert!(baseline.disk_io.is_none());
-        assert!(baseline.network.is_none());
-
-        collector.source_mut().disk[0].read_bytes += 1_000;
-        collector.source_mut().disk[0].write_bytes += 2_000;
-        collector.source_mut().network[0].rx_bytes += 1_000;
-        collector.source_mut().network[0].tx_bytes += 2_000;
-        collector.source_mut().network[1].rx_bytes += 3_000;
-        collector.source_mut().network[1].tx_bytes += 4_000;
-
-        let metrics = collector
-            .sample()
-            .expect("third sample publishes live metrics");
-        assert_eq!(metrics.cpu_frequency_hz, Some(2_400_000_000));
-        let disk = metrics.disk_io.expect("disk rates");
-        assert_eq!(disk.devices.len(), 1);
-        assert!(disk.aggregate_read_bytes_per_sec > 0);
-        assert!(disk.aggregate_write_bytes_per_sec > 0);
-
-        let network = metrics.network.expect("network rates");
-        assert!(network.aggregate_rx_bytes_per_sec > 0);
-        assert!(network.aggregate_tx_bytes_per_sec > 0);
-        assert_eq!(network.aggregate_rx_capacity_bps, Some(10_000_000_000));
-        assert_eq!(network.aggregate_tx_capacity_bps, Some(8_000_000_000));
-        assert!(network
-            .interfaces
-            .iter()
-            .find(|interface| interface.is_loopback)
-            .is_some_and(|interface| !interface.aggregate_member));
-    }
-
-    #[test]
-    fn first_sample_warms() {
-        let mock = mock_source();
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let err = collector.sample().expect_err("first sample should warm");
+    fn first_sample_warms_then_ready_with_commit() {
+        let mut collector = WindowsCollector::with_source(mock_source(), None).expect("constructs");
+        let err = collector.sample().expect_err("first warms");
         assert_eq!(err.kind, crate::collector::error::CollectErrorKind::Warming);
-    }
-
-    #[test]
-    fn second_sample_becomes_ready() {
-        let mut mock = mock_source();
-        mock.auto_increment_cpu = true;
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample(); // warm
-        let metrics = collector.sample().expect("second sample");
+        let metrics = collector.sample().expect("second succeeds");
         assert!(metrics.cpu_usage_pct.is_some());
-        let cpu = metrics.cpu_usage_pct.unwrap();
-        assert!(cpu.is_finite());
-        assert!((0.0..=100.0).contains(&cpu));
-    }
-
-    #[test]
-    fn commit_is_some() {
-        let mock = mock_source();
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample();
-        let metrics = collector.sample().expect("second sample");
-        assert!(metrics.commit.is_some());
-        let commit = metrics.commit.unwrap();
-        assert!(commit.used_bytes <= commit.limit_bytes);
-        assert!(commit.usage_pct.is_finite());
-        assert!((0.0..=100.0).contains(&commit.usage_pct));
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn unsupported_metrics_are_absent() {
-        let mock = mock_source();
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample();
-        let metrics = collector.sample().expect("second sample");
-        // iowait should be None
         assert!(metrics.cpu_iowait_pct.is_none());
-        // load should be zero (v1 convention for unsupported)
-        assert_eq!(metrics.load.one, 0.0);
-        assert_eq!(metrics.load.five, 0.0);
-        assert_eq!(metrics.load.fifteen, 0.0);
-        // swap should be zero (v1 convention for unsupported)
-        assert_eq!(metrics.swap.used_bytes, 0);
-        assert_eq!(metrics.swap.total_bytes, 0);
-    }
-
-    #[test]
-    fn v2_capabilities_match_plan() {
-        let mock = mock_source();
-        let collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let v2 = collector.capabilities_v2();
-        assert!(!v2.cpu_iowait);
-        assert!(!v2.load_average);
-        assert!(!v2.swap);
-        assert!(v2.memory_commit);
-    }
-
-    #[test]
-    fn supports_v1_snapshot_returns_false() {
-        let mock = mock_source();
-        let collector = WindowsCollector::with_source(mock, None).expect("collector");
+        assert!(metrics.commit.is_some());
         assert!(!collector.supports_v1_snapshot());
-    }
-
-    // --- CPU error handling tests ---
-
-    #[test]
-    fn cpu_error_propagated() {
-        let mut mock = mock_source();
-        mock.cpu_error = true;
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample(); // warm
-        let err = collector.sample().expect_err("cpu error");
-        assert_eq!(
-            err.kind,
-            crate::collector::error::CollectErrorKind::SourceUnavailable
-        );
+        let caps_v2 = collector.capabilities_v2();
+        assert!(!caps_v2.cpu_iowait && !caps_v2.load_average && !caps_v2.swap);
+        assert!(caps_v2.memory_commit);
     }
 
     #[test]
-    fn memory_error_propagated() {
-        let mut mock = mock_source();
-        mock.memory_error = true;
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample(); // warm
-        let err = collector.sample().expect_err("memory error");
-        assert_eq!(
-            err.kind,
-            crate::collector::error::CollectErrorKind::SourceUnavailable
-        );
-    }
-
-    #[test]
-    fn commit_error_propagated() {
-        let mut mock = mock_source();
-        mock.commit_error = true;
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
-        let _ = collector.sample(); // warm
-        let err = collector.sample().expect_err("commit error");
-        assert_eq!(
-            err.kind,
-            crate::collector::error::CollectErrorKind::SourceUnavailable
-        );
-    }
-
-    #[test]
-    fn drive_enumeration_failure_preserves_core_metrics_and_omits_drives() {
+    fn drive_failure_preserves_core_sample() {
         let mut mock = mock_source();
         mock.drives_error = true;
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let mut collector = WindowsCollector::with_source(mock, None).expect("constructs");
         let _ = collector.sample().expect_err("warming");
-        let metrics = collector.sample().expect("core metrics remain available");
-
+        let metrics = collector.sample().expect("core succeeds");
         assert!(metrics.cpu_usage_pct.is_some());
-        assert!(metrics.memory.total_bytes > 0);
-        assert!(metrics.drives.is_none());
+        assert_eq!(metrics.drives, None);
     }
 
     #[test]
-    fn filtered_drive_enumeration_is_successful_empty() {
+    fn successful_empty_drive_enumeration_is_preserved() {
         let mut mock = mock_source();
         mock.drives.clear();
-        let mut collector = WindowsCollector::with_source(mock, None).expect("collector");
+        let mut collector = WindowsCollector::with_source(mock, None).expect("constructs");
         let _ = collector.sample().expect_err("warming");
         let metrics = sample_until_drives(&mut collector);
-
         assert_eq!(metrics.drives, Some(Vec::new()));
     }
 }

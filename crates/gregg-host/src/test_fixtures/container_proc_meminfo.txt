@@ -1,0 +1,7 @@
+Minimal container-style meminfo: no MemAvailable, small memory.
+MemTotal:        2048000 kB
+MemFree:         1024000 kB
+Buffers:          100000 kB
+Cached:           200000 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
