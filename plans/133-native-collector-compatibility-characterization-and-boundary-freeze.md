@@ -157,17 +157,17 @@ Then use one ordinary existing CI run as the native baseline.
 
 ## Acceptance criteria
 
-- [ ] Current public/cross-module collector paths and responsibilities are explicitly inventoried.
-- [ ] CPU warmup/reset/recovery sequences are deterministically characterized for Linux, macOS, and Windows.
-- [ ] Disk/network baseline, disappearance/reappearance, counter-decrease, and source-failure behavior is characterized.
-- [ ] Drive refresh first-result, empty-result, last-success, panic, and blocked-drop semantics are characterized.
-- [ ] Optional telemetry failures are proven not to fail core readiness.
-- [ ] Canonical Linux/macOS/Windows collector results produce frozen v1/v2 Rust and JSON expectations.
-- [ ] Windows v2-only behavior is explicitly frozen.
-- [ ] Public collector compatibility imports are covered by a compile/test boundary.
-- [ ] No collector formula, timing location, cadence, protocol shape, readiness policy, worker behavior, or platform support is changed.
-- [ ] Rust 1.89 and all current native CI jobs are green at the characterization SHA.
-- [ ] The architecture boundary is documented for Plan 134/135 handoff.
+- [x] Current public/cross-module collector paths and responsibilities are explicitly inventoried.
+- [x] CPU warmup/reset/recovery sequences are deterministically characterized for Linux, macOS, and Windows.
+- [x] Disk/network baseline, disappearance/reappearance, counter-decrease, and source-failure behavior is characterized.
+- [x] Drive refresh first-result, empty-result, last-success, panic, and blocked-drop semantics are characterized.
+- [x] Optional telemetry failures are proven not to fail core readiness.
+- [x] Canonical Linux/macOS/Windows collector results produce frozen v1/v2 Rust and JSON expectations.
+- [x] Windows v2-only behavior is explicitly frozen.
+- [x] Public collector compatibility imports are covered by a compile/test boundary.
+- [x] No collector formula, timing location, cadence, protocol shape, readiness policy, worker behavior, or platform support is changed.
+- [x] Rust 1.89 and all current native CI jobs are green at the characterization SHA.
+- [x] The architecture boundary is documented for Plan 134/135 handoff.
 
 ## Explicit non-goals
 

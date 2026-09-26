@@ -411,9 +411,13 @@ abstraction; NetBSD/OpenBSD remain separate future backends.
 Capabilities: `cpu_iowait=false`, `load_average=true`, `swap=false`,
 `memory_commit=false`, `drives/disk_io/network=true`, `cpu_frequency=false`.
 Native CI proves identity/cores/CPU/memory/load/drives/network enumeration
-plus disk-write and loopback traffic-direction advancement; zero-rate
-intervals remain valid. Full `greggd` FreeBSD service/install/release
-support is a later product plan, not implied.
+plus disk-write activity and loopback counter-activity advancement; zero-rate
+intervals remain valid. The native loopback smoke proves that the mapped
+ifmib byte-counter fields are live and advance under known loopback traffic.
+RX/TX semantic ordering is grounded in the field-for-field FreeBSD
+`struct if_data` ABI mapping, not inferred from symmetric loopback traffic.
+Full `greggd` FreeBSD service/install/release support is a later product
+plan, not implied.
 
 ## Fixture files
 

@@ -311,21 +311,21 @@ Do not make Plan 136 depend on those future ports.
 
 ## Acceptance criteria
 
-- [ ] `gregg-host::freebsd` exists as an explicit backend with injectable native source seam.
-- [ ] No generic Unix/BSD collector abstraction is introduced.
-- [ ] FreeBSD identity, CPU, load, and physical-memory collection are implemented from native APIs with documented semantics.
-- [ ] Swap is implemented only if a stable unprivileged native source is qualified; otherwise it is truthfully unsupported with a recorded follow-up.
-- [ ] Local filesystem capacity uses native records and shared drive normalization/slow-probe isolation.
-- [ ] Disk I/O uses native devstat/sysctl behavior without shell commands and shared reset-safe rate logic.
-- [ ] Network telemetry uses native ifmib/sysctl behavior without shell commands and shared reset-safe rate logic.
-- [ ] Optional metric-family failure does not fail core sampling.
-- [ ] Collection bounds and deterministic ordering are preserved.
-- [ ] Unsafe code is confined to documented FreeBSD FFI/source modules.
-- [ ] Deterministic mock/parser tests cover reset/hotplug/sparse/error/extreme cases.
-- [ ] A bounded native FreeBSD CI/smoke path proves the collector on a supported release.
-- [ ] Existing Linux/macOS/Windows/MSRV qualification remains green.
-- [ ] Documentation states exact FreeBSD support without implying complete `greggd` product support.
-- [ ] NetBSD/OpenBSD remain explicitly deferred follow-up backends.
+- [x] `gregg-host::freebsd` exists as an explicit backend with injectable native source seam.
+- [x] No generic Unix/BSD collector abstraction is introduced.
+- [x] FreeBSD identity, CPU, load, and physical-memory collection are implemented from native APIs with documented semantics.
+- [x] Swap is implemented only if a stable unprivileged native source is qualified; otherwise it is truthfully unsupported with a recorded follow-up.
+- [x] Local filesystem capacity uses native records and shared drive normalization/slow-probe isolation.
+- [x] Disk I/O uses native devstat/sysctl behavior without shell commands and shared reset-safe rate logic.
+- [x] Network telemetry uses native ifmib/sysctl behavior without shell commands and shared reset-safe rate logic.
+- [x] Optional metric-family failure does not fail core sampling.
+- [x] Collection bounds and deterministic ordering are preserved.
+- [x] Unsafe code is confined to documented FreeBSD FFI/source modules.
+- [x] Deterministic mock/parser tests cover reset/hotplug/sparse/error/extreme cases.
+- [x] A bounded native FreeBSD CI/smoke path proves the collector on a supported release.
+- [x] Existing Linux/macOS/Windows/MSRV qualification remains green.
+- [x] Documentation states exact FreeBSD support without implying complete `greggd` product support.
+- [x] NetBSD/OpenBSD remain explicitly deferred follow-up backends.
 
 ## Explicit non-goals
 
@@ -442,3 +442,21 @@ semantic change.
    monotonicity are already proven natively).
 3. NetBSD (UVM/sysctl) and OpenBSD (release ABI, Tier-3 attention) backends
    as separate researched plans.
+
+## Plan-137 correction note (appended, history preserved)
+
+Plan 137 corrects the network-evidence wording without rewriting the
+implementation or CI evidence above. The loopback ping test is
+counter-activity evidence, not an RX/TX field-order proof: the native
+loopback smoke proves that the mapped ifmib byte-counter fields are live
+and advance under known loopback traffic. RX/TX semantic ordering is
+grounded in the field-for-field FreeBSD `struct if_data` ABI mapping, not
+inferred from symmetric loopback traffic. The strengthened
+`native_loopback_traffic_advances_lo_counters` test (Plan 137) requires the
+base-system ping to execute successfully, requires the same stable
+loopback identity before and after traffic, retains monotonicity checks,
+and requires both RX and TX to advance strictly. CI run `36220930632`
+remains valid evidence for the implementation state it tested; Plan 137
+records its own implementation SHA and CI run for the corrected
+qualification. Plan 136 remains complete with Plan 137 as its narrow
+corrective follow-up.

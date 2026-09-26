@@ -259,20 +259,20 @@ The existing macOS and Windows native CI jobs must compile and exercise the move
 
 ## Acceptance criteria
 
-- [ ] `crates/gregg-host` exists as a workspace crate with Rust 1.89 MSRV.
-- [ ] The crate has no dependency on `gregg-protocol`, Tokio, EggServe, Clap, updater, client, or TUI crates.
-- [ ] Protocol-neutral identity/capability/sample types cover every field currently collected by Linux/macOS/Windows.
-- [ ] Collection limits are no longer imported from `gregg-protocol` inside the reusable crate.
-- [ ] Shared rate/baseline semantics move without behavioral change.
-- [ ] Drive normalization and slow-refresh isolation move without behavioral change.
-- [ ] Linux native source/parsers/collector/fixtures move with Plan-133 characterization green.
-- [ ] Corrected macOS Mach/sysctl/libc/IOKit implementation moves with arm64+Intel tests green.
-- [ ] Windows native FFI/source/collector moves with current topology/commit/network/disk semantics green.
-- [ ] No external metrics command or privilege requirement is introduced.
-- [ ] Unsafe remains contained to documented platform FFI/source boundaries.
-- [ ] Existing workspace tests and Rust-1.89 compilation remain green.
-- [ ] `greggd` can still compile against a compatibility layer pending Plan 135 cutover.
-- [ ] Package-name availability is checked before any crates.io publication; publication itself is not required by this plan.
+- [x] `crates/gregg-host` exists as a workspace crate with Rust 1.89 MSRV.
+- [x] The crate has no dependency on `gregg-protocol`, Tokio, EggServe, Clap, updater, client, or TUI crates.
+- [x] Protocol-neutral identity/capability/sample types cover every field currently collected by Linux/macOS/Windows.
+- [x] Collection limits are no longer imported from `gregg-protocol` inside the reusable crate.
+- [x] Shared rate/baseline semantics move without behavioral change.
+- [x] Drive normalization and slow-refresh isolation move without behavioral change.
+- [x] Linux native source/parsers/collector/fixtures move with Plan-133 characterization green.
+- [x] Corrected macOS Mach/sysctl/libc/IOKit implementation moves with arm64+Intel tests green.
+- [x] Windows native FFI/source/collector moves with current topology/commit/network/disk semantics green.
+- [x] No external metrics command or privilege requirement is introduced.
+- [x] Unsafe remains contained to documented platform FFI/source boundaries.
+- [x] Existing workspace tests and Rust-1.89 compilation remain green.
+- [x] `greggd` can still compile against a compatibility layer pending Plan 135 cutover.
+- [x] Package-name availability is checked before any crates.io publication; publication itself is not required by this plan.
 
 ## Explicit non-goals
 

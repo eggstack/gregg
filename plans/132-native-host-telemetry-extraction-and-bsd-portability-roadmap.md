@@ -184,16 +184,16 @@ Do not include:
 
 ## Acceptance criteria
 
-- [ ] Plan 133 records and tests the exact compatibility surface before source movement.
-- [ ] Plan 134 creates a protocol-neutral native telemetry crate and moves the reusable Linux/macOS/Windows collection implementation without semantic drift.
-- [ ] Plan 135 makes `greggd` consume the extracted implementation while preserving public collector compatibility, protocol output, readiness, native behavior, MSRV, and operational failure isolation.
-- [ ] Existing Linux, macOS arm64, macOS Intel, and Windows native qualification remains green.
-- [ ] No new external metrics command, privilege requirement, async/runtime framework, or generic system-information dependency is introduced.
-- [ ] `greggd` retains exact current v1/v2 semantics, including Windows v2-only behavior.
-- [ ] The extracted crate is not coupled to `gregg-protocol`.
-- [ ] Plan 136 proves the design with a native FreeBSD backend after existing-platform qualification.
-- [ ] NetBSD/OpenBSD remain explicit future backends rather than being falsely claimed through a generic BSD flag.
-- [ ] Current architecture and planning documentation are reconciled after each phase.
+- [x] Plan 133 records and tests the exact compatibility surface before source movement.
+- [x] Plan 134 creates a protocol-neutral native telemetry crate and moves the reusable Linux/macOS/Windows collection implementation without semantic drift.
+- [x] Plan 135 makes `greggd` consume the extracted implementation while preserving public collector compatibility, protocol output, readiness, native behavior, MSRV, and operational failure isolation.
+- [x] Existing Linux, macOS arm64, macOS Intel, and Windows native qualification remains green.
+- [x] No new external metrics command, privilege requirement, async/runtime framework, or generic system-information dependency is introduced.
+- [x] `greggd` retains exact current v1/v2 semantics, including Windows v2-only behavior.
+- [x] The extracted crate is not coupled to `gregg-protocol`.
+- [x] Plan 136 proves the design with a native FreeBSD backend after existing-platform qualification.
+- [x] NetBSD/OpenBSD remain explicit future backends rather than being falsely claimed through a generic BSD flag.
+- [x] Current architecture and planning documentation are reconciled after each phase.
 
 ## Handoff note
 

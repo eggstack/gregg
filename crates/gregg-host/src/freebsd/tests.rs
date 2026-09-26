@@ -377,8 +377,8 @@ fn native_smoke_warms_and_validates() {
         .any(|interface| !interface.is_loopback));
 }
 
-/// Native direction proof: known disk-write traffic must advance write
-/// counters (read family must not advance from a pure write).
+/// Native write-activity proof: known disk-write traffic must advance write
+/// counters (read family stays monotonic; write family strictly advances).
 #[cfg(target_os = "freebsd")]
 #[test]
 fn native_disk_write_traffic_advances_write_counters() {
@@ -413,28 +413,83 @@ fn native_disk_write_traffic_advances_write_counters() {
     );
 }
 
-/// Native direction proof: loopback ping must advance `lo` counters.
+/// Native counter-activity proof: loopback ping must advance `lo` counters.
+///
+/// The native loopback smoke proves that the mapped ifmib byte-counter
+/// fields are live and advance under known loopback traffic. RX/TX semantic
+/// ordering is grounded in the field-for-field FreeBSD `struct if_data` ABI
+/// mapping, not inferred from symmetric loopback traffic.
 #[cfg(target_os = "freebsd")]
 #[test]
 fn native_loopback_traffic_advances_lo_counters() {
     use super::source::{FreeBsdSource, NativeFreeBsdSource};
+    use std::time::Duration;
     let source = NativeFreeBsdSource;
-    let before = source.network_interfaces().expect("ifmib readable");
-    let ping = std::process::Command::new("ping")
+    let before = source
+        .network_interfaces()
+        .expect("ifmib readable before traffic");
+    let previous = before
+        .iter()
+        .find(|iface| iface.is_loopback)
+        .expect("loopback interface present before traffic");
+    let previous_id = previous.id.clone();
+    let previous_name = previous.name.clone();
+    let previous_rx = previous.rx_bytes;
+    let previous_tx = previous.tx_bytes;
+    let output = std::process::Command::new("ping")
         .args(["-c", "3", "-t", "2", "127.0.0.1"])
-        .output();
-    if !ping.is_ok_and(|output| output.status.success()) {
-        eprintln!("ping unavailable; skipping loopback direction proof");
+        .output()
+        .expect("FreeBSD base-system ping must execute on the qualification image");
+    assert!(
+        output.status.success(),
+        "FreeBSD base-system ping must succeed on the qualification image"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let after = source
+        .network_interfaces()
+        .expect("ifmib readable after traffic");
+    let current = after
+        .iter()
+        .find(|iface| iface.id == previous_id)
+        .expect("same loopback interface present after traffic");
+    assert_eq!(
+        current.name, previous_name,
+        "loopback identity must remain stable across traffic"
+    );
+    assert!(
+        current.is_loopback,
+        "matched interface must still be loopback after traffic"
+    );
+    assert!(
+        current.rx_bytes >= previous_rx && current.tx_bytes >= previous_tx,
+        "loopback counters must be monotonic"
+    );
+    if current.rx_bytes > previous_rx && current.tx_bytes > previous_tx {
         return;
     }
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let after = source.network_interfaces().expect("ifmib readable");
-    let lo_before = before.iter().find(|iface| iface.is_loopback);
-    let lo_after = after.iter().find(|iface| iface.is_loopback);
-    if let (Some(previous), Some(current)) = (lo_before, lo_after) {
-        assert!(
-            current.rx_bytes >= previous.rx_bytes && current.tx_bytes >= previous.tx_bytes,
-            "loopback counters must be monotonic"
-        );
-    }
+    // One bounded re-read for counter-accounting visibility only.
+    std::thread::sleep(Duration::from_millis(1000));
+    let again = source
+        .network_interfaces()
+        .expect("ifmib readable on visibility retry");
+    let current = again
+        .iter()
+        .find(|iface| iface.id == previous_id)
+        .expect("same loopback interface present on visibility retry");
+    assert_eq!(
+        current.name, previous_name,
+        "loopback identity must remain stable on visibility retry"
+    );
+    assert!(
+        current.rx_bytes >= previous_rx && current.tx_bytes >= previous_tx,
+        "loopback counters must be monotonic on visibility retry"
+    );
+    assert!(
+        current.rx_bytes > previous_rx,
+        "loopback RX must advance under ping traffic"
+    );
+    assert!(
+        current.tx_bytes > previous_tx,
+        "loopback TX must advance under ping traffic"
+    );
 }

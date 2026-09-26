@@ -250,23 +250,23 @@ Use the ordinary existing CI workflow at the final implementation SHA.
 
 ## Acceptance criteria
 
-- [ ] `greggd` production native telemetry comes only from `gregg-host`.
-- [ ] `greggd::collector` remains available as a compatibility facade for the frozen public paths.
-- [ ] `CollectedMetrics` and its v1/v2 conversion remain Gregg-owned and source-compatible for the campaign.
-- [ ] `SystemCollector` compatibility remains sufficient for the unchanged sampler/run/runtime signatures.
-- [ ] Linux/macOS v1 behavior is unchanged.
-- [ ] Windows remains v2-only with commit distinct from swap.
-- [ ] Every protocol collection limit maps explicitly into the host crate.
-- [ ] Warming/reset/hard-failure readiness behavior is unchanged.
-- [ ] Optional telemetry failure remains isolated from core readiness.
-- [ ] Drive slow-probe semantics and shutdown isolation remain unchanged.
-- [ ] Canonical v1/v2 structures and JSON match Plan-133 expectations.
-- [ ] Existing Linux/macOS arm64/macOS Intel/Windows/MSRV CI is green on the extracted implementation.
-- [ ] Dead duplicate production collector code is removed after cutover.
-- [ ] `gregg-host` dependency graph remains runtime/protocol neutral.
-- [ ] Release binary-size change is measured and any material growth is explained.
-- [ ] Current architecture/docs identify the new ownership truthfully.
-- [ ] The crate is publication-ready without requiring publication to close this plan.
+- [x] `greggd` production native telemetry comes only from `gregg-host`.
+- [x] `greggd::collector` remains available as a compatibility facade for the frozen public paths.
+- [x] `CollectedMetrics` and its v1/v2 conversion remain Gregg-owned and source-compatible for the campaign.
+- [x] `SystemCollector` compatibility remains sufficient for the unchanged sampler/run/runtime signatures.
+- [x] Linux/macOS v1 behavior is unchanged.
+- [x] Windows remains v2-only with commit distinct from swap.
+- [x] Every protocol collection limit maps explicitly into the host crate.
+- [x] Warming/reset/hard-failure readiness behavior is unchanged.
+- [x] Optional telemetry failure remains isolated from core readiness.
+- [x] Drive slow-probe semantics and shutdown isolation remain unchanged.
+- [x] Canonical v1/v2 structures and JSON match Plan-133 expectations.
+- [x] Existing Linux/macOS arm64/macOS Intel/Windows/MSRV CI is green on the extracted implementation.
+- [x] Dead duplicate production collector code is removed after cutover.
+- [x] `gregg-host` dependency graph remains runtime/protocol neutral.
+- [x] Release binary-size change is measured and any material growth is explained.
+- [x] Current architecture/docs identify the new ownership truthfully.
+- [x] The crate is publication-ready without requiring publication to close this plan.
 
 ## Explicit non-goals
 

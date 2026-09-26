@@ -963,8 +963,10 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
 // counters, baudrate, and type fields used here are mapped; rows are
 // accepted only with a printable nonempty name. Loopback follows
 // `IFF_LOOPBACK`/`IFT_LOOP`; aggregate membership excludes loopback.
-// Baudrate/type/counter offsets are covered by the native direction smoke
-// in CI (loopback ping must advance `lo` counters).
+// The native loopback smoke proves that the mapped ifmib byte-counter
+// fields are live and advance under known loopback traffic. RX/TX semantic
+// ordering is grounded in the field-for-field FreeBSD `struct if_data` ABI
+// mapping, not inferred from symmetric loopback traffic.
 
 /// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
 #[cfg(target_os = "freebsd")]
