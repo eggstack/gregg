@@ -207,7 +207,9 @@ Implement Plan 139 or 140 first for low-risk wins. Plan 141 should begin by addi
 
 ## Closure record
 
-Campaign implemented at `83df89e` with toolchain `rustc 1.98.1` on
+Campaign implemented at `83df89e` with corrective fix `e9ca180`
+(removing an unused macOS-only test helper that failed `-D warnings`
+on the macOS check) and toolchain `rustc 1.98.1` on
 `x86_64-unknown-linux-gnu`. Implementation order followed the plan:
 139 and 140 (low-risk daemon/client wins), 141 (source-call
 accounting then `CPUFreq`/page-size), 142 after 141 settled source
@@ -217,8 +219,11 @@ cost, and 143 independently. Local verification at closure:
 --all-targets --all-features`, and `./scripts/check-local.sh` green;
 `./scripts/check-local.sh --release` green except the expected
 clean-tree gate on the dirty tree (clean after the closure commit).
-Final campaign CI run: recorded below after push (one ordinary
-existing workflow run; no new performance workflow).
+Final campaign CI run `36261210288` green across Linux, macOS arm64,
+macOS Intel, Windows SCM smoke, MSRV Rust 1.89, and FreeBSD native
+(one ordinary existing workflow run; no new performance workflow).
+The earlier run `36260944380` failed only the macOS check on the
+unused helper; the fix is docs-clean and code-identical otherwise.
 
 Per-plan outcomes:
 
