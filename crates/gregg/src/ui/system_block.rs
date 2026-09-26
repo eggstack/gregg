@@ -282,6 +282,23 @@ impl MetricRowSet for [MetricRow; 5] {
 /// this snapshot, so legacy systems do not receive a phantom NET row in a
 /// mixed fleet.
 pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> MetricRows {
+    build_metric_rows_with_aggregates(
+        snap,
+        snap.drives.as_deref().and_then(aggregate_drives),
+        snap.network
+            .as_ref()
+            .and_then(crate::normalized::NormalizedNetwork::aggregate_utilization_pct),
+    )
+}
+
+/// Plan 143: cache-miss row builder reusing the drive/network aggregates
+/// already derived for the render key, avoiding a second aggregate pass
+/// over the same snapshot on the same miss.
+pub(crate) fn build_metric_rows_with_aggregates(
+    snap: &NormalizedSnapshot,
+    drive_aggregate: Option<crate::normalized::DriveAggregate>,
+    network_utilization_pct: Option<f32>,
+) -> MetricRows {
     let cpu = MetricRow {
         label: "CPU",
         pct: Some(snap.usage_pct),
@@ -337,7 +354,7 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> MetricRows {
         },
     };
 
-    let disk = match snap.drives.as_deref().and_then(aggregate_drives) {
+    let disk = match drive_aggregate {
         Some(aggregate) => {
             let used = text::format_bytes(aggregate.used_bytes);
             let total = text::format_bytes(aggregate.total_bytes);
@@ -357,7 +374,7 @@ pub(crate) fn build_metric_rows(snap: &NormalizedSnapshot) -> MetricRows {
     let network = match snap.network.as_ref() {
         Some(network) => MetricRow {
             label: "NET",
-            pct: network.aggregate_utilization_pct(),
+            pct: network_utilization_pct,
             detail: Some(format!(
                 "{} rx {} tx",
                 text::format_rate(network.aggregate_rx_bytes_per_sec),

@@ -48,6 +48,28 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
     }
 }
 
+/// Plan 141: cached Linux `CPUFreq` policy structure.
+///
+/// Membership (`affected_cpus`/`related_cpus` weights) is structural while
+/// `cpuinfo_cur_freq`/`scaling_cur_freq` are current values read every
+/// sample. The cache is valid only while the policy identity set and the
+/// logical-core count are unchanged; any policy add/remove or core-count
+/// change forces a membership refresh with immediate visibility.
+#[derive(Debug, Clone, Default)]
+pub struct CpuFreqStructuralCache {
+    policies: Vec<PathBuf>,
+    weights: std::collections::HashMap<PathBuf, usize>,
+    logical_cores: Option<usize>,
+}
+
+impl CpuFreqStructuralCache {
+    /// Return the cached weight for a policy, if the cache is valid.
+    #[must_use]
+    pub fn weight_for(&self, policy: &Path) -> Option<usize> {
+        self.weights.get(policy).copied()
+    }
+}
+
 /// Procfs-flavoured [`FileSource`].
 ///
 /// Holds an inner [`FileSource`] that performs actual I/O and caches the
@@ -138,6 +160,13 @@ impl ProcSource {
         self
     }
 
+    /// Plan 141: switch the stat path on a live collector without
+    /// requiring unique ownership of the inner fixture source.
+    #[cfg(test)]
+    pub fn set_stat_path(&mut self, path: PathBuf) {
+        self.stat_path = path;
+    }
+
     /// Override the `/proc/loadavg` path.
     #[must_use]
     pub fn with_loadavg_path(mut self, path: impl Into<PathBuf>) -> Self {
@@ -172,49 +201,51 @@ impl ProcSource {
     /// Read current `CPUFreq` policy frequencies, preferring hardware-reported
     /// `cpuinfo_cur_freq` and falling back to `scaling_cur_freq`.
     pub fn cpu_frequency_hz(&self) -> Option<u64> {
+        let mut cold_cache = CpuFreqStructuralCache::default();
+        self.cpu_frequency_hz_with_cache(&mut cold_cache)
+    }
+
+    /// Plan 141: structural `CPUFreq` cache.
+    ///
+    /// Policy-root enumeration and current-frequency reads stay live every
+    /// sample. Parsed membership weights are reused only while the policy
+    /// identity set and logical-core count are unchanged; any policy
+    /// add/remove or core-count change forces an immediate membership
+    /// refresh producing the same values as a cold query.
+    pub fn cpu_frequency_hz_with_cache(&self, cache: &mut CpuFreqStructuralCache) -> Option<u64> {
         let root = Path::new("/sys/devices/system/cpu/cpufreq");
         let policies = self.inner.read_dir(root).ok()?;
+        let mut eligible: Vec<PathBuf> = policies
+            .into_iter()
+            .filter(|policy| {
+                policy
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("policy"))
+            })
+            .collect();
+        eligible.sort();
         let logical_cores = self.logical_core_count().unwrap_or(1);
+        let cache_valid = cache.logical_cores == Some(logical_cores) && cache.policies == eligible;
+        if !cache_valid {
+            let mut weights = std::collections::HashMap::new();
+            for policy in &eligible {
+                let weight = self.cpufreq_policy_weight(policy, logical_cores);
+                weights.insert(policy.clone(), weight);
+            }
+            cache.policies.clone_from(&eligible);
+            cache.weights = weights;
+            cache.logical_cores = Some(logical_cores);
+        }
         let mut weighted_sum = 0u128;
         let mut weight_sum = 0u128;
-        for policy in policies {
-            if !policy
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("policy"))
-            {
-                continue;
-            }
-            let affected = self.inner.read_to_string(&policy.join("affected_cpus"));
-            let weight = match affected {
-                Ok(raw) => parse_cpu_list(&raw, logical_cores).or_else(|| {
-                    self.inner
-                        .read_to_string(&policy.join("related_cpus"))
-                        .ok()
-                        .and_then(|raw| parse_cpu_list(&raw, logical_cores))
-                }),
-                Err(_) => self
-                    .inner
-                    .read_to_string(&policy.join("related_cpus"))
-                    .ok()
-                    .and_then(|raw| parse_cpu_list(&raw, logical_cores))
-                    .or(Some(1)),
-            }
-            .unwrap_or(0);
+        for policy in &eligible {
+            let weight = cache.weights.get(policy).copied().unwrap_or(0);
             if weight == 0 {
                 continue;
             }
-            let khz = self
-                .inner
-                .read_to_string(&policy.join("cpuinfo_cur_freq"))
-                .ok()
-                .and_then(|raw| parse_positive_u64(&raw))
-                .or_else(|| {
-                    self.inner
-                        .read_to_string(&policy.join("scaling_cur_freq"))
-                        .ok()
-                        .and_then(|raw| parse_positive_u64(&raw))
-                });
-            let Some(khz) = khz else { continue };
+            let Some(khz) = self.cpufreq_current_khz(policy) else {
+                continue;
+            };
             let Some(hz) = khz.checked_mul(1_000) else {
                 continue;
             };
@@ -222,6 +253,38 @@ impl ProcSource {
             weight_sum = weight_sum.checked_add(weight as u128)?;
         }
         u64::try_from(weighted_sum.checked_div(weight_sum)?).ok()
+    }
+
+    fn cpufreq_policy_weight(&self, policy: &Path, logical_cores: usize) -> usize {
+        let affected = self.inner.read_to_string(&policy.join("affected_cpus"));
+        match affected {
+            Ok(raw) => parse_cpu_list(&raw, logical_cores).or_else(|| {
+                self.inner
+                    .read_to_string(&policy.join("related_cpus"))
+                    .ok()
+                    .and_then(|raw| parse_cpu_list(&raw, logical_cores))
+            }),
+            Err(_) => self
+                .inner
+                .read_to_string(&policy.join("related_cpus"))
+                .ok()
+                .and_then(|raw| parse_cpu_list(&raw, logical_cores))
+                .or(Some(1)),
+        }
+        .unwrap_or(0)
+    }
+
+    fn cpufreq_current_khz(&self, policy: &Path) -> Option<u64> {
+        self.inner
+            .read_to_string(&policy.join("cpuinfo_cur_freq"))
+            .ok()
+            .and_then(|raw| parse_positive_u64(&raw))
+            .or_else(|| {
+                self.inner
+                    .read_to_string(&policy.join("scaling_cur_freq"))
+                    .ok()
+                    .and_then(|raw| parse_positive_u64(&raw))
+            })
     }
 
     /// Read top-level Linux block-device sector counters. Partitions are not
@@ -506,6 +569,47 @@ fn map_io_error(path: &Path, err: io::Error) -> CollectError {
     }
 }
 
+/// Plan 141: deterministic source-call accounting.
+///
+/// Counts fixture reads per absolute path so steady-state versus
+/// topology-change behavior can be asserted structurally without timing.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub struct CallCounts {
+    reads: std::collections::HashMap<PathBuf, usize>,
+    dirs: std::collections::HashMap<PathBuf, usize>,
+}
+
+#[cfg(test)]
+impl CallCounts {
+    fn record_read(&mut self, path: &Path) {
+        *self.reads.entry(path.to_path_buf()).or_insert(0) += 1;
+    }
+
+    fn record_dir(&mut self, path: &Path) {
+        *self.dirs.entry(path.to_path_buf()).or_insert(0) += 1;
+    }
+
+    /// Total `read_to_string` calls for paths containing `needle`.
+    pub fn reads_containing(&self, needle: &str) -> usize {
+        self.reads
+            .iter()
+            .filter(|(path, _)| path.to_string_lossy().contains(needle))
+            .map(|(_, count)| *count)
+            .sum()
+    }
+
+    /// Total `read_dir` calls for exactly `path`.
+    pub fn dirs_for(&self, path: &str) -> usize {
+        self.dirs.get(Path::new(path)).copied().unwrap_or(0)
+    }
+
+    /// Total `read_to_string` calls for exactly `path`.
+    pub fn reads_for(&self, path: &str) -> usize {
+        self.reads.get(Path::new(path)).copied().unwrap_or(0)
+    }
+}
+
 /// In-memory fixture source for tests.
 ///
 /// `MemorySource` is the workhorse of source-level tests. Each constructor
@@ -517,6 +621,8 @@ pub struct MemorySource {
     files: std::collections::HashMap<PathBuf, String>,
     stats: std::collections::HashMap<PathBuf, RawStatvfs>,
     logical_cores: Option<usize>,
+    #[cfg(test)]
+    counts: std::sync::Arc<std::sync::Mutex<CallCounts>>,
 }
 
 impl MemorySource {
@@ -562,10 +668,24 @@ impl MemorySource {
     pub fn set_logical_cores(&mut self, cores: usize) {
         self.logical_cores = Some(cores);
     }
+
+    /// Plan 141: snapshot of deterministic fixture call counts.
+    #[cfg(test)]
+    #[must_use]
+    pub fn call_counts(&self) -> CallCounts {
+        self.counts
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
 }
 
 impl FileSource for MemorySource {
     fn read_to_string(&self, path: &Path) -> Result<String, CollectError> {
+        #[cfg(test)]
+        if let Ok(mut guard) = self.counts.lock() {
+            guard.record_read(path);
+        }
         if let Some(content) = self.files.get(path) {
             Ok(content.clone())
         } else {
@@ -578,6 +698,10 @@ impl FileSource for MemorySource {
     }
 
     fn read_dir(&self, path: &Path) -> Result<Vec<PathBuf>, CollectError> {
+        #[cfg(test)]
+        if let Ok(mut guard) = self.counts.lock() {
+            guard.record_dir(path);
+        }
         let mut children = std::collections::BTreeSet::new();
         for candidate in self.files.keys() {
             if let Ok(relative) = candidate.strip_prefix(path) {
@@ -857,5 +981,200 @@ mod tests {
                 .rx_capacity_bps,
             Some(1_000_000_000)
         );
+    }
+
+    // ===== Plan 141: source-call accounting and CPUFreq structural cache =====
+
+    #[test]
+    fn plan141_source_call_accounting_covers_hot_paths() {
+        let mut mem = MemorySource::new().with_logical_cores(4);
+        for (path, content) in [
+            ("/proc/stat", "cpu  100 0 50 8000 30 5 2 1 0 0\n"),
+            ("/proc/loadavg", "0.10 0.20 0.30 1/50 1\n"),
+            (
+                "/proc/meminfo",
+                "MemTotal:        8000000 kB\nMemAvailable:     4000000 kB\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "0-1\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+                "2000000\n",
+            ),
+            ("/sys/block/sda/stat", "1 2 10 4 5 6 20 8 9 10 11\n"),
+            ("/proc/net/dev", "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed\neth0: 300 0 0 0 0 0 0 0 400 0 0 0 0 0 0 0\n"),
+            ("/sys/class/net/eth0/flags", "0x1\n"),
+            ("/sys/class/net/eth0/operstate", "up\n"),
+            ("/sys/class/net/eth0/speed", "1000\n"),
+        ] {
+            mem.add_file(path, content);
+        }
+        let probe = mem.clone();
+        let source = ProcSource::for_memory(mem);
+        let _ = source.read_proc_stat();
+        let _ = source.read_proc_loadavg();
+        let _ = source.read_proc_meminfo();
+        let _ = source.cpu_frequency_hz();
+        let _ = source.disk_io();
+        let _ = source.network_interfaces();
+        let counts = probe.call_counts();
+        assert_eq!(counts.reads_for("/proc/stat"), 1);
+        assert_eq!(counts.reads_for("/proc/loadavg"), 1);
+        assert_eq!(counts.reads_for("/proc/meminfo"), 1);
+        assert_eq!(
+            counts.dirs_for("/sys/devices/system/cpu/cpufreq"),
+            1,
+            "CPUFreq root enumeration must be accounted"
+        );
+        assert!(counts.reads_containing("affected_cpus") >= 1);
+        assert!(counts.reads_containing("cpuinfo_cur_freq") >= 1);
+        assert_eq!(counts.dirs_for("/sys/block"), 1);
+        assert!(counts.reads_containing("/sys/block/sda/stat") >= 1);
+        assert_eq!(counts.reads_for("/proc/net/dev"), 1);
+        assert!(counts.reads_containing("/sys/class/net/eth0/flags") >= 1);
+    }
+
+    #[test]
+    fn plan141_steady_cpufreq_avoids_membership_reads_but_stays_live() {
+        // Rebuild the CPUFreq fixture here with a shared probe so call
+        // counts stay observable (`source_with` moves its map).
+        // `plan141_cpufreq_source` documents the canonical fixture shape.
+        let mut mem = MemorySource::new().with_logical_cores(4);
+        for (path, content) in [
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "0-1\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+                "2000000\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+                "2-3\n",
+            ),
+            (
+                "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+                "1000000\n",
+            ),
+        ] {
+            mem.add_file(path, content);
+        }
+        let probe = mem.clone();
+        let source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+        let first = source.cpu_frequency_hz_with_cache(&mut cache);
+        assert_eq!(first, Some(1_500_000_000));
+        let after_first = probe.call_counts();
+        let membership_first = after_first.reads_containing("affected_cpus")
+            + after_first.reads_containing("related_cpus");
+        let freq_first = after_first.reads_containing("cpuinfo_cur_freq")
+            + after_first.reads_containing("scaling_cur_freq");
+        assert!(membership_first >= 2);
+        assert!(freq_first >= 2);
+
+        // Steady topology: membership files must not be re-read while
+        // current frequency stays live.
+        let second = source.cpu_frequency_hz_with_cache(&mut cache);
+        assert_eq!(second, first);
+        let after_second = probe.call_counts();
+        let membership_second = after_second.reads_containing("affected_cpus")
+            + after_second.reads_containing("related_cpus");
+        let freq_second = after_second.reads_containing("cpuinfo_cur_freq")
+            + after_second.reads_containing("scaling_cur_freq");
+        assert_eq!(
+            membership_second, membership_first,
+            "steady state must avoid repeated membership reads"
+        );
+        assert!(
+            freq_second > freq_first,
+            "current frequency must remain sampled every cycle"
+        );
+        // Root enumeration stays live for immediate policy visibility.
+        assert!(after_second.dirs_for("/sys/devices/system/cpu/cpufreq") >= 2);
+    }
+
+    #[test]
+    fn plan141_cpufreq_policy_and_core_changes_force_refresh() {
+        let mut mem = MemorySource::new().with_logical_cores(4);
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "0-1\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "2000000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+            "2-3\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        let mut source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+        let first = source.cpu_frequency_hz_with_cache(&mut cache);
+        assert_eq!(first, Some(1_500_000_000));
+
+        // Policy add/remove is visible immediately and matches a cold query.
+        source.memory_source_mut().expect("memory source").add_file(
+            "/sys/devices/system/cpu/cpufreq/policy2/affected_cpus",
+            "0-3\n",
+        );
+        source.memory_source_mut().expect("memory source").add_file(
+            "/sys/devices/system/cpu/cpufreq/policy2/cpuinfo_cur_freq",
+            "3000000\n",
+        );
+        let after_add = source.cpu_frequency_hz_with_cache(&mut cache);
+        let cold_after_add = {
+            let mut cold = CpuFreqStructuralCache::default();
+            source.cpu_frequency_hz_with_cache(&mut cold)
+        };
+        // Cold comparison uses a fresh cache on the same fixture; both must
+        // observe the new policy without a stale window.
+        assert_eq!(after_add, cold_after_add);
+
+        // Logical-core-count change invalidates structural weights.
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .set_logical_cores(2);
+        let after_cores = source.cpu_frequency_hz_with_cache(&mut cache);
+        let mut cold_cores = CpuFreqStructuralCache::default();
+        let cold_value = source.cpu_frequency_hz_with_cache(&mut cold_cores);
+        assert_eq!(after_cores, cold_value);
+    }
+
+    #[test]
+    fn plan141_once_lock_pattern_retries_failure_then_caches_success() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        let cell: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        let read_once = || -> Result<u64, &'static str> {
+            let attempt = CALLS.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                return Err("first query fails");
+            }
+            if let Some(cached) = cell.get() {
+                return Ok(*cached);
+            }
+            let fresh = 16_384u64;
+            let _ = cell.set(fresh);
+            Ok(*cell.get().unwrap_or(&fresh))
+        };
+        assert!(read_once().is_err(), "failed first query must be retryable");
+        assert_eq!(read_once(), Ok(16_384));
+        let calls_after_success = CALLS.load(Ordering::SeqCst);
+        assert_eq!(read_once(), Ok(16_384));
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            calls_after_success + 1,
+            "cached success must not re-run FFI, only the wrapper call counts"
+        );
+        assert_eq!(cell.get(), Some(&16_384));
     }
 }

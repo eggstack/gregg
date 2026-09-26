@@ -200,10 +200,13 @@ impl AppState {
 
     /// Reconcile the configured system endpoint list while retaining safe
     /// state for unchanged stable IDs.
+    ///
+    /// Plan 140: retained entries are moved out of the old-ID map instead
+    /// of deep-cloned, avoiding `NormalizedSnapshot` copies during reload.
     pub fn reconcile_systems(&mut self, config: &Config) {
         let old_systems = std::mem::take(&mut self.systems);
         let old_selected = self.selected_id.clone();
-        let old_by_id = old_systems
+        let mut old_by_id = old_systems
             .into_iter()
             .map(|system| (system.id.clone(), system))
             .collect::<std::collections::HashMap<_, _>>();
@@ -212,7 +215,7 @@ impl AppState {
             .systems
             .iter()
             .map(|entry| {
-                let Some(mut old) = old_by_id.get(&entry.id).cloned() else {
+                let Some(mut old) = old_by_id.remove(&entry.id) else {
                     return system_from_entry(entry);
                 };
 
@@ -261,18 +264,40 @@ impl AppState {
     /// `u64::MAX` to `1` wrap. For each result: updates reachability, latest
     /// snapshot, timestamps, latency, and error.
     pub fn apply_batch(&mut self, batch: &PollBatch) {
+        let _ = self.apply_batch_changed(batch);
+    }
+
+    /// Plan 143: borrowed batch application reporting render-visible change.
+    ///
+    /// Returns `false` for rejected generations and for accepted batches
+    /// where every result was ignored or left render-visible state
+    /// identical (reachability, normalized snapshot, offline provenance,
+    /// selection/viewport). Timestamps/latency alone never force a frame.
+    pub fn apply_batch_changed(&mut self, batch: &PollBatch) -> bool {
         // The scheduler advances by exactly one and wraps only MAX -> 1;
         // do not accept a skipped-generation wrap as a fresh batch.
         if !self.accept_batch_generation(batch.generation) {
-            return;
+            return false;
         }
 
         let was_initialized = self.last_applied_generation == 0;
+        let selected_before = self.selected_id.clone();
+        let viewport_before = self.viewport_top_id.clone();
+        let mut visible_changed = false;
 
         for (result_index, result) in batch.results.iter().enumerate() {
             let Some(system_index) = self.resolve_result_index(result_index, &result.system_id)
             else {
                 continue;
+            };
+            // Borrow-checker: capture comparison inputs before mutating.
+            let (before_reachability, before_latest, before_reason) = {
+                let system = &self.systems[system_index];
+                (
+                    system.reachability,
+                    system.latest.clone(),
+                    system.offline_reason.clone(),
+                )
             };
             let system = &mut self.systems[system_index];
             // A stable ID may be retained while its configured target
@@ -285,40 +310,70 @@ impl AppState {
             }
             match &result.outcome {
                 PollOutcome::Online(snapshot) => {
+                    let normalized = NormalizedSnapshot::from_v1(snapshot);
+                    if before_reachability != Reachability::Online
+                        || before_latest.as_ref() != Some(&normalized)
+                        || before_reason.is_some()
+                    {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Online;
-                    system.latest = Some(NormalizedSnapshot::from_v1(snapshot));
+                    system.latest = Some(normalized);
                     system.last_success_at = Some(batch.completed_at);
                     system.last_attempt_at = Some(batch.completed_at);
                     system.latency = Some(result.latency);
                     system.offline_reason = None;
                 }
                 PollOutcome::OnlineV2(snapshot) => {
+                    let normalized = NormalizedSnapshot::from_v2_payload(snapshot);
+                    if before_reachability != Reachability::Online
+                        || before_latest.as_ref() != Some(&normalized)
+                        || before_reason.is_some()
+                    {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Online;
-                    system.latest = Some(NormalizedSnapshot::from_v2_payload(snapshot));
+                    system.latest = Some(normalized);
                     system.last_success_at = Some(batch.completed_at);
                     system.last_attempt_at = Some(batch.completed_at);
                     system.latency = Some(result.latency);
                     system.offline_reason = None;
                 }
                 _ => {
+                    let reason = result.outcome.offline_reason();
+                    if before_reachability != Reachability::Offline || before_reason != reason {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Offline;
                     system.last_attempt_at = Some(batch.completed_at);
-                    system.offline_reason = result.outcome.offline_reason();
+                    system.offline_reason = reason;
                 }
             }
         }
 
         self.finish_batch(batch.generation, was_initialized);
+        visible_changed
+            || self.selected_id != selected_before
+            || self.viewport_top_id != viewport_before
     }
 
     /// Apply an owned poll batch, moving successful payload data into the
     /// normalized state instead of cloning strings and collections.
     pub fn apply_batch_owned(&mut self, batch: PollBatch) {
+        let _ = self.apply_batch_owned_changed(batch);
+    }
+
+    /// Plan 143: owned batch application reporting render-visible change,
+    /// mirroring [`Self::apply_batch_changed`] without cloning payloads.
+    pub fn apply_batch_owned_changed(&mut self, batch: PollBatch) -> bool {
         if !self.accept_batch_generation(batch.generation) {
-            return;
+            return false;
         }
 
         let was_initialized = self.last_applied_generation == 0;
+        let selected_before = self.selected_id.clone();
+        let viewport_before = self.viewport_top_id.clone();
+        let mut visible_changed = false;
         let PollBatch {
             generation,
             completed_at,
@@ -330,6 +385,10 @@ impl AppState {
             else {
                 continue;
             };
+            let (before_reachability, before_reason) = {
+                let system = &self.systems[system_index];
+                (system.reachability, system.offline_reason.clone())
+            };
             let system = &mut self.systems[system_index];
             if !equivalent_endpoint_host(&system.endpoint.host, &result.endpoint.host)
                 || system.endpoint.port != result.endpoint.port
@@ -338,30 +397,53 @@ impl AppState {
             }
             match result.outcome {
                 PollOutcome::Online(snapshot) => {
+                    let normalized = NormalizedSnapshot::from_v1_owned(*snapshot);
+                    let latest_same = system.latest.as_ref() == Some(&normalized);
+                    if before_reachability != Reachability::Online
+                        || !latest_same
+                        || before_reason.is_some()
+                    {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Online;
-                    system.latest = Some(NormalizedSnapshot::from_v1_owned(*snapshot));
+                    system.latest = Some(normalized);
                     system.last_success_at = Some(completed_at);
                     system.last_attempt_at = Some(completed_at);
                     system.latency = Some(result.latency);
                     system.offline_reason = None;
                 }
                 PollOutcome::OnlineV2(snapshot) => {
+                    let normalized = NormalizedSnapshot::from_v2_payload_owned(*snapshot);
+                    let latest_same = system.latest.as_ref() == Some(&normalized);
+                    if before_reachability != Reachability::Online
+                        || !latest_same
+                        || before_reason.is_some()
+                    {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Online;
-                    system.latest = Some(NormalizedSnapshot::from_v2_payload_owned(*snapshot));
+                    system.latest = Some(normalized);
                     system.last_success_at = Some(completed_at);
                     system.last_attempt_at = Some(completed_at);
                     system.latency = Some(result.latency);
                     system.offline_reason = None;
                 }
                 outcome => {
+                    let reason = outcome.offline_reason();
+                    if before_reachability != Reachability::Offline || before_reason != reason {
+                        visible_changed = true;
+                    }
                     system.reachability = Reachability::Offline;
                     system.last_attempt_at = Some(completed_at);
-                    system.offline_reason = outcome.offline_reason();
+                    system.offline_reason = reason;
                 }
             }
         }
 
         self.finish_batch(generation, was_initialized);
+        visible_changed
+            || self.selected_id != selected_before
+            || self.viewport_top_id != viewport_before
     }
 
     fn accept_batch_generation(&self, generation: u64) -> bool {
@@ -412,8 +494,45 @@ impl AppState {
     }
 
     /// Apply a user action.
-    #[allow(clippy::match_same_arms, clippy::too_many_lines)]
     pub fn apply_action(&mut self, action: Action) {
+        let _ = self.apply_action_changed(action);
+    }
+
+    /// Plan 143: action application reporting render-visible change.
+    ///
+    /// Returns `false` for boundary navigation with unchanged selection and
+    /// highlight, clearing an already-clear highlight, `RefreshNow`/`Quit`
+    /// (handled by the scheduler/event loop), and other logical no-ops.
+    /// `Resize` always reports changed. No full-`AppState` equality scan is
+    /// performed; only render-visible fields are compared.
+    pub fn apply_action_changed(&mut self, action: Action) -> bool {
+        if matches!(action, Action::Resize { .. }) {
+            self.apply_action_inner(action);
+            return true;
+        }
+        let before_selected = self.selected_id.clone();
+        let before_viewport = self.viewport_top_id.clone();
+        let before_pane = self.active_pane;
+        let before_view = self.system_view_mode;
+        let before_drives = self.drives_expanded;
+        let before_network = self.network_expanded;
+        let before_highlight = self.selection_highlight_active;
+        let before_terminal = self.terminal_size;
+        let before_eggpool_period = self.eggpool.as_ref().map(|eggpool| eggpool.period);
+        self.apply_action_inner(action);
+        before_selected != self.selected_id
+            || before_viewport != self.viewport_top_id
+            || before_pane != self.active_pane
+            || before_view != self.system_view_mode
+            || before_drives != self.drives_expanded
+            || before_network != self.network_expanded
+            || before_highlight != self.selection_highlight_active
+            || before_terminal != self.terminal_size
+            || before_eggpool_period != self.eggpool.as_ref().map(|eggpool| eggpool.period)
+    }
+
+    #[allow(clippy::match_same_arms, clippy::too_many_lines)]
+    fn apply_action_inner(&mut self, action: Action) {
         match action {
             Action::MoveDown => {
                 if self.active_pane == Pane::Eggpool {
@@ -549,11 +668,19 @@ impl AppState {
 
     /// Apply one `EggPool` result if it belongs to the current request and period.
     pub fn apply_eggpool_result(&mut self, result: &EggpoolResult) {
+        let _ = self.apply_eggpool_result_changed(result);
+    }
+
+    /// Plan 143: `EggPool` result application reporting render-visible change.
+    ///
+    /// Returns `false` for stale generations/periods and cancelled outcomes
+    /// that leave visible state untouched.
+    pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
         let Some(eggpool) = self.eggpool.as_mut() else {
-            return;
+            return false;
         };
         if result.generation != eggpool.request_generation || result.period != eggpool.period {
-            return;
+            return false;
         }
         if !matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
             eggpool.status = EggpoolStatus::Idle;
@@ -566,7 +693,9 @@ impl AppState {
                 }
                 error => eggpool.last_error = Some(error.clone()),
             }
+            return true;
         }
+        false
     }
 
     /// Mark an `EggPool` activation or manual refresh as a new request.
@@ -2401,5 +2530,116 @@ mod tests {
         ]);
         state.systems[0].latest = Some(snapshot);
         assert_eq!(entry_height(&state, 0), 2);
+    }
+
+    // ===== Plan 143: changed-result reducer seams =====
+
+    fn plan143_online_batch(state: &AppState, generation: u64) -> PollBatch {
+        let now = Instant::now();
+        PollBatch {
+            generation,
+            started_at: now,
+            completed_at: now,
+            results: state
+                .systems
+                .iter()
+                .map(|system| crate::poller::PollResult {
+                    system_id: system.id.clone(),
+                    endpoint: system.endpoint.clone(),
+                    outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                    latency: Duration::from_millis(1),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn plan143_stale_generation_reports_unchanged_without_draw() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        let first = plan143_online_batch(&state, 1);
+        assert!(state.apply_batch_changed(&first));
+        let mut draws = 0;
+        if state.apply_batch_changed(&first) {
+            draws += 1;
+        }
+        assert_eq!(draws, 0, "rejected stale batch must not force a frame");
+        // Owned path mirrors the borrowed compatibility path.
+        let stale_owned = plan143_online_batch(&state, 1);
+        assert!(!state.apply_batch_owned_changed(stale_owned));
+    }
+
+    #[test]
+    fn plan143_stale_endpoint_target_ignored_without_draw() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        let first = plan143_online_batch(&state, 1);
+        assert!(state.apply_batch_changed(&first));
+        let now = Instant::now();
+        let stale_target = PollBatch {
+            generation: 2,
+            started_at: now,
+            completed_at: now,
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: Endpoint::new("old.local".into(), 11310, None),
+                outcome: PollOutcome::Online(Box::new(make_snapshot())),
+                latency: Duration::from_millis(1),
+            }],
+        };
+        // Host/port guard ignores the superseded target; nothing else
+        // changed, so no frame.
+        assert!(!state.apply_batch_changed(&stale_target));
+    }
+
+    #[test]
+    fn plan143_boundary_navigation_reports_unchanged() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.selection_highlight_active = true;
+        // Single system: moving down cannot change selection; highlight is
+        // already active, so no visible change.
+        assert!(!state.apply_action_changed(Action::MoveDown));
+        assert!(!state.apply_action_changed(Action::MoveUp));
+        // Clearing an already-clear highlight is a no-op.
+        state.selection_highlight_active = false;
+        assert!(!state.apply_action_changed(Action::ClearSelectionHighlight));
+        // Clearing an active highlight is visible.
+        state.selection_highlight_active = true;
+        assert!(state.apply_action_changed(Action::ClearSelectionHighlight));
+        assert!(!state.selection_highlight_active);
+    }
+
+    #[test]
+    fn plan143_real_selection_change_redraws_and_arms_highlight() {
+        let config = test_config_with_ids(&["a", "b"]);
+        let mut state = AppState::from_config(&config);
+        state.selection_highlight_active = false;
+        assert!(state.apply_action_changed(Action::MoveDown));
+        assert!(state.selection_highlight_active);
+        assert_eq!(state.selected_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn plan143_resize_always_reports_changed() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        state.terminal_size = Some((80, 24));
+        assert!(state.apply_action_changed(Action::Resize {
+            width: 80,
+            height: 24
+        }));
+    }
+
+    #[test]
+    fn plan143_repeated_identical_online_batch_reports_unchanged() {
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        let first = plan143_online_batch(&state, 1);
+        assert!(state.apply_batch_changed(&first));
+        // Same snapshot values again (latency/timestamps differ but are not
+        // rendered): no visible change, no frame.
+        let second = plan143_online_batch(&state, 2);
+        assert!(!state.apply_batch_changed(&second));
     }
 }

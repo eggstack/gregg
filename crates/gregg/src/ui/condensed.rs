@@ -135,16 +135,74 @@ const COLUMN_GAP_CELLS: usize = 2;
 /// the widest value per column across the fleet.
 #[derive(Debug, Clone)]
 pub(crate) struct PreformattedValues {
-    host: String,
-    cpu: String,
-    mem: String,
-    disk: String,
-    net: String,
-    load: String,
-    iowait: String,
+    pub(crate) host: String,
+    pub(crate) cpu: String,
+    pub(crate) mem: String,
+    pub(crate) disk: String,
+    pub(crate) net: String,
+    pub(crate) load: String,
+    pub(crate) iowait: String,
 }
 
-fn preformat_online(system: &SystemState) -> PreformattedValues {
+/// Plan 143: bounded per-system condensed cache key.
+///
+/// Contains only values that affect condensed output. Reuse is by value
+/// equality, never pointer identity, so config reload/mutation invalidates
+/// correctly. `None` latest (online without snapshot) still formats to
+/// em-dashes, so the key distinguishes presence.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CondensedRenderKey {
+    host: String,
+    reachability: Reachability,
+    cpu_usage_pct: Option<f32>,
+    memory_usage_pct: Option<f32>,
+    drive_aggregate_pct: Option<f32>,
+    network_utilization_pct: Option<f32>,
+    load_one: Option<f32>,
+    iowait_supported: bool,
+    iowait_pct: Option<f32>,
+}
+
+pub(crate) fn condensed_key_for(system: &SystemState) -> Option<CondensedRenderKey> {
+    if system.reachability != Reachability::Online {
+        return None;
+    }
+    let host = system
+        .configured_name
+        .as_deref()
+        .unwrap_or(&system.endpoint.host)
+        .to_string();
+    let Some(snapshot) = system.latest.as_ref() else {
+        return Some(CondensedRenderKey {
+            host,
+            reachability: system.reachability,
+            cpu_usage_pct: None,
+            memory_usage_pct: None,
+            drive_aggregate_pct: None,
+            network_utilization_pct: None,
+            load_one: None,
+            iowait_supported: false,
+            iowait_pct: None,
+        });
+    };
+    Some(CondensedRenderKey {
+        host,
+        reachability: system.reachability,
+        cpu_usage_pct: Some(snapshot.usage_pct),
+        memory_usage_pct: Some(snapshot.memory.usage_pct),
+        drive_aggregate_pct: aggregate_drives(snapshot.drives.as_deref().unwrap_or_default())
+            .map(|aggregate| aggregate.usage_pct),
+        network_utilization_pct: snapshot
+            .network
+            .as_ref()
+            .and_then(crate::normalized::NormalizedNetwork::aggregate_utilization_pct),
+        load_one: snapshot.load.as_ref().map(|load| load.one),
+        iowait_supported: snapshot.cpu_iowait_supported,
+        iowait_pct: snapshot.iowait_pct,
+    })
+}
+
+pub(crate) fn preformat_online(system: &SystemState) -> PreformattedValues {
     let host = system
         .configured_name
         .as_deref()
@@ -259,9 +317,29 @@ pub(crate) fn compute_condensed_table_layout_with_values(
     width: u16,
     values: &[Option<PreformattedValues>],
 ) -> CondensedTableLayout {
+    let borrowed: Vec<Option<&PreformattedValues>> = values.iter().map(Option::as_ref).collect();
+    compute_condensed_table_layout_with_refs(systems, width, &borrowed)
+}
+
+/// Plan 143: layout from cross-render cached `Rc` values without cloning
+/// their strings for measurement.
+pub(crate) fn compute_condensed_table_layout_with_rc(
+    systems: &[SystemState],
+    width: u16,
+    values: &[Option<std::rc::Rc<PreformattedValues>>],
+) -> CondensedTableLayout {
+    let borrowed: Vec<Option<&PreformattedValues>> =
+        values.iter().map(|slot| slot.as_deref()).collect();
+    compute_condensed_table_layout_with_refs(systems, width, &borrowed)
+}
+
+fn compute_condensed_table_layout_with_refs(
+    systems: &[SystemState],
+    width: u16,
+    values: &[Option<&PreformattedValues>],
+) -> CondensedTableLayout {
     let available = usize::from(width);
-    let online_values: Vec<&PreformattedValues> =
-        values.iter().filter_map(Option::as_ref).collect();
+    let online_values: Vec<&PreformattedValues> = values.iter().filter_map(|slot| *slot).collect();
     // Plan 086: the HOST width budget must include every visible
     // system name (online/offline/pending) so status rows do not get
     // their device identity erased when the online fleet happens to

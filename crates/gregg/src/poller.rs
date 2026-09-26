@@ -367,6 +367,191 @@ impl HttpClient {
         }
     }
 
+    /// Plan 140: owned result constructor moving one generation-owned
+    /// endpoint into the result. Only the stable-ID string is duplicated,
+    /// as required by the public `PollResult` shape.
+    fn make_result_owned(
+        endpoint: Endpoint,
+        outcome: PollOutcome,
+        start: std::time::Instant,
+        end: std::time::Instant,
+    ) -> PollResult {
+        PollResult {
+            system_id: endpoint.id.clone(),
+            endpoint,
+            outcome,
+            latency: end.saturating_duration_since(start),
+        }
+    }
+
+    /// Plan 140: scheduler-internal polling path using prepared v1/v2
+    /// targets. Moves the generation-owned endpoint into the result and
+    /// never rebuilds URLs. Invalid prepared targets reproduce the public
+    /// `poll` network-error outcome per generation.
+    pub(crate) async fn poll_prepared(
+        &self,
+        endpoint: Endpoint,
+        v1_target: &Result<std::sync::Arc<str>, EndpointError>,
+        v2_target: &Result<std::sync::Arc<str>, EndpointError>,
+        clock: &impl Clock,
+    ) -> PollResult {
+        #[cfg(test)]
+        let _guard = self.observer.as_ref().map(|o| o.guard());
+        let start = clock.now();
+        let Ok(v2_url) = v2_target else {
+            return Self::make_result_owned(
+                endpoint,
+                PollOutcome::NetworkError,
+                start,
+                clock.now(),
+            );
+        };
+        let v2_result = self
+            .poll_single_url_owned(v2_url.as_ref(), endpoint, ExpectedSchema::V2, start, clock)
+            .await;
+        if matches!(&v2_result.outcome, PollOutcome::HttpStatus(404)) {
+            let endpoint = v2_result.endpoint;
+            let Ok(v1_url) = v1_target else {
+                return Self::make_result_owned(
+                    endpoint,
+                    PollOutcome::NetworkError,
+                    start,
+                    clock.now(),
+                );
+            };
+            return self
+                .poll_single_url_owned(v1_url.as_ref(), endpoint, ExpectedSchema::V1, start, clock)
+                .await;
+        }
+        v2_result
+    }
+
+    /// Plan 140: owned single-URL poll moving the endpoint into the result.
+    async fn poll_single_url_owned(
+        &self,
+        url: &str,
+        endpoint: Endpoint,
+        expected_schema: ExpectedSchema,
+        start: std::time::Instant,
+        clock: &impl Clock,
+    ) -> PollResult {
+        let builder = match self.client.get(url) {
+            Ok(builder) => builder.max_decoded_body_size(MAX_RESPONSE_BYTES),
+            Err(_) => {
+                return Self::make_result_owned(
+                    endpoint,
+                    PollOutcome::NetworkError,
+                    start,
+                    clock.now(),
+                );
+            }
+        };
+        let mut response = match builder.send_detailed().await {
+            Ok(response) => response,
+            Err(failure) => {
+                return Self::make_result_owned(
+                    endpoint,
+                    classify_eggfetch_failure(&failure),
+                    start,
+                    clock.now(),
+                );
+            }
+        };
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return Self::make_result_owned(
+                endpoint,
+                PollOutcome::HttpStatus(status),
+                start,
+                clock.now(),
+            );
+        }
+        let body = match response.bytes().await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let outcome = if matches!(error, EggfetchError::DecodedBodyTooLarge) {
+                    PollOutcome::BodyTooLarge
+                } else if matches!(
+                    error,
+                    EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
+                ) {
+                    PollOutcome::Timeout
+                } else {
+                    PollOutcome::NetworkError
+                };
+                return Self::make_result_owned(endpoint, outcome, start, clock.now());
+            }
+        };
+        Self::parse_response_owned(&body, endpoint, expected_schema, start, clock)
+    }
+
+    /// Plan 140: owned response parsing moving the endpoint into the result.
+    fn parse_response_owned(
+        body: &[u8],
+        endpoint: Endpoint,
+        expected_schema: ExpectedSchema,
+        start: std::time::Instant,
+        clock: &impl Clock,
+    ) -> PollResult {
+        if matches!(expected_schema, ExpectedSchema::V2) {
+            let Ok(payload) = serde_json::from_slice::<StatusPayloadV2>(body) else {
+                return Self::make_result_owned(
+                    endpoint,
+                    PollOutcome::DecodeError,
+                    start,
+                    clock.now(),
+                );
+            };
+            if payload.snapshot.schema_version != SCHEMA_VERSION_V2 {
+                return Self::make_result_owned(
+                    endpoint,
+                    PollOutcome::UnsupportedSchema,
+                    start,
+                    clock.now(),
+                );
+            }
+            if payload.validate().is_err() {
+                return Self::make_result_owned(
+                    endpoint,
+                    PollOutcome::InvalidSnapshot,
+                    start,
+                    clock.now(),
+                );
+            }
+            return Self::make_result_owned(
+                endpoint,
+                PollOutcome::OnlineV2(Box::new(payload)),
+                start,
+                clock.now(),
+            );
+        }
+        let Ok(snapshot): Result<StatusSnapshot, _> = serde_json::from_slice(body) else {
+            return Self::make_result_owned(endpoint, PollOutcome::DecodeError, start, clock.now());
+        };
+        if snapshot.schema_version != SCHEMA_VERSION_V1 {
+            return Self::make_result_owned(
+                endpoint,
+                PollOutcome::UnsupportedSchema,
+                start,
+                clock.now(),
+            );
+        }
+        if snapshot.validate().is_err() {
+            return Self::make_result_owned(
+                endpoint,
+                PollOutcome::InvalidSnapshot,
+                start,
+                clock.now(),
+            );
+        }
+        Self::make_result_owned(
+            endpoint,
+            PollOutcome::Online(Box::new(snapshot)),
+            start,
+            clock.now(),
+        )
+    }
+
     /// Poll a single URL and return a [`PollResult`].
     async fn poll_single_url(
         &self,

@@ -1649,8 +1649,27 @@ fn vm_info64() -> Result<RawVmStats, CollectError> {
     })
 }
 
+/// Plan 141: immutable host page-size memo.
+///
+/// The host page size is a process/host property that cannot change under a
+/// running collector. Only a successful query is cached in a process-wide
+/// `OnceLock`; a failed first query leaves the cell empty so the next sample
+/// retries instead of poisoning later collections.
+static CACHED_PAGE_SIZE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+
 /// Read the host page size via `host_page_size`.
 fn read_page_size() -> Result<u64, CollectError> {
+    if let Some(cached) = CACHED_PAGE_SIZE.get() {
+        return Ok(*cached);
+    }
+    let fresh = read_page_size_uncached()?;
+    // A racing sampler may have installed the value first; either way the
+    // established immutable value is authoritative.
+    let _ = CACHED_PAGE_SIZE.set(fresh);
+    Ok(*CACHED_PAGE_SIZE.get().unwrap_or(&fresh))
+}
+
+fn read_page_size_uncached() -> Result<u64, CollectError> {
     let host = HostPort::current()?;
     let mut page_size: usize = 0;
     // Safety: `host_page_size` writes a single usize value. The pointer is
@@ -1664,6 +1683,11 @@ fn read_page_size() -> Result<u64, CollectError> {
     }
     #[allow(clippy::cast_possible_truncation)]
     Ok(page_size as u64)
+}
+
+#[cfg(test)]
+fn cached_page_size_for_tests() -> Option<u64> {
+    CACHED_PAGE_SIZE.get().copied()
 }
 
 /// Read swap usage from sysctl `vm.swapusage`.

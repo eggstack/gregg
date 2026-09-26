@@ -1497,6 +1497,250 @@ async fn ipv6_loopback_if_available() {
     completion.wait().await.unwrap();
 }
 
+// ===== Plan 139: ready-health memoization and borrowed dispatch =====
+
+#[tokio::test]
+async fn plan139_repeated_ready_v1_health_serializes_once() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    for _ in 0..10 {
+        let response = call(&state, get("/healthz")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: gregg_protocol::HealthResponse =
+            serde_json::from_str(&response_body_string(response)).unwrap();
+        assert_eq!(parsed.state, ReadinessState::Ready);
+    }
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "fresh ready v1 health must serialize at most once per publication"
+    );
+}
+
+#[tokio::test]
+async fn plan139_repeated_ready_v2_health_serializes_once() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    for _ in 0..10 {
+        let response = call(&state, get("/v2/healthz")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let parsed: HealthResponseV2 =
+            serde_json::from_str(&response_body_string(response)).unwrap();
+        assert_eq!(parsed.state, ReadinessState::Ready);
+    }
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "fresh ready v2 health must serialize at most once per publication"
+    );
+}
+
+#[tokio::test]
+async fn plan139_new_publication_rearms_health_memo() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    let _ = call(&state, get("/healthz")).await;
+    let _ = call(&state, get("/v2/healthz")).await;
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(2)
+            .build(),
+    )
+    .await;
+    let _ = call(&state, get("/healthz")).await;
+    let _ = call(&state, get("/v2/healthz")).await;
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+}
+
+#[tokio::test]
+async fn plan139_stale_transition_never_serves_cached_ready_bytes() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_millis(100));
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(1)
+            .build(),
+    )
+    .await;
+    // Prime the ready memo path on a fresh publication first (no age policy).
+    let fresh = ServerState::new();
+    update_both(&fresh, LinuxSnapshotBuilder::default().build()).await;
+    let ready_body = response_body_string(call(&fresh, get("/healthz")).await);
+    assert!(ready_body.contains("\"ready\""));
+
+    // The stale state must return the exact Plan-124 stale envelope.
+    let response = call(&state, get("/healthz")).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = response_body_string(response);
+    assert_ne!(body, ready_body);
+    let parsed: gregg_protocol::HealthResponse = serde_json::from_str(&body).unwrap();
+    assert_eq!(parsed.state, ReadinessState::Failed);
+    assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
+
+    let response = call(&state, get("/v2/healthz")).await;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let parsed: HealthResponseV2 = serde_json::from_str(&response_body_string(response)).unwrap();
+    assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
+}
+
+#[tokio::test]
+async fn plan139_failure_after_cached_ready_preserves_exact_message() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    let _ = call(&state, get("/healthz")).await;
+    let _ = call(&state, get("/v2/healthz")).await;
+    state.set_failed("collector crashed").await;
+    for path in ["/healthz", "/v2/healthz"] {
+        let response = call(&state, get(path)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        let body = response_body_string(response);
+        assert!(
+            body.contains("collector crashed"),
+            "{path} must preserve Plan-124 failure message, got {body}"
+        );
+        assert!(
+            !body.contains("\"ready\""),
+            "{path} must not serve ready bytes"
+        );
+    }
+}
+
+#[tokio::test]
+async fn plan139_not_serving_survives_later_failures() {
+    let state = ServerState::new();
+    state
+        .update_snapshot_v2_only(WindowsSnapshotV2Builder::default().build_payload())
+        .await;
+    let _ = call(&state, get("/healthz")).await;
+    state.set_failed("collector crashed").await;
+    let response = call(&state, get("/healthz")).await;
+    let parsed: gregg_protocol::HealthResponse =
+        serde_json::from_str(&response_body_string(response)).unwrap();
+    assert_eq!(parsed.category, Some(HealthCategory::NotServing));
+    assert_eq!(
+        parsed.message.as_deref(),
+        Some("schema v1 status is unavailable on this platform")
+    );
+    // v1-only compat path mirrors the guarantee.
+    let compat = ServerState::new();
+    compat
+        .update_snapshot_v1_only(LinuxSnapshotBuilder::default().build())
+        .await;
+    compat.set_failed("boom").await;
+    let response = call(&compat, get("/v2/healthz")).await;
+    let parsed: HealthResponseV2 = serde_json::from_str(&response_body_string(response)).unwrap();
+    assert_eq!(parsed.category, Some(HealthCategory::NotServing));
+}
+
+#[test]
+fn plan139_borrowed_ready_health_matches_public_types() {
+    for builder in [
+        LinuxSnapshotBuilder::default().build(),
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(42)
+            .build(),
+    ] {
+        let owned =
+            serde_json::to_vec(&gregg_protocol::HealthResponse::ready(builder.clone())).unwrap();
+        let borrowed = super::serialize_ready_health_borrowed(&builder).unwrap();
+        assert_eq!(owned, borrowed.to_vec());
+    }
+    for payload in [
+        LinuxSnapshotV2Builder::default().build_payload(),
+        WindowsSnapshotV2Builder::default().build_payload(),
+    ] {
+        let owned = serde_json::to_vec(&HealthResponseV2::ready(payload.snapshot.clone())).unwrap();
+        let borrowed = super::serialize_ready_health_v2_borrowed(&payload.snapshot).unwrap();
+        assert_eq!(owned, borrowed.to_vec());
+    }
+}
+
+#[tokio::test]
+async fn plan139_status_cache_unchanged_by_health_memo() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    for _ in 0..5 {
+        let response = call(&state, get("/v1/status")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = call(&state, get("/healthz")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(
+        state
+            .v1_status_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn plan139_known_routes_avoid_fallback_allocation() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    let before = state
+        .fallback_bodies_built
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for path in ["/", "/v1/status", "/v2/status", "/healthz", "/v2/healthz"] {
+        let response = call(&state, get(path)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+    }
+    assert_eq!(
+        state
+            .fallback_bodies_built
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before,
+        "known routes must not build 404 fallback bodies"
+    );
+    let response = call(&state, get("/unknown")).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        state
+            .fallback_bodies_built
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before + 1
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn malformed_http_version_is_handled_gracefully() {
     let state = ServerState::new();

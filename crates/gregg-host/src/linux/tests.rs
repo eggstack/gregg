@@ -267,3 +267,70 @@ fn identity_uses_pretty_name_when_present() {
     let identity = collect_identity(&source, None).expect("identity");
     assert_eq!(identity.os_name, "Ubuntu 24.04 LTS");
 }
+
+#[test]
+fn plan141_collector_steady_cpufreq_reuses_structure() {
+    use super::source::MemorySource;
+    use super::source::ProcSource;
+    // Pre-populate three stat snapshots and switch `stat_path` between
+    // samples so no post-`drive_refresh` fixture mutation is required.
+    let mut mem = MemorySource::new().with_logical_cores(4);
+    mem.add_file(
+        Path::new("/proc/stat_a"),
+        "cpu  100 0 50 8000 30 5 2 1 0 0\n",
+    );
+    mem.add_file(
+        Path::new("/proc/stat_b"),
+        "cpu  150 0 60 8050 50 6 3 1 0 0\n",
+    );
+    mem.add_file(
+        Path::new("/proc/stat_c"),
+        "cpu  200 0 70 8100 70 7 4 1 0 0\n",
+    );
+    mem.add_file(Path::new("/proc/loadavg"), "0.10 0.20 0.30 1/50 1\n");
+    mem.add_file(
+        Path::new("/proc/meminfo"),
+        "MemTotal:        8000000 kB\nMemAvailable:     4000000 kB\nSwapTotal:              0 kB\nSwapFree:               0 kB\n",
+    );
+    mem.add_file(Path::new("/proc/sys/kernel/hostname"), "cache-host\n");
+    mem.add_file(
+        Path::new("/sys/devices/system/cpu/cpufreq/policy0/affected_cpus"),
+        "0-1\n",
+    );
+    mem.add_file(
+        Path::new("/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq"),
+        "2000000\n",
+    );
+    mem.add_file(
+        Path::new("/sys/devices/system/cpu/cpufreq/policy1/affected_cpus"),
+        "2-3\n",
+    );
+    mem.add_file(
+        Path::new("/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq"),
+        "1000000\n",
+    );
+    let probe = mem.clone();
+    let source = ProcSource::for_memory(mem).with_stat_path("/proc/stat_a");
+    let mut collector = LinuxCollector::with_source(source, None).expect("constructs");
+    let _ = collector.sample().expect_err("warming");
+    collector
+        .source_mut()
+        .set_stat_path(Path::new("/proc/stat_b").to_path_buf());
+    let first = collector.sample().expect("steady sample");
+    assert_eq!(first.cpu_frequency_hz, Some(1_500_000_000));
+    let after_first = probe.call_counts();
+    let membership_first = after_first.reads_containing("affected_cpus")
+        + after_first.reads_containing("related_cpus");
+    collector
+        .source_mut()
+        .set_stat_path(Path::new("/proc/stat_c").to_path_buf());
+    let second = collector.sample().expect("second steady sample");
+    assert_eq!(second.cpu_frequency_hz, first.cpu_frequency_hz);
+    let after_second = probe.call_counts();
+    assert_eq!(
+        after_second.reads_containing("affected_cpus")
+            + after_second.reads_containing("related_cpus"),
+        membership_first,
+        "collector steady state must reuse CPUFreq structure"
+    );
+}

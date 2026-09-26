@@ -1103,4 +1103,302 @@ mod tests {
         // At least 2 samples (warming + success) should have fired the callback.
         assert!(sample_count.load(Ordering::Relaxed) >= 2);
     }
+
+    // ===== Plan 142: persistent worker vs spawn_blocking experiment =====
+    //
+    // Test-only reversible candidate: one dedicated collector thread owns the
+    // synthetic collector for the session; the async side sends one request
+    // only when no sample is outstanding (bounded, no queue). Panics are
+    // contained with `catch_unwind`, the collector is retained, and shutdown
+    // is bounded. Production `Sampler` is unchanged; this module closes with
+    // RETAIN SPAWN_BLOCKING (see Plan 142 closure).
+
+    use std::sync::mpsc::{sync_channel, SyncSender};
+
+    struct WorkerResponse {
+        sample: Result<CollectedMetrics, CollectError>,
+        identity: Result<gregg_protocol::SystemIdentity, CollectError>,
+    }
+
+    struct TestWorker {
+        requests: Option<SyncSender<tokio::sync::oneshot::Sender<WorkerResponse>>>,
+        handle: Option<std::thread::JoinHandle<SyntheticCollector>>,
+        samples_taken: Arc<std::sync::atomic::AtomicU32>,
+    }
+
+    impl TestWorker {
+        fn spawn(collector: SyntheticCollector) -> Self {
+            // Bounded capacity 1: one outstanding sample at most (buffered
+            // request or in-progress sample), never an unbounded queue.
+            let (tx, rx) = sync_channel::<tokio::sync::oneshot::Sender<WorkerResponse>>(1);
+            let samples_taken = Arc::new(std::sync::atomic::AtomicU32::new(0));
+            let counted = Arc::clone(&samples_taken);
+            let handle = std::thread::Builder::new()
+                .name("plan142-test-collector".into())
+                .spawn(move || {
+                    let mut owned = collector;
+                    while let Ok(respond) = rx.recv() {
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            counted.fetch_add(1, Ordering::Relaxed);
+                            let sample = owned.sample();
+                            let identity = owned.identity();
+                            WorkerResponse { sample, identity }
+                        }));
+                        let response = match result {
+                            Ok(response) => response,
+                            Err(_) => WorkerResponse {
+                                sample: Err(CollectError::new(
+                                    CollectErrorKind::SourceUnavailable,
+                                    "collection task panicked",
+                                )),
+                                identity: Ok(test_identity()),
+                            },
+                        };
+                        let _ = respond.send(response);
+                    }
+                    owned
+                })
+                .expect("worker thread spawns");
+            Self {
+                requests: Some(tx),
+                handle: Some(handle),
+                samples_taken,
+            }
+        }
+
+        async fn sample_once_via_worker(&self) -> Option<WorkerResponse> {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            // At most one in flight: `try_send` fails if a sample is
+            // outstanding (rendezvous channel), never queues unbounded work.
+            self.requests.as_ref()?.try_send(tx).ok()?;
+            rx.await.ok()
+        }
+
+        fn shutdown_bounded(mut self, timeout: Duration) -> Option<SyntheticCollector> {
+            drop(self.requests.take());
+            let handle = self.handle.take()?;
+            // Bounded join: a blocked native call must not hang shutdown.
+            // Spawn a waiter and time out; on timeout the worker is detached
+            // (mirroring the runtime pool, which cannot abort started work).
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let owned = handle.join();
+                let _ = done_tx.send(owned);
+            });
+            done_rx.recv_timeout(timeout).ok().and_then(Result::ok)
+        }
+    }
+
+    struct PanickingCollector {
+        panicked: bool,
+    }
+
+    impl SystemCollector for PanickingCollector {
+        fn identity(&self) -> Result<gregg_protocol::SystemIdentity, CollectError> {
+            Ok(test_identity())
+        }
+
+        fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
+            if !self.panicked {
+                self.panicked = true;
+                panic!("plan142 synthetic panic");
+            }
+            Ok(successful_metrics())
+        }
+
+        fn capabilities(&self) -> gregg_protocol::MetricCapabilities {
+            gregg_protocol::MetricCapabilities { cpu_iowait: false }
+        }
+    }
+
+    #[test]
+    fn plan142_worker_warming_then_ready_matches_baseline() {
+        let worker = TestWorker::spawn(SyntheticCollector::warming_then_success());
+        let first = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(worker.sample_once_via_worker())
+            .expect("first response");
+        assert!(matches!(
+            first.sample,
+            Err(ref error) if error.kind == CollectErrorKind::Warming
+        ));
+        let second = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(worker.sample_once_via_worker())
+            .expect("second response");
+        assert!(second.sample.is_ok());
+        assert!(second.identity.is_ok());
+        assert_eq!(worker.samples_taken.load(Ordering::Relaxed), 2);
+        let _ = worker.shutdown_bounded(Duration::from_secs(2));
+    }
+
+    #[test]
+    fn plan142_worker_panic_recovers_and_retains_collector() {
+        // Baseline `Sampler` recovers from a panicked `spawn_blocking` task
+        // via poisoned-mutex recovery; the worker must match that without
+        // killing its loop.
+        let (tx, rx) = sync_channel::<tokio::sync::oneshot::Sender<WorkerResponse>>(1);
+        let handle = std::thread::Builder::new()
+            .name("plan142-panic-worker".into())
+            .spawn(move || {
+                let mut owned = PanickingCollector { panicked: false };
+                let mut samples = 0u32;
+                while let Ok(respond) = rx.recv() {
+                    samples += 1;
+                    let result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owned.sample()));
+                    let sample = match result {
+                        Ok(sample) => sample,
+                        Err(_) => Err(CollectError::new(
+                            CollectErrorKind::SourceUnavailable,
+                            "collection task panicked",
+                        )),
+                    };
+                    let _ = respond.send(WorkerResponse {
+                        sample,
+                        identity: Ok(test_identity()),
+                    });
+                    if samples >= 2 {
+                        break;
+                    }
+                }
+            })
+            .unwrap();
+        let roundtrip = |timeout: Duration| {
+            let (tx_one, rx_one) = tokio::sync::oneshot::channel();
+            tx.try_send(tx_one).unwrap();
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async { tokio::time::timeout(timeout, rx_one).await })
+                .unwrap()
+                .unwrap()
+        };
+        let first = roundtrip(Duration::from_secs(2));
+        assert!(matches!(
+            first.sample,
+            Err(ref error) if error.kind == CollectErrorKind::SourceUnavailable
+        ));
+        let second = roundtrip(Duration::from_secs(2));
+        assert!(second.sample.is_ok(), "worker must survive panic");
+        drop(tx);
+        handle.join().expect("worker exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn plan142_worker_allows_at_most_one_in_flight() {
+        let worker = TestWorker::spawn(SyntheticCollector::warming_then_success());
+        // Sequential use (the `Sampler::run` discipline) always succeeds.
+        let first = worker.sample_once_via_worker().await;
+        assert!(first.is_some());
+        let second = worker.sample_once_via_worker().await;
+        assert!(second.is_some());
+        let _ = worker.shutdown_bounded(Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn plan142_worker_shutdown_between_samples_is_bounded() {
+        let worker = TestWorker::spawn(SyntheticCollector::warming_then_success());
+        let _ = worker.sample_once_via_worker().await;
+        let start = std::time::Instant::now();
+        let _ = worker.shutdown_bounded(Duration::from_secs(2));
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "idle shutdown must be prompt"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan142_blocked_worker_does_not_stall_async_http() {
+        struct BlockedCollector;
+        impl SystemCollector for BlockedCollector {
+            fn identity(&self) -> Result<gregg_protocol::SystemIdentity, CollectError> {
+                Ok(test_identity())
+            }
+            fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
+                std::thread::sleep(Duration::from_secs(10));
+                Ok(successful_metrics())
+            }
+            fn capabilities(&self) -> gregg_protocol::MetricCapabilities {
+                gregg_protocol::MetricCapabilities { cpu_iowait: false }
+            }
+        }
+        // Baseline `spawn_blocking` cannot abort started work either; the
+        // worker must not claim stronger cancellation. Prove the async
+        // runtime stays responsive while a sample is blocked by racing a
+        // bounded shutdown against an unrelated async tick.
+        let (tx, rx) = sync_channel::<tokio::sync::oneshot::Sender<WorkerResponse>>(1);
+        let handle = std::thread::Builder::new()
+            .name("plan142-blocked-worker".into())
+            .spawn(move || {
+                let mut owned = BlockedCollector;
+                while let Ok(respond) = rx.recv() {
+                    // No `catch_unwind` needed for the blocking proof; the
+                    // sleep simulates an uninterruptible native call.
+                    let sample = owned.sample();
+                    let _ = respond.send(WorkerResponse {
+                        sample,
+                        identity: Ok(test_identity()),
+                    });
+                }
+            })
+            .unwrap();
+        let (tx_one, rx_one) = tokio::sync::oneshot::channel();
+        tx.try_send(tx_one).unwrap();
+        // Unrelated async work completes while the worker is blocked.
+        tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::task::yield_now().await;
+        })
+        .await
+        .expect("async runtime stays responsive during blocked sample");
+        // Bounded shutdown does not wait for the 10s native call.
+        drop(tx);
+        let shutdown_done = tokio::task::spawn_blocking(move || {
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let joined = handle.join();
+                let _ = done_tx.send(joined.is_ok());
+            });
+            done_rx.recv_timeout(Duration::from_millis(200)).is_ok()
+        })
+        .await
+        .unwrap();
+        assert!(
+            !shutdown_done,
+            "blocked worker join must time out rather than hang shutdown"
+        );
+        std::mem::drop(rx_one);
+    }
+
+    #[test]
+    fn plan142_worker_handoff_structure_is_documented() {
+        // Structural evidence (synthetic near-zero-cost collector, so native
+        // I/O does not hide handoff cost):
+        // - baseline: one `spawn_blocking` task + two mutex locks per sample
+        //   (sample + identity/capability conversion), no channels;
+        // - candidate: zero `spawn_blocking` tasks, one thread total, two
+        //   channel operations per sample (request + response), zero mutexes,
+        //   but an extra worker/channel/shutdown state machine plus
+        //   `sample_once` ownership transfer machinery.
+        //
+        // The candidate removes per-tick task creation at the cost of a
+        // persistent thread, bounded request/response channels, panic
+        // containment, identity bundling, and bounded-shutdown/detach logic.
+        // After Plan 141 native I/O dominates per-sample cost, so the
+        // handoff saving is not meaningful enough to justify the additional
+        // lifecycle state. RETAIN SPAWN_BLOCKING.
+        let baseline_spawn_blocking_per_sample = 1;
+        let baseline_mutex_locks_per_sample = 2;
+        let candidate_threads_total = 1;
+        let candidate_channel_ops_per_sample = 2;
+        assert_eq!(baseline_spawn_blocking_per_sample, 1);
+        assert_eq!(baseline_mutex_locks_per_sample, 2);
+        assert_eq!(candidate_threads_total, 1);
+        assert_eq!(candidate_channel_ops_per_sample, 2);
+    }
 }

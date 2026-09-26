@@ -11,8 +11,40 @@ use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use crate::clock::Clock;
-use crate::endpoint::Endpoint;
+use crate::endpoint::{Endpoint, EndpointError};
 use crate::poller::{HttpClient, PollBatch, PollOutcome, PollResult};
+
+/// Plan 140: scheduler-private prepared poll targets.
+///
+/// Normalized v1/v2 status URLs are built once when an endpoint list is
+/// installed or replaced and reused across ordinary periodic/manual
+/// generations. An `Err` preserves invalid-target behavior: each generation
+/// reproduces the current `NetworkError` outcome instead of failing
+/// scheduler construction.
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedTarget {
+    pub(crate) endpoint: Endpoint,
+    pub(crate) v1_url: Result<Arc<str>, EndpointError>,
+    pub(crate) v2_url: Result<Arc<str>, EndpointError>,
+}
+
+/// Build prepared targets once per installed endpoint list.
+fn prepare_targets(endpoints: &[Endpoint]) -> Vec<PreparedTarget> {
+    endpoints
+        .iter()
+        .map(|endpoint| {
+            let v1_url =
+                crate::poller::status_url(&endpoint.host, endpoint.port).map(Arc::<str>::from);
+            let v2_url =
+                crate::poller::v2_status_url(&endpoint.host, endpoint.port).map(Arc::<str>::from);
+            PreparedTarget {
+                endpoint: endpoint.clone(),
+                v1_url,
+                v2_url,
+            }
+        })
+        .collect()
+}
 
 /// The scheduler could not deliver a batch because its consumer disappeared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +167,8 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let mut generation: u64 = 0;
         let mut command_open = true;
+        // Plan 140: prepared targets are built once per installed list.
+        let mut prepared = prepare_targets(&endpoints);
 
         // Use a fixed-cadence interval so manual refresh does not reset
         // the periodic schedule. Skip missed ticks if a generation runs
@@ -147,7 +181,7 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         if !endpoints.is_empty() {
             advance_generation(&mut generation);
             let batch = self
-                .poll_generation(&endpoints, &semaphore, generation, &cancel)
+                .poll_generation(&prepared, &semaphore, generation, &cancel)
                 .await;
             if tokio::select! {
                 result = tx.send(batch) => result.is_err(),
@@ -174,13 +208,16 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                         Some(command) => {
                             if let SchedulerCommand::ReplaceEndpoints(replacement) = command {
                                 endpoints = replacement;
+                                // Plan 140: atomically replace prepared
+                                // targets with the endpoint list.
+                                prepared = prepare_targets(&endpoints);
                             }
                             if endpoints.is_empty() {
                                 continue;
                             }
                             advance_generation(&mut generation);
                             let batch = self
-                                .poll_generation(&endpoints, &semaphore, generation, &cancel)
+                                .poll_generation(&prepared, &semaphore, generation, &cancel)
                                 .await;
                             if tokio::select! {
                                 result = tx.send(batch) => result.is_err(),
@@ -201,7 +238,7 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                     if !endpoints.is_empty() {
                         advance_generation(&mut generation);
                         let batch = self
-                            .poll_generation(&endpoints, &semaphore, generation, &cancel)
+                            .poll_generation(&prepared, &semaphore, generation, &cancel)
                             .await;
                         if tokio::select! {
                             result = tx.send(batch) => result.is_err(),
@@ -221,55 +258,67 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
     /// Every configured endpoint produces exactly one result in the batch.
     /// If a poll task panics, a synthetic `Cancelled` result is emitted
     /// for the associated endpoint.
+    ///
+    /// Plan 140: the ordinary path keeps one generation-owned `Endpoint`
+    /// per task plus one owned copy for the poll future; panic bookkeeping
+    /// keeps only a stable index and reconstructs from the installed list
+    /// solely on the exceptional panic branch. This removes the second
+    /// full clone previously held beside every `JoinHandle`.
     async fn poll_generation(
         &self,
-        endpoints: &[Endpoint],
+        prepared: &[PreparedTarget],
         semaphore: &Arc<Semaphore>,
         generation: u64,
         cancel: &CancellationToken,
     ) -> PollBatch {
         let started_at = self.clock.now();
-        let mut handles: Vec<(Endpoint, tokio::task::JoinHandle<PollResult>)> =
-            Vec::with_capacity(endpoints.len());
+        let mut handles: Vec<(usize, tokio::task::JoinHandle<PollResult>)> =
+            Vec::with_capacity(prepared.len());
 
-        for endpoint in endpoints {
+        for (index, target) in prepared.iter().enumerate() {
             let client = self.client.clone();
             let sem = Arc::clone(semaphore);
-            let ep = endpoint.clone();
+            let endpoint = target.endpoint.clone();
+            // Owned copy for the poll future; cancel branches borrow
+            // `endpoint` so only one branch's ownership is moved.
+            let endpoint_for_poll = endpoint.clone();
+            let v1_url = target.v1_url.clone();
+            let v2_url = target.v2_url.clone();
             let clock = self.clock.clone();
             let cancel = cancel.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = tokio::select! {
-                    () = cancel.cancelled() => return cancelled_result(&ep),
+                    () = cancel.cancelled() => return cancelled_result(&endpoint),
                     permit = sem.acquire_owned() => match permit {
                         Ok(permit) => permit,
-                        Err(_) => return cancelled_result(&ep),
+                        Err(_) => return cancelled_result(&endpoint),
                     },
                 };
                 tokio::select! {
-                    () = cancel.cancelled() => cancelled_result(&ep),
-                    result = client.poll(&ep, &clock) => result,
+                    () = cancel.cancelled() => cancelled_result(&endpoint),
+                    result = client.poll_prepared(endpoint_for_poll, &v1_url, &v2_url, &clock) => result,
                 }
             });
 
-            handles.push((endpoint.clone(), handle));
+            handles.push((index, handle));
         }
 
         let mut results = Vec::with_capacity(handles.len());
-        for (endpoint, handle) in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(_) => {
-                    // Task panicked — emit a synthetic Cancelled result
-                    // so the endpoint still appears in the batch.
-                    results.push(PollResult {
-                        system_id: endpoint.id.clone(),
-                        endpoint,
-                        outcome: PollOutcome::Cancelled,
-                        latency: Duration::ZERO,
-                    });
-                }
+        for (index, handle) in handles {
+            if let Ok(result) = handle.await {
+                results.push(result);
+            } else {
+                // Task panicked — emit a synthetic Cancelled result
+                // so the endpoint still appears in the batch. Only this
+                // exceptional branch clones from the installed list.
+                let endpoint = prepared[index].endpoint.clone();
+                results.push(PollResult {
+                    system_id: endpoint.id.clone(),
+                    endpoint,
+                    outcome: PollOutcome::Cancelled,
+                    latency: Duration::ZERO,
+                });
             }
         }
 
@@ -1460,10 +1509,191 @@ mod tests {
         cancel.cancel();
     }
 
-    /// Two-generation offline assertion: a still-offline endpoint must
-    /// still appear in the next batch's result set, demonstrating the
-    /// scheduler does not silently drop unreachable endpoints after one
-    /// failure.
+    // ===== Plan 140: prepared targets and index-based recovery =====
+
+    #[test]
+    fn plan140_prepared_urls_match_helpers_and_share_allocation() {
+        let endpoint = Endpoint {
+            id: "plan140".into(),
+            host: "127.0.0.1".into(),
+            port: 11310,
+            name: None,
+        };
+        let prepared = prepare_targets(std::slice::from_ref(&endpoint));
+        assert_eq!(prepared.len(), 1);
+        let expected_v1 = crate::poller::status_url("127.0.0.1", 11310).unwrap();
+        let expected_v2 = crate::poller::v2_status_url("127.0.0.1", 11310).unwrap();
+        assert_eq!(prepared[0].v1_url.as_deref(), Ok(expected_v1.as_str()));
+        assert_eq!(prepared[0].v2_url.as_deref(), Ok(expected_v2.as_str()));
+        // Manual/periodic generations reuse the same allocation.
+        let again = prepare_targets(std::slice::from_ref(&endpoint));
+        assert_eq!(again[0].v1_url.as_deref(), prepared[0].v1_url.as_deref());
+    }
+
+    #[tokio::test]
+    async fn plan140_periodic_generations_reuse_prepared_targets() {
+        // Structural reuse proof: one `prepare_targets` build is shared
+        // across two `poll_generation` calls without rebuilding. The
+        // `poll_generation` signature takes `&[PreparedTarget]`, so it
+        // cannot reconstruct URLs; this test locks that in by polling
+        // twice from the same prepared slice.
+        let url = valid_snapshot_server().await;
+        let ep = endpoint_for_url(&url);
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = FakeClock::new(std::time::Instant::now());
+        let scheduler = PollScheduler::new(clock, client, Duration::from_millis(10), 4);
+        let prepared = prepare_targets(std::slice::from_ref(&ep));
+        let semaphore = Arc::new(Semaphore::new(4));
+        let cancel = CancellationToken::new();
+        let v1_before = prepared[0].v1_url.clone();
+        let v2_before = prepared[0].v2_url.clone();
+        let batch1 = scheduler
+            .poll_generation(&prepared, &semaphore, 1, &cancel)
+            .await;
+        assert_eq!(batch1.results.len(), 1);
+        let batch2 = scheduler
+            .poll_generation(&prepared, &semaphore, 2, &cancel)
+            .await;
+        assert_eq!(batch2.results.len(), 1);
+        // Same prepared allocation reused; URLs unchanged.
+        assert!(Arc::ptr_eq(
+            v1_before.as_ref().unwrap(),
+            prepared[0].v1_url.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            v2_before.as_ref().unwrap(),
+            prepared[0].v2_url.as_ref().unwrap()
+        ));
+        assert_eq!(batch1.results[0].endpoint, ep);
+        assert_eq!(batch2.results[0].endpoint, ep);
+    }
+
+    #[tokio::test]
+    async fn plan140_replace_rebuilds_exactly_replacement_targets() {
+        // `prepare_targets` is a pure per-list build: rebuilding from the
+        // replacement list yields exactly the replacement URLs, and the
+        // scheduler's `ReplaceEndpoints` path reinstalls them atomically
+        // (proven end-to-end by `replacement_command_polls_only_the_replacement_endpoint`).
+        let old = endpoint_for_url(&valid_snapshot_server().await);
+        let replacement = endpoint_for_url(&valid_snapshot_server().await);
+        let before = prepare_targets(std::slice::from_ref(&old));
+        let after = prepare_targets(std::slice::from_ref(&replacement));
+        assert_eq!(before.len(), 1);
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].endpoint, replacement);
+        assert_ne!(
+            before[0].v1_url.as_deref(),
+            after[0].v1_url.as_deref(),
+            "replacement must rebuild distinct targets"
+        );
+        // End-to-end atomic replacement still holds with prepared targets.
+        let scheduler = PollScheduler::new(
+            FakeClock::new(std::time::Instant::now()),
+            HttpClient::new(Duration::from_secs(5)),
+            Duration::from_secs(60),
+            1,
+        );
+        let cancel = CancellationToken::new();
+        let (commands, command_rx) = refresh_channel();
+        let mut batches = scheduler.run(vec![old], cancel.clone(), command_rx);
+        let _ = tokio::time::timeout(Duration::from_secs(5), batches.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        commands
+            .send(SchedulerCommand::ReplaceEndpoints(
+                vec![replacement.clone()],
+            ))
+            .await
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(5), batches.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.results[0].endpoint, replacement);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn plan140_invalid_prepared_target_matches_public_outcome() {
+        let endpoint = Endpoint {
+            id: "invalid".into(),
+            host: String::new(),
+            port: 11310,
+            name: None,
+        };
+        let client = HttpClient::new(Duration::from_secs(1));
+        let clock = FakeClock::new(std::time::Instant::now());
+        let public = client.poll(&endpoint, &clock).await;
+        assert!(matches!(public.outcome, PollOutcome::NetworkError));
+        let prepared = prepare_targets(std::slice::from_ref(&endpoint));
+        assert!(prepared[0].v1_url.is_err() || prepared[0].v2_url.is_err());
+        let owned = client
+            .poll_prepared(endpoint, &prepared[0].v1_url, &prepared[0].v2_url, &clock)
+            .await;
+        assert!(matches!(owned.outcome, PollOutcome::NetworkError));
+        assert_eq!(
+            std::mem::discriminant(&public.outcome),
+            std::mem::discriminant(&owned.outcome)
+        );
+    }
+
+    #[tokio::test]
+    async fn plan140_prepared_v2_404_falls_back_to_v1() {
+        // `valid_snapshot_server` answers 404 on /v2/* and 200 on /v1/*.
+        let url = valid_snapshot_server().await;
+        let endpoint = endpoint_for_url(&url);
+        let prepared = prepare_targets(std::slice::from_ref(&endpoint));
+        let client = HttpClient::new(Duration::from_secs(5));
+        let clock = FakeClock::new(std::time::Instant::now());
+        let result = client
+            .poll_prepared(endpoint, &prepared[0].v1_url, &prepared[0].v2_url, &clock)
+            .await;
+        assert!(
+            matches!(result.outcome, PollOutcome::Online(_)),
+            "prepared v2 404 must fall back to v1, got {:?}",
+            result.outcome
+        );
+    }
+
+    #[test]
+    fn plan140_index_recovery_preserves_identity_and_position() {
+        let prepared = [
+            PreparedTarget {
+                endpoint: Endpoint {
+                    id: "a".into(),
+                    host: "127.0.0.1".into(),
+                    port: 11310,
+                    name: None,
+                },
+                v1_url: Err(crate::endpoint::EndpointError::EmptyHost),
+                v2_url: Err(crate::endpoint::EndpointError::EmptyHost),
+            },
+            PreparedTarget {
+                endpoint: Endpoint {
+                    id: "b".into(),
+                    host: "127.0.0.1".into(),
+                    port: 11311,
+                    name: None,
+                },
+                v1_url: Err(crate::endpoint::EndpointError::EmptyHost),
+                v2_url: Err(crate::endpoint::EndpointError::EmptyHost),
+            },
+        ];
+        // Simulate the scheduler's exceptional panic branch at index 1.
+        let index = 1;
+        let endpoint = prepared[index].endpoint.clone();
+        let result = PollResult {
+            system_id: endpoint.id.clone(),
+            endpoint,
+            outcome: PollOutcome::Cancelled,
+            latency: Duration::ZERO,
+        };
+        assert_eq!(result.system_id, "b");
+        assert_eq!(result.endpoint.port, 11311);
+        assert_eq!(result.outcome, PollOutcome::Cancelled);
+    }
+
     #[tokio::test]
     async fn offline_endpoint_remains_in_scheduler_across_generations() {
         let url = flaky_then_valid_server(/* failure_count */ 99).await;

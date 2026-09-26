@@ -58,13 +58,16 @@ pub fn render(f: &mut Frame, state: &AppState) {
         return;
     }
 
+    // Plan 143: condensed values are reused across unchanged redraws via a
+    // bounded per-system cache keyed by render-relevant fields. Fleet-wide
+    // scanning for geometry remains per render; only formatting is memoized.
     let condensed_values = if state.system_view_mode == SystemViewMode::Condensed {
-        condensed::preformat_fleet(&state.systems)
+        preformat_fleet_cached(state)
     } else {
         Vec::new()
     };
     let condensed_layout = if state.system_view_mode == SystemViewMode::Condensed {
-        condensed::compute_condensed_table_layout_with_values(
+        condensed::compute_condensed_table_layout_with_rc(
             &state.systems,
             area.width,
             &condensed_values,
@@ -111,7 +114,9 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 entry.is_visually_selected,
                 entry.drive_rows_visible,
                 entry.network_rows_visible,
-                condensed_values.get(entry.index).and_then(Option::as_ref),
+                condensed_values
+                    .get(entry.index)
+                    .and_then(|slot| slot.as_deref()),
             );
             continue;
         }
@@ -209,6 +214,10 @@ thread_local! {
 /// system's formatted rows are rebuilt only when its snapshot content
 /// (compared by full value, immune to any mutation path) or membership
 /// changed. Returns `(system index, rows)` pairs in configured order.
+///
+/// Plan 143: on a cache miss the already-derived drive/network aggregates in
+/// the render key are passed into the row builder so the same snapshot is
+/// not aggregated twice.
 fn metric_rows_for_fleet(state: &AppState) -> Vec<Option<Rc<MetricRows>>> {
     let mut online_rows = vec![None; state.systems.len()];
     METRIC_ROWS_CACHE.with_borrow_mut(|cache| {
@@ -223,12 +232,26 @@ fn metric_rows_for_fleet(state: &AppState) -> Vec<Option<Rc<MetricRows>>> {
             let rows = match cache.get_mut(&system.id) {
                 Some(entry) if entry.key == key => Rc::clone(&entry.rows),
                 Some(entry) => {
+                    let rebuilt = system_block::build_metric_rows_with_aggregates(
+                        snapshot,
+                        key.drive_aggregate,
+                        key.network
+                            .as_ref()
+                            .and_then(|network| network.utilization_pct),
+                    );
                     entry.key = key;
-                    entry.rows = Rc::new(system_block::build_metric_rows(snapshot));
+                    entry.rows = Rc::new(rebuilt);
                     Rc::clone(&entry.rows)
                 }
                 None => {
-                    let rows: Rc<MetricRows> = Rc::new(system_block::build_metric_rows(snapshot));
+                    let rebuilt = system_block::build_metric_rows_with_aggregates(
+                        snapshot,
+                        key.drive_aggregate,
+                        key.network
+                            .as_ref()
+                            .and_then(|network| network.utilization_pct),
+                    );
+                    let rows: Rc<MetricRows> = Rc::new(rebuilt);
                     cache.insert(
                         system.id.clone(),
                         CachedMetricRows {
@@ -248,6 +271,67 @@ fn metric_rows_for_fleet(state: &AppState) -> Vec<Option<Rc<MetricRows>>> {
         }
     });
     online_rows
+}
+
+/// Plan 143: bounded cross-render condensed value cache.
+///
+/// Reuses preformatted condensed strings when the render key is unchanged,
+/// avoiding up to seven `format!` calls per online system on unchanged
+/// redraws. Keys are by value (never pointer identity) so config
+/// reload/mutation invalidates correctly; departed IDs are pruned under the
+/// same bounded-membership principle as the normal metric cache.
+struct CachedCondensedValues {
+    key: condensed::CondensedRenderKey,
+    values: Rc<condensed::PreformattedValues>,
+}
+
+thread_local! {
+    static CONDENSED_VALUES_CACHE: RefCell<HashMap<String, CachedCondensedValues>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+pub(crate) fn condensed_cache_len_for_tests() -> usize {
+    CONDENSED_VALUES_CACHE.with_borrow(std::collections::HashMap::len)
+}
+
+/// Pre-format each online system once per distinct render key, reusing cached
+/// values across redraws when the key is unchanged. Index-aligned with the
+/// configured fleet; offline/pending entries are `None`.
+fn preformat_fleet_cached(state: &AppState) -> Vec<Option<Rc<condensed::PreformattedValues>>> {
+    let mut out = vec![None; state.systems.len()];
+    CONDENSED_VALUES_CACHE.with_borrow_mut(|cache| {
+        for (index, system) in state.systems.iter().enumerate() {
+            let Some(key) = condensed::condensed_key_for(system) else {
+                continue;
+            };
+            let values = match cache.get_mut(&system.id) {
+                Some(entry) if entry.key == key => Rc::clone(&entry.values),
+                Some(entry) => {
+                    let fresh = Rc::new(condensed::preformat_online(system));
+                    entry.key = key;
+                    entry.values = Rc::clone(&fresh);
+                    fresh
+                }
+                None => {
+                    let fresh = Rc::new(condensed::preformat_online(system));
+                    cache.insert(
+                        system.id.clone(),
+                        CachedCondensedValues {
+                            key,
+                            values: Rc::clone(&fresh),
+                        },
+                    );
+                    fresh
+                }
+            };
+            out[index] = Some(values);
+        }
+        if cache.len() > state.systems.len() * 4 + 16 {
+            cache.retain(|id, _| state.systems.iter().any(|system| &system.id == id));
+        }
+    });
+    out
 }
 
 #[cfg(test)]
@@ -3088,5 +3172,150 @@ mod tests {
             "Unicode nickname shifted numeric columns at terminal cell: \
              unicode_cells={unicode_cells:?}, ascii_cells={ascii_cells:?}"
         );
+    }
+
+    // ===== Plan 143: cross-render condensed reuse and aggregate sharing =====
+
+    fn plan143_condensed_state() -> AppState {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "a".into(),
+            host: "host-a.local".into(),
+            port: 11310,
+            name: Some("alpha".into()),
+        });
+        let mut state = AppState::from_config(&config);
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+        let now = Instant::now();
+        state.apply_batch(&PollBatch {
+            generation: 1,
+            started_at: now,
+            completed_at: now,
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap())),
+                latency: Duration::from_millis(1),
+            }],
+        });
+        state
+    }
+
+    #[test]
+    fn plan143_identical_condensed_snapshots_reuse_cached_values() {
+        use std::rc::Rc;
+        let state = plan143_condensed_state();
+        let first = super::preformat_fleet_cached(&state);
+        let second = super::preformat_fleet_cached(&state);
+        assert_eq!(first.len(), second.len());
+        let (Some(first_rc), Some(second_rc)) = (&first[0], &second[0]) else {
+            panic!("online system must have cached values");
+        };
+        assert!(
+            Rc::ptr_eq(first_rc, second_rc),
+            "identical keys must reuse the same allocation"
+        );
+    }
+
+    #[test]
+    fn plan143_condensed_key_changes_invalidate_each_field() {
+        use std::rc::Rc;
+        let mut state = plan143_condensed_state();
+        let baseline = super::preformat_fleet_cached(&state);
+        let baseline_rc = baseline[0].as_ref().unwrap().clone();
+        // Display host/name change invalidates.
+        state.systems[0].configured_name = Some("beta".into());
+        let renamed = super::preformat_fleet_cached(&state);
+        assert!(!Rc::ptr_eq(&baseline_rc, renamed[0].as_ref().unwrap()));
+        // Metric change invalidates (CPU percentage via new snapshot).
+        state.systems[0].configured_name = Some("alpha".into());
+        let now = Instant::now();
+        state.apply_batch(&PollBatch {
+            generation: 2,
+            started_at: now,
+            completed_at: now,
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::Online(Box::new(linux_snap_custom(88.0, 5.0, 4))),
+                latency: Duration::from_millis(1),
+            }],
+        });
+        let changed = super::preformat_fleet_cached(&state);
+        assert!(!Rc::ptr_eq(&baseline_rc, changed[0].as_ref().unwrap()));
+    }
+
+    #[test]
+    fn plan143_condensed_cache_prunes_departed_ids() {
+        // Fill the cache with many churned IDs, then verify the bounded
+        // principle keeps it from growing without bound.
+        let mut last_state = None;
+        for batch in 0..40 {
+            let mut config = Config::default();
+            for index in 0..10 {
+                config.systems.push(SystemEntry {
+                    id: format!("churn-{batch}-{index}"),
+                    host: format!("host-{batch}-{index}.local"),
+                    port: 11310,
+                    name: None,
+                });
+            }
+            let mut state = AppState::from_config(&config);
+            state.system_view_mode = crate::state::SystemViewMode::Condensed;
+            let now = Instant::now();
+            let results = state
+                .systems
+                .iter()
+                .map(|system| crate::poller::PollResult {
+                    system_id: system.id.clone(),
+                    endpoint: system.endpoint.clone(),
+                    outcome: PollOutcome::Online(Box::new(linux_snap())),
+                    latency: Duration::from_millis(1),
+                })
+                .collect();
+            state.apply_batch(&PollBatch {
+                generation: 1,
+                started_at: now,
+                completed_at: now,
+                results,
+            });
+            let _ = super::preformat_fleet_cached(&state);
+            last_state = Some(state);
+        }
+        let state = last_state.unwrap();
+        let _ = super::preformat_fleet_cached(&state);
+        let len = super::condensed_cache_len_for_tests();
+        assert!(
+            len <= state.systems.len() * 4 + 16 + 10,
+            "condensed cache must stay bounded, got {len}"
+        );
+    }
+
+    #[test]
+    fn plan143_normal_cache_miss_reuses_aggregate_without_recompute() {
+        let snapshot =
+            crate::normalized::NormalizedSnapshot::from_v1(&linux_snap_custom(25.0, 1.0, 4));
+        let key = super::MetricRenderKey::from_snapshot(&snapshot);
+        let direct = crate::ui::system_block::build_metric_rows(&snapshot);
+        let shared = crate::ui::system_block::build_metric_rows_with_aggregates(
+            &snapshot,
+            key.drive_aggregate,
+            key.network
+                .as_ref()
+                .and_then(|network| network.utilization_pct),
+        );
+        assert_eq!(
+            format!("{direct:?}"),
+            format!("{shared:?}"),
+            "shared-aggregate rows must match the direct build"
+        );
+    }
+
+    #[test]
+    fn plan143_consecutive_condensed_renders_are_identical() {
+        let state = plan143_condensed_state();
+        let first = render_state(&state, 80, 10);
+        let second = render_state(&state, 80, 10);
+        assert_eq!(first, second, "cached second render must match the first");
     }
 }

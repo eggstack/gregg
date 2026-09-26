@@ -23,8 +23,9 @@ use eggserve_server::{
     service_fn_with_policy, RuntimeConfig, Server, ServerCompletion, ServerControl, Service,
     ServiceError,
 };
-use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2};
-use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot};
+use gregg_protocol::v2::SCHEMA_VERSION_V2;
+use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2, StatusSnapshotV2};
+use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
 use tokio::sync::{RwLock, Semaphore};
 use tracing::info;
@@ -136,6 +137,12 @@ pub struct ServerState {
     v1_status_serializations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     v2_status_serializations: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    v1_health_serializations: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    v2_health_serializations: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    fallback_bodies_built: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug)]
@@ -144,10 +151,74 @@ struct PublishedState {
     snapshot_v2: Option<Arc<StatusPayloadV2>>,
     status_bytes: Option<Bytes>,
     status_bytes_v2: Option<Bytes>,
+    /// Plan 139: ready-health bodies memoized per immutable publication.
+    /// Valid only while `health`/`health_v2` remains `Ready` and the snapshot
+    /// is fresh at request time. Cleared on every new publication, warming,
+    /// or failure transition so stale/failed responses stay dynamic.
+    health_bytes: Option<Bytes>,
+    health_bytes_v2: Option<Bytes>,
     last_observed_at_unix_ms: Option<u64>,
     health: HealthMetadata,
     health_v2: HealthMetadata,
     consecutive_failures: u32,
+}
+
+/// Plan 139: borrowed ready-health serialization view for v1.
+///
+/// Byte-for-byte equivalent to `HealthResponse::ready(snapshot.clone())`
+/// without deep-cloning the snapshot. Field order and `skip_serializing_if`
+/// attributes mirror [`HealthResponse`] exactly.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct BorrowedReadyHealthV1<'a> {
+    schema_version: u16,
+    state: ReadinessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<gregg_protocol::HealthCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<&'a StatusSnapshot>,
+}
+
+/// Plan 139: borrowed ready-health serialization view for v2.
+///
+/// Byte-for-byte equivalent to `HealthResponseV2::ready(snapshot.clone())`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+struct BorrowedReadyHealthV2<'a> {
+    schema_version: u16,
+    state: ReadinessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<gregg_protocol::HealthCategory>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<&'a StatusSnapshotV2>,
+}
+
+fn serialize_ready_health_borrowed(snapshot: &StatusSnapshot) -> Result<Bytes, serde_json::Error> {
+    let view = BorrowedReadyHealthV1 {
+        schema_version: SCHEMA_VERSION_V1,
+        state: ReadinessState::Ready,
+        category: None,
+        message: None,
+        snapshot: Some(snapshot),
+    };
+    serde_json::to_vec(&view).map(Bytes::from)
+}
+
+fn serialize_ready_health_v2_borrowed(
+    snapshot: &StatusSnapshotV2,
+) -> Result<Bytes, serde_json::Error> {
+    let view = BorrowedReadyHealthV2 {
+        schema_version: SCHEMA_VERSION_V2,
+        state: ReadinessState::Ready,
+        category: None,
+        message: None,
+        snapshot: Some(snapshot),
+    };
+    serde_json::to_vec(&view).map(Bytes::from)
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +357,8 @@ impl ServerState {
                 snapshot_v2: None,
                 status_bytes: None,
                 status_bytes_v2: None,
+                health_bytes: None,
+                health_bytes_v2: None,
                 last_observed_at_unix_ms: None,
                 health: HealthMetadata::warming(),
                 health_v2: HealthMetadata::warming(),
@@ -297,6 +370,12 @@ impl ServerState {
             v1_status_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             v2_status_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            v1_health_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            v2_health_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            fallback_bodies_built: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -314,6 +393,28 @@ impl ServerState {
         self.v2_status_serializations
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         serialize_status_v2(snapshot)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn serialize_v1_ready_health(
+        &self,
+        snapshot: &StatusSnapshot,
+    ) -> Result<Bytes, serde_json::Error> {
+        #[cfg(test)]
+        self.v1_health_serializations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        serialize_ready_health_borrowed(snapshot)
+    }
+
+    #[allow(clippy::unused_self)]
+    fn serialize_v2_ready_health(
+        &self,
+        snapshot: &StatusSnapshotV2,
+    ) -> Result<Bytes, serde_json::Error> {
+        #[cfg(test)]
+        self.v2_health_serializations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        serialize_ready_health_v2_borrowed(snapshot)
     }
 
     /// Publish new v1 and v2 snapshots and mark the server ready.
@@ -339,6 +440,8 @@ impl ServerState {
         state.snapshot_v2 = Some(payload_v2);
         state.status_bytes = status_bytes;
         state.status_bytes_v2 = status_bytes_v2;
+        state.health_bytes = None;
+        state.health_bytes_v2 = None;
         state.health = HealthMetadata::ready();
         state.health_v2 = HealthMetadata::ready();
         state.last_observed_at_unix_ms = Some(observed_at_unix_ms);
@@ -361,6 +464,8 @@ impl ServerState {
         state.snapshot_v2 = Some(payload_v2);
         state.status_bytes = None;
         state.status_bytes_v2 = status_bytes_v2;
+        state.health_bytes = None;
+        state.health_bytes_v2 = None;
         state.health = HealthMetadata::failed(
             gregg_protocol::HealthCategory::NotServing,
             V1_UNAVAILABLE_MESSAGE,
@@ -387,6 +492,8 @@ impl ServerState {
         state.snapshot_v2 = None;
         state.status_bytes = status_bytes;
         state.status_bytes_v2 = None;
+        state.health_bytes = None;
+        state.health_bytes_v2 = None;
         state.health = HealthMetadata::ready();
         state.health_v2 = HealthMetadata::failed(
             gregg_protocol::HealthCategory::NotServing,
@@ -403,6 +510,8 @@ impl ServerState {
         state.snapshot_v2 = None;
         state.status_bytes = None;
         state.status_bytes_v2 = None;
+        state.health_bytes = None;
+        state.health_bytes_v2 = None;
         state.last_observed_at_unix_ms = None;
         state.health = HealthMetadata::warming();
         state.health_v2 = HealthMetadata::warming();
@@ -425,6 +534,11 @@ impl ServerState {
             state.health_v2 =
                 HealthMetadata::failed(gregg_protocol::HealthCategory::CollectorFailure, msg);
         }
+        // Ready-health memos must not survive a failure transition; the
+        // next ready publication rebuilds them. NotServing memos are never
+        // cached, so clearing unconditionally is exact.
+        state.health_bytes = None;
+        state.health_bytes_v2 = None;
         // Snapshot is deliberately NOT cleared here. The stale-snapshot
         // policy in the status handler decides whether to serve it.
         tracing::debug!(
@@ -470,37 +584,134 @@ impl ServerState {
         StatusDataV2::Unavailable(Box::new(state.health_v2.v2_response(None)))
     }
 
-    async fn v1_health_data(&self, now_unix_ms: Option<u64>) -> (HealthResponse, bool) {
-        let state = self.published.read().await;
-        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
-        let health = if snapshot_is_stale && state.health.state == ReadinessState::Ready {
-            HealthResponse::failed(
-                gregg_protocol::HealthCategory::CollectorFailure,
-                "cached snapshot is stale",
+    /// Plan 139: ready-health fast path returning cached bytes when the
+    /// publication is Ready and fresh, otherwise a dynamic body.
+    ///
+    /// Returns the body plus whether it was served from the per-publication
+    /// memo (used only by tests via serialization counters).
+    async fn v1_health_cached(
+        &self,
+        now_unix_ms: Option<u64>,
+    ) -> Result<(Bytes, StatusCode), ServiceError> {
+        let (snapshot, cached, state_is_ready, snapshot_is_stale) = {
+            let published = self.published.read().await;
+            let snapshot_stale = self.is_stale(&published, now_unix_ms);
+            let ready = published.health.state == ReadinessState::Ready;
+            if snapshot_stale && ready {
+                let body = serialize_health(&HealthResponse::failed(
+                    gregg_protocol::HealthCategory::CollectorFailure,
+                    "cached snapshot is stale",
+                ))?;
+                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+            }
+            if !ready {
+                let health = published.health.v1_response(published.snapshot.as_deref());
+                let status = if health.state == ReadinessState::Ready && !snapshot_stale {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                };
+                let body = serialize_health(&health)?;
+                return Ok((body, status));
+            }
+            let Some(snapshot) = published.snapshot.clone() else {
+                let health = published.health.v1_response(None);
+                let body = serialize_health(&health)?;
+                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+            };
+            (
+                snapshot,
+                published.health_bytes.clone(),
+                ready,
+                snapshot_stale,
             )
-        } else {
-            state.health.v1_response(state.snapshot.as_deref())
         };
-        (health, snapshot_is_stale)
+        debug_assert!(state_is_ready && !snapshot_is_stale);
+        if let Some(body) = cached {
+            return Ok((body, StatusCode::OK));
+        }
+        let body = self
+            .serialize_v1_ready_health(&snapshot)
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        // Publish the memo only if the same immutable snapshot is still
+        // current and still Ready; otherwise serve without polluting the
+        // newer generation.
+        {
+            let mut state = self.published.write().await;
+            let still_current = state
+                .snapshot
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &snapshot))
+                && state.health.state == ReadinessState::Ready;
+            if still_current && state.health_bytes.is_none() {
+                state.health_bytes = Some(body.clone());
+            }
+        }
+        Ok((body, StatusCode::OK))
     }
 
-    async fn v2_health_data(&self, now_unix_ms: Option<u64>) -> (HealthResponseV2, bool) {
-        let state = self.published.read().await;
-        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
-        let health = if snapshot_is_stale && state.health_v2.state == ReadinessState::Ready {
-            HealthResponseV2::failed(
-                gregg_protocol::HealthCategory::CollectorFailure,
-                "cached snapshot is stale",
-            )
-        } else {
-            state.health_v2.v2_response(
-                state
-                    .snapshot_v2
-                    .as_deref()
-                    .map(|payload| &payload.snapshot),
+    /// Plan 139: v2 ready-health fast path, mirroring [`Self::v1_health_cached`].
+    async fn v2_health_cached(
+        &self,
+        now_unix_ms: Option<u64>,
+    ) -> Result<(Bytes, StatusCode), ServiceError> {
+        let (snapshot_v2, cached, state_is_ready, snapshot_is_stale) = {
+            let published = self.published.read().await;
+            let snapshot_stale = self.is_stale(&published, now_unix_ms);
+            let ready = published.health_v2.state == ReadinessState::Ready;
+            if snapshot_stale && ready {
+                let body = serialize_health_v2(&HealthResponseV2::failed(
+                    gregg_protocol::HealthCategory::CollectorFailure,
+                    "cached snapshot is stale",
+                ))?;
+                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+            }
+            if !ready {
+                let health = published.health_v2.v2_response(
+                    published
+                        .snapshot_v2
+                        .as_deref()
+                        .map(|payload| &payload.snapshot),
+                );
+                let status = if health.state == ReadinessState::Ready && !snapshot_stale {
+                    StatusCode::OK
+                } else {
+                    StatusCode::SERVICE_UNAVAILABLE
+                };
+                let body = serialize_health_v2(&health)?;
+                return Ok((body, status));
+            }
+            let Some(snapshot_v2) = published.snapshot_v2.clone() else {
+                let health = published.health_v2.v2_response(None);
+                let body = serialize_health_v2(&health)?;
+                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+            };
+            (
+                snapshot_v2,
+                published.health_bytes_v2.clone(),
+                ready,
+                snapshot_stale,
             )
         };
-        (health, snapshot_is_stale)
+        debug_assert!(state_is_ready && !snapshot_is_stale);
+        if let Some(body) = cached {
+            return Ok((body, StatusCode::OK));
+        }
+        let body = self
+            .serialize_v2_ready_health(&snapshot_v2.snapshot)
+            .map_err(|error| ServiceError::internal(error.to_string()))?;
+        {
+            let mut state = self.published.write().await;
+            let still_current = state
+                .snapshot_v2
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, &snapshot_v2))
+                && state.health_v2.state == ReadinessState::Ready;
+            if still_current && state.health_bytes_v2.is_none() {
+                state.health_bytes_v2 = Some(body.clone());
+            }
+        }
+        Ok((body, StatusCode::OK))
     }
 
     fn is_stale(&self, state: &PublishedState, now_unix_ms: Option<u64>) -> bool {
@@ -626,24 +837,34 @@ fn http_service(state: ServerState) -> impl Service {
 
 async fn dispatch_request(state: &ServerState, request: Request) -> Result<Response, ServiceError> {
     let (head, _body) = request.into_head_and_body();
-    let method = head.method().as_str().to_owned();
-    let raw_target = head.target().raw().to_owned();
+    // Plan 139: keep method/target borrowed through route selection so
+    // successful known routes never allocate owned dispatch strings. Only
+    // the 404 fallback builds its text body from owned copies.
+    let method = head.method().as_str();
     let path = head.target().path();
     let known_route = matches!(
         path,
         "/" | "/v1/status" | "/v2/status" | "/healthz" | "/v2/healthz"
     );
 
-    if known_route && !matches!(method.as_str(), "GET" | "HEAD") {
+    if known_route && !matches!(method, "GET" | "HEAD") {
         return method_not_allowed_response();
     }
 
-    match (method.as_str(), path) {
+    match (method, path) {
         ("GET" | "HEAD", "/" | "/v1/status") => v1_status_response(state).await,
         ("GET" | "HEAD", "/v2/status") => v2_status_response(state).await,
         ("GET" | "HEAD", "/healthz") => health_response(state).await,
         ("GET" | "HEAD", "/v2/healthz") => health_response_v2(state).await,
-        _ => not_found_response(&method, &raw_target),
+        _ => {
+            let method_owned = method.to_owned();
+            let raw_owned = head.target().raw().to_owned();
+            #[cfg(test)]
+            state
+                .fallback_bodies_built
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            not_found_response(&method_owned, &raw_owned)
+        }
     }
 }
 
@@ -675,25 +896,13 @@ async fn v2_status_response(state: &ServerState) -> Result<Response, ServiceErro
 }
 
 async fn health_response(state: &ServerState) -> Result<Response, ServiceError> {
-    let now = now_unix_ms();
-    let (health, snapshot_is_stale) = state.v1_health_data(now).await;
-    let status = if health.state == ReadinessState::Ready && !snapshot_is_stale {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    json_response(status, serialize_health(&health)?)
+    let (body, status) = state.v1_health_cached(now_unix_ms()).await?;
+    json_response(status, body)
 }
 
 async fn health_response_v2(state: &ServerState) -> Result<Response, ServiceError> {
-    let now = now_unix_ms();
-    let (health, snapshot_is_stale) = state.v2_health_data(now).await;
-    let status = if health.state == ReadinessState::Ready && !snapshot_is_stale {
-        StatusCode::OK
-    } else {
-        StatusCode::SERVICE_UNAVAILABLE
-    };
-    json_response(status, serialize_health_v2(&health)?)
+    let (body, status) = state.v2_health_cached(now_unix_ms()).await?;
+    json_response(status, body)
 }
 
 fn json_response(status: StatusCode, body: Bytes) -> Result<Response, ServiceError> {

@@ -222,8 +222,9 @@ async fn run_event_loop(
             maybe_batch = recv_poll_batch(batch_rx) => {
                 match maybe_batch {
                     Some(batch) => {
-                        app_state.apply_batch_owned(batch);
-                        dirty = true;
+                        // Plan 143: rejected/stale batches and fully-ignored
+                        // results do not force a frame.
+                        dirty = app_state.apply_batch_owned_changed(batch);
                     }
                     None => {
                         // An empty system list has no scheduler traffic. Keep
@@ -235,8 +236,7 @@ async fn run_event_loop(
 
             maybe_result = recv_eggpool_result(eggpool_results) => {
                 if let Some(result) = maybe_result {
-                    app_state.apply_eggpool_result(&result);
-                    dirty = true;
+                    dirty = app_state.apply_eggpool_result_changed(&result);
                 } else {
                     // A worker channel closing is not a system-monitoring error.
                     // Mark only the optional pane unavailable and keep Systems responsive.
@@ -254,7 +254,6 @@ async fn run_event_loop(
                                 app_state.apply_action(action);
                                 break;
                             }
-                            dirty = true;
                             let before_pane = app_state.active_pane;
                             let before_highlight = app_state.selection_highlight_active;
                             let resets_highlight =
@@ -262,15 +261,17 @@ async fn run_event_loop(
                             if matches!(action, action::Action::RefreshNow)
                                 && before_pane == state::Pane::Systems
                             {
-                                app_state.apply_action(action);
-                                begin_system_refresh(
+                                // `RefreshNow` itself never changes render-visible
+                                // state; only the reload outcome does.
+                                let _ = app_state.apply_action_changed(action);
+                                dirty = begin_system_refresh(
                                     app_state,
                                     scheduler_tx,
                                     store,
                                     &mut pending_system_refresh,
                                 )?;
                             } else {
-                                dispatch_action_with_store(
+                                dirty = dispatch_action_with_store(
                                     app_state,
                                     action,
                                     scheduler_tx,
@@ -308,8 +309,9 @@ async fn run_event_loop(
                 highlight_sleep
                     .as_mut()
                     .reset(tokio::time::Instant::now() + HIGHLIGHT_DORMANT_DEADLINE);
-                app_state.apply_action(action::Action::ClearSelectionHighlight);
-                dirty = true;
+                // Plan 143: clearing an already-clear highlight is a no-op.
+                dirty = app_state
+                    .apply_action_changed(action::Action::ClearSelectionHighlight);
             }
 
             result = async {
@@ -373,17 +375,39 @@ async fn dispatch_action_with_store(
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: Option<&config::ConfigStore>,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
-) -> Result<(), SchedulerUnavailable> {
-    let is_refresh = matches!(action, action::Action::RefreshNow);
+) -> Result<bool, SchedulerUnavailable> {
+    // Plan 143: drive the dirty gate from the reducer result. Snapshot the
+    // render-visible Systems fields plus EggPool request identity before
+    // mutation; pane/period transitions via `begin_eggpool_request` change
+    // visible status even when the Systems selection is untouched.
+    let before_selected = app_state.selected_id.clone();
+    let before_viewport = app_state.viewport_top_id.clone();
     let before_pane = app_state.active_pane;
+    let before_view = app_state.system_view_mode;
+    let before_drives = app_state.drives_expanded;
+    let before_network = app_state.network_expanded;
+    let before_highlight = app_state.selection_highlight_active;
+    let before_terminal = app_state.terminal_size;
+    let before_eggpool = app_state.eggpool_request();
+    let before_eggpool_status = app_state.eggpool.as_ref().map(|eggpool| eggpool.status);
+    let is_refresh = matches!(action, action::Action::RefreshNow);
     let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
-    app_state.apply_action(action);
+    let _ = app_state.apply_action_changed(action);
 
     let Some(commands) = eggpool_commands else {
         if is_refresh {
-            refresh_systems(app_state, scheduler_tx, store).await?;
+            return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(());
+        return Ok(before_selected != app_state.selected_id
+            || before_viewport != app_state.viewport_top_id
+            || before_pane != app_state.active_pane
+            || before_view != app_state.system_view_mode
+            || before_drives != app_state.drives_expanded
+            || before_network != app_state.network_expanded
+            || before_highlight != app_state.selection_highlight_active
+            || before_terminal != app_state.terminal_size
+            || before_eggpool != app_state.eggpool_request()
+            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status));
     };
 
     if is_refresh {
@@ -396,9 +420,18 @@ async fn dispatch_action_with_store(
                 );
             }
         } else {
-            refresh_systems(app_state, scheduler_tx, store).await?;
+            return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(());
+        return Ok(before_selected != app_state.selected_id
+            || before_viewport != app_state.viewport_top_id
+            || before_pane != app_state.active_pane
+            || before_view != app_state.system_view_mode
+            || before_drives != app_state.drives_expanded
+            || before_network != app_state.network_expanded
+            || before_highlight != app_state.selection_highlight_active
+            || before_terminal != app_state.terminal_size
+            || before_eggpool != app_state.eggpool_request()
+            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status));
     }
 
     if before_pane != app_state.active_pane {
@@ -428,7 +461,16 @@ async fn dispatch_action_with_store(
         }
     }
 
-    Ok(())
+    Ok(before_selected != app_state.selected_id
+        || before_viewport != app_state.viewport_top_id
+        || before_pane != app_state.active_pane
+        || before_view != app_state.system_view_mode
+        || before_drives != app_state.drives_expanded
+        || before_network != app_state.network_expanded
+        || before_highlight != app_state.selection_highlight_active
+        || before_terminal != app_state.terminal_size
+        || before_eggpool != app_state.eggpool_request()
+        || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -447,7 +489,11 @@ fn begin_system_refresh(
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: &config::ConfigStore,
     pending: &mut Option<PendingSystemRefresh>,
-) -> Result<(), SchedulerUnavailable> {
+) -> Result<bool, SchedulerUnavailable> {
+    // Plan 143: a successful reload reconciles or reports diagnostics
+    // (both render-visible); backpressure defers the visible change to the
+    // pending branch. `RefreshNow` itself never changes state.
+    let error_before = app_state.config_reload_error.clone();
     let (command, replacement) = match store.load_existing() {
         Ok(config) => {
             let endpoints = config
@@ -467,13 +513,19 @@ fn begin_system_refresh(
             (scheduler::SchedulerCommand::Refresh, None)
         }
     };
+    let error_changed = app_state.config_reload_error != error_before;
 
     match scheduler_tx.try_send(command) {
         Ok(()) => {
             if let Some(config) = replacement {
                 app_state.reconcile_systems(&config);
                 app_state.clear_config_reload_error();
+                // Reconciliation installs a new endpoint list (visible via
+                // pending/offline rows even before the next batch); clearing
+                // a previous diagnostic is also visible.
+                return Ok(true);
             }
+            Ok(error_changed)
         }
         Err(tokio::sync::mpsc::error::TrySendError::Full(command)) => {
             let sender = scheduler_tx.clone();
@@ -483,25 +535,26 @@ fn begin_system_refresh(
                 }),
                 replacement,
             });
+            // Visible change (if any) happens when the pending send completes.
+            Ok(error_changed)
         }
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            return Err(SchedulerUnavailable);
-        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(SchedulerUnavailable),
     }
-    Ok(())
 }
 
 async fn refresh_systems(
     app_state: &mut state::AppState,
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: Option<&config::ConfigStore>,
-) -> Result<(), SchedulerUnavailable> {
+) -> Result<bool, SchedulerUnavailable> {
     let Some(store) = store else {
         scheduler_tx
             .send(scheduler::SchedulerCommand::Refresh)
             .await
             .map_err(|_| SchedulerUnavailable)?;
-        return Ok(());
+        // Bare refresh without a store never changes render-visible state
+        // by itself; the next batch drives redraws.
+        return Ok(false);
     };
 
     match store.load_existing() {
@@ -517,6 +570,7 @@ async fn refresh_systems(
                 .map_err(|_| SchedulerUnavailable)?;
             app_state.reconcile_systems(&config);
             app_state.clear_config_reload_error();
+            Ok(true)
         }
         Err(error) => {
             // Keep the last-known-good state when an external edit is
@@ -526,10 +580,9 @@ async fn refresh_systems(
                 .send(scheduler::SchedulerCommand::Refresh)
                 .await
                 .map_err(|_| SchedulerUnavailable)?;
+            Ok(true)
         }
     }
-
-    Ok(())
 }
 
 /// Queue one `EggPool` command without ever blocking the event loop.

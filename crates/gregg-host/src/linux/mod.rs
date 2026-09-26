@@ -35,8 +35,8 @@ pub use memory::{
     SwapSample as SwapInfoSample,
 };
 pub use source::{
-    FileSource, MemorySource, ParsedMeminfo, ParsedProcStat, ProcSource, RawDiskIo,
-    RawNetworkInterface,
+    CpuFreqStructuralCache, FileSource, MemorySource, ParsedMeminfo, ParsedProcStat, ProcSource,
+    RawDiskIo, RawNetworkInterface,
 };
 
 /// A Linux native collector.
@@ -49,6 +49,7 @@ pub struct LinuxCollector {
     drive_refresh: Option<DriveRefreshCache>,
     disk_baselines: CounterBaselines,
     network_baselines: CounterBaselines,
+    cpufreq_cache: crate::linux::source::CpuFreqStructuralCache,
 }
 
 impl LinuxCollector {
@@ -91,6 +92,7 @@ impl LinuxCollector {
             drive_refresh: None,
             disk_baselines: CounterBaselines::default(),
             network_baselines: CounterBaselines::default(),
+            cpufreq_cache: crate::linux::source::CpuFreqStructuralCache::default(),
         })
     }
 
@@ -276,6 +278,9 @@ impl HostCollector for LinuxCollector {
         )
         .unwrap_or(1);
 
+        let cpu_frequency_hz = self
+            .source
+            .cpu_frequency_hz_with_cache(&mut self.cpufreq_cache);
         Ok(HostSample {
             logical_cores,
             cpu_usage_pct: Some(cpu_sample.usage_pct),
@@ -293,7 +298,7 @@ impl HostCollector for LinuxCollector {
             }),
             commit: None,
             drives: self.refresh_drives(),
-            cpu_frequency_hz: self.source.cpu_frequency_hz(),
+            cpu_frequency_hz,
             disk_io: self.collect_disk_io(now),
             network: self.collect_network(now),
         })
