@@ -227,7 +227,7 @@ pub struct MockNativeQueries {
     /// When true, `cpu_load_info` increments `cpu` by a small delta on each
     /// call so successive samples produce a valid non-zero CPU interval.
     pub auto_increment_cpu: bool,
-    pub(crate) cpu_call_count: std::sync::atomic::AtomicU32,
+    pub cpu_call_count: std::sync::atomic::AtomicU32,
     pub disk: Vec<RawDiskIo>,
     pub network: Vec<RawNetworkInterface>,
 }
@@ -416,8 +416,8 @@ const HOST_CPU_LOAD_INFO: i32 = 3;
 const HOST_VM_INFO64: i32 = 4;
 // Filesystem mount flags. Values mirror the Darwin headers; libc remains the
 // authority for the `statfs`/`getmntinfo` ABI itself (see below).
-pub(crate) const MNT_LOCAL: u32 = libc::MNT_LOCAL as u32;
-pub(crate) const MNT_DONTBROWSE: u32 = libc::MNT_DONTBROWSE as u32;
+pub const MNT_LOCAL: u32 = libc::MNT_LOCAL as u32;
+pub const MNT_DONTBROWSE: u32 = libc::MNT_DONTBROWSE as u32;
 
 // ---------------------------------------------------------------------------
 // Darwin filesystem ABI

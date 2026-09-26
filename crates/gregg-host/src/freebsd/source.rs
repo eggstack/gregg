@@ -204,7 +204,7 @@ pub struct MockFreeBsdSource {
     pub network: Vec<RawNetworkInterface>,
     /// When true, CPU advances a small delta per call.
     pub auto_increment_cpu: bool,
-    pub(crate) cpu_call_count: std::sync::atomic::AtomicU32,
+    pub cpu_call_count: std::sync::atomic::AtomicU32,
     /// Error injection flags.
     pub cpu_error: bool,
     /// Error injection flags.

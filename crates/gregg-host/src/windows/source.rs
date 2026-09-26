@@ -158,7 +158,7 @@ pub struct MockWindowsSource {
     /// small delta on each call so successive samples produce a valid
     /// non-zero CPU interval.
     pub auto_increment_cpu: bool,
-    pub(crate) cpu_call_count: std::sync::atomic::AtomicU32,
+    pub cpu_call_count: std::sync::atomic::AtomicU32,
     pub cpu_frequency: Option<u64>,
     pub disk: Vec<RawDiskIo>,
     pub network: Vec<RawNetworkInterface>,
