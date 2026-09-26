@@ -813,7 +813,9 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
         snap_time: 0.0,
     };
     let fetched = unsafe { devstat_getdevs(std::ptr::null_mut(), &raw mut stats) };
-    if fetched != 0 {
+    // Man `devstat(3)`: -1 is an error, 0 means no error, and 1 means the
+    // device list changed (expected on the first call). Only -1 fails.
+    if fetched < 0 {
         return Err(CollectError::new(
             CollectErrorKind::SourceUnavailable,
             "devstat_getdevs failed",
@@ -983,7 +985,10 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
             "ifmib interface count unavailable",
         ));
     }
-    let expected = std::mem::size_of::<IfmibData>();
+    let prefix = std::mem::size_of::<IfmibData>();
+    // The kernel `struct ifmibdata` may be larger than the mapped prefix
+    // (later fields are not used here). Read into a generous buffer and
+    // interpret only the validated leading prefix.
     let mut out = Vec::new();
     for row in 1..=count {
         let mib = [
@@ -994,27 +999,27 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
             row as libc::c_int,
             IFDATA_GENERAL,
         ];
-        let mut data = std::mem::MaybeUninit::<IfmibData>::uninit();
-        let mut len = expected as libc::size_t;
-        // Safety: data is valid for one IfmibData; MIB addresses a single
-        // sparse-tolerant row; ENOENT rows are skipped; length must match
-        // exactly or the row is rejected.
+        let mut buffer = vec![0u8; 1024];
+        let mut len = buffer.len() as libc::size_t;
+        // Safety: buffer is valid for its length; MIB addresses a single
+        // sparse-tolerant row; ENOENT rows are skipped; only the validated
+        // prefix is interpreted below.
         let fetched = unsafe {
             libc::sysctl(
                 mib.as_ptr(),
                 mib.len() as libc::c_uint,
-                data.as_mut_ptr().cast(),
+                buffer.as_mut_ptr().cast(),
                 &raw mut len,
                 std::ptr::null(),
                 0,
             )
         };
-        if fetched != 0 || len != expected as libc::size_t {
+        if fetched != 0 || len < prefix as libc::size_t {
             continue;
         }
-        // Safety: sysctl fully initialized the row (length verified).
-        let row_data = unsafe { data.assume_init() };
-        if let Some(record) = ifmib_record(row, &row_data) {
+        // Safety: the first `prefix` bytes were initialized by sysctl.
+        let row_data: &IfmibData = unsafe { &*buffer.as_ptr().cast() };
+        if let Some(record) = ifmib_record(row, row_data) {
             out.push(record);
         }
     }

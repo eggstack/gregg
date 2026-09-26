@@ -48,7 +48,6 @@ pub struct FreeBsdCollector<S: FreeBsdSource = source::NativeFreeBsdSource> {
     drive_refresh: Option<DriveRefreshCache>,
     disk_baselines: CounterBaselines,
     network_baselines: CounterBaselines,
-    disk_generation: Option<i64>,
 }
 
 impl FreeBsdCollector<source::NativeFreeBsdSource> {
@@ -92,7 +91,6 @@ impl<S: FreeBsdSource + Clone> FreeBsdCollector<S> {
             drive_refresh: None,
             disk_baselines: CounterBaselines::default(),
             network_baselines: CounterBaselines::default(),
-            disk_generation: None,
         })
     }
 
@@ -277,7 +275,6 @@ impl<S: FreeBsdSource + Clone + 'static> FreeBsdCollector<S> {
             Ok(records) => records,
             Err(_) => {
                 self.disk_baselines.clear();
-                self.disk_generation = None;
                 return None;
             }
         };

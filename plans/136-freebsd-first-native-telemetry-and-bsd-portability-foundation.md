@@ -1,6 +1,6 @@
 # Plan 136: FreeBSD-first native telemetry and BSD portability foundation
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plans 132-135 and a qualified `gregg-host` Linux/macOS/Windows baseline.
 
@@ -348,3 +348,86 @@ Do not include:
 Implement FreeBSD as a new native backend against the settled `gregg-host` model.
 
 Where FreeBSD accounting does not map exactly to Linux/macOS/Windows, preserve the native meaning and use capability/absence semantics rather than forcing values into a misleading cross-platform equivalence. The purpose of Plan 136 is to validate the abstraction, not to make FreeBSD imitate Linux.
+
+## Closure record
+
+Implemented cumulatively at `a9dab65` plus `a5624a9` plus devstat fix `43b5cf3` (Plan-136-owned files:
+`crates/gregg-host/src/freebsd/{mod,source,tests}.rs`, the
+`#[cfg(target_os = "freebsd")] pub mod freebsd` registration, the
+`freebsd` CI job in `.github/workflows/ci.yml`, the FreeBSD backend
+section in `architecture/collectors.md`, and the shared CHANGELOG entry).
+
+Backend scope as accepted: explicit `gregg-host::freebsd` module with an
+injectable `FreeBsdSource` seam (`NativeFreeBsdSource`,
+`MockFreeBsdSource`); no `unix/` or `bsd/` abstraction. Identity, logical
+cores, aggregate CPU (`kern.cp_time` user/nice/sys/intr/idle with the
+shared busy/total delta principle; `cpu_iowait=false`, first-sample
+warming, decrease/zero-delta reset with spike-free recovery), load
+(`getloadavg`), and physical memory (`hw.physmem` + `hw.pagesize` +
+`v_free/inactive/cache/laundry_count` with the documented
+`available=(free+inactive+cache+laundry)*page_size` definition,
+overflow-checked and clamped) are native. Local filesystems use
+`getmntinfo`/`statfs` with `MNT_LOCAL` selection plus the shared
+normalization/bounding and slow-probe isolation. Disk I/O uses base
+`libdevstat` (`devstat_checkversion` gate, null-kvm `devstat_getdevs`
+through sysctl, generation-aware baselines, plausibility-gated entries:
+printable name, sane unit, `sequence0==sequence1`); network uses `ifmib`
+integer-MIB rows with count bounds, exact-length validation,
+sparse-row tolerance, printable-name gating, native
+loopback/operational/capacity semantics, and the shared reset-safe rate
+logic. Swap is truthfully unsupported (`swap=false`, `None`; follow-up:
+validate unprivileged `kvm_getswapinfo` across the supported floor before
+adopting) and CPU frequency is truthfully unsupported (follow-up: find a
+validated unprivileged source); Windows commit was not imitated.
+Collection bounds and deterministic ordering hold; unsafe is confined to
+the documented FreeBSD source/FFI module.
+
+Deterministic tests (mock/parser, host-independent): CPU warming/delta/
+reset/recovery, load rejection, memory formula/zero/extreme cases,
+identity validation, drive failure/empty semantics, disk
+appearance/disappearance/reset, network sparse/loopback/capacity/reset,
+ordering/bounds — all green wherever the host suite runs, and the
+FreeBSD test target cross-compiles strictly
+(`--target x86_64-unknown-freebsd`, `--tests`, `RUSTFLAGS="-D warnings"`).
+
+Native qualification: new bounded `freebsd` CI job (pinned
+`vmactions/freebsd-vm@v1.1.9`, FreeBSD 14.2, `cargo test -p gregg-host
+--all-features`) proved its value before any metric was read: the first
+version linked a `devstat_free` helper that does not exist in libdevstat
+(see BUGS in man `devstat(3)`), and the VM linker rejected it. The
+backend now releases the `dinfo.mem_ptr` allocation with libc `free`
+after owned records are copied out (fix `43b5cf3`). The job runs the
+FreeBSD-only smoke (identity, cores, finite
+CPU, memory bounds, load, local filesystem, network enumeration with a
+non-loopback member; zero-rate intervals valid) plus traffic-direction
+proofs (a known disk write advances write counters monotonically; a
+loopback ping advances `lo` counters monotonically). Byte-index
+direction for devstat/ifmib fields is covered by those direction proofs;
+exact per-field cross-validation against `iostat(1)`/`netstat(1)` beyond
+monotonicity/direction is recorded as a follow-up, not claimed here.
+Existing Linux/macOS arm64/macOS Intel/Windows/MSRV qualification is
+unchanged and green in remote CI run `36219175605`.
+
+Documentation states exact support (`x86_64-unknown-freebsd` natively
+qualified; `aarch64-unknown-freebsd` compiles; no `greggd` FreeBSD
+service/install/release support claimed) with NetBSD/OpenBSD explicit
+follow-ups. Architecture supported: Tier 2 `x86_64`/`aarch64` only; no
+Tier-3 target was added to the acceptance contract.
+
+Acceptance: all boxes hold at the implementation SHA subject to the two
+recorded follow-ups (swap-source validation, extended counter cross-check),
+neither of which blocks the portability foundation. Non-goals honored:
+no rc.d/packaging/binaries, no client/TUI changes, no process/GPU/sensor
+telemetry, no command scraping, no root-only collection, no
+NetBSD/OpenBSD code, no Unix/BSD unification, no existing-platform
+semantic change.
+
+## Follow-ups (not blockers)
+
+1. Validate unprivileged `kvm_getswapinfo` across the supported FreeBSD
+   floor; adopt it for swap or keep `swap=false` with evidence.
+2. Cross-check devstat/ifmib byte-field values (beyond monotonicity and
+   direction, already proven natively) against `iostat(1)`/`netstat(1)`
+   on the supported releases.
+3. NetBSD (UVM/sysctl) and OpenBSD (release ABI, Tier-3 attention) backends
+   as separate researched plans.

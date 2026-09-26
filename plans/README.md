@@ -235,14 +235,15 @@ do not) and its deterministic tests while preserving the settled Plan-130
 install/profile/activation/ownership behavior. Plan 130 remains complete
 with a Plan-131 corrective follow-up.
 
-Plan 132 opens the native host telemetry extraction and BSD-portability campaign.
-It coordinates Plans 133-136 and keeps the initial Linux/macOS/Windows move
-strictly behavior-preserving: Plan 133 freezes/characterizes the collector,
+Plan 132 opened the native host telemetry extraction and BSD-portability campaign
+and is complete with Plans 133-136. The Linux/macOS/Windows move stayed
+strictly behavior-preserving: Plan 133 froze/characterized the collector,
 wire, readiness, public-path, rate/reset, and slow-probe contracts; Plan 134
-extracts those native primitives into a protocol-neutral working
-`gregg-host` workspace crate; Plan 135 cuts `greggd` over through a
-compatibility facade and qualifies exact v1/v2/native/MSRV behavior; Plan 136
-then adds FreeBSD as the first post-extraction backend without introducing a
+extracted those native primitives into the protocol-neutral working
+`gregg-host` workspace crate; Plan 135 cut `greggd` over through a
+compatibility facade and qualified exact v1/v2/native/MSRV behavior
+(stripped release `greggd` byte-identical at 2,629,008 bytes); Plan 136
+added FreeBSD as the first post-extraction backend without introducing a
 generic Unix collector. NetBSD/OpenBSD remain explicit later ports, and
 complete FreeBSD `greggd` service/release support remains separately
 deferred. Plans 132-136 are independent of the remaining Plan 091 soak record.
@@ -375,11 +376,11 @@ excluded.
 | [`129-macos-route-message-parser-corrective-pass.md`](129-macos-route-message-parser-corrective-pass.md) | Correct heterogeneous `NET_RT_IFLIST2` message walking, strengthen native interface-completeness proof, and reconcile Plan 128 closure | complete; implementation `30df587`; CI `36176134555` green |
 | [`130-user-local-installer-path-activation.md`](130-user-local-installer-path-activation.md) | Persist user-local `~/.local/bin` for supported shells and document same-shell activation without changing install ownership | complete; implementation `d4f2843`; CI `36186493797` green |
 | [`131-installer-path-profile-detection-corrective-pass.md`](131-installer-path-profile-detection-corrective-pass.md) | Correct false-positive existing-profile detection so comments/unrelated `.local/bin` text cannot suppress user-local PATH persistence | complete; implementation `3aade95`; CI `36193308083` green |
-| [`132-native-host-telemetry-extraction-and-bsd-portability-roadmap.md`](132-native-host-telemetry-extraction-and-bsd-portability-roadmap.md) | Coordinate regression-controlled native telemetry extraction and FreeBSD-first portability | planned; coordinates 133-136 |
-| [`133-native-collector-compatibility-characterization-and-boundary-freeze.md`](133-native-collector-compatibility-characterization-and-boundary-freeze.md) | Freeze collector/public-path/wire/readiness/rate/slow-probe behavior before moving source | planned; blocks 134-135 |
-| [`134-gregg-host-native-telemetry-crate-extraction.md`](134-gregg-host-native-telemetry-crate-extraction.md) | Extract protocol-neutral Linux/macOS/Windows native telemetry into working `gregg-host` crate | planned; depends on 133 |
-| [`135-greggd-gregg-host-adapter-cutover-and-qualification.md`](135-greggd-gregg-host-adapter-cutover-and-qualification.md) | Cut greggd over through a compatibility facade and prove exact native/v1/v2/MSRV equivalence | planned; depends on 133-134 |
-| [`136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md`](136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md) | Add FreeBSD as the first post-extraction native backend and establish BSD portability seams | planned; depends on 132-135 |
+| [`132-native-host-telemetry-extraction-and-bsd-portability-roadmap.md`](132-native-host-telemetry-extraction-and-bsd-portability-roadmap.md) | Coordinate regression-controlled native telemetry extraction and FreeBSD-first portability | complete; coordinated 133-136 at `a9dab65`+`a5624a9`+`43b5cf3`; CI `36219175605` green |
+| [`133-native-collector-compatibility-characterization-and-boundary-freeze.md`](133-native-collector-compatibility-characterization-and-boundary-freeze.md) | Freeze collector/public-path/wire/readiness/rate/slow-probe behavior before moving source | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`; CI `36219175605` green |
+| [`134-gregg-host-native-telemetry-crate-extraction.md`](134-gregg-host-native-telemetry-crate-extraction.md) | Extract protocol-neutral Linux/macOS/Windows native telemetry into working `gregg-host` crate | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`; CI `36219175605` green |
+| [`135-greggd-gregg-host-adapter-cutover-and-qualification.md`](135-greggd-gregg-host-adapter-cutover-and-qualification.md) | Cut greggd over through a compatibility facade and prove exact native/v1/v2/MSRV equivalence | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`; CI `36219175605` green |
+| [`136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md`](136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md) | Add FreeBSD as the first post-extraction native backend and establish BSD portability seams | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`; CI `36219175605` green; swap/counter-cross-check follow-ups recorded |
 
 Dependency order:
 

@@ -1,6 +1,6 @@
 # Plan 134: gregg-host native telemetry crate extraction
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plan 133 characterization/boundary freeze.
 
@@ -294,3 +294,61 @@ Do not include:
 Move tests and source seams with each platform rather than copying only production code.
 
 If a platform behavior cannot be represented by the proposed neutral model without losing information, extend the neutral model. Do not force the native backend through Gregg's current wire limitations; the wire adapter belongs to Plan 135.
+
+## Closure record
+
+Implemented cumulatively at `a9dab65` plus `a5624a9` plus devstat fix `43b5cf3` (Plan-134-owned files:
+`crates/gregg-host/` in full — `Cargo.toml`, `README.md`, `LICENSE`,
+`src/lib.rs` (`HostCollector`, percentage helpers), `src/model.rs`
+(`HostIdentity`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`,
+`CommitMetrics`, `DriveMetrics`, `DiskIoPayload`, `NetworkPayload`,
+`HostCapabilities` with 8 support flags, `HostSample` with `Option`
+load/swap and no fabricated zeros, `CollectionLimits` with Gregg-matching
+defaults), `src/error.rs`, `src/rate.rs`, `src/drives.rs`
+(`normalize`/`normalize_with_limits`), `src/slow_probe.rs`
+(`DriveRefreshCache`), `src/linux/`, `src/macos/`, `src/windows/` with
+source seams/mocks/fixtures/tests — plus the `gregg-host` workspace
+membership in the root `Cargo.toml` and `Cargo.lock`).
+
+Neutral-model deltas from the pre-extraction shapes are intentional and
+wire-invisible: `HostSample.load`/`swap` are `Option` (Windows reports
+`None` instead of zeroed v1-convention values; the Plan-135 adapter maps
+`None` back to the frozen zeros), `HostCapabilities` carries 8 flags
+(v1/v2 wire mapping lives in the `greggd` adapter, never in the crate),
+and drive/disk/network bounds come from `CollectionLimits` (Gregg
+defaults equal the protocol constants; `greggd` constructs them from the
+constants explicitly). Timing is preserved: `Instant::now()` stays at the
+existing disk/network collection boundary. Slow-probe policy is unchanged
+(one worker, immediate first request, 30s cadence, bounded channels,
+last-good retention, panic backoff, nonblocking poll, drop never joins).
+Unsafe remains confined to the documented platform FFI/source modules
+(`linux/source.rs` statvfs, `macos/ffi.rs` Mach/sysctl/IOKit,
+`windows/source.rs` Win32); the crate root carries no `forbid` that would
+conflict with those local allowances, matching the workspace pattern.
+
+Dependency review (`cargo tree -p gregg-host`): `libc` (Unix only),
+`thiserror`, `tracing` — no `gregg-protocol`, Tokio, EggServe, Clap,
+updater, client/TUI, `serde`, shell, or system-information crates.
+Package-name availability: `gregg-host` returns 404 on crates.io
+(available); publication is not required and was not performed.
+`greggd` compiled unchanged throughout this phase (no dependency on the
+new crate yet), so the compatibility layer requirement holds trivially:
+all pre-extraction public paths still resolve to the original code.
+
+Local verification: `cargo test -p gregg-host --all-targets --all-features`
+(24 tests green on Linux), `cargo check -p gregg-host --target
+x86_64-apple-darwin` and `--target x86_64-pc-windows-msvc` clean,
+`RUSTFLAGS="-D warnings"` strict checks clean, plus the full workspace
+fmt/clippy/tests/check-local suite green. Remote CI run `36219175605`
+green including the macOS arm64/Intel native suites exercising the moved
+macOS code and the Windows suite exercising the moved Windows code.
+
+Acceptance: all boxes hold at the implementation SHA. No protocol,
+clock, slow-probe-policy, processor-group, BSD, process/GPU/sensor,
+publication, client/TUI, or footprint work was included.
+
+## Host MSRV note
+
+The crate inherits workspace `rust-version = "1.89"` and uses no
+post-1.89 features; the MSRV job compiles and tests the full workspace
+including `gregg-host`.

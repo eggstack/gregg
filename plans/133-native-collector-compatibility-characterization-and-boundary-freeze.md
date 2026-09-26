@@ -1,6 +1,6 @@
 # Plan 133: native collector compatibility characterization and boundary freeze
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 132 and the current post-Plan-131 collector/runtime baseline.
 
@@ -190,3 +190,51 @@ Do not include:
 Plan 133 should leave the repository behaviorally unchanged but make the collector contract difficult to accidentally alter.
 
 When the characterization suite is green, Plan 134 may move the implementation. If Plan 134 reveals an uncharacterized behavior, add the missing characterization here or in the same corrective pass before changing semantics.
+
+## Closure record
+
+Implemented cumulatively at `a9dab65` plus `a5624a9` plus devstat fix `43b5cf3` alongside Plans 134-136 (single
+implementation commit; Plan-133-owned files:
+`crates/greggd/src/collector/compat_freeze.rs`,
+`architecture/collectors.md` boundary section, and the `compat_freeze`
+module declaration in `crates/greggd/src/collector/mod.rs`).
+
+The characterization suite (22 tests) pins: shared rate warmup/actual-
+elapsed/disappearance/reappearance/decrease/clear semantics; drive-cache
+nonblocking poll, immediate first request, `None`-vs-`Some(empty)`
+distinction at conversion; canonical Linux/macOS/Windows ready samples
+through `into_snapshot_pair` with v1/v2 shape, capability, Windows-v2-only,
+and JSON presence/absence expectations; protocol limit constants;
+sampler `Warming`/`CounterReset`-never-fail vs hard-failure mapping;
+Linux CPU warmup/reset/recovery plus hotplug refresh; Linux optional-family
+absence preserving core sampling; frozen CPU-math spot checks, percentage
+helpers, error taxonomy, and drive normalization; and public-path compile
+imports for the shared contract plus each native platform seam
+(cfg-gated so Linux/macOS/Windows jobs each prove their own collector,
+with macOS/Windows sequence tests exercising the same reset/recovery and
+optional-isolation contract through their mocks).
+
+No collector formula, timing location, cadence, protocol shape, readiness
+policy, worker behavior, or platform support was changed. Local
+verification at the implementation SHA: `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+`cargo test --workspace --all-targets --all-features`, and
+`./scripts/check-local.sh` all green. Remote CI run `36219175605` at the
+implementation SHA is green across Linux, macOS arm64, macOS Intel,
+Windows (incl. SCM smoke), MSRV Rust 1.89, and the new FreeBSD job.
+
+Acceptance: all boxes hold at the implementation SHA. Plans 134-135 used
+these frozen expectations as the qualification authority; no
+uncharacterized behavior was found during the move.
+
+## Post-closure note (Plan 135 cutover)
+
+During cutover the shared `CollectError`/`CollectErrorKind`,
+`CounterBaselines`, drive normalization, `DriveRefreshCache`, and
+percentage helpers became re-exports of `gregg-host` at the same
+`greggd::collector` paths, and platform collectors became facades
+delegating production sampling to `gregg-host`. The characterization
+suite was updated only where it constructed the moved `DriveMetrics`
+type directly (now the host type with identical fields); every frozen
+behavioral expectation is unchanged and green on the extracted
+implementation.

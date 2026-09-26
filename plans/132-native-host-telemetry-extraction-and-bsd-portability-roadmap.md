@@ -1,6 +1,6 @@
 # Plan 132: native host telemetry extraction and BSD portability roadmap
 
-Status: planned.
+Status: complete.
 
 Depends on: the current post-Plan-131 main state, the settled native collector and live-metrics work from Plans 109-111, the macOS ABI/parser corrections from Plans 128-129, the Rust 1.89 baseline from Plan 117, and the current daemon publication/performance baseline from Plans 120-124. This work is independent of the remaining Plan 091 soak record.
 
@@ -200,3 +200,20 @@ Do not include:
 Start with Plan 133. Do not begin by moving files.
 
 The main risk in this campaign is not compilation; it is silent semantic drift in warmup/reset behavior, optional-family absence, aggregation, slow-probe isolation, or v1/v2 conversion. Characterize those behaviors first, move the reusable implementation second, and cut `greggd` over only after both implementations can be compared deterministically.
+
+## Closure record
+
+Coordination complete with Plans 133-136, implemented cumulatively at
+`a9dab65` plus `a5624a9` plus devstat fix `43b5cf3`. All four acceptance boxes hold:
+133 recorded and tested the compatibility surface; 134 created the
+protocol-neutral `gregg-host` crate; 135 cut `greggd` over through the
+facade with exact native/v1/v2/MSRV equivalence (stripped release
+`greggd` byte-identical at 2,629,008 bytes); 136 proved the boundary with
+a native FreeBSD backend. Linux, macOS arm64, macOS Intel, Windows, MSRV
+Rust 1.89, and the new FreeBSD native qualification are green in remote
+CI run `36219175605`. No external metrics command, privilege, async
+runtime, or system-information dependency was introduced; `greggd`
+retains exact v1/v2 semantics including Windows v2-only behavior; the
+extracted crate is not coupled to `gregg-protocol`; NetBSD/OpenBSD remain
+explicit future backends. Independent of the remaining Plan 091 soak
+record; no downstream plan status changes required.

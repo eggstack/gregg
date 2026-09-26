@@ -279,8 +279,11 @@ fn network_sparse_loopback_and_counter_reset() {
         .is_some_and(|i| !i.aggregate_member));
     // Only the non-loopback aggregate member feeds capacity.
     assert_eq!(network.aggregate_rx_capacity_bps, Some(1_000_000_000));
-    // Counter reset re-baselines.
-    collector.source_mut().network[1].rx_bytes = 5;
+    // Counter reset on every interface re-baselines the whole family.
+    collector.source_mut().network[0].rx_bytes = 5;
+    collector.source_mut().network[0].tx_bytes = 6;
+    collector.source_mut().network[1].rx_bytes = 7;
+    collector.source_mut().network[1].tx_bytes = 8;
     let reset = collector.sample().expect("core succeeds");
     assert!(reset.network.is_none());
 }
