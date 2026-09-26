@@ -1685,11 +1685,6 @@ fn read_page_size_uncached() -> Result<u64, CollectError> {
     Ok(page_size as u64)
 }
 
-#[cfg(test)]
-fn cached_page_size_for_tests() -> Option<u64> {
-    CACHED_PAGE_SIZE.get().copied()
-}
-
 /// Read swap usage from sysctl `vm.swapusage`.
 fn swap_usage() -> Result<RawSwapUsage, CollectError> {
     #[repr(C)]
