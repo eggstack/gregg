@@ -1,6 +1,6 @@
 # Plan 143: TUI/state no-op and cross-render optimization
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 138 and the settled Plan-122 TUI optimization baseline. It may proceed independently of Plans 139-142.
 
@@ -151,17 +151,17 @@ cargo test --workspace --all-targets --all-features
 
 ## Acceptance criteria
 
-- [ ] Rejected stale batches no longer force a frame.
-- [ ] Proven boundary/no-op Systems actions no longer force a frame.
-- [ ] Real state changes still redraw immediately.
-- [ ] Condensed formatting is reused across unchanged redraws.
-- [ ] Cache invalidation covers every render-relevant condensed field and config membership change.
-- [ ] Normal-view cache misses avoid duplicate aggregate calculation where structurally practical.
-- [ ] Fleet-wide/off-screen geometry semantics are unchanged.
-- [ ] Existing TestBackend presentation output remains unchanged.
-- [ ] Public AppState/reducer APIs remain source-compatible.
-- [ ] No new dependency or TUI framework is introduced.
-- [ ] Focused tests, workspace gates, and Rust 1.89 remain green.
+- [x] Rejected stale batches no longer force a frame.
+- [x] Proven boundary/no-op Systems actions no longer force a frame.
+- [x] Real state changes still redraw immediately.
+- [x] Condensed formatting is reused across unchanged redraws.
+- [x] Cache invalidation covers every render-relevant condensed field and config membership change.
+- [x] Normal-view cache misses avoid duplicate aggregate calculation where structurally practical.
+- [x] Fleet-wide/off-screen geometry semantics are unchanged.
+- [x] Existing TestBackend presentation output remains unchanged.
+- [x] Public AppState/reducer APIs remain source-compatible.
+- [x] No new dependency or TUI framework is introduced.
+- [x] Focused tests, workspace gates, and Rust 1.89 remain green.
 
 ## Explicit non-goals
 
@@ -181,3 +181,48 @@ Do not include:
 ## Handoff note
 
 Start with changed-result plumbing and draw-count tests. Add cross-render formatting caches only after exact TestBackend output is frozen; the cache is an implementation detail and must never become a second source of presentation truth.
+
+## Closure record
+
+Implemented at `83df89e` with toolchain `rustc 1.98.1`. Local
+verification: `cargo test -p gregg --lib --all-features`
+(586 passed, including 6 new `state::tests::plan143_*` and 5 new
+`ui::tests::plan143_*`), `cargo test -p gregg --all-targets
+--all-features --bin gregg` (9 passed), `cargo fmt --check`,
+workspace clippy `-D warnings`, and `./scripts/check-local.sh`
+green. Final campaign CI run is recorded in Plan 138.
+
+Deterministic evidence (`crates/gregg/src/state.rs`, `ui/mod.rs`,
+`ui/condensed.rs`, `ui/system_block.rs`, `src/main.rs`):
+
+- `apply_batch_changed`/`apply_batch_owned_changed` return `false`
+  for rejected generations and for accepted batches where every
+  result was ignored (host/port guard) or left reachability, latest,
+  and offline provenance identical; timestamps/latency alone never
+  force a frame (draw-counter pattern: `if changed { draws += 1 }`
+  stays 0 for stale/ignored/identical batches);
+- `apply_action_changed` returns `false` for boundary
+  `MoveUp`/`MoveDown` with unchanged selection and highlight,
+  clearing an already-clear highlight, and other logical no-ops;
+  `Resize` always `true`; real selection change redraws and arms the
+  highlight timer;
+- event loop drives `dirty` from `apply_batch_owned_changed`,
+  `apply_eggpool_result_changed` (stale/cancelled `EggPool` results
+  no longer force a frame), `dispatch_action_with_store →
+  Result<bool>`, `begin_system_refresh → Result<bool>`, and
+  highlight-expiry `apply_action_changed`; initial draw, `Resize`,
+  config-reload diagnostics, and shutdown preserved;
+- condensed `CondensedRenderKey` (host, reachability, CPU/MEM/drive/
+  network/load/iowait) memoizes `Rc<PreformattedValues>` across
+  redraws (`ptr_eq` reuse on identical keys, invalidation on host or
+  metric change, bounded prune of departed IDs); consecutive
+  `TestBackend` renders identical;
+- normal cache misses pass the key's drive/network aggregates into
+  `build_metric_rows_with_aggregates`, so the same snapshot is not
+  aggregated twice (`format!("{direct:?}") ==
+  format!("{shared:?}")`).
+
+Public `AppState::apply_batch/apply_batch_owned/apply_action` and
+`apply_eggpool_result` shapes preserved (new `*_changed` methods are
+additive); fleet-wide/off-screen geometry, Ratatui diffing, and
+existing `TestBackend` output unchanged; no new dependencies.

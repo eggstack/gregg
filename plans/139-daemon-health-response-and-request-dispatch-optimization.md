@@ -1,6 +1,6 @@
 # Plan 139: daemon health-response and request-dispatch optimization
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 138 and the completed Plan-123/124 publication and stale-response baseline.
 
@@ -128,16 +128,16 @@ Use one ordinary existing CI run at final campaign closure; no new workflow is r
 
 ## Acceptance criteria
 
-- [ ] Fresh ready v1 health is serialized at most once per immutable publication.
-- [ ] Fresh ready v2 health is serialized at most once per immutable publication.
-- [ ] Repeated ready-health serving performs no deep snapshot clone.
-- [ ] Borrowed/private serialization is exact-wire equivalent to the public health types.
-- [ ] Stale, Failed, Warming, and NotServing responses remain exact.
-- [ ] Plan-123 status-body cache behavior is unchanged.
-- [ ] Successful known routes no longer allocate owned method/raw-target strings solely for dispatch.
-- [ ] Public typed `ServerState` methods and protocol types are unchanged.
-- [ ] No route, status code, header, stale threshold, or EggServe runtime policy changes.
-- [ ] Focused tests, workspace gates, and MSRV remain green.
+- [x] Fresh ready v1 health is serialized at most once per immutable publication.
+- [x] Fresh ready v2 health is serialized at most once per immutable publication.
+- [x] Repeated ready-health serving performs no deep snapshot clone.
+- [x] Borrowed/private serialization is exact-wire equivalent to the public health types.
+- [x] Stale, Failed, Warming, and NotServing responses remain exact.
+- [x] Plan-123 status-body cache behavior is unchanged.
+- [x] Successful known routes no longer allocate owned method/raw-target strings solely for dispatch.
+- [x] Public typed `ServerState` methods and protocol types are unchanged.
+- [x] No route, status code, header, stale threshold, or EggServe runtime policy changes.
+- [x] Focused tests, workspace gates, and MSRV remain green.
 
 ## Explicit non-goals
 
@@ -156,3 +156,49 @@ Do not include:
 ## Handoff note
 
 Start with exact ready-health wire-equivalence tests, then add the memo. Keep Plan 124's stale-failure tests as the authoritative regression boundary while restructuring response selection.
+
+## Closure record
+
+Implemented at `83df89e` (campaign implementation commit for Plans
+139-143) with toolchain `rustc 1.98.1` on
+`x86_64-unknown-linux-gnu`. Local verification: `cargo test -p greggd
+--lib --all-features -- server` (73 passed, including 9 new
+`plan139_*` tests), `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --all-features -- -D warnings`, and
+`./scripts/check-local.sh` green. Final campaign CI run is recorded in
+Plan 138.
+
+Deterministic evidence (`crates/greggd/src/server/tests.rs`):
+
+- repeated fresh v1/v2 health for one publication serializes exactly
+  once (`v1_health_serializations`/`v2_health_serializations` == 1
+  after 10 requests);
+- new publication re-arms the memo (counters advance to 2);
+- stale age/failure transitions never serve cached ready bytes and
+  preserve the exact Plan-124 `"cached snapshot is stale"` and
+  collector-failure messages;
+- v1/v2 `NotServing` survives later failures;
+- borrowed ready-health bytes equal
+  `serde_json::to_vec(HealthResponse::ready(...))` (v1 + v2 across
+  Linux/macOS/Windows-style payloads);
+- Plan-123 status cache unchanged (status still serializes once per
+  publication while health memoizes independently);
+- known routes (`/`, `/v1/status`, `/v2/status`, `/healthz`,
+  `/v2/healthz`) do not build 404 fallback bodies
+  (`fallback_bodies_built` unchanged); unknown routes do.
+
+Structure: `PublishedState` gains generation-local `health_bytes` /
+`health_bytes_v2` memos cleared on every publication, warming, and
+failure transition; ready-health serializes through borrowed
+`BorrowedReadyHealthV1/V2` views (no snapshot deep-clone, `Arc` clone
+only for memo installation with `ptr_eq` generation guard);
+`dispatch_request` keeps method/target borrowed through route
+selection and allocates only for the 404 fallback. Public typed
+`ServerState::health()`/`health_v2()` and protocol types unchanged;
+routes, codes, headers, stale policy, and EggServe limits unchanged.
+
+Measurement: stripped release `greggd` 2,694,560 bytes on this
+toolchain (campaign-wide; Plan 135's 2,629,008-byte baseline predates
+the current toolchain and the small memo/cache code; no new
+dependencies, std-only). Timing retained on deterministic
+serialization/clone-elimination counts, not wall-clock gates.

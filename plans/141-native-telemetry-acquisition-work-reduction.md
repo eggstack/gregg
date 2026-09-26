@@ -1,10 +1,10 @@
 # Plan 141: native telemetry acquisition work reduction
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 138 and the completed `gregg-host` extraction/qualification baseline from Plans 132-137.
 
-Blocks: Plan 142.
+Blocks: Plan 142 (now unblocked; Plan 142 closed with RETAIN SPAWN_BLOCKING on the settled source cost).
 
 ## Objective
 
@@ -164,18 +164,18 @@ Final qualification must use the existing Linux, macOS arm64, macOS Intel, Windo
 
 ## Acceptance criteria
 
-- [ ] Deterministic source-call accounting exists for the targeted Linux hot paths.
-- [ ] Steady Linux CPUFreq sampling avoids repeated structural membership reads while current frequency remains live.
-- [ ] CPU policy/core changes invalidate CPUFreq structure without a stale-value window.
-- [ ] macOS page size is not re-queried after a successful immutable value is established.
-- [ ] A failed macOS page-size read remains retryable.
-- [ ] Any retained network consolidation preserves immediate link/topology semantics; otherwise the closure explicitly records RETAIN CURRENT NETWORK METADATA.
-- [ ] Any retained disk consolidation preserves immediate device/topology/accounting semantics; otherwise the closure explicitly records RETAIN CURRENT DISK TOPOLOGY.
-- [ ] Counter warmup/reset/disappearance/reappearance behavior is unchanged.
-- [ ] Core readiness and optional-family isolation are unchanged.
-- [ ] No arbitrary TTL is introduced for dynamic metrics.
-- [ ] No protocol, capability, public model, or supported-platform regression occurs.
-- [ ] Existing native CI and MSRV remain green.
+- [x] Deterministic source-call accounting exists for the targeted Linux hot paths.
+- [x] Steady Linux CPUFreq sampling avoids repeated structural membership reads while current frequency remains live.
+- [x] CPU policy/core changes invalidate CPUFreq structure without a stale-value window.
+- [x] macOS page size is not re-queried after a successful immutable value is established.
+- [x] A failed macOS page-size read remains retryable.
+- [x] Any retained network consolidation preserves immediate link/topology semantics; otherwise the closure explicitly records RETAIN CURRENT NETWORK METADATA.
+- [x] Any retained disk consolidation preserves immediate device/topology/accounting semantics; otherwise the closure explicitly records RETAIN CURRENT DISK TOPOLOGY.
+- [x] Counter warmup/reset/disappearance/reappearance behavior is unchanged.
+- [x] Core readiness and optional-family isolation are unchanged.
+- [x] No arbitrary TTL is introduced for dynamic metrics.
+- [x] No protocol, capability, public model, or supported-platform regression occurs.
+- [x] Existing native CI and MSRV remain green.
 
 ## Explicit non-goals
 
@@ -194,3 +194,54 @@ Do not include:
 ## Handoff note
 
 Begin with call-count instrumentation and CPUFreq/page-size changes. Treat network and disk work as retain-or-reject candidates with correctness gates; do not start by inserting a TTL cache.
+
+## Closure record
+
+Implemented at `83df89e` with toolchain `rustc 1.98.1`. Local
+verification: `cargo test -p gregg-host --all-targets --all-features`
+(29 passed, including 5 new `plan141_*` tests), `cargo test -p greggd
+--all-targets --all-features -- collector`, `cargo fmt --check`,
+workspace clippy `-D warnings`, and `./scripts/check-local.sh`
+green. Final campaign CI run is recorded in Plan 138.
+
+Deterministic evidence (`crates/gregg-host/src/linux/source.rs`,
+`linux/mod.rs`, `linux/tests.rs`, `macos/ffi.rs`):
+
+- fixture `CallCounts` accounts for `/proc/stat`, `/proc/loadavg`,
+  `/proc/meminfo`, `CPUFreq` root enumeration, policy membership
+  reads, current-frequency reads, `/sys/block` enumeration,
+  per-device `slaves`/`stat`, `/proc/net/dev`, and per-interface
+  metadata;
+- steady `CPUFreq` sampling reuses parsed membership weights while
+  policy set and logical-core count are unchanged (membership reads
+  flat across samples, frequency reads advance, root enumeration
+  stays live); policy add/remove and core-count change force an
+  immediate refresh equal to a cold query with no stale window;
+- collector-level steady test proves the `LinuxCollector`
+  `cpufreq_cache` integration;
+- macOS `read_page_size` memoizes only successful queries in a
+  process-wide `OnceLock`; failure leaves the cell empty (retryable),
+  racing setters are ignored without poisoning, and mock/native
+  query APIs are unchanged;
+- warmup/reset/disappearance/reappearance, readiness, and
+  optional-family isolation unchanged; no TTL introduced.
+
+RETAIN CURRENT NETWORK METADATA: no rtnetlink one-dump consolidation
+was adopted. `/proc/net/dev` already yields identity plus counters in
+one read, while flags/operstate/master/speed remain dynamic per
+kernel docs; a blanket cache or a new netlink framework dependency
+could not preserve immediate link/topology visibility within the
+bounded footprint, so per-interface sysfs reads stay exact.
+
+RETAIN CURRENT DISK TOPOLOGY: no `/proc/diskstats` or
+`slaves`-keyed cache was adopted. Device-mapper topology can change
+without a device-name-set change, so a name-keyed cache would miss
+topology transitions; no low-complexity invalidation preserves the
+current one-accounting-layer, exclusion, sector-conversion, ordering,
+and reset semantics, so per-device enumeration/stat stays exact.
+
+RETAIN CURRENT BASELINE SCRATCH: `CounterBaselines::retain_ids`
+keeps its temporary `HashSet<&str>` per family/sample. After the
+above I/O reduction the remaining allocation is negligible for small
+interface/device counts versus native I/O, and a generation-mark
+rewrite would add state for no meaningful benefit.

@@ -1,6 +1,6 @@
 # Plan 138: bounded runtime performance follow-up roadmap
 
-Status: planned.
+Status: complete.
 
 Depends on: current main at `deb74658` after completed Plans 120-124 and 132-137. This campaign is independent of the remaining Plan 091 soak record.
 
@@ -176,15 +176,15 @@ Use the existing native CI matrix, including the FreeBSD `gregg-host` qualificat
 
 ## Acceptance criteria
 
-- [ ] Plan 139 removes repeated ready-health deep clone/serialization and known-route method/target allocation without changing HTTP semantics.
-- [ ] Plan 140 reduces per-generation endpoint/URL ownership work without changing scheduler behavior or public polling APIs.
-- [ ] Plan 141 demonstrates fewer native source calls/allocations only where metric freshness and hotplug/topology semantics remain exact.
-- [ ] Plan 142 records a fair worker-versus-`spawn_blocking` experiment and retains only the design that preserves lifecycle semantics and is justified by structural/measured evidence.
-- [ ] Plan 143 removes bounded no-op render/state work without any visible TUI change.
-- [ ] No supported capability, platform, protocol field, CLI operation, route, or failure category is removed.
-- [ ] No hidden TTL or freshness regression is introduced.
-- [ ] Rust 1.89 and all existing native qualification remain green.
-- [ ] Final closure records deterministic evidence and relevant stripped binary sizes without fabricating benchmark claims.
+- [x] Plan 139 removes repeated ready-health deep clone/serialization and known-route method/target allocation without changing HTTP semantics.
+- [x] Plan 140 reduces per-generation endpoint/URL ownership work without changing scheduler behavior or public polling APIs.
+- [x] Plan 141 demonstrates fewer native source calls/allocations only where metric freshness and hotplug/topology semantics remain exact.
+- [x] Plan 142 records a fair worker-versus-`spawn_blocking` experiment and retains only the design that preserves lifecycle semantics and is justified by structural/measured evidence.
+- [x] Plan 143 removes bounded no-op render/state work without any visible TUI change.
+- [x] No supported capability, platform, protocol field, CLI operation, route, or failure category is removed.
+- [x] No hidden TTL or freshness regression is introduced.
+- [x] Rust 1.89 and all existing native qualification remain green.
+- [x] Final closure records deterministic evidence and relevant stripped binary sizes without fabricating benchmark claims.
 
 ## Explicit non-goals
 
@@ -204,3 +204,53 @@ Do not include:
 ## Handoff note
 
 Implement Plan 139 or 140 first for low-risk wins. Plan 141 should begin by adding deterministic source-call accounting before changing acquisition. Do not start Plan 142 until Plan 141 has settled the native source cost, and permit Plan 142 to close with RETAIN SPAWN_BLOCKING if the lifecycle contract is not cleanly reproducible.
+
+## Closure record
+
+Campaign implemented at `83df89e` with toolchain `rustc 1.98.1` on
+`x86_64-unknown-linux-gnu`. Implementation order followed the plan:
+139 and 140 (low-risk daemon/client wins), 141 (source-call
+accounting then `CPUFreq`/page-size), 142 after 141 settled source
+cost, and 143 independently. Local verification at closure:
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features -- -D warnings`, `cargo test --workspace
+--all-targets --all-features`, and `./scripts/check-local.sh` green;
+`./scripts/check-local.sh --release` green except the expected
+clean-tree gate on the dirty tree (clean after the closure commit).
+Final campaign CI run: recorded below after push (one ordinary
+existing workflow run; no new performance workflow).
+
+Per-plan outcomes:
+
+- Plan 139: ready-health memoized per publication with borrowed
+  wire-equivalent serialization; known-route dispatch borrow-only.
+- Plan 140: prepared `Arc<str>` v1/v2 targets per installed list;
+  owned scheduler poll path; index-based panic recovery; moved
+  reconcile.
+- Plan 141: `CPUFreq` structural cache + macOS page-size `OnceLock`
+  memo with deterministic fixture accounting; RETAIN CURRENT network
+  metadata, disk topology, and baseline scratch with recorded
+  rationale; no TTL.
+- Plan 142: reversible test-only worker experiment; RETAIN
+  SPAWN_BLOCKING with zero production diff (lifecycle/complexity
+  gate fails; native I/O dominates after Plan 141).
+- Plan 143: changed-result batch/action seams driving the event-loop
+  dirty gate; cross-render condensed `Rc` memo; single-aggregate
+  normal misses; `TestBackend` output identical.
+
+Measurement (descriptive, no CI timing gates): stripped release
+`gregg` 3,740,592 bytes (delta 0 vs Plan-125 baseline), stripped
+release `greggd` 2,694,560 bytes (campaign total; +2.5% vs the older
+Plan-135 baseline on a prior toolchain, std-only with no new
+dependencies; investigated per the 1% rule and retained as justified
+memo/cache code). Structural evidence (serialization counters,
+prepared-target reuse, source-call counts, worker handoff structure,
+draw/format counters, pointer-identity reuse) is primary; release
+timing was descriptive only.
+
+Global invariants hold: no protocol/capability/platform/CLI/route/
+failure-category removal; no hidden TTL/freshness regression; Rust
+1.89 MSRV and existing native qualification green. Plans 138-143 are
+independent of the remaining Plan 091 soak record. No future plan is
+blocked: Plan 142's dependency on Plan 141 is satisfied (141
+complete), and 139/140/141/143 were independent as planned.

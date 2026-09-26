@@ -255,16 +255,19 @@ corrections plus the precise FreeBSD package metadata and registry cleanup;
 the extraction architecture remains closed. Plans 132-137 are independent
 of the remaining Plan 091 soak record.
 
-Plan 138 opens a second bounded runtime-performance campaign on the post-Plan-137
-architecture and coordinates Plans 139-143. Plan 139 removes repeated ready-health
-snapshot cloning/serialization and known-route request-string allocation; Plan 140
-prepares client poll targets and reduces Endpoint ownership churn without changing
-scheduler semantics; Plan 141 reduces native telemetry source work only where
-freshness/hotplug behavior remains exact; Plan 142 is a reversible dedicated
-collector-worker experiment that may close with RETAIN SPAWN_BLOCKING; Plan 143
-owns remaining no-op TUI redraw and cross-render formatting work. The campaign
-does not reopen protocol, cadence, supported capabilities, scheduler architecture,
-release profile, or the completed native extraction. Plans 138-143 are independent
+Plan 138 coordinated the second bounded runtime-performance campaign on the
+post-Plan-137 architecture and is complete with Plans 139-143. Plan 139
+memoized ready-health JSON per publication with borrowed serialization and
+borrowed dispatch; Plan 140 prepares client poll targets once per installed
+list with owned polling and index-based panic recovery; Plan 141 added
+freshness-safe `CPUFreq`/macOS caching with deterministic source-call
+accounting and explicitly retained current network metadata, disk topology,
+and baseline scratch; Plan 142 ran the reversible dedicated worker
+experiment and closed with RETAIN SPAWN_BLOCKING and zero production diff;
+Plan 143 suppressed provable no-op redraws and added cross-render condensed
+memo plus single-aggregate normal misses. The campaign did not reopen
+protocol, cadence, supported capabilities, scheduler architecture, release
+profile, or the completed native extraction. Plans 138-143 are independent
 of the remaining Plan 091 soak record.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
@@ -401,12 +404,12 @@ excluded.
 | [`135-greggd-gregg-host-adapter-cutover-and-qualification.md`](135-greggd-gregg-host-adapter-cutover-and-qualification.md) | Cut greggd over through a compatibility facade and prove exact native/v1/v2/MSRV equivalence | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`+`d928950`+`a2d8bd2`+`c01389b`; CI `36220930632` green |
 | [`136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md`](136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md) | Add FreeBSD as the first post-extraction native backend and establish BSD portability seams | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`+`d928950`+`a2d8bd2`+`c01389b`; CI `36220930632` green; post-closure evidence/record follow-up is Plan 137 |
 | [`137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md`](137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md) | Reconcile Plans 132-136 closure records and make FreeBSD loopback counter-activity qualification fail closed and truthful | complete; implementation `f5c2c4c`; CI `36223217199` green across Linux, both macOS jobs, Windows SCM smoke, MSRV Rust 1.89, and the strengthened FreeBSD native job; independent of Plan 091 |
-| [`138-bounded-runtime-performance-follow-up-roadmap.md`](138-bounded-runtime-performance-follow-up-roadmap.md) | Coordinate the post-gregg-host behavior-preserving runtime optimization follow-up across daemon HTTP, client polling, native acquisition, sampler execution, and TUI/state | planned; coordinates 139-143; independent of Plan 091 |
-| [`139-daemon-health-response-and-request-dispatch-optimization.md`](139-daemon-health-response-and-request-dispatch-optimization.md) | Memoize ready health JSON per publication and remove successful-route request-string ownership without changing stale/health semantics | planned; depends on 138 |
-| [`140-prepared-client-poll-targets-and-endpoint-ownership-optimization.md`](140-prepared-client-poll-targets-and-endpoint-ownership-optimization.md) | Prepare v1/v2 poll targets once per installed endpoint list and reduce per-generation Endpoint cloning while preserving scheduler behavior | planned; depends on 138 |
-| [`141-native-telemetry-acquisition-work-reduction.md`](141-native-telemetry-acquisition-work-reduction.md) | Reduce gregg-host native source work with freshness-safe CPUFreq/macOS caching and correctness-gated Linux network/disk consolidation | planned; depends on 138; blocks 142 |
-| [`142-persistent-native-sampler-worker-experiment.md`](142-persistent-native-sampler-worker-experiment.md) | Compare per-tick spawn_blocking against a dedicated collector worker under strict lifecycle/panic/shutdown gates | planned experiment; may close RETAIN SPAWN_BLOCKING; depends on 141 |
-| [`143-tui-state-noop-and-cross-render-optimization.md`](143-tui-state-noop-and-cross-render-optimization.md) | Suppress provable no-op redraws and reuse condensed/aggregate render preparation across unchanged frames | planned; depends on 138 |
+| [`138-bounded-runtime-performance-follow-up-roadmap.md`](138-bounded-runtime-performance-follow-up-roadmap.md) | Coordinate the post-gregg-host behavior-preserving runtime optimization follow-up across daemon HTTP, client polling, native acquisition, sampler execution, and TUI/state | complete; campaign implementation `83df89e`; coordinates 139-143; independent of Plan 091 |
+| [`139-daemon-health-response-and-request-dispatch-optimization.md`](139-daemon-health-response-and-request-dispatch-optimization.md) | Memoize ready health JSON per publication and remove successful-route request-string ownership without changing stale/health semantics | complete; implementation `83df89e` |
+| [`140-prepared-client-poll-targets-and-endpoint-ownership-optimization.md`](140-prepared-client-poll-targets-and-endpoint-ownership-optimization.md) | Prepare v1/v2 poll targets once per installed endpoint list and reduce per-generation Endpoint cloning while preserving scheduler behavior | complete; implementation `83df89e` |
+| [`141-native-telemetry-acquisition-work-reduction.md`](141-native-telemetry-acquisition-work-reduction.md) | Reduce gregg-host native source work with freshness-safe CPUFreq/macOS caching and correctness-gated Linux network/disk consolidation | complete; implementation `83df89e`; unblocks 142 (closed RETAIN) |
+| [`142-persistent-native-sampler-worker-experiment.md`](142-persistent-native-sampler-worker-experiment.md) | Compare per-tick spawn_blocking against a dedicated collector worker under strict lifecycle/panic/shutdown gates | complete with RETAIN SPAWN_BLOCKING; implementation `83df89e` (test-only, zero production diff); depends on 141 |
+| [`143-tui-state-noop-and-cross-render-optimization.md`](143-tui-state-noop-and-cross-render-optimization.md) | Suppress provable no-op redraws and reuse condensed/aggregate render preparation across unchanged frames | complete; implementation `83df89e` |
 
 Dependency order:
 

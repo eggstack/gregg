@@ -1,6 +1,6 @@
 # Plan 142: persistent native sampler worker experiment
 
-Status: planned experiment; may close with RETAIN SPAWN_BLOCKING.
+Status: complete with RETAIN SPAWN_BLOCKING.
 
 Depends on: Plan 138 and completed Plan 141 native acquisition work, so native source cost is settled before runtime-handoff comparison.
 
@@ -150,16 +150,16 @@ Use existing native CI only. No new soak or performance workflow is required.
 
 ## Acceptance criteria
 
-- [ ] Baseline and candidate are compared against the same compatibility suite.
-- [ ] At most one collector sample is in flight.
-- [ ] Panic recovery and later sampling match baseline behavior.
-- [ ] Identity/capability refresh semantics remain unchanged.
-- [ ] Public Sampler methods remain source-compatible.
-- [ ] Shutdown/blocking behavior is explicitly demonstrated, not inferred.
-- [ ] Structural and descriptive performance evidence is recorded.
-- [ ] Candidate is retained only if the retain/reject gate passes.
-- [ ] A RETAIN SPAWN_BLOCKING closure is considered successful if the candidate fails the gate.
-- [ ] No new runtime/dependency framework is introduced.
+- [x] Baseline and candidate are compared against the same compatibility suite.
+- [x] At most one collector sample is in flight.
+- [x] Panic recovery and later sampling match baseline behavior.
+- [x] Identity/capability refresh semantics remain unchanged.
+- [x] Public Sampler methods remain source-compatible.
+- [x] Shutdown/blocking behavior is explicitly demonstrated, not inferred.
+- [x] Structural and descriptive performance evidence is recorded.
+- [x] Candidate is retained only if the retain/reject gate passes.
+- [x] A RETAIN SPAWN_BLOCKING closure is considered successful if the candidate fails the gate.
+- [x] No new runtime/dependency framework is introduced.
 
 ## Explicit non-goals
 
@@ -177,3 +177,40 @@ Do not include:
 ## Handoff note
 
 Build the experiment so it can be reverted as one bounded diff. Do not entangle the worker candidate with Plan-141 source changes or unrelated sampler cleanup.
+
+## Closure record
+
+Experimented at `83df89e` with toolchain `rustc 1.98.1`, closed with
+RETAIN SPAWN_BLOCKING and zero production diff to
+`crates/greggd/src/sampler.rs` runtime behavior. Local verification:
+`cargo test -p greggd --lib --all-features -- sampler::tests::plan142`
+(6 passed), existing sampler tests green, `cargo fmt --check`,
+workspace clippy `-D warnings`, and `./scripts/check-local.sh`
+green. Final campaign CI run is recorded in Plan 138.
+
+Fair comparison (test-only reversible candidate in
+`sampler.rs::tests`, synthetic near-zero-cost collector so native I/O
+does not hide handoff cost):
+
+- warming→ready, panic→recovery (worker survives `catch_unwind` and
+  the next sample succeeds, matching poisoned-mutex recovery),
+  ordering (sequential request/response), at-most-one-in-flight
+  (bounded capacity-1 channel, `try_send` never queues), identity
+  re-read per sample, shutdown between samples (bounded join prompt),
+  shutdown while blocked (async runtime stays responsive; blocked
+  join times out rather than hanging shutdown, mirroring
+  `spawn_blocking`'s inability to abort started work);
+- public `Sampler::new/with_interval/snapshot/snapshot_v2/readiness/
+  health_response/sample_once/run` untouched; `sample_once`
+  before/after a bounded run would require collector-ownership
+  transfer machinery under a worker, which is disproportionate.
+
+Retain/reject gate fails on 1, 5, and 6: lifecycle semantics would be
+no simpler (extra thread, request/response channels, panic
+containment, identity bundling, bounded-shutdown/detach logic),
+blocked-call shutdown does not improve on the runtime pool, and the
+structural saving (one thread total + two channel ops per sample
+versus one `spawn_blocking` task + two mutex locks per sample) is not
+meaningful after Plan 141 made native I/O dominant. Binary growth
+unjustified. Production retains per-tick `spawn_blocking` with
+`Arc<Mutex<C>>` handoff; the experiment is recorded, not adopted.
