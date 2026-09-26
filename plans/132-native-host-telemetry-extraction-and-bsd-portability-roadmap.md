@@ -211,7 +211,7 @@ facade with exact native/v1/v2/MSRV equivalence (stripped release
 `greggd` byte-identical at 2,629,008 bytes); 136 proved the boundary with
 a native FreeBSD backend. Linux, macOS arm64, macOS Intel, Windows, MSRV
 Rust 1.89, and the new FreeBSD native qualification are green in remote
-CI run `36219175605`. No external metrics command, privilege, async
+CI run `36219678790`. No external metrics command, privilege, async
 runtime, or system-information dependency was introduced; `greggd`
 retains exact v1/v2 semantics including Windows v2-only behavior; the
 extracted crate is not coupled to `gregg-protocol`; NetBSD/OpenBSD remain

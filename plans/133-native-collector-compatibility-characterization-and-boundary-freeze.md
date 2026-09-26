@@ -219,7 +219,7 @@ policy, worker behavior, or platform support was changed. Local
 verification at the implementation SHA: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
 `cargo test --workspace --all-targets --all-features`, and
-`./scripts/check-local.sh` all green. Remote CI run `36219175605` at the
+`./scripts/check-local.sh` all green. Remote CI run `36219678790` at the
 implementation SHA is green across Linux, macOS arm64, macOS Intel,
 Windows (incl. SCM smoke), MSRV Rust 1.89, and the new FreeBSD job.
 

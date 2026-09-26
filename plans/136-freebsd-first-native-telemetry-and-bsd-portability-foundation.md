@@ -406,7 +406,7 @@ direction for devstat/ifmib fields is covered by those direction proofs;
 exact per-field cross-validation against `iostat(1)`/`netstat(1)` beyond
 monotonicity/direction is recorded as a follow-up, not claimed here.
 Existing Linux/macOS arm64/macOS Intel/Windows/MSRV qualification is
-unchanged and green in remote CI run `36219175605`.
+unchanged and green in remote CI run `36219678790`.
 
 Documentation states exact support (`x86_64-unknown-freebsd` natively
 qualified; `aarch64-unknown-freebsd` compiles; no `greggd` FreeBSD

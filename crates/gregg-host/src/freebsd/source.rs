@@ -1113,6 +1113,120 @@ fn normalize_ifmib_row(
     })
 }
 
+/// TEMPORARY native layout diagnostic (removed before closure).
+/// Dumps raw kernel bytes for devstat/ifmib so field offsets can be fixed
+/// against ground truth instead of headers. Panics to surface output.
+#[cfg(all(test, target_os = "freebsd"))]
+#[test]
+fn native_debug_dump_layouts() {
+    use std::ffi::CString;
+    let mut dump = String::new();
+    // devstat sysctl: generation (long) + numdevs * sizeof(devstat).
+    let name = CString::new("kern.devstat.all").unwrap();
+    let mut len: libc::size_t = 0;
+    let queried = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    dump.push_str(&format!("devstat.all len-query rc={queried} len={len}\n"));
+    if queried == 0 && len > 8 && len < 10_000_000 {
+        let mut buf = vec![0u8; len];
+        let mut got = len;
+        let fetched = unsafe {
+            libc::sysctlbyname(
+                name.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                &mut got,
+                std::ptr::null(),
+                0,
+            )
+        };
+        dump.push_str(&format!("devstat.all fetch rc={fetched} got={got}\n"));
+        if fetched == 0 && got >= 8 {
+            let generation = u64::from_ne_bytes(buf[0..8].try_into().unwrap());
+            dump.push_str(&format!("devstat generation={generation}\n"));
+            let rest = &buf[8..got];
+            dump.push_str(&format!("devstat payload bytes={}\n", rest.len()));
+            // Scan for printable device-name candidates (runs of 2+ alnum).
+            let text: String = rest
+                .iter()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\0' {
+                        *b as char
+                    } else {
+                        '.'
+                    }
+                })
+                .collect();
+            for (i, window) in text.as_bytes().windows(64).enumerate().step_by(128) {
+                if i > 2048 {
+                    break;
+                }
+                dump.push_str(&format!(
+                    "devstat[{i:04}]: {}\n",
+                    String::from_utf8_lossy(window)
+                ));
+            }
+            // First 128 bytes hex.
+            dump.push_str("devstat first128 hex:");
+            for b in rest.iter().take(128) {
+                dump.push_str(&format!(" {b:02x}"));
+            }
+            dump.push_str("\n");
+        }
+    }
+    // ifmib row 1 raw bytes.
+    let count = sysctl_u32("net.link.generic.system.ifcount").unwrap_or(0);
+    dump.push_str(&format!("ifcount={count}\n"));
+    if count > 0 {
+        let mib = [
+            CTL_NET,
+            PF_LINK,
+            NETLINK_GENERIC,
+            IFMIB_IFDATA,
+            1,
+            IFDATA_GENERAL,
+        ];
+        let mut buffer = vec![0u8; 1024];
+        let mut row_len = buffer.len() as libc::size_t;
+        let fetched = unsafe {
+            libc::sysctl(
+                mib.as_ptr(),
+                mib.len() as libc::c_uint,
+                buffer.as_mut_ptr().cast(),
+                &mut row_len,
+                std::ptr::null(),
+                0,
+            )
+        };
+        dump.push_str(&format!("ifmib row1 rc={fetched} len={row_len}\n"));
+        if fetched == 0 && row_len > 0 && row_len <= 1024 {
+            let printable: String = buffer[..row_len as usize]
+                .iter()
+                .map(|b| {
+                    if b.is_ascii_graphic() || *b == b' ' || *b == 0 {
+                        (*b as char).to_string()
+                    } else {
+                        ".".to_string()
+                    }
+                })
+                .collect();
+            dump.push_str(&format!("ifmib row1 text: {printable}\n"));
+            dump.push_str("ifmib row1 hex:");
+            for b in buffer.iter().take(row_len as usize) {
+                dump.push_str(&format!(" {b:02x}"));
+            }
+            dump.push_str("\n");
+        }
+    }
+    panic!("NATIVE LAYOUT DUMP:\n{dump}");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
