@@ -1,6 +1,6 @@
 # Plan 137: native telemetry closure and FreeBSD network-evidence corrective pass
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plans 132-136 at the current post-`e2dba59` main state. This work is independent of the remaining Plan 091 soak record.
 
@@ -186,23 +186,23 @@ No new workflow, runner, matrix, artifact bundle, or privileged environment is r
 
 ## Acceptance criteria
 
-- [ ] Plans 132-136 acceptance checklists are reconciled item-by-item with their existing closure evidence.
-- [ ] No unsupported Plan-132-136 acceptance item is checked merely to make the records look complete.
-- [ ] Plan 136 receives an appended Plan-137 correction note rather than rewritten historical implementation/CI evidence.
-- [ ] `native_loopback_traffic_advances_lo_counters` cannot pass when ping execution fails.
-- [ ] The loopback native test requires a loopback interface before traffic and the same stable interface after traffic.
-- [ ] The loopback native test retains monotonicity checks and requires strict traffic-driven byte-counter advancement.
-- [ ] The FreeBSD native test remains bounded and deterministic enough for the pinned FreeBSD 14.2 VM job.
-- [ ] Documentation no longer claims symmetric loopback traffic independently proves RX-vs-TX field ordering.
-- [ ] RX/TX semantic ordering is attributed to the field-for-field FreeBSD `struct if_data` ABI mapping; native traffic is described as counter-activity evidence.
-- [ ] The existing disk-write native proof is not weakened.
-- [ ] `gregg-host` Cargo package description names FreeBSD explicitly rather than generic BSD support.
-- [ ] NetBSD/OpenBSD remain explicitly deferred and are not implied by metadata.
-- [ ] The duplicate `d928950` registry entry is removed without changing historical implementation meaning.
-- [ ] Plan 136 remains complete with Plan 137 recorded as its narrow corrective follow-up.
-- [ ] Existing Linux/macOS/Windows collector behavior, Gregg v1/v2 protocol behavior, readiness, cadence, slow-probe isolation, dependency boundary, and release footprint are unchanged.
-- [ ] One ordinary final CI run is green across Linux, both macOS jobs, Windows, MSRV 1.89, and the strengthened FreeBSD native job.
-- [ ] Plan 137 closure records the final implementation SHA and exact CI run.
+- [x] Plans 132-136 acceptance checklists are reconciled item-by-item with their existing closure evidence.
+- [x] No unsupported Plan-132-136 acceptance item is checked merely to make the records look complete.
+- [x] Plan 136 receives an appended Plan-137 correction note rather than rewritten historical implementation/CI evidence.
+- [x] `native_loopback_traffic_advances_lo_counters` cannot pass when ping execution fails.
+- [x] The loopback native test requires a loopback interface before traffic and the same stable interface after traffic.
+- [x] The loopback native test retains monotonicity checks and requires strict traffic-driven byte-counter advancement.
+- [x] The FreeBSD native test remains bounded and deterministic enough for the pinned FreeBSD 14.2 VM job.
+- [x] Documentation no longer claims symmetric loopback traffic independently proves RX-vs-TX field ordering.
+- [x] RX/TX semantic ordering is attributed to the field-for-field FreeBSD `struct if_data` ABI mapping; native traffic is described as counter-activity evidence.
+- [x] The existing disk-write native proof is not weakened.
+- [x] `gregg-host` Cargo package description names FreeBSD explicitly rather than generic BSD support.
+- [x] NetBSD/OpenBSD remain explicitly deferred and are not implied by metadata.
+- [x] The duplicate `d928950` registry entry is removed without changing historical implementation meaning.
+- [x] Plan 136 remains complete with Plan 137 recorded as its narrow corrective follow-up.
+- [x] Existing Linux/macOS/Windows collector behavior, Gregg v1/v2 protocol behavior, readiness, cadence, slow-probe isolation, dependency boundary, and release footprint are unchanged.
+- [x] One ordinary final CI run is green across Linux, both macOS jobs, Windows, MSRV 1.89, and the strengthened FreeBSD native job.
+- [x] Plan 137 closure records the final implementation SHA and exact CI run.
 
 ## Explicit non-goals
 
@@ -228,3 +228,68 @@ Do not include:
 Start by tightening `crates/gregg-host/src/freebsd/tests.rs::native_loopback_traffic_advances_lo_counters`.
 
 Do not paper over a failing native assertion by restoring a skip path. If the strengthened test exposes a real ifmib parsing defect, correct that defect narrowly and record it in Plan 137. Otherwise keep this pass limited to qualification truthfulness, metadata, and planning-record reconciliation.
+
+## Closure record
+
+Implemented at `f5c2c4c` with remote CI run `36223217199` green across
+Linux, macOS arm64, macOS Intel, Windows (incl. SCM smoke), MSRV Rust
+1.89, and the strengthened FreeBSD 14.2 `gregg-host` native
+qualification.
+
+Finding 1: all 67 Plans 132-136 acceptance boxes reconciled item by
+item against closure evidence and marked checked (132: 10, 133: 11,
+134: 14, 135: 17, 136: 15). Every item holds at the implementation
+SHA, including the intentionally truthful unsupported results the
+original criteria explicitly permit (FreeBSD swap remaining
+unsupported pending `kvm_getswapinfo` qualification; CPU frequency
+unsupported without a validated source). No box was checked merely to
+look complete; no implementation SHA or historical CI evidence was
+rewritten; historical rationale preserved.
+
+Finding 2: `native_loopback_traffic_advances_lo_counters` is now
+fail-closed on the pinned FreeBSD image. It requires a loopback record
+before traffic, preserves the stable loopback identity (id plus name)
+for the after-sample match, requires base-system ping execution and
+successful status, requires the same identity still present afterward
+with monotonic counters, and requires both RX and TX to advance
+strictly (one bounded ~1s visibility re-read only). Any missing
+prerequisite fails rather than printing and returning. The FreeBSD job
+in run `36223217199` shows the test running and passing
+(`native_loopback_traffic_advances_lo_counters ... ok`, 25 passed, 0
+failed); no skip path remains. No production dependency or subprocess
+was added; the disk-write proof is unchanged.
+
+Finding 3: loopback evidence wording corrected to counter-activity.
+The test doc, `freebsd/source.rs` ifmib comment,
+`architecture/collectors.md` FreeBSD section, and the appended Plan-136
+correction note all state: the native loopback smoke proves that the
+mapped ifmib byte-counter fields are live and advance under known
+loopback traffic; RX/TX semantic ordering is grounded in the
+field-for-field FreeBSD `struct if_data` ABI mapping, not inferred
+from symmetric loopback traffic. No asymmetric direction claim is
+made; no new asymmetric test was needed as the ABI mapping stands.
+Plan 136 keeps its original implementation/CI evidence with the
+correction appended, not rewritten.
+
+Finding 4: `crates/gregg-host/Cargo.toml` now names FreeBSD
+explicitly (Linux, macOS, Windows, and FreeBSD); no `bsd` feature or
+generic portability claim was added. NetBSD/OpenBSD remain deferred;
+the crate README's precise support statement is unchanged.
+
+Registry: the duplicated trailing `d928950` is removed from all five
+Plans 132-136 index entries without changing historical meaning; the
+chain is `... -> 136 -> 137`; Plan 136 is complete with Plan 137 as
+its narrow corrective follow-up. Original Plan-136 CI run
+`36220930632` is retained as valid evidence for the state it tested.
+
+Verification: focused `gregg-host` (24 passed locally) and
+`greggd collector` (62 passed) suites green; `cargo fmt --check`,
+workspace clippy `-D warnings`, and `./scripts/check-local.sh` green
+(one unrelated flaky `mixed_fleet_evidence` client timing failure
+passed on deterministic rerun). No collector formula, API, protocol,
+readiness, cadence, platform-support, or production-subprocess change.
+
+Acceptance: all boxes hold at the implementation SHA. Independent of
+the remaining Plan 091 soak record; no downstream plan status changes
+required — Plan 137 is terminal in the 132-137 chain and no future
+plan depends on it.

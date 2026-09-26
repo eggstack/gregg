@@ -247,13 +247,13 @@ added FreeBSD as the first post-extraction backend without introducing a
 generic Unix collector. NetBSD/OpenBSD remain explicit later ports, and
 complete FreeBSD `greggd` service/release support remains separately
 deferred. Post-closure review found a narrow evidence/record defect: the
-FreeBSD loopback qualification can pass without proving traffic-driven
-counter advancement, Plan 136 overstates symmetric loopback traffic as an
-RX/TX-direction proof, and Plans 132-136 retain unchecked acceptance boxes
-despite complete closure records. Planned Plan 137 owns only those corrections
-plus the precise FreeBSD package metadata and registry cleanup; the extraction
-architecture remains closed. Plans 132-137 are independent of the remaining
-Plan 091 soak record.
+FreeBSD loopback qualification could pass without proving traffic-driven
+counter advancement, Plan 136 overstated symmetric loopback traffic as an
+RX/TX-direction proof, and Plans 132-136 retained unchecked acceptance boxes
+despite complete closure records. Completed Plan 137 closed only those
+corrections plus the precise FreeBSD package metadata and registry cleanup;
+the extraction architecture remains closed. Plans 132-137 are independent
+of the remaining Plan 091 soak record.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -388,7 +388,7 @@ excluded.
 | [`134-gregg-host-native-telemetry-crate-extraction.md`](134-gregg-host-native-telemetry-crate-extraction.md) | Extract protocol-neutral Linux/macOS/Windows native telemetry into working `gregg-host` crate | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`+`d928950`+`a2d8bd2`+`c01389b`; CI `36220930632` green |
 | [`135-greggd-gregg-host-adapter-cutover-and-qualification.md`](135-greggd-gregg-host-adapter-cutover-and-qualification.md) | Cut greggd over through a compatibility facade and prove exact native/v1/v2/MSRV equivalence | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`+`d928950`+`a2d8bd2`+`c01389b`; CI `36220930632` green |
 | [`136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md`](136-freebsd-first-native-telemetry-and-bsd-portability-foundation.md) | Add FreeBSD as the first post-extraction native backend and establish BSD portability seams | complete; implementation `a9dab65`+`a5624a9`+`43b5cf3`+`d928950`+`a2d8bd2`+`c01389b`; CI `36220930632` green; post-closure evidence/record follow-up is Plan 137 |
-| [`137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md`](137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md) | Reconcile Plans 132-136 closure records and make FreeBSD loopback counter-activity qualification fail closed and truthful | planned; depends on completed 132-136; independent of Plan 091 |
+| [`137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md`](137-native-telemetry-closure-and-freebsd-network-evidence-corrective-pass.md) | Reconcile Plans 132-136 closure records and make FreeBSD loopback counter-activity qualification fail closed and truthful | complete; implementation `f5c2c4c`; CI `36223217199` green across Linux, both macOS jobs, Windows SCM smoke, MSRV Rust 1.89, and the strengthened FreeBSD native job; independent of Plan 091 |
 
 Dependency order:
 

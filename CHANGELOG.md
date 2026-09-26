@@ -9,6 +9,21 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Native telemetry closure and FreeBSD network-evidence correction (Plan
+  137):** the FreeBSD `native_loopback_traffic_advances_lo_counters`
+  qualification is now fail-closed — base-system ping must execute and
+  succeed, the same stable loopback identity is required before and after
+  traffic, counters must be monotonic, and both RX and TX must advance
+  strictly (one bounded visibility re-read only). Loopback evidence is
+  described truthfully as counter-activity, not RX/TX field-order proof:
+  the smoke proves the mapped ifmib byte counters are live under known
+  traffic while ordering rests on the field-for-field `struct if_data`
+  ABI mapping. `gregg-host` package metadata now names FreeBSD explicitly
+  (NetBSD/OpenBSD remain deferred), all 67 Plans 132-136 acceptance boxes
+  are reconciled with closure evidence, and the duplicated registry entry
+  is removed. No collector, protocol, readiness, cadence, or
+  production-subprocess changes.
+
 - **Installer profile detection (Plan 131):** the user-local bootstrap now
   suppresses its managed PATH block only for a recognizable active PATH
   integration (`$HOME/.local/bin`, `${HOME}/.local/bin`, `~/.local/bin`, or
