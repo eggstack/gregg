@@ -8,12 +8,21 @@
 //!
 //! No external commands are invoked for metrics collection.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::error::{CollectError, CollectErrorKind};
+
+/// Plan 145: maximum CPU ID accepted by the bounded cpulist parser.
+///
+/// Linux's documented `MAX_LOGICAL_CORES` is 8192 (see
+/// `arch/x86/kernel/cpu/common.c` and the kernel docs). Anything above this
+/// is treated as malformed so a hostile or runaway file cannot allocate
+/// memory proportional to its byte length.
+const MAX_CPU_ID: u16 = 8192;
 
 /// Lowest-level read trait used by the Linux collector.
 ///
@@ -48,25 +57,95 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Plan 141: cached Linux `CPUFreq` policy structure.
+/// Plan 145: parsed CPU identity set bounded by [`MAX_CPU_ID`].
 ///
-/// Membership (`affected_cpus`/`related_cpus` weights) is structural while
-/// `cpuinfo_cur_freq`/`scaling_cur_freq` are current values read every
-/// sample. The cache is valid only while the policy identity set and the
-/// logical-core count are unchanged; any policy add/remove or core-count
-/// change forces a membership refresh with immediate visibility.
+/// Implements the cpulist grammar accepted by `affected_cpus`,
+/// `related_cpus`, and `online`: single IDs, comma- or whitespace-separated
+/// values, inclusive ranges. IDs above `MAX_CPU_ID` are clamped. The set
+/// keeps its members sorted so intersections are deterministic.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CpuIdSet {
+    ids: BTreeSet<u16>,
+}
+
+impl CpuIdSet {
+    /// Build an empty identity set.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    /// Whether the set contains no identities.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    /// Number of identities in the set.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    /// Whether `id` is a member of the set.
+    #[must_use]
+    pub fn contains(&self, id: u16) -> bool {
+        self.ids.contains(&id)
+    }
+
+    /// Iterate identities in ascending order.
+    pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+        self.ids.iter().copied()
+    }
+}
+
+/// Plan 145: cached Linux `CPUFreq` policy structure.
+///
+/// Membership is structural (the `related_cpus` identity set) while
+/// `cpuinfo_cur_freq` / `scaling_cur_freq` are current values read every
+/// sample. The cache stores `related_cpus` once per policy while the
+/// policy directory set is unchanged; the live `online` set is read once
+/// per sample and intersected with the cached `related_cpus` to derive
+/// the dynamic policy weight, so same-cardinality online membership
+/// changes are visible without re-reading structural membership files.
 #[derive(Debug, Clone, Default)]
 pub struct CpuFreqStructuralCache {
+    /// Policy directory paths in deterministic order; refreshed every sample
+    /// so add/remove is observable immediately.
     policies: Vec<PathBuf>,
-    weights: std::collections::HashMap<PathBuf, usize>,
-    logical_cores: Option<usize>,
+    /// Structural `related_cpus` identity sets per policy. Refreshed only
+    /// when the policy set or a per-policy structural read fails.
+    related: std::collections::HashMap<PathBuf, CpuIdSet>,
+    /// Last successful global online-CPU identity read, retained for tests
+    /// and diagnostic use.
+    online: Option<CpuIdSet>,
 }
 
 impl CpuFreqStructuralCache {
-    /// Return the cached weight for a policy, if the cache is valid.
+    /// Last live `online` set, if a sample successfully read it.
     #[must_use]
-    pub fn weight_for(&self, policy: &Path) -> Option<usize> {
-        self.weights.get(policy).copied()
+    pub fn last_online(&self) -> Option<&CpuIdSet> {
+        self.online.as_ref()
+    }
+
+    /// Live weight = `|related_cpus ∩ online|`. Returns `None` when the
+    /// policy has no structural membership recorded.
+    #[must_use]
+    pub fn live_weight(&self, policy: &Path, online: &CpuIdSet) -> Option<usize> {
+        let related = self.related.get(policy)?;
+        Some(Self::intersection_count(related, online))
+    }
+
+    /// Static intersection count between two identity sets, using the
+    /// smaller set as the iteration driver so the result is
+    /// `O(min(|a|, |b|))`.
+    #[must_use]
+    pub fn intersection_count(a: &CpuIdSet, b: &CpuIdSet) -> usize {
+        if a.len() <= b.len() {
+            a.iter().filter(|id| b.contains(*id)).count()
+        } else {
+            b.iter().filter(|id| a.contains(*id)).count()
+        }
     }
 }
 
@@ -205,13 +284,16 @@ impl ProcSource {
         self.cpu_frequency_hz_with_cache(&mut cold_cache)
     }
 
-    /// Plan 141: structural `CPUFreq` cache.
+    /// Plan 145: structural `CPUFreq` cache with live online-membership.
     ///
     /// Policy-root enumeration and current-frequency reads stay live every
-    /// sample. Parsed membership weights are reused only while the policy
-    /// identity set and logical-core count are unchanged; any policy
-    /// add/remove or core-count change forces an immediate membership
-    /// refresh producing the same values as a cold query.
+    /// sample. The cached `related_cpus` identity set is reused only while
+    /// the policy directory set is unchanged; the global
+    /// `/sys/devices/system/cpu/online` set is read once per sample and
+    /// intersected with the cached structural membership, so
+    /// same-cardinality online membership changes are immediately visible
+    /// without re-reading `related_cpus`. If the global online source is
+    /// unavailable, the sample fails closed to the live membership path.
     pub fn cpu_frequency_hz_with_cache(&self, cache: &mut CpuFreqStructuralCache) -> Option<u64> {
         let root = Path::new("/sys/devices/system/cpu/cpufreq");
         let policies = self.inner.read_dir(root).ok()?;
@@ -224,22 +306,47 @@ impl ProcSource {
             })
             .collect();
         eligible.sort();
-        let logical_cores = self.logical_core_count().unwrap_or(1);
-        let cache_valid = cache.logical_cores == Some(logical_cores) && cache.policies == eligible;
-        if !cache_valid {
-            let mut weights = std::collections::HashMap::new();
+
+        // Plan 145: the global online set is the single live dynamic input;
+        // a failed read fails closed to the legacy membership path so we
+        // never reuse stale dynamic weights.
+        let Some(online) = self.read_online_cpus() else {
+            cache.online = None;
+            cache.related.clear();
+            cache.policies.clear();
+            return self.cpu_frequency_hz_live_fallback(&eligible);
+        };
+        cache.online = Some(online.clone());
+
+        // Refresh structural membership only when the policy directory set
+        // changes or a previously-unreadable policy becomes readable.
+        if cache.policies == eligible {
             for policy in &eligible {
-                let weight = self.cpufreq_policy_weight(policy, logical_cores);
-                weights.insert(policy.clone(), weight);
+                if !cache.related.contains_key(policy) {
+                    if let Some(set) = self.read_related_cpus(policy) {
+                        cache.related.insert(policy.clone(), set);
+                    }
+                }
             }
+        } else {
             cache.policies.clone_from(&eligible);
-            cache.weights = weights;
-            cache.logical_cores = Some(logical_cores);
+            cache.related.clear();
+            for policy in &eligible {
+                if let Some(set) = self.read_related_cpus(policy) {
+                    cache.related.insert(policy.clone(), set);
+                }
+            }
         }
+
         let mut weighted_sum = 0u128;
         let mut weight_sum = 0u128;
         for policy in &eligible {
-            let weight = cache.weights.get(policy).copied().unwrap_or(0);
+            let weight = match cache.related.get(policy) {
+                Some(related) => CpuFreqStructuralCache::intersection_count(related, &online),
+                // Plan 145: per-policy fail-closed fallback when structural
+                // membership cannot be read or parsed.
+                None => self.cpufreq_policy_weight(policy, MAX_CPU_ID as usize),
+            };
             if weight == 0 {
                 continue;
             }
@@ -253,6 +360,48 @@ impl ProcSource {
             weight_sum = weight_sum.checked_add(weight as u128)?;
         }
         u64::try_from(weighted_sum.checked_div(weight_sum)?).ok()
+    }
+
+    /// Plan 145: legacy live-membership fallback.
+    ///
+    /// Used when the global online source is unreadable so we never reuse
+    /// stale dynamic weights after the authoritative input is missing.
+    fn cpu_frequency_hz_live_fallback(&self, eligible: &[PathBuf]) -> Option<u64> {
+        let mut weighted_sum = 0u128;
+        let mut weight_sum = 0u128;
+        for policy in eligible {
+            let weight = self.cpufreq_policy_weight(policy, MAX_CPU_ID as usize);
+            if weight == 0 {
+                continue;
+            }
+            let Some(khz) = self.cpufreq_current_khz(policy) else {
+                continue;
+            };
+            let Some(hz) = khz.checked_mul(1_000) else {
+                continue;
+            };
+            weighted_sum = weighted_sum.checked_add(u128::from(hz) * weight as u128)?;
+            weight_sum = weight_sum.checked_add(weight as u128)?;
+        }
+        u64::try_from(weighted_sum.checked_div(weight_sum)?).ok()
+    }
+
+    /// Plan 145: read the global `/sys/devices/system/cpu/online` set.
+    fn read_online_cpus(&self) -> Option<CpuIdSet> {
+        let raw = self
+            .inner
+            .read_to_string(Path::new("/sys/devices/system/cpu/online"))
+            .ok()?;
+        parse_cpu_list_ids(&raw, MAX_CPU_ID)
+    }
+
+    /// Plan 145: read a policy's structural `related_cpus` membership.
+    fn read_related_cpus(&self, policy: &Path) -> Option<CpuIdSet> {
+        let raw = self
+            .inner
+            .read_to_string(&policy.join("related_cpus"))
+            .ok()?;
+        parse_cpu_list_ids(&raw, MAX_CPU_ID)
     }
 
     fn cpufreq_policy_weight(&self, policy: &Path, logical_cores: usize) -> usize {
@@ -645,6 +794,12 @@ impl MemorySource {
         self.files.insert(path.into(), content.into());
     }
 
+    /// Remove a file entry on an already-constructed source. Used by tests
+    /// that simulate a policy disappearing between samples.
+    pub fn remove_file(&mut self, path: impl Into<PathBuf>) -> bool {
+        self.files.remove(&path.into()).is_some()
+    }
+
     /// Add native filesystem statistics for a fixture mount point.
     pub fn add_statvfs(&mut self, path: impl Into<PathBuf>, stats: RawStatvfs) {
         self.stats.insert(path.into(), stats);
@@ -812,6 +967,36 @@ fn parse_cpu_list(raw: &str, logical_cores: usize) -> Option<usize> {
         }
     }
     (count > 0).then_some(count)
+}
+
+/// Plan 145: parse a cpulist into an identity set bounded by `max_id`.
+///
+/// Accepts the same grammar as [`parse_cpu_list`]: single IDs, comma- or
+/// whitespace-separated values, and inclusive ranges. IDs above `max_id`
+/// are clamped; IDs that overflow `u64` are rejected.
+fn parse_cpu_list_ids(raw: &str, max_id: u16) -> Option<CpuIdSet> {
+    let mut ids = BTreeSet::new();
+    for item in raw
+        .trim()
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .filter(|item| !item.is_empty())
+    {
+        let (start, end) = item.split_once('-').map_or_else(
+            || item.parse::<u64>().ok().map(|value| (value, value)),
+            |(start, end)| Some((start.parse().ok()?, end.parse().ok()?)),
+        )?;
+        if end < start {
+            return None;
+        }
+        let bounded_end = end.min(u64::from(max_id));
+        if start <= bounded_end {
+            #[allow(clippy::cast_possible_truncation)]
+            for id in start..=bounded_end {
+                ids.insert(id as u16);
+            }
+        }
+    }
+    (!ids.is_empty()).then_some(CpuIdSet { ids })
 }
 
 /// Output of [`ProcSource::read_proc_stat`].
@@ -1043,8 +1228,9 @@ mod tests {
         // `plan141_cpufreq_source` documents the canonical fixture shape.
         let mut mem = MemorySource::new().with_logical_cores(4);
         for (path, content) in [
+            ("/sys/devices/system/cpu/online", "0-3\n"),
             (
-                "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+                "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
                 "0-1\n",
             ),
             (
@@ -1052,7 +1238,7 @@ mod tests {
                 "2000000\n",
             ),
             (
-                "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+                "/sys/devices/system/cpu/cpufreq/policy1/related_cpus",
                 "2-3\n",
             ),
             (
@@ -1068,29 +1254,34 @@ mod tests {
         let first = source.cpu_frequency_hz_with_cache(&mut cache);
         assert_eq!(first, Some(1_500_000_000));
         let after_first = probe.call_counts();
-        let membership_first = after_first.reads_containing("affected_cpus")
-            + after_first.reads_containing("related_cpus");
+        let related_first = after_first.reads_containing("related_cpus");
         let freq_first = after_first.reads_containing("cpuinfo_cur_freq")
             + after_first.reads_containing("scaling_cur_freq");
-        assert!(membership_first >= 2);
+        let online_first = after_first.reads_for("/sys/devices/system/cpu/online");
+        assert!(related_first >= 2);
         assert!(freq_first >= 2);
+        assert!(online_first >= 1, "online set must be read each sample");
 
         // Steady topology: membership files must not be re-read while
-        // current frequency stays live.
+        // current frequency and online membership stay live.
         let second = source.cpu_frequency_hz_with_cache(&mut cache);
         assert_eq!(second, first);
         let after_second = probe.call_counts();
-        let membership_second = after_second.reads_containing("affected_cpus")
-            + after_second.reads_containing("related_cpus");
+        let related_second = after_second.reads_containing("related_cpus");
         let freq_second = after_second.reads_containing("cpuinfo_cur_freq")
             + after_second.reads_containing("scaling_cur_freq");
+        let online_second = after_second.reads_for("/sys/devices/system/cpu/online");
         assert_eq!(
-            membership_second, membership_first,
-            "steady state must avoid repeated membership reads"
+            related_second, related_first,
+            "steady state must avoid repeated structural membership reads"
         );
         assert!(
             freq_second > freq_first,
             "current frequency must remain sampled every cycle"
+        );
+        assert!(
+            online_second > online_first,
+            "online set must be re-read every sample to drive policy weights"
         );
         // Root enumeration stays live for immediate policy visibility.
         assert!(after_second.dirs_for("/sys/devices/system/cpu/cpufreq") >= 2);
@@ -1099,8 +1290,9 @@ mod tests {
     #[test]
     fn plan141_cpufreq_policy_and_core_changes_force_refresh() {
         let mut mem = MemorySource::new().with_logical_cores(4);
+        mem.add_file("/sys/devices/system/cpu/online", "0-3\n");
         mem.add_file(
-            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
             "0-1\n",
         );
         mem.add_file(
@@ -1108,7 +1300,7 @@ mod tests {
             "2000000\n",
         );
         mem.add_file(
-            "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+            "/sys/devices/system/cpu/cpufreq/policy1/related_cpus",
             "2-3\n",
         );
         mem.add_file(
@@ -1122,7 +1314,7 @@ mod tests {
 
         // Policy add/remove is visible immediately and matches a cold query.
         source.memory_source_mut().expect("memory source").add_file(
-            "/sys/devices/system/cpu/cpufreq/policy2/affected_cpus",
+            "/sys/devices/system/cpu/cpufreq/policy2/related_cpus",
             "0-3\n",
         );
         source.memory_source_mut().expect("memory source").add_file(
@@ -1138,15 +1330,16 @@ mod tests {
         // observe the new policy without a stale window.
         assert_eq!(after_add, cold_after_add);
 
-        // Logical-core-count change invalidates structural weights.
+        // Online-set change is reflected in the next sample without
+        // structural membership refresh.
         source
             .memory_source_mut()
             .expect("memory source")
-            .set_logical_cores(2);
-        let after_cores = source.cpu_frequency_hz_with_cache(&mut cache);
-        let mut cold_cores = CpuFreqStructuralCache::default();
-        let cold_value = source.cpu_frequency_hz_with_cache(&mut cold_cores);
-        assert_eq!(after_cores, cold_value);
+            .add_file("/sys/devices/system/cpu/online", "0-1\n");
+        let after_online_change = source.cpu_frequency_hz_with_cache(&mut cache);
+        let mut cold_online = CpuFreqStructuralCache::default();
+        let cold_online_value = source.cpu_frequency_hz_with_cache(&mut cold_online);
+        assert_eq!(after_online_change, cold_online_value);
     }
 
     #[test]
@@ -1176,5 +1369,315 @@ mod tests {
             "cached success must not re-run FFI, only the wrapper call counts"
         );
         assert_eq!(cell.get(), Some(&16_384));
+    }
+
+    // ===== Plan 145: CPUFreq online-membership freshness =====
+
+    fn cpufreq_two_policy_fixture() -> MemorySource {
+        let mut mem = MemorySource::new().with_logical_cores(4);
+        // Policies with overlapping related membership and divergent
+        // frequencies so weight changes change the weighted average.
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
+            "0-2\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/related_cpus",
+            "0-1,3\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "3000000\n",
+        );
+        mem
+    }
+
+    #[test]
+    fn plan145_same_count_membership_swap_changes_weighted_average() {
+        let mut mem = cpufreq_two_policy_fixture();
+        mem.add_file("/sys/devices/system/cpu/online", "0-1\n");
+        let mut source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+
+        let first = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        // online = {0,1}; policy0 related ∩ online = {0,1}, weight 2;
+        // policy1 related ∩ online = {0,1}, weight 2;
+        // weighted = (1e9*2 + 3e9*2) / 4 = 2_000_000_000
+        assert_eq!(first, 2_000_000_000);
+
+        let after_first = source
+            .memory_source_mut()
+            .expect("memory source")
+            .call_counts();
+        let related_first = after_first.reads_containing("related_cpus");
+
+        // Same-cardinality swap: online moves to {0,2}. The policy set
+        // and `related_cpus` membership are unchanged.
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .add_file("/sys/devices/system/cpu/online", "0,2\n");
+        let second = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        let after_second = source
+            .memory_source_mut()
+            .expect("memory source")
+            .call_counts();
+        let related_second = after_second.reads_containing("related_cpus");
+
+        // online = {0,2}; policy0 related ∩ online = {0,2}, weight 2;
+        // policy1 related ∩ online = {0}, weight 1;
+        // weighted = (1e9*2 + 3e9*1) / 3 = 1_666_666_666
+        assert_eq!(second, 1_666_666_666);
+        assert_ne!(
+            first, second,
+            "same-cardinality swap must change the weighted average"
+        );
+        assert_eq!(
+            related_second, related_first,
+            "structural membership must not be re-read for the swap"
+        );
+        assert!(
+            after_second.reads_for("/sys/devices/system/cpu/online")
+                > after_first.reads_for("/sys/devices/system/cpu/online"),
+            "online set must be re-read every sample"
+        );
+    }
+
+    #[test]
+    fn plan145_ordinary_steady_state_keeps_live_current_freq_and_online() {
+        let mut mem = cpufreq_two_policy_fixture();
+        mem.add_file("/sys/devices/system/cpu/online", "0-3\n");
+        let probe = mem.clone();
+        let source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+
+        // First sample seeds the cache.
+        let first = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        let after_first = probe.call_counts();
+        let related_first = after_first.reads_containing("related_cpus");
+        let online_first = after_first.reads_for("/sys/devices/system/cpu/online");
+        let freq_first = after_first.reads_containing("cpuinfo_cur_freq");
+
+        // Second sample: same topology, same online, same frequencies.
+        let second = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        assert_eq!(second, first);
+        let after_second = probe.call_counts();
+        let related_second = after_second.reads_containing("related_cpus");
+        let online_second = after_second.reads_for("/sys/devices/system/cpu/online");
+        let freq_second = after_second.reads_containing("cpuinfo_cur_freq");
+
+        assert_eq!(
+            related_second, related_first,
+            "structural membership must not advance in steady state"
+        );
+        assert!(
+            online_second > online_first,
+            "online must be re-read every sample"
+        );
+        assert!(
+            freq_second > freq_first,
+            "current frequency must be sampled every cycle"
+        );
+        assert!(
+            after_second.reads_containing("affected_cpus")
+                == after_first.reads_containing("affected_cpus"),
+            "no dynamic membership reads must occur when the cache and online set are healthy"
+        );
+    }
+
+    #[test]
+    fn plan145_policy_topology_change_invalidates_structural_cache() {
+        let mut mem = cpufreq_two_policy_fixture();
+        mem.add_file("/sys/devices/system/cpu/online", "0-3\n");
+        let mut source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+
+        let first = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+
+        // Add a new policy path.
+        source.memory_source_mut().expect("memory source").add_file(
+            "/sys/devices/system/cpu/cpufreq/policy2/related_cpus",
+            "0-3\n",
+        );
+        source.memory_source_mut().expect("memory source").add_file(
+            "/sys/devices/system/cpu/cpufreq/policy2/cpuinfo_cur_freq",
+            "5000000\n",
+        );
+
+        let after_add = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        let cold = {
+            let mut cold = CpuFreqStructuralCache::default();
+            source.cpu_frequency_hz_with_cache(&mut cold)
+        };
+        // Online = {0,1,2,3}; policy0 related = {0,1,2}, weight 3;
+        // policy1 related = {0,1,3}, weight 3; policy2 related = {0..3}, weight 4.
+        // weighted = (1*3 + 3*3 + 5*4) / (3+3+4) = (3 + 9 + 20) / 10 = 3_200_000_000
+        assert_eq!(after_add, 3_200_000_000);
+        assert_eq!(
+            after_add,
+            cold.expect("cold value"),
+            "structural cache must match a cold query after a topology change"
+        );
+        assert_ne!(after_add, first);
+
+        // Remove a policy by deleting its directory entry: the cache must
+        // refresh and yield the same value as a cold query.
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .remove_file("/sys/devices/system/cpu/cpufreq/policy2/related_cpus");
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .remove_file("/sys/devices/system/cpu/cpufreq/policy2/cpuinfo_cur_freq");
+        let after_remove = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        let mut cold2 = CpuFreqStructuralCache::default();
+        let cold_remove = source.cpu_frequency_hz_with_cache(&mut cold2);
+        assert_eq!(after_remove, cold_remove.expect("cold remove"));
+        assert_eq!(after_remove, first);
+    }
+
+    #[test]
+    fn plan145_online_set_failure_falls_back_to_live_membership() {
+        let mut mem = cpufreq_two_policy_fixture();
+        mem.add_file("/sys/devices/system/cpu/online", "0-3\n");
+        let mut source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+        let first = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        // Populated cache proves the structural path was used.
+        assert!(cache.last_online().is_some());
+
+        // Malformed online content forces the fallback path. The fallback
+        // must not reuse stale dynamic weights from the cache.
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .add_file("/sys/devices/system/cpu/online", "not a cpu list\n");
+        let fallback = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("fallback weighted hz");
+        let live_cold = {
+            let mut cold = CpuFreqStructuralCache::default();
+            source.cpu_frequency_hz_with_cache(&mut cold)
+        };
+        assert_eq!(fallback, live_cold.expect("live cold"));
+        assert_eq!(fallback, first, "fallback must read affected_cpus live");
+
+        // Cache state must be cleared so a stale online cannot re-enter
+        // the structural path until the source is readable again.
+        assert!(cache.last_online().is_none());
+
+        // Restoring the online file must succeed again and re-populate the cache.
+        source
+            .memory_source_mut()
+            .expect("memory source")
+            .add_file("/sys/devices/system/cpu/online", "0-3\n");
+        let recovered = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("recovered weighted hz");
+        assert_eq!(recovered, first);
+        assert!(cache.last_online().is_some());
+    }
+
+    #[test]
+    fn plan145_zero_online_policy_does_not_distort_weighted_average() {
+        let mut mem = MemorySource::new().with_logical_cores(4);
+        mem.add_file("/sys/devices/system/cpu/online", "0-1\n");
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
+            "0-1\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        // policy1's structural CPUs are all offline under the live set.
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/related_cpus",
+            "2-3\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "5000000\n",
+        );
+        let source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+        let value = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        // Only policy0 contributes (weight 2); policy1 contributes 0.
+        assert_eq!(value, 1_000_000_000);
+        // The structural entry remains cached for policy1 so its identity
+        // is preserved when the online set changes.
+        assert_eq!(cache.related.len(), 2);
+    }
+
+    #[test]
+    fn plan145_per_policy_related_cpus_failure_uses_legacy_weight() {
+        let mut mem = cpufreq_two_policy_fixture();
+        mem.add_file("/sys/devices/system/cpu/online", "0-3\n");
+        // Drop policy0's related_cpus so the cache cannot use it; the
+        // legacy per-policy path reads affected_cpus.
+        mem.remove_file("/sys/devices/system/cpu/cpufreq/policy0/related_cpus");
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "0-2\n",
+        );
+        let source = ProcSource::for_memory(mem);
+        let mut cache = CpuFreqStructuralCache::default();
+        let value = source
+            .cpu_frequency_hz_with_cache(&mut cache)
+            .expect("weighted hz");
+        // policy0 weight from affected_cpus = 3, freq 1e9;
+        // policy1 weight = |{0,1,3} ∩ {0,1,2,3}| = 3, freq 3e9;
+        // weighted = (1*3 + 3*3) / 6 = 12 / 6 = 2_000_000_000
+        assert_eq!(value, 2_000_000_000);
+    }
+
+    #[test]
+    fn plan145_cpulist_parser_supports_single_id_comma_range_whitespace() {
+        let ids = parse_cpu_list_ids("0-3\n", MAX_CPU_ID).expect("parseable");
+        assert_eq!(ids.len(), 4);
+        assert!(ids.contains(0));
+        assert!(ids.contains(3));
+
+        let comma = parse_cpu_list_ids("0,2,4", MAX_CPU_ID).expect("parseable");
+        assert_eq!(comma.len(), 3);
+        assert!(comma.contains(0) && comma.contains(2) && comma.contains(4));
+
+        let whitespace = parse_cpu_list_ids("0 1 2 3", MAX_CPU_ID).expect("parseable");
+        assert_eq!(whitespace.len(), 4);
+        assert_eq!(whitespace.iter().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+
+        let mixed = parse_cpu_list_ids("0-1,3 5-6", MAX_CPU_ID).expect("parseable");
+        assert_eq!(mixed.len(), 5);
+        assert!(mixed.contains(1) && mixed.contains(3) && mixed.contains(6));
+
+        let clamped = parse_cpu_list_ids("0-999999", MAX_CPU_ID).expect("parseable");
+        assert_eq!(clamped.len(), (MAX_CPU_ID as usize) + 1);
+
+        assert!(parse_cpu_list_ids("", MAX_CPU_ID).is_none());
+        assert!(parse_cpu_list_ids("not a cpu list", MAX_CPU_ID).is_none());
+        assert!(parse_cpu_list_ids("5-2", MAX_CPU_ID).is_none());
     }
 }

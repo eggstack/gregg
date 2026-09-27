@@ -293,8 +293,9 @@ fn plan141_collector_steady_cpufreq_reuses_structure() {
         "MemTotal:        8000000 kB\nMemAvailable:     4000000 kB\nSwapTotal:              0 kB\nSwapFree:               0 kB\n",
     );
     mem.add_file(Path::new("/proc/sys/kernel/hostname"), "cache-host\n");
+    mem.add_file(Path::new("/sys/devices/system/cpu/online"), "0-3\n");
     mem.add_file(
-        Path::new("/sys/devices/system/cpu/cpufreq/policy0/affected_cpus"),
+        Path::new("/sys/devices/system/cpu/cpufreq/policy0/related_cpus"),
         "0-1\n",
     );
     mem.add_file(
@@ -302,7 +303,7 @@ fn plan141_collector_steady_cpufreq_reuses_structure() {
         "2000000\n",
     );
     mem.add_file(
-        Path::new("/sys/devices/system/cpu/cpufreq/policy1/affected_cpus"),
+        Path::new("/sys/devices/system/cpu/cpufreq/policy1/related_cpus"),
         "2-3\n",
     );
     mem.add_file(
@@ -319,8 +320,7 @@ fn plan141_collector_steady_cpufreq_reuses_structure() {
     let first = collector.sample().expect("steady sample");
     assert_eq!(first.cpu_frequency_hz, Some(1_500_000_000));
     let after_first = probe.call_counts();
-    let membership_first = after_first.reads_containing("affected_cpus")
-        + after_first.reads_containing("related_cpus");
+    let related_first = after_first.reads_containing("related_cpus");
     collector
         .source_mut()
         .set_stat_path(Path::new("/proc/stat_c").to_path_buf());
@@ -328,9 +328,8 @@ fn plan141_collector_steady_cpufreq_reuses_structure() {
     assert_eq!(second.cpu_frequency_hz, first.cpu_frequency_hz);
     let after_second = probe.call_counts();
     assert_eq!(
-        after_second.reads_containing("affected_cpus")
-            + after_second.reads_containing("related_cpus"),
-        membership_first,
+        after_second.reads_containing("related_cpus"),
+        related_first,
         "collector steady state must reuse CPUFreq structure"
     );
 }
