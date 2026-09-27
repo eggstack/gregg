@@ -277,7 +277,7 @@ Plan 139; Plan 145 owns Linux CPUFreq online-membership freshness after Plan 141
 Plans 139/141 remain complete historical records. Plans 144-145 are independent
 of Plan 091 and of each other.
 
-Plan 144 is complete at implementation `<filled-in-by-closure-commit>`: it
+Plan 144 is complete at implementation `808f44e4dd27de1c3ae2eb3238ce627696bb95f9`: it
 replaces Plan-139's `Option<Bytes>` memos with per-publication
 `Arc<tokio::sync::OnceCell<Bytes>>` cells, drops the `PublishedState` read
 guard before awaiting `get_or_try_init`, installs fresh cells on every
@@ -428,7 +428,7 @@ excluded.
 | [`141-native-telemetry-acquisition-work-reduction.md`](141-native-telemetry-acquisition-work-reduction.md) | Reduce gregg-host native source work with freshness-safe CPUFreq/macOS caching and correctness-gated Linux network/disk consolidation | complete; implementation `83df89e` (+ fix `e9ca180` macOS `-D warnings`); unblocks 142 (closed RETAIN); campaign CI `36261210288` (see Plan 138); CPUFreq membership follow-up is Plan 145 |
 | [`142-persistent-native-sampler-worker-experiment.md`](142-persistent-native-sampler-worker-experiment.md) | Compare per-tick spawn_blocking against a dedicated collector worker under strict lifecycle/panic/shutdown gates | complete with RETAIN SPAWN_BLOCKING; implementation `83df89e` (test-only, zero production diff); depends on 141; campaign CI `36261210288` (see Plan 138) |
 | [`143-tui-state-noop-and-cross-render-optimization.md`](143-tui-state-noop-and-cross-render-optimization.md) | Suppress provable no-op redraws and reuse condensed/aggregate render preparation across unchanged frames | complete; implementation `83df89e` (+ fix `e9ca180` docs-clean); campaign CI `36261210288` (see Plan 138) |
-| [`144-ready-health-single-flight-serialization-corrective-pass.md`](144-ready-health-single-flight-serialization-corrective-pass.md) | Make Plan-139 ready-health memoization truly single-flight under concurrent first requests while preserving retry/stale/failure semantics | complete; per-publication `Arc<tokio::sync::OnceCell<Bytes>>` cells with dropped-guard `get_or_try_init` and deterministic concurrent-first-request gate |
+| [`144-ready-health-single-flight-serialization-corrective-pass.md`](144-ready-health-single-flight-serialization-corrective-pass.md) | Make Plan-139 ready-health memoization truly single-flight under concurrent first requests while preserving retry/stale/failure semantics | complete at `808f44e`; per-publication `Arc<tokio::sync::OnceCell<Bytes>>` cells with dropped-guard `get_or_try_init` and deterministic concurrent-first-request gate |
 | [`145-linux-cpufreq-online-membership-freshness-corrective-pass.md`](145-linux-cpufreq-online-membership-freshness-corrective-pass.md) | Make Plan-141 CPUFreq policy weighting respond to same-cardinality online CPU membership changes without restoring steady per-policy dynamic reads | planned; post-closure corrective follow-up to 141; independent of 091 and 144 |
 
 Dependency order:

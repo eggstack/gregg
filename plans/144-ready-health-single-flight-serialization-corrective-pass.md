@@ -200,7 +200,7 @@ Start by adding the deterministic concurrent-first-request test against current 
 
 ## Closed scope record
 
-Completed at implementation `<filled-in-by-closure-commit>`:
+Completed at implementation `808f44e4dd27de1c3ae2eb3238ce627696bb95f9`:
 
 - replaced `PublishedState::health_bytes` / `health_bytes_v2` with
   `Arc<tokio::sync::OnceCell<Bytes>>` per publication; concurrent first
