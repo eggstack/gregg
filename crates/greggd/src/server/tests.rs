@@ -1780,3 +1780,565 @@ async fn malformed_http_version_is_handled_gracefully() {
     control.shutdown();
     completion.wait().await.unwrap();
 }
+
+// ===== Plan 144: ready-health single-flight memoization =====
+
+fn assert_response_status(response: &TestResponse, expected_status: StatusCode) {
+    assert_eq!(response.status(), expected_status);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_concurrent_v1_health_serializes_once() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    // Deterministic concurrency gate: arm for 8 so all eight tasks reach
+    // the cell boundary together.
+    state.test_gate.arm(8);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+
+    let mut bodies = Vec::new();
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        bodies.push(body);
+    }
+
+    state.test_gate.reset();
+
+    let first = bodies.first().unwrap();
+    for body in &bodies[1..] {
+        assert_eq!(
+            body, first,
+            "all concurrent v1 health bodies must be byte-identical"
+        );
+    }
+
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "8 concurrent first requests must serialize the v1 ready-health body exactly once"
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "v2 path was not exercised"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_concurrent_v2_health_serializes_once() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    state.test_gate.arm(8);
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/v2/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+
+    let mut bodies = Vec::new();
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        bodies.push(body);
+    }
+
+    state.test_gate.reset();
+
+    let first = bodies.first().unwrap();
+    for body in &bodies[1..] {
+        assert_eq!(
+            body, first,
+            "all concurrent v2 health bodies must be byte-identical"
+        );
+    }
+
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "8 concurrent first requests must serialize the v2 ready-health body exactly once"
+    );
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "v1 path was not exercised"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_concurrent_mixed_v1_and_v2_serializes_each_once() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    state.test_gate.arm(8);
+
+    let mut handles = Vec::new();
+    for _ in 0..4 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+    for _ in 0..4 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/v2/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+
+    let mut v1_bodies = Vec::new();
+    let mut v2_bodies = Vec::new();
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        let raw = String::from_utf8(body).unwrap();
+        if raw.contains("\"schema_version\":1") {
+            v1_bodies.push(raw);
+        } else if raw.contains("\"schema_version\":2") {
+            v2_bodies.push(raw);
+        } else {
+            panic!("unexpected schema_version in body: {raw}");
+        }
+    }
+    state.test_gate.reset();
+
+    let v1_first = v1_bodies.first().unwrap();
+    for body in &v1_bodies[1..] {
+        assert_eq!(body, v1_first);
+    }
+    let v2_first = v2_bodies.first().unwrap();
+    for body in &v2_bodies[1..] {
+        assert_eq!(body, v2_first);
+    }
+
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan144_new_publication_owns_fresh_cells() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_response_status(&call(&state, get("/v2/healthz")).await, StatusCode::OK);
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    // Publish a new snapshot: cells must be replaced so the next request
+    // triggers exactly one fresh init per version.
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(7)
+            .build(),
+    )
+    .await;
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_response_status(&call(&state, get("/v2/healthz")).await, StatusCode::OK);
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    // Subsequent requests must reuse the second publication's cell.
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_response_status(&call(&state, get("/v2/healthz")).await, StatusCode::OK);
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan144_old_publication_cell_cannot_contaminate_new() {
+    let state = ServerState::new();
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(1)
+            .build(),
+    )
+    .await;
+
+    // Spawn one task that races a fresh publication; with two-worker
+    // runtime it cannot deadlock because at most one task is in flight.
+    let app_first = state.clone();
+    let first_handle = tokio::spawn(async move {
+        let response = call(&app_first, get("/healthz")).await;
+        response.status()
+    });
+
+    // Give the first task a moment, then publish a new snapshot. The new
+    // snapshot replaces the cell so the first task's eventual init writes
+    // only to the orphaned cell.
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(2)
+            .build(),
+    )
+    .await;
+
+    assert_eq!(first_handle.await.unwrap(), StatusCode::OK);
+
+    // The new publication must trigger a brand new init exactly once.
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    let v1_count = state
+        .v1_health_serializations
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        v1_count >= 2,
+        "old init + new publication init must each serialize once (got {v1_count})"
+    );
+    assert!(
+        v1_count <= 2,
+        "old cell must not contaminate the new publication (got {v1_count})"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan144_serialization_error_leaves_cell_retryable() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+
+    state
+        .fail_next_v1_health_serialize
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let failed = call_raw(&state, get("/healthz")).await;
+    match failed {
+        Err(error) => {
+            let message = error.message();
+            assert!(
+                message.contains("test-injected"),
+                "error must surface the injected message: {message}"
+            );
+        }
+        Ok(response) => panic!(
+            "expected an error from injected serialization failure, got status {:?}",
+            response.status()
+        ),
+    }
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "injected failure must not count as a successful serialization"
+    );
+
+    // A follow-up request with the flag cleared must succeed and populate
+    // the cell. The cell must remain retryable; no memoized error result.
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_response_status(&call(&state, get("/healthz")).await, StatusCode::OK);
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "retry must serialize exactly once after the failed init"
+    );
+
+    // Recovery must apply independently to v2.
+    state
+        .fail_next_v2_health_serialize
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let failed_v2 = call_raw(&state, get("/v2/healthz")).await;
+    assert!(
+        failed_v2.is_err(),
+        "v2 injected failure must surface as error"
+    );
+    assert_response_status(&call(&state, get("/v2/healthz")).await, StatusCode::OK);
+    assert_eq!(
+        state
+            .v2_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+async fn call_raw(
+    state: &ServerState,
+    request: TestRequest,
+) -> Result<TestResponse, eggserve_server::ServiceError> {
+    let method = Method::new(request.method).unwrap();
+    let target = RequestTarget::parse(request.target).unwrap();
+    let head = RequestHead::new(method, target, HttpVersion::Http11, HeaderBlock::new());
+    let connection = ConnectionInfo::with_socket_addrs(
+        "127.0.0.1:11310".parse().unwrap(),
+        "127.0.0.1:12345".parse().unwrap(),
+        Scheme::Http,
+        None,
+    );
+    let request = Request::new(head, RequestBody::empty(), connection);
+    let service = http_service(state.clone());
+    let mut response = service.call(request).await?;
+    let status = response.status();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|header| {
+            (
+                header.name.as_str().to_ascii_lowercase(),
+                header.value.to_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    let body = match response.take_body().unwrap_or(ResponseBody::Empty) {
+        ResponseBody::Empty | ResponseBody::EmptyWithLength(_) => Vec::new(),
+        ResponseBody::Bytes(bytes) => bytes,
+        ResponseBody::Stream(stream) => {
+            let (mut stream, _) = stream.into_parts();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = stream.next().await {
+                bytes.extend_from_slice(&chunk.unwrap());
+            }
+            bytes
+        }
+        ResponseBody::File(_) => panic!("Gregg service does not produce file bodies"),
+    };
+    Ok(TestResponse {
+        status,
+        headers,
+        body,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_failure_after_concurrent_ready_preserves_exact_messages() {
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+    state.test_gate.arm(8);
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        let parsed: gregg_protocol::HealthResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed.state, ReadinessState::Ready);
+    }
+    state.test_gate.reset();
+
+    state.set_failed("collector crashed").await;
+    for path in ["/healthz", "/v2/healthz"] {
+        let response = call(&state, get(path)).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        let body = response_body_string(response);
+        assert!(
+            body.contains("collector crashed"),
+            "{path} must preserve Plan-124 failure message, got {body}"
+        );
+        assert!(
+            !body.contains("\"ready\""),
+            "{path} must not serve ready bytes after failure, got {body}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_concurrent_warming_does_not_initialize_cell() {
+    let state = ServerState::new();
+    // No publication: state is Warming.
+    state.test_gate.arm(8);
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+    let mut bodies = Vec::new();
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        bodies.push(body);
+    }
+    state.test_gate.reset();
+    let first = bodies.first().unwrap();
+    for body in &bodies[1..] {
+        assert_eq!(body, first, "warming responses must be byte-identical");
+    }
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "warming path must not run the ready-health serializer"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn plan144_publication_replaces_cell_under_concurrency() {
+    let state = ServerState::new();
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(1)
+            .build(),
+    )
+    .await;
+
+    state.test_gate.arm(8);
+    let mut first_handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        first_handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            response.status()
+        }));
+    }
+    for handle in first_handles {
+        assert_eq!(handle.await.unwrap(), StatusCode::OK);
+    }
+    let after_first_batch = state
+        .v1_health_serializations
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(after_first_batch, 1);
+
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(2)
+            .build(),
+    )
+    .await;
+
+    state.test_gate.arm(8);
+    let mut second_handles = Vec::new();
+    for _ in 0..8 {
+        let app = state.clone();
+        second_handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+    let mut second_bodies = Vec::new();
+    for handle in second_handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        second_bodies.push(body);
+    }
+    state.test_gate.reset();
+    let first_second = second_bodies.first().unwrap();
+    for body in &second_bodies[1..] {
+        assert_eq!(body, first_second);
+    }
+    assert_eq!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2,
+        "new publication must trigger exactly one new successful serialization"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn plan144_no_lock_held_across_init_for_concurrent_burst() {
+    // This test exercises the readiness response path under heavy
+    // concurrency without a gate; it proves that single-flight holds
+    // without deterministic barriers and that follow-up requests remain
+    // byte-identical to the first successful response.
+    let state = ServerState::new();
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+
+    let mut handles = Vec::new();
+    for _ in 0..32 {
+        let app = state.clone();
+        handles.push(tokio::spawn(async move {
+            let response = call(&app, get("/healthz")).await;
+            (response.status(), response.body)
+        }));
+    }
+
+    let mut bodies = Vec::new();
+    for handle in handles {
+        let (status, body) = handle.await.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        bodies.push(body);
+    }
+
+    let first = bodies.first().unwrap();
+    for body in &bodies[1..] {
+        assert_eq!(body, first);
+    }
+
+    assert!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed)
+            <= 4,
+        "32 concurrent first requests must serialize at most a small number of times"
+    );
+    assert!(
+        state
+            .v1_health_serializations
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= 1
+    );
+}

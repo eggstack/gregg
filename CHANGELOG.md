@@ -104,6 +104,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   publication and served from shared immutable bytes while staleness and
   health decisions remain request-time.
 
+- **Ready-health single-flight memoization** (`greggd`, Plan 144): the
+  Plan-139 per-publication ready-health memo now uses
+  `Arc<tokio::sync::OnceCell<Bytes>>` instead of `Option<Bytes>`, so
+  concurrent first requests serialize the ready-health body exactly once
+  per immutable publication (previously up to N serializations for N
+  concurrent first requests). The `PublishedState` read guard is dropped
+  before the cell is initialized, a failed serialization leaves the cell
+  retryable rather than memoizing the error, fresh cells replace any
+  prior cell on every publication/warming/failure transition, and an
+  in-flight old-publication init cannot populate the new publication's
+  cell. Plan-124 stale/failure envelope, `BorrowedReadyHealthV1`/`V2`,
+  Plan-123 status caching, public `ServerState` API, and `EggServe`
+  runtime policy are unchanged. No protocol, route, or wire change.
+
 ### Fixed
 
 - **macOS route-message parser correction (Plan 129):** the `NET_RT_IFLIST2`

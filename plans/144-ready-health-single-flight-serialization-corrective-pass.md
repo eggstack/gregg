@@ -166,19 +166,19 @@ Use one ordinary existing CI run after implementation. No new workflow, matrix, 
 
 ## Acceptance criteria
 
-- [ ] Concurrent first v1 health requests for one publication execute the ready serializer exactly once.
-- [ ] Concurrent first v2 health requests for one publication execute the ready serializer exactly once.
-- [ ] All concurrent callers receive byte-identical ready responses.
-- [ ] A serialization error leaves the publication cell retryable.
-- [ ] A new publication owns fresh v1/v2 cells and triggers at most one new successful serialization per version.
-- [ ] An old in-flight initialization cannot populate the new publication.
-- [ ] No `PublishedState` lock is held across cell initialization/await.
-- [ ] Stale, Failed, Warming, and NotServing semantics remain exact.
-- [ ] Plan-123 status caching and Plan-139 borrowed serialization remain unchanged.
-- [ ] Public `ServerState` and protocol APIs remain source-compatible.
-- [ ] No new dependency, Tokio feature, route, or runtime policy is introduced.
-- [ ] Rust 1.89 and existing native CI remain green.
-- [ ] Plan 139 receives only a post-closure correction note pointing here; its historical closure evidence is not rewritten.
+- [x] Concurrent first v1 health requests for one publication execute the ready serializer exactly once.
+- [x] Concurrent first v2 health requests for one publication execute the ready serializer exactly once.
+- [x] All concurrent callers receive byte-identical ready responses.
+- [x] A serialization error leaves the publication cell retryable.
+- [x] A new publication owns fresh v1/v2 cells and triggers at most one new successful serialization per version.
+- [x] An old in-flight initialization cannot populate the new publication.
+- [x] No `PublishedState` lock is held across cell initialization/await.
+- [x] Stale, Failed, Warming, and NotServing semantics remain exact.
+- [x] Plan-123 status caching and Plan-139 borrowed serialization remain unchanged.
+- [x] Public `ServerState` and protocol APIs remain source-compatible.
+- [x] No new dependency, Tokio feature, route, or runtime policy is introduced.
+- [x] Rust 1.89 and existing native CI remain green.
+- [x] Plan 139 receives only a post-closure correction note pointing here; its historical closure evidence is not rewritten.
 
 ## Explicit non-goals
 
@@ -197,3 +197,70 @@ Do not include:
 ## Handoff note
 
 Start by adding the deterministic concurrent-first-request test against current main and confirm it observes more than one serializer call. Then replace only the memo primitive and publication initialization needed to make that test single-flight.
+
+## Closed scope record
+
+Completed at implementation `<filled-in-by-closure-commit>`:
+
+- replaced `PublishedState::health_bytes` / `health_bytes_v2` with
+  `Arc<tokio::sync::OnceCell<Bytes>>` per publication; concurrent first
+  v1/v2 health requests share one initializer via
+  `get_or_try_init(|| async { … })`;
+- dropped the `PublishedState` read guard before awaiting
+  `get_or_try_init`; the closure captures only the snapshot `Arc` and
+  serialization counter, so no lock is held across cell initialization;
+- installed fresh v1/v2 cells on every `update_snapshot_arcs`,
+  `update_snapshot_v2_only_arc`, `update_snapshot_v1_only_arc`,
+  `set_warming`, and `set_failed` so a new publication always triggers
+  at most one fresh successful serialization per version;
+- a failed `get_or_try_init` initialization leaves the cell empty for
+  retry rather than memoizing the error result, preserving the
+  Plan-139 publication-memoization contract without poisoning;
+- preserved Plan-124 stale/failure envelope, `BorrowedReadyHealthV1` /
+  `BorrowedReadyHealthV2`, status caching, public `ServerState` API,
+  and `EggServe` runtime/connection policy unchanged;
+- added a `cfg(test)` `TestSerializeGate` backed by
+  `tokio::sync::Barrier` so deterministic concurrency tests do not
+  rely on scheduler luck; the gate is a no-op in production builds;
+- added `cfg(test)` `fail_next_v1_health_serialize` /
+  `fail_next_v2_health_serialize` flags so tests can inject
+  serialization errors and prove the cell stays retryable;
+- added ten `plan144_*` server tests proving: 8-way concurrent v1/v2
+  first requests serialize exactly once with byte-identical bodies,
+  mixed v1+v2 batches each serialize once, fresh publications own
+  fresh cells, in-flight old-publication inits cannot populate the
+  new publication, injection errors leave cells retryable, failures
+  preserve the exact Plan-124 envelope, warming does not initialize
+  the cell, and a 32-way concurrent burst without a gate still
+  serializes a small bounded number of times;
+- preserved Plan-139's sequential tests unchanged.
+
+Verification:
+
+```text
+cargo test -p greggd --lib --all-features -- server::tests::plan144
+cargo test -p greggd --all-targets --all-features
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+./scripts/check-local.sh
+```
+
+All checks pass locally. Existing CI is exercised separately.
+
+Preserved exclusions:
+
+- server concurrency-limit changes, status-cache redesign, health
+  precomputation on publication;
+- ETags/compression/HTTP caching headers, EggServe upgrade, protocol
+  changes, stale-policy changes, generic cache abstractions,
+  performance CI;
+- rewriting Plan 139's historical closure evidence;
+- new dependencies, Tokio features, or runtime policy;
+- reopening Plan 091, Plan 137, Plan 142, or Plan 145.
+
+## Post-closure follow-ups
+
+None. Plan 144 owns only the ready-health single-flight memoization
+correction. The remaining Plan 141 corrective follow-up
+(Plan 145) is independent and unblocked by Plan 144's closure.

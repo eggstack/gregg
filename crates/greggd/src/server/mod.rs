@@ -13,6 +13,8 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -33,6 +35,18 @@ use tracing::info;
 use crate::server::error::{ServerConfigError, ServerError};
 
 pub mod error;
+
+/// Plan 144: one ready-health memo cell per immutable publication.
+///
+/// Each new v1/v2 publication installs a fresh `OnceCell`. Concurrent first
+/// requests coordinate through `get_or_try_init`, so the ready-health
+/// serializer runs at most once per cell. A failed initialization leaves the
+/// cell empty so later requests can retry without poisoning the publication.
+type HealthMemoCell = Arc<tokio::sync::OnceCell<Bytes>>;
+
+fn fresh_health_cell() -> HealthMemoCell {
+    Arc::new(tokio::sync::OnceCell::new())
+}
 
 const V1_UNAVAILABLE_MESSAGE: &str = "schema v1 status is unavailable on this platform";
 const MAX_REQUEST_BODY_BYTES: u64 = 64 * 1024;
@@ -143,6 +157,14 @@ pub struct ServerState {
     v2_health_serializations: Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     fallback_bodies_built: Arc<std::sync::atomic::AtomicUsize>,
+    #[cfg(test)]
+    fail_next_v1_health_serialize: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    fail_next_v2_health_serialize: Arc<std::sync::atomic::AtomicBool>,
+    /// Plan 144: deterministic concurrent-first-request gate for tests.
+    /// In production builds this is absent and the request path is unchanged.
+    #[cfg(test)]
+    test_gate: Arc<TestSerializeGate>,
 }
 
 #[derive(Debug)]
@@ -151,12 +173,13 @@ struct PublishedState {
     snapshot_v2: Option<Arc<StatusPayloadV2>>,
     status_bytes: Option<Bytes>,
     status_bytes_v2: Option<Bytes>,
-    /// Plan 139: ready-health bodies memoized per immutable publication.
-    /// Valid only while `health`/`health_v2` remains `Ready` and the snapshot
-    /// is fresh at request time. Cleared on every new publication, warming,
-    /// or failure transition so stale/failed responses stay dynamic.
-    health_bytes: Option<Bytes>,
-    health_bytes_v2: Option<Bytes>,
+    /// Plan 144: per-publication single-flight memo for the v1 ready-health
+    /// body. Replaced on every new publication; a failed or in-flight init
+    /// does not poison or contaminate the next publication's cell.
+    health_cell: HealthMemoCell,
+    /// Plan 144: per-publication single-flight memo for the v2 ready-health
+    /// body. Mirrors [`Self::health_cell`].
+    health_cell_v2: HealthMemoCell,
     last_observed_at_unix_ms: Option<u64>,
     health: HealthMetadata,
     health_v2: HealthMetadata,
@@ -357,8 +380,8 @@ impl ServerState {
                 snapshot_v2: None,
                 status_bytes: None,
                 status_bytes_v2: None,
-                health_bytes: None,
-                health_bytes_v2: None,
+                health_cell: fresh_health_cell(),
+                health_cell_v2: fresh_health_cell(),
                 last_observed_at_unix_ms: None,
                 health: HealthMetadata::warming(),
                 health_v2: HealthMetadata::warming(),
@@ -376,6 +399,12 @@ impl ServerState {
             v2_health_serializations: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             fallback_bodies_built: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            #[cfg(test)]
+            fail_next_v1_health_serialize: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            fail_next_v2_health_serialize: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            #[cfg(test)]
+            test_gate: Arc::new(TestSerializeGate::new()),
         }
     }
 
@@ -401,8 +430,18 @@ impl ServerState {
         snapshot: &StatusSnapshot,
     ) -> Result<Bytes, serde_json::Error> {
         #[cfg(test)]
-        self.v1_health_serializations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            if self
+                .fail_next_v1_health_serialize
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(serde_json::Error::io(std::io::Error::other(
+                    "test-injected v1 health serialization failure",
+                )));
+            }
+            self.v1_health_serializations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         serialize_ready_health_borrowed(snapshot)
     }
 
@@ -412,8 +451,18 @@ impl ServerState {
         snapshot: &StatusSnapshotV2,
     ) -> Result<Bytes, serde_json::Error> {
         #[cfg(test)]
-        self.v2_health_serializations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        {
+            if self
+                .fail_next_v2_health_serialize
+                .swap(false, std::sync::atomic::Ordering::Relaxed)
+            {
+                return Err(serde_json::Error::io(std::io::Error::other(
+                    "test-injected v2 health serialization failure",
+                )));
+            }
+            self.v2_health_serializations
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         serialize_ready_health_v2_borrowed(snapshot)
     }
 
@@ -440,8 +489,10 @@ impl ServerState {
         state.snapshot_v2 = Some(payload_v2);
         state.status_bytes = status_bytes;
         state.status_bytes_v2 = status_bytes_v2;
-        state.health_bytes = None;
-        state.health_bytes_v2 = None;
+        // Plan 144: install fresh single-flight cells so an old in-flight
+        // init cannot populate the new publication's memo.
+        state.health_cell = fresh_health_cell();
+        state.health_cell_v2 = fresh_health_cell();
         state.health = HealthMetadata::ready();
         state.health_v2 = HealthMetadata::ready();
         state.last_observed_at_unix_ms = Some(observed_at_unix_ms);
@@ -464,8 +515,8 @@ impl ServerState {
         state.snapshot_v2 = Some(payload_v2);
         state.status_bytes = None;
         state.status_bytes_v2 = status_bytes_v2;
-        state.health_bytes = None;
-        state.health_bytes_v2 = None;
+        state.health_cell = fresh_health_cell();
+        state.health_cell_v2 = fresh_health_cell();
         state.health = HealthMetadata::failed(
             gregg_protocol::HealthCategory::NotServing,
             V1_UNAVAILABLE_MESSAGE,
@@ -492,8 +543,8 @@ impl ServerState {
         state.snapshot_v2 = None;
         state.status_bytes = status_bytes;
         state.status_bytes_v2 = None;
-        state.health_bytes = None;
-        state.health_bytes_v2 = None;
+        state.health_cell = fresh_health_cell();
+        state.health_cell_v2 = fresh_health_cell();
         state.health = HealthMetadata::ready();
         state.health_v2 = HealthMetadata::failed(
             gregg_protocol::HealthCategory::NotServing,
@@ -510,8 +561,8 @@ impl ServerState {
         state.snapshot_v2 = None;
         state.status_bytes = None;
         state.status_bytes_v2 = None;
-        state.health_bytes = None;
-        state.health_bytes_v2 = None;
+        state.health_cell = fresh_health_cell();
+        state.health_cell_v2 = fresh_health_cell();
         state.last_observed_at_unix_ms = None;
         state.health = HealthMetadata::warming();
         state.health_v2 = HealthMetadata::warming();
@@ -537,8 +588,8 @@ impl ServerState {
         // Ready-health memos must not survive a failure transition; the
         // next ready publication rebuilds them. NotServing memos are never
         // cached, so clearing unconditionally is exact.
-        state.health_bytes = None;
-        state.health_bytes_v2 = None;
+        state.health_cell = fresh_health_cell();
+        state.health_cell_v2 = fresh_health_cell();
         // Snapshot is deliberately NOT cleared here. The stale-snapshot
         // policy in the status handler decides whether to serve it.
         tracing::debug!(
@@ -584,8 +635,9 @@ impl ServerState {
         StatusDataV2::Unavailable(Box::new(state.health_v2.v2_response(None)))
     }
 
-    /// Plan 139: ready-health fast path returning cached bytes when the
-    /// publication is Ready and fresh, otherwise a dynamic body.
+    /// Plan 144: ready-health fast path using a per-publication single-flight
+    /// cell. Concurrent first requests coordinate through `OnceCell`, so the
+    /// ready-health serializer runs at most once per immutable publication.
     ///
     /// Returns the body plus whether it was served from the per-publication
     /// memo (used only by tests via serialization counters).
@@ -593,7 +645,12 @@ impl ServerState {
         &self,
         now_unix_ms: Option<u64>,
     ) -> Result<(Bytes, StatusCode), ServiceError> {
-        let (snapshot, cached, state_is_ready, snapshot_is_stale) = {
+        // Plan 144: deterministic concurrency gate for tests. No-op in
+        // production builds.
+        #[cfg(test)]
+        self.test_gate.arrive().await;
+
+        let (snapshot, cell) = {
             let published = self.published.read().await;
             let snapshot_stale = self.is_stale(&published, now_unix_ms);
             let ready = published.health.state == ReadinessState::Ready;
@@ -619,43 +676,34 @@ impl ServerState {
                 let body = serialize_health(&health)?;
                 return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
             };
-            (
-                snapshot,
-                published.health_bytes.clone(),
-                ready,
-                snapshot_stale,
-            )
+            (snapshot, Arc::clone(&published.health_cell))
         };
-        debug_assert!(state_is_ready && !snapshot_is_stale);
-        if let Some(body) = cached {
-            return Ok((body, StatusCode::OK));
+
+        // Plan 144: per-publication single-flight memoization. The read
+        // guard above is dropped before awaiting the cell, so concurrent
+        // tasks cannot serialize the same snapshot more than once even if
+        // they all observe an empty cell. A failed init leaves the cell
+        // empty so later requests can retry.
+        if let Some(body) = cell.get() {
+            return Ok((body.clone(), StatusCode::OK));
         }
-        let body = self
-            .serialize_v1_ready_health(&snapshot)
-            .map_err(|error| ServiceError::internal(error.to_string()))?;
-        // Publish the memo only if the same immutable snapshot is still
-        // current and still Ready; otherwise serve without polluting the
-        // newer generation.
-        {
-            let mut state = self.published.write().await;
-            let still_current = state
-                .snapshot
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &snapshot))
-                && state.health.state == ReadinessState::Ready;
-            if still_current && state.health_bytes.is_none() {
-                state.health_bytes = Some(body.clone());
-            }
-        }
+        let body = cell
+            .get_or_try_init(|| async { self.serialize_v1_ready_health(&snapshot) })
+            .await
+            .map_err(|error| ServiceError::internal(error.to_string()))?
+            .clone();
         Ok((body, StatusCode::OK))
     }
 
-    /// Plan 139: v2 ready-health fast path, mirroring [`Self::v1_health_cached`].
+    /// Plan 144: v2 ready-health fast path, mirroring [`Self::v1_health_cached`].
     async fn v2_health_cached(
         &self,
         now_unix_ms: Option<u64>,
     ) -> Result<(Bytes, StatusCode), ServiceError> {
-        let (snapshot_v2, cached, state_is_ready, snapshot_is_stale) = {
+        #[cfg(test)]
+        self.test_gate.arrive().await;
+
+        let (snapshot_v2, cell) = {
             let published = self.published.read().await;
             let snapshot_stale = self.is_stale(&published, now_unix_ms);
             let ready = published.health_v2.state == ReadinessState::Ready;
@@ -686,31 +734,17 @@ impl ServerState {
                 let body = serialize_health_v2(&health)?;
                 return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
             };
-            (
-                snapshot_v2,
-                published.health_bytes_v2.clone(),
-                ready,
-                snapshot_stale,
-            )
+            (snapshot_v2, Arc::clone(&published.health_cell_v2))
         };
-        debug_assert!(state_is_ready && !snapshot_is_stale);
-        if let Some(body) = cached {
-            return Ok((body, StatusCode::OK));
+
+        if let Some(body) = cell.get() {
+            return Ok((body.clone(), StatusCode::OK));
         }
-        let body = self
-            .serialize_v2_ready_health(&snapshot_v2.snapshot)
-            .map_err(|error| ServiceError::internal(error.to_string()))?;
-        {
-            let mut state = self.published.write().await;
-            let still_current = state
-                .snapshot_v2
-                .as_ref()
-                .is_some_and(|current| Arc::ptr_eq(current, &snapshot_v2))
-                && state.health_v2.state == ReadinessState::Ready;
-            if still_current && state.health_bytes_v2.is_none() {
-                state.health_bytes_v2 = Some(body.clone());
-            }
-        }
+        let body = cell
+            .get_or_try_init(|| async { self.serialize_v2_ready_health(&snapshot_v2.snapshot) })
+            .await
+            .map_err(|error| ServiceError::internal(error.to_string()))?
+            .clone();
         Ok((body, StatusCode::OK))
     }
 
@@ -965,3 +999,56 @@ fn serialize_health_v2(health: &HealthResponseV2) -> Result<Bytes, ServiceError>
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[derive(Debug)]
+struct TestSerializeGate {
+    /// `Some(barrier)` when armed: `Barrier::wait()` blocks until N tasks
+    /// have arrived, then releases them all simultaneously. `None` when
+    /// disarmed so the request path is a no-op.
+    barrier: StdMutex<Option<Arc<tokio::sync::Barrier>>>,
+}
+
+#[cfg(test)]
+impl TestSerializeGate {
+    fn new() -> Self {
+        Self {
+            barrier: StdMutex::new(None),
+        }
+    }
+
+    /// Arm the gate for `target` participants. Subsequent request calls
+    /// block until `target` of them have reached the gate.
+    fn arm(&self, target: usize) {
+        let mut guard = self
+            .barrier
+            .lock()
+            .expect("TestSerializeGate mutex poisoned");
+        *guard = Some(Arc::new(tokio::sync::Barrier::new(target)));
+    }
+
+    /// Disarm the gate so the request path is no-op.
+    fn reset(&self) {
+        let mut guard = self
+            .barrier
+            .lock()
+            .expect("TestSerializeGate mutex poisoned");
+        *guard = None;
+    }
+
+    /// Wait at the gate if armed. Each task clones the `Arc<Barrier>` under
+    /// the mutex, then calls `wait()` without holding the lock so concurrent
+    /// arrivals are not serialized.
+    async fn arrive(&self) {
+        let barrier = {
+            let guard = self
+                .barrier
+                .lock()
+                .expect("TestSerializeGate mutex poisoned");
+            guard.clone()
+        };
+        if let Some(barrier) = barrier {
+            barrier.wait().await;
+        }
+    }
+}
