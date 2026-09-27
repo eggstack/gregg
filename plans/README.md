@@ -284,9 +284,19 @@ guard before awaiting `get_or_try_init`, installs fresh cells on every
 publication/warming/failure transition, preserves retry-after-serialization-error
 semantics, and proves eight-way concurrent v1/v2 first requests serialize
 exactly once with byte-identical bodies through a `cfg(test)` `Barrier`-backed
-deterministic gate. Plan 145 (Linux CPUFreq online-membership freshness) is
-the only remaining corrective follow-up after Plans 138-143; it is independent
-of Plan 144 and of the remaining Plan 091 soak record.
+deterministic gate.
+
+Plan 145 is complete at implementation `e7f6256`: it replaces the
+Plan-141 cached `affected_cpus` weights with structural `related_cpus`
+identity sets per policy, reads the global
+`/sys/devices/system/cpu/online` set once per sample to drive cached-policy
+live weights, fails closed to the pre-Plan-141 live membership path when
+the global online source is unreadable, and proves same-cardinality
+online membership swaps change the weighted average immediately while
+steady-state structural reads stay flat. The Plan 141 closure record is
+preserved; its tests are updated to the new fixture shape (online +
+`related_cpus`). Plans 144-145 are independent of the remaining Plan 091
+soak record and of each other.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -429,7 +439,7 @@ excluded.
 | [`142-persistent-native-sampler-worker-experiment.md`](142-persistent-native-sampler-worker-experiment.md) | Compare per-tick spawn_blocking against a dedicated collector worker under strict lifecycle/panic/shutdown gates | complete with RETAIN SPAWN_BLOCKING; implementation `83df89e` (test-only, zero production diff); depends on 141; campaign CI `36261210288` (see Plan 138) |
 | [`143-tui-state-noop-and-cross-render-optimization.md`](143-tui-state-noop-and-cross-render-optimization.md) | Suppress provable no-op redraws and reuse condensed/aggregate render preparation across unchanged frames | complete; implementation `83df89e` (+ fix `e9ca180` docs-clean); campaign CI `36261210288` (see Plan 138) |
 | [`144-ready-health-single-flight-serialization-corrective-pass.md`](144-ready-health-single-flight-serialization-corrective-pass.md) | Make Plan-139 ready-health memoization truly single-flight under concurrent first requests while preserving retry/stale/failure semantics | complete at `808f44e`; per-publication `Arc<tokio::sync::OnceCell<Bytes>>` cells with dropped-guard `get_or_try_init` and deterministic concurrent-first-request gate |
-| [`145-linux-cpufreq-online-membership-freshness-corrective-pass.md`](145-linux-cpufreq-online-membership-freshness-corrective-pass.md) | Make Plan-141 CPUFreq policy weighting respond to same-cardinality online CPU membership changes without restoring steady per-policy dynamic reads | planned; post-closure corrective follow-up to 141; independent of 091 and 144 |
+| [`145-linux-cpufreq-online-membership-freshness-corrective-pass.md`](145-linux-cpufreq-online-membership-freshness-corrective-pass.md) | Make Plan-141 CPUFreq policy weighting respond to same-cardinality online CPU membership changes without restoring steady per-policy dynamic reads | complete at `e7f6256`; structural `related_cpus` cache + live `cpu/online` reads with fail-closed legacy fallback; preserves Plan-141 topology-change behavior |
 
 Dependency order:
 

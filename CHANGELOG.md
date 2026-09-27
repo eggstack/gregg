@@ -118,6 +118,23 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   Plan-123 status caching, public `ServerState` API, and `EggServe`
   runtime policy are unchanged. No protocol, route, or wire change.
 
+- **Linux CPUFreq online-membership freshness** (`gregg-host`, Plan 145):
+  the Plan-141 `affected_cpus` weight cache now stores structural
+  `related_cpus` identity sets per policy, refreshed only when the
+  policy directory set changes. Each sample reads the global
+  `/sys/devices/system/cpu/online` set once and intersects it with each
+  cached `related_cpus` to derive the live policy weight, so
+  same-cardinality online membership swaps and zero-online policies are
+  visible immediately without re-reading structural membership files.
+  The global online source fails closed to the pre-Plan-141 live
+  `affected_cpus -> related_cpus` path when unreadable or malformed, and
+  the same legacy fallback is used per-policy when one policy's
+  `related_cpus` cannot be read/parsed. Plan-141 topology-change
+  behavior, current-frequency live reads, public `ProcSource` API,
+  macOS/Windows/FreeBSD collectors, protocol/capability surfaces, and
+  Rust 1.89 MSRV are unchanged. No new dependencies, no arbitrary TTL
+  or periodic refresh, no protocol or wire change.
+
 ### Fixed
 
 - **macOS route-message parser correction (Plan 129):** the `NET_RT_IFLIST2`

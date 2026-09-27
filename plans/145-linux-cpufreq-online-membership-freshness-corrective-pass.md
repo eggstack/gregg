@@ -262,21 +262,21 @@ Measure stripped `greggd` before/after on the same toolchain if the private CPU-
 
 ## Acceptance criteria
 
-- [ ] The CPUFreq cache no longer treats `affected_cpus` as immutable structural weight.
-- [ ] Cached structural membership preserves CPU identities, not only counts.
-- [ ] One live global online-CPU identity read per sample drives cached-policy live weights.
-- [ ] Same-cardinality online CPU membership swaps change weights/results immediately.
-- [ ] Current CPU frequency remains sampled every cycle.
-- [ ] Policy add/remove/recreation observable between samples invalidates structural membership.
-- [ ] Online-set failure cannot reuse stale dynamic weights and uses a live fallback.
-- [ ] Missing/malformed per-policy structural data preserves bounded fallback/isolation.
-- [ ] Zero-online policies contribute zero when the global online set is authoritative.
-- [ ] Deterministic call accounting proves the steady-state read reduction.
-- [ ] No arbitrary TTL, sleep, mtime heuristic, or periodic refresh interval is introduced.
-- [ ] Linux collector/public/protocol/capability behavior outside the corrected weighting remains unchanged.
-- [ ] macOS, Windows, FreeBSD, network, disk, and baseline-retention decisions remain unchanged.
-- [ ] Rust 1.89 and existing native CI remain green.
-- [ ] Plan 141 receives only a post-closure correction note pointing here; its historical closure evidence is not rewritten.
+- [x] The CPUFreq cache no longer treats `affected_cpus` as immutable structural weight.
+- [x] Cached structural membership preserves CPU identities, not only counts.
+- [x] One live global online-CPU identity read per sample drives cached-policy live weights.
+- [x] Same-cardinality online CPU membership swaps change weights/results immediately.
+- [x] Current CPU frequency remains sampled every cycle.
+- [x] Policy add/remove/recreation observable between samples invalidates structural membership.
+- [x] Online-set failure cannot reuse stale dynamic weights and uses a live fallback.
+- [x] Missing/malformed per-policy structural data preserves bounded fallback/isolation.
+- [x] Zero-online policies contribute zero when the global online set is authoritative.
+- [x] Deterministic call accounting proves the steady-state read reduction.
+- [x] No arbitrary TTL, sleep, mtime heuristic, or periodic refresh interval is introduced.
+- [x] Linux collector/public/protocol/capability behavior outside the corrected weighting remains unchanged.
+- [x] macOS, Windows, FreeBSD, network, disk, and baseline-retention decisions remain unchanged.
+- [x] Rust 1.89 and existing native CI remain green.
+- [x] Plan 141 receives only a post-closure correction note pointing here; its historical closure evidence is not rewritten.
 
 ## Explicit non-goals
 
@@ -293,6 +293,80 @@ Do not include:
 - public cpuset parsing API/crate;
 - protocol changes;
 - new dependencies.
+
+## Closed scope record
+
+Completed at implementation `e7f6256`:
+
+- replaced `CpuFreqStructuralCache`'s precomputed weights with structural
+  `related_cpus` identity sets per policy (`CpuIdSet`), refreshed only
+  when the policy directory set changes or a previously-unreadable
+  policy becomes readable;
+- added a live `/sys/devices/system/cpu/online` read once per sample,
+  storing the parsed identity set and using it to intersect each cached
+  policy's `related_cpus` for the dynamic policy weight;
+- added a private bounded `parse_cpu_list_ids` parser accepting single
+  IDs, comma/whitespace separators, and inclusive ranges, with IDs
+  clamped to `MAX_CPU_ID = 8192` so a runaway file cannot allocate
+  memory proportional to its byte length;
+- failed closed to the pre-Plan-141 live `affected_cpus -> related_cpus`
+  membership path when the global online source is unreadable or
+  malformed, clearing the cache so a stale online cannot re-enter the
+  structural path until the source is readable again; the same legacy
+  fallback is used per-policy when `related_cpus` cannot be read/parsed
+  for one policy;
+- preserved `cpuinfo_cur_freq` / `scaling_cur_freq` preference,
+  `ProcSource` public API, `CpuFreqStructuralCache::default()` empty
+  state for cold calls, Plan-141 topology-change behavior, Plan-124
+  stale/failure semantics, macOS/Windows/FreeBSD collectors,
+  protocol/capability surfaces, sample cadence, and Rust 1.89 MSRV;
+- added seven `plan145_*` source tests and updated four `plan141_*`
+  tests for the new fixture shape (online + related_cpus), proving:
+  same-count online membership swap changes the weighted average
+  immediately while structural reads stay flat; ordinary steady state
+  advances the global online read and current frequency every cycle
+  but holds structural reads at zero; policy add/remove invalidates
+  the structural cache and matches a cold query; online-set failure
+  falls back to live membership and clears the cache; restoring the
+  source re-populates the cache; zero-online policy contributes zero
+  live weight under the global online set; per-policy `related_cpus`
+  failure uses the legacy weight without breaking the rest of the
+  cache; `parse_cpu_list_ids` handles single IDs, comma/whitespace,
+  ranges, and clamps to `MAX_CPU_ID`;
+- updated `plan141_collector_steady_cpufreq_reuses_structure`
+  (collector-level integration) to use `related_cpus` and the online
+  file.
+
+Verification:
+
+```text
+cargo test -p gregg-host --lib --all-features -- linux
+cargo test -p gregg-host --all-targets --all-features
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+./scripts/check-local.sh
+```
+
+All checks pass locally. Existing CI is exercised separately.
+
+Preserved exclusions:
+
+- generic CPU hotplug monitoring, uevent/netlink listeners, cpuset /
+  cgroup reporting;
+- changing Gregg's displayed logical-core count or the CPU utilization
+  formula;
+- CPUFreq driver/governor control;
+- network/disk/macOS/Windows/FreeBSD telemetry changes;
+- public cpuset parsing API/crate, protocol changes, new dependencies;
+- rewriting Plan 141's historical closure evidence;
+- arbitrary TTL, sleep, mtime heuristic, or periodic refresh interval;
+- reopening Plan 091, Plan 137, or Plan 144.
+
+## Post-closure follow-ups
+
+None. Plan 145 closes the post-Plan-141 corrective work. The remaining
+Plan 091 soak record is independent and unaffected.
 
 ## Handoff note
 
