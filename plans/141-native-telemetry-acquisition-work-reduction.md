@@ -245,3 +245,8 @@ keeps its temporary `HashSet<&str>` per family/sample. After the
 above I/O reduction the remaining allocation is negligible for small
 interface/device counts versus native I/O, and a generation-mark
 rewrite would add state for no meaningful benefit.
+
+
+## Post-closure correction note (Plan 145)
+
+A later Linux CPUFreq semantics review found that Plan 141 cached a weight derived from `affected_cpus` behind policy-directory identity plus logical-core count. Linux defines `affected_cpus` as the currently online members of a policy, while `related_cpus` is the policy's structural online+offline membership, so a same-cardinality CPU online/offline swap can change the live policy weight without invalidating the landed cache. This does not reopen Plan 141's macOS page-size work or its network/disk/baseline RETAIN decisions. Planned Plan 145 owns only the CPUFreq online-membership freshness correction and source-call requalification; Plan 141 remains complete.

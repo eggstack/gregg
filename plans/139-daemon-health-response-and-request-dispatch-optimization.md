@@ -202,3 +202,8 @@ toolchain (campaign-wide; Plan 135's 2,629,008-byte baseline predates
 the current toolchain and the small memo/cache code; no new
 dependencies, std-only). Timing retained on deterministic
 serialization/clone-elimination counts, not wall-clock gates.
+
+
+## Post-closure correction note (Plan 144)
+
+A later concurrency review found that Plan 139's `Option<Bytes>` memo proves one serialization per publication only for sequential requests: concurrent first requests can observe an empty memo before any caller installs it and can therefore serialize the same immutable publication more than once. This does not change wire correctness or invalidate the completed Plan-139 implementation record. Planned Plan 144 owns only true per-publication single-flight initialization plus deterministic concurrent evidence; Plan 139 remains complete.

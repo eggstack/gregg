@@ -1,0 +1,299 @@
+# Plan 145: Linux CPUFreq online-membership freshness corrective pass
+
+Status: planned.
+
+Depends on: completed Plans 138-143 at current post-`07f353f` main, specifically Plan 141's Linux CPUFreq structural cache. Independent of Plan 091 and Plan 144.
+
+Corrects: the CPUFreq membership-invalidation gap in completed Plan 141. Plan 141 remains complete as the historical implementation record; this plan owns only the online-membership freshness correction and its source-call qualification.
+
+## Objective
+
+Preserve Plan 141's useful reduction in repeated CPUFreq membership reads while making policy weighting responsive to CPU online/offline changes even when:
+
+- the `policyX` directory set is unchanged;
+- the total online/logical CPU count is unchanged; and
+- different CPU identities move online/offline between samples.
+
+The correction must preserve current-frequency freshness, weighted-average semantics, malformed-source isolation, immediate policy add/remove visibility, and the no-arbitrary-TTL rule.
+
+## Confirmed gap
+
+The landed `CpuFreqStructuralCache` keys cached policy weights by:
+
+~~~text
+policy directory identity set + logical_core_count()
+~~~
+
+and obtains those weights from `affected_cpus` first.
+
+Linux defines:
+
+- `affected_cpus` as the **online** CPUs currently belonging to the policy;
+- `related_cpus` as **all online and offline** CPUs structurally belonging to the policy.
+
+The kernel also keeps policy objects across ordinary CPU offline/online transitions; bringing a CPU online inside an already-active policy does not recreate the policy object.
+
+Therefore `affected_cpus` is dynamic state, not safe structural cache content. A same-cardinality hotplug transition can change which policies have online members without changing either the `policyX` directory set or the existing cache's logical-core-count key.
+
+Reference: https://docs.kernel.org/admin-guide/pm/cpufreq.html
+
+## Preferred correction
+
+### 1. Cache structural related_cpus membership, not affected_cpus weights
+
+Change the private CPUFreq cache from precomputed policy weights to policy membership sets derived from `related_cpus`.
+
+Conceptually:
+
+~~~text
+CpuFreqStructuralCache {
+    policies: Vec<PathBuf>,
+    related: Map<PolicyPath, CpuSet>,
+}
+~~~
+
+The exact compact representation may be sorted CPU IDs, ranges, or another allocation-bounded private type.
+
+On a cold cache or policy-directory-set change:
+
+- read and parse `related_cpus` for each eligible policy;
+- store the actual CPU identities, not only a count;
+- preserve deterministic policy ordering.
+
+Policy root enumeration remains live every sample so policy creation/removal still invalidates immediately.
+
+### 2. Read the global online CPU identity set once per sample
+
+Read and parse:
+
+~~~text
+/sys/devices/system/cpu/online
+~~~
+
+once per CPUFreq sample.
+
+For each cached policy, derive the live weight as:
+
+~~~text
+count(related_cpus(policy) ∩ online_cpus)
+~~~
+
+This reconstructs the documented meaning of `affected_cpus` while replacing N dynamic per-policy membership reads with one global dynamic online-set read.
+
+Do not use only the online CPU count. Preserve identities so same-cardinality swaps are visible.
+
+Do not reuse `std::thread::available_parallelism()` as the online-set authority: it may reflect process affinity/cgroup restrictions and cannot identify which CPUs are online.
+
+### 3. Keep current frequency fully live
+
+Continue reading every sample, per eligible policy:
+
+1. `cpuinfo_cur_freq`;
+2. fallback `scaling_cur_freq`.
+
+Do not cache either value.
+
+A policy with zero currently online members contributes zero weight and must not distort the weighted average merely because its structural `related_cpus` set is non-empty.
+
+### 4. Fail closed to the legacy per-policy membership path
+
+The optimization must not make CPU frequency disappear or become stale when the preferred sources are unavailable or malformed.
+
+If:
+
+- `/sys/devices/system/cpu/online` cannot be read/parsed; or
+- a policy's `related_cpus` cannot be read/parsed reliably;
+
+fall back for that sample/policy to the pre-Plan-141 live membership rule:
+
+~~~text
+affected_cpus -> related_cpus -> existing bounded fallback
+~~~
+
+Do not use a previously cached dynamic weight after the online-set source fails.
+
+The implementation may decide that a failed structural refresh invalidates the whole CPUFreq cache for that sample if that is simpler and preserves existing optional-family isolation.
+
+### 5. Treat structural-policy stability as a qualified assumption
+
+Kernel documentation describes the policy CPU mask as part of policy-object initialization and the policy object as surviving ordinary online/offline transitions. The implementation may therefore cache `related_cpus` while the same policy objects remain represented by the same policy directory set.
+
+However, qualification must include driver/policy recreation behavior available in deterministic fixtures:
+
+- remove/add a policy path;
+- recreate a same-numbered policy after an observed disappearance;
+- ensure cache refresh occurs after the observable directory-set transition.
+
+Do not claim detection of an unobservable remove-and-recreate event that occurs entirely between two samples.
+
+If implementation review finds a realistic supported-kernel path where `related_cpus` mutates in place for the same live policy object and cannot be detected without rereading it every sample, prefer correctness: record the finding and RETAIN LIVE MEMBERSHIP READS rather than keep a stale structural cache.
+
+## Parser requirements
+
+The current CPU-list helper primarily yields a count. Add or refactor a private parser that preserves CPU identities.
+
+It must support the Linux cpulist grammar already accepted by Gregg's fixtures, including:
+
+- single IDs;
+- comma-separated IDs;
+- inclusive ranges;
+- surrounding whitespace/newlines.
+
+It must reject or isolate malformed/overflowing ranges without panicking or allocating proportional to attacker-controlled enormous CPU IDs.
+
+Prefer a sorted/range representation or enforce the existing `MAX_LOGICAL_CORES`/bounded-source policy appropriately.
+
+Do not broaden this into a general public cpuset crate/API.
+
+## Deterministic tests
+
+Add tests that fail against current Plan-141 behavior.
+
+Required fixture scenarios:
+
+### Same-count membership swap
+
+Use at least two policies with different current frequencies and structural memberships so:
+
+- sample A online set produces weights such as policy0=1, policy1=1;
+- sample B has the same total online CPU count but a different identity set producing different policy weights, such as policy0=2, policy1=0;
+- policy directory names remain unchanged;
+- current frequencies remain unchanged.
+
+Prove the weighted result changes immediately on sample B.
+
+### Ordinary steady state
+
+Across multiple steady samples:
+
+- policy root enumeration continues;
+- global `cpu/online` read advances once per sample;
+- `related_cpus` reads do not advance after structural cache warmup;
+- current-frequency reads do advance every sample.
+
+### Policy topology change
+
+Add/remove/recreate a policy path and prove structural membership is reread immediately and the result matches a cold query.
+
+### Preferred-source failure
+
+Prove unreadable/malformed global online-set data cannot reuse stale dynamic weights and falls back to the live legacy membership path.
+
+Prove malformed/missing `related_cpus` for one policy retains the current bounded fallback/isolation behavior.
+
+### Zero-online policy
+
+Characterize a policy whose structural CPUs are all offline. It must contribute zero live weight when the global online set is authoritative.
+
+### Collector integration
+
+Keep a `LinuxCollector`-level test proving the cache is used through ordinary sampling, not only through a source helper.
+
+## Source-call accounting
+
+Extend Plan 141's `CallCounts` evidence to distinguish:
+
+- policy-root enumeration;
+- `related_cpus` structural reads;
+- `affected_cpus` fallback reads;
+- global `/sys/devices/system/cpu/online` reads;
+- current-frequency reads.
+
+The intended steady state is:
+
+~~~text
+policy root:       +1/sample
+cpu/online:        +1/sample
+current frequency: +N/sample
+related_cpus:      +0 after warm cache
+affected_cpus:     +0 unless fallback
+~~~
+
+Do not add syscall-count timing gates to CI.
+
+## Compatibility constraints
+
+Preserve:
+
+- `ProcSource::cpu_frequency_hz()` public behavior as a cold one-shot query;
+- `cpu_frequency_hz_with_cache()` return type and optional-family semantics;
+- preference for hardware `cpuinfo_cur_freq`;
+- `scaling_cur_freq` fallback;
+- overflow-safe weighted arithmetic;
+- policy ordering;
+- LinuxCollector API;
+- protocol/capability surfaces;
+- sample cadence;
+- network/disk/macOS/Windows/FreeBSD behavior;
+- Rust 1.89 MSRV.
+
+No arbitrary TTL or timer-based invalidation is allowed.
+
+## Retain/revert gate
+
+Retain the revised structural cache only if all are true:
+
+1. same-cardinality online membership changes are immediately visible;
+2. steady-state per-policy dynamic membership reads are reduced;
+3. source failures fall back without stale cached weights;
+4. policy add/remove semantics remain exact;
+5. current-frequency reads remain live;
+6. no new dependency or unsafe code is needed;
+7. native Linux/MSRV qualification is green.
+
+If these gates cannot be met cleanly, revert CPUFreq membership caching to the live pre-Plan-141 path and record the performance tradeoff. Correct freshness is mandatory; cache retention is not.
+
+The macOS page-size optimization and Plan-141 RETAIN CURRENT network/disk/baseline decisions remain untouched.
+
+## Verification
+
+~~~text
+cargo test -p gregg-host --all-targets --all-features
+cargo test -p greggd --all-targets --all-features -- collector
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+./scripts/check-local.sh
+~~~
+
+Final implementation must pass the existing Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.89, and FreeBSD native CI jobs. Only Linux is expected to receive production-source changes.
+
+Measure stripped `greggd` before/after on the same toolchain if the private CPU-set representation materially changes linked size.
+
+## Acceptance criteria
+
+- [ ] The CPUFreq cache no longer treats `affected_cpus` as immutable structural weight.
+- [ ] Cached structural membership preserves CPU identities, not only counts.
+- [ ] One live global online-CPU identity read per sample drives cached-policy live weights.
+- [ ] Same-cardinality online CPU membership swaps change weights/results immediately.
+- [ ] Current CPU frequency remains sampled every cycle.
+- [ ] Policy add/remove/recreation observable between samples invalidates structural membership.
+- [ ] Online-set failure cannot reuse stale dynamic weights and uses a live fallback.
+- [ ] Missing/malformed per-policy structural data preserves bounded fallback/isolation.
+- [ ] Zero-online policies contribute zero when the global online set is authoritative.
+- [ ] Deterministic call accounting proves the steady-state read reduction.
+- [ ] No arbitrary TTL, sleep, mtime heuristic, or periodic refresh interval is introduced.
+- [ ] Linux collector/public/protocol/capability behavior outside the corrected weighting remains unchanged.
+- [ ] macOS, Windows, FreeBSD, network, disk, and baseline-retention decisions remain unchanged.
+- [ ] Rust 1.89 and existing native CI remain green.
+- [ ] Plan 141 receives only a post-closure correction note pointing here; its historical closure evidence is not rewritten.
+
+## Explicit non-goals
+
+Do not include:
+
+- generic CPU hotplug monitoring;
+- uevent/netlink listener infrastructure;
+- cpuset/cgroup reporting;
+- changing Gregg's displayed logical-core count;
+- CPU utilization formula changes;
+- CPUFreq driver/governor control;
+- network/disk cache work;
+- FreeBSD/macOS/Windows telemetry changes;
+- public cpuset parsing API/crate;
+- protocol changes;
+- new dependencies.
+
+## Handoff note
+
+Start with the same-cardinality swap regression fixture before changing the cache. Then implement the smallest structural-membership + live-online-set design that makes that fixture pass while preserving Plan 141's source-call reduction. If the structural assumption fails qualification, prefer the live legacy membership path and close truthfully with that result.
