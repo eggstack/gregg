@@ -264,3 +264,8 @@ Preserved exclusions:
 None. Plan 144 owns only the ready-health single-flight memoization
 correction. The remaining Plan 141 corrective follow-up
 (Plan 145) is independent and unblocked by Plan 144's closure.
+
+
+## Post-closure correction note (Plan 146)
+
+Post-closure review found only record/API-boundary cleanup: this file's top-level status still says `planned` despite completed implementation/acceptance, final all-platform CI run `36338426733` is not recorded here, and Plan 145 exposed adjacent CPU-set helper cleanup unrelated to ready-health behavior. Planned Plan 146 owns the status/evidence reconciliation plus that Linux parser/API hardening. Plan 144's implementation at `808f44e4dd27de1c3ae2eb3238ce627696bb95f9` remains complete and is not reopened.

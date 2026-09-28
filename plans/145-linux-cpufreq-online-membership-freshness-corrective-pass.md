@@ -371,3 +371,8 @@ Plan 091 soak record is independent and unaffected.
 ## Handoff note
 
 Start with the same-cardinality swap regression fixture before changing the cache. Then implement the smallest structural-membership + live-online-set design that makes that fixture pass while preserving Plan 141's source-call reduction. If the structural assumption fails qualification, prefer the live legacy membership path and close truthfully with that result.
+
+
+## Post-closure correction note (Plan 146)
+
+Post-closure review confirmed the Plan-145 online-membership architecture and CI behavior, but found three narrow cleanup items: this file's top-level status still says `planned`; final all-platform CI run `36338426733` is not recorded here; and the new CPU-set implementation exposes unnecessary helper surface while `MAX_CPU_ID = 8192` conflates numeric CPU identity with the 8192-member safety limit and silently clamps oversized ranges. Planned Plan 146 owns only that record/API/parser-boundary cleanup. Plan 145's implementation at `e7f62565848b07ee99bc4070bf16ccf598b94e98` remains complete and its CPUFreq freshness design is not reopened.
