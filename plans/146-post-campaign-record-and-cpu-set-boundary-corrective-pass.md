@@ -1,6 +1,6 @@
 # Plan 146: post-campaign record and CPU-set boundary corrective pass
 
-Status: planned.
+Status: complete at implementation `9651b68ac44511851a3a4dde2bd2ef516c35dd1c` with CI run `36457308977` green across all six jobs.
 
 Depends on: completed Plans 144-145 and their settled Plans 138-143 baseline. Independent of Plan 091.
 
@@ -256,24 +256,168 @@ No new workflow is required.
 
 ## Acceptance criteria
 
-- [ ] Plans 144 and 145 top-level status lines are truthful and say complete.
-- [ ] CI run `36338426733` is recorded as the post-145 all-platform qualification evidence.
-- [ ] `CpuFreqStructuralCache`'s pre-existing usable boundary remains source-compatible.
-- [ ] New Plan-145 identity-set helpers expose no unnecessary public surface.
-- [ ] Unused `live_weight()` is removed unless a real production consumer is found.
-- [ ] Test-only cache inspection does not require public production API.
-- [ ] CPU-list resource safety is defined as at most 8192 distinct identities, not numeric ID <= 8192.
-- [ ] Exactly 8192 distinct IDs succeeds; 8193 fails.
-- [ ] Oversized input fails atomically rather than being silently truncated.
-- [ ] Sparse CPU numbering is preserved.
-- [ ] Reversed/overflowing/malformed input fails without panic or unbounded allocation.
-- [ ] Legacy CPUFreq fallback uses the same bounded identity semantics where practical.
-- [ ] Plan-145 same-cardinality freshness and source-call reductions remain intact.
-- [ ] No extra steady-state topology/sysfs read is introduced.
-- [ ] No protocol, cadence, readiness, capability, platform, network, disk, or Plan-144 behavior changes.
-- [ ] No new dependency or unsafe code.
-- [ ] Rust 1.89 and all existing native CI jobs remain green.
-- [ ] Plan 146 closure leaves Plan 091 as the only independent active historical plan unless unrelated work lands concurrently.
+- [x] Plans 144 and 145 top-level status lines are truthful and say complete.
+- [x] CI run `36338426733` is recorded as the post-145 all-platform qualification evidence.
+- [x] `CpuFreqStructuralCache`'s pre-existing usable boundary remains source-compatible.
+- [x] New Plan-145 identity-set helpers expose no unnecessary public surface.
+- [x] Unused `live_weight()` is removed unless a real production consumer is found.
+- [x] Test-only cache inspection does not require public production API.
+- [x] CPU-list resource safety is defined as at most 8192 distinct identities, not numeric ID <= 8192.
+- [x] Exactly 8192 distinct IDs succeeds; 8193 fails.
+- [x] Oversized input fails atomically rather than being silently truncated.
+- [x] Sparse CPU numbering is preserved.
+- [x] Reversed/overflowing/malformed input fails without panic or unbounded allocation.
+- [x] Legacy CPUFreq fallback uses the same bounded identity semantics where practical.
+- [x] Plan-145 same-cardinality freshness and source-call reductions remain intact.
+- [x] No extra steady-state topology/sysfs read is introduced.
+- [x] No protocol, cadence, readiness, capability, platform, network, disk, or Plan-144 behavior changes.
+- [x] No new dependency or unsafe code.
+- [x] Rust 1.89 and all existing native CI jobs remain green.
+- [x] Plan 146 closure leaves Plan 091 as the only independent active historical plan unless unrelated work lands concurrently. (One pre-existing caveat: the retired Plan 064 file still says `Status: planned` even though `plans/README.md` records the 063-065 group complete; reconciling that unenumerated stale header is out of this corrective plan's scope and is noted below.)
+
+## Closed scope record
+
+Completed at implementation `9651b68ac44511851a3a4dde2bd2ef516c35dd1c`:
+
+### Record reconciliation (correction 1)
+
+- changed Plans 144 and 145 in place to truthful `complete` status lines
+  without rewriting their historical implementation narratives; both keep
+  their original implementation SHAs
+  (`808f44e4dd27de1c3ae2eb3238ce627696bb95f9`,
+  `e7f62565848b07ee99bc4070bf16ccf598b94e98`);
+- recorded CI run `36338426733` (verified green: Linux, macOS arm64,
+  macOS Intel, Windows, MSRV Rust 1.89, FreeBSD native; same run HEAD
+  `6752ad704cd06c31bcde3ad061051ce9c999162a`) as the post-145
+  qualification evidence in both plan files, replacing the stale
+  "existing CI is exercised separately" wording;
+- reconciled both post-closure-follow-up sections to point at Plan 146
+  and record its closure (Plan 145's note additionally owns the parser
+  correction evidence); Plan 139/141 historical closure records were not
+  rewritten beyond the Plan-144/145 correction notes they already carry.
+
+### Helper-visibility narrowing (correction 2)
+
+- `CpuIdSet` is private to the Linux source implementation; a workspace
+  search confirmed no non-test consumer outside
+  `crates/gregg-host/src/linux/source.rs`;
+- `live_weight()` had no production caller and was deleted;
+- `intersection_count()` is a private associated function;
+- the public `last_online()` accessor was removed; in-module tests
+  inspect the private `online` field directly, so test-only cache
+  inspection needs no public production API;
+- no new public cpuset parser/type was added to compensate;
+- `CpuFreqStructuralCache`, `CpuFreqStructuralCache::default()`, and
+  `ProcSource::cpu_frequency_hz_with_cache(&mut CpuFreqStructuralCache)`
+  remain source-compatible; `LinuxCollector` construction, protocol
+  behavior, and the `greggd::collector::linux` facade (`CpuFreqStructuralCache`
+  was never re-exported there) are unchanged.
+
+### Cardinality-based CPU-list safety (corrections 3-4)
+
+- one shared bound owned by the Linux collector module,
+  `MAX_CPU_SET_MEMBERS = MAX_LOGICAL_CORES = 8192`; the removed
+  `MAX_CPU_ID: u16 = 8192` numeric-ID clamp is gone (8193 identities in
+  `0..=8192` is fixed as a side effect);
+- `parse_cpu_list_ids` preserves numeric CPU identities (`u32`) with no
+  remapping or clamping, accepts at most 8192 distinct members, rejects
+  the entire list when a token/range would exceed the bound, rejects
+  reversed ranges, values beyond `u32`, and empty/non-cpulist input, and
+  never returns a silently truncated partial set. An oversized declared
+  range is rejected from its own span before any member is materialized,
+  and ranges overlapping already-parsed members count only the
+  identities they would actually add, so duplicates can neither inflate
+  nor bypass the bound;
+- the legacy count-only `parse_cpu_list(raw, logical_cores)` (which
+  treated the core count as a maximum numeric ID) was deleted; the
+  fallback weight derives from the parsed set's `.len()`, preserving the
+  exact `affected_cpus -> related_cpus -> bounded default` sequence
+  (`Some(1)` only when `affected_cpus` is unreadable and `related_cpus`
+  unusable, `0` when both are readable but unusable). Dense ordinary
+  fixtures keep their pre-Plan-141 weights; a sparse fixture such as
+  `0,2,10000` is now representable by identity;
+- no `kernel_max`/`possible`/`present` read was added per sample or
+  otherwise.
+
+### Deterministic tests (all Plan-146 required cases)
+
+- seven new `plan146_*` tests plus the revised Plan-145 parser test cover:
+  exactly 8192 distinct members succeeds / 8193 fails; sparse high-ID
+  singletons and comma/whitespace/range forms preserve identity and
+  count; oversized ranges fail without materializing a partial set;
+  reversed ranges, `u32` overflow, `-1`/`0-`/empty input fail; duplicate
+  IDs/ranges count distinct members only (a fully duplicated full-bound
+  list succeeds, one fresh ID past the bound fails); the legacy fallback
+  keeps dense-fixture weights, preserves the
+  `affected_cpus -> related_cpus -> bounded default` order, and no longer
+  drops sparse identities above the core count; a sparse structural
+  fixture keeps identity weights through the structural path;
+- all Plan-145 same-cardinality-swap, zero-online-policy,
+  cache-clear-on-online-failure, source-call-accounting, steady-state,
+  and topology-change tests remain green, as do the Plan-141
+  structural-cache fixtures and the Plan-144 server tests.
+
+Verification:
+
+```text
+cargo test -p gregg-host --lib --all-features -- linux
+cargo test -p gregg-host --all-targets --all-features
+cargo test -p greggd --lib --all-features -- server::tests::plan144
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+cargo doc -p gregg-host --no-deps
+./scripts/check-local.sh
+```
+
+All pass locally (the only `cargo doc` warning is the pre-existing
+`drives.rs` redundant-link note, untouched by this plan). CI run
+`36457308977` at the implementation SHA `9651b68...` is green across all
+six jobs: Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.89, and
+FreeBSD native. No new workflow was added; the existing CI matrix is the
+only final qualification.
+
+Preserved exclusions:
+
+- reopening Plans 138-145 architecture;
+- changing CPU frequency formulas;
+- CPU hotplug notification infrastructure;
+- adding a `kernel_max` polling cache;
+- changing Gregg's displayed logical-core count;
+- cpuset/cgroup reporting;
+- generic public CPU-set library/API;
+- network/disk telemetry optimization;
+- macOS/Windows/FreeBSD collector changes;
+- protocol changes;
+- EggServe/server changes;
+- performance CI;
+- Plan 091 work.
+
+### Future-plan status
+
+No future plan was waiting on Plan 146. Plans 144-146 are terminal
+follow-ups to the completed 138-143 campaign; the dependency chain ends
+here. Plan 091 remains in progress on its own soak evidence and is
+structurally independent — nothing in this plan unblocks it and nothing
+further was required to be unblocked by it.
+
+One truthfulness note for future record work: the retired Plan 064 file
+(`plans/064-status-protocol-package-correctness.md`) still begins with
+`Status: planned` although `plans/README.md` records its 063-065 roadmap
+group as completed with CI run `30964819950` (Plan 064 has no closed-scope
+record of its own, confirming the stale header predates the Plans
+workflow's current closure discipline). It was not enumerated in Plan
+146's findings, so it is left untouched and flagged here rather than
+fixed through scope creep.
+
+## Handoff note (retained from planning)
+
+Implement the parser boundary first with failing boundary/sparse-ID tests, then narrow helper visibility, then reconcile the plan headers/evidence. The implementation should be mechanically small: if the CPU-list cleanup starts changing collector architecture or adding new native reads, stop and reduce scope.
+
+(The handoff order is what landed: the cardinality parser plus failing
+boundary tests came first, visibility narrowing and the header/evidence
+reconciliation followed, and no collector architecture or native read
+change was needed.)
 
 ## Explicit non-goals
 

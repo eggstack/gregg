@@ -298,18 +298,24 @@ preserved; its tests are updated to the new fixture shape (online +
 `related_cpus`). Plans 144-145 are independent of the remaining Plan 091
 soak record and of each other.
 
-Plan 146 is the final post-campaign reconciliation/hardening pass and does
-not reopen Plans 144-145: Plans 144 and 145 now carry truthful `complete`
-status lines plus the shared all-platform CI run `36338426733` (Linux, both
-macOS jobs, Windows, MSRV Rust 1.89, FreeBSD native), the Plan-145 CPU-set
-helper surface is narrowed (private `CpuIdSet`, private intersection count,
-no unused `live_weight()`, no public cache inspection accessor), and the
-`MAX_CPU_ID` clamp is replaced by an exact 8192-distinct-identity bound that
-preserves sparse Linux CPU numbers and fails atomically instead of
-truncating. `CpuFreqStructuralCache` and
-`ProcSource::cpu_frequency_hz_with_cache` stay source-compatible and the
-Plan-145 steady-state read pattern is unchanged. Plans 138-146 are
-independent of the remaining Plan 091 soak record.
+Plan 146 is complete at implementation `9651b68` with CI run
+`36457308977` green across Linux, both macOS jobs, Windows, MSRV Rust 1.89,
+and FreeBSD native. It is the final post-campaign reconciliation/hardening
+pass and does not reopen Plans 144-145: Plans 144 and 145 now carry
+truthful `complete` status lines plus the shared all-platform CI run
+`36338426733`, the Plan-145 CPU-set helper surface is narrowed (private
+`CpuIdSet`, private intersection count, no unused `live_weight()`, no
+public cache inspection accessor), and the `MAX_CPU_ID` clamp is replaced
+by an exact 8192-distinct-identity bound that preserves sparse Linux CPU
+numbers and fails atomically instead of truncating.
+`CpuFreqStructuralCache` and `ProcSource::cpu_frequency_hz_with_cache`
+stay source-compatible and the Plan-145 steady-state read pattern is
+unchanged. Plans 138-146 are independent of the remaining Plan 091 soak
+record; with Plans 144-146 closed, Plan 091 is the only in-progress plan
+in the 091-146 line. (The retired Plan 064 file retains a pre-existing
+stale `planned` header; the 063-065 group is recorded complete in this
+index, and reconciling that unenumerated artifact is noted in Plan 146's
+closure rather than remade here.)
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -453,7 +459,7 @@ excluded.
 | [`143-tui-state-noop-and-cross-render-optimization.md`](143-tui-state-noop-and-cross-render-optimization.md) | Suppress provable no-op redraws and reuse condensed/aggregate render preparation across unchanged frames | complete; implementation `83df89e` (+ fix `e9ca180` docs-clean); campaign CI `36261210288` (see Plan 138) |
 | [`144-ready-health-single-flight-serialization-corrective-pass.md`](144-ready-health-single-flight-serialization-corrective-pass.md) | Make Plan-139 ready-health memoization truly single-flight under concurrent first requests while preserving retry/stale/failure semantics | complete at `808f44e`; per-publication `Arc<tokio::sync::OnceCell<Bytes>>` cells with dropped-guard `get_or_try_init` and deterministic concurrent-first-request gate; CI `36338426733` green across all six jobs |
 | [`145-linux-cpufreq-online-membership-freshness-corrective-pass.md`](145-linux-cpufreq-online-membership-freshness-corrective-pass.md) | Make Plan-141 CPUFreq policy weighting respond to same-cardinality online CPU membership changes without restoring steady per-policy dynamic reads | complete at `e7f6256`; structural `related_cpus` cache + live `cpu/online` reads with fail-closed legacy fallback; preserves Plan-141 topology-change behavior; CI `36338426733` green across all six jobs; CPU-set visibility/cardinality boundary hardened by Plan 146 |
-| [`146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md`](146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md) | Reconcile Plans 144-145 closure evidence/status and harden Plan-145 CPU-set visibility/cardinality semantics without reopening the runtime corrections | planned at authoring; post-closure corrective follow-up to 144-145; independent of Plan 091 |
+| [`146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md`](146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md) | Reconcile Plans 144-145 closure evidence/status and harden Plan-145 CPU-set visibility/cardinality semantics without reopening the runtime corrections | complete at `9651b68`; truthful 144/145 status + CI `36338426733`, private CPU-set identity helpers, exact 8192-distinct-identity cardinality bound preserving sparse CPU numbers; CI `36457308977` green across all six jobs; terminal for the 138-146 campaign |
 
 Dependency order:
 
