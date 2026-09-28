@@ -16,13 +16,15 @@ use std::sync::Arc;
 
 use crate::error::{CollectError, CollectErrorKind};
 
-/// Plan 145: maximum CPU ID accepted by the bounded cpulist parser.
+/// Plan 146: maximum number of distinct CPU identities Gregg will materialize
+/// from a single CPU-list source file.
 ///
-/// Linux's documented `MAX_LOGICAL_CORES` is 8192 (see
-/// `arch/x86/kernel/cpu/common.c` and the kernel docs). Anything above this
-/// is treated as malformed so a hostile or runaway file cannot allocate
-/// memory proportional to its byte length.
-const MAX_CPU_ID: u16 = 8192;
+/// This is a *cardinality* bound, not a maximum numeric CPU ID. Linux CPU
+/// numbers are identities and need not be dense `0..N-1`, so a sparse list
+/// such as `0,2,10000` is valid and must keep its exact identities. Reusing
+/// the collector's existing logical-core safety target keeps one number for
+/// "how much CPU topology Gregg accepts".
+const MAX_CPU_SET_MEMBERS: usize = crate::linux::MAX_LOGICAL_CORES;
 
 /// Lowest-level read trait used by the Linux collector.
 ///
@@ -57,44 +59,36 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Plan 145: parsed CPU identity set bounded by [`MAX_CPU_ID`].
+/// Plan 145: parsed CPU identity set, bounded by [`MAX_CPU_SET_MEMBERS`].
 ///
 /// Implements the cpulist grammar accepted by `affected_cpus`,
 /// `related_cpus`, and `online`: single IDs, comma- or whitespace-separated
-/// values, inclusive ranges. IDs above `MAX_CPU_ID` are clamped. The set
-/// keeps its members sorted so intersections are deterministic.
+/// values, and inclusive ranges. Identities are preserved exactly, so a
+/// sparse Linux CPU numbering is represented without remapping or clamping.
+/// The set keeps its members sorted so intersections are deterministic.
+///
+/// Plan 146: this type is private to the Linux source implementation. It is
+/// an internal representation detail, not part of Gregg's reusable API.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct CpuIdSet {
-    ids: BTreeSet<u16>,
+struct CpuIdSet {
+    ids: BTreeSet<u32>,
 }
 
 impl CpuIdSet {
-    /// Build an empty identity set.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self::default()
-    }
-
-    /// Whether the set contains no identities.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
-
     /// Number of identities in the set.
     #[must_use]
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.ids.len()
     }
 
     /// Whether `id` is a member of the set.
     #[must_use]
-    pub fn contains(&self, id: u16) -> bool {
+    fn contains(&self, id: u32) -> bool {
         self.ids.contains(&id)
     }
 
     /// Iterate identities in ascending order.
-    pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
         self.ids.iter().copied()
     }
 }
@@ -116,31 +110,18 @@ pub struct CpuFreqStructuralCache {
     /// Structural `related_cpus` identity sets per policy. Refreshed only
     /// when the policy set or a per-policy structural read fails.
     related: std::collections::HashMap<PathBuf, CpuIdSet>,
-    /// Last successful global online-CPU identity read, retained for tests
-    /// and diagnostic use.
+    /// Last successful global online-CPU identity read. Retained for
+    /// in-module tests and internal diagnostics; there is no production
+    /// reader.
     online: Option<CpuIdSet>,
 }
 
 impl CpuFreqStructuralCache {
-    /// Last live `online` set, if a sample successfully read it.
-    #[must_use]
-    pub fn last_online(&self) -> Option<&CpuIdSet> {
-        self.online.as_ref()
-    }
-
-    /// Live weight = `|related_cpus ∩ online|`. Returns `None` when the
-    /// policy has no structural membership recorded.
-    #[must_use]
-    pub fn live_weight(&self, policy: &Path, online: &CpuIdSet) -> Option<usize> {
-        let related = self.related.get(policy)?;
-        Some(Self::intersection_count(related, online))
-    }
-
-    /// Static intersection count between two identity sets, using the
-    /// smaller set as the iteration driver so the result is
-    /// `O(min(|a|, |b|))`.
-    #[must_use]
-    pub fn intersection_count(a: &CpuIdSet, b: &CpuIdSet) -> usize {
+    /// Plan 146: static intersection count between two identity sets, using
+    /// the smaller set as the iteration driver so the result is
+    /// `O(min(|a|, |b|))`. Private because the live weighting decision is an
+    /// internal implementation detail.
+    fn intersection_count(a: &CpuIdSet, b: &CpuIdSet) -> usize {
         if a.len() <= b.len() {
             a.iter().filter(|id| b.contains(*id)).count()
         } else {
@@ -345,7 +326,7 @@ impl ProcSource {
                 Some(related) => CpuFreqStructuralCache::intersection_count(related, &online),
                 // Plan 145: per-policy fail-closed fallback when structural
                 // membership cannot be read or parsed.
-                None => self.cpufreq_policy_weight(policy, MAX_CPU_ID as usize),
+                None => self.cpufreq_policy_weight(policy),
             };
             if weight == 0 {
                 continue;
@@ -370,7 +351,7 @@ impl ProcSource {
         let mut weighted_sum = 0u128;
         let mut weight_sum = 0u128;
         for policy in eligible {
-            let weight = self.cpufreq_policy_weight(policy, MAX_CPU_ID as usize);
+            let weight = self.cpufreq_policy_weight(policy);
             if weight == 0 {
                 continue;
             }
@@ -392,7 +373,7 @@ impl ProcSource {
             .inner
             .read_to_string(Path::new("/sys/devices/system/cpu/online"))
             .ok()?;
-        parse_cpu_list_ids(&raw, MAX_CPU_ID)
+        parse_cpu_list_ids(&raw)
     }
 
     /// Plan 145: read a policy's structural `related_cpus` membership.
@@ -401,26 +382,35 @@ impl ProcSource {
             .inner
             .read_to_string(&policy.join("related_cpus"))
             .ok()?;
-        parse_cpu_list_ids(&raw, MAX_CPU_ID)
+        parse_cpu_list_ids(&raw)
     }
 
-    fn cpufreq_policy_weight(&self, policy: &Path, logical_cores: usize) -> usize {
+    /// Plan 146: legacy live-membership policy weight.
+    ///
+    /// Preserves the pre-Plan-141 sequence `affected_cpus -> related_cpus ->
+    /// bounded default`, but derives each weight from the parsed identity set
+    /// instead of reinterpreting ranges as dense CPU IDs bounded by the host
+    /// core count. A policy whose `affected_cpus` cannot be read at all keeps
+    /// the existing bounded default weight of 1; a readable but unusable
+    /// `affected_cpus` with no usable `related_cpus` contributes 0.
+    fn cpufreq_policy_weight(&self, policy: &Path) -> usize {
         let affected = self.inner.read_to_string(&policy.join("affected_cpus"));
         match affected {
-            Ok(raw) => parse_cpu_list(&raw, logical_cores).or_else(|| {
-                self.inner
-                    .read_to_string(&policy.join("related_cpus"))
-                    .ok()
-                    .and_then(|raw| parse_cpu_list(&raw, logical_cores))
-            }),
-            Err(_) => self
-                .inner
-                .read_to_string(&policy.join("related_cpus"))
-                .ok()
-                .and_then(|raw| parse_cpu_list(&raw, logical_cores))
-                .or(Some(1)),
+            Ok(raw) => parse_cpu_list_ids(&raw)
+                .map(|ids| ids.len())
+                .or_else(|| self.cpufreq_related_cpus_weight(policy))
+                .unwrap_or(0),
+            Err(_) => self.cpufreq_related_cpus_weight(policy).unwrap_or(1),
         }
-        .unwrap_or(0)
+    }
+
+    /// Plan 146: membership weight taken from a policy's `related_cpus`.
+    fn cpufreq_related_cpus_weight(&self, policy: &Path) -> Option<usize> {
+        let raw = self
+            .inner
+            .read_to_string(&policy.join("related_cpus"))
+            .ok()?;
+        parse_cpu_list_ids(&raw).map(|ids| ids.len())
     }
 
     fn cpufreq_current_khz(&self, policy: &Path) -> Option<u64> {
@@ -947,54 +937,58 @@ fn parse_link_speed(raw: Option<String>) -> Option<u64> {
     (mbps > 0).then(|| mbps.checked_mul(1_000_000)).flatten()
 }
 
-fn parse_cpu_list(raw: &str, logical_cores: usize) -> Option<usize> {
-    let mut count = 0usize;
-    for item in raw
-        .trim()
-        .split(|character: char| character == ',' || character.is_whitespace())
-        .filter(|item| !item.is_empty())
-    {
-        let (start, end) = item.split_once('-').map_or_else(
-            || item.parse::<usize>().ok().map(|value| (value, value)),
-            |(start, end)| Some((start.parse().ok()?, end.parse().ok()?)),
-        )?;
-        if end < start {
-            return None;
-        }
-        let bounded_end = end.min(logical_cores.saturating_sub(1));
-        if start <= bounded_end {
-            count = count.checked_add(bounded_end - start + 1)?;
-        }
-    }
-    (count > 0).then_some(count)
-}
-
-/// Plan 145: parse a cpulist into an identity set bounded by `max_id`.
+/// Plan 146: parse a Linux CPU list into a bounded set of CPU identities.
 ///
-/// Accepts the same grammar as [`parse_cpu_list`]: single IDs, comma- or
-/// whitespace-separated values, and inclusive ranges. IDs above `max_id`
-/// are clamped; IDs that overflow `u64` are rejected.
-fn parse_cpu_list_ids(raw: &str, max_id: u16) -> Option<CpuIdSet> {
+/// Accepts the kernel cpulist grammar Gregg already supports: single IDs,
+/// comma- or whitespace-separated values, and inclusive ranges. CPU numbers
+/// are identities rather than dense positions, so each ID is preserved
+/// exactly; nothing is remapped, clamped, or otherwise interpreted as a
+/// count-derived index.
+///
+/// The list is accepted only when it yields at most
+/// [`MAX_CPU_SET_MEMBERS`] distinct identities. The whole list is rejected
+/// (never silently truncated) when a token or range is reversed, when an ID
+/// overflows `u32`, when the input is empty or malformed, or when adding a
+/// token or range would exceed the member bound. An oversized declared
+/// range is rejected from its own span before any member is materialized, so
+/// cost is bounded by the accepted cardinality rather than by an
+/// attacker-controlled byte length.
+fn parse_cpu_list_ids(raw: &str) -> Option<CpuIdSet> {
     let mut ids = BTreeSet::new();
+    let bound = MAX_CPU_SET_MEMBERS as u64;
     for item in raw
         .trim()
         .split(|character: char| character == ',' || character.is_whitespace())
         .filter(|item| !item.is_empty())
     {
         let (start, end) = item.split_once('-').map_or_else(
-            || item.parse::<u64>().ok().map(|value| (value, value)),
+            || item.parse::<u32>().ok().map(|value| (value, value)),
             |(start, end)| Some((start.parse().ok()?, end.parse().ok()?)),
         )?;
         if end < start {
             return None;
         }
-        let bounded_end = end.min(u64::from(max_id));
-        if start <= bounded_end {
-            #[allow(clippy::cast_possible_truncation)]
-            for id in start..=bounded_end {
-                ids.insert(id as u16);
-            }
+        let span = u64::from(end - start) + 1;
+        // Reject an oversized declared range from its span alone, before
+        // any iteration or allocation proportional to it.
+        if span > bound {
+            return None;
         }
+        if ids.len() as u64 + span <= bound {
+            ids.extend(start..=end);
+            continue;
+        }
+        // The range overlaps existing members, so count only the identities
+        // it would actually add: repeated IDs and ranges must neither inflate
+        // nor bypass the member bound.
+        let fresh = span - ids.range(start..=end).count() as u64;
+        if fresh == 0 {
+            continue;
+        }
+        if ids.len() as u64 + fresh > bound {
+            return None;
+        }
+        ids.extend(start..=end);
     }
     (!ids.is_empty()).then_some(CpuIdSet { ids })
 }
@@ -1565,7 +1559,7 @@ mod tests {
             .cpu_frequency_hz_with_cache(&mut cache)
             .expect("weighted hz");
         // Populated cache proves the structural path was used.
-        assert!(cache.last_online().is_some());
+        assert!(cache.online.is_some());
 
         // Malformed online content forces the fallback path. The fallback
         // must not reuse stale dynamic weights from the cache.
@@ -1585,7 +1579,7 @@ mod tests {
 
         // Cache state must be cleared so a stale online cannot re-enter
         // the structural path until the source is readable again.
-        assert!(cache.last_online().is_none());
+        assert!(cache.online.is_none());
 
         // Restoring the online file must succeed again and re-populate the cache.
         source
@@ -1596,7 +1590,7 @@ mod tests {
             .cpu_frequency_hz_with_cache(&mut cache)
             .expect("recovered weighted hz");
         assert_eq!(recovered, first);
-        assert!(cache.last_online().is_some());
+        assert!(cache.online.is_some());
     }
 
     #[test]
@@ -1656,28 +1650,221 @@ mod tests {
 
     #[test]
     fn plan145_cpulist_parser_supports_single_id_comma_range_whitespace() {
-        let ids = parse_cpu_list_ids("0-3\n", MAX_CPU_ID).expect("parseable");
+        let ids = parse_cpu_list_ids("0-3\n").expect("parseable");
         assert_eq!(ids.len(), 4);
         assert!(ids.contains(0));
         assert!(ids.contains(3));
 
-        let comma = parse_cpu_list_ids("0,2,4", MAX_CPU_ID).expect("parseable");
+        let comma = parse_cpu_list_ids("0,2,4").expect("parseable");
         assert_eq!(comma.len(), 3);
         assert!(comma.contains(0) && comma.contains(2) && comma.contains(4));
 
-        let whitespace = parse_cpu_list_ids("0 1 2 3", MAX_CPU_ID).expect("parseable");
+        let whitespace = parse_cpu_list_ids("0 1 2 3").expect("parseable");
         assert_eq!(whitespace.len(), 4);
         assert_eq!(whitespace.iter().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
 
-        let mixed = parse_cpu_list_ids("0-1,3 5-6", MAX_CPU_ID).expect("parseable");
+        let mixed = parse_cpu_list_ids("0-1,3 5-6").expect("parseable");
         assert_eq!(mixed.len(), 5);
         assert!(mixed.contains(1) && mixed.contains(3) && mixed.contains(6));
 
-        let clamped = parse_cpu_list_ids("0-999999", MAX_CPU_ID).expect("parseable");
-        assert_eq!(clamped.len(), (MAX_CPU_ID as usize) + 1);
+        assert!(parse_cpu_list_ids("").is_none());
+        assert!(parse_cpu_list_ids("not a cpu list").is_none());
+        assert!(parse_cpu_list_ids("5-2").is_none());
+    }
 
-        assert!(parse_cpu_list_ids("", MAX_CPU_ID).is_none());
-        assert!(parse_cpu_list_ids("not a cpu list", MAX_CPU_ID).is_none());
-        assert!(parse_cpu_list_ids("5-2", MAX_CPU_ID).is_none());
+    // ===== Plan 146: bounded CPU-set cardinality boundary =====
+
+    fn dense_range_list(start: u32, end: u32) -> String {
+        (start..=end)
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    #[test]
+    fn plan146_cpulist_accepts_exactly_max_members_and_rejects_one_more() {
+        let at_bound = parse_cpu_list_ids(&dense_range_list(0, 8_191)).expect("bounded accept");
+        assert_eq!(at_bound.len(), MAX_CPU_SET_MEMBERS);
+
+        let over_bound = parse_cpu_list_ids(&dense_range_list(0, 8_192));
+        assert!(
+            over_bound.is_none(),
+            "8193 distinct identities must fail instead of truncating"
+        );
+    }
+
+    #[test]
+    fn plan146_cpulist_preserves_sparse_high_cpu_identities() {
+        let sparse = parse_cpu_list_ids("0,2,10000").expect("sparse list parses");
+        assert_eq!(sparse.len(), 3);
+        assert_eq!(sparse.iter().collect::<Vec<_>>(), vec![0, 2, 10_000]);
+
+        let mixed = parse_cpu_list_ids("0-1,3 5-6,1000000").expect("mixed list parses");
+        assert_eq!(mixed.len(), 6);
+        assert!(mixed.contains(1) && mixed.contains(3) && mixed.contains(6));
+        assert!(mixed.contains(1_000_000));
+
+        // The largest representable Linux CPU index is still one identity,
+        // so it is accepted rather than treated as an oversized declaration.
+        let highest = parse_cpu_list_ids(&u32::MAX.to_string()).expect("u32::MAX is one id");
+        assert_eq!(highest.len(), 1);
+        assert!(highest.contains(u32::MAX));
+    }
+
+    #[test]
+    fn plan146_cpulist_rejects_oversized_range_without_materializing_members() {
+        // A declared range far beyond the member bound fails from its span,
+        // so no 8192/8193-member partial set is ever constructed.
+        assert!(parse_cpu_list_ids("0-999999").is_none());
+        assert!(parse_cpu_list_ids(&format!("0-{},5", u32::MAX)).is_none());
+        assert!(parse_cpu_list_ids(&format!("{}-{}", u32::MAX - 100_000, u32::MAX)).is_none());
+
+        // A range that fits alone but overflows the bound when combined with
+        // the identities already parsed is rejected atomically.
+        let at_bound = parse_cpu_list_ids(&dense_range_list(0, 8_191)).expect("bounded accept");
+        assert_eq!(at_bound.len(), MAX_CPU_SET_MEMBERS);
+        assert!(parse_cpu_list_ids("0-8191,1000000").is_none());
+        assert!(parse_cpu_list_ids("0-8191,1-8192").is_none());
+    }
+
+    #[test]
+    fn plan146_cpulist_rejects_reversed_overflow_and_malformed_input() {
+        assert!(parse_cpu_list_ids("5-2").is_none());
+        assert!(parse_cpu_list_ids("0-1,4-3").is_none());
+        // Values beyond the ordinary Linux CPU index width are rejected
+        // instead of wrapping.
+        assert!(parse_cpu_list_ids(&(u64::from(u32::MAX) + 1).to_string()).is_none());
+        assert!(parse_cpu_list_ids("99999999999999999999").is_none());
+        assert!(parse_cpu_list_ids("0-99999999999999999999").is_none());
+        assert!(parse_cpu_list_ids("-1").is_none());
+        assert!(parse_cpu_list_ids("0-").is_none());
+        assert!(parse_cpu_list_ids(",,,").is_none());
+        assert!(parse_cpu_list_ids("   \n  ").is_none());
+        // Empty separators stay tolerated exactly as before: they are not
+        // identities, so `0,,1` is still the two-member list `0,1`.
+        assert_eq!(parse_cpu_list_ids("0,,1").expect("tolerated").len(), 2);
+    }
+
+    #[test]
+    fn plan146_cpulist_duplicates_count_distinct_members_only() {
+        let repeated = parse_cpu_list_ids("0-3,0-3,2,2-3").expect("duplicates parse");
+        assert_eq!(repeated.len(), 4);
+        assert_eq!(repeated.iter().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+
+        // Repeating the full bound keeps the distinct cardinality inside the
+        // limit instead of being rejected as inflated declared membership.
+        let repeated_bound =
+            parse_cpu_list_ids("0-8191,0-8191").expect("duplicate bound list parses");
+        assert_eq!(repeated_bound.len(), MAX_CPU_SET_MEMBERS);
+
+        // Duplicates cannot be used to smuggle an over-bound list through.
+        assert!(parse_cpu_list_ids("0-8191,0-8191,8192").is_none());
+        assert!(parse_cpu_list_ids("0-8191,0-8191,0-8191,0-8191").is_some());
+    }
+
+    #[test]
+    fn plan146_legacy_fallback_weight_is_unbounded_by_core_count() {
+        // Sparse membership whose identities exceed the online/logical core
+        // count must not be dropped: the fallback weight is the distinct
+        // identity count, not a clamp to the core count.
+        let mut mem = MemorySource::new().with_logical_cores(2);
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "0,2,10000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "1500000\n",
+        );
+        let source = ProcSource::for_memory(mem);
+        assert_eq!(source.cpu_frequency_hz(), Some(1_500_000_000));
+
+        // Dense ordinary fixtures keep the pre-Plan-141 `affected_cpus`
+        // weight, and the documented fallback order is unchanged.
+        let mut dense = MemorySource::new().with_logical_cores(4);
+        dense.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "0-1\n",
+        );
+        dense.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "2000000\n",
+        );
+        dense.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/affected_cpus",
+            "2-3\n",
+        );
+        dense.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        assert_eq!(
+            ProcSource::for_memory(dense).cpu_frequency_hz(),
+            Some(1_500_000_000)
+        );
+
+        // Malformed `affected_cpus` still falls back to `related_cpus` and
+        // then to the existing bounded default weight of 1.
+        let mut fallbacks = MemorySource::new().with_logical_cores(4);
+        fallbacks.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/affected_cpus",
+            "not a cpu list\n",
+        );
+        fallbacks.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
+            "0-2\n",
+        );
+        fallbacks.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "2000000\n",
+        );
+        let source = ProcSource::for_memory(fallbacks);
+        assert_eq!(source.cpu_frequency_hz(), Some(2_000_000_000));
+
+        let mut bounded_default = MemorySource::new().with_logical_cores(4);
+        bounded_default.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "2000000\n",
+        );
+        bounded_default.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        // Neither policy exposes membership, so each keeps the bounded
+        // default weight of 1 and the average is the plain mean.
+        assert_eq!(
+            ProcSource::for_memory(bounded_default).cpu_frequency_hz(),
+            Some(1_500_000_000)
+        );
+    }
+
+    #[test]
+    fn plan146_sparse_related_cpus_keeps_identity_weight_in_structural_path() {
+        // Structural membership with sparse identities intersects against the
+        // live online set by identity, so a CPU whose number exceeds the
+        // host core count still contributes its own weight.
+        let mut mem = MemorySource::new().with_logical_cores(2);
+        mem.add_file("/sys/devices/system/cpu/online", "0,2,10000\n");
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/related_cpus",
+            "0,2,10000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq",
+            "1000000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/related_cpus",
+            "0,2,10000\n",
+        );
+        mem.add_file(
+            "/sys/devices/system/cpu/cpufreq/policy1/cpuinfo_cur_freq",
+            "3000000\n",
+        );
+        let mut cache = CpuFreqStructuralCache::default();
+        assert_eq!(
+            ProcSource::for_memory(mem).cpu_frequency_hz_with_cache(&mut cache),
+            Some(2_000_000_000)
+        );
     }
 }

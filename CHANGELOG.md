@@ -9,6 +9,30 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Linux CPU-set cardinality boundary** (`gregg-host`, Plan 146): the
+  CPU-list parser now bounds the number of *distinct CPU identities* Gregg
+  materializes (8192, the same value as its logical-core safety target)
+  instead of clamping numeric CPU IDs to 8192. Linux CPU numbers are
+  identities and need not be contiguous, so sparse lists such as
+  `0,2,10000` keep their exact members; a list that would exceed the
+  member bound — including a single oversized range — now fails the whole
+  list instead of silently truncating to a partial set, and reversed
+  ranges, values beyond the CPU-index width, and empty/malformed input
+  still fail without panic or unbounded allocation. The legacy
+  `affected_cpus -> related_cpus -> bounded default` CPUFreq fallback
+  derives its weight from the same parsed identity set instead of
+  reinterpreting ranges as dense IDs bounded by the host core count. The
+  Plan-145 identity-set type and intersection calculation are now private
+  to the Linux source module, the unused `live_weight()` helper and the
+  public `last_online()` inspection accessor are removed, and in-module
+  tests read cache state directly. `CpuFreqStructuralCache`,
+  `ProcSource::cpu_frequency_hz_with_cache`, the Plan-141/145 steady-state
+  read pattern, weighted-average arithmetic, sample cadence, protocol and
+  capability surfaces, and Rust 1.89 MSRV are unchanged. This is
+  correctness hardening of an internal boundary; no user-visible
+  telemetry change is claimed, and no dependency, unsafe code, or new
+  topology read is introduced.
+
 - **Native telemetry closure and FreeBSD network-evidence correction (Plan
   137):** the FreeBSD `native_loopback_traffic_advances_lo_counters`
   qualification is now fail-closed — base-system ping must execute and

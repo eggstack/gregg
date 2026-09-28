@@ -1,6 +1,6 @@
 # Plan 144: ready-health single-flight serialization corrective pass
 
-Status: planned.
+Status: complete at implementation `808f44e4dd27de1c3ae2eb3238ce627696bb95f9`; all-platform qualification run `36338426733` green.
 
 Depends on: completed Plans 138-143 at current post-`07f353f` main, specifically Plan 139's ready-health memoization. Independent of Plan 091 and Plan 145.
 
@@ -246,7 +246,11 @@ cargo test --workspace --all-targets --all-features
 ./scripts/check-local.sh
 ```
 
-All checks pass locally. Existing CI is exercised separately.
+All checks pass locally. Final qualification is the existing CI workflow, not
+a new one: post-implementation `main` (the Plan-145 closure record commit
+`6752ad704cd06c31bcde3ad061051ce9c999162a`) is green in run `36338426733`
+across Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.89, and the
+FreeBSD native job.
 
 Preserved exclusions:
 
@@ -262,10 +266,17 @@ Preserved exclusions:
 ## Post-closure follow-ups
 
 None. Plan 144 owns only the ready-health single-flight memoization
-correction. The remaining Plan 141 corrective follow-up
-(Plan 145) is independent and unblocked by Plan 144's closure.
+correction. Plan 145 and the Plan-146 record/CPU-set-boundary cleanup that
+closed alongside it are independent and unblocked by Plan 144's closure.
 
 
 ## Post-closure correction note (Plan 146)
 
-Post-closure review found only record/API-boundary cleanup: this file's top-level status still says `planned` despite completed implementation/acceptance, final all-platform CI run `36338426733` is not recorded here, and Plan 145 exposed adjacent CPU-set helper cleanup unrelated to ready-health behavior. Planned Plan 146 owns the status/evidence reconciliation plus that Linux parser/API hardening. Plan 144's implementation at `808f44e4dd27de1c3ae2eb3238ce627696bb95f9` remains complete and is not reopened.
+Post-closure review found only record/API-boundary cleanup: this file's
+top-level status said `planned` despite completed implementation/acceptance,
+and final all-platform CI run `36338426733` was not recorded here. Plan 146
+reconciled both (see its closed scope record) and additionally hardened the
+adjacent Plan-145 CPU-set helper visibility and cardinality policy, which is
+unrelated to ready-health behavior. Plan 144's implementation at
+`808f44e4dd27de1c3ae2eb3238ce627696bb95f9` remains complete and is not
+reopened.

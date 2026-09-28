@@ -22,6 +22,12 @@ mod identity;
 mod memory;
 mod source;
 
+/// Maximum number of logical cores Gregg accepts from the host.
+///
+/// Plan 146 also uses this single value as the maximum number of distinct CPU
+/// identities Gregg will materialize from one CPU-list source file. The two
+/// limits are deliberately the same number: a CPU list is bounded by how many
+/// CPU identities Gregg is willing to hold, not by a maximum numeric CPU ID.
 const MAX_LOGICAL_CORES: usize = 8192;
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 # Plan 145: Linux CPUFreq online-membership freshness corrective pass
 
-Status: planned.
+Status: complete at implementation `e7f62565848b07ee99bc4070bf16ccf598b94e98`; all-platform qualification run `36338426733` green; Plan-146 CPU-set boundary hardening retained.
 
 Depends on: completed Plans 138-143 at current post-`07f353f` main, specifically Plan 141's Linux CPUFreq structural cache. Independent of Plan 091 and Plan 144.
 
@@ -307,8 +307,11 @@ Completed at implementation `e7f6256`:
   policy's `related_cpus` for the dynamic policy weight;
 - added a private bounded `parse_cpu_list_ids` parser accepting single
   IDs, comma/whitespace separators, and inclusive ranges, with IDs
-  clamped to `MAX_CPU_ID = 8192` so a runaway file cannot allocate
-  memory proportional to its byte length;
+  bounded by the Plan-145 `MAX_CPU_ID = 8192` ceiling so a runaway file
+  could not allocate memory proportional to its byte length. (Plan 146
+  replaced that numeric-ID ceiling with an equivalent bounded-cardinality
+  policy; see its closed scope record. The clamp was never a documented
+  feature and no user-visible telemetry depended on it.);
 - failed closed to the pre-Plan-141 live `affected_cpus -> related_cpus`
   membership path when the global online source is unreadable or
   malformed, clearing the cache so a stale online cannot re-enter the
@@ -332,7 +335,8 @@ Completed at implementation `e7f6256`:
   live weight under the global online set; per-policy `related_cpus`
   failure uses the legacy weight without breaking the rest of the
   cache; `parse_cpu_list_ids` handles single IDs, comma/whitespace,
-  ranges, and clamps to `MAX_CPU_ID`;
+  and inclusive ranges under the then-current `MAX_CPU_ID` ceiling
+  (Plan 146 replaced that ceiling; see its closed scope record);
 - updated `plan141_collector_steady_cpufreq_reuses_structure`
   (collector-level integration) to use `related_cpus` and the online
   file.
@@ -348,7 +352,11 @@ cargo test --workspace --all-targets --all-features
 ./scripts/check-local.sh
 ```
 
-All checks pass locally. Existing CI is exercised separately.
+All checks pass locally. Final qualification is the existing CI workflow, not
+a new one: post-implementation `main` (this closure record commit
+`6752ad704cd06c31bcde3ad061051ce9c999162a`) is green in run `36338426733`
+across Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.89, and the
+FreeBSD native job.
 
 Preserved exclusions:
 
@@ -366,7 +374,9 @@ Preserved exclusions:
 ## Post-closure follow-ups
 
 None. Plan 145 closes the post-Plan-141 corrective work. The remaining
-Plan 091 soak record is independent and unaffected.
+Plan 091 soak record is independent and unaffected. The post-closure
+CPU-set visibility/cardinality cleanup raised by this review is closed by
+Plan 146, which also records this plan's final CI evidence.
 
 ## Handoff note
 
@@ -375,4 +385,16 @@ Start with the same-cardinality swap regression fixture before changing the cach
 
 ## Post-closure correction note (Plan 146)
 
-Post-closure review confirmed the Plan-145 online-membership architecture and CI behavior, but found three narrow cleanup items: this file's top-level status still says `planned`; final all-platform CI run `36338426733` is not recorded here; and the new CPU-set implementation exposes unnecessary helper surface while `MAX_CPU_ID = 8192` conflates numeric CPU identity with the 8192-member safety limit and silently clamps oversized ranges. Planned Plan 146 owns only that record/API/parser-boundary cleanup. Plan 145's implementation at `e7f62565848b07ee99bc4070bf16ccf598b94e98` remains complete and its CPUFreq freshness design is not reopened.
+Post-closure review confirmed the Plan-145 online-membership architecture and
+CI behavior, but found three narrow cleanup items: this file's top-level status
+still said `planned`; final all-platform CI run `36338426733` was not recorded
+here; and the new CPU-set implementation exposed unnecessary helper surface
+while `MAX_CPU_ID = 8192` conflated numeric CPU identity with the
+8192-member safety limit and silently clamped oversized ranges. Plan 146 owns
+only that record/API/parser-boundary cleanup and is closed: the status and
+evidence above are reconciled, `CpuIdSet` plus the cache's intersection
+calculation are private, the unused `live_weight()` helper and the public
+`last_online()` inspection accessor are gone, and CPU-list safety is now an
+exact 8192-distinct-identity bound that preserves sparse CPU numbers. Plan
+145's implementation at `e7f62565848b07ee99bc4070bf16ccf598b94e98` remains
+complete and its CPUFreq freshness design is not reopened.
