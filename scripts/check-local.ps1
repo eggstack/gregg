@@ -64,7 +64,7 @@ function Get-WorkspaceVersion {
 
 function Test-VersionConsistency {
     $workspaceVersion = Get-WorkspaceVersion
-    $crates = @('crates/gregg-protocol', 'crates/gregg-update', 'crates/greggd', 'crates/gregg')
+    $crates = @('crates/gregg-protocol', 'crates/gregg-update', 'crates/gregg-host', 'crates/greggd', 'crates/gregg')
     foreach ($crate in $crates) {
         $manifest = Join-Path $RepoRoot "$crate/Cargo.toml"
         $inheritance = @(Select-String -LiteralPath $manifest -Pattern '^\s*version\.workspace\s*=\s*true\s*$')
@@ -94,8 +94,26 @@ function Test-VersionConsistency {
             }
         }
     }
+    # greggd additionally pins gregg-host exactly.
+    $manifest = Join-Path $RepoRoot "crates/greggd/Cargo.toml"
+    $dependencyLines = @(Get-Content -LiteralPath $manifest | Where-Object {
+            $_ -match "^\s*gregg-host\s*="
+        })
+    if ($dependencyLines.Count -eq 0) {
+        throw "error: $manifest has no gregg-host dependency declaration"
+    }
+    foreach ($line in $dependencyLines) {
+        $match = [regex]::Match([string]$line, 'version\s*=\s*"([^"]+)"')
+        if (-not $match.Success) {
+            throw "error: $manifest gregg-host dependency has no registry version"
+        }
+        $dependencyVersion = $match.Groups[1].Value
+        if ($dependencyVersion -ne $workspaceVersion) {
+            throw "error: $manifest gregg-host dependency version $dependencyVersion != workspace $workspaceVersion"
+        }
+    }
 
-    Write-Host "  workspace version $workspaceVersion; all members inherit it and gregg-protocol/gregg-update constraints match"
+    Write-Host "  workspace version $workspaceVersion; all members inherit it and gregg-protocol/gregg-update/gregg-host constraints match"
 }
 
 function Get-FreeLoopbackPort {
@@ -181,8 +199,8 @@ stale_after_ms = 10000
 Write-Step "cargo fmt --all -- --check"
 Invoke-OrFail { cargo fmt --all -- --check }
 
-Write-Step "cargo test --workspace"
-Invoke-OrFail { cargo test --workspace }
+Write-Step "cargo test --workspace --all-targets --all-features"
+Invoke-OrFail { cargo test --workspace --all-targets --all-features }
 
 # ── Release preflight ───────────────────────────────────────────────────────
 
@@ -210,6 +228,9 @@ if ($Mode -eq 'release') {
 
     Write-Step "cargo package --list (gregg-update)"
     Invoke-OrFail { cargo package --list -p gregg-update }
+
+    Write-Step "cargo package --list (gregg-host)"
+    Invoke-OrFail { cargo package --list -p gregg-host }
 
     Write-Step "cargo package --list (greggd)"
     Invoke-OrFail { cargo package --list -p greggd }

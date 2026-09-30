@@ -131,7 +131,7 @@ fn systemctl_probe_is_running() -> bool {
         &["is-system-running", "--quiet"],
         MANAGER_COMMAND_TIMEOUT,
     )
-    .is_ok()
+    .is_ok_and(|output| output.status.success())
 }
 // ── Auto detection ────────────────────────────────────────────────────────
 

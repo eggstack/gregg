@@ -126,7 +126,9 @@ mod tests {
     use super::*;
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // Generous deadline: under full-workspace parallel load the
+        // background worker can starve for seconds.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while std::time::Instant::now() < deadline {
             if condition() {
                 return;

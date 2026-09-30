@@ -57,7 +57,7 @@ pub fn find_curl() -> Result<String, UpdateError> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok()
+            .is_ok_and(|status| status.success())
         {
             return Ok(candidate.to_string());
         }
@@ -75,7 +75,7 @@ pub fn find_cargo() -> Result<String, UpdateError> {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .is_ok()
+            .is_ok_and(|status| status.success())
         {
             return Ok(candidate.to_string());
         }
@@ -123,6 +123,8 @@ fn map_capture_error(e: &io::Error) -> UpdateError {
 ///
 /// The child is bounded by [`PROBE_TIMEOUT`] (killed and reaped past the
 /// deadline) so a hung curl binary cannot block the caller forever.
+/// Uses the same `-fsSL --max-time` contract as [`download_file`] so the
+/// flags cannot drift silently.
 pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
     #[cfg(windows)]
     let null_device = "NUL";
@@ -130,7 +132,7 @@ pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
     let null_device = "/dev/null";
     let mut cmd = Command::new(curl);
     cmd.args([
-        "-s",
+        "-fsSL",
         "-o",
         null_device,
         "-w",

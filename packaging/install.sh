@@ -594,6 +594,13 @@ verify_checksum() {
   if [[ -z "$expected" ]]; then
     die "checksum file is empty or unreadable: $sha_file"
   fi
+  # Match the Rust updater (`verify.rs`): lowercase and require 64 hex
+  # digits so an uppercase or malformed `.sha256` cannot pass one path
+  # and fail the other.
+  expected="$(echo "$expected" | tr '[:upper:]' '[:lower:]')"
+  if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+    die "checksum file has invalid SHA-256 hex: $sha_file"
+  fi
   if command -v sha256sum >/dev/null 2>&1; then
     actual="$(sha256sum "$file" | awk '{print $1}')"
   elif command -v shasum >/dev/null 2>&1; then
@@ -601,6 +608,7 @@ verify_checksum() {
   else
     die "no sha256 tool found (need sha256sum or shasum)"
   fi
+  actual="$(echo "$actual" | tr '[:upper:]' '[:lower:]')"
   if [[ "$expected" != "$actual" ]]; then
     echo "expected: $expected" >&2
     echo "actual:   $actual" >&2
@@ -615,13 +623,21 @@ verify_candidate_version() {
   if ! output="$("$candidate" version 2>&1)"; then
     die "candidate $program failed 'version' check: $output"
   fi
-  # Expected form: "gregg X.Y.Z" or "greggd X.Y.Z"
+  # Expected form: exactly "<program> X.Y.Z" (single line, no extra
+  # fields or surrounding whitespace), matching the Rust updater's
+  # `validate_candidate` exact-match contract.
   if [[ "$output" != "${program} "* ]]; then
     die "candidate version output does not start with '${program} ': $output"
   fi
   version_part="$(echo "$output" | awk '{print $2}')"
   if [[ -z "$version_part" ]]; then
     die "candidate version output missing version: $output"
+  fi
+  if [[ "$output" != "${program} ${version_part}" ]]; then
+    die "candidate version output has extra content: $output"
+  fi
+  if [[ ! "$version_part" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    die "candidate version is not MAJOR.MINOR.PATCH: $output"
   fi
   if [[ -n "$STRIPPED_VERSION" ]]; then
     if [[ "$version_part" != "$STRIPPED_VERSION" ]]; then
@@ -775,20 +791,22 @@ install_program() {
 
   tmpdir="$(mktemp -d)"
   # cleanup on success or failure; expand now so trap sees value
-  # shellcheck disable=SC2016
-  trap 'rm -rf "$tmpdir"' EXIT
+  # shellcheck disable=SC2064
+  trap "rm -rf \"$tmpdir\"" EXIT
 
   echo "Downloading $program from $url ..." >&2
 
-  # Attempt to download executable; classify 404 as Cargo-fallback trigger, other errors as hard failure
+  # Attempt to download executable; classify 404 as Cargo-fallback trigger, other errors as hard failure.
+  # Bounded like the Rust updater (`exec.rs`): --max-time, --max-filesize
+  # (64 MiB), and a program User-Agent so a mirror cannot hang or fill disk.
   set +e
-  curl -fsSL -o "${tmpdir}/${asset}" "$url"
+  curl -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}" "$url"
   local curl_status=$?
   set -e
 
   if [[ $curl_status -ne 0 ]]; then
     local http_code
-    http_code="$(curl -s -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")"
+    http_code="$(curl -fsSL --max-time 15 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")"
     if [[ "$http_code" == "404" ]]; then
       echo "No prebuilt $program asset at $url (HTTP 404); trying Cargo fallback..." >&2
       rm -rf "$tmpdir"
@@ -803,7 +821,7 @@ install_program() {
   fi
 
   echo "Downloading checksum ${sha_url} ..." >&2
-  if ! curl -fsSL -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
+  if ! curl -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
     die "failed to download checksum for $asset from $sha_url"
   fi
 

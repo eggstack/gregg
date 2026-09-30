@@ -171,9 +171,9 @@ mod tests {
 
     #[test]
     fn multiple_hooks_do_not_stack() {
-        // The Once guard ensures the hook is only installed once.
-        // Calling the installation logic multiple times should not
-        // create multiple hooks.
+        // Save and restore the ambient hook so this test never pollutes
+        // other tests: `take_hook()` discards the installed hook.
+        let saved = std::panic::take_hook();
         let hook1 = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             restore_terminal();
@@ -189,7 +189,7 @@ mod tests {
             }));
         });
 
-        // Clean up: restore default hook.
-        let _ = std::panic::take_hook();
+        // Restore the ambient hook.
+        std::panic::set_hook(saved);
     }
 }

@@ -113,4 +113,4 @@ target in all consumers at once, never in one place alone.
   kill/reap (no orphaned compilers), no predictable shared-temp pathnames.
   `exit 4` mapping is caller-owned; the shared crate returns
   `PermissionDenied` with a platform-correct hint.
-- Publish order: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+- Publish order: `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.

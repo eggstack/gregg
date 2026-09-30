@@ -124,12 +124,14 @@ The daemon-provided disk/network aggregates are intentionally not checked
 against detail-record sums because their accounting sets may differ.
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 16 structured kinds (`CpuFrequencyZero`,
+live-metrics validation adds 18 structured kinds (`CpuFrequencyZero`,
 `TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`, `DiskIoNameInvalid`/`TooLong`,
-`DuplicateDiskIoId`, `TooManyNetworkInterfaces`, `NetworkInterfaceIdInvalid`/`TooLong`,
+`DuplicateDiskIoId`, `DuplicateDriveName`, `UnknownDriveAssociation`,
+`TooManyNetworkInterfaces`, `NetworkInterfaceIdInvalid`/`TooLong`,
 `NetworkInterfaceNameInvalid`/`TooLong`, `DuplicateNetworkInterfaceId`,
-`ZeroCapacity`, `LoopbackAggregateMember`, `RateExceedsMaximum`, plus
-identity/collection bounds), for 32 `ViolationKindV2` variants total.
+`ZeroCapacity`, `LoopbackAggregateMember`, `RateExceedsMaximum` (aggregates
+and per-device/per-interface rates), plus
+identity/collection bounds), for 34 `ViolationKindV2` variants total.
 
 ## Health responses
 

@@ -77,6 +77,9 @@ jobs:
         run: cargo check --workspace --all-targets --all-features
 
       - name: Native macOS collector smoke
+        run: cargo test -p gregg-host --all-features -- macos
+
+      - name: macOS adapter smoke
         run: cargo test -p greggd --all-features -- collector::macos
 
   windows:

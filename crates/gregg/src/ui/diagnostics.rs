@@ -9,7 +9,7 @@ use ratatui::Frame;
 
 /// Render a message when no systems are configured.
 pub fn render_empty_config(f: &mut Frame, area: Rect) {
-    let msg = "No sources configured. Use: gregg add HOST[:PORT] or gregg eggpool add HOST[:PORT]";
+    let msg = "No sources configured. Use: gregg add HOST:PORT or gregg eggpool add HOST:PORT";
     let paragraph =
         Paragraph::new(Line::from(Span::raw(msg))).style(Style::default().fg(Color::Yellow));
     f.render_widget(paragraph, area);

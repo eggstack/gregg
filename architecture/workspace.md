@@ -1,22 +1,24 @@
 # Workspace and crate boundaries
 
-The repository is a Cargo workspace with four members under `crates/`
-(three user-facing plus one internal shared mechanism):
+The repository is a Cargo workspace with five members under `crates/`
+(three user-facing plus two shared libraries):
 
 ```text
 crates/gregg-protocol    library    versioned wire types and compatibility rules
 crates/gregg-update      library    shared binary-first self-update mechanics (internal, Plan 104)
+crates/gregg-host        library    native host telemetry (Linux/macOS/Windows/FreeBSD, rate math, slow probe)
 crates/greggd           bin + lib  Linux/macOS/Windows metrics daemon + service-management CLI (lib exposes the collector for integration tests)
 crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
-The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux, macOS, and Windows x86-64.
+The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux, macOS, and Windows x86-64. `gregg-host` additionally carries a FreeBSD backend (Plan 136), qualified on FreeBSD CI; the full `greggd` product remains Linux/macOS/Windows.
 
 ## Dependency direction
 
 ```text
 gregg-protocol  ◄── greggd
 gregg-protocol  ◄── gregg
+gregg-host      ◄── greggd
 gregg-update    ◄── greggd
 gregg-update    ◄── gregg
 ```
@@ -24,14 +26,20 @@ gregg-update    ◄── gregg
 Allowed:
 
 - `gregg-protocol` depends only on narrow serialization and error crates.
+- `gregg-host` is runtime-neutral and protocol-neutral; native collectors
+  (`linux/macos/windows/freebsd/`), shared rate math (`src/rate.rs`), and
+  the `DriveRefreshCache` slow probe. Never depends on app crates, service
+  managers, or the protocol; re-exported via `greggd::collector`.
 - `gregg-update` depends only on transport/staging/replacement crates
   (`serde_json`, `thiserror`, `sha2`, `self-replace`, `tempfile`); no
   protocol, TUI, EggPool, or service-manager concepts.
-- `greggd` and `gregg` may each depend on `gregg-protocol` and `gregg-update`.
+- `greggd` and `gregg` may each depend on `gregg-protocol` and `gregg-update`; `greggd` additionally depends on `gregg-host`.
 
 Forbidden:
 
 - `gregg-protocol` depending on any other workspace crate.
+- `gregg-host` depending on either application crate, on service-manager
+  concepts, or on the wire protocol.
 - `gregg-update` depending on either application crate, on service-manager
   concepts, or on the wire protocol.
 - `greggd` depending on `gregg`, or vice versa.
@@ -54,9 +62,12 @@ Within each binary crate, the following are kept separate:
 
 ## Collector module boundary
 
-The daemon's collector lives under `crates/greggd/src/collector/`. Platform-specific
+Native telemetry lives in `gregg-host` (`src/linux/`, `src/macos/`,
+`src/windows/`, `src/freebsd/` plus shared `src/rate.rs` and
+`src/slow_probe.rs`). The daemon's thin adapters live under
+`crates/greggd/src/collector/`. Platform-specific
 collectors are `cfg(target_os = ...)`-gated and share the `SystemCollector` trait
-defined in `collector/mod.rs`. Only one platform module is compiled per target.
+defined in `collector/mod.rs` (re-exporting `gregg_host::DriveRefreshCache`). Only one platform module is compiled per target.
 
 ## HTTP server module
 
@@ -432,9 +443,10 @@ The workspace enables `clippy::pedantic` as a warning (not an error) so that
 contributors see style suggestions without breaking the build on unrelated
 changes. All members deny `unsafe_code` through the workspace lint table.
 Narrowly scoped `#[allow(unsafe_code)]` sites with documented safety
-invariants are the only exceptions: the collectors
-(`greggd/src/collector/linux/source.rs` for `statvfs`,
-`collector/macos/ffi.rs` for Mach, `collector/windows/source.rs`), the
+invariants are the only exceptions: the native collectors
+(`gregg-host/src/linux/source.rs` for `statvfs`,
+`gregg-host/src/macos/ffi.rs` for Mach, `gregg-host/src/windows/source.rs`,
+`gregg-host/src/freebsd/source.rs`), the
 `greggd` startup privilege probe (`startup/install.rs` for `geteuid`), and
 the client config lock (`gregg/src/config/lock.rs`, `config/store.rs`,
 `bin/lock_helper.rs` for `flock`/`LockFileEx`) plus the client executable

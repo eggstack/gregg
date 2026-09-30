@@ -288,6 +288,7 @@ require_command python3
 [[ -x "${BINARY}" ]] || die "binary not found or not executable: ${BINARY}"
 is_nonnegative_number "${STARTUP_DEADLINE_SECS}" || die "invalid STARTUP_DEADLINE_SECS"
 is_nonnegative_number "${SHUTDOWN_DEADLINE_SECS}" || die "invalid SHUTDOWN_DEADLINE_SECS"
+is_nonnegative_number "${POLL_INTERVAL_SECS}" || die "invalid POLL_INTERVAL_SECS"
 is_positive_integer "${MAX_PORT_ATTEMPTS}" || die "invalid MAX_PORT_ATTEMPTS"
 
 umask 077

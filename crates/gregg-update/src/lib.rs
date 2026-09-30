@@ -193,7 +193,13 @@ pub fn prepare_candidate(
         return Ok((true, staged));
     }
 
-    let target = target_opt.expect("supported target checked above");
+    let Some(target) = target_opt else {
+        return Err(UpdateError::Io(format!(
+            "no supported prebuilt target for {}/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+        )));
+    };
     let (asset_url, sha_url) = github_urls(&spec.program_name, target, latest);
     eprintln!(
         "Latest {} is {latest} (current {current}); downloading {asset_url} ...",

@@ -29,11 +29,14 @@ if [[ "$ZIG_VERSION" != "0.14.0" && -z "${ZIG_SHA256:-}" ]]; then
   exit 1
 fi
 ZIG_SHA256="${ZIG_SHA256:-$ZIG_SHA256_DEFAULT}"
-curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o /tmp/zig.tar.xz
-echo "${ZIG_SHA256}  /tmp/zig.tar.xz" | sha256sum -c -
+ZIG_TMPDIR="$(mktemp -d)"
+trap 'rm -rf "$ZIG_TMPDIR"' EXIT
+curl -fsSL --max-time 120 "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o "$ZIG_TMPDIR/zig.tar.xz"
+echo "${ZIG_SHA256}  $ZIG_TMPDIR/zig.tar.xz" | sha256sum -c -
 mkdir -p "$HOME/.local/zig"
-tar -xf /tmp/zig.tar.xz -C "$HOME/.local/zig" --strip-components=1
-rm -f /tmp/zig.tar.xz
+tar -xf "$ZIG_TMPDIR/zig.tar.xz" -C "$HOME/.local/zig" --strip-components=1
+rm -rf "$ZIG_TMPDIR"
+trap - EXIT
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   echo "$HOME/.local/zig" >> "$GITHUB_PATH"
 fi

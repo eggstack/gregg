@@ -321,7 +321,7 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
     use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
-    const IO_TIMEOUT: Duration = Duration::from_millis(750);
+    const IO_TIMEOUT: Duration = Duration::from_millis(1500);
 
     let candidates = stop_candidates(config_path);
     let mut last_io_error: Option<std::io::Error> = None;
@@ -330,7 +330,10 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
         // Local Unix-socket connect is essentially instantaneous for both
         // success (returning immediately) and common failures (NotFound
         // for missing paths, ConnectionRefused for stale listeners). The
-        // read/write timeouts below bound the protocol exchange.
+        // read/write timeouts below bound the protocol exchange. Client
+        // timeout (1500ms) exceeds the server per-connection
+        // `CONTROL_CLIENT_TIMEOUT` (1s) so a slow-but-valid stop is not
+        // misclassified `Uncertain` while the daemon completes it.
         let mut stream = match UnixStream::connect(candidate) {
             Ok(stream) => stream,
             Err(e) => {
@@ -339,8 +342,14 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
             }
         };
 
-        let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+        if let Err(e) = stream.set_read_timeout(Some(IO_TIMEOUT)) {
+            record_stop_error(&mut last_io_error, e);
+            continue;
+        }
+        if let Err(e) = stream.set_write_timeout(Some(IO_TIMEOUT)) {
+            record_stop_error(&mut last_io_error, e);
+            continue;
+        }
 
         if let Err(e) = stream.write_all(STOP_COMMAND) {
             record_stop_error(&mut last_io_error, e);

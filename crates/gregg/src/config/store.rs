@@ -72,6 +72,11 @@ pub(crate) fn set_secure_permissions(file: &fs::File) -> io::Result<()> {
 }
 
 /// Remove temporary config files left by an interrupted atomic write.
+///
+/// Only files older than `STALE_TEMP_AGE` are removed: a concurrent writer's
+/// in-flight temp matches the same `.gregg-*.toml.tmp` pattern and must not
+/// be unlinked mid-write. Best-effort: all errors are swallowed (with a
+/// warning on Windows) so cleanup never fails a user load/write.
 pub(crate) fn cleanup_stale_temps(dir: &Path) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
@@ -81,10 +86,21 @@ pub(crate) fn cleanup_stale_temps(dir: &Path) -> io::Result<()> {
             .is_some_and(|name| name.starts_with(".gregg-") && name.ends_with(".toml.tmp"))
             && entry.file_type()?.is_file()
         {
+            // Age gate: skip recent files that may belong to a concurrent
+            // writer. Missing mtime or clock skew fails closed (skip).
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+                .is_some_and(|age| age >= STALE_TEMP_AGE);
+            if !stale {
+                continue;
+            }
             match fs::remove_file(entry.path()) {
                 Ok(()) => {}
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                // On Windows, a stale temp may be briefly locked by antivirus
+                // A stale temp may be briefly locked by antivirus
                 // or a concurrent reader; treat as non-fatal best-effort.
                 Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
                     #[cfg(windows)]
@@ -124,9 +140,8 @@ pub(crate) fn sync_parent_directory(dir: &Path) -> io::Result<()> {
     let file = match options.open(dir) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            // On Windows, opening a directory for fsync may require privileges
-            // not available in all CI environments; treat as non-fatal best-effort.
-            #[cfg(windows)]
+            // Opening a directory for fsync may require privileges
+            // not available in all environments; treat as non-fatal best-effort.
             eprintln!(
                 "warning: sync_parent_directory could not open {}: {}",
                 dir.display(),
@@ -139,7 +154,6 @@ pub(crate) fn sync_parent_directory(dir: &Path) -> io::Result<()> {
     match file.sync_all() {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-            #[cfg(windows)]
             eprintln!(
                 "warning: sync_parent_directory sync failed for {}: {}",
                 dir.display(),
@@ -153,6 +167,11 @@ pub(crate) fn sync_parent_directory(dir: &Path) -> io::Result<()> {
 
 /// Default lock acquisition timeout in milliseconds.
 pub(crate) const LOCK_TIMEOUT_MS: u64 = 5_000;
+
+/// Minimum age before a `.gregg-*.toml.tmp` file is considered stale and
+/// eligible for cleanup. Prevents deleting a concurrent writer's in-flight
+/// temp, which matches the same filename pattern.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Configuration store with advisory locking.
 pub struct ConfigStore {
@@ -194,7 +213,7 @@ impl ConfigStore {
     /// invalid.
     #[allow(dead_code)]
     pub fn load_existing(&self) -> Result<Config, ConfigError> {
-        self.cleanup_stale_temps()?;
+        self.cleanup_stale_temps();
         Config::load(&self.path)
     }
 
@@ -205,7 +224,7 @@ impl ConfigStore {
     /// Returns [`ConfigError`] if the file exists but cannot be read or
     /// parsed.
     pub fn load_or_default(&self) -> Result<Config, ConfigError> {
-        self.cleanup_stale_temps()?;
+        self.cleanup_stale_temps();
         match Config::load(&self.path) {
             Ok(config) => Ok(config),
             Err(error) if matches!(&error, ConfigError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound) => {
@@ -215,23 +234,19 @@ impl ConfigStore {
         }
     }
 
-    fn cleanup_stale_temps(&self) -> Result<(), ConfigError> {
+    fn cleanup_stale_temps(&self) {
         let Some(dir) = self.path.parent() else {
-            return Ok(());
+            return;
         };
         let dir = if dir.as_os_str().is_empty() {
             Path::new(".")
         } else {
             dir
         };
-        match cleanup_stale_temps(dir) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(ConfigError::Io {
-                path: dir.to_path_buf(),
-                source,
-            }),
-        }
+        // Best-effort: cleanup must never fail a user load/write.
+        // Age-gated above, so a concurrent writer's in-flight temp is
+        // skipped; any residual error is swallowed.
+        let _ = cleanup_stale_temps(dir);
     }
 
     /// Atomically persist a configuration.

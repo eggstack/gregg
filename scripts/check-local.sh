@@ -102,7 +102,7 @@ check_version_consistency() {
 
     local crate
     local manifest
-    for crate in crates/gregg-protocol crates/gregg-update crates/greggd crates/gregg; do
+    for crate in crates/gregg-protocol crates/gregg-update crates/gregg-host crates/greggd crates/gregg; do
         manifest="${crate}/Cargo.toml"
         if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${manifest}"; then
             echo "error: ${manifest} is missing version.workspace = true" >&2
@@ -137,8 +137,28 @@ check_version_consistency() {
         done <<< "${dependency_lines}"
         done
     done
+    # greggd additionally pins gregg-host exactly.
+    manifest="crates/greggd/Cargo.toml"
+    dependency_lines="$(grep -E "^[[:space:]]*gregg-host[[:space:]]*=" "${manifest}" || true)"
+    if [[ -z "${dependency_lines}" ]]; then
+        echo "error: ${manifest} has no gregg-host dependency declaration" >&2
+        return 1
+    fi
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        if [[ "${line}" =~ version[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
+            dependency_version="${BASH_REMATCH[1]}"
+        else
+            echo "error: ${manifest} gregg-host dependency has no registry version" >&2
+            return 1
+        fi
+        if [[ "${dependency_version}" != "${workspace_version_value}" ]]; then
+            echo "error: ${manifest} gregg-host dependency version ${dependency_version} != workspace ${workspace_version_value}" >&2
+            return 1
+        fi
+    done <<< "${dependency_lines}"
 
-    echo "  workspace version ${workspace_version_value}; all members inherit it and gregg-protocol/gregg-update constraints match"
+    echo "  workspace version ${workspace_version_value}; all members inherit it and gregg-protocol/gregg-update/gregg-host constraints match"
 }
 
 if [[ "${MODE}" == "release" ]]; then
@@ -163,6 +183,9 @@ if [[ "${MODE}" == "release" ]]; then
 
     step "cargo package --list (gregg-update)"
     run_or_fail cargo package --list -p gregg-update
+
+    step "cargo package --list (gregg-host)"
+    run_or_fail cargo package --list -p gregg-host
 
     step "cargo package --list (greggd)"
     run_or_fail cargo package --list -p greggd

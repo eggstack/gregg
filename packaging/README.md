@@ -107,7 +107,7 @@ The script:
   prebuilt candidate, including SCM-safe stop/replace/register/restart on
   Windows;
 - treats a checksum or version mismatch as a hard error (no Cargo fallback);
-- after a verified `greggd` install, whether prebuilt or Cargo-staged, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary, not duplicated in shell: when privileged it runs `sudo greggd startup install` (systemd: `daemon-reload` + `enable` + `start`/`restart`; launchd: `bootstrap` + `kickstart -k`; cron: idempotent `# greggd managed watchdog` block). When unprivileged on a systemd/launchd host it prints the exact elevated `sudo <exe> startup install --method <...>` and does **not** silently fall back to cron; on a cron host it installs the user-local crontab without elevation. The client `gregg` has no startup behavior.
+- after a verified `greggd` install, whether prebuilt or Cargo-staged, delegates startup to `greggd startup install` (auto) so systemd/launchd/cron logic lives in the binary, not duplicated in shell: when already privileged it runs `"${DEST_DIR}/greggd" startup install` directly (systemd: `daemon-reload` + `enable` + `start`/`restart`; launchd: `bootstrap` + `kickstart -k`; cron: idempotent `# greggd managed watchdog` block). When unprivileged on a systemd/launchd host it prints the exact elevated `sudo <exe> startup install --method <...>` and does **not** silently fall back to cron; on a cron host it installs the user-local crontab without elevation. The client `gregg` has no startup behavior.
 
 No-argument behaviour: attached to an interactive terminal, a tiny selector is
 shown; piped/noninteractive without a component prints concise usage and exits
@@ -119,7 +119,7 @@ nonzero.
 irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
 .\packaging\install.ps1 -Component Gregg
 .\packaging\install.ps1 -Component Greggd
-.\packaging\install.ps1 -Component Both -Version 1.0.11
+.\packaging\install.ps1 -Component Both -Version 1.0.14
 ```
 
 Equivalent mapping (`AMD64` → `x86_64-pc-windows-msvc`), `Invoke-WebRequest`

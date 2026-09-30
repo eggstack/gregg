@@ -293,6 +293,8 @@ function Invoke-CargoFallback {
         if ($LASTEXITCODE -ne 0) { throw "staged $Program failed version check: $out" }
         if (-not ("$out".StartsWith("$Program "))) { throw "staged version output does not start with '$Program ': $out" }
         $verPart = ("$out" -split ' ')[1]
+        if ("$out" -ne "$Program $verPart") { throw "staged version output has extra content: $out" }
+        if ($verPart -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "staged version is not MAJOR.MINOR.PATCH: $out" }
         if ($StrippedVersion -and $verPart -ne $StrippedVersion) { throw "staged version $verPart != requested $StrippedVersion" }
         Write-Host "Verified candidate: $out"
 
@@ -346,7 +348,7 @@ function Install-Program {
         throw "constructed URL is not under expected repo: $Url"
     }
 
-    $Tmp = Join-Path $env:TEMP "gregg-install-$(Get-Random)-$Program"
+    $Tmp = Join-Path $env:TEMP ("gregg-install-" + [System.IO.Path]::GetRandomFileName() + "-$Program")
     New-Item -ItemType Directory -Path $Tmp -Force | Out-Null
     try {
         $Candidate = Join-Path $Tmp $Asset
@@ -356,7 +358,7 @@ function Install-Program {
         $downloadSucceeded = $true
         $httpCode = ""
         try {
-            Invoke-WebRequest -Uri $Url -OutFile $Candidate -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri $Url -OutFile $Candidate -UseBasicParsing -TimeoutSec 100 -ErrorAction Stop
         } catch {
             $downloadSucceeded = $false
             # Try to extract HTTP status
@@ -366,7 +368,7 @@ function Install-Program {
             } else {
                 # Fallback: probe with a HEAD
                 try {
-                    $probe = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -ErrorAction Stop
+                    $probe = Invoke-WebRequest -Uri $Url -Method Head -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
                     $httpCode = $probe.StatusCode
                 } catch {
                     if ($_.Exception.Response) { $httpCode = [int]$_.Exception.Response.StatusCode } else { $httpCode = "000" }
@@ -385,14 +387,15 @@ function Install-Program {
 
         Write-Host "Downloading checksum $ShaUrl ..."
         try {
-            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaFile -UseBasicParsing -ErrorAction Stop
+            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaFile -UseBasicParsing -TimeoutSec 100 -ErrorAction Stop
         } catch {
             throw "failed to download checksum for $Asset from $ShaUrl : $($_.Exception.Message)"
         }
 
-        # Verify SHA-256 before execution
+        # Verify SHA-256 before execution (lowercase + 64 hex digits,
+        # matching the Rust updater contract).
         $Expected = ((Get-Content -LiteralPath $ShaFile -Raw).Split()[0]).Trim().ToLower()
-        if (-not $Expected -or $Expected.Length -ne 64) {
+        if (-not $Expected -or $Expected -notmatch '^[0-9a-f]{64}$') {
             throw "checksum file is empty or malformed: $ShaFile"
         }
         $Actual = (Get-FileHash -Algorithm SHA256 -Path $Candidate).Hash.ToLower()
@@ -403,11 +406,15 @@ function Install-Program {
         }
         Write-Host "Checksum OK: $Actual"
 
-        # Verify candidate version before install
+        # Verify candidate version before install: exact "<program> X.Y.Z",
+        # matching the Rust updater contract (no extra fields, no
+        # surrounding whitespace beyond the single separator).
         $out = & $Candidate version 2>&1
         if ($LASTEXITCODE -ne 0) { throw "candidate $Program failed 'version' check: $out" }
         if (-not $out.StartsWith("$Program ")) { throw "candidate version output does not start with '$Program ': $out" }
         $verPart = ($out -split ' ')[1]
+        if ("$out" -ne "$Program $verPart") { throw "candidate version output has extra content: $out" }
+        if ($verPart -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') { throw "candidate version is not MAJOR.MINOR.PATCH: $out" }
         if ($StrippedVersion -and $verPart -ne $StrippedVersion) { throw "candidate version $verPart != requested $StrippedVersion (output: $out)" }
         Write-Host "Verified candidate: $out"
 

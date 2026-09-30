@@ -142,14 +142,8 @@ mod tests {
 
     #[test]
     fn checksum_parser() {
-        let dir = std::env::temp_dir().join(format!(
-            "gregg-update-test-checksum-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::create_dir_all(&dir);
+        let temp = crate::stage::create_temp_dir("gregg-update-test-checksum").unwrap();
+        let dir = temp.path();
         let path = dir.join("test.sha256");
         fs::write(
             &path,
@@ -160,38 +154,24 @@ mod tests {
             parse_checksum_file(&path).unwrap(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn checksum_parser_rejects_garbage() {
-        let dir = std::env::temp_dir().join(format!(
-            "gregg-update-test-checksum-bad-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::create_dir_all(&dir);
+        let temp = crate::stage::create_temp_dir("gregg-update-test-checksum-bad").unwrap();
+        let dir = temp.path();
         let empty = dir.join("empty.sha256");
         fs::write(&empty, "").unwrap();
         assert!(parse_checksum_file(&empty).is_err());
         let short = dir.join("short.sha256");
         fs::write(&short, "abc123  file\n").unwrap();
         assert!(parse_checksum_file(&short).is_err());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn checksum_mismatch_is_rejected() {
-        let dir = std::env::temp_dir().join(format!(
-            "gregg-update-test-mismatch-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::create_dir_all(&dir);
+        let temp = crate::stage::create_temp_dir("gregg-update-test-mismatch").unwrap();
+        let dir = temp.path();
         let file = dir.join("asset");
         fs::write(&file, b"tampered bytes").unwrap();
         let sha = dir.join("asset.sha256");
@@ -202,7 +182,6 @@ mod tests {
         .unwrap();
         let err = verify_checksum(&file, &sha).expect_err("tampered bytes must not verify");
         assert!(matches!(err, UpdateError::ChecksumMismatch { .. }));
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

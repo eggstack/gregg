@@ -9,7 +9,7 @@ Guide agents through building, testing, and verifying changes to the gregg works
 
 ## When to use me
 
-Use this when making code changes, adding features, or fixing bugs in any of the four workspace crates (`gregg-protocol`, `gregg-update`, `greggd`, `gregg`).
+Use this when making code changes, adding features, or fixing bugs in any of the five workspace crates (`gregg-protocol`, `gregg-update`, `gregg-host`, `greggd`, `gregg`).
 
 ## Build and verify
 
@@ -28,13 +28,15 @@ Runs `cargo fmt --all -- --check` followed by `cargo test --workspace --all-targ
 ./scripts/check-local.sh --release
 ```
 
-Adds: Clippy, documentation, clean-tree check, version consistency, per-crate `cargo package --list` (all four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`), installed-binary v2 loopback smoke, and protocol dry-run.
+Adds: Clippy, documentation, clean-tree check, version consistency, per-crate `cargo package --list` (all five members: `gregg-protocol`, `gregg-update`, `gregg-host`, `greggd`, `gregg`), installed-binary v2 loopback smoke, and protocol dry-run.
 
 **Platform-native collector tests (run separately when focused coverage is needed):**
 
 ```bash
-cargo test -p greggd --all-features -- collector::linux     # Linux
-cargo test -p greggd --all-features -- collector::macos     # macOS
+cargo test -p gregg-host --all-features -- linux     # Linux native
+cargo test -p greggd --all-features -- collector::linux     # Linux adapter
+cargo test -p gregg-host --all-features -- macos     # macOS native
+cargo test -p greggd --all-features -- collector::macos     # macOS adapter
 cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows
 ```
 
@@ -42,6 +44,7 @@ cargo test -p greggd --all-targets --all-features -- collector::windows    # Win
 
 ```bash
 cargo test -p gregg-protocol --all-targets --all-features -- <test_name>
+cargo test -p gregg-host --all-targets --all-features -- <test_name>
 cargo test -p greggd --all-targets --all-features -- <test_name>
 cargo test -p gregg --all-targets --all-features -- <test_name>
 ```

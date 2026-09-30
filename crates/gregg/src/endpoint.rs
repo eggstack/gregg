@@ -445,9 +445,25 @@ pub fn validate_name(name: &str) -> Result<(), EndpointError> {
             reason: "name is empty".to_string(),
         });
     }
+    // Store the trimmed form: surrounding whitespace renders as padding
+    // artifacts and diverges from the eggpool path, which rejects
+    // `trimmed != name`.
+    if name != trimmed {
+        return Err(EndpointError::InvalidName {
+            reason: "name has surrounding whitespace".to_string(),
+        });
+    }
     if trimmed.chars().any(char::is_control) {
         return Err(EndpointError::InvalidName {
             reason: "name contains control characters".to_string(),
+        });
+    }
+    // `@`, `:`, `/` would make `nickname@host:port` ambiguous and let
+    // `user:pass@host:port` bypass the `HasCredentials` rejection by
+    // splitting off a `user:pass` nickname.
+    if trimmed.chars().any(|c| c == '@' || c == ':' || c == '/') {
+        return Err(EndpointError::InvalidName {
+            reason: "name contains '@', ':', or '/'".to_string(),
         });
     }
     if trimmed.len() > MAX_ENDPOINT_NAME_LEN {

@@ -413,7 +413,6 @@ fn sync_parent_directory(dir: &Path) -> std::io::Result<()> {
     let file = match options.open(dir) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            #[cfg(windows)]
             eprintln!(
                 "warning: sync_parent_directory could not open {}: {}",
                 dir.display(),
@@ -426,7 +425,6 @@ fn sync_parent_directory(dir: &Path) -> std::io::Result<()> {
     match file.sync_all() {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
-            #[cfg(windows)]
             eprintln!(
                 "warning: sync_parent_directory sync failed for {}: {}",
                 dir.display(),

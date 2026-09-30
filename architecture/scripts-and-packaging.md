@@ -251,9 +251,9 @@ Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
 `v*` tags and manual dispatch:
 
 - mandatory preflight via `scripts/release-preflight.sh`: workspace/member
-  version equality (including the `gregg-update` internal dependency),
+  version equality (including the `gregg-update`/`gregg-host` internal dependencies),
   tag points at HEAD, clean checkout, crates.io visibility for
-  `gregg-protocol`/`gregg-update`/`gregg`/`greggd`;
+  `gregg-protocol`/`gregg-update`/`gregg-host`/`gregg`/`greggd`;
 - five jobs (Linux x86_64/aarch64 with glibc 2.17 via `cargo-zigbuild` + Zig
   installed by `scripts/release-install-zig.sh`, macOS Intel/ARM64 native,
   Windows x86_64 native) each build both binaries, run `version`/`--help`,
@@ -277,7 +277,7 @@ release from prebuilt binaries.
 ## Build configuration
 
 **`Cargo.toml`** (workspace root):
-- Four members: `gregg-protocol`, `gregg-update`, `greggd`, `gregg`
+- Five members: `gregg-protocol`, `gregg-update`, `gregg-host`, `greggd`, `gregg`
 - One shared version from `[workspace.package]` (currently `1.0.14`),
    edition 2021, MSRV 1.89
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics

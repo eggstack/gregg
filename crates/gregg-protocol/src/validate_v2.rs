@@ -72,6 +72,10 @@ pub enum ViolationKindV2 {
     EmptyDriveName,
     /// A drive display name exceeded the protocol bound.
     DriveNameTooLong { max_bytes: usize },
+    /// A drive display name occurred more than once.
+    DuplicateDriveName,
+    /// A disk-I/O `drive_name` association does not match any drive in the payload.
+    UnknownDriveAssociation,
     /// The drive collection exceeded the protocol bound.
     TooManyDrives { max_entries: usize },
     /// CPU frequency was explicitly reported as zero.
@@ -143,6 +147,10 @@ impl fmt::Display for ViolationKindV2 {
             Self::EmptyDriveName => f.write_str("drive name must not be empty"),
             Self::DriveNameTooLong { max_bytes } => {
                 write!(f, "drive name exceeds maximum length of {max_bytes} bytes")
+            }
+            Self::DuplicateDriveName => f.write_str("drive names must be unique"),
+            Self::UnknownDriveAssociation => {
+                f.write_str("disk-I/O drive association must match a payload drive")
             }
             Self::TooManyDrives { max_entries } => {
                 write!(
@@ -323,6 +331,15 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                     format!("{prefix}.available_bytes"),
                 ));
             }
+            if drives[..index]
+                .iter()
+                .any(|previous| previous.name == drive.name)
+            {
+                violations.push(ValidationViolationV2::new(
+                    ViolationKindV2::DuplicateDriveName,
+                    format!("{prefix}.name"),
+                ));
+            }
         }
     }
 
@@ -333,7 +350,11 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         ));
     }
     if let Some(disk_io) = &payload.disk_io {
-        validate_disk_io(disk_io, &mut violations);
+        validate_disk_io(
+            disk_io,
+            payload.drives.as_deref().unwrap_or(&[]),
+            &mut violations,
+        );
     }
     if let Some(network) = &payload.network {
         validate_network(network, &mut violations);
@@ -346,7 +367,11 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
     }
 }
 
-fn validate_disk_io(disk_io: &crate::v2::DiskIoPayload, out: &mut Vec<ValidationViolationV2>) {
+fn validate_disk_io(
+    disk_io: &crate::v2::DiskIoPayload,
+    drives: &[crate::v2::DriveMetrics],
+    out: &mut Vec<ValidationViolationV2>,
+) {
     check_rate(
         disk_io.aggregate_read_bytes_per_sec,
         "disk_io.aggregate_read_bytes_per_sec",
@@ -366,7 +391,7 @@ fn validate_disk_io(disk_io: &crate::v2::DiskIoPayload, out: &mut Vec<Validation
         ));
     }
     for (index, device) in disk_io.devices.iter().enumerate() {
-        validate_disk_io_device(index, device, out);
+        validate_disk_io_device(index, device, drives, out);
         if disk_io.devices[..index]
             .iter()
             .any(|previous| previous.id == device.id)
@@ -382,6 +407,7 @@ fn validate_disk_io(disk_io: &crate::v2::DiskIoPayload, out: &mut Vec<Validation
 fn validate_disk_io_device(
     index: usize,
     device: &DiskIoMetrics,
+    drives: &[crate::v2::DriveMetrics],
     out: &mut Vec<ValidationViolationV2>,
 ) {
     let prefix = format!("disk_io.devices[{index}]");
@@ -402,7 +428,26 @@ fn validate_disk_io_device(
     validate_disk_io_name(&device.name, format!("{prefix}.name"), out);
     if let Some(drive_name) = &device.drive_name {
         validate_disk_io_name(drive_name, format!("{prefix}.drive_name"), out);
+        // Only enforce the association when the payload actually carries a
+        // drive list: `drives == None` means unavailable/legacy, where the
+        // reference cannot be verified.
+        if !drives.is_empty() && !drives.iter().any(|drive| &drive.name == drive_name) {
+            out.push(ValidationViolationV2::new(
+                ViolationKindV2::UnknownDriveAssociation,
+                format!("{prefix}.drive_name"),
+            ));
+        }
     }
+    check_rate(
+        device.read_bytes_per_sec,
+        format!("{prefix}.read_bytes_per_sec"),
+        out,
+    );
+    check_rate(
+        device.write_bytes_per_sec,
+        format!("{prefix}.write_bytes_per_sec"),
+        out,
+    );
 }
 
 fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViolationV2>) {
@@ -510,6 +555,16 @@ fn validate_network_interface(
     validate_capacity(
         interface.tx_capacity_bps,
         format!("{prefix}.tx_capacity_bps"),
+        out,
+    );
+    check_rate(
+        interface.rx_bytes_per_sec,
+        format!("{prefix}.rx_bytes_per_sec"),
+        out,
+    );
+    check_rate(
+        interface.tx_bytes_per_sec,
+        format!("{prefix}.tx_bytes_per_sec"),
         out,
     );
     if interface.is_loopback && interface.aggregate_member {
@@ -1168,6 +1223,102 @@ mod tests {
                 "missing RateExceedsMaximum for {field}"
             );
         }
+    }
+
+    #[test]
+    fn absurd_per_device_throughput_is_rejected() {
+        use crate::v2::MAX_RATE_BYTES_PER_SEC;
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "sda".into(),
+            name: "sda".into(),
+            read_bytes_per_sec: MAX_RATE_BYTES_PER_SEC + 1,
+            write_bytes_per_sec: u64::MAX,
+            drive_name: None,
+        }]));
+        payload.network = Some(valid_network(vec![NetworkInterfaceMetrics {
+            id: "eth0".into(),
+            name: "eth0".into(),
+            rx_bytes_per_sec: u64::MAX,
+            tx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC + 1,
+            rx_capacity_bps: None,
+            tx_capacity_bps: None,
+            is_loopback: false,
+            aggregate_member: false,
+        }]));
+        let error = payload.validate().unwrap_err();
+        for field in [
+            "disk_io.devices[0].read_bytes_per_sec",
+            "disk_io.devices[0].write_bytes_per_sec",
+            "network.interfaces[0].rx_bytes_per_sec",
+            "network.interfaces[0].tx_bytes_per_sec",
+        ] {
+            assert!(
+                error.iter().any(|violation| violation.field == field
+                    && matches!(violation.kind, ViolationKindV2::RateExceedsMaximum { .. })),
+                "missing RateExceedsMaximum for {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_drive_names_are_rejected() {
+        let payload = valid_payload(Some(vec![
+            DriveMetrics {
+                name: "/".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+                available_bytes: None,
+            },
+            DriveMetrics {
+                name: "/".into(),
+                used_bytes: 1,
+                total_bytes: 2,
+                available_bytes: None,
+            },
+        ]));
+        let error = payload.validate().unwrap_err();
+        assert!(error
+            .iter()
+            .any(|violation| violation.field == "drives[1].name"
+                && violation.kind == ViolationKindV2::DuplicateDriveName));
+    }
+
+    #[test]
+    fn dangling_drive_association_is_rejected() {
+        let mut payload = valid_payload(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 1,
+            total_bytes: 2,
+            available_bytes: None,
+        }]));
+        payload.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "sda".into(),
+            name: "sda".into(),
+            read_bytes_per_sec: 1,
+            write_bytes_per_sec: 2,
+            drive_name: Some("/missing".into()),
+        }]));
+        let error = payload.validate().unwrap_err();
+        assert!(error.iter().any(
+            |violation| violation.field == "disk_io.devices[0].drive_name"
+                && violation.kind == ViolationKindV2::UnknownDriveAssociation
+        ));
+        // Matching association passes.
+        let mut ok = valid_payload(Some(vec![DriveMetrics {
+            name: "/".into(),
+            used_bytes: 1,
+            total_bytes: 2,
+            available_bytes: None,
+        }]));
+        ok.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "sda".into(),
+            name: "sda".into(),
+            read_bytes_per_sec: 1,
+            write_bytes_per_sec: 2,
+            drive_name: Some("/".into()),
+        }]));
+        ok.validate().expect("matching drive association validates");
     }
 
     #[test]

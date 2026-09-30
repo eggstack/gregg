@@ -29,8 +29,8 @@ commitments those plans must respect together.
 
 `gregg` is a private-LAN system monitor: a daemon (`greggd`) on each watched
 host exposes cached metrics over HTTP, and a terminal client (`gregg`) polls a
-small fleet and renders a live TUI. Two small libraries carry the shared
-contract and the shared self-update mechanism.
+small fleet and renders a live TUI. Three small libraries carry the shared
+contract, host telemetry, and the shared self-update mechanism.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -55,6 +55,11 @@ contract and the shared self-update mechanism.
 │ gregg-update (internal library)                         │
 │ binary-first self-update mechanics for gregg + greggd   │
 └─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ gregg-host (library)                                    │
+│ native host telemetry (Linux/macOS/Windows/FreeBSD)     │
+└─────────────────────────────────────────────────────────┘
 ```
 
 Strict one-way dependencies (enforced by manifests, see
@@ -63,17 +68,20 @@ Strict one-way dependencies (enforced by manifests, see
 ```
 gregg-protocol  ◄── greggd
 gregg-protocol  ◄── gregg
+gregg-host      ◄── greggd
 gregg-update    ◄── greggd
 gregg-update    ◄── gregg
 ```
 
 `greggd` and `gregg` never depend on each other. `gregg-protocol` depends on
-no workspace crate. `gregg-update` depends on neither app crate, nor service
+no workspace crate. `gregg-host` never depends on app crates, service
+managers, or the protocol. `gregg-update` depends on neither app crate, nor service
 managers, TUI, EggPool, or the wire protocol.
 
 | Crate | Path | Kind | Role | Deep dive |
 |-------|------|------|------|-----------|
 | `gregg-protocol` | `crates/gregg-protocol/` | lib | JSON wire contract (v1/v2, capabilities, validation, health) | [gregg-protocol.md](gregg-protocol.md) |
+| `gregg-host` | `crates/gregg-host/` | lib | Native host telemetry (Linux/macOS/Windows/FreeBSD, rate math, slow probe) | [collectors.md](collectors.md) |
 | `gregg-update` | `crates/gregg-update/` | lib (internal) | Shared binary-first self-update mechanics | [gregg-update.md](gregg-update.md) |
 | `greggd` | `crates/greggd/` | bin+lib | Metrics daemon: collect, sample, serve, manage lifecycle | [greggd-daemon.md](greggd-daemon.md) |
 | `gregg` | `crates/gregg/` | lib + bin (+ `lock_helper` test helper) | Fleet client: manage endpoints, poll, reduce state, render TUI | [gregg-client.md](gregg-client.md) |
@@ -93,8 +101,8 @@ platform dependencies (`serde`, `serde_json`, `thiserror` only;
 - Schema v2: cross-platform shape with capability flags (`load_average`,
   `swap`, `memory_commit`, `cpu_iowait`), optional drives (≤32 entries),
   and additive live telemetry (CPU Hz, disk R/s/W/s, net Rx/s/Tx/s)
-  (`v2.rs`, `validate_v2.rs` — 32 `ViolationKindV2` variants: 16 base
-  + 16 live-telemetry/identity bounds).
+  (`v2.rs`, `validate_v2.rs` — 34 `ViolationKindV2` variants: 16 base
+  + 18 live-telemetry/identity bounds).
 - Health: `Ready` / `Warming` / `Failed` with coarse wire-safe categories
   (`health.rs`); validation returns `Vec<Violation>`, never serde errors.
 - Test fixtures: `test_support` builders + `tests/fixtures/` JSON payloads.
@@ -124,13 +132,15 @@ contract).
 ### greggd — the daemon
 
 Runs on each monitored host: collects via native OS interfaces only
-(`/proc`, Mach/sysctl/IOKit, Win32 — never external commands), samples on a
+(`/proc`, Mach/sysctl/IOKit, Win32, FreeBSD sysctl — never external commands), samples on a
 clock, serves cached immutable snapshots, and owns its OS lifecycle.
 Bin+lib split: reusable code returns errors (exit codes `0`/`1`/`2`/`3`/`4`
 are a binary-boundary concern).
 
-- `collector/{linux,macos,windows}/` + shared `rate.rs` (monotonic
-  counter baselines), `drives.rs` (dedup/sort/truncate), `error.rs`
+- `collector/{linux,macos,windows}/` platform adapters over `gregg-host`
+  (`linux/macos/windows/freebsd/` native collectors) + shared `rate.rs`
+  (monotonic counter baselines, re-exported via `greggd::collector`),
+  `drives.rs` (dedup/sort/truncate), `error.rs`
   (6 `CollectErrorKind`s). First sample is `Warming`; gaps re-baseline or
   omit — never fabricate zeroes.
 - `sampler.rs` (cadence, readiness, `Warming→Ready/Failed`), `server/`

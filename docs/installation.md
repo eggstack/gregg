@@ -27,8 +27,8 @@ privileged `greggd` command needs no trailing export: it installs to
 Pinned version:
 
 ```bash
-curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.12/install.sh | bash -s -- --version 1.0.12 gregg
-./packaging/install.sh --version 1.0.12 greggd
+curl -fsSL https://github.com/eggstack/gregg/releases/download/v1.0.14/install.sh | bash -s -- --version 1.0.14 gregg
+./packaging/install.sh --version 1.0.14 greggd
 ```
 
 The script requires bash. Piping to `sh` fails on Debian/Ubuntu, where `sh`
@@ -125,7 +125,7 @@ or as a regular user for `%LOCALAPPDATA%\Gregg` without service registration:
 irm https://github.com/eggstack/gregg/releases/latest/download/install.ps1 | iex
 .\install.ps1 -Component Gregg
 .\install.ps1 -Component Greggd
-.\install.ps1 -Component Both -Version 1.0.12
+.\install.ps1 -Component Both -Version 1.0.14
 ```
 
 The script detects `AMD64` → `x86_64-pc-windows-msvc`, downloads the

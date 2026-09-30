@@ -6,20 +6,22 @@ Deep detail lives in `architecture/` (index: `architecture/overview.md`); sequen
 
 ## Project structure
 
-Four Rust crates, strict one-way dependencies:
+Five Rust crates, strict one-way dependencies:
 
 ```
 gregg-protocol  ◄── greggd      (daemon, metrics, HTTP server)
 gregg-protocol  ◄── gregg       (client, TUI, polling)
+gregg-host      ◄── greggd      (native host telemetry)
 gregg-update    ◄── greggd      (shared self-update mechanics)
 gregg-update    ◄── gregg       (shared self-update mechanics)
 ```
 
 - `gregg-protocol`: wire types only (`serde`, `serde_json`, `thiserror`). No runtime/HTTP/terminal/platform deps. `#![forbid(unsafe_code)]`
-- `gregg-update`: internal binary-first self-update (version/target policy, bounded curl/Cargo, SHA-256, staging, replace). Knows nothing about service managers, TUI, EggPool, or wire protocol. Publishable; order is `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
-- `greggd`: bin+lib daemon. Collectors `crates/greggd/src/collector/{linux,macos,windows}/`; shared rate math `crates/greggd/src/collector/rate.rs`; startup `crates/greggd/src/startup/`; read-only diagnostics `crates/greggd/src/status.rs`.
+- `gregg-host`: native host telemetry (`linux/macos/windows/freebsd/` collectors, shared rate math `src/rate.rs`, `DriveRefreshCache` slow probe). Runtime-neutral and protocol-neutral; re-exported via `greggd::collector`.
+- `gregg-update`: internal binary-first self-update (version/target policy, bounded curl/Cargo, SHA-256, staging, replace). Knows nothing about service managers, TUI, EggPool, or wire protocol. Publishable; order is `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.
+- `greggd`: bin+lib daemon. Platform adapters `crates/greggd/src/collector/{linux,macos,windows}/` over `gregg-host`; startup `crates/greggd/src/startup/`; read-only diagnostics `crates/greggd/src/status.rs`.
 - `gregg`: TUI client (ratatui+crossterm). Event loop `crates/gregg/src/main.rs`; UI `crates/gregg/src/ui/`; config `crates/gregg/src/config/`; offline provenance `crates/gregg/src/poller.rs`.
-- `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-update` never depends on app crates, service managers, or the protocol.
+- `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-host` never depends on app crates, service managers, or the protocol. `gregg-update` never depends on app crates, service managers, or the protocol.
 → `architecture/workspace.md`
 
 ## Build and verify
@@ -36,14 +38,17 @@ Single / focused tests (mirror CI flags when touching that area):
 
 ```bash
 cargo test -p gregg-protocol --all-targets --all-features -- <test_name>
+cargo test -p gregg-host --all-targets --all-features -- <test_name>
 cargo test -p greggd --all-targets --all-features -- <test_name>
 cargo test -p gregg --all-targets --all-features -- <test_name>
-cargo test -p greggd --all-features -- collector::linux     # Linux native
-cargo test -p greggd --all-features -- collector::macos     # macOS native
+cargo test -p gregg-host --all-features -- linux     # Linux native
+cargo test -p greggd --all-features -- collector::linux     # Linux adapter
+cargo test -p gregg-host --all-features -- macos     # macOS native
+cargo test -p greggd --all-features -- collector::macos     # macOS adapter
 cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows native
 ```
 
-CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` and `gregg` builds + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo test --workspace --all-targets --all-features` on Rust 1.89.
+CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `gregg-host` native + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` and `gregg` builds + `scripts/smoke-windows.ps1` SCM smoke; MSRV job runs `cargo test --workspace --all-targets --all-features` on Rust 1.89.
 
 ## Key constraints
 
@@ -51,7 +56,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 
 - **MSRV 1.89.** `rust-toolchain.toml` pins stable channel; all crates inherit `rust-version = "1.89"`. Never change MSRV incidentally (see `architecture/workspace.md` Plan 117 decision).
 - **Clippy pedantic is warn, not error.** Don't add new warnings.
-- **Unsafe allowlist only, each block needs a safety comment:** `crates/greggd/src/collector/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs}`, `crates/greggd/src/startup/install.rs` (`geteuid`), `crates/gregg/src/config/lock.rs` (flock/LockFileEx) + `crates/gregg/src/cli.rs` (executable probe).
+- **Unsafe allowlist only, each block needs a safety comment:** `crates/gregg-host/src/{linux/source.rs (statvfs),macos/ffi.rs (Mach),windows/source.rs,freebsd/source.rs}`, `crates/greggd/src/startup/install.rs` (`geteuid`), `crates/gregg/src/config/lock.rs` (flock/LockFileEx) + `crates/gregg/src/cli.rs` (executable probe).
 - **No external commands for metrics.** Use `/proc`, Mach APIs, Windows native APIs.
 - **Live telemetry (freq, disk/network rates) is best-effort:** native cumulative counters + real monotonic elapsed time; reset/hotplug/unsupported re-baselines or omits that family without failing core readiness. Never fabricate zeroes; `R/s`/`W/s`/`Rx/s`/`Tx/s` are byte rates; freq is current OS-reported Hz (macOS may omit); network util is max(Rx,Tx) direction, loopback never in aggregate capacity.
 - **Config writes are atomic:** temp file → flush → rename → validate. Tests never sleep production intervals — inject clocks/short intervals.
@@ -91,11 +96,11 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 ## Schema protocol (`architecture/protocol.md`, `architecture/gregg-protocol.md`)
 
 - Client tries `/v2/status` first, falls back to v1 only on HTTP 404 from `/v2/status`. `/v2/status` is universal; `/v1/status` is Linux/macOS only (Windows 503).
-- Never fabricate: macOS `iowait_pct` null; Windows load/swap/iowait null, commit instead; `drives` null = unavailable/legacy, `[]` = none eligible; optional v2 freq/disk_io/network absent on old daemons stays absent. `system.name` = configured daemon name; `system.hostname` = native hostname. V2 caps required on all four fields; identity fields ≤512 UTF-8 bytes. `validate()` returns structured violations (V1: 9 kinds, V2 base: 16 + telemetry/identity bounds), not serde errors.
+- Never fabricate: macOS `iowait_pct` null; Windows load/swap/iowait null, commit instead; `drives` null = unavailable/legacy, `[]` = none eligible; optional v2 freq/disk_io/network absent on old daemons stays absent. `system.name` = configured daemon name; `system.hostname` = native hostname. V2 caps required on all four fields; identity fields ≤512 UTF-8 bytes. `validate()` returns structured violations (V1: 9 kinds, V2: 34 kinds), not serde errors.
 
 ## Versions and testing
 
-- All crates inherit workspace version; inter-crate dep versions must equal it. Publish order `gregg-protocol` → `gregg-update` → `greggd` → `gregg`. Ordinary CI never publishes; see `RELEASING.md`.
+- All crates inherit workspace version; inter-crate dep versions must equal it. Publish order `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`. Ordinary CI never publishes; see `RELEASING.md`.
 - Integration: `gregg-protocol/tests/integration.rs`, `greggd/tests/{linux_collector.rs,windows_smoke.rs}`; fixtures `gregg-protocol/tests/fixtures/` + `greggd/src/collector/test_fixtures/` (+ `live-metrics-v2.json` for optional-telemetry compat). `test_support` feature gates mock builders. `gregg` TUI drivers `mixed_fleet_evidence`/`sustained_workload` (`#[cfg(test)]`) run via `scripts/run-mixed-fleet-sustained.py` (pytest in `scripts/tests/`). `lock_helper` bin needs `test-helper` feature — plain `cargo test -p gregg` silently skips that test; use `--all-features` to run it.
 
 ## What not to do

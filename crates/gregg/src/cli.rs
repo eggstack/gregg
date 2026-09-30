@@ -370,6 +370,16 @@ fn cmd_eggpool_add(
                 crate::config::ConfigViolation::EggpoolAlreadyConfigured,
             ]));
         }
+        // On `--replace`, keep the existing stable ID instead of minting a
+        // new one: selection and memoization keys stay stable.
+        if replace {
+            if let Some(existing) = config.eggpool.as_ref() {
+                let mut entry = entry;
+                entry.id.clone_from(&existing.id);
+                config.eggpool = Some(entry);
+                return Ok(());
+            }
+        }
         config.eggpool = Some(entry);
         Ok(())
     })?;
@@ -565,6 +575,7 @@ fn parse_add_target(input: &str) -> Result<AddTarget, EndpointError> {
                 input: trimmed.to_string(),
             });
         }
+        let nick = nick.trim();
         if nick.is_empty() {
             return Err(EndpointError::InvalidName {
                 reason: "nickname prefix is empty".to_string(),
@@ -818,7 +829,7 @@ fn executable_exists_unix(cmd: &str) -> bool {
     };
     path_var
         .split(':')
-        .map(|dir| if dir.is_empty() { "." } else { dir })
+        .filter(|dir| !dir.is_empty())
         .map(std::path::Path::new)
         .map(|dir| dir.join(cmd))
         .any(|path| is_executable(&path))

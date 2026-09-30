@@ -86,7 +86,7 @@ impl std::fmt::Debug for StagedCandidate {
     }
 }
 
-/// Resolve the current executable, following one level of symlink so
+/// Resolve the current executable, canonicalizing symlinks so
 /// replacement targets the real installed file (mirroring `self-replace`
 /// semantics).
 pub fn current_exe_path() -> Result<PathBuf, UpdateError> {

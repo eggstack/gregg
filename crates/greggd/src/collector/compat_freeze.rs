@@ -341,8 +341,9 @@ mod tests {
             }])
         });
         // Immediate first request: a result arrives without an explicit
-        // follow-up request.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // follow-up request. Generous deadline: under full-workspace
+        // parallel load the background worker can starve for seconds.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut observed = None;
         while std::time::Instant::now() < deadline {
             if let Some(drives) = cache.poll() {

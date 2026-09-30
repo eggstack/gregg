@@ -9,6 +9,35 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Audit corrective pass (bugs.md, 2026-09-30):** minimal behavior-preserving
+  fixes across workspace drift, validation, daemon, client, updater, and
+  installers. Workspace/docs now name all five crates
+  (`gregg-protocol → gregg-update → gregg-host → greggd → gregg`), the
+  `gregg-host` native-telemetry role/boundary, FreeBSD backend, corrected
+  unsafe allowlist, and `gregg-host` coverage in version/package/release
+  checks plus macOS CI. Protocol v2 validation now caps per-device
+  disk-I/O and per-interface network rates at `MAX_RATE_BYTES_PER_SEC`,
+  rejects duplicate drive names, and rejects dangling `drive_name`
+  associations (new `DuplicateDriveName`/`UnknownDriveAssociation` kinds;
+  34 `ViolationKindV2` total). Daemon: `systemctl is-system-running` probe
+  requires exit success, control-socket client timeout raised above the
+  server 1s window with timeout errors surfaced, and dir-sync
+  `PermissionDenied` now warns on all platforms. Client: endpoint names
+  reject surrounding whitespace and `@`/`:`/`/` (closing the
+  `user:pass@host:port` nickname bypass), `PATH` lookup skips empty
+  components instead of probing `.`, EggPool `--replace` preserves the
+  stable ID, stale-temp cleanup is age-gated (5 min) and best-effort, and
+  the empty-config hint requires an explicit port. Updater: `curl`/`cargo`
+  discovery requires exit success, `probe_http_code` uses `-fsSL`,
+  `prepare_candidate` returns an error instead of `expect`, staging docs
+  match canonicalization, and checksum tests use exclusive `TempDir`s.
+  Installers verify lowercase 64-hex checksums and exact
+  `"<program> X.Y.Z"` versions, bound `curl` with `--max-time`/
+  `--max-filesize`/User-Agent, follow redirects on 404 probes, expand the
+  cleanup trap immediately, and use unpredictable temp names with
+  `-TimeoutSec` on Windows. Flaky drive-cache tests use a 10s deadline;
+  `check-local.ps1` runs `--all-targets --all-features`.
+
 - **Linux CPU-set cardinality boundary** (`gregg-host`, Plan 146): the
   CPU-list parser now bounds the number of *distinct CPU identities* Gregg
   materializes (8192, the same value as its logical-core safety target)

@@ -77,7 +77,7 @@ if [[ -n "$TAG" ]]; then
 fi
 
 # Verify every member manifests inherit the workspace version.
-for crate in crates/gregg-protocol crates/gregg-update crates/greggd crates/gregg; do
+for crate in crates/gregg-protocol crates/gregg-update crates/gregg-host crates/greggd crates/gregg; do
   manifest="$crate/Cargo.toml"
   if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$manifest"; then
     echo "error: $manifest missing version.workspace = true" >&2
@@ -86,8 +86,8 @@ for crate in crates/gregg-protocol crates/gregg-update crates/greggd crates/greg
 done
 
 # Verify inter-crate dependency versions match workspace version.
-# Publication order is gregg-protocol -> gregg-update -> greggd -> gregg,
-# so greggd/gregg must pin both internal dependencies exactly.
+# Publication order is gregg-protocol -> gregg-update -> gregg-host -> greggd -> gregg,
+# so greggd/gregg must pin both internal dependencies exactly, plus greggd pins gregg-host.
 for dep in gregg-protocol gregg-update; do
   for crate in crates/greggd crates/gregg; do
     manifest="$crate/Cargo.toml"
@@ -103,6 +103,17 @@ for dep in gregg-protocol gregg-update; do
     fi
   done
 done
+manifest="crates/greggd/Cargo.toml"
+dep_version="$(grep -E "^[[:space:]]*gregg-host[[:space:]]*=" "$manifest" | head -1 | sed -E 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')"
+if [[ -z "$dep_version" ]]; then
+  echo "error: $manifest has no gregg-host version" >&2
+  exit 1
+fi
+dep_stripped="${dep_version#=}"
+if [[ "$dep_stripped" != "$WORKSPACE_VERSION" ]]; then
+  echo "error: $manifest gregg-host dependency $dep_version != workspace $WORKSPACE_VERSION" >&2
+  exit 1
+fi
 echo "Version consistency OK: $VERSION"
 
 # Export tag/version for the GitHub Actions preflight job outputs when
@@ -137,7 +148,7 @@ if [[ "$CHECK_REGISTRY" -eq 1 ]]; then
   # The release sequence publishes crates before the tag. A rerun must
   # remain safe. If the registry has not yet indexed the version, fail
   # clearly so the maintainer can rerun after indexing.
-  for crate in gregg-protocol gregg-update gregg greggd; do
+  for crate in gregg-protocol gregg-update gregg-host gregg greggd; do
     echo "Checking crates.io for $crate $VERSION..."
     # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
     HTTP_CODE="$(curl -s -o /tmp/crate.json -w "%{http_code}" \
