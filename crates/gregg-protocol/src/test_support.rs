@@ -342,6 +342,7 @@ impl MacosSnapshotBuilder {
 
 #[allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 fn percent(used: u64, total: u64) -> f32 {
+    debug_assert!(used <= total, "percent builder misuse: used > total");
     if total == 0 {
         0.0
     } else {

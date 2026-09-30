@@ -29,7 +29,7 @@ use gregg_protocol::v2::SCHEMA_VERSION_V2;
 use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2, StatusSnapshotV2};
 use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 use tracing::info;
 
 use crate::server::error::{ServerConfigError, ServerError};
@@ -140,6 +140,15 @@ impl Config {
 }
 
 /// Shared server state.
+///
+/// `published` is a Tokio `RwLock`: every request holds the read guard only
+/// for a short clone of `Arc`/metadata (no I/O under the guard), while the
+/// sampler's publication paths take the write guard once per sample. Read
+/// critical sections are intentionally tiny and the connection/request
+/// bounds in [`runtime_config`] cap read concurrency, so the writer is not
+/// starved in practice. If write contention ever appears, publication
+/// should retry via `try_write` with a bounded backoff rather than
+/// lengthening any read section.
 #[derive(Debug, Clone)]
 pub struct ServerState {
     published: Arc<RwLock<PublishedState>>,
@@ -924,12 +933,20 @@ impl ServerState {
     }
 
     /// Clone of the current health response.
+    ///
+    /// Test/compatibility accessor: returns the published health envelope
+    /// without evaluating the staleness policy. The HTTP handlers evaluate
+    /// staleness separately (`v1_health_now`/`v2_health_now`), so serving
+    /// paths remain coherent while this getter stays a plain snapshot read.
     pub async fn health(&self) -> HealthResponse {
         let state = self.published.read().await;
         state.health.v1_response(state.snapshot.as_deref())
     }
 
     /// Clone of the current v2 health response.
+    ///
+    /// Same handler-only staleness note as [`Self::health`]: the HTTP layer
+    /// applies `is_stale`, this getter does not.
     pub async fn health_v2(&self) -> HealthResponseV2 {
         let state = self.published.read().await;
         state.health_v2.v2_response(
@@ -968,13 +985,16 @@ pub(crate) async fn start(
 
 /// `EggServe` limits are selected explicitly so a future default change cannot
 /// silently change Gregg's wire or lifecycle contract.
+///
+/// Connection/request concurrency is bounded (512) so a slow-loris or FD
+/// burst cannot starve the single current-thread runtime or the
+/// `RwLock<PublishedState>` writer. Each connection carries a total
+/// lifetime bound and a per-connection request cap so immortal keep-alive
+/// cannot accumulate.
 fn runtime_config() -> Result<RuntimeConfig, eggserve_server::ServerError> {
     RuntimeConfig::builder()
-        // Preserve practical parity with Hyper's unbounded accepted
-        // connection/request concurrency; this is the semaphore's maximum,
-        // not EggServe's small default of 64.
-        .max_connections(Semaphore::MAX_PERMITS)
-        .max_in_flight_requests(Semaphore::MAX_PERMITS)
+        .max_connections(512)
+        .max_in_flight_requests(512)
         // Hyper's H1 parser defaults to 100 fields and a 417,792-byte read
         // buffer. EggServe applies these bounds explicitly.
         .max_headers(100)
@@ -990,8 +1010,8 @@ fn runtime_config() -> Result<RuntimeConfig, eggserve_server::ServerError> {
         .handler_timeout(Duration::from_secs(30))
         .body_read_timeout(Duration::from_secs(30))
         .keep_alive_idle_timeout(Duration::from_secs(60))
-        .disable_connection_total_timeout()
-        .max_requests_per_connection(None)
+        .connection_total_timeout(Duration::from_secs(300))
+        .max_requests_per_connection(Some(1000))
         .response_write_timeout(Duration::from_secs(30))
         // Gregg's outer 10-second cleanup deadline remains authoritative.
         .graceful_shutdown_timeout(Duration::from_secs(8))

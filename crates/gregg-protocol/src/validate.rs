@@ -86,7 +86,10 @@ impl fmt::Display for ViolationKind {
                 f.write_str("iowait_pct must be Some(_) iff cpu_iowait capability is true")
             }
             Self::InvalidIdentityField => {
-                f.write_str("identity field must be non-empty and contain no NUL characters")
+                write!(
+                    f,
+                    "identity field must be non-empty, NUL-free, and at most {MAX_IDENTITY_FIELD_BYTES} bytes"
+                )
             }
         }
     }

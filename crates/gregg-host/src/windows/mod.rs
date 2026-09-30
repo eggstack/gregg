@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use crate::error::{CollectError, CollectErrorKind};
+use crate::model::MAX_RATE_BYTES_PER_SEC;
 use crate::model::{
     CollectionLimits, DiskIoMetrics, DiskIoPayload, HostCapabilities, HostIdentity, HostSample,
     NetworkInterfaceMetrics, NetworkPayload,
@@ -181,8 +182,12 @@ impl<S: WindowsSource + Clone + 'static> WindowsCollector<S> {
             else {
                 continue;
             };
-            read_total = read_total.saturating_add(rate.first_per_sec);
-            write_total = write_total.saturating_add(rate.second_per_sec);
+            read_total = read_total
+                .saturating_add(rate.first_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
+            write_total = write_total
+                .saturating_add(rate.second_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
             if devices.len() < self.limits.max_disk_io_entries {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -228,8 +233,12 @@ impl<S: WindowsSource + Clone + 'static> WindowsCollector<S> {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                rx_total = rx_total.saturating_add(rate.first_per_sec);
-                tx_total = tx_total.saturating_add(rate.second_per_sec);
+                rx_total = rx_total
+                    .saturating_add(rate.first_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
+                tx_total = tx_total
+                    .saturating_add(rate.second_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
                         rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));

@@ -61,8 +61,11 @@ pub enum Command {
     /// gregg add http://server.local:11310/
     /// gregg add deadpool@192.168.182.146:11310
     /// gregg add deadpool@server.local:11310
+    /// gregg add deadpool@http://server.local:11310/
     /// ```
     ///
+    /// The last form (`nickname@` plus HTTP URL) is accepted: nickname
+    /// becomes the display name, URL contributes only host:port.
     /// Forms that omit the port (`gregg add 192.168.182.146`,
     /// `gregg add host`, `gregg add ::1`, `gregg add http://host/`)
     /// are rejected. Supplying both `nickname@host:port` and `--name`
@@ -504,21 +507,32 @@ fn cmd_add(
 
         // Check for exact duplicate. DNS comparison is case-insensitive
         // (RFC 1035), matching `Config::validate` and `Endpoint::matches_host`.
-        let existing_idx = config
+        let existing = config
             .systems
             .iter()
-            .position(|s| s.port == port && s.host.eq_ignore_ascii_case(&host));
+            .enumerate()
+            .find(|(_, s)| s.port == port && s.host.eq_ignore_ascii_case(&host))
+            .map(|(idx, s)| (idx, s.id.clone()));
 
-        if let Some(idx) = existing_idx {
+        if let Some((idx, existing_id)) = existing {
             if replace {
-                config.systems.remove(idx);
-            } else {
-                return Err(ConfigError::Validation(vec![
-                    crate::config::ConfigViolation::DuplicateAddress {
-                        address: crate::endpoint::display_address(&host, port),
-                    },
-                ]));
+                // Preserve the stable ID and fleet position like EggPool
+                // `--replace` so selection, memoization, and poll state
+                // survive a replace instead of resetting.
+                let entry = crate::config::SystemEntry {
+                    id: existing_id,
+                    host,
+                    port,
+                    name: final_name.clone(),
+                };
+                config.systems[idx] = entry;
+                return Ok(());
             }
+            return Err(ConfigError::Validation(vec![
+                crate::config::ConfigViolation::DuplicateAddress {
+                    address: crate::endpoint::display_address(&host, port),
+                },
+            ]));
         }
 
         let entry = crate::config::SystemEntry {
@@ -611,8 +625,7 @@ fn cmd_list(store: &ConfigStore, json: bool) -> Result<(), Box<dyn std::error::E
     let config = store.load_or_default()?;
 
     if json {
-        let output =
-            serde_json::to_string_pretty(&config.systems).expect("systems serializes to JSON");
+        let output = serde_json::to_string_pretty(&config.systems)?;
         println!("{output}");
     } else {
         if config.systems.is_empty() {

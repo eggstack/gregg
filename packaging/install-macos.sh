@@ -57,14 +57,27 @@ fi
 
 # Validate architecture matches host.
 HOST_ARCH="$(uname -m)"
-FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|arm64' | head -1)"
+if command -v file >/dev/null 2>&1; then
+  FILE_OUT="$(file "$BINARY_PATH" 2>/dev/null || true)"
+  FILE_ARCH="$(echo "$FILE_OUT" | grep -oE 'x86_64|arm64' | head -1)"
+else
+  FILE_OUT=""
+  FILE_ARCH=""
+  echo "warning: 'file' command not found; skipping binary architecture check" >&2
+fi
 case "$HOST_ARCH" in
     x86_64)  EXPECTED_ARCH="x86_64" ;;
     arm64)   EXPECTED_ARCH="arm64" ;;
     *)       EXPECTED_ARCH="" ;;
 esac
-if [[ -n "$EXPECTED_ARCH" && -n "$FILE_ARCH" && "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
-    die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+if [[ -n "$EXPECTED_ARCH" ]]; then
+  if [[ -z "$FILE_ARCH" ]]; then
+    echo "warning: could not determine binary architecture; continuing" >&2
+  elif [[ "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
+    if ! echo "$FILE_OUT" | grep -q "$EXPECTED_ARCH"; then
+      die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+    fi
+  fi
 fi
 
 # --- Installation ---

@@ -68,6 +68,24 @@ pub(crate) fn message_violation(message: &str) -> Option<&'static str> {
     }
 }
 
+/// Clamp an arbitrary health message into the wire bounds.
+///
+/// NUL characters are replaced with `�` (U+FFFD) and the result is
+/// truncated to [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes on a UTF-8
+/// boundary. Callers that need strict rejection should use the `try_`
+/// constructors instead.
+pub(crate) fn sanitize_health_message(message: &str) -> String {
+    let cleaned = message.replace('\0', "�");
+    if cleaned.len() <= crate::MAX_HEALTH_MESSAGE_BYTES {
+        return cleaned;
+    }
+    let mut end = crate::MAX_HEALTH_MESSAGE_BYTES;
+    while !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    cleaned[..end].to_owned()
+}
+
 /// Health and readiness response served by the daemon.
 ///
 /// The `Ready` variant carries a fresh snapshot. The other variants carry a
@@ -190,6 +208,8 @@ impl<'de> Deserialize<'de> for HealthResponse {
 impl HealthResponse {
     /// A `Ready` response wrapping the supplied snapshot.
     ///
+    /// Validated input only: the caller must ensure `snapshot` already
+    /// passed [`StatusSnapshot::validate`](crate::StatusSnapshot::validate).
     /// Prefer [`Self::try_ready`] when the snapshot comes from an untrusted
     /// source: this constructor asserts the invariant in debug builds and
     /// publishes the snapshot as-is in release builds.
@@ -229,27 +249,90 @@ impl HealthResponse {
     }
 
     /// A `Warming` response with a custom message.
+    ///
+    /// The message is clamped into the wire bounds (NUL replaced, truncated
+    /// to [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes). Use
+    /// [`Self::try_warming_with_message`] to reject invalid messages instead.
     #[must_use]
     pub fn warming_with_message(message: impl Into<String>) -> Self {
+        let message: String = message.into();
+        let sanitized = sanitize_health_message(&message);
+        debug_assert!(
+            message_violation(&sanitized).is_none(),
+            "sanitized health message must be wire-valid"
+        );
         Self {
             schema_version: crate::SCHEMA_VERSION_V1,
             state: ReadinessState::Warming,
             category: Some(HealthCategory::Warming),
-            message: Some(message.into()),
+            message: Some(sanitized),
             snapshot: None,
         }
     }
 
+    /// A `Warming` response with a custom message, rejected when invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wire violation reason when the message exceeds
+    /// [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes or contains NUL.
+    pub fn try_warming_with_message(message: impl Into<String>) -> Result<Self, &'static str> {
+        let message = message.into();
+        if let Some(reason) = message_violation(&message) {
+            return Err(reason);
+        }
+        Ok(Self {
+            schema_version: crate::SCHEMA_VERSION_V1,
+            state: ReadinessState::Warming,
+            category: Some(HealthCategory::Warming),
+            message: Some(message),
+            snapshot: None,
+        })
+    }
+
     /// A `Failed` response with the given category and message.
+    ///
+    /// The message is clamped into the wire bounds (NUL replaced, truncated
+    /// to [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes). Use
+    /// [`Self::try_failed`] to reject invalid messages instead.
     #[must_use]
     pub fn failed(category: HealthCategory, message: impl Into<String>) -> Self {
+        let message: String = message.into();
+        let sanitized = sanitize_health_message(&message);
+        debug_assert!(
+            message_violation(&sanitized).is_none(),
+            "sanitized health message must be wire-valid"
+        );
         Self {
             schema_version: crate::SCHEMA_VERSION_V1,
             state: ReadinessState::Failed,
             category: Some(category),
-            message: Some(message.into()),
+            message: Some(sanitized),
             snapshot: None,
         }
+    }
+
+    /// A `Failed` response with the given category and message, rejected when invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wire violation reason when the message exceeds
+    /// [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes or contains NUL.
+    pub fn try_failed(
+        category: HealthCategory,
+        message: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let message = message.into();
+        if let Some(reason) = message_violation(&message) {
+            return Err(reason);
+        }
+        Ok(Self {
+            schema_version: crate::SCHEMA_VERSION_V1,
+            state: ReadinessState::Failed,
+            category: Some(category),
+            message: Some(message),
+            snapshot: None,
+        })
     }
 }
 
@@ -343,16 +426,34 @@ mod tests {
 
     #[test]
     fn health_messages_are_bounded_and_nul_free() {
+        // Wire still rejects oversize/NUL payloads from untrusted peers.
         let oversize = "x".repeat(MAX_HEALTH_MESSAGE_BYTES + 1);
-        let json = serde_json::to_string(&HealthResponse::failed(
-            HealthCategory::CollectorFailure,
-            &oversize,
-        ))
-        .expect("serialize");
-        assert!(serde_json::from_str::<HealthResponse>(&json).is_err());
+        let raw = serde_json::json!({
+            "schema_version": 1,
+            "state": "failed",
+            "category": "collector_failure",
+            "message": oversize,
+        });
+        assert!(serde_json::from_value::<HealthResponse>(raw).is_err());
+        assert!(HealthResponse::try_failed(HealthCategory::CollectorFailure, &oversize).is_err());
+        assert!(HealthResponse::try_warming_with_message(&oversize).is_err());
 
         let json = r#"{"schema_version":1,"state":"failed","category":"collector_failure","message":"a\u0000b"}"#;
         assert!(serde_json::from_str::<HealthResponse>(json).is_err());
+        assert!(HealthResponse::try_failed(HealthCategory::CollectorFailure, "a\0b").is_err());
+
+        // Clamping constructors stay wire-valid.
+        let clamped = HealthResponse::failed(HealthCategory::CollectorFailure, &oversize);
+        let message = clamped.message.as_deref().expect("message");
+        assert_eq!(message.len(), MAX_HEALTH_MESSAGE_BYTES);
+        let json = serde_json::to_string(&clamped).expect("serialize");
+        assert!(serde_json::from_str::<HealthResponse>(&json).is_ok());
+
+        let nul_clamped = HealthResponse::failed(HealthCategory::CollectorFailure, "a\0b");
+        let message = nul_clamped.message.as_deref().expect("message");
+        assert!(!message.contains('\0'));
+        let json = serde_json::to_string(&nul_clamped).expect("serialize");
+        assert!(serde_json::from_str::<HealthResponse>(&json).is_ok());
 
         let at_bound = "x".repeat(MAX_HEALTH_MESSAGE_BYTES);
         let json = serde_json::to_string(&HealthResponse::warming_with_message(at_bound))

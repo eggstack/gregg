@@ -33,5 +33,9 @@ pub fn render_text_line(f: &mut Frame, area: Rect, line: &str) {
     if area.height == 0 || area.width == 0 {
         return;
     }
+    debug_assert!(
+        unicode_width::UnicodeWidthStr::width(line) <= usize::from(area.width),
+        "render_text_line line exceeds area width"
+    );
     f.render_widget(Line::from(Span::raw(line.to_string())), area);
 }

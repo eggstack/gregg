@@ -86,7 +86,9 @@ fn run_main() -> Result<(), Box<dyn Error>> {
             match command {
                 greggd::cli::Command::Start => service.start().map_err(Into::into),
                 greggd::cli::Command::Restart => service.restart().map_err(Into::into),
-                _ => unreachable!(),
+                _ => Err(Box::new(std::io::Error::other(
+                    "command is handled at the binary boundary",
+                )) as Box<dyn std::error::Error>),
             }
         }
         #[cfg(target_os = "windows")]

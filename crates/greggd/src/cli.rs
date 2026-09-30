@@ -304,11 +304,17 @@ impl std::error::Error for ConfigValidationError {}
 /// Update a single field in the config and atomically persist it.
 ///
 /// This is the shared logic for `host` and `port` subcommands.
+///
+/// The load→mutate→validate→write sequence holds an exclusive advisory
+/// lock on `<config>.lock` (same `<config>.lock` scheme as the `gregg`
+/// client) so concurrent `greggd host`/`port` mutations cannot lose an
+/// update despite the atomic rename.
 pub fn mutate_config(
     path: &std::path::Path,
     explicit: bool,
     mutate: impl FnOnce(&mut Config),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let _lock = acquire_config_lock(path);
     let mut config = load_config(path, explicit)?;
     mutate(&mut config);
 
@@ -320,6 +326,74 @@ pub fn mutate_config(
     config.write_atomic(path)?;
 
     Ok(())
+}
+
+/// Advisory cross-process lock guard for daemon config mutation.
+///
+/// Holds the open lock file so the `flock` (Unix) is retained until the
+/// guard drops. On non-Unix targets this is a no-op placeholder.
+struct ConfigLockGuard {
+    #[allow(dead_code)]
+    file: Option<std::fs::File>,
+}
+
+/// Acquire `<config>.lock` around config mutation (best-effort, bounded
+/// ~5s wait). A lock failure still returns a guard so the mutation can
+/// proceed; the atomic rename guarantees no torn writes (only the
+/// lost-update protection degrades).
+#[cfg_attr(unix, allow(unsafe_code))]
+fn acquire_config_lock(config_path: &std::path::Path) -> ConfigLockGuard {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let lock_path = {
+            let mut s = config_path.as_os_str().to_owned();
+            s.push(".lock");
+            std::path::PathBuf::from(s)
+        };
+        if let Some(parent) = lock_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path);
+        match file {
+            Ok(file) => {
+                let fd = file.as_raw_fd();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    // SAFETY: `flock` is called with an owned open fd and
+                    // constant flags; it does not touch Rust-managed memory.
+                    let rc = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                    if rc == 0 {
+                        return ConfigLockGuard { file: Some(file) };
+                    }
+                    let errno = std::io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO);
+                    if errno != libc::EWOULDBLOCK && errno != libc::EAGAIN {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                ConfigLockGuard { file: Some(file) }
+            }
+            Err(_) => ConfigLockGuard { file: None },
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config_path;
+        ConfigLockGuard { file: None }
+    }
 }
 
 /// Return the compile-time version rendered for the daemon binary.
@@ -634,7 +708,9 @@ pub fn dispatch_with_config_intent(
         Command::Run => {
             // Delegate to the async run entry point.
             // This is handled in main.rs.
-            unreachable!("Command::Run is handled in main.rs")
+            Err(Box::new(std::io::Error::other(
+                "Command::Run is handled at the binary boundary",
+            )) as Box<dyn std::error::Error>)
         }
         Command::Stop => {
             // Unix uses the local control socket and is dispatched at the
@@ -642,11 +718,15 @@ pub fn dispatch_with_config_intent(
             // runtime/library boundary without a global tracing init.
             #[cfg(unix)]
             {
-                unreachable!("Command::Stop is handled at the binary boundary on Unix")
+                Err(Box::new(std::io::Error::other(
+                    "Command::Stop is handled at the binary boundary on Unix",
+                )) as Box<dyn std::error::Error>)
             }
             #[cfg(not(unix))]
             {
-                unreachable!("Command::Stop is handled at the binary boundary on Windows")
+                Err(Box::new(std::io::Error::other(
+                    "Command::Stop is handled at the binary boundary on Windows",
+                )) as Box<dyn std::error::Error>)
             }
         }
         Command::Croncheck => {
@@ -656,6 +736,19 @@ pub fn dispatch_with_config_intent(
                 CroncheckProbe::Running => Ok(()),
                 CroncheckProbe::Absent => {
                     build_daemon_command(config_path, explicit)?.spawn()?;
+                    // Best-effort bounded readiness wait so a failed spawn
+                    // is not reported as success. `run` binds before its
+                    // first sample; 2s covers bind + first health answer.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                    loop {
+                        if probe_greggd(target) == CroncheckProbe::Running {
+                            break;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
                     Ok(())
                 }
                 CroncheckProbe::Ambiguous => Err(Box::new(std::io::Error::other(
@@ -726,7 +819,9 @@ pub fn dispatch_with_config_intent(
         Command::Restart => {
             #[cfg(target_os = "windows")]
             {
-                unreachable!("Windows service commands are dispatched at the binary boundary")
+                Err(Box::new(std::io::Error::other(
+                    "Windows service commands are dispatched at the binary boundary",
+                )) as Box<dyn std::error::Error>)
             }
             #[cfg(not(target_os = "windows"))]
             {
@@ -753,13 +848,13 @@ pub fn dispatch_with_config_intent(
             }
         },
         #[cfg(target_os = "windows")]
-        Command::Start => {
-            unreachable!("Windows service commands are dispatched at the binary boundary")
-        }
+        Command::Start => Err(Box::new(std::io::Error::other(
+            "Windows service commands are dispatched at the binary boundary",
+        )) as Box<dyn std::error::Error>),
         #[cfg(target_os = "windows")]
-        Command::Service => {
-            unreachable!("Command::Service is handled in main.rs")
-        }
+        Command::Service => Err(Box::new(std::io::Error::other(
+            "Command::Service is handled in main.rs",
+        )) as Box<dyn std::error::Error>),
     }
 }
 

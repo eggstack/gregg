@@ -367,18 +367,23 @@ pub(crate) fn repair_system_config_permissions(config_path: &Path) -> io::Result
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        // Only relax when an unprivileged open would actually fail (no
+        // other-read on the file, or no other traverse+read on the parent).
+        // Already-relaxed modes are never clobbered, preserving
+        // operator-managed modes such as 0750/0640.
         if let Some(parent) = config_path.parent() {
             if parent.exists() {
-                // 0755: owner can manage, everyone can traverse/read.
-                // Existing operator-managed modes are intentionally
-                // normalized here because a 0700 system directory would
-                // still block unprivileged `croncheck` even with a 0644
-                // file.
-                fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+                let mode = fs::metadata(parent)?.permissions().mode() & 0o777;
+                if mode & 0o005 != 0o005 {
+                    fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+                }
             }
         }
         if config_path.exists() {
-            fs::set_permissions(config_path, fs::Permissions::from_mode(0o644))?;
+            let mode = fs::metadata(config_path)?.permissions().mode() & 0o777;
+            if mode & 0o004 != 0o004 {
+                fs::set_permissions(config_path, fs::Permissions::from_mode(0o644))?;
+            }
         }
         Ok(())
     }

@@ -148,10 +148,12 @@ if [[ "$CHECK_REGISTRY" -eq 1 ]]; then
   # The release sequence publishes crates before the tag. A rerun must
   # remain safe. If the registry has not yet indexed the version, fail
   # clearly so the maintainer can rerun after indexing.
+  CRATE_JSON="$(mktemp)"
+  trap 'rm -f "$CRATE_JSON"' EXIT
   for crate in gregg-protocol gregg-update gregg-host gregg greggd; do
     echo "Checking crates.io for $crate $VERSION..."
     # crates.io API: https://crates.io/api/v1/crates/<name>/<version>
-    HTTP_CODE="$(curl -s -o /tmp/crate.json -w "%{http_code}" \
+    HTTP_CODE="$(curl --proto '=https' --tlsv1.2 -s --max-time 15 --connect-timeout 5 -o "$CRATE_JSON" -w "%{http_code}" \
       -H "User-Agent: gregg-release-ci (eggstack/gregg)" \
       "https://crates.io/api/v1/crates/${crate}/${VERSION}" || true)"
     if [[ "$HTTP_CODE" == "200" ]]; then
@@ -161,14 +163,16 @@ if [[ "$CHECK_REGISTRY" -eq 1 ]]; then
       echo "The release workflow requires the workspace version to be" >&2
       echo "published to crates.io before building GitHub binaries." >&2
       echo "Wait for indexing, then rerun this workflow." >&2
-      cat /tmp/crate.json 2>/dev/null || true
+      cat "$CRATE_JSON" 2>/dev/null || true
       exit 1
     else
       echo "warning: crates.io check for $crate returned HTTP $HTTP_CODE; treating as hard failure" >&2
-      cat /tmp/crate.json 2>/dev/null || true
+      cat "$CRATE_JSON" 2>/dev/null || true
       exit 1
     fi
   done
+  rm -f "$CRATE_JSON"
+  trap - EXIT
 fi
 
 echo "Release preflight OK"

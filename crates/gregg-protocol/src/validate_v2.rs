@@ -222,7 +222,10 @@ impl fmt::Display for ViolationKindV2 {
                 "throughput rate exceeds maximum of {max_bytes_per_sec} bytes per second"
             ),
             Self::InvalidIdentityField => {
-                f.write_str("identity field must be non-empty and contain no NUL characters")
+                write!(
+                    f,
+                    "identity field must be non-empty, NUL-free, and at most {MAX_IDENTITY_FIELD_BYTES} bytes"
+                )
             }
         }
     }
@@ -308,7 +311,6 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         // attacker-sized list stays linear instead of quadratic.
         let mut drive_names: HashSet<&str> = HashSet::new();
         for (index, drive) in drives.iter().enumerate() {
-            let prefix = format!("drives[{index}]");
             // A drive name is a display-only mount label, so it keeps its
             // historical tolerance for unusual bytes, but it must still be
             // a usable label: not empty, not whitespace-only, and free of
@@ -316,7 +318,7 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
             if drive.name.trim().is_empty() || drive.name.contains('\0') {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::EmptyDriveName,
-                    format!("{prefix}.name"),
+                    format!("drives[{index}].name"),
                 ));
             }
             if drive.name.len() > MAX_DRIVE_NAME_BYTES {
@@ -324,7 +326,7 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                     ViolationKindV2::DriveNameTooLong {
                         max_bytes: MAX_DRIVE_NAME_BYTES,
                     },
-                    format!("{prefix}.name"),
+                    format!("drives[{index}].name"),
                 ));
             }
             // An all-zero drive is a legitimate empty or placeholder volume
@@ -337,13 +339,13 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
             {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::ZeroNotAllowed,
-                    format!("{prefix}.total_bytes"),
+                    format!("drives[{index}].total_bytes"),
                 ));
             }
             if drive.used_bytes > drive.total_bytes {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::UsedExceedsTotal,
-                    format!("{prefix}.used_bytes"),
+                    format!("drives[{index}].used_bytes"),
                 ));
             }
             if drive
@@ -352,13 +354,13 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
             {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::AvailableExceedsTotal,
-                    format!("{prefix}.available_bytes"),
+                    format!("drives[{index}].available_bytes"),
                 ));
             }
-            if !drive_names.insert(drive.name.as_str()) {
+            if !drive_names.insert(drive.name.trim()) {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::DuplicateDriveName,
-                    format!("{prefix}.name"),
+                    format!("drives[{index}].name"),
                 ));
             }
         }
@@ -422,11 +424,11 @@ fn validate_disk_io(
     // `TooManyDiskIoDevices` violation does not stop per-entry validation,
     // so the scan must stay linear over an attacker-sized list.
     let known_drives: Option<HashSet<&str>> =
-        drives.map(|drives| drives.iter().map(|drive| drive.name.as_str()).collect());
+        drives.map(|drives| drives.iter().map(|drive| drive.name.trim()).collect());
     let mut seen_ids: HashSet<&str> = HashSet::new();
     for (index, device) in disk_io.devices.iter().enumerate() {
         validate_disk_io_device(index, device, known_drives.as_ref(), out);
-        if !seen_ids.insert(device.id.as_str()) {
+        if !seen_ids.insert(device.id.trim()) {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::DuplicateDiskIoId,
                 format!("disk_io.devices[{index}].id"),
@@ -441,11 +443,10 @@ fn validate_disk_io_device(
     known_drives: Option<&HashSet<&str>>,
     out: &mut Vec<ValidationViolationV2>,
 ) {
-    let prefix = format!("disk_io.devices[{index}]");
     if device.id.trim().is_empty() || device.id.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoIdInvalid,
-            format!("{prefix}.id"),
+            format!("disk_io.devices[{index}].id"),
         ));
     }
     if device.id.len() > MAX_LIVE_METRIC_ID_BYTES {
@@ -453,53 +454,76 @@ fn validate_disk_io_device(
             ViolationKindV2::DiskIoIdTooLong {
                 max_bytes: MAX_LIVE_METRIC_ID_BYTES,
             },
-            format!("{prefix}.id"),
+            format!("disk_io.devices[{index}].id"),
         ));
     }
-    validate_disk_io_name(&device.name, format!("{prefix}.name"), out);
+    validate_disk_io_name(
+        &device.name,
+        || format!("disk_io.devices[{index}].name"),
+        out,
+    );
     if let Some(drive_name) = &device.drive_name {
-        validate_disk_io_name(drive_name, format!("{prefix}.drive_name"), out);
+        validate_disk_io_name(
+            drive_name,
+            || format!("disk_io.devices[{index}].drive_name"),
+            out,
+        );
         // Only enforce the association when the payload actually carries a
         // drive list. `drives == None` means unavailable/legacy, where the
         // reference cannot be verified; `Some([])` means "enumerated, none
         // eligible", so any association is dangling.
         if let Some(known_drives) = known_drives {
-            if !known_drives.contains(drive_name.as_str()) {
+            if !known_drives.contains(drive_name.trim()) {
                 out.push(ValidationViolationV2::new(
                     ViolationKindV2::UnknownDriveAssociation,
-                    format!("{prefix}.drive_name"),
+                    format!("disk_io.devices[{index}].drive_name"),
                 ));
             }
         }
     }
-    check_rate(
-        device.read_bytes_per_sec,
-        format!("{prefix}.read_bytes_per_sec"),
-        out,
-    );
-    check_rate(
-        device.write_bytes_per_sec,
-        format!("{prefix}.write_bytes_per_sec"),
-        out,
-    );
+    if device.read_bytes_per_sec > MAX_RATE_BYTES_PER_SEC {
+        check_rate(
+            device.read_bytes_per_sec,
+            &format!("disk_io.devices[{index}].read_bytes_per_sec"),
+            out,
+        );
+    }
+    if device.write_bytes_per_sec > MAX_RATE_BYTES_PER_SEC {
+        check_rate(
+            device.write_bytes_per_sec,
+            &format!("disk_io.devices[{index}].write_bytes_per_sec"),
+            out,
+        );
+    }
 }
 
-fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViolationV2>) {
+fn validate_disk_io_name(
+    name: &str,
+    field: impl FnOnce() -> String,
+    out: &mut Vec<ValidationViolationV2>,
+) {
     // Unlike drive names (mount-path labels that historically contained odd
     // bytes and are length-only checked), disk-I/O names are protocol
-    // identifiers and reject NUL like identity fields.
-    if name.trim().is_empty() || name.contains('\0') {
+    // identifiers and reject NUL like identity fields. The field string is
+    // built lazily so the valid path allocates nothing.
+    let invalid = name.trim().is_empty() || name.contains('\0');
+    let too_long = name.len() > MAX_LIVE_METRIC_NAME_BYTES;
+    if !invalid && !too_long {
+        return;
+    }
+    let f = field();
+    if invalid {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoNameInvalid,
-            field.as_str(),
+            f.clone(),
         ));
     }
-    if name.len() > MAX_LIVE_METRIC_NAME_BYTES {
+    if too_long {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoNameTooLong {
                 max_bytes: MAX_LIVE_METRIC_NAME_BYTES,
             },
-            field,
+            f,
         ));
     }
 }
@@ -536,7 +560,7 @@ fn validate_network(network: &crate::v2::NetworkPayload, out: &mut Vec<Validatio
     let mut seen_ids: HashSet<&str> = HashSet::new();
     for (index, interface) in network.interfaces.iter().enumerate() {
         validate_network_interface(index, interface, out);
-        if !seen_ids.insert(interface.id.as_str()) {
+        if !seen_ids.insert(interface.id.trim()) {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::DuplicateNetworkInterfaceId,
                 format!("network.interfaces[{index}].id"),
@@ -550,11 +574,10 @@ fn validate_network_interface(
     interface: &NetworkInterfaceMetrics,
     out: &mut Vec<ValidationViolationV2>,
 ) {
-    let prefix = format!("network.interfaces[{index}]");
     if interface.id.trim().is_empty() || interface.id.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::NetworkInterfaceIdInvalid,
-            format!("{prefix}.id"),
+            format!("network.interfaces[{index}].id"),
         ));
     }
     if interface.id.len() > MAX_LIVE_METRIC_ID_BYTES {
@@ -562,13 +585,13 @@ fn validate_network_interface(
             ViolationKindV2::NetworkInterfaceIdTooLong {
                 max_bytes: MAX_LIVE_METRIC_ID_BYTES,
             },
-            format!("{prefix}.id"),
+            format!("network.interfaces[{index}].id"),
         ));
     }
     if interface.name.trim().is_empty() || interface.name.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::NetworkInterfaceNameInvalid,
-            format!("{prefix}.name"),
+            format!("network.interfaces[{index}].name"),
         ));
     }
     if interface.name.len() > MAX_LIVE_METRIC_NAME_BYTES {
@@ -576,42 +599,52 @@ fn validate_network_interface(
             ViolationKindV2::NetworkInterfaceNameTooLong {
                 max_bytes: MAX_LIVE_METRIC_NAME_BYTES,
             },
-            format!("{prefix}.name"),
+            format!("network.interfaces[{index}].name"),
         ));
     }
-    validate_capacity(
-        interface.rx_capacity_bps,
-        format!("{prefix}.rx_capacity_bps"),
-        out,
-    );
-    validate_capacity(
-        interface.tx_capacity_bps,
-        format!("{prefix}.tx_capacity_bps"),
-        out,
-    );
-    check_rate(
-        interface.rx_bytes_per_sec,
-        format!("{prefix}.rx_bytes_per_sec"),
-        out,
-    );
-    check_rate(
-        interface.tx_bytes_per_sec,
-        format!("{prefix}.tx_bytes_per_sec"),
-        out,
-    );
+    if interface
+        .rx_capacity_bps
+        .is_some_and(|bps| bps == 0 || bps > MAX_CAPACITY_BITS_PER_SEC)
+    {
+        validate_capacity(
+            interface.rx_capacity_bps,
+            &format!("network.interfaces[{index}].rx_capacity_bps"),
+            out,
+        );
+    }
+    if interface
+        .tx_capacity_bps
+        .is_some_and(|bps| bps == 0 || bps > MAX_CAPACITY_BITS_PER_SEC)
+    {
+        validate_capacity(
+            interface.tx_capacity_bps,
+            &format!("network.interfaces[{index}].tx_capacity_bps"),
+            out,
+        );
+    }
+    if interface.rx_bytes_per_sec > MAX_RATE_BYTES_PER_SEC {
+        check_rate(
+            interface.rx_bytes_per_sec,
+            &format!("network.interfaces[{index}].rx_bytes_per_sec"),
+            out,
+        );
+    }
+    if interface.tx_bytes_per_sec > MAX_RATE_BYTES_PER_SEC {
+        check_rate(
+            interface.tx_bytes_per_sec,
+            &format!("network.interfaces[{index}].tx_bytes_per_sec"),
+            out,
+        );
+    }
     if interface.is_loopback && interface.aggregate_member {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::LoopbackAggregateMember,
-            format!("{prefix}.aggregate_member"),
+            format!("network.interfaces[{index}].aggregate_member"),
         ));
     }
 }
 
-fn validate_capacity(
-    capacity: Option<u64>,
-    field: impl Into<String>,
-    out: &mut Vec<ValidationViolationV2>,
-) {
+fn validate_capacity(capacity: Option<u64>, field: &str, out: &mut Vec<ValidationViolationV2>) {
     match capacity {
         Some(0) => out.push(ValidationViolationV2::new(
             ViolationKindV2::ZeroCapacity,
@@ -627,7 +660,7 @@ fn validate_capacity(
     }
 }
 
-fn check_rate(rate: u64, field: impl Into<String>, out: &mut Vec<ValidationViolationV2>) {
+fn check_rate(rate: u64, field: &str, out: &mut Vec<ValidationViolationV2>) {
     if rate > MAX_RATE_BYTES_PER_SEC {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::RateExceedsMaximum {

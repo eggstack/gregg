@@ -36,6 +36,8 @@ pub fn normalize_with_limits(
     candidates.retain(|candidate| {
         !candidate.identity.is_empty()
             && !candidate.name.is_empty()
+            && !candidate.name.trim().is_empty()
+            && !candidate.name.contains('\0')
             && candidate.name.len() <= limits.max_drive_name_bytes
             && candidate.total_bytes > 0
             && candidate.total_free_bytes <= candidate.total_bytes

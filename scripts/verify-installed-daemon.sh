@@ -165,8 +165,12 @@ validate_status_v2() {
 }
 
 retry_after_bind_collision() {
-    if ((ALLOW_PORT_RETRY == 1)) && grep -Eiq 'address already in use|already allocated|cannot assign requested address' "${LOG_FILE}"; then
-        echo "Port collision detected; retrying with a new isolated port" >&2
+    # Locale-independent: any early exit on an isolated (auto-allocated)
+    # port is retried with a fresh port, regardless of the log message.
+    # Bounded by MAX_PORT_ATTEMPTS in the caller, so persistent failures
+    # (bad binary, bad config) still fail after at most that many attempts.
+    if ((ALLOW_PORT_RETRY == 1)); then
+        echo "Port attempt failed early; retrying with a new isolated port" >&2
         set +e
         wait "${GREGGD_PID}" 2>/dev/null
         set -e

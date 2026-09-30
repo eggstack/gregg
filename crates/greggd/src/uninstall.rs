@@ -477,7 +477,8 @@ fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discover
         (crate::startup::ArtifactOwnership::Absent, false, None);
     let launchd_plist_exists = crate::startup::standard_launchd_plist_path().exists();
 
-    let (cron_has_block, cron_ownership, crontab_available) = read_cron_evidence(exe_path);
+    let (cron_has_block, cron_ownership, crontab_available) =
+        read_cron_evidence(exe_path, config_path, explicit);
 
     let daemon_probe = match crate::cli::load_config(config_path, explicit) {
         Ok(config) => crate::cli::probe_health(crate::cli::croncheck_target(&config)),
@@ -548,12 +549,24 @@ fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discover
 
 /// Read-only cron evidence: whether the current account crontab holds
 /// the Gregg managed block, and whether `crontab` exists at all.
-fn read_cron_evidence(exe_path: &Path) -> (bool, crate::startup::ArtifactOwnership, bool) {
+///
+/// Ownership is config-aware: a block invoking the same executable with a
+/// different `--config` classifies `Foreign`, never `Owned`.
+fn read_cron_evidence(
+    exe_path: &Path,
+    config_path: &Path,
+    explicit: bool,
+) -> (bool, crate::startup::ArtifactOwnership, bool) {
     use std::io::ErrorKind;
     match crate::startup::cron::run_crontab_list() {
         Ok(content) => (
             content.contains(crate::startup::CRON_MANAGED_MARKER),
-            crate::startup::cron_block_ownership(&content, exe_path),
+            crate::startup::cron_block_ownership_for_config(
+                &content,
+                exe_path,
+                config_path,
+                explicit,
+            ),
             true,
         ),
         Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -609,19 +622,60 @@ fn purge_empty_dir_for(config_path: &Path) -> Option<PathBuf> {
 
 /// Probe that `dir` accepts a temporary file (practical writability
 /// preflight for artifact removal).
+// Probe names are generated lowercase hex here, so the case-sensitive
+// cleanup match below is exact.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+#[allow(clippy::cast_possible_truncation)]
 fn probe_dir_writable(dir: &Path, exe: &Path, purge: bool) -> Result<(), UninstallError> {
     // The per-process counter keeps two threads that share a pid and
     // nanosecond timestamp from colliding on the same probe name, which
     // would surface a spurious `AlreadyExists` as a preflight failure.
+    // The random suffix makes the name unguessable against squatters.
     static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let count = PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let rand_suffix = {
+        let mut buf = [0_u8; 4];
+        #[cfg(unix)]
+        {
+            use std::io::Read;
+            if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+                let _ = f.read_exact(&mut buf);
+            }
+        }
+        u32::from_ne_bytes(buf) ^ (count as u32).wrapping_mul(0x9E37_79B9)
+    };
     let probe = dir.join(format!(
-        ".greggd-uninstall-probe-{}-{}-{}.tmp",
+        ".greggd-uninstall-probe-{}-{}-{}-{:08x}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos()),
-        PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        count,
+        rand_suffix,
     ));
+    // Best-effort cleanup of stale probes from crashed runs (older than
+    // 1h, so a concurrent preflight's in-flight probe is never removed).
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if let Some(s) = name.to_str() {
+                if s.starts_with(".greggd-uninstall-probe-")
+                    && s.ends_with(".tmp")
+                    && entry.path() != probe
+                {
+                    let stale = entry
+                        .metadata()
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.elapsed().ok())
+                        .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+                    if stale {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -888,7 +942,11 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
         crate::startup::uninstall_launchd(&plan.exe_path)?;
     }
     if plan.cron_teardown {
-        crate::startup::uninstall_cron_for(&plan.exe_path)?;
+        crate::startup::uninstall_cron_for_config(
+            &plan.exe_path,
+            &plan.config_path,
+            plan.explicit_config,
+        )?;
     }
     #[cfg(target_os = "windows")]
     if plan.scm_teardown {
@@ -910,17 +968,18 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
     if plan.direct_stop {
         direct_stop_and_gate(plan)?;
     }
-    // A managed stop above must have released the endpoint; a daemon
-    // still answering afterwards blocks deletion rather than orphaning.
-    if !plan.direct_stop && plan.discovery.daemon_is_running() && managed_stop_performed(plan) {
-        let still_running = match crate::cli::load_config(&plan.config_path, plan.explicit_config) {
+    // Re-probe the endpoint immediately before deletion (TOCTOU gate): a
+    // daemon that started after discovery must block deletion rather than
+    // have its executable unlinked from under it. Only a provably absent
+    // endpoint (`Unreachable`) permits deletion; any valid Gregg answer,
+    // a foreign peer (`NotGregg`), or an unreadable config fails closed.
+    if !plan.direct_stop {
+        let still_present = match crate::cli::load_config(&plan.config_path, plan.explicit_config) {
             Ok(config) => {
                 let target = crate::cli::croncheck_target(&config);
-                matches!(
+                !matches!(
                     crate::cli::probe_health(target),
-                    crate::cli::HealthProbe::Ready
-                        | crate::cli::HealthProbe::Warming
-                        | crate::cli::HealthProbe::Failed
+                    crate::cli::HealthProbe::Unreachable
                 )
             }
             // Fail closed: an unreadable or removed config means the endpoint
@@ -935,10 +994,11 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
                 });
             }
         };
-        if still_running {
+        if still_present {
             return Err(UninstallError::UncertainStop {
-                message: "the daemon still answers on its endpoint after managed shutdown; it may still be running"
-                    .to_string(),
+                message:
+                    "the daemon endpoint still answers before deletion; it may still be running"
+                        .to_string(),
             });
         }
     }
@@ -975,6 +1035,11 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
 
 /// Whether a manager stop was part of this plan (as opposed to merely
 /// removing a stale registration while the daemon runs unmanaged).
+///
+/// Retained for unit tests pinning plan classification; the production
+/// deletion gate re-probes the endpoint unconditionally (TOCTOU), so it no
+/// longer consults this predicate.
+#[allow(dead_code)]
 fn managed_stop_performed(plan: &UninstallPlan) -> bool {
     (plan.systemd_teardown && plan.discovery.systemd_active)
         || (plan.launchd_teardown && plan.discovery.launchd_loaded)

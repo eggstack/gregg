@@ -356,6 +356,15 @@ impl Config {
                 }])
             })?;
         }
+        // EggPool hosts use the same normalization so hand-edited spellings
+        // cannot diverge from `eggpool add` canonical form and fail at poll.
+        if let Some(eggpool) = config.eggpool.as_mut() {
+            eggpool.host = crate::endpoint::normalize_host(&eggpool.host).map_err(|_error| {
+                ConfigError::Validation(vec![ConfigViolation::InvalidEggpoolHost {
+                    host: eggpool.host.clone(),
+                }])
+            })?;
+        }
 
         let violations = config.validate();
         if violations.is_empty() {

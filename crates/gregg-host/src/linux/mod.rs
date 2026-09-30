@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use crate::error::{CollectError, CollectErrorKind};
+use crate::model::MAX_RATE_BYTES_PER_SEC;
 use crate::model::{
     CollectionLimits, DiskIoMetrics, DiskIoPayload, HostCapabilities, HostIdentity, HostSample,
     LoadAverage, NetworkInterfaceMetrics, NetworkPayload,
@@ -153,8 +154,12 @@ impl LinuxCollector {
             else {
                 continue;
             };
-            aggregate_read = aggregate_read.saturating_add(rate.first_per_sec);
-            aggregate_write = aggregate_write.saturating_add(rate.second_per_sec);
+            aggregate_read = aggregate_read
+                .saturating_add(rate.first_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
+            aggregate_write = aggregate_write
+                .saturating_add(rate.second_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
             if devices.len() < self.limits.max_disk_io_entries {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -200,8 +205,12 @@ impl LinuxCollector {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                aggregate_rx = aggregate_rx.saturating_add(rate.first_per_sec);
-                aggregate_tx = aggregate_tx.saturating_add(rate.second_per_sec);
+                aggregate_rx = aggregate_rx
+                    .saturating_add(rate.first_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
+                aggregate_tx = aggregate_tx
+                    .saturating_add(rate.second_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
                         rx_capacity_total =
@@ -260,7 +269,14 @@ impl HostCollector for LinuxCollector {
                         "aggregate CPU counters reset; baseline re-established",
                     ));
                 }
-                Err(other) => return Err(other),
+                Err(other) => {
+                    // Refresh the baseline on numeric failures too so a
+                    // single bad interval does not repeat forever.
+                    if other.kind == CollectErrorKind::Numeric {
+                        self.previous_cpu = stat.aggregate;
+                    }
+                    return Err(other);
+                }
             }
         } else {
             self.previous_cpu = stat.aggregate;
@@ -345,6 +361,12 @@ pub fn parse_loadavg(raw: &str) -> Result<LoadAverage, CollectError> {
         }
         #[allow(clippy::cast_possible_truncation)]
         let as_f32 = parsed as f32;
+        if !as_f32.is_finite() {
+            return Err(CollectError::new(
+                CollectErrorKind::Parse,
+                format!("loadavg {label} overflows f32"),
+            ));
+        }
         Ok(as_f32)
     };
 

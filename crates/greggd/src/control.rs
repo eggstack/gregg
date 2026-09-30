@@ -277,21 +277,45 @@ pub fn stop_candidates(config_path: &Path) -> Vec<PathBuf> {
 }
 
 /// Best-effort removal of a control socket path that the daemon created
-/// at startup. Only unlinks regular files and Unix-domain sockets. Any
-/// other entry type (directory, symlink to a directory) is left alone.
+/// at startup. Only unlinks socket inodes. Any other entry type is left
+/// alone.
+///
+/// `symlink_metadata` is used so a symlink at the path is never followed:
+/// a dangling link (which would break future binds) is unlinked directly;
+/// other links and non-sockets are left alone.
 ///
 /// A `NotFound` from the unlink itself is treated as success: another
 /// process may have removed the confirmed socket between the metadata
 /// check and the unlink, and the goal — no stale socket at the path — is
 /// already satisfied in that case.
 pub fn remove_control_socket(path: &Path) -> std::io::Result<()> {
-    match std::fs::metadata(path) {
-        Ok(meta) if meta.file_type().is_socket() => match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(e),
-        },
-        Ok(_) => Ok(()),
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => {
+            let ft = meta.file_type();
+            if ft.is_symlink() {
+                // Never follow symlinks. Unlink only a dangling link (its
+                // target is gone); unlinking the link never touches a live
+                // target.
+                match std::fs::metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        match std::fs::remove_file(path) {
+                            Ok(()) => Ok(()),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                            Err(e) => Err(e),
+                        }
+                    }
+                    _ => Ok(()),
+                }
+            } else if ft.is_socket() {
+                match std::fs::remove_file(path) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(e) => Err(e),
+                }
+            } else {
+                Ok(())
+            }
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
@@ -329,6 +353,33 @@ fn record_stop_error(slot: &mut Option<std::io::Error>, error: std::io::Error) {
     }
 }
 
+/// Bounded Unix-socket connect: a full listen backlog must not block
+/// `stop`/`uninstall`/`restart` indefinitely.
+///
+/// Runs the blocking `connect` on a short-lived thread and waits up to
+/// `timeout` for it. On expiry returns `TimedOut` (never classified as
+/// stale, so callers fail closed). No new dependencies; portable across
+/// Unix targets.
+fn connect_with_timeout(
+    path: &Path,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    use std::os::unix::net::UnixStream;
+    let owned = path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = UnixStream::connect(&owned);
+        let _ = tx.send(result);
+    });
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "control socket connect timed out",
+        )),
+    }
+}
+
 /// Send one `STOP\n` command to a running `greggd` via its local Unix
 /// control socket and block until the `OK\n` acknowledgement arrives.
 ///
@@ -346,23 +397,21 @@ fn record_stop_error(slot: &mut Option<std::io::Error>, error: std::io::Error) {
 /// sockets.
 pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
     use std::time::Duration;
 
     const IO_TIMEOUT: Duration = Duration::from_millis(1500);
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 
     let candidates = ControlIdentity::for_path(config_path).stop_candidates();
     let mut last_io_error: Option<std::io::Error> = None;
 
     for candidate in &candidates {
-        // Local Unix-socket connect is essentially instantaneous for both
-        // success (returning immediately) and common failures (NotFound
-        // for missing paths, ConnectionRefused for stale listeners). The
-        // read/write timeouts below bound the protocol exchange. Client
-        // timeout (1500ms) exceeds the server per-connection
-        // `CONTROL_CLIENT_TIMEOUT` (1s) so a slow-but-valid stop is not
-        // misclassified `Uncertain` while the daemon completes it.
-        let mut stream = match UnixStream::connect(candidate) {
+        // Bounded connect: a full listen backlog must not block `stop`
+        // indefinitely. The read/write timeouts below bound the protocol
+        // exchange. Client timeout (1500ms) exceeds the server
+        // per-connection `CONTROL_CLIENT_TIMEOUT` (1s) so a slow-but-valid
+        // stop is not misclassified `Uncertain` while the daemon completes it.
+        let mut stream = match connect_with_timeout(candidate, CONNECT_TIMEOUT) {
             Ok(stream) => stream,
             Err(e) => {
                 record_stop_error(&mut last_io_error, e);
@@ -655,9 +704,26 @@ fn try_bind_secure(path: &Path) -> Option<ControlBind> {
 /// holds a live listener or a non-socket entry, or when inspection itself
 /// failed; in those cases the existing entry is always left in place.
 fn prepare_final_path(path: &Path) -> Option<()> {
-    match std::fs::metadata(path) {
+    match std::fs::symlink_metadata(path) {
         Ok(meta) => {
             let ft = meta.file_type();
+            if ft.is_symlink() {
+                // Never follow symlinks; a dangling link blocks bind, so
+                // unlink the link itself (never its target).
+                match std::fs::metadata(path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        let _ = std::fs::remove_file(path);
+                        return Some(());
+                    }
+                    _ => {
+                        warn!(
+                            path = %path.display(),
+                            "control socket path is a symlink; skipping"
+                        );
+                        return None;
+                    }
+                }
+            }
             if !ft.is_socket() {
                 warn!(
                     path = %path.display(),
@@ -665,8 +731,9 @@ fn prepare_final_path(path: &Path) -> Option<()> {
                 );
                 return None;
             }
-            // Try to connect to confirm the entry is actually stale.
-            match std::os::unix::net::UnixStream::connect(path) {
+            // Try to connect to confirm the entry is actually stale, with a
+            // bounded deadline so a full backlog cannot hang bind.
+            match connect_with_timeout(path, std::time::Duration::from_secs(1)) {
                 Ok(_) => {
                     // Live listener; do not rebind.
                     None
@@ -700,6 +767,12 @@ fn prepare_final_path(path: &Path) -> Option<()> {
 }
 
 /// Run a dedicated control-stop task that owns the bound Unix listener.
+///
+/// The `path` parameter is informational only (the listener already owns
+/// the bound socket); it is retained so call sites document which socket
+/// the task serves. The returned `JoinHandle` should be held for the
+/// daemon lifetime; dropping it detaches the task while the
+/// `ControlSocketGuard` still owns file cleanup.
 ///
 /// The task accepts connections, reads a bounded prefix, validates it is
 /// exactly `STOP\n`, replies with `OK\n`, and signals the supplied

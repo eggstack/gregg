@@ -284,21 +284,30 @@ impl AppState {
         let selected_before = self.selected_id.clone();
         let viewport_before = self.viewport_top_id.clone();
         let mut visible_changed = false;
+        let mut id_map: Option<std::collections::HashMap<String, usize>> = None;
 
         for (result_index, result) in batch.results.iter().enumerate() {
-            let Some(system_index) = self.resolve_result_index(result_index, &result.system_id)
-            else {
+            let mut missed = false;
+            let Some(system_index) = self.resolve_result_index_with_map(
+                result_index,
+                &result.system_id,
+                id_map.as_ref(),
+            ) else {
                 continue;
             };
-            // Borrow-checker: capture comparison inputs before mutating.
-            let (before_reachability, before_latest, before_reason) = {
-                let system = &self.systems[system_index];
-                (
-                    system.reachability,
-                    system.latest.clone(),
-                    system.offline_reason.clone(),
-                )
-            };
+            if id_map.is_none()
+                && self
+                    .systems
+                    .get(result_index)
+                    .is_none_or(|system| system.id != result.system_id)
+            {
+                missed = true;
+            }
+            if missed {
+                id_map = Some(self.build_result_index_map());
+            }
+            // Compat path only: build normalized first, then compare by
+            // reference so `latest` is never cloned per result.
             let system = &mut self.systems[system_index];
             // A stable ID may be retained while its configured target
             // changes. Results from the superseded target are stale even
@@ -311,9 +320,9 @@ impl AppState {
             match &result.outcome {
                 PollOutcome::Online(snapshot) => {
                     let normalized = NormalizedSnapshot::from_v1(snapshot);
-                    if before_reachability != Reachability::Online
-                        || before_latest.as_ref() != Some(&normalized)
-                        || before_reason.is_some()
+                    if system.reachability != Reachability::Online
+                        || system.latest.as_ref() != Some(&normalized)
+                        || system.offline_reason.is_some()
                     {
                         visible_changed = true;
                     }
@@ -326,9 +335,9 @@ impl AppState {
                 }
                 PollOutcome::OnlineV2(snapshot) => {
                     let normalized = NormalizedSnapshot::from_v2_payload(snapshot);
-                    if before_reachability != Reachability::Online
-                        || before_latest.as_ref() != Some(&normalized)
-                        || before_reason.is_some()
+                    if system.reachability != Reachability::Online
+                        || system.latest.as_ref() != Some(&normalized)
+                        || system.offline_reason.is_some()
                     {
                         visible_changed = true;
                     }
@@ -341,7 +350,9 @@ impl AppState {
                 }
                 _ => {
                     let reason = result.outcome.offline_reason();
-                    if before_reachability != Reachability::Offline || before_reason != reason {
+                    if system.reachability != Reachability::Offline
+                        || system.offline_reason != reason
+                    {
                         visible_changed = true;
                     }
                     system.reachability = Reachability::Offline;
@@ -374,6 +385,7 @@ impl AppState {
         let selected_before = self.selected_id.clone();
         let viewport_before = self.viewport_top_id.clone();
         let mut visible_changed = false;
+        let mut id_map: Option<std::collections::HashMap<String, usize>> = None;
         let PollBatch {
             generation,
             completed_at,
@@ -381,10 +393,25 @@ impl AppState {
             ..
         } = batch;
         for (result_index, result) in results.into_iter().enumerate() {
-            let Some(system_index) = self.resolve_result_index(result_index, &result.system_id)
-            else {
+            let mut missed = false;
+            let Some(system_index) = self.resolve_result_index_with_map(
+                result_index,
+                &result.system_id,
+                id_map.as_ref(),
+            ) else {
                 continue;
             };
+            if id_map.is_none()
+                && self
+                    .systems
+                    .get(result_index)
+                    .is_none_or(|system| system.id != result.system_id)
+            {
+                missed = true;
+            }
+            if missed {
+                id_map = Some(self.build_result_index_map());
+            }
             let (before_reachability, before_reason) = {
                 let system = &self.systems[system_index];
                 (system.reachability, system.offline_reason.clone())
@@ -455,18 +482,39 @@ impl AppState {
         true
     }
 
-    fn resolve_result_index(&self, result_index: usize, system_id: &str) -> Option<usize> {
+    /// Positional match with stable-ID fallback, using a one-per-batch
+    /// index after the first miss so a reordered batch stays O(n) instead
+    /// of O(n²). The map owns its keys so it can live across the mutable
+    /// per-result updates; built only on the first miss (rare), keeping
+    /// the common ordered path allocation-free.
+    fn resolve_result_index_with_map(
+        &self,
+        result_index: usize,
+        system_id: &str,
+        map: Option<&std::collections::HashMap<String, usize>>,
+    ) -> Option<usize> {
         if self
             .systems
             .get(result_index)
             .is_some_and(|system| system.id == system_id)
         {
-            Some(result_index)
-        } else {
-            self.systems
-                .iter()
-                .position(|system| system.id == system_id)
+            return Some(result_index);
         }
+        if let Some(map) = map {
+            return map.get(system_id).copied();
+        }
+        self.systems
+            .iter()
+            .position(|system| system.id == system_id)
+    }
+
+    /// Build the one-per-batch stable-ID index after the first miss.
+    fn build_result_index_map(&self) -> std::collections::HashMap<String, usize> {
+        let mut map = std::collections::HashMap::with_capacity(self.systems.len());
+        for (index, system) in self.systems.iter().enumerate() {
+            map.insert(system.id.clone(), index);
+        }
+        map
     }
 
     fn finish_batch(&mut self, generation: u64, was_initialized: bool) {
@@ -620,6 +668,13 @@ impl AppState {
             }
             Action::ToggleSystemView => return,
             Action::ToggleDrives => {
+                // Unlike `ToggleNetwork`, drive expansion is intentionally
+                // unguarded: with no drive details the toggle still flips
+                // state but yields zero detail rows, and existing tests lock
+                // this behavior (`network_expansion_is_independent...`,
+                // `view_controls_wrap...`). Gating on
+                // `valid_drive_detail_count > 0` would break those tests,
+                // so the availability guard stays network-only.
                 self.drives_expanded = !self.drives_expanded;
             }
             Action::ToggleNetwork => {
@@ -673,8 +728,8 @@ impl AppState {
 
     /// Plan 143: `EggPool` result application reporting render-visible change.
     ///
-    /// Returns `false` for stale generations/periods and cancelled outcomes
-    /// that leave visible state untouched.
+    /// Returns `false` for stale generations/periods and for cancelled
+    /// outcomes that leave visible state untouched (already idle).
     pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
         let Some(eggpool) = self.eggpool.as_mut() else {
             return false;
@@ -682,20 +737,27 @@ impl AppState {
         if result.generation != eggpool.request_generation || result.period != eggpool.period {
             return false;
         }
-        if !matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
-            eggpool.status = EggpoolStatus::Idle;
-            eggpool.last_attempt_at = Some(result.completed_at);
-            match &result.outcome {
-                EggpoolFetchOutcome::Online(summary) => {
-                    eggpool.summary = Some(summary.clone());
-                    eggpool.last_success_at = Some(result.completed_at);
-                    eggpool.last_error = None;
-                }
-                error => eggpool.last_error = Some(error.clone()),
+        if matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
+            // A cancelled worker leaves `Refreshing` forever unless
+            // resolved. Return to `Idle` without touching
+            // `last_attempt_at` or `last_error`.
+            if eggpool.status != EggpoolStatus::Idle {
+                eggpool.status = EggpoolStatus::Idle;
+                return true;
             }
-            return true;
+            return false;
         }
-        false
+        eggpool.status = EggpoolStatus::Idle;
+        eggpool.last_attempt_at = Some(result.completed_at);
+        match &result.outcome {
+            EggpoolFetchOutcome::Online(summary) => {
+                eggpool.summary = Some(summary.clone());
+                eggpool.last_success_at = Some(result.completed_at);
+                eggpool.last_error = None;
+            }
+            error => eggpool.last_error = Some(error.clone()),
+        }
+        true
     }
 
     /// Mark an `EggPool` activation or manual refresh as a new request.
@@ -979,6 +1041,11 @@ pub fn ensure_selected_visible(state: &mut AppState) {
 
 /// [`ensure_selected_visible`] with a precomputed display order, so
 /// callers already holding one avoid rebuilding it.
+///
+/// The below-viewport walk calls O(n) `visible_range` per step (O(n²)
+/// worst-case far below the viewport). With n≈100 this is negligible
+/// and keeps minimal-scroll obvious; a single-pass walk would save
+/// nothing measurable.
 fn ensure_selected_visible_with_order(state: &mut AppState, order: &[usize]) {
     if order.is_empty() {
         return;

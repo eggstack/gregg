@@ -62,6 +62,10 @@ pub fn compute_viewport(
             .y
             .saturating_add(content_area.height)
             .saturating_sub(y);
+        // `visible_range` excluded non-first partials, so `h` is full
+        // except for a first entry taller than the viewport (clipped
+        // details). An `h < base` never reaches the renderer (see
+        // `render_online`); details truncate via the visible counts below.
         let h = full_height.min(height_remaining);
         let is_selected = state
             .selected_id

@@ -59,6 +59,105 @@ pub const MAX_CAPACITY_BITS_PER_SEC: u64 = 1 << 48;
 /// means "unknown" and remains valid.
 pub const MAX_CPU_FREQUENCY_HZ: u64 = 1 << 34;
 
+/// Hard deserialization bound for drive/disk-I/O/network collections.
+///
+/// Twice the validation bound ([`MAX_DRIVE_ENTRIES`], etc.) so slightly
+/// over-limit payloads still deserialize and receive detailed `validate()`
+/// diagnostics, while attacker-sized lists are rejected during serde with a
+/// bounded allocation.
+const MAX_DESERIALIZE_ENTRIES: usize = 64;
+
+/// Deserialize a `Vec<T>` with a streaming length cap.
+///
+/// The visitor errors as soon as more than [`MAX_DESERIALIZE_ENTRIES`]
+/// elements arrive, so the allocation stays bounded even for hostile input.
+/// Serialization is unchanged.
+fn deserialize_capped_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct CappedVecVisitor<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T> serde::de::Visitor<'de> for CappedVecVisitor<T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Vec<T>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "a sequence of at most {MAX_DESERIALIZE_ENTRIES} entries")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::SeqAccess<'de>,
+        {
+            let mut values = Vec::new();
+            while let Some(item) = seq.next_element()? {
+                if values.len() >= MAX_DESERIALIZE_ENTRIES {
+                    return Err(serde::de::Error::custom(format!(
+                        "collection exceeds maximum length of {MAX_DESERIALIZE_ENTRIES} entries"
+                    )));
+                }
+                values.push(item);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(CappedVecVisitor(std::marker::PhantomData))
+}
+
+/// Deserialize an `Option<Vec<T>>` with the same streaming length cap.
+///
+/// Missing fields are handled by `#[serde(default)]`; explicit `null`
+/// maps to `None` here.
+fn deserialize_capped_opt_vec<'de, D, T>(deserializer: D) -> Result<Option<Vec<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    struct CappedOptVecVisitor<T>(std::marker::PhantomData<T>);
+
+    impl<'de, T> serde::de::Visitor<'de> for CappedOptVecVisitor<T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Option<Vec<T>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "null or a sequence of at most {MAX_DESERIALIZE_ENTRIES} entries"
+            )
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D2>(self, deserializer: D2) -> Result<Self::Value, D2::Error>
+        where
+            D2: serde::Deserializer<'de>,
+        {
+            deserialize_capped_vec(deserializer).map(Some)
+        }
+    }
+
+    deserializer.deserialize_option(CappedOptVecVisitor(std::marker::PhantomData))
+}
+
 /// Capacity metrics for one operator-visible mounted filesystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -89,6 +188,7 @@ pub struct DiskIoPayload {
     /// De-duplicated aggregate write throughput in bytes per second.
     pub aggregate_write_bytes_per_sec: u64,
     /// Bounded device or logical-device detail records.
+    #[serde(deserialize_with = "deserialize_capped_vec")]
     pub devices: Vec<DiskIoMetrics>,
 }
 
@@ -124,6 +224,7 @@ pub struct NetworkPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregate_tx_capacity_bps: Option<u64>,
     /// Bounded interface detail records.
+    #[serde(deserialize_with = "deserialize_capped_vec")]
     pub interfaces: Vec<NetworkInterfaceMetrics>,
 }
 
@@ -165,7 +266,11 @@ pub struct NetworkInterfaceMetrics {
 pub struct StatusPayloadV2 {
     #[serde(flatten)]
     pub snapshot: StatusSnapshotV2,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_capped_opt_vec"
+    )]
     pub drives: Option<Vec<DriveMetrics>>,
     /// Host-level current CPU frequency in Hz, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,9 +538,11 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
 impl HealthResponseV2 {
     /// A `Ready` response wrapping the supplied v2 snapshot.
     ///
-    /// Prefer [`Self::try_ready`] when the snapshot comes from an untrusted
-    /// source: this constructor asserts the invariant in debug builds and
-    /// publishes the snapshot as-is in release builds.
+    /// Validated input only: the caller must ensure `snapshot` already
+    /// passed [`StatusSnapshotV2::validate`]. Prefer [`Self::try_ready`]
+    /// when the snapshot comes from an untrusted source: this constructor
+    /// asserts the invariant in debug builds and publishes the snapshot
+    /// as-is in release builds.
     #[must_use]
     pub fn ready(snapshot: StatusSnapshotV2) -> Self {
         debug_assert!(
@@ -473,27 +580,90 @@ impl HealthResponseV2 {
     }
 
     /// A `Warming` response with a custom message.
+    ///
+    /// The message is clamped into the wire bounds (NUL replaced, truncated
+    /// to [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes). Use
+    /// [`Self::try_warming_with_message`] to reject invalid messages instead.
     #[must_use]
     pub fn warming_with_message(message: impl Into<String>) -> Self {
+        let message: String = message.into();
+        let sanitized = crate::health::sanitize_health_message(&message);
+        debug_assert!(
+            crate::health::message_violation(&sanitized).is_none(),
+            "sanitized health message must be wire-valid"
+        );
         Self {
             schema_version: SCHEMA_VERSION_V2,
             state: crate::ReadinessState::Warming,
             category: Some(crate::HealthCategory::Warming),
-            message: Some(message.into()),
+            message: Some(sanitized),
             snapshot: None,
         }
     }
 
+    /// A `Warming` response with a custom message, rejected when invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wire violation reason when the message exceeds
+    /// [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes or contains NUL.
+    pub fn try_warming_with_message(message: impl Into<String>) -> Result<Self, &'static str> {
+        let message = message.into();
+        if let Some(reason) = crate::health::message_violation(&message) {
+            return Err(reason);
+        }
+        Ok(Self {
+            schema_version: SCHEMA_VERSION_V2,
+            state: crate::ReadinessState::Warming,
+            category: Some(crate::HealthCategory::Warming),
+            message: Some(message),
+            snapshot: None,
+        })
+    }
+
     /// A `Failed` response with the given category and message.
+    ///
+    /// The message is clamped into the wire bounds (NUL replaced, truncated
+    /// to [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes). Use
+    /// [`Self::try_failed`] to reject invalid messages instead.
     #[must_use]
     pub fn failed(category: crate::HealthCategory, message: impl Into<String>) -> Self {
+        let message: String = message.into();
+        let sanitized = crate::health::sanitize_health_message(&message);
+        debug_assert!(
+            crate::health::message_violation(&sanitized).is_none(),
+            "sanitized health message must be wire-valid"
+        );
         Self {
             schema_version: SCHEMA_VERSION_V2,
             state: crate::ReadinessState::Failed,
             category: Some(category),
-            message: Some(message.into()),
+            message: Some(sanitized),
             snapshot: None,
         }
+    }
+
+    /// A `Failed` response with the given category and message, rejected when invalid.
+    ///
+    /// # Errors
+    ///
+    /// Returns the wire violation reason when the message exceeds
+    /// [`crate::MAX_HEALTH_MESSAGE_BYTES`] bytes or contains NUL.
+    pub fn try_failed(
+        category: crate::HealthCategory,
+        message: impl Into<String>,
+    ) -> Result<Self, &'static str> {
+        let message = message.into();
+        if let Some(reason) = crate::health::message_violation(&message) {
+            return Err(reason);
+        }
+        Ok(Self {
+            schema_version: SCHEMA_VERSION_V2,
+            state: crate::ReadinessState::Failed,
+            category: Some(category),
+            message: Some(message),
+            snapshot: None,
+        })
     }
 }
 
@@ -811,15 +981,106 @@ mod tests {
     #[test]
     fn v2_health_messages_are_bounded_and_nul_free() {
         let oversize = "x".repeat(crate::MAX_HEALTH_MESSAGE_BYTES + 1);
-        let json = serde_json::to_string(&HealthResponseV2::failed(
-            HealthCategory::CollectorFailure,
-            oversize,
-        ))
-        .expect("serialize");
-        assert!(serde_json::from_str::<HealthResponseV2>(&json).is_err());
+        let raw = serde_json::json!({
+            "schema_version": 2,
+            "state": "failed",
+            "category": "collector_failure",
+            "message": oversize,
+        });
+        assert!(serde_json::from_value::<HealthResponseV2>(raw).is_err());
+        assert!(HealthResponseV2::try_failed(HealthCategory::CollectorFailure, &oversize).is_err());
+        assert!(HealthResponseV2::try_warming_with_message(&oversize).is_err());
 
         let json = r#"{"schema_version":2,"state":"failed","category":"collector_failure","message":"a\u0000b"}"#;
         assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+        assert!(HealthResponseV2::try_failed(HealthCategory::CollectorFailure, "a\0b").is_err());
+
+        let clamped = HealthResponseV2::failed(HealthCategory::CollectorFailure, &oversize);
+        let message = clamped.message.as_deref().expect("message");
+        assert_eq!(message.len(), crate::MAX_HEALTH_MESSAGE_BYTES);
+        let json = serde_json::to_string(&clamped).expect("serialize");
+        assert!(serde_json::from_str::<HealthResponseV2>(&json).is_ok());
+
+        let nul_clamped = HealthResponseV2::failed(HealthCategory::CollectorFailure, "a\0b");
+        assert!(!nul_clamped
+            .message
+            .as_deref()
+            .expect("message")
+            .contains('\0'));
+        let json = serde_json::to_string(&nul_clamped).expect("serialize");
+        assert!(serde_json::from_str::<HealthResponseV2>(&json).is_ok());
+    }
+
+    #[test]
+    fn v2_health_message_sanitize_truncates_on_char_boundary() {
+        // `é` is 2 bytes; 511 `x` + `é` would be 513 bytes, so the clamp
+        // must drop the trailing `é` rather than split it.
+        let message = format!("{}{}", "x".repeat(511), "é");
+        assert_eq!(message.len(), 513);
+        let clamped = HealthResponseV2::failed(HealthCategory::CollectorFailure, message);
+        let out = clamped.message.as_deref().expect("message");
+        assert!(out.len() <= crate::MAX_HEALTH_MESSAGE_BYTES);
+        let json = serde_json::to_string(&clamped).expect("serialize");
+        assert!(serde_json::from_str::<HealthResponseV2>(&json).is_ok());
+    }
+
+    #[test]
+    fn oversized_collections_are_rejected_during_deserialization() {
+        let base = serde_json::to_value(v2_valid_snapshot()).expect("snapshot value");
+        // `drives` lives on the flat payload, not the base snapshot.
+        let drive = serde_json::json!({"name": "/", "used_bytes": 0, "total_bytes": 1});
+        let many_drives: Vec<_> = (0..65).map(|_| drive.clone()).collect();
+        let mut payload = base.clone();
+        payload["drives"] = serde_json::Value::Array(many_drives);
+        assert!(
+            serde_json::from_value::<StatusPayloadV2>(payload).is_err(),
+            "65 drives must be rejected during deserialization"
+        );
+
+        let device = serde_json::json!({
+            "id": "sda", "name": "sda",
+            "read_bytes_per_sec": 1, "write_bytes_per_sec": 2
+        });
+        let many_devices: Vec<_> = (0..65).map(|_| device.clone()).collect();
+        let mut payload = base.clone();
+        payload["disk_io"] = serde_json::json!({
+            "aggregate_read_bytes_per_sec": 1,
+            "aggregate_write_bytes_per_sec": 2,
+            "devices": many_devices,
+        });
+        assert!(
+            serde_json::from_value::<StatusPayloadV2>(payload).is_err(),
+            "65 disk devices must be rejected during deserialization"
+        );
+
+        let iface = serde_json::json!({
+            "id": "eth0", "name": "eth0",
+            "rx_bytes_per_sec": 1, "tx_bytes_per_sec": 2,
+            "is_loopback": false, "aggregate_member": false
+        });
+        let many_ifaces: Vec<_> = (0..65).map(|_| iface.clone()).collect();
+        let mut payload = base.clone();
+        payload["network"] = serde_json::json!({
+            "aggregate_rx_bytes_per_sec": 1,
+            "aggregate_tx_bytes_per_sec": 2,
+            "interfaces": many_ifaces,
+        });
+        assert!(
+            serde_json::from_value::<StatusPayloadV2>(payload).is_err(),
+            "65 network interfaces must be rejected during deserialization"
+        );
+
+        // At the validation bound (32) deserialization still succeeds.
+        let few_drives: Vec<_> = (0..32)
+            .map(
+                |i| serde_json::json!({"name": format!("/{i}"), "used_bytes": 0, "total_bytes": 1}),
+            )
+            .collect();
+        let mut payload = base.clone();
+        payload["drives"] = serde_json::Value::Array(few_drives);
+        let parsed: StatusPayloadV2 =
+            serde_json::from_value(payload).expect("32 drives deserialize");
+        parsed.validate().expect("32 drives validate");
     }
 
     #[test]

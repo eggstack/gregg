@@ -117,12 +117,49 @@ done
 if [[ "${FAKE_CURL_MODE:-ok}" == "404" ]]; then
   if [[ " $* " == *" %{http_code}"* ]]; then
     printf '404'
-    exit 0
+    exit 22
   fi
   echo "curl: (22) the requested URL returned error: 404" >&2
   exit 22
 fi
 if [[ " $* " == *" %{http_code}"* ]]; then
+  # Single-request shape: asset download carries -o <file> -w %{http_code}.
+  # Create the asset when an -o target is present (not /dev/null), then
+  # report the code, mirroring real curl's -o + -w behavior.
+  if [[ -n "$outfile" && "$outfile" != "/dev/null" && "$outfile" != *.sha256 ]]; then
+    base="$(basename "$url")"
+    program="${base%%-*}"
+    cat > "$outfile" <<INNEREOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "version" ]]; then
+  echo "${program} ${FAKE_VERSION:-9.9.9}"
+  exit 0
+fi
+if [[ "\${1:-}" == "startup" ]]; then
+  echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "status" ]]; then
+  echo "${program} status" >> "\${DAEMON_LOG:?}"
+  [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
+  exit \$?
+fi
+if [[ "\${1:-}" == "stop" ]]; then
+  echo "${program} stop" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "stop" ]]; then exit 1; fi
+  rm -f "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+if [[ "\${1:-}" == "croncheck" ]]; then
+  echo "${program} croncheck" >> "\${DAEMON_LOG:?}"
+  if [[ "\${ACTIVATION_FAIL:-}" == "croncheck" ]]; then exit 1; fi
+  touch "\${RUNNING_MARKER:?}"
+  exit 0
+fi
+exit 0
+INNEREOF
+    chmod +x "$outfile"
+  fi
   printf '200'
   exit 0
 fi

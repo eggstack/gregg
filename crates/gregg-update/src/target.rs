@@ -56,9 +56,14 @@ pub fn is_supported_binary_target(target: &str) -> bool {
 }
 
 /// Asset name for a program+target (no version in filename).
+///
+/// Only the supported table entry `x86_64-pc-windows-msvc` carries `.exe`;
+/// an exact match (not `ends_with`) keeps hypothetical future Windows
+/// targets from inheriting the suffix before they are added to
+/// [`SUPPORTED_TARGETS`].
 #[must_use]
 pub fn asset_name(program: &str, target: &str) -> String {
-    if target.ends_with("-pc-windows-msvc") {
+    if target == "x86_64-pc-windows-msvc" {
         format!("{program}-{target}.exe")
     } else {
         format!("{program}-{target}")
@@ -68,6 +73,10 @@ pub fn asset_name(program: &str, target: &str) -> String {
 /// Construct exact tagged GitHub Release URLs for an asset and its checksum.
 #[must_use]
 pub fn github_urls(program: &str, target: &str, version: &str) -> (String, String) {
+    debug_assert!(
+        crate::version::parse_stable_version(version).is_some(),
+        "github_urls requires a stable X.Y.Z version"
+    );
     let asset = asset_name(program, target);
     let base = format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset}");
     let sha = format!("{base}.sha256");
@@ -135,7 +144,7 @@ mod tests {
         );
         assert_eq!(
             asset_name("gregg", "aarch64-pc-windows-msvc"),
-            "gregg-aarch64-pc-windows-msvc.exe"
+            "gregg-aarch64-pc-windows-msvc"
         );
     }
 

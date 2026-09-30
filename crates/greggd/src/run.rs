@@ -33,6 +33,13 @@ use crate::server::{Config as ServerConfig, ServerState};
 /// cleanup window from multiplying when multiple tasks are still running.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 
+/// Count-based staleness wired from daemon config into the server.
+///
+/// `run_with_shutdown_on_ready` passes this alongside `stale_after_ms` so
+/// a short burst of collector failures marks the preserved snapshot stale
+/// (status 503) instead of serving 200 while healthz reports 503.
+const DEFAULT_MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
 /// Outcome of the supervision `select!`.
 ///
 /// Each variant captures the result of the branch that fired. After the
@@ -246,8 +253,13 @@ where
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
     // Wire stale_after_ms from daemon config into the server state.
-    let server_state =
-        ServerState::with_stale_policy(0, Duration::from_millis(config.stale_after_ms()));
+    // A small count-based threshold keeps status/health coherent: without
+    // it a `Failed` sampler would keep serving its last snapshot as 200
+    // while healthz reports 503 until the age policy expires.
+    let server_state = ServerState::with_stale_policy(
+        DEFAULT_MAX_CONSECUTIVE_FAILURES,
+        Duration::from_millis(config.stale_after_ms()),
+    );
 
     // Bind the TCP listener before spawning tasks so bind failures
     // are surfaced immediately rather than silently lost.

@@ -170,6 +170,8 @@ pub(crate) struct CondensedRenderKey {
 }
 
 pub(crate) fn condensed_key_for(system: &SystemState) -> Option<CondensedRenderKey> {
+    // Like `MetricRenderKey`: `aggregate_drives` per system per render even
+    // on hits is accepted (≤32 drives); formatted strings are memoized.
     if system.reachability != Reachability::Online {
         return None;
     }

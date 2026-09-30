@@ -93,6 +93,10 @@ pub(crate) fn render_online(
         || base_height_for(snap.network.is_some()),
         MetricRows::base_height,
     );
+    // Partial `area.height < base_height` never reaches here via
+    // `visible_range` (non-first partials excluded; first returns empty
+    // below minimum). Defensive early return renders nothing rather than
+    // a truncated base block.
     if area.height < base_height {
         return;
     }

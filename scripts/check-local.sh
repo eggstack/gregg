@@ -104,7 +104,7 @@ check_version_consistency() {
     local manifest
     for crate in crates/gregg-protocol crates/gregg-update crates/gregg-host crates/greggd crates/gregg; do
         manifest="${crate}/Cargo.toml"
-        if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$' "${manifest}"; then
+        if ! grep -Eq '^[[:space:]]*version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*(#.*)?$' "${manifest}"; then
             echo "error: ${manifest} is missing version.workspace = true" >&2
             return 1
         fi
@@ -126,6 +126,7 @@ check_version_consistency() {
             [[ -z "${line}" ]] && continue
             if [[ "${line}" =~ version[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
                 dependency_version="${BASH_REMATCH[1]}"
+                dependency_version="${dependency_version#=}"
             else
                 echo "error: ${manifest} ${dep} dependency has no registry version" >&2
                 return 1
@@ -148,6 +149,7 @@ check_version_consistency() {
         [[ -z "${line}" ]] && continue
         if [[ "${line}" =~ version[[:space:]]*=[[:space:]]*\"([^\"]+)\" ]]; then
             dependency_version="${BASH_REMATCH[1]}"
+            dependency_version="${dependency_version#=}"
         else
             echo "error: ${manifest} gregg-host dependency has no registry version" >&2
             return 1

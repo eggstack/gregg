@@ -38,7 +38,7 @@ pub fn collect_identity(
 
     let name = match display_name {
         Some(value) => clip_identifier(value),
-        None => hostname.clone(),
+        None => clip_identifier(&hostname),
     };
 
     Ok(HostIdentity {

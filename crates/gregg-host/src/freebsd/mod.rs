@@ -22,6 +22,7 @@
 use std::time::Instant;
 
 use crate::error::{CollectError, CollectErrorKind};
+use crate::model::MAX_RATE_BYTES_PER_SEC;
 use crate::model::{
     CollectionLimits, DiskIoMetrics, DiskIoPayload, HostCapabilities, HostIdentity, HostSample,
     LoadAverage, NetworkInterfaceMetrics, NetworkPayload,
@@ -113,13 +114,18 @@ fn collect_identity(raw: &source::RawIdentity, display_name: Option<&str>) -> Ho
     let clip = |value: &str| -> String {
         let trimmed = value.trim().replace('\0', "");
         if trimmed.is_empty() {
-            "unknown".to_string()
-        } else {
-            trimmed.chars().take(128).collect()
+            return "unknown".to_string();
         }
+        // Byte-clip on UTF-8 boundary (512 B wire bound via 128-char
+        // display budget), matching Linux/macOS clip policy.
+        let mut end = trimmed.len().min(128);
+        while end > 0 && !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        trimmed[..end].to_string()
     };
     HostIdentity {
-        name: display_name.map_or_else(|| raw.hostname.clone(), |name| clip(name)),
+        name: display_name.map_or_else(|| clip(&raw.hostname), |name| clip(name)),
         hostname: clip(&raw.hostname),
         os_name: "freebsd".to_string(),
         os_version: clip(&raw.os_version),
@@ -216,7 +222,14 @@ fn parse_load(raw: &[f64; 3]) -> Result<LoadAverage, CollectError> {
             ));
         }
         #[allow(clippy::cast_possible_truncation)]
-        Ok(value as f32)
+        let as_f32 = value as f32;
+        if !as_f32.is_finite() {
+            return Err(CollectError::new(
+                CollectErrorKind::Parse,
+                format!("FreeBSD loadavg {label} overflows f32"),
+            ));
+        }
+        Ok(as_f32)
     };
     Ok(LoadAverage {
         one: parse_one(raw[0], "1")?,
@@ -297,8 +310,12 @@ impl<S: FreeBsdSource + Clone + 'static> FreeBsdCollector<S> {
             else {
                 continue;
             };
-            read_total = read_total.saturating_add(rate.first_per_sec);
-            write_total = write_total.saturating_add(rate.second_per_sec);
+            read_total = read_total
+                .saturating_add(rate.first_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
+            write_total = write_total
+                .saturating_add(rate.second_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
             if devices.len() < self.limits.max_disk_io_entries {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -347,8 +364,12 @@ impl<S: FreeBsdSource + Clone + 'static> FreeBsdCollector<S> {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                rx_total = rx_total.saturating_add(rate.first_per_sec);
-                tx_total = tx_total.saturating_add(rate.second_per_sec);
+                rx_total = rx_total
+                    .saturating_add(rate.first_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
+                tx_total = tx_total
+                    .saturating_add(rate.second_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
                         rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));

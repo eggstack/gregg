@@ -31,10 +31,24 @@ pub fn systemd_unit_content(config_path: &Path) -> String {
         "ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml",
         &format!(
             "ExecStart=/usr/local/bin/greggd run --config {}",
-            config_path.display()
+            systemd_quote_path(config_path),
         ),
     );
     template
+}
+
+/// Quote a path for systemd `ExecStart`: bare when safe, otherwise
+/// double-quoted with backslash/quote escaping per systemd.syntax.
+fn systemd_quote_path(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let needs_quote = s.is_empty()
+        || s.chars()
+            .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | '\'' | ';' | '$' | '`'));
+    if !needs_quote {
+        return s.into_owned();
+    }
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 /// Unit template with the canonical `ExecStart` config path substituted at

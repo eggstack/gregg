@@ -410,6 +410,11 @@ select_shell_profile() {
 append_profile_entry() {
   local file="$1"
   local parent
+  # Never follow a profile symlink outside $HOME (would append to an
+  # attacker-chosen target); the caller reports the miss as manual guidance.
+  if [[ -L "$file" ]]; then
+    return 1
+  fi
   parent="$(dirname "$file")"
   if [[ ! -d "$parent" ]]; then
     return 1
@@ -760,7 +765,16 @@ install_program() {
   local dest="${DEST_DIR}/${program}"
   local scope
   local existing_version=""
+  local curl_status http_code
 
+  # Refuse a symlink at the canonical destination: replacing through it
+  # would write outside the install scope (TOCTOU between classify and
+  # install). The operator must remove or rename it manually.
+  if [[ -L "$dest" ]]; then
+    echo "error: ${dest} is a symlink; refusing to install through it." >&2
+    echo "Remove or rename it manually, then rerun." >&2
+    exit 1
+  fi
   # Same-scope contract: rerunning at the same scope replaces that scope's
   # component. Classify before any download; a foreign executable at the
   # canonical path is never silently treated as a Gregg upgrade.
@@ -807,16 +821,18 @@ install_program() {
   echo "Downloading $program from $url ..." >&2
 
   # Attempt to download executable; classify 404 as Cargo-fallback trigger, other errors as hard failure.
-  # Bounded like the Rust updater (`exec.rs`): --max-time, --max-filesize
-  # (64 MiB), and a program User-Agent so a mirror cannot hang or fill disk.
+  # Bounded like the Rust updater (`exec.rs`): --proto '=https', --tlsv1.2,
+  # --max-time, --max-filesize (64 MiB), and a program User-Agent so a
+  # mirror cannot hang, downgrade, or fill disk. The HTTP code comes from
+  # this same invocation (`-w %{http_code}`), so no second probe request
+  # is issued on failure.
   set +e
-  curl -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}" "$url"
-  local curl_status=$?
+  http_code="$(curl --proto '=https' --tlsv1.2 -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}" -w "%{http_code}" "$url" 2>/dev/null)"
+  curl_status=$?
   set -e
+  http_code="${http_code:-000}"
 
   if [[ $curl_status -ne 0 ]]; then
-    local http_code
-    http_code="$(curl -fsSL --max-time 15 -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")"
     if [[ "$http_code" == "404" ]]; then
       echo "No prebuilt $program asset at $url (HTTP 404); trying Cargo fallback..." >&2
       rm -rf "$tmpdir"
@@ -829,9 +845,17 @@ install_program() {
       die "failed to download $asset (HTTP $http_code)"
     fi
   fi
+  # Defense in depth: `-f` already fails non-2xx, but assert the captured
+  # code is 2xx anyway so a future curl without `-f` cannot accept an
+  # error body as success.
+  if [[ "$http_code" != 2* ]]; then
+    echo "curl exit $curl_status, HTTP $http_code for $url" >&2
+    rm -rf "$tmpdir"
+    die "failed to download $asset (HTTP $http_code)"
+  fi
 
   echo "Downloading checksum ${sha_url} ..." >&2
-  if ! curl -fsSL --max-time 100 --max-filesize 67108864 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
+  if ! curl --proto '=https' --tlsv1.2 -fsSL --max-time 30 --max-filesize 4096 -H "User-Agent: ${program}/installer (https://github.com/eggstack/gregg)" -o "${tmpdir}/${asset}.sha256" "$sha_url"; then
     die "failed to download checksum for $asset from $sha_url"
   fi
 

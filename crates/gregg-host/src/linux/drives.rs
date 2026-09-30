@@ -97,16 +97,20 @@ fn decode_mountinfo(value: &str) -> Option<String> {
 
 fn parse_mountinfo_line(line: &str) -> Option<MountRecord> {
     let (left, right) = line.split_once(" - ")?;
-    let left: Vec<_> = left.split_whitespace().collect();
-    let right: Vec<_> = right.split_whitespace().collect();
-    if left.len() < 6 || right.len() < 2 {
+    let mut left_iter = left.split_whitespace();
+    let device = left_iter.nth(2)?.to_string();
+    let root = decode_mountinfo(left_iter.next()?)?;
+    let mount_point = decode_mountinfo(left_iter.next()?)?;
+    // Skip remaining left fields without collecting.
+    let mut right_iter = right.split_whitespace();
+    let filesystem_type = right_iter.next()?.to_string();
+    let source = decode_mountinfo(right_iter.next()?)?;
+    // Validate minimum field counts (6 left, 2 right) without Vecs.
+    // device/root/mount consumed above; ensure at least 3 more left fields
+    // existed by checking the original split count cheaply.
+    if left.split_whitespace().count() < 6 || right.split_whitespace().count() < 2 {
         return None;
     }
-    let device = left[2].to_string();
-    let root = decode_mountinfo(left[3])?;
-    let mount_point = decode_mountinfo(left[4])?;
-    let filesystem_type = right[0].to_string();
-    let source = decode_mountinfo(right[1])?;
     Some(MountRecord {
         device,
         root,

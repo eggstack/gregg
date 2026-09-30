@@ -267,12 +267,38 @@ pub fn update_spec() -> UpdateSpec {
 /// `restart_daemon()` so a registration change between quiescence and
 /// restart fails as `UpdatedButRestartFailed` instead of mutating a foreign
 /// manager. All other dispositions leave the host untouched.
+///
+/// The endpoint is re-observed immediately before restart: a
+/// running→stopped transition across the replace window downgrades to
+/// `Stopped` (no resurrection), and a stopped→running transition never
+/// gains a restart it was not attributed.
 fn restart_after_update(
     lifecycle: UpdateLifecycle,
     exe: &Path,
     config_path: &Path,
     explicit: bool,
 ) -> Result<(), UpdateError> {
+    let lifecycle = match lifecycle {
+        UpdateLifecycle::ManagedRunning | UpdateLifecycle::DirectRunning => {
+            #[cfg(target_os = "windows")]
+            {
+                // Windows intent is SCM-owned; the endpoint probe is Unix-only.
+                lifecycle
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                if is_selected_daemon_running(config_path, explicit) {
+                    lifecycle
+                } else {
+                    eprintln!(
+                        "Daemon stopped during update; leaving binary updated without starting."
+                    );
+                    UpdateLifecycle::Stopped
+                }
+            }
+        }
+        other => other,
+    };
     match lifecycle {
         UpdateLifecycle::ManagedRunning | UpdateLifecycle::DirectRunning => {
             crate::startup::restart_daemon(exe, config_path, explicit)
@@ -301,6 +327,9 @@ fn restart_after_update(
 /// `config_path` and `explicit` describe the resolved config location.
 /// Prints progress to stderr and returns an outcome or error.
 pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, UpdateError> {
+    // Fail fast on permission before any network I/O.
+    let (_exe_path, original_exe) = gregg_update::preflight_exe_writable(PROGRAM)?;
+
     let spec = update_spec();
     let plan = gregg_update::resolve_plan(&spec)?;
     let (current, latest, target) = match plan {
@@ -313,9 +342,6 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
             target,
         } => (current, latest, target),
     };
-
-    // Permission check before any download or lifecycle action.
-    let (_exe_path, original_exe) = gregg_update::preflight_exe_writable(PROGRAM)?;
 
     #[cfg(target_os = "windows")]
     let pre_registration = crate::service::platform_service_manager()

@@ -363,6 +363,13 @@ function Install-Program {
         $httpCode = ""
         try {
             Invoke-WebRequest -Uri $Url -OutFile $Candidate -UseBasicParsing -TimeoutSec 100 -ErrorAction Stop
+            # Bound the staged asset (64 MiB, matching the Rust updater and
+            # install.sh --max-filesize) before any checksum/exec step.
+            $assetLen = (Get-Item -LiteralPath $Candidate).Length
+            if ($assetLen -gt 67108864) {
+                Remove-Item -LiteralPath $Candidate -Force -ErrorAction SilentlyContinue
+                throw "downloaded asset is $assetLen bytes, exceeding the 67108864 byte maximum"
+            }
         } catch {
             $downloadSucceeded = $false
             # Try to extract HTTP status
@@ -391,7 +398,14 @@ function Install-Program {
 
         Write-Host "Downloading checksum $ShaUrl ..."
         try {
-            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaFile -UseBasicParsing -TimeoutSec 100 -ErrorAction Stop
+            Invoke-WebRequest -Uri $ShaUrl -OutFile $ShaFile -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+            # A legitimate .sha256 is under 200 bytes; 4 KiB bounds a
+            # compromised mirror before the file is read.
+            $shaLen = (Get-Item -LiteralPath $ShaFile).Length
+            if ($shaLen -gt 4096) {
+                Remove-Item -LiteralPath $ShaFile -Force -ErrorAction SilentlyContinue
+                throw "checksum file is $shaLen bytes, exceeding the 4096 byte maximum"
+            }
         } catch {
             throw "failed to download checksum for $Asset from $ShaUrl : $($_.Exception.Message)"
         }

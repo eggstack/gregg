@@ -33,8 +33,8 @@ pub const MAX_SINGLE_GROUP_LOGICAL_PROCESSORS: u32 = 64;
 ///
 /// # Behavior
 ///
-/// - Returns [`CollectErrorKind::Warming`] when `prev == curr` (identical
-///   samples).
+/// - Returns [`CollectErrorKind::CounterReset`] when `prev == curr` (identical
+///   samples, zero delta).
 /// - Returns [`CollectErrorKind::CounterReset`] when any counter decreased.
 /// - Returns [`CollectErrorKind::CounterReset`] when `delta_total == 0`.
 /// - Returns [`CollectErrorKind::Numeric`] when the result is not finite.
@@ -75,27 +75,8 @@ pub fn compute_cpu_percentages(
     #[allow(clippy::cast_precision_loss)]
     let usage_pct = (delta_busy as f64) * 100.0 / (delta_total as f64);
 
-    let finalize = |value: f64| -> Result<f32, CollectError> {
-        if !value.is_finite() {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "CPU percentage is not finite",
-            ));
-        }
-        let clamped = value.clamp(0.0, 100.0);
-        #[allow(clippy::cast_possible_truncation)]
-        let as_f32 = clamped as f32;
-        if !as_f32.is_finite() || !(0.0..=100.0).contains(&as_f32) {
-            return Err(CollectError::new(
-                CollectErrorKind::Numeric,
-                "CPU percentage outside closed 0..=100 interval after conversion",
-            ));
-        }
-        Ok(as_f32)
-    };
-
     Ok(CpuSample {
-        usage_pct: finalize(usage_pct)?,
+        usage_pct: crate::finalize_percentage(usage_pct)?,
     })
 }
 
@@ -154,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn identical_counters_return_warming() {
+    fn identical_counters_return_counter_reset() {
         let ticks = RawCpuTimes {
             idle: 8_000,
             kernel: 8_500,

@@ -55,6 +55,12 @@ pub const CRON_MANAGED_MARKER: &str = "# greggd managed watchdog";
 
 /// Classify the managed cron block by the executable it actually invokes.
 /// The marker alone is not ownership evidence.
+///
+/// NOTE: this is exe-scoped ownership only — a block invoking the same
+/// executable with a *different* `--config` still classifies `Owned`.
+/// Callers that must not remove another config's watchdog should use
+/// [`cron_block_ownership_for_config`], which additionally compares the
+/// block's config identity.
 pub fn cron_block_ownership(crontab: &str, exe: &Path) -> ArtifactOwnership {
     let lines: Vec<&str> = crontab.lines().collect();
     let markers: Vec<usize> = lines
@@ -90,6 +96,13 @@ pub fn cron_block_ownership(crontab: &str, exe: &Path) -> ArtifactOwnership {
 }
 
 fn parse_cron_command_target(line: &str) -> Result<PathBuf, ()> {
+    parse_cron_command_parts(line).map(|(exe, _)| exe)
+}
+
+/// Parse a managed cron command line into its executable and optional
+/// `--config` identity. Returns `(exe, config)` where `config` is `None`
+/// for implicit-default blocks (no `--config` flag).
+fn parse_cron_command_parts(line: &str) -> Result<(PathBuf, Option<PathBuf>), ()> {
     let command = if let Some(rest) = line.strip_prefix("@reboot ") {
         rest
     } else {
@@ -110,7 +123,70 @@ fn parse_cron_command_target(line: &str) -> Result<PathBuf, ()> {
     {
         return Err(());
     }
-    Ok(PathBuf::from(target))
+    // Strip the trailing `croncheck` verb to isolate `--config '...'`.
+    let args = remainder.strip_suffix("croncheck").ok_or(())?.trim();
+    let config = if args.is_empty() {
+        None
+    } else {
+        let cfg_quoted = args.strip_prefix("--config").ok_or(())?.trim();
+        let cfg_quoted = cfg_quoted.strip_prefix('\'').ok_or(())?;
+        let end = cfg_quoted.find('\'').ok_or(())?;
+        let encoded = &cfg_quoted[..end];
+        let rest = cfg_quoted[end + 1..].trim();
+        if !rest.is_empty() {
+            return Err(());
+        }
+        let decoded = encoded.replace("'\\''", "'");
+        if decoded.is_empty() {
+            return Err(());
+        }
+        Some(PathBuf::from(decoded))
+    };
+    Ok((PathBuf::from(target), config))
+}
+
+/// Config-aware ownership: `Owned` only when the block invokes `exe` *and*
+/// its config identity matches the selected config (`explicit` selects
+/// whether `--config <config>` or an implicit block is expected).
+pub fn cron_block_ownership_for_config(
+    crontab: &str,
+    exe: &Path,
+    config: &Path,
+    explicit: bool,
+) -> ArtifactOwnership {
+    match cron_block_ownership(crontab, exe) {
+        ArtifactOwnership::Owned => {}
+        other => return other,
+    }
+    let lines: Vec<&str> = crontab.lines().collect();
+    let Some(marker) = lines
+        .iter()
+        .enumerate()
+        .find_map(|(index, line)| (line.trim() == CRON_MANAGED_MARKER).then_some(index))
+    else {
+        return ArtifactOwnership::Absent;
+    };
+    // `cron_block_ownership` already validated shape (two matching exe
+    // targets); re-parse configs here.
+    let Ok((_, first_cfg)) = parse_cron_command_parts(lines.get(marker + 1).unwrap_or(&"")) else {
+        return ArtifactOwnership::Unknown;
+    };
+    let Ok((_, second_cfg)) = parse_cron_command_parts(lines.get(marker + 2).unwrap_or(&"")) else {
+        return ArtifactOwnership::Unknown;
+    };
+    if first_cfg != second_cfg {
+        return ArtifactOwnership::Unknown;
+    }
+    let matches_selected = match (&first_cfg, explicit) {
+        (Some(block_cfg), true) => block_cfg == config,
+        (None, false) => true,
+        _ => false,
+    };
+    if matches_selected {
+        ArtifactOwnership::Owned
+    } else {
+        ArtifactOwnership::Foreign
+    }
 }
 
 /// Render the canonical cron block for the given executable and config.
@@ -215,8 +291,19 @@ pub fn merge_crontab(existing: &str, new_block: &str) -> String {
     out
 }
 // ── Cron installation ─────────────────────────────────────────────────────
+/// Upper bound for a listed crontab: a huge foreign crontab must not OOM
+/// discovery.
+const MAX_CRONTAB_BYTES: usize = 4 * 1024 * 1024;
+
 pub(crate) fn run_crontab_list() -> io::Result<String> {
     let output = Command::new("crontab").arg("-l").output()?;
+    // Bounded: a huge foreign crontab must not OOM discovery.
+    if output.stdout.len() > MAX_CRONTAB_BYTES || output.stderr.len() > MAX_CRONTAB_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::FileTooLarge,
+            "crontab output exceeds 4 MiB cap",
+        ));
+    }
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -325,9 +412,25 @@ pub fn cron_uninstall_changed(existing: &str) -> Option<String> {
 
 /// Return the stripped crontab only when the managed block targets `exe`.
 /// Foreign and ambiguous blocks are preserved.
+///
+/// NOTE: exe-scoped; see [`cron_block_ownership`] for the config-aware
+/// variant.
 #[must_use]
 pub fn cron_uninstall_changed_for(existing: &str, exe: &Path) -> Option<String> {
     (cron_block_ownership(existing, exe) == ArtifactOwnership::Owned)
+        .then(|| remove_managed_cron_block(existing))
+}
+
+/// Config-aware variant: strips only when the block targets `exe` with the
+/// selected config identity.
+#[must_use]
+pub fn cron_uninstall_changed_for_config(
+    existing: &str,
+    exe: &Path,
+    config: &Path,
+    explicit: bool,
+) -> Option<String> {
+    (cron_block_ownership_for_config(existing, exe, config, explicit) == ArtifactOwnership::Owned)
         .then(|| remove_managed_cron_block(existing))
 }
 
@@ -385,6 +488,34 @@ pub fn uninstall_cron_for(exe: &Path) -> Result<bool, InstallError> {
         }
     };
     let Some(stripped) = cron_uninstall_changed_for(&existing, exe) else {
+        return Ok(false);
+    };
+    run_crontab_install(&stripped).map_err(|e| InstallError::Io {
+        path: PathBuf::from("crontab -"),
+        source: e,
+    })?;
+    println!("greggd cron watchdog removed");
+    Ok(true)
+}
+
+/// Config-aware removal: only strips when the block targets `exe` with the
+/// selected config identity. A same-exe/different-config block is preserved.
+pub fn uninstall_cron_for_config(
+    exe: &Path,
+    config: &Path,
+    explicit: bool,
+) -> Result<bool, InstallError> {
+    let existing = match run_crontab_list() {
+        Ok(content) => content,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(InstallError::Io {
+                path: PathBuf::from("crontab -l"),
+                source: e,
+            });
+        }
+    };
+    let Some(stripped) = cron_uninstall_changed_for_config(&existing, exe, config, explicit) else {
         return Ok(false);
     };
     run_crontab_install(&stripped).map_err(|e| InstallError::Io {

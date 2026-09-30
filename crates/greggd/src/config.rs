@@ -136,11 +136,15 @@ impl Config {
             violations.push(ConfigViolation::EmptyName);
         } else if trimmed.chars().any(char::is_control) {
             violations.push(ConfigViolation::NameContainsControlCharacters);
-        } else if trimmed.len() > MAX_NAME_LEN {
-            violations.push(ConfigViolation::NameTooLong {
-                length: trimmed.len(),
-                max: MAX_NAME_LEN,
-            });
+        } else {
+            // Character count (not byte length) for the user-facing limit.
+            let char_len = trimmed.chars().count();
+            if char_len > MAX_NAME_LEN {
+                violations.push(ConfigViolation::NameTooLong {
+                    length: char_len,
+                    max: MAX_NAME_LEN,
+                });
+            }
         }
 
         // Port validation. u16 cannot exceed 65535, so only check for zero.
@@ -295,9 +299,21 @@ impl Config {
             source: AtomicWriteError::Io(source),
         })?;
 
-        // 3. Write to a uniquely named temporary file.
+        // 3. Write to a uniquely named temporary file. Nanos + counter
+        // defeat pid-reuse collisions; the random suffix makes the first
+        // name unguessable so a squatter cannot pre-create it to force a
+        // `create_new` DoS.
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!(".greggd-{}-{}.toml.tmp", std::process::id(), id);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let temp_name = format!(
+            ".greggd-{}-{}-{}-{:08x}.toml.tmp",
+            std::process::id(),
+            nanos,
+            id,
+            temp_rand_suffix(nanos, id),
+        );
         let temp_path = dir.join(&temp_name);
 
         let write_result = (|| -> std::io::Result<()> {
@@ -392,6 +408,28 @@ impl Config {
     pub fn stale_after_ms(&self) -> u64 {
         self.stale_after_ms
     }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn temp_rand_suffix(nanos: u128, id: u64) -> u32 {
+    // Best-effort unguessable suffix without new deps: 4 bytes from the OS
+    // RNG, falling back to a time/counter xorshift.
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut buf = [0_u8; 4];
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            if f.read_exact(&mut buf).is_ok() {
+                return u32::from_ne_bytes(buf);
+            }
+        }
+    }
+    let mut x =
+        (nanos as u64 ^ id.wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ 0xBF58_4764_80FC_4A8F) as u32;
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    x
 }
 
 fn sync_parent_directory(dir: &Path) -> std::io::Result<()> {

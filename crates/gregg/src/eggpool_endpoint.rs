@@ -136,10 +136,15 @@ fn normalize_host(host: &str) -> Result<String, EggpoolEndpointError> {
     // operator-friendly bare `%zone` spelling and persist the URL-safe form
     // so the request URL stays valid — identical to
     // `endpoint::normalize_host`, so `gregg add` and `gregg eggpool add`
-    // accept and store the same host spellings.
+    // accept and store the same host spellings. Only strip leading `25`
+    // when the input contained `%25`; genuine `25...` zones use `%2525...`.
     if let Some((address, zone)) = host.split_once('%') {
         if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.contains(':') {
-            let zone = zone.strip_prefix("25").unwrap_or(zone);
+            let zone = if host.contains("%25") {
+                zone.strip_prefix("25").unwrap_or(zone)
+            } else {
+                zone
+            };
             if zone.is_empty() {
                 return Err(EggpoolEndpointError::EmptyHost);
             }
@@ -162,7 +167,11 @@ fn is_ipv6_with_zone_id(host: &str) -> bool {
     let Some((address, zone)) = host.split_once('%') else {
         return false;
     };
-    let zone = zone.strip_prefix("25").unwrap_or(zone);
+    let zone = if host.contains("%25") {
+        zone.strip_prefix("25").unwrap_or(zone)
+    } else {
+        zone
+    };
     !zone.is_empty() && !zone.contains(':') && address.parse::<std::net::Ipv6Addr>().is_ok()
 }
 

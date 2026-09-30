@@ -203,7 +203,7 @@ impl MockWindowsSource {
     pub fn success() -> Self {
         Self {
             drives: vec![RawLogicalDrive {
-                root: "C:\\\\".to_string(),
+                root: "C:\\".to_string(),
                 drive_type: DRIVE_FIXED,
                 total_bytes: 100,
                 total_free_bytes: 25,

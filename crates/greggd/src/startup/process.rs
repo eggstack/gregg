@@ -13,6 +13,10 @@ pub(crate) const DIRECT_RESTART_TIMEOUT: Duration = Duration::from_secs(10);
 /// probe) and probes are infrequent operator commands, so blocking `wait()`
 /// with `wait_timeout` is not worth the extra dependency.
 pub(crate) const CHILD_POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// Upper bound for one captured child pipe (stdout/stderr each). Manager
+/// probes (crontab, systemctl) are small; a huge output OOMs discovery, so
+/// readers stop after this many bytes.
+pub(crate) const MAX_CHILD_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) fn run_bounded_command(
     program: &str,
     args: &[&str],
@@ -48,10 +52,20 @@ pub(crate) fn run_bounded_command(
         stderr: join_pipe(stderr)?,
     })
 }
-fn read_pipe<R: Read + Send + 'static>(mut reader: R) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+fn read_pipe<R: Read + Send + 'static>(reader: R) -> thread::JoinHandle<io::Result<Vec<u8>>> {
     thread::spawn(move || {
         let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
+        // Bounded: a runaway child cannot OOM discovery via a huge crontab
+        // or manager dump.
+        reader
+            .take(u64::try_from(MAX_CHILD_OUTPUT_BYTES + 1).unwrap_or(u64::MAX))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > MAX_CHILD_OUTPUT_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::FileTooLarge,
+                "child output exceeds 4 MiB cap",
+            ));
+        }
         Ok(bytes)
     })
 }

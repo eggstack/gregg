@@ -183,17 +183,19 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
             let batch = self
                 .poll_generation(&prepared, &semaphore, generation, &cancel)
                 .await;
+            // Prefer cancellation over delivery during shutdown.
             if tokio::select! {
-                result = tx.send(batch) => result.is_err(),
+                biased;
                 () = cancel.cancelled() => false,
+                result = tx.send(batch) => result.is_err(),
             } {
                 return Err(SchedulerRunError::ReceiverDropped);
             }
         }
 
-        // Consume the interval's initial immediate tick so the next tick
-        // fires at the first interval boundary, not immediately.
-        interval.tick().await;
+        // Reset the cadence after the (possibly slow) first generation so
+        // the next tick fires one full interval later instead of bursting.
+        interval.reset();
 
         loop {
             tokio::select! {
@@ -219,9 +221,11 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                             let batch = self
                                 .poll_generation(&prepared, &semaphore, generation, &cancel)
                                 .await;
+                            // Prefer cancellation over delivery during shutdown.
                             if tokio::select! {
-                                result = tx.send(batch) => result.is_err(),
+                                biased;
                                 () = cancel.cancelled() => false,
+                                result = tx.send(batch) => result.is_err(),
                             } {
                                 return Err(SchedulerRunError::ReceiverDropped);
                             }
@@ -240,9 +244,11 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                         let batch = self
                             .poll_generation(&prepared, &semaphore, generation, &cancel)
                             .await;
+                        // Prefer cancellation over delivery during shutdown.
                         if tokio::select! {
-                            result = tx.send(batch) => result.is_err(),
+                            biased;
                             () = cancel.cancelled() => false,
+                            result = tx.send(batch) => result.is_err(),
                         } {
                             return Err(SchedulerRunError::ReceiverDropped);
                         }
@@ -278,6 +284,10 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
         for (index, target) in prepared.iter().enumerate() {
             let client = self.client.clone();
             let sem = Arc::clone(semaphore);
+            // One owned `Endpoint` for cancel paths plus one owned copy
+            // for the poll future. Cancel needs full host/port accuracy
+            // for state matching, so an id-only clone is insufficient;
+            // the second clone moves into the poll result without copying.
             let endpoint = target.endpoint.clone();
             // Owned copy for the poll future; cancel branches borrow
             // `endpoint` so only one branch's ownership is moved.
@@ -289,6 +299,7 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
 
             let handle = tokio::spawn(async move {
                 let _permit = tokio::select! {
+                    biased;
                     () = cancel.cancelled() => return cancelled_result(&endpoint),
                     permit = sem.acquire_owned() => match permit {
                         Ok(permit) => permit,
@@ -296,6 +307,7 @@ impl<C: Clock + Clone + Send + Sync + 'static> PollScheduler<C> {
                     },
                 };
                 tokio::select! {
+                    biased;
                     () = cancel.cancelled() => cancelled_result(&endpoint),
                     result = client.poll_prepared(endpoint_for_poll, &v1_url, &v2_url, &clock) => result,
                 }

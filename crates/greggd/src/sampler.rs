@@ -26,6 +26,13 @@ const DEFAULT_INTERVAL_MS: u64 = 1000;
 const MIN_INTERVAL_MS: u64 = 250;
 /// Maximum allowed sampling interval in milliseconds.
 const MAX_INTERVAL_MS: u64 = 60_000;
+/// Upper bound for one collection cycle on the blocking pool.
+///
+/// A hung native read (e.g. `statvfs` on a hung mount) must not stall the
+/// sampling loop or shutdown indefinitely. Timeouts are recorded as
+/// `SourceUnavailable` failures; the last snapshot keeps serving per the
+/// stale policy.
+const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---------------------------------------------------------------------------
 // Clock trait and real implementation
@@ -204,13 +211,28 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     }
 
     /// Return a health response reflecting the current readiness state.
+    ///
+    /// On v2-only platforms (e.g. Windows, where `supports_v1==false`) a
+    /// `Ready` sampler has a v2 snapshot but no v1 snapshot. Readiness is
+    /// therefore derived from whichever snapshot exists rather than v1
+    /// alone, so a healthy Windows daemon does not report `Failed`.
     #[must_use]
     pub fn health_response(&self) -> HealthResponse {
         match self.readiness {
             ReadinessState::Ready => match self.snapshot.as_ref() {
                 Some(snap) => HealthResponse::ready((**snap).clone()),
                 None => {
-                    HealthResponse::failed(HealthCategory::CollectorFailure, "snapshot unavailable")
+                    // v2-only Ready: v1 is unavailable by design, but the
+                    // sampler is healthy. v1 `Ready` requires a v1 snapshot,
+                    // so report warming rather than a misleading failure.
+                    if self.snapshot_v2.is_some() {
+                        HealthResponse::warming()
+                    } else {
+                        HealthResponse::failed(
+                            HealthCategory::CollectorFailure,
+                            "snapshot unavailable",
+                        )
+                    }
                 }
             },
             ReadinessState::Warming => HealthResponse::warming(),
@@ -243,7 +265,27 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         C: Send + 'static,
     {
         loop {
-            let result = self.sample_on_blocking_pool().await;
+            // Observe shutdown while a collection cycle is in flight so a
+            // hung native read cannot stall shutdown beyond COLLECTION_TIMEOUT.
+            // The blocking task itself cannot be aborted; on timeout or
+            // shutdown-race the cycle is recorded as SourceUnavailable and
+            // the last snapshot keeps serving.
+            let result = tokio::select! {
+                result = tokio::time::timeout(
+                    COLLECTION_TIMEOUT,
+                    self.sample_on_blocking_pool(),
+                ) => match result {
+                    Ok(result) => result,
+                    Err(_) => Err(CollectError::new(
+                        CollectErrorKind::SourceUnavailable,
+                        "collection timed out",
+                    )),
+                },
+                _ = shutdown.recv() => {
+                    tracing::info!("sampler shutting down");
+                    break;
+                }
+            };
             self.apply_sample_result(result);
             on_sample(
                 self.readiness,

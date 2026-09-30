@@ -114,7 +114,11 @@ pub fn current_exe_path() -> Result<PathBuf, UpdateError> {
 
 /// Lexically normalize `.`/`..` segments without I/O (the target may not
 /// exist, so `canonicalize` is not an option on this fallback path).
-fn normalize_lexically(path: &Path) -> PathBuf {
+///
+/// Shared with `crate::uninstall` (made `pub(crate)` for that purpose):
+/// there is intentionally one lexical normalizer for both the update
+/// permission probe and the uninstall path-identity fallback.
+pub(crate) fn normalize_lexically(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -150,6 +154,12 @@ fn normalize_lexically(path: &Path) -> PathBuf {
 /// actionable elevated command instead of after minutes of fetching.
 /// `operation` is the CLI verb rendered in the rerun hint (`update` or
 /// `uninstall [--purge]`); it never changes what is probed.
+///
+/// The probe checks directory creatability (not file append writability)
+/// deliberately: replacement is a same-filesystem atomic rename via
+/// `self-replace`, which requires parent-directory write permission.
+/// Opening the existing file with `append(true)` would test a different
+/// operation and remains TOCTOU either way, so it is not probed.
 pub fn check_write_permission_for(
     exe_path: &Path,
     original_exe: &Path,
@@ -185,7 +195,7 @@ pub fn check_write_permission_for(
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                 return Err(UpdateError::PermissionDenied {
-                    message: format!(" permission denied writing to {}", parent.display()),
+                    message: format!("permission denied writing to {}", parent.display()),
                     elevated: elevated_rerun_hint(original_exe, operation),
                 });
             }

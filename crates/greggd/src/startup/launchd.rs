@@ -29,8 +29,27 @@ use std::path::{Path, PathBuf};
 pub fn launchd_plist_content(config_path: &Path) -> String {
     LAUNCHD_PLIST_TEMPLATE.replace(
         "        <string>/Library/Application Support/gregg/greggd.toml</string>",
-        &format!("        <string>{}</string>", config_path.display()),
+        &format!(
+            "        <string>{}</string>",
+            xml_escape(&config_path.to_string_lossy()),
+        ),
     )
+}
+
+/// Minimal XML escape for plist string values (`&`, `<`, `>`, `"`, `'`).
+fn xml_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Plist template with the canonical `ProgramArguments` config substituted at

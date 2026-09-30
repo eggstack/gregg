@@ -19,6 +19,21 @@ pub const MAX_CRATES_IO_BYTES: usize = 256 * 1024;
 /// until `--max-time` expires.
 pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Maximum bytes accepted on a captured stderr pipe (64 KiB). Stderr is
+/// never part of the version/identity decision; the cap only prevents an
+/// unbounded pipe buffer from a verbose child.
+pub const MAX_STDERR_BYTES: usize = 64 * 1024;
+
+/// Maximum bytes accepted from a staged candidate `version` probe on each
+/// of stdout/stderr (16 KiB). A legitimate identity line is under 100
+/// bytes; anything larger is rejected without buffering it fully.
+pub const MAX_CANDIDATE_OUTPUT_BYTES: usize = 16 * 1024;
+
+/// Maximum `cargo install --list` stdout accepted (256 KiB). The listing
+/// scales with the number of installed packages, not with the queried
+/// package, so it is bounded like crates.io metadata.
+pub const MAX_CARGO_LIST_BYTES: usize = 256 * 1024;
+
 /// `--max-time` for crates.io version lookups, in seconds.
 pub const CRATES_IO_TIMEOUT_SECS: &str = "15";
 
@@ -48,6 +63,11 @@ pub const DOWNLOAD_WALL_TIMEOUT: Duration = Duration::from_secs(100);
 
 /// Timeout for Cargo fallback builds.
 pub const CARGO_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wall-clock bound for Cargo-owned uninstall handoff (`cargo uninstall`).
+/// Removal is metadata-only and returns in seconds; the 600s build bound
+/// must not apply here.
+pub const CARGO_UNINSTALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Wall-clock bound for a `curl`/`cargo` `--version` discovery probe.
 ///
@@ -132,28 +152,51 @@ fn map_capture_error(e: &io::Error) -> UpdateError {
 /// Probe the HTTP status code of a URL with a short bounded request.
 /// Returns `None` when the probe itself cannot run.
 ///
+/// Currently unused by the production single-request [`download_file`]
+/// classification (which captures `%{http_code}` inline); retained for
+/// manual debugging and shell-parity reference.
+///
 /// The child is bounded by [`PROBE_TIMEOUT`] (killed and reaped past the
 /// deadline) so a hung curl binary cannot block the caller forever.
 /// Uses the same `-fsSL --max-time` contract as [`download_file`] so the
 /// flags cannot drift silently.
+#[allow(dead_code)]
 pub fn probe_http_code(curl: &str, url: &str) -> Option<u16> {
     #[cfg(windows)]
     let null_device = "NUL";
     #[cfg(not(windows))]
     let null_device = "/dev/null";
     let mut cmd = Command::new(curl);
-    cmd.args([
-        "-fsSL",
-        "-o",
-        null_device,
-        "-w",
-        "%{http_code}",
-        "--max-time",
-        "15",
-        url,
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::null());
+    // `--proto '=https'` pins production HTTPS fetches to TLS only;
+    // plain-http fixtures (local deterministic tests) keep `http,https`
+    // so the same helper stays testable without weakening production.
+    if url.starts_with("https://") {
+        cmd.args([
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "-o",
+            null_device,
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            "15",
+            url,
+        ]);
+    } else {
+        cmd.args([
+            "-fsSL",
+            "-o",
+            null_device,
+            "-w",
+            "%{http_code}",
+            "--max-time",
+            "15",
+            url,
+        ]);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
     let output = run_child_with_timeout(cmd, PROBE_TIMEOUT).ok()?;
     let code_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
     // curl emits `000` for transport failures (timeout/DNS/TLS); code 0 is
@@ -176,10 +219,18 @@ pub fn fetch_latest_stable_version(
     program: &str,
     current_version: &str,
 ) -> Result<String, UpdateError> {
+    if !is_valid_crate_name(crate_name) {
+        return Err(UpdateError::VersionLookup(format!(
+            "invalid crate name: {crate_name:?}"
+        )));
+    }
     let curl = find_curl()?;
     let url = format!("https://crates.io/api/v1/crates/{crate_name}");
     let user_agent = format!("{program}/{current_version} (https://github.com/eggstack/gregg)");
     let args = [
+        "--proto",
+        "=https",
+        "--tlsv1.2",
         "-fsSL",
         "--max-time",
         CRATES_IO_TIMEOUT_SECS,
@@ -197,6 +248,18 @@ pub fn fetch_latest_stable_version(
         other => other,
     })?;
     parse_stable_version_response(&stdout)
+}
+
+/// Whether `crate_name` is safe to interpolate into the crates.io URL.
+/// crates.io names are `[A-Za-z0-9_-]+`; anything else is rejected before
+/// it reaches the command line so path separators or shell metacharacters
+/// can never alter the request target (no shell is invoked regardless).
+fn is_valid_crate_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Parse and validate a crates.io metadata body.
@@ -253,24 +316,50 @@ pub enum DownloadOutcome {
 /// second probe request. Only an exact `404` code permits the Cargo
 /// fallback; every other failure (timeout, 5xx, TLS, spawn error) is a
 /// hard `Failed`.
+///
+/// No custom `User-Agent` is sent here: unlike the crates.io API (which
+/// requires one), GitHub release downloads need no UA, and the installer
+/// shell path sets its own `program/installer` UA for mirror accounting.
+/// Keeping this transport UA-free avoids threading caller identity through
+/// every test stub for no server requirement.
 pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadOutcome {
     let dest_str = dest.to_string_lossy().to_string();
     let max_filesize = MAX_DOWNLOAD_BYTES.to_string();
     let mut cmd = Command::new(curl);
-    cmd.args([
-        "-fsSL",
-        "--max-time",
-        DOWNLOAD_TIMEOUT_SECS,
-        "--max-filesize",
-        &max_filesize,
-        "-o",
-        &dest_str,
-        "-w",
-        "%{http_code}",
-        url,
-    ])
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    // `--proto '=https'` pins production HTTPS fetches to TLS only;
+    // plain-http fixtures (local deterministic tests) keep `http,https`
+    // so the same helper stays testable without weakening production.
+    if url.starts_with("https://") {
+        cmd.args([
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "-fsSL",
+            "--max-time",
+            DOWNLOAD_TIMEOUT_SECS,
+            "--max-filesize",
+            &max_filesize,
+            "-o",
+            &dest_str,
+            "-w",
+            "%{http_code}",
+            url,
+        ]);
+    } else {
+        cmd.args([
+            "-fsSL",
+            "--max-time",
+            DOWNLOAD_TIMEOUT_SECS,
+            "--max-filesize",
+            &max_filesize,
+            "-o",
+            &dest_str,
+            "-w",
+            "%{http_code}",
+            url,
+        ]);
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let output = run_child_with_timeout(cmd, DOWNLOAD_WALL_TIMEOUT);
     match output {
         Ok(out) if out.status.success() => {
@@ -403,16 +492,29 @@ fn pipe_reader_limited<R: Read + Send + 'static>(
 }
 
 /// `run_child_with_timeout` variant that caps captured stdout at
-/// `max_bytes`. Returns an `OutOfMemory`-kind [`io::Error`] when the cap is
-/// exceeded so callers can map it without allocating the full body.
-fn run_child_with_timeout_capped(
+/// `max_stdout_bytes` and stderr at `max_stderr_bytes`. Returns an
+/// `OutOfMemory`-kind [`io::Error`] when either cap is exceeded so callers
+/// can map it without allocating the full body.
+pub(crate) fn run_child_with_timeout_capped(
+    cmd: Command,
+    timeout: Duration,
+    max_stdout_bytes: usize,
+) -> io::Result<Output> {
+    run_child_with_timeout_capped_both(cmd, timeout, max_stdout_bytes, MAX_STDERR_BYTES)
+}
+
+/// `run_child_with_timeout` variant with independent stdout/stderr caps.
+/// Both pipes stream at most `limit + 1` bytes so an oversized body is
+/// detected without buffering it fully.
+pub(crate) fn run_child_with_timeout_capped_both(
     mut cmd: Command,
     timeout: Duration,
-    max_bytes: usize,
+    max_stdout_bytes: usize,
+    max_stderr_bytes: usize,
 ) -> io::Result<Output> {
     let mut child = cmd.spawn()?;
-    let stdout = pipe_reader_limited(child.stdout.take(), max_bytes);
-    let stderr = pipe_reader(child.stderr.take());
+    let stdout = pipe_reader_limited(child.stdout.take(), max_stdout_bytes);
+    let stderr = pipe_reader_limited(child.stderr.take(), max_stderr_bytes);
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
         match child.try_wait()? {
@@ -431,7 +533,14 @@ fn run_child_with_timeout_capped(
         }
     };
     let stdout = join_pipe(stdout)?;
-    if stdout.len() > max_bytes {
+    if stdout.len() > max_stdout_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            format!("child {RESPONSE_TOO_LARGE_FRAGMENT}"),
+        ));
+    }
+    let stderr = join_pipe(stderr)?;
+    if stderr.len() > max_stderr_bytes {
         return Err(io::Error::new(
             io::ErrorKind::OutOfMemory,
             format!("child {RESPONSE_TOO_LARGE_FRAGMENT}"),
@@ -440,7 +549,7 @@ fn run_child_with_timeout_capped(
     Ok(Output {
         status,
         stdout,
-        stderr: join_pipe(stderr)?,
+        stderr,
     })
 }
 
@@ -455,10 +564,22 @@ fn join_pipe(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Res
 
 /// Run a command with a timeout, mapping spawn/timeout failures into the
 /// candidate-verification error category.
+///
+/// Both pipes are capped at [`MAX_CANDIDATE_OUTPUT_BYTES`] (16 KiB): a
+/// legitimate `<program> X.Y.Z` identity line is under 100 bytes, so a
+/// larger probe output is rejected without buffering it fully.
 pub fn run_command_with_timeout(cmd: Command, timeout: Duration) -> Result<Output, UpdateError> {
-    run_child_with_timeout(cmd, timeout).map_err(|error| {
+    run_child_with_timeout_capped_both(
+        cmd,
+        timeout,
+        MAX_CANDIDATE_OUTPUT_BYTES,
+        MAX_CANDIDATE_OUTPUT_BYTES,
+    )
+    .map_err(|error| {
         if error.kind() == io::ErrorKind::TimedOut {
             UpdateError::CandidateMismatch("candidate 'version' timed out".to_string())
+        } else if error.kind() == io::ErrorKind::OutOfMemory {
+            UpdateError::CandidateMismatch("candidate 'version' output too large".to_string())
         } else {
             UpdateError::CandidateMismatch(format!("candidate process failed: {error}"))
         }
@@ -473,7 +594,10 @@ pub fn run_command_with_timeout_for_cargo(
 ) -> Result<Output, UpdateError> {
     run_child_with_timeout(cmd, timeout).map_err(|error| {
         if error.kind() == io::ErrorKind::TimedOut {
-            UpdateError::CargoFallback("cargo install timed out after 600s".to_string())
+            UpdateError::CargoFallback(format!(
+                "cargo install timed out after {}s",
+                timeout.as_secs()
+            ))
         } else {
             UpdateError::CargoFallback(format!("cargo process failed: {error}"))
         }

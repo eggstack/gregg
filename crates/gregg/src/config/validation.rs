@@ -138,6 +138,8 @@ pub(crate) fn validate_eggpool(violations: &mut Vec<ConfigViolation>, entry: &Eg
         || host.contains('@')
         || host.contains('[')
         || host.contains(']')
+        || host.contains(char::is_whitespace)
+        || host.chars().any(char::is_control)
     {
         violations.push(ConfigViolation::InvalidEggpoolHost {
             host: entry.host.clone(),

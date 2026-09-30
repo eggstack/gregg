@@ -15,11 +15,36 @@ use sha2::{Digest, Sha256};
 use crate::error::UpdateError;
 use crate::exec::CANDIDATE_TIMEOUT;
 
+/// Maximum `<asset>.sha256` file accepted (4 KiB). A legitimate checksum
+/// file is under 200 bytes (`<64 hex>  <name>\n`); anything larger is
+/// rejected via metadata before any allocation.
+pub const MAX_CHECKSUM_FILE_BYTES: u64 = 4096;
+
 /// Parse a `<asset>.sha256` file and return the lowercase hex digest.
 pub fn parse_checksum_file(path: &Path) -> Result<String, UpdateError> {
-    let content = fs::read_to_string(path).map_err(|e| {
+    let metadata = fs::metadata(path).map_err(|e| {
         UpdateError::ChecksumRetrieval(format!("failed to read checksum file: {e}"))
     })?;
+    if metadata.len() > MAX_CHECKSUM_FILE_BYTES {
+        return Err(UpdateError::ChecksumRetrieval(format!(
+            "checksum file too large ({} bytes)",
+            metadata.len()
+        )));
+    }
+    let file = fs::File::open(path).map_err(|e| {
+        UpdateError::ChecksumRetrieval(format!("failed to read checksum file: {e}"))
+    })?;
+    let mut content = String::new();
+    file.take(MAX_CHECKSUM_FILE_BYTES.saturating_add(1))
+        .read_to_string(&mut content)
+        .map_err(|e| {
+            UpdateError::ChecksumRetrieval(format!("failed to read checksum file: {e}"))
+        })?;
+    if content.len() as u64 > MAX_CHECKSUM_FILE_BYTES {
+        return Err(UpdateError::ChecksumRetrieval(
+            "checksum file too large".to_string(),
+        ));
+    }
     let hash = content
         .split_whitespace()
         .next()

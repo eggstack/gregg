@@ -508,7 +508,12 @@ impl ProcSource {
                 .read_to_string(&path.join("flags"))
                 .ok()
                 .and_then(|value| {
-                    u32::from_str_radix(value.trim().trim_start_matches("0x"), 16).ok()
+                    let trimmed = value.trim();
+                    let hex = trimmed
+                        .strip_prefix("0x")
+                        .or_else(|| trimmed.strip_prefix("0X"))
+                        .unwrap_or(trimmed);
+                    u32::from_str_radix(hex, 16).ok()
                 })
                 .unwrap_or(0);
             let is_loopback = flags & 0x8 != 0;
@@ -934,7 +939,12 @@ fn parse_positive_u64(raw: &str) -> Option<u64> {
 
 fn parse_link_speed(raw: Option<String>) -> Option<u64> {
     let mbps = raw?.trim().parse::<u64>().ok()?;
-    (mbps > 0).then(|| mbps.checked_mul(1_000_000)).flatten()
+    // Some drivers report 65535 for unknown (only -1 previously yielded
+    // None via parse failure); treat it as unknown too.
+    if mbps == 0 || mbps == 65535 {
+        return None;
+    }
+    mbps.checked_mul(1_000_000)
 }
 
 /// Plan 146: parse a Linux CPU list into a bounded set of CPU identities.

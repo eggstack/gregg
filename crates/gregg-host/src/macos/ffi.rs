@@ -984,8 +984,23 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
             ));
         }
         let statistics_key = cf_string("Statistics")?;
-        let read_key = cf_string("Bytes (Read)")?;
-        let write_key = cf_string("Bytes (Write)")?;
+        let read_key = match cf_string("Bytes (Read)") {
+            Ok(key) => key,
+            Err(error) => {
+                unsafe { CFRelease(statistics_key.cast()) };
+                return Err(error);
+            }
+        };
+        let write_key = match cf_string("Bytes (Write)") {
+            Ok(key) => key,
+            Err(error) => {
+                unsafe {
+                    CFRelease(statistics_key.cast());
+                    CFRelease(read_key.cast());
+                }
+                return Err(error);
+            }
+        };
         let mut records = Vec::new();
         loop {
             let service = unsafe { IOIteratorNext(iterator) };

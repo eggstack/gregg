@@ -181,24 +181,18 @@ pub fn prepare_candidate(
     latest: &str,
     target_opt: Option<&str>,
 ) -> Result<(bool, StagedCandidate), UpdateError> {
-    let supported = target_opt.is_some_and(is_supported_binary_target);
-    if !supported {
-        eprintln!(
-            "No prebuilt {} asset for {}/{} (target {target_opt:?}); trying Cargo fallback...",
-            spec.program_name,
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        );
-        let staged = cargo_fallback(&spec.program_name, latest)?;
-        return Ok((true, staged));
-    }
-
-    let Some(target) = target_opt else {
-        return Err(UpdateError::Io(format!(
-            "no supported prebuilt target for {}/{}",
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-        )));
+    let target: &str = match target_opt {
+        Some(target) if is_supported_binary_target(target) => target,
+        _ => {
+            eprintln!(
+                "No prebuilt {} asset for {}/{} (target {target_opt:?}); trying Cargo fallback...",
+                spec.program_name,
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+            );
+            let staged = cargo_fallback(&spec.program_name, latest)?;
+            return Ok((true, staged));
+        }
     };
     let (asset_url, sha_url) = github_urls(&spec.program_name, target, latest);
     eprintln!(
@@ -242,6 +236,11 @@ pub fn prepare_candidate(
 
 /// Build and stage the program via `cargo install --locked` into an
 /// exclusive owner-private root, then identity-verify the result.
+///
+/// Build output is discarded (`Stdio::null`): a full `cargo install`
+/// transcript is unbounded and never part of the update decision. The PS1
+/// installer already inherits the console for the same reason; failures
+/// surface only the exit status, not the buffered log.
 pub fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, UpdateError> {
     let cargo_bin = exec::find_cargo()?;
     let temp_root = stage::create_temp_dir(&format!("gregg-cargo-{program}"))?;
@@ -260,12 +259,11 @@ pub fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, U
         &cargo_root_str,
         program,
     ]);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let output = exec::run_command_with_timeout_for_cargo(cmd, exec::CARGO_TIMEOUT)?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         return Err(UpdateError::CargoFallback(format!(
-            "cargo install {program} --version ={version} failed (status {:?}): {stderr}",
+            "cargo install {program} --version ={version} failed (status {:?})",
             output.status.code()
         )));
     }
@@ -275,7 +273,7 @@ pub fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, U
         program.to_string()
     };
     let staged = cargo_root.join("bin").join(&bin_name);
-    if !staged.exists() {
+    if !staged.is_file() {
         return Err(UpdateError::CargoFallback(format!(
             "cargo install succeeded but {} not found",
             staged.display()

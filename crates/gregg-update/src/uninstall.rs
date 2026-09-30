@@ -16,7 +16,7 @@
 //! existing owners of those artifacts.
 
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use crate::error::UpdateError;
 use crate::stage::{check_write_permission_for, current_exe_path, elevated_rerun_hint};
@@ -45,24 +45,15 @@ pub fn paths_equivalent(left: &Path, right: &Path) -> bool {
 }
 
 fn absolute_lexical(path: &Path) -> PathBuf {
+    // Lexical core is shared with `stage::normalize_lexically` (single
+    // normalizer); this wrapper only prepends `current_dir` for relative
+    // inputs before delegating, so the `.`/`..` rules cannot drift.
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
     };
-    let mut result = PathBuf::new();
-    for component in absolute.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if result.file_name().is_some() {
-                    result.pop();
-                }
-            }
-            other => result.push(other.as_os_str()),
-        }
-    }
-    result
+    crate::stage::normalize_lexically(&absolute)
 }
 
 /// Preflight that the install location of `exe_path` is writable before
@@ -187,7 +178,8 @@ pub fn cargo_list_contains_package(list_stdout: &str, package: &str) -> bool {
 /// Confirm via Cargo's supported interface that `root` has `package`
 /// installed.
 ///
-/// Runs bounded `cargo install --list --root <root>` and applies
+/// Runs bounded `cargo install --list --root <root>` (stdout capped at
+/// [`crate::exec::MAX_CARGO_LIST_BYTES`]) and applies
 /// [`cargo_list_contains_package`]. Any failure (missing `cargo`,
 /// timeout, nonzero exit) means "not positively identified" (`false`),
 /// never an error: ordinary bootstrap/manual-binary uninstall must not
@@ -201,7 +193,11 @@ pub fn cargo_lists_package(cargo_bin: &str, root: &Path, package: &str) -> bool 
     cmd.args(["install", "--list", "--root", &root.to_string_lossy()]);
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    let Ok(output) = crate::exec::run_child_with_timeout(cmd, LIST_TIMEOUT) else {
+    let Ok(output) = crate::exec::run_child_with_timeout_capped(
+        cmd,
+        LIST_TIMEOUT,
+        crate::exec::MAX_CARGO_LIST_BYTES,
+    ) else {
         return false;
     };
     if !output.status.success() {
@@ -254,6 +250,10 @@ pub fn detect_cargo_ownership(
 /// Run the Cargo-owned handoff: `cargo uninstall --root <root> <package>`
 /// with a bounded deadline.
 ///
+/// Removal is metadata-only: stdio is discarded (`Stdio::null`, never
+/// buffered) and the deadline is [`crate::exec::CARGO_UNINSTALL_TIMEOUT`]
+/// (120s), not the 600s build bound.
+///
 /// Used only on platforms where removing the running image synchronously
 /// is known to work (Unix). Windows callers must fail before mutation
 /// with [`CargoOwnership::uninstall_command`] instead, because the
@@ -269,15 +269,15 @@ pub fn cargo_uninstall(ownership: &CargoOwnership) -> Result<(), UpdateError> {
         &ownership.root.to_string_lossy(),
         &ownership.package,
     ]);
-    cmd.stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let output = crate::exec::run_command_with_timeout_for_cargo(cmd, crate::exec::CARGO_TIMEOUT)?;
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let output =
+        crate::exec::run_command_with_timeout_for_cargo(cmd, crate::exec::CARGO_UNINSTALL_TIMEOUT)?;
     if output.status.success() {
         Ok(())
     } else {
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         Err(UpdateError::CargoFallback(format!(
-            "cargo uninstall {} --root {} failed (status {:?}): {stderr}",
+            "cargo uninstall {} --root {} failed (status {:?})",
             ownership.package,
             ownership.root.display(),
             output.status.code()

@@ -226,18 +226,15 @@ pub struct CollectionLimits {
 
 impl Default for CollectionLimits {
     fn default() -> Self {
-        Self {
-            max_drive_entries: 32,
-            max_drive_name_bytes: 512,
-            max_disk_io_entries: 32,
-            max_disk_id_bytes: 512,
-            max_disk_name_bytes: 512,
-            max_network_interface_entries: 32,
-            max_network_id_bytes: 512,
-            max_network_name_bytes: 512,
-        }
+        Self::gregg_defaults()
     }
 }
+
+/// Maximum plausible aggregate or per-device throughput in bytes per second.
+///
+/// Mirrors the wire bound so detail truncation can never trip validation
+/// via a saturated aggregate.
+pub const MAX_RATE_BYTES_PER_SEC: u64 = 1 << 40;
 
 impl CollectionLimits {
     /// Bounds matching Gregg's current wire constants.

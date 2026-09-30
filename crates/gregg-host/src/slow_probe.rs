@@ -84,8 +84,21 @@ impl DriveRefreshCache {
                         break;
                     }
                 }
-            })
-            .expect("drive refresh worker spawn");
+            });
+        let Some(worker) = worker.inspect_err(|error| {
+            tracing::warn!(%error, "drive refresh worker spawn failed; drive telemetry degraded");
+        }).ok() else {
+            // Thread/resource exhaustion: degrade to a cache whose poll()
+            // always yields None (drive telemetry is best-effort). The worker
+            // sender was dropped with the failed spawn, so result_rx is
+            // already disconnected.
+            drop(request_tx);
+            return Self {
+                request_tx: None,
+                result_rx,
+                latest: None,
+            };
+        };
         drop(worker);
         let _ = request_tx.try_send(());
         Self {

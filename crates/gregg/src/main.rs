@@ -180,7 +180,8 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
     event_stream.shutdown();
     terminal.restore();
     if let Some(commands) = eggpool_commands {
-        let _ = commands.send(eggpool::EggpoolCommand::Shutdown).await;
+        // Never block teardown on a dead worker with a full channel.
+        let _ = commands.try_send(eggpool::EggpoolCommand::Shutdown);
     }
     cancel.cancel();
 
@@ -219,33 +220,8 @@ async fn run_event_loop(
                 break;
             }
 
-            maybe_batch = recv_poll_batch(batch_rx) => {
-                match maybe_batch {
-                    Some(batch) => {
-                        // Plan 143: rejected/stale batches and fully-ignored
-                        // results do not force a frame.
-                        dirty = app_state.apply_batch_owned_changed(batch);
-                    }
-                    None => {
-                        // An empty system list has no scheduler traffic. Keep
-                        // the TUI alive for an EggPool-only or empty config.
-                        *batch_rx = None;
-                    }
-                }
-            }
-
-            maybe_result = recv_eggpool_result(eggpool_results) => {
-                if let Some(result) = maybe_result {
-                    dirty = app_state.apply_eggpool_result_changed(&result);
-                } else {
-                    // A worker channel closing is not a system-monitoring error.
-                    // Mark only the optional pane unavailable and keep Systems responsive.
-                    app_state.mark_eggpool_worker_unavailable();
-                    *eggpool_results = None;
-                    dirty = true;
-                }
-            }
-
+            // Input before scheduler batches: a flooded batch channel
+            // must not starve `Quit` or other key handling.
             maybe_event = event_rx.recv() => {
                 match maybe_event {
                     Some(evt) => {
@@ -301,6 +277,33 @@ async fn run_event_loop(
                         }
                     }
                     None => break,
+                }
+            }
+
+            maybe_batch = recv_poll_batch(batch_rx) => {
+                match maybe_batch {
+                    Some(batch) => {
+                        // Plan 143: rejected/stale batches and fully-ignored
+                        // results do not force a frame.
+                        dirty = app_state.apply_batch_owned_changed(batch);
+                    }
+                    None => {
+                        // An empty system list has no scheduler traffic. Keep
+                        // the TUI alive for an EggPool-only or empty config.
+                        *batch_rx = None;
+                    }
+                }
+            }
+
+            maybe_result = recv_eggpool_result(eggpool_results) => {
+                if let Some(result) = maybe_result {
+                    dirty = app_state.apply_eggpool_result_changed(&result);
+                } else {
+                    // A worker channel closing is not a system-monitoring error.
+                    // Mark only the optional pane unavailable and keep Systems responsive.
+                    app_state.mark_eggpool_worker_unavailable();
+                    *eggpool_results = None;
+                    dirty = true;
                 }
             }
 
@@ -376,38 +379,25 @@ async fn dispatch_action_with_store(
     store: Option<&config::ConfigStore>,
     eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
 ) -> Result<bool, SchedulerUnavailable> {
-    // Plan 143: drive the dirty gate from the reducer result. Snapshot the
-    // render-visible Systems fields plus EggPool request identity before
-    // mutation; pane/period transitions via `begin_eggpool_request` change
-    // visible status even when the Systems selection is untouched.
-    let before_selected = app_state.selected_id.clone();
-    let before_viewport = app_state.viewport_top_id.clone();
-    let before_pane = app_state.active_pane;
-    let before_view = app_state.system_view_mode;
-    let before_drives = app_state.drives_expanded;
-    let before_network = app_state.network_expanded;
-    let before_highlight = app_state.selection_highlight_active;
-    let before_terminal = app_state.terminal_size;
+    // Plan 143: drive the dirty gate from the reducer result plus explicit
+    // extras the reducer never touches (EggPool request identity/status
+    // and the `config_reload_error` diagnostic owned by refresh paths).
     let before_eggpool = app_state.eggpool_request();
     let before_eggpool_status = app_state.eggpool.as_ref().map(|eggpool| eggpool.status);
+    let before_error = app_state.config_reload_error.clone();
     let is_refresh = matches!(action, action::Action::RefreshNow);
+    let before_pane = app_state.active_pane;
     let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
-    let _ = app_state.apply_action_changed(action);
+    let reducer_changed = app_state.apply_action_changed(action);
 
     let Some(commands) = eggpool_commands else {
         if is_refresh {
             return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(before_selected != app_state.selected_id
-            || before_viewport != app_state.viewport_top_id
-            || before_pane != app_state.active_pane
-            || before_view != app_state.system_view_mode
-            || before_drives != app_state.drives_expanded
-            || before_network != app_state.network_expanded
-            || before_highlight != app_state.selection_highlight_active
-            || before_terminal != app_state.terminal_size
+        return Ok(reducer_changed
             || before_eggpool != app_state.eggpool_request()
-            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status));
+            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
+            || before_error != app_state.config_reload_error);
     };
 
     if is_refresh {
@@ -422,16 +412,10 @@ async fn dispatch_action_with_store(
         } else {
             return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(before_selected != app_state.selected_id
-            || before_viewport != app_state.viewport_top_id
-            || before_pane != app_state.active_pane
-            || before_view != app_state.system_view_mode
-            || before_drives != app_state.drives_expanded
-            || before_network != app_state.network_expanded
-            || before_highlight != app_state.selection_highlight_active
-            || before_terminal != app_state.terminal_size
+        return Ok(reducer_changed
             || before_eggpool != app_state.eggpool_request()
-            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status));
+            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
+            || before_error != app_state.config_reload_error);
     }
 
     if before_pane != app_state.active_pane {
@@ -461,16 +445,10 @@ async fn dispatch_action_with_store(
         }
     }
 
-    Ok(before_selected != app_state.selected_id
-        || before_viewport != app_state.viewport_top_id
-        || before_pane != app_state.active_pane
-        || before_view != app_state.system_view_mode
-        || before_drives != app_state.drives_expanded
-        || before_network != app_state.network_expanded
-        || before_highlight != app_state.selection_highlight_active
-        || before_terminal != app_state.terminal_size
+    Ok(reducer_changed
         || before_eggpool != app_state.eggpool_request()
-        || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status))
+        || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
+        || before_error != app_state.config_reload_error)
 }
 
 #[derive(Debug, thiserror::Error)]

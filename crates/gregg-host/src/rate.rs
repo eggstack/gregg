@@ -69,8 +69,13 @@ impl CounterBaselines {
 
     /// Forget identities absent from the current native enumeration.
     pub fn retain_ids<'a>(&mut self, ids: impl IntoIterator<Item = &'a str>) {
-        let ids: HashSet<&str> = ids.into_iter().collect();
-        self.samples.retain(|id, _| ids.contains(id.as_str()));
+        let ids: Vec<&'a str> = ids.into_iter().collect();
+        // Fast path: no hotplug when counts match and every id is known.
+        if ids.len() == self.samples.len() && ids.iter().all(|id| self.samples.contains_key(*id)) {
+            return;
+        }
+        let set: HashSet<&str> = ids.into_iter().collect();
+        self.samples.retain(|id, _| set.contains(id.as_str()));
     }
 
     /// Discard all observations after a source failure so the next successful

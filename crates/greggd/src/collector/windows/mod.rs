@@ -102,10 +102,14 @@ fn convert_sample(sample: gregg_host::model::HostSample) -> Result<CollectedMetr
         logical_cores: sample.logical_cores,
         cpu_usage_pct: sample.cpu_usage_pct,
         cpu_iowait_pct: None,
+        // Unsupported on Windows: NaN (never valid on the wire) so any
+        // future `supports_v1` flip fails closed instead of silently
+        // serving fabricated zeros. The v2 caps gate drops these before
+        // publication today.
         load: LoadAverage {
-            one: 0.0,
-            five: 0.0,
-            fifteen: 0.0,
+            one: f32::NAN,
+            five: f32::NAN,
+            fifteen: f32::NAN,
         },
         memory: gregg_protocol::MemoryMetrics {
             used_bytes: sample.memory.used_bytes,
@@ -115,7 +119,7 @@ fn convert_sample(sample: gregg_host::model::HostSample) -> Result<CollectedMetr
         swap: SwapMetrics {
             used_bytes: 0,
             total_bytes: 0,
-            usage_pct: 0.0,
+            usage_pct: f32::NAN,
         },
         commit: Some(gregg_protocol::v2::CommitMetrics {
             used_bytes: commit.used_bytes,

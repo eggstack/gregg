@@ -103,8 +103,19 @@ pub fn compute_memory(info: &ParsedMeminfo) -> Result<MemorySample, CollectError
     let (available_bytes, fallback_used) = if let Some(avail_kb) = info.mem_available_kb {
         (kb_to_bytes(avail_kb)?, false)
     } else {
-        // Fallback: MemFree + Buffers + Cached + SReclaimable. Missing
-        // subfields are treated as zero. Document this in test fixtures.
+        // Fallback: MemFree + Buffers + Cached + SReclaimable. All four
+        // absent means near-empty meminfo — fail rather than fabricate
+        // 100% usage (used=total).
+        if info.mem_free_kb.is_none()
+            && info.buffers_kb.is_none()
+            && info.cached_kb.is_none()
+            && info.s_reclaimable_kb.is_none()
+        {
+            return Err(CollectError::new(
+                CollectErrorKind::Parse,
+                "/proc/meminfo missing MemAvailable and fallback fields",
+            ));
+        }
         let free = info.mem_free_kb.unwrap_or(0);
         let buffers = info.buffers_kb.unwrap_or(0);
         let cached = info.cached_kb.unwrap_or(0);

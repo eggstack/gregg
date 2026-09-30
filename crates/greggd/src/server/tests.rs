@@ -20,18 +20,18 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
 #[test]
-fn eggserve_runtime_keeps_unlimited_lifetime_and_explicit_bounds() {
+fn eggserve_runtime_keeps_bounded_lifetime_and_explicit_bounds() {
     let config = runtime_config().unwrap();
 
-    assert_eq!(config.connection_total_timeout, Duration::ZERO);
-    assert_eq!(config.max_connections, Semaphore::MAX_PERMITS);
-    assert_eq!(config.max_in_flight_requests, Semaphore::MAX_PERMITS);
+    assert_eq!(config.connection_total_timeout, Duration::from_secs(300));
+    assert_eq!(config.max_connections, 512);
+    assert_eq!(config.max_in_flight_requests, 512);
     assert_eq!(config.max_headers, 100);
     assert_eq!(config.max_buf_size, 417_792);
     assert_eq!(config.max_header_bytes, 417_792);
     assert_eq!(config.max_request_target_bytes, 65_536);
     assert_eq!(config.max_request_body_bytes, MAX_REQUEST_BODY_BYTES);
-    assert_eq!(config.max_requests_per_connection, None);
+    assert_eq!(config.max_requests_per_connection, Some(1000));
     assert_eq!(config.graceful_shutdown_timeout, Duration::from_secs(8));
     assert_eq!(config.header_read_timeout, Duration::from_secs(10));
     assert_eq!(config.handler_timeout, Duration::from_secs(30));

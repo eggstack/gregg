@@ -118,10 +118,10 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.preflight.outputs.version }}"
           ./dist/gregg-x86_64-unknown-linux-gnu version
-          ./dist/gregg-x86_64-unknown-linux-gnu version | grep -q "gregg $VERSION"
+          ./dist/gregg-x86_64-unknown-linux-gnu version | grep -qx "gregg $VERSION"
           ./dist/gregg-x86_64-unknown-linux-gnu --help
           ./dist/greggd-x86_64-unknown-linux-gnu version
-          ./dist/greggd-x86_64-unknown-linux-gnu version | grep -q "greggd $VERSION"
+          ./dist/greggd-x86_64-unknown-linux-gnu version | grep -qx "greggd $VERSION"
           ./dist/greggd-x86_64-unknown-linux-gnu --help
 
       - name: Daemon loopback smoke (/v2/healthz + /v2/status)
@@ -227,10 +227,10 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.preflight.outputs.version }}"
           ./dist/gregg-aarch64-unknown-linux-gnu version
-          ./dist/gregg-aarch64-unknown-linux-gnu version | grep -q "gregg $VERSION"
+          ./dist/gregg-aarch64-unknown-linux-gnu version | grep -qx "gregg $VERSION"
           ./dist/gregg-aarch64-unknown-linux-gnu --help
           ./dist/greggd-aarch64-unknown-linux-gnu version
-          ./dist/greggd-aarch64-unknown-linux-gnu version | grep -q "greggd $VERSION"
+          ./dist/greggd-aarch64-unknown-linux-gnu version | grep -qx "greggd $VERSION"
           ./dist/greggd-aarch64-unknown-linux-gnu --help
 
       - name: Daemon loopback smoke (native)
@@ -325,10 +325,10 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.preflight.outputs.version }}"
           ./dist/gregg-x86_64-apple-darwin version
-          ./dist/gregg-x86_64-apple-darwin version | grep -q "gregg $VERSION"
+          ./dist/gregg-x86_64-apple-darwin version | grep -qx "gregg $VERSION"
           ./dist/gregg-x86_64-apple-darwin --help
           ./dist/greggd-x86_64-apple-darwin version
-          ./dist/greggd-x86_64-apple-darwin version | grep -q "greggd $VERSION"
+          ./dist/greggd-x86_64-apple-darwin version | grep -qx "greggd $VERSION"
           ./dist/greggd-x86_64-apple-darwin --help
 
       - name: Daemon loopback smoke
@@ -423,10 +423,10 @@ jobs:
           set -euo pipefail
           VERSION="${{ needs.preflight.outputs.version }}"
           ./dist/gregg-aarch64-apple-darwin version
-          ./dist/gregg-aarch64-apple-darwin version | grep -q "gregg $VERSION"
+          ./dist/gregg-aarch64-apple-darwin version | grep -qx "gregg $VERSION"
           ./dist/gregg-aarch64-apple-darwin --help
           ./dist/greggd-aarch64-apple-darwin version
-          ./dist/greggd-aarch64-apple-darwin version | grep -q "greggd $VERSION"
+          ./dist/greggd-aarch64-apple-darwin version | grep -qx "greggd $VERSION"
           ./dist/greggd-aarch64-apple-darwin --help
 
       - name: Daemon loopback smoke
@@ -518,13 +518,13 @@ jobs:
           & ./dist/gregg-x86_64-pc-windows-msvc.exe version
           if ($LASTEXITCODE -ne 0) { throw "gregg version failed" }
           $out = & ./dist/gregg-x86_64-pc-windows-msvc.exe version
-          if ($out -notmatch "gregg $version") { throw "gregg version mismatch: $out vs $version" }
+          if ($out -notmatch "^gregg $version$") { throw "gregg version mismatch: $out vs $version" }
           & ./dist/gregg-x86_64-pc-windows-msvc.exe --help
           if ($LASTEXITCODE -ne 0) { throw "gregg --help failed" }
           & ./dist/greggd-x86_64-pc-windows-msvc.exe version
           if ($LASTEXITCODE -ne 0) { throw "greggd version failed" }
           $out2 = & ./dist/greggd-x86_64-pc-windows-msvc.exe version
-          if ($out2 -notmatch "greggd $version") { throw "greggd version mismatch: $out2 vs $version" }
+          if ($out2 -notmatch "^greggd $version$") { throw "greggd version mismatch: $out2 vs $version" }
           & ./dist/greggd-x86_64-pc-windows-msvc.exe --help
           if ($LASTEXITCODE -ne 0) { throw "greggd --help failed" }
 
@@ -569,11 +569,9 @@ jobs:
           Set-Location dist
           $greggHash = (Get-FileHash -Algorithm SHA256 -Path gregg-x86_64-pc-windows-msvc.exe).Hash.ToLower()
           $gregdHash = (Get-FileHash -Algorithm SHA256 -Path greggd-x86_64-pc-windows-msvc.exe).Hash.ToLower()
-          "$greggHash  gregg-x86_64-pc-windows-msvc.exe" | Set-Content -NoNewline -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Encoding ASCII
-          Add-Content -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Value "" -NoNewline
-          # Rebuild with proper format (hash + two spaces + filename)
-          Set-Content -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Value "$greggHash  gregg-x86_64-pc-windows-msvc.exe" -NoNewline
-          Set-Content -Path greggd-x86_64-pc-windows-msvc.exe.sha256 -Value "$gregdHash  greggd-x86_64-pc-windows-msvc.exe" -NoNewline
+          # Single write each (trailing newline included): "<hash>  <file>".
+          Set-Content -Path gregg-x86_64-pc-windows-msvc.exe.sha256 -Value "$greggHash  gregg-x86_64-pc-windows-msvc.exe" -Encoding ASCII
+          Set-Content -Path greggd-x86_64-pc-windows-msvc.exe.sha256 -Value "$gregdHash  greggd-x86_64-pc-windows-msvc.exe" -Encoding ASCII
           Get-Content gregg-x86_64-pc-windows-msvc.exe.sha256
           Get-Content greggd-x86_64-pc-windows-msvc.exe.sha256
           # Verify
@@ -635,6 +633,14 @@ jobs:
           if command -v shellcheck >/dev/null 2>&1; then
             shellcheck packaging/install.sh || echo "shellcheck warnings (non-fatal for CI)"
           fi
+          # PowerShell parse gate (mirrors bash -n above): fail on
+          # syntax errors in install.ps1. Skipped only when pwsh is
+          # absent from the runner.
+          if command -v pwsh >/dev/null 2>&1; then
+            pwsh -NoProfile -NonInteractive -Command '$errors = $null; [void][System.Management.Automation.Language.Parser]::ParseFile("packaging/install.ps1", [ref]$null, [ref]$errors); if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_.Message }; exit 1 } else { Write-Host "install.ps1 parse OK" }'
+          else
+            echo "pwsh not available; skipping install.ps1 parse gate"
+          fi
 
       - name: Assemble draft release (idempotent, never auto-publish)
         shell: bash
@@ -649,8 +655,10 @@ jobs:
           # Ensure gh is available
           gh --version
 
-          # Prepare file list: executables, checksums, installers
-          mapfile -t ASSETS < <(ls dist/*)
+          # Prepare file list: executables, checksums, installers.
+          # Glob expansion (not `ls` parsing) so asset names with spaces
+          # cannot word-split.
+          ASSETS=(dist/*)
           ASSETS+=("packaging/install.sh")
           ASSETS+=("packaging/install.ps1")
           echo "Assets to upload:"

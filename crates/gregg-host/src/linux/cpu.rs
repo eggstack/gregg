@@ -86,29 +86,30 @@ pub fn parse_proc_stat(raw: &str) -> Result<ParsedProcStat, CollectError> {
 }
 
 fn parse_cpu_row(label: &str, rest: &str) -> Result<CpuCounters, CollectError> {
-    let fields: Vec<&str> = rest.split_whitespace().collect();
+    // Iterate without collecting: /proc/stat is sampled at 1 Hz.
+    let mut values = [0u64; 10];
+    let mut count = 0usize;
+    for field in rest.split_whitespace().take(10) {
+        if count < 10 {
+            values[count] = field.parse::<u64>().map_err(|e| {
+                CollectError::new(
+                    CollectErrorKind::Parse,
+                    format!("non-numeric field on `{label}` row at index {count}"),
+                )
+                .with_source(e)
+            })?;
+            count += 1;
+        }
+    }
     // `/proc/stat` documents 10 user/sys/idle/.../guest/guest_nice fields for
     // the aggregate `cpu` row. Older kernels may report only 7; we accept
     // both and treat absent trailing fields as zero.
     let expected_min = 7;
-    if fields.len() < expected_min {
+    if count < expected_min {
         return Err(CollectError::new(
             CollectErrorKind::Parse,
-            format!(
-                "expected at least {expected_min} fields on `{label}` row, found {}",
-                fields.len()
-            ),
+            format!("expected at least {expected_min} fields on `{label}` row, found {count}"),
         ));
-    }
-    let mut values = [0u64; 10];
-    for (idx, field) in fields.iter().take(10).enumerate() {
-        values[idx] = field.parse::<u64>().map_err(|e| {
-            CollectError::new(
-                CollectErrorKind::Parse,
-                format!("non-numeric field on `{label}` row at index {idx}"),
-            )
-            .with_source(e)
-        })?;
     }
     Ok(CpuCounters {
         user: values[0],

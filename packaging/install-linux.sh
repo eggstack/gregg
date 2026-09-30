@@ -45,13 +45,7 @@ die() {
 
 [[ $EUID -eq 0 ]] || die "this script must be run as root (use sudo)"
 
-# Create dedicated service user if it doesn't exist.
-if ! id -u greggd >/dev/null 2>&1; then
-    useradd --system --no-create-home --shell /usr/sbin/nologin greggd
-    echo "  Created system user: greggd"
-fi
-
-# Find the binary.
+# Find the binary and validate it before any system mutation (useradd).
 if [[ -z "$BINARY_PATH" ]]; then
     BINARY_PATH="$(cd "$(dirname "$0")/.." && pwd)/target/release/greggd"
 fi
@@ -61,17 +55,37 @@ fi
 
 # Validate architecture matches host.
 HOST_ARCH="$(uname -m)"
-FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'x86_64|aarch64|80386' | head -1)"
-# armv7l fallback: 32-bit ARM binaries report only `ARM` in `file` output.
-if [[ -z "$FILE_ARCH" ]]; then FILE_ARCH="$(file "$BINARY_PATH" | grep -oE 'ARM' | head -1)"; fi
+if command -v file >/dev/null 2>&1; then
+  FILE_OUT="$(file "$BINARY_PATH" 2>/dev/null || true)"
+  FILE_ARCH="$(echo "$FILE_OUT" | grep -oE 'x86_64|aarch64|80386' | head -1)"
+  # armv7l fallback: 32-bit ARM binaries report only `ARM` in `file` output.
+  if [[ -z "$FILE_ARCH" ]]; then FILE_ARCH="$(echo "$FILE_OUT" | grep -oE 'ARM' | head -1)"; fi
+else
+  FILE_ARCH=""
+  echo "warning: 'file' command not found; skipping binary architecture check" >&2
+fi
 case "$HOST_ARCH" in
     x86_64)  EXPECTED_ARCH="x86_64" ;;
     aarch64) EXPECTED_ARCH="aarch64" ;;
     armv7l)  EXPECTED_ARCH="ARM" ;;
     *)       EXPECTED_ARCH="" ;;
 esac
-if [[ -n "$EXPECTED_ARCH" && -n "$FILE_ARCH" && "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
-    die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+if [[ -n "$EXPECTED_ARCH" ]]; then
+  if [[ -z "$FILE_ARCH" ]]; then
+    echo "warning: could not determine binary architecture; continuing" >&2
+  elif [[ "$FILE_ARCH" != "$EXPECTED_ARCH" ]]; then
+    # Confirm via direct match before failing: the oE sniff above can
+    # mis-extract on multi-arch output, so re-check with grep -q.
+    if ! echo "$FILE_OUT" | grep -q "$EXPECTED_ARCH"; then
+      die "binary architecture ($FILE_ARCH) does not match host ($HOST_ARCH)"
+    fi
+  fi
+fi
+
+# Create dedicated service user if it doesn't exist.
+if ! id -u greggd >/dev/null 2>&1; then
+    useradd --system --no-create-home --shell /usr/sbin/nologin greggd
+    echo "  Created system user: greggd"
 fi
 
 # --- Installation ---

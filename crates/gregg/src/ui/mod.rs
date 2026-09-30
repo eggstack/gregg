@@ -179,6 +179,9 @@ struct NetworkRenderKey {
 }
 
 impl MetricRenderKey {
+    /// `aggregate_drives` runs per system per render even on cache hits
+    /// (≤32 drives of integer math). Accepted to keep `NormalizedSnapshot`
+    /// free of render caches; formatted strings stay memoized.
     fn from_snapshot(snapshot: &NormalizedSnapshot) -> Self {
         Self {
             usage_pct: snapshot.usage_pct,

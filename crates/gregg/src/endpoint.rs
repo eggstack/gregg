@@ -65,11 +65,14 @@ impl Endpoint {
     }
 
     /// Return `true` if this endpoint matches the given host:port string.
+    ///
+    /// DNS is case-insensitive (RFC 1035) like `matches_host`, add dedup,
+    /// remove, and `Config::validate`.
     #[must_use]
     #[allow(dead_code)]
     pub fn matches_full(&self, spec: &str) -> bool {
         match EndpointSpec::parse(spec) {
-            Ok(parsed) => self.host == parsed.host && self.port == parsed.port,
+            Ok(parsed) => self.host.eq_ignore_ascii_case(&parsed.host) && self.port == parsed.port,
             Err(_) => false,
         }
     }
@@ -405,6 +408,13 @@ impl EndpointSpec {
                 input: input.to_string(),
             });
         }
+        // Post-`]` path (e.g. `[::1]:8080/path`) is `HasPath`, not
+        // `PortNotANumber`.
+        if rest[1..].contains('/') || rest[1..].contains('?') || rest[1..].contains('#') {
+            return Err(EndpointError::HasPath {
+                input: input.to_string(),
+            });
+        }
 
         let port_str = &rest[1..];
         let port = parse_port(port_str, input)?;
@@ -485,10 +495,17 @@ pub(crate) fn normalize_host(host: &str) -> Result<String, EndpointError> {
 
     // URL authorities encode the zone separator as `%25`. Accept the
     // operator-friendly bare `%zone` spelling, but persist the URL-safe form
-    // so the poller can construct a valid request URL.
+    // so the poller can construct a valid request URL. Only strip a leading
+    // `25` when the input actually contained `%25` (encoded separator);
+    // a genuine bare zone beginning with `25` must be double-encoded as
+    // `%2525...` so a single `%25...` is always an encoded separator.
     if let Some((address, zone)) = trimmed.split_once('%') {
         if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.contains(':') {
-            let zone = zone.strip_prefix("25").unwrap_or(zone);
+            let zone = if trimmed.contains("%25") {
+                zone.strip_prefix("25").unwrap_or(zone)
+            } else {
+                zone
+            };
             if zone.is_empty() {
                 return Err(EndpointError::EmptyHost);
             }
@@ -534,7 +551,12 @@ fn is_ipv6_with_zone_id(host: &str) -> bool {
     let Some((address, zone)) = host.split_once('%') else {
         return false;
     };
-    let zone = zone.strip_prefix("25").unwrap_or(zone);
+    // Mirror `normalize_host`: only treat leading `25` as encoded `%25`.
+    let zone = if host.contains("%25") {
+        zone.strip_prefix("25").unwrap_or(zone)
+    } else {
+        zone
+    };
     !zone.is_empty() && !zone.contains(':') && address.parse::<std::net::Ipv6Addr>().is_ok()
 }
 

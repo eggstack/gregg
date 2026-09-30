@@ -31,7 +31,7 @@ fi
 ZIG_SHA256="${ZIG_SHA256:-$ZIG_SHA256_DEFAULT}"
 ZIG_TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$ZIG_TMPDIR"' EXIT
-curl -fsSL --max-time 120 "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o "$ZIG_TMPDIR/zig.tar.xz"
+curl --proto '=https' --tlsv1.2 -fsSL --max-time 120 "https://ziglang.org/download/${ZIG_VERSION}/zig-linux-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" -o "$ZIG_TMPDIR/zig.tar.xz"
 echo "${ZIG_SHA256}  $ZIG_TMPDIR/zig.tar.xz" | sha256sum -c -
 mkdir -p "$HOME/.local/zig"
 tar -xf "$ZIG_TMPDIR/zig.tar.xz" -C "$HOME/.local/zig" --strip-components=1
@@ -42,5 +42,5 @@ if [[ -n "${GITHUB_PATH:-}" ]]; then
 fi
 export PATH="$HOME/.local/zig:$PATH"
 zig version
-cargo install cargo-zigbuild --locked
+cargo install cargo-zigbuild --version 0.23.4 --locked
 cargo zigbuild --help

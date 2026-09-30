@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use crate::error::{CollectError, CollectErrorKind};
+use crate::model::MAX_RATE_BYTES_PER_SEC;
 use crate::model::{
     CollectionLimits, DiskIoMetrics, DiskIoPayload, HostCapabilities, HostIdentity, HostSample,
     LoadAverage, NetworkInterfaceMetrics, NetworkPayload,
@@ -231,8 +232,12 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
             else {
                 continue;
             };
-            read_total = read_total.saturating_add(rate.first_per_sec);
-            write_total = write_total.saturating_add(rate.second_per_sec);
+            read_total = read_total
+                .saturating_add(rate.first_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
+            write_total = write_total
+                .saturating_add(rate.second_per_sec)
+                .min(MAX_RATE_BYTES_PER_SEC);
             if devices.len() < self.limits.max_disk_io_entries {
                 devices.push(DiskIoMetrics {
                     id: record.id,
@@ -286,8 +291,12 @@ impl<S: ffi::MacNativeQueries + Clone + 'static> MacOsCollector<S> {
             };
             let aggregate_member = record.aggregate_member && !record.is_loopback;
             if aggregate_member {
-                rx_total = rx_total.saturating_add(rate.first_per_sec);
-                tx_total = tx_total.saturating_add(rate.second_per_sec);
+                rx_total = rx_total
+                    .saturating_add(rate.first_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
+                tx_total = tx_total
+                    .saturating_add(rate.second_per_sec)
+                    .min(MAX_RATE_BYTES_PER_SEC);
                 if record.operational && !record.is_loopback {
                     if let Some(capacity) = record.rx_capacity_bps {
                         rx_capacity = Some(rx_capacity.unwrap_or(0).saturating_add(capacity));
@@ -404,7 +413,14 @@ fn parse_loadavgs(raw: &[f64; 3]) -> Result<LoadAverage, CollectError> {
             ));
         }
         #[allow(clippy::cast_possible_truncation)]
-        Ok(value as f32)
+        let as_f32 = value as f32;
+        if !as_f32.is_finite() {
+            return Err(CollectError::new(
+                CollectErrorKind::Parse,
+                format!("loadavg {label} overflows f32"),
+            ));
+        }
+        Ok(as_f32)
     };
 
     Ok(LoadAverage {

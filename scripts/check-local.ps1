@@ -67,7 +67,7 @@ function Test-VersionConsistency {
     $crates = @('crates/gregg-protocol', 'crates/gregg-update', 'crates/gregg-host', 'crates/greggd', 'crates/gregg')
     foreach ($crate in $crates) {
         $manifest = Join-Path $RepoRoot "$crate/Cargo.toml"
-        $inheritance = @(Select-String -LiteralPath $manifest -Pattern '^\s*version\.workspace\s*=\s*true\s*$')
+        $inheritance = @(Select-String -LiteralPath $manifest -Pattern '^\s*version\.workspace\s*=\s*true\s*(#.*)?$')
         if ($inheritance.Count -eq 0) {
             throw "error: $manifest is missing version.workspace = true"
         }
@@ -87,7 +87,7 @@ function Test-VersionConsistency {
                 if (-not $match.Success) {
                     throw "error: $manifest $dep dependency has no registry version"
                 }
-                $dependencyVersion = $match.Groups[1].Value
+                $dependencyVersion = $match.Groups[1].Value.TrimStart('=')
                 if ($dependencyVersion -ne $workspaceVersion) {
                     throw "error: $manifest $dep dependency version $dependencyVersion != workspace $workspaceVersion"
                 }
@@ -107,7 +107,7 @@ function Test-VersionConsistency {
         if (-not $match.Success) {
             throw "error: $manifest gregg-host dependency has no registry version"
         }
-        $dependencyVersion = $match.Groups[1].Value
+        $dependencyVersion = $match.Groups[1].Value.TrimStart('=')
         if ($dependencyVersion -ne $workspaceVersion) {
             throw "error: $manifest gregg-host dependency version $dependencyVersion != workspace $workspaceVersion"
         }
@@ -126,21 +126,18 @@ function Get-FreeLoopbackPort {
     }
 }
 
-function Invoke-InstalledDaemonSmoke {
-    param([string]$BinaryPath)
+function Invoke-SingleDaemonSmoke {
+    param([string]$BinaryPath, [string]$TempDir, [int]$Port)
 
-    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
     $process = $null
     try {
-        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-        $port = Get-FreeLoopbackPort
-        $configPath = Join-Path $tempDir 'greggd.toml'
-        $stdoutPath = Join-Path $tempDir 'greggd.stdout.log'
-        $stderrPath = Join-Path $tempDir 'greggd.stderr.log'
+        $configPath = Join-Path $TempDir "greggd-$Port.toml"
+        $stdoutPath = Join-Path $TempDir "greggd-$Port.stdout.log"
+        $stderrPath = Join-Path $TempDir "greggd-$Port.stderr.log"
         $config = @"
 name = "loopback-test"
 host = "127.0.0.1"
-port = $port
+port = $Port
 sample_interval_ms = 250
 stale_after_ms = 10000
 "@
@@ -155,7 +152,7 @@ stale_after_ms = 10000
                 throw "installed greggd exited during startup"
             }
             try {
-                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/healthz" -TimeoutSec 2
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v2/healthz" -TimeoutSec 2
                 if ($health.state -eq 'ready') {
                     $ready = $true
                     break
@@ -168,14 +165,14 @@ stale_after_ms = 10000
             throw "installed greggd did not become ready within 15 seconds"
         }
 
-        $status = Invoke-RestMethod -Uri "http://127.0.0.1:$port/v2/status" -TimeoutSec 2
+        $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v2/status" -TimeoutSec 2
         if ([int]$status.schema_version -ne 2) {
             throw "installed greggd returned an unexpected v2 schema version"
         }
         if ([string]::IsNullOrWhiteSpace([string]$status.system.name)) {
             throw "installed greggd returned an empty system name"
         }
-        Write-Host "  installed greggd v2 loopback smoke passed on port $port"
+        Write-Host "  installed greggd v2 loopback smoke passed on port $Port"
     } finally {
         if ($null -ne $process) {
             $process.Refresh()
@@ -187,6 +184,36 @@ stale_after_ms = 10000
                 throw "installed greggd process did not terminate"
             }
         }
+    }
+}
+
+function Invoke-InstalledDaemonSmoke {
+    param([string]$BinaryPath)
+
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.IO.Path]::GetRandomFileName())
+    try {
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        # Bind-close-rebind is racy: the freed loopback port may be taken
+        # before the daemon binds. Retry fresh ports (bounded) instead of
+        # failing the smoke on a single collision.
+        $attempt = 0
+        $maxAttempts = 5
+        $smokePassed = $false
+        $lastError = $null
+        while (-not $smokePassed -and $attempt -lt $maxAttempts) {
+            $attempt++
+            $port = Get-FreeLoopbackPort
+            try {
+                Invoke-SingleDaemonSmoke -BinaryPath $BinaryPath -TempDir $tempDir -Port $port
+                $smokePassed = $true
+            } catch {
+                $lastError = $_
+                if ($attempt -ge $maxAttempts) { throw }
+                Start-Sleep -Milliseconds 200
+            }
+        }
+        if (-not $smokePassed) { throw $lastError }
+    } finally {
         if (Test-Path -LiteralPath $tempDir) {
             Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         }

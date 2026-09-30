@@ -79,12 +79,15 @@ pub fn startup_state() -> StartupState {
     }
     #[cfg(all(unix, target_os = "linux"))]
     {
+        // Skip the `systemctl is-active` probe entirely outside a systemd
+        // environment: in containers it can block up to the manager timeout
+        // before failing. Unit existence alone maps to installed-stopped.
+        if !is_systemd_environment() {
+            let unit_exists = systemd_unit_exists();
+            return systemd_state_with(unit_exists, false);
+        }
         let unit_exists = systemd_unit_exists();
-        let active = if unit_exists || is_systemd_environment() {
-            systemd_is_active()
-        } else {
-            false
-        };
+        let active = systemd_is_active();
         let state = systemd_state_with(unit_exists, active);
         if state != StartupState::UnmanagedOrCron {
             return state;
