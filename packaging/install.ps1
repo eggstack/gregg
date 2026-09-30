@@ -55,7 +55,11 @@ $Tag = ""
 if ($Version) {
     $StrippedVersion = $Version.Trim()
     if ($StrippedVersion.StartsWith("v")) { $StrippedVersion = $StrippedVersion.Substring(1) }
-    if ($StrippedVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z\.\-]+)?(\+[0-9A-Za-z\.\-]+)?$') {
+    if ($StrippedVersion -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+        # Strict stable SemVer only: the shared `validate_candidate`
+        # contract requires an exact "X.Y.Z" candidate version, so a
+        # prerelease or build suffix would fail late (after download and
+        # staging) instead of at argument parse.
         throw "Version must be X.Y.Z (got '$Version')"
     }
     $Tag = "v$StrippedVersion"

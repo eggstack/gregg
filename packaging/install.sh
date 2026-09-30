@@ -143,7 +143,11 @@ STRIPPED_VERSION=""
 TAG=""
 if [[ -n "$VERSION" ]]; then
   STRIPPED_VERSION="${VERSION#v}"
-  if [[ ! "$STRIPPED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+  # Strict stable SemVer only: the shared `validate_candidate` contract
+  # requires an exact "X.Y.Z" candidate version, so a prerelease or build
+  # suffix would fail late (after download and staging) instead of at
+  # argument parse.
+  if [[ ! "$STRIPPED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     die "--version must be X.Y.Z (got '$VERSION')"
   fi
   TAG="v${STRIPPED_VERSION}"
@@ -671,6 +675,11 @@ cargo_fallback() {
   # removed afterwards; no Cargo install root persists beside the binary.
   local stage_root
   stage_root="$(mktemp -d)"
+  # Remove the staging root on every exit path, including a `die` inside
+  # candidate verification. `install_program` clears its own download trap
+  # before delegating here, so this trap owns cleanup for the rest of the run.
+  # shellcheck disable=SC2064
+  trap "rm -rf \"$stage_root\"" EXIT
   local cargo_root="${stage_root}/cargo-root"
 
   local -a args=(install --locked)
@@ -703,6 +712,7 @@ cargo_fallback() {
     chmod 755 "${DEST_DIR}/${program}"
   fi
   rm -rf "$stage_root"
+  trap - EXIT
 
   if [[ "$scope" == "replace" ]]; then
     echo "Updated ${program} at ${DEST_DIR}/${program} (${existing_version} -> $("$DEST_DIR/$program" version 2>&1 || echo "unverified"))" >&2

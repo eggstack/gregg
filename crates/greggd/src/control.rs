@@ -151,17 +151,70 @@ pub enum ControlSetupError {
 /// source.
 #[must_use]
 pub fn config_id_for_path(config_path: &Path) -> String {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    ControlIdentity::for_path(config_path).id
+}
 
-    let bytes = control_identity_path(config_path);
-    let bytes = bytes.as_os_str().as_bytes();
-    let mut hash = FNV_OFFSET_BASIS;
-    for &byte in bytes {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
+/// Normalized control-socket identity for exactly one config path.
+///
+/// Built once per `run`/`stop` operation so the digest and the parent
+/// directory can never disagree: re-canonicalizing per candidate would let a
+/// file created or deleted between calls flip between the canonical and the
+/// lexical `current_dir().join()` branch, and a differing `cwd` for `run` vs
+/// `stop` would otherwise produce two `<id>` values for one spelling.
+struct ControlIdentity {
+    id: String,
+    normalized: PathBuf,
+}
+
+impl ControlIdentity {
+    fn for_path(config_path: &Path) -> Self {
+        const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let normalized = control_identity_path(config_path);
+        let mut hash = FNV_OFFSET_BASIS;
+        for &byte in normalized.as_os_str().as_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        Self {
+            id: format!("{hash:016x}"),
+            normalized,
+        }
     }
-    format!("{hash:016x}")
+
+    fn socket_file_name(&self) -> String {
+        format!("greggd-{}.control.sock", self.id)
+    }
+
+    fn primary(&self) -> Option<PathBuf> {
+        let path = self.normalized.parent()?.join(self.socket_file_name());
+        if path.as_os_str().len() > UNIX_PATH_MAX {
+            return None;
+        }
+        Some(path)
+    }
+
+    fn fallback(&self) -> Option<PathBuf> {
+        let path = std::env::temp_dir().join(self.socket_file_name());
+        if path.as_os_str().len() > UNIX_PATH_MAX {
+            return None;
+        }
+        Some(path)
+    }
+
+    fn stop_candidates(&self) -> Vec<PathBuf> {
+        let mut out = Vec::with_capacity(2);
+        if let Some(primary) = self.primary() {
+            out.push(primary);
+        }
+        if let Some(fallback) = self.fallback() {
+            if !out.iter().any(|p| p == &fallback) {
+                out.push(fallback);
+            }
+        }
+        out
+    }
 }
 
 /// Normalize a config path for control-socket identity.
@@ -204,16 +257,7 @@ fn control_identity_path(path: &Path) -> PathBuf {
 /// it as the first candidate.
 #[must_use]
 pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
-    let identity_path = control_identity_path(config_path);
-    let parent = identity_path.parent()?;
-    let path = parent.join(format!(
-        "greggd-{}.control.sock",
-        config_id_for_path(config_path)
-    ));
-    if path.as_os_str().len() > UNIX_PATH_MAX {
-        return None;
-    }
-    Some(path)
+    ControlIdentity::for_path(config_path).primary()
 }
 
 /// Compute the deterministic fallback control socket path.
@@ -223,29 +267,13 @@ pub fn primary_control_path(config_path: &Path) -> Option<PathBuf> {
 /// the daemon's identity regardless of host/port edits inside the TOML.
 #[must_use]
 pub fn fallback_control_path(config_path: &Path) -> Option<PathBuf> {
-    let path = std::env::temp_dir().join(format!(
-        "greggd-{}.control.sock",
-        config_id_for_path(config_path)
-    ));
-    if path.as_os_str().len() > UNIX_PATH_MAX {
-        return None;
-    }
-    Some(path)
+    ControlIdentity::for_path(config_path).fallback()
 }
 
 /// All candidates `stop` should try, in priority order.
 #[must_use]
 pub fn stop_candidates(config_path: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::with_capacity(2);
-    if let Some(primary) = primary_control_path(config_path) {
-        out.push(primary);
-    }
-    if let Some(fallback) = fallback_control_path(config_path) {
-        if !out.iter().any(|p| p == &fallback) {
-            out.push(fallback);
-        }
-    }
-    out
+    ControlIdentity::for_path(config_path).stop_candidates()
 }
 
 /// Best-effort removal of a control socket path that the daemon created
@@ -323,7 +351,7 @@ pub fn send_stop(config_path: &Path) -> Result<StopOutcome, ControlError> {
 
     const IO_TIMEOUT: Duration = Duration::from_millis(1500);
 
-    let candidates = stop_candidates(config_path);
+    let candidates = ControlIdentity::for_path(config_path).stop_candidates();
     let mut last_io_error: Option<std::io::Error> = None;
 
     for candidate in &candidates {
@@ -497,14 +525,19 @@ pub enum ControlBind {
 pub fn bind_listener(config_path: &Path) -> ControlBind {
     use tracing::info;
 
-    if let Some(primary) = primary_control_path(config_path) {
-        if let Some(bound) = try_bind_secure(&primary) {
+    // One identity per bind attempt: the primary/fallback comparison below
+    // must not re-derive the digest, or a file appearing between the two
+    // derivations could make the fallback alias the primary.
+    let identity = ControlIdentity::for_path(config_path);
+    let primary = identity.primary();
+    if let Some(primary) = primary.as_ref() {
+        if let Some(bound) = try_bind_secure(primary) {
             info!(path = %primary.display(), "control socket bound");
             return bound;
         }
     }
-    if let Some(fallback) = fallback_control_path(config_path) {
-        if Some(&fallback) != primary_control_path(config_path).as_ref() {
+    if let Some(fallback) = identity.fallback() {
+        if Some(&fallback) != primary.as_ref() {
             if let Some(bound) = try_bind_secure(&fallback) {
                 info!(path = %fallback.display(), "control socket bound (fallback)");
                 return bound;
@@ -673,30 +706,39 @@ fn prepare_final_path(path: &Path) -> Option<()> {
 /// one-shot shutdown receiver. Stale or malformed input is dropped and the
 /// connection is closed.
 ///
-/// If the task is cancelled (for example because the runtime is dropped
-/// during a signal-driven shutdown), the control-socket RAII guard ensures
-/// the socket file is removed before any cleanup paths become observable.
+/// The socket file is *not* cleaned up by this task. Cleanup is owned by the
+/// [`ControlSocketGuard`] the caller holds, so it runs on every exit path —
+/// including the signal-driven one, where the runtime is torn down while this
+/// task is still parked in `accept()` and its future would never be
+/// polled to completion.
 pub fn spawn_stop_task(
     listener: tokio::net::UnixListener,
-    path: PathBuf,
+    _path: PathBuf,
     notify: tokio::sync::oneshot::Sender<std::io::Result<&'static str>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let guard = ControlSocketGuard { path: path.clone() };
         let result = stop_loop(listener).await;
         let _ = notify.send(result);
-        drop(guard);
     })
 }
 
 /// RAII guard that removes a control socket path when dropped.
 ///
-/// This guarantees the socket file is cleaned up even if the spawning
-/// runtime is dropped before the dedicated control task completes its
-/// own cleanup path. The actual cleanup is a no-op for non-socket paths,
-/// so dropping the guard on a healthy stop is harmless.
-struct ControlSocketGuard {
+/// The foreground daemon holds this for its whole lifetime, so the socket
+/// file is removed deterministically when `run` returns — whether it exits
+/// via `greggd stop`, SIGTERM/SIGINT, or an error. Cleanup is a no-op for
+/// non-socket paths, so dropping the guard while no socket was bound (or
+/// after the socket was already removed) is harmless.
+pub(crate) struct ControlSocketGuard {
     path: PathBuf,
+}
+
+impl ControlSocketGuard {
+    /// Register `path` for removal when the returned guard is dropped.
+    #[must_use]
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
 }
 
 impl Drop for ControlSocketGuard {
@@ -1453,6 +1495,55 @@ mod tests {
         remove_control_socket(&primary_b).unwrap();
         remove_control_socket(&fallback_control_path(&cfg_a).unwrap()).unwrap();
         remove_control_socket(&fallback_control_path(&cfg_b).unwrap()).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_guard_removes_socket_when_control_task_is_cancelled() {
+        // The signal-driven shutdown path leaves the control task parked in
+        // `accept()`; the runtime drops it before it can clean up. Cleanup is
+        // owned by the caller's guard, so dropping the runtime alone must not
+        // leave the socket file behind.
+        let dir = fresh_temp_dir("guard-cleanup");
+        let cfg = make_config_file(&dir, "greggd.toml");
+
+        let socket_path = {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (path, task) = rt.block_on(async {
+                let bound = bind_listener(&cfg);
+                let ControlBind::Bound { path, listener } = bound else {
+                    panic!("listener must bind");
+                };
+                let (tx, _rx) = tokio::sync::oneshot::channel();
+                let task = spawn_stop_task(listener, path.clone(), tx);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                assert!(path.exists(), "socket must exist while the daemon runs");
+                // `run_with_control_path` holds this guard for the daemon's
+                // whole lifetime; forget it here so the runtime teardown
+                // cannot be credited with the cleanup.
+                let guard = ControlSocketGuard::new(path.clone());
+                std::mem::forget(guard);
+                (path, task)
+            });
+            // Keep the JoinHandle alive until the runtime is dropped.
+            drop(task);
+            path
+        };
+        // Runtime dropped with the control task still parked.
+        assert!(
+            socket_path.exists(),
+            "the cancelled control task must not have removed the socket"
+        );
+        drop(ControlSocketGuard::new(socket_path.clone()));
+        assert!(
+            !socket_path.exists(),
+            "the daemon-owned guard must remove the control socket on exit"
+        );
+
+        remove_control_socket(&fallback_control_path(&cfg).unwrap()).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

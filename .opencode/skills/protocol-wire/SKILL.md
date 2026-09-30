@@ -97,13 +97,46 @@ Validation is intentionally separate from serde deserialization. Adding fields t
 | `LoadCapabilityMismatch` | load presence disagrees with capability |
 | `SwapCapabilityMismatch` | swap presence disagrees with capability |
 | `CommitCapabilityMismatch` | commit presence disagrees with capability |
-| `EmptyDriveName` | Drive name is empty string |
+| `EmptyDriveName` | Drive name is empty, whitespace-only, or NUL-padded |
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
 V2 also validates live-metrics collection/string bounds, duplicate IDs,
 positive CPU frequency/capacities, and the loopback aggregate-member rule.
 `Some(0)` capacities and zero CPU frequency are rejected.
+
+36 `ViolationKindV2` variants total: the 16 base kinds above plus
+`CpuFrequencyZero`, `CpuFrequencyExceedsMaximum` (2^34 Hz),
+`TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`,
+`DiskIoNameInvalid`/`TooLong`, `DuplicateDiskIoId`, `DuplicateDriveName`,
+`UnknownDriveAssociation`, `TooManyNetworkInterfaces`,
+`NetworkInterfaceIdInvalid`/`TooLong`, `NetworkInterfaceNameInvalid`/`TooLong`,
+`DuplicateNetworkInterfaceId`, `ZeroCapacity`, `CapacityExceedsMaximum`
+(2^48 bps), `LoopbackAggregateMember`, and `RateExceedsMaximum` (1 TiB/s).
+
+Duplicate detection is hash-set based (linear over an attacker-sized
+collection) and per-entry violations are still reported after the
+`TooMany*` bound fires. A disk-I/O `drive_name` association must match a
+payload drive whenever `drives` is `Some`; an empty `Some([])` makes any
+association dangling, and only `drives: None` skips the check. A drive with
+`total_bytes == 0` is a valid empty/placeholder volume unless it also claims
+non-zero `used_bytes`/`available_bytes`.
+
+## Health envelopes
+
+The state/category pairing is a total allowlist enforced on deserialize:
+
+| State | Allowed category |
+|-------|------------------|
+| `ready` | none, and no `message` |
+| `warming` | `warming` |
+| `failed` | `collector_failure` or `not_serving` |
+
+`message` is bounded by `MAX_HEALTH_MESSAGE_BYTES` (512 UTF-8 bytes) and
+rejected when it contains NUL. `ready()` debug-asserts the snapshot
+invariant; `try_ready()` validates first and returns the structured violation
+list, and the daemon serves a `failed` envelope rather than a `200` when a
+cached snapshot fails validation.
 
 ## Test support
 
@@ -114,6 +147,7 @@ The `test_support` feature flag exposes builder fixtures:
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
 | `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry |
+| `MacosSnapshotV2Builder` | V2 macOS snapshot (load average, no iowait, no swap) with optional drives/live telemetry |
 | `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit/live telemetry |
 
 ## Fixture files

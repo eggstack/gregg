@@ -4,9 +4,10 @@ use super::install::{
     elevated_command, ensure_config_preserved, is_privileged, manager_error_is_permission,
     repair_system_config_permissions, write_atomic_text, InstallError,
 };
+#[cfg(test)]
+use super::method::standard_launchd_config;
 use super::method::{
-    launchd_label, standard_launchd_binary, standard_launchd_config, standard_launchd_plist_path,
-    StartupMethodArg,
+    launchd_label, standard_launchd_binary, standard_launchd_plist_path, StartupMethodArg,
 };
 use super::process::{run_bounded_command, MANAGER_COMMAND_TIMEOUT};
 use super::ArtifactOwnership;
@@ -14,8 +15,27 @@ use std::fs;
 use std::io::{self};
 use std::path::{Path, PathBuf};
 
-pub fn launchd_plist_content() -> String {
-    const TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+/// Canonical launchd plist. Keep synchronized with
+/// `packaging/launchd/com.eggstack.greggd.plist`.
+///
+/// `config_path` is the resolved `--config` the daemon must load. It is
+/// rendered into `ProgramArguments` so `greggd --config /custom.toml startup
+/// install --method launchd` registers the job that actually reads that
+/// file; the default installation passes the standard
+/// `/Library/Application Support/gregg/greggd.toml` and produces the
+/// packaged plist byte-for-byte.
+///
+/// The plist is rendered from [`LAUNCHD_PLIST_TEMPLATE`] below.
+pub fn launchd_plist_content(config_path: &Path) -> String {
+    LAUNCHD_PLIST_TEMPLATE.replace(
+        "        <string>/Library/Application Support/gregg/greggd.toml</string>",
+        &format!("        <string>{}</string>", config_path.display()),
+    )
+}
+
+/// Plist template with the canonical `ProgramArguments` config substituted at
+/// install time.
+const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -64,8 +84,7 @@ pub fn launchd_plist_content() -> String {
 </dict>
 </plist>
 "#;
-    TEMPLATE.to_string()
-}
+
 #[allow(dead_code)]
 pub(crate) fn launchd_plist_exists() -> bool {
     standard_launchd_plist_path().exists()
@@ -162,7 +181,11 @@ pub fn launchd_artifact_ownership(exe: &Path) -> (ArtifactOwnership, bool, Optio
 /// a generalized discovery database.
 // ── Launchd installation ──────────────────────────────────────────────────
 #[allow(clippy::too_many_lines)]
-pub fn install_launchd(exe: &Path, _config_path: &Path) -> Result<(), InstallError> {
+///
+/// `config_path` is the configuration the installed job must load; it is
+/// rendered into `ProgramArguments` so `restart`/`update`/`uninstall`
+/// ownership checks see the same config the operator selected.
+pub fn install_launchd(exe: &Path, config_path: &Path) -> Result<(), InstallError> {
     // Verify macOS
     if std::env::consts::OS != "macos" && std::env::consts::OS != "darwin" {
         return Err(InstallError::LaunchdNotDetected {
@@ -179,26 +202,21 @@ pub fn install_launchd(exe: &Path, _config_path: &Path) -> Result<(), InstallErr
             message: format!("permission denied: rerun as root: {cmd}"),
         });
     }
-    // Ensure config dir and default config
-    let cfg_path = standard_launchd_config();
-    if let Some(parent) = cfg_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| InstallError::Io {
-            path: parent.to_path_buf(),
-            source: e,
-        })?;
-    }
-    ensure_config_preserved(&cfg_path).map_err(|e| InstallError::Io {
-        path: cfg_path.clone(),
+    // Ensure the selected config dir and config exist. Using `config_path`
+    // (not the hardcoded standard path) is what makes an explicit
+    // `--config /custom.toml` install register the file the daemon reads.
+    ensure_config_preserved(config_path).map_err(|e| InstallError::Io {
+        path: config_path.to_path_buf(),
         source: e,
     })?;
     // Older installs left the system config 0600, which breaks
     // unprivileged `croncheck`/`status`/`configprint` with EACCES.
-    repair_system_config_permissions(&cfg_path).map_err(|e| InstallError::Io {
-        path: cfg_path.clone(),
+    repair_system_config_permissions(config_path).map_err(|e| InstallError::Io {
+        path: config_path.to_path_buf(),
         source: e,
     })?;
     // Write plist atomically
-    let plist_content = launchd_plist_content();
+    let plist_content = launchd_plist_content(config_path);
     let plist_path = standard_launchd_plist_path();
     if let Some(parent) = plist_path.parent() {
         fs::create_dir_all(parent).map_err(|e| InstallError::Io {
@@ -307,7 +325,7 @@ pub fn install_launchd(exe: &Path, _config_path: &Path) -> Result<(), InstallErr
         }
     }
     println!("greggd launchd service installed: {}", plist_path.display());
-    println!("config: {}", cfg_path.display());
+    println!("config: {}", config_path.display());
     println!("logs: log show --predicate 'process == \"greggd\"' --last 5m");
     Ok(())
 }
@@ -453,11 +471,20 @@ mod tests {
 
     #[test]
     fn launchd_plist_content_contains_label() {
-        let content = launchd_plist_content();
+        let content = launchd_plist_content(&standard_launchd_config());
         assert!(content.contains("com.eggstack.greggd"));
         assert!(content.contains("/usr/local/bin/greggd"));
         assert!(content.contains("KeepAlive"));
     }
+    #[test]
+    fn launchd_plist_renders_the_selected_config_path() {
+        let content = launchd_plist_content(Path::new("/srv/gregg/custom.toml"));
+        assert!(content.contains("<string>/srv/gregg/custom.toml</string>"));
+        assert!(!content.contains("/Library/Application Support/gregg/greggd.toml"));
+        assert!(launchd_plist_content(&standard_launchd_config())
+            .contains("<string>/Library/Application Support/gregg/greggd.toml</string>"));
+    }
+
     #[test]
     fn embedded_launchd_plist_matches_packaging_file_when_present() {
         let packaging = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -468,7 +495,7 @@ mod tests {
                 file_norm.push('\n');
             }
             assert_eq!(
-                launchd_plist_content(),
+                launchd_plist_content(&standard_launchd_config()),
                 file_norm,
                 "embedded launchd plist must stay synchronized with packaging/launchd/com.eggstack.greggd.plist"
             );

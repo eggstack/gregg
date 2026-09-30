@@ -28,11 +28,17 @@ fn collect_drives<S: WindowsSource>(
     limits: &CollectionLimits,
 ) -> Result<Vec<crate::model::DriveMetrics>, CollectError> {
     let raw = source.logical_drives()?;
+    // Windows volume roots are case-insensitive, so `C:\` and `c:\` name the
+    // same volume. Collapse case variants before normalization: otherwise one
+    // volume would reach the wire twice under two spellings and the
+    // protocol's duplicate-drive-name rule would reject the payload.
+    let mut seen_roots: std::collections::HashSet<String> = std::collections::HashSet::new();
     let candidates = raw
         .into_iter()
         .filter(|drive| {
             (drive.drive_type == source::DRIVE_FIXED || drive.drive_type == source::DRIVE_REMOVABLE)
                 && !drive.root.is_empty()
+                && seen_roots.insert(drive.root.to_ascii_uppercase())
         })
         .map(|drive| crate::drives::DriveCandidate {
             identity: drive.root.clone(),
@@ -331,7 +337,9 @@ impl<S: WindowsSource + Clone + 'static> HostCollector for WindowsCollector<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::windows::source::{MockWindowsSource, RawIdentity, RawProcessorTopology};
+    use crate::windows::source::{
+        MockWindowsSource, RawIdentity, RawLogicalDrive, RawProcessorTopology,
+    };
 
     fn default_identity() -> RawIdentity {
         RawIdentity {
@@ -380,6 +388,34 @@ mod tests {
         };
         let err = WindowsCollector::with_source(mock, None).expect_err("2 groups fail");
         assert!(err.message.contains("multiple processor groups"));
+    }
+
+    #[test]
+    fn case_variant_volume_roots_collapse_to_one_drive() {
+        // Windows volume roots are case-insensitive: `C:\` and `c:\` are
+        // the same volume. Both reaching the wire would trip the protocol's
+        // duplicate-drive-name rule and reject the whole payload.
+        let mut mock = mock_source();
+        mock.drives = vec![
+            RawLogicalDrive {
+                root: "C:\\".to_string(),
+                drive_type: source::DRIVE_FIXED,
+                total_bytes: 100,
+                total_free_bytes: 40,
+                available_bytes: 40,
+            },
+            RawLogicalDrive {
+                root: "c:\\".to_string(),
+                drive_type: source::DRIVE_FIXED,
+                total_bytes: 100,
+                total_free_bytes: 40,
+                available_bytes: 40,
+            },
+        ];
+        let drives = collect_drives(&mock, &CollectionLimits::gregg_defaults())
+            .expect("drive collection succeeds");
+        assert_eq!(drives.len(), 1, "one volume must yield one drive record");
+        assert_eq!(drives[0].name, "C:\\");
     }
 
     #[test]

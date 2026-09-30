@@ -150,9 +150,15 @@ pub(crate) struct PreformattedValues {
 /// equality, never pointer identity, so config reload/mutation invalidates
 /// correctly. `None` latest (online without snapshot) still formats to
 /// em-dashes, so the key distinguishes presence.
+///
+/// The online row intentionally renders the configured name (or the bare
+/// host) without a port, so `label` is that display text. `port` is carried
+/// separately anyway: a port-only config edit must not reuse a memoized row
+/// from the previous endpoint even though the rendered label is unchanged.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CondensedRenderKey {
-    host: String,
+    label: String,
+    port: u16,
     reachability: Reachability,
     cpu_usage_pct: Option<f32>,
     memory_usage_pct: Option<f32>,
@@ -167,14 +173,16 @@ pub(crate) fn condensed_key_for(system: &SystemState) -> Option<CondensedRenderK
     if system.reachability != Reachability::Online {
         return None;
     }
-    let host = system
+    let label = system
         .configured_name
         .as_deref()
         .unwrap_or(&system.endpoint.host)
         .to_string();
+    let port = system.endpoint.port;
     let Some(snapshot) = system.latest.as_ref() else {
         return Some(CondensedRenderKey {
-            host,
+            label,
+            port,
             reachability: system.reachability,
             cpu_usage_pct: None,
             memory_usage_pct: None,
@@ -186,7 +194,8 @@ pub(crate) fn condensed_key_for(system: &SystemState) -> Option<CondensedRenderK
         });
     };
     Some(CondensedRenderKey {
-        host,
+        label,
+        port,
         reachability: system.reachability,
         cpu_usage_pct: Some(snapshot.usage_pct),
         memory_usage_pct: Some(snapshot.memory.usage_pct),
@@ -655,6 +664,21 @@ mod tests {
             latency: None,
             offline_reason: None,
         }
+    }
+
+    #[test]
+    fn render_key_changes_when_only_the_port_changes() {
+        // The online row label intentionally omits the port, so a memo keyed
+        // on the label alone would reuse a stale row after a port-only
+        // config edit.
+        let a = system("srv");
+        let mut b = system("srv");
+        b.endpoint = Endpoint::new("fallback".into(), 11311, None);
+        assert_ne!(condensed_key_for(&a), condensed_key_for(&b));
+
+        let mut same = system("srv");
+        same.endpoint = Endpoint::new("fallback".into(), 11310, None);
+        assert_eq!(condensed_key_for(&a), condensed_key_for(&same));
     }
 
     #[test]

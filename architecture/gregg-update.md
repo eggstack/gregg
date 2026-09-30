@@ -109,8 +109,16 @@ target in all consumers at once, never in one place alone.
   application crate. No install receipt is kept.
 - Bounded execution everywhere: crates.io 15s / 256 KiB, download 90s
   (100s wall) / 64 MiB, capture/probe/candidate 20s/20s/5s, Cargo 600s,
-  `cargo --list` 30s, owner-private `TempDir 0700`, partial-file removal,
-  kill/reap (no orphaned compilers), no predictable shared-temp pathnames.
+  `cargo --list` 30s, `curl`/`cargo` discovery probes 5s (run through the
+  same bounded child runner, so an earlier-`PATH` shim that never exits is
+  killed and reaped instead of blocking `resolve_plan`), owner-private
+  `TempDir 0700`, partial-file removal, kill/reap (no orphaned compilers), no
+  predictable shared-temp pathnames.
+- A 2xx download is rejected unless the staged file is within
+  `MAX_DOWNLOAD_BYTES` (`metadata().len()` re-check after the HTTP status, the
+  metadata-path equivalent of the `take(MAX+1)` capture guard), so a curl that
+  ignores `--max-filesize` can never feed an oversized asset to the checksum,
+  `chmod`, or exec steps.
   `exit 4` mapping is caller-owned; the shared crate returns
   `PermissionDenied` with a platform-correct hint.
 - Publish order: `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.

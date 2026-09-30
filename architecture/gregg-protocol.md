@@ -108,30 +108,44 @@ additive JSON changes from silently loosening invariants.
 | `LoadCapabilityMismatch` | load presence disagrees with `load_average` capability |
 | `SwapCapabilityMismatch` | swap presence disagrees with `swap` capability |
 | `CommitCapabilityMismatch` | commit presence disagrees with `memory_commit` capability |
-| `EmptyDriveName` | Drive name is empty string |
+| `EmptyDriveName` | Drive name is empty, whitespace-only, or NUL-padded |
 | `DriveNameTooLong` | Drive name > 512 UTF-8 bytes |
 | `TooManyDrives` | More than 32 drive entries |
 
-Live telemetry adds bounded validation for positive CPU frequency/capacities,
-disk-I/O and network collection sizes, non-empty bounded IDs and
-names (disk/net IDs and names reject NUL; drive names check length only),
+Live telemetry adds bounded validation for positive and plausible CPU
+frequency/capacities, disk-I/O and network collection sizes, non-empty
+non-blank bounded IDs and names (disk/net IDs and names reject NUL and
+whitespace-only values; drive names reject blank and NUL-padded labels),
 unique IDs within each detail list, plausible aggregate throughput
 (`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s; above it is rejected as a buggy daemon,
-never silently clamped), and the rule that loopback cannot
+never silently clamped), plausible capacity
+(`MAX_CAPACITY_BITS_PER_SEC` = 2^48 bps) and CPU frequency
+(`MAX_CPU_FREQUENCY_HZ` = 2^34 Hz), and the rule that loopback cannot
 be an aggregate network-capacity member. `Some(0)` capacities are rejected;
 missing capacities remain valid and mean that utilization cannot be derived.
 The daemon-provided disk/network aggregates are intentionally not checked
 against detail-record sums because their accounting sets may differ.
 
+Duplicate detection uses hash sets rather than pairwise scans, so an
+attacker-sized collection is validated in linear time; per-entry violations
+are still reported after the `TooMany*` bound fires. A disk-I/O `drive_name`
+association must match a payload drive whenever `drives` is `Some` (an empty
+`Some([])` makes any association dangling); only `drives: None`
+(unavailable/legacy) skips the check. A drive with `total_bytes == 0` is a
+legitimate empty or placeholder volume and is rejected only when it also
+claims non-zero `used_bytes`/`available_bytes`, matching memory/swap/commit.
+
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 18 structured kinds (`CpuFrequencyZero`,
-`TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`, `DiskIoNameInvalid`/`TooLong`,
+live-metrics validation adds 20 structured kinds (`CpuFrequencyZero`,
+`CpuFrequencyExceedsMaximum`, `TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`,
+`DiskIoNameInvalid`/`TooLong`,
 `DuplicateDiskIoId`, `DuplicateDriveName`, `UnknownDriveAssociation`,
 `TooManyNetworkInterfaces`, `NetworkInterfaceIdInvalid`/`TooLong`,
 `NetworkInterfaceNameInvalid`/`TooLong`, `DuplicateNetworkInterfaceId`,
-`ZeroCapacity`, `LoopbackAggregateMember`, `RateExceedsMaximum` (aggregates
+`ZeroCapacity`, `CapacityExceedsMaximum`, `LoopbackAggregateMember`,
+`RateExceedsMaximum` (aggregates
 and per-device/per-interface rates), plus
-identity/collection bounds), for 34 `ViolationKindV2` variants total.
+identity/collection bounds), for 36 `ViolationKindV2` variants total.
 
 ## Health responses
 
@@ -145,13 +159,29 @@ both v1 and v2; ready responses omit the category and include the snapshot;
 Non-ready health responses must include their machine-readable category in both
 v1 and v2 (`Warming` included); ready responses omit the category and include the snapshot.
 
+The state/category pairing is a total allowlist, enforced on deserialize, so a
+wire payload can never be self-contradictory:
+
+| State | Allowed category |
+|-------|------------------|
+| `ready` | none (and no `message`) |
+| `warming` | `warming` |
+| `failed` | `collector_failure` or `not_serving` |
+
+`message` is bounded by `MAX_HEALTH_MESSAGE_BYTES` (512 UTF-8 bytes) and
+rejected when it contains NUL, matching the identity-field bounds.
+
 Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
 v2 status and health remain independently ready after a valid sample.
 
 Both v1 (`HealthResponse`) and v2 (`HealthResponseV2`) have constructors for
 each state: `ready()`, `warming()`, `warming_with_message()`, `failed()`.
-`StatusPayloadV2` also has its own `validate()` method, which validates the
-optional live telemetry in addition to the base snapshot and drives.
+`ready()` asserts the snapshot invariant in debug builds; `try_ready()`
+validates first and returns the structured violation list, and the daemon
+serves a `failed` envelope instead of a `200` when a cached snapshot fails
+validation. `StatusPayloadV2` also has its own `validate()` method, which
+validates the optional live telemetry in addition to the base snapshot and
+drives.
 
 ## Test support
 
@@ -163,10 +193,8 @@ defaults:
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
 | `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry and `build_payload()` |
+| `MacosSnapshotV2Builder` | V2 macOS snapshot (load average, no iowait, no swap) with optional drives/live telemetry and `build_payload()` |
 | `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit, optional live telemetry, and `build_payload()` |
-
-There is no `MacosSnapshotV2Builder`; macOS V2 coverage uses the
-`macos-v2.json` fixture plus manual construction.
 
 `IdentityFixture` provides `linux()`, `macos()`, and `windows()` const
 constructors for shared identity defaults across all builders.
@@ -176,8 +204,9 @@ All builders call `validate()` on `build()` (and `validate()` on
 always start from valid baselines.
 
 **Design note:** `DriveMetrics.available_bytes` is `Option<u64>` — callers
-cannot assume it is always present. The `drive.total_bytes != 0` invariant
-is enforced by validation.
+cannot assume it is always present. A zero `drive.total_bytes` is accepted for
+an entirely empty or placeholder volume; validation rejects it only when the
+record also claims non-zero `used_bytes`/`available_bytes`.
 
 ## Fixture files
 

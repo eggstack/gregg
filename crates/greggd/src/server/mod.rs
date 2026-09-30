@@ -278,15 +278,22 @@ impl HealthMetadata {
 
     fn v1_response(&self, snapshot: Option<&StatusSnapshot>) -> HealthResponse {
         match self.state {
-            ReadinessState::Ready => snapshot.map_or_else(
-                || {
-                    HealthResponse::failed(
-                        gregg_protocol::HealthCategory::CollectorFailure,
-                        "snapshot unavailable",
-                    )
-                },
-                |snapshot| HealthResponse::ready(snapshot.clone()),
-            ),
+            ReadinessState::Ready => match snapshot {
+                // A snapshot that fails validation can never be advertised
+                // as `Ready`; serve the failure envelope instead.
+                Some(snapshot) => {
+                    HealthResponse::try_ready(snapshot.clone()).unwrap_or_else(|_| {
+                        HealthResponse::failed(
+                            gregg_protocol::HealthCategory::CollectorFailure,
+                            "cached snapshot failed protocol validation",
+                        )
+                    })
+                }
+                None => HealthResponse::failed(
+                    gregg_protocol::HealthCategory::CollectorFailure,
+                    "snapshot unavailable",
+                ),
+            },
             ReadinessState::Warming => HealthResponse::warming_with_message(
                 self.message.as_deref().unwrap_or("collector warming up"),
             ),
@@ -303,15 +310,20 @@ impl HealthMetadata {
         snapshot: Option<&gregg_protocol::v2::StatusSnapshotV2>,
     ) -> HealthResponseV2 {
         match self.state {
-            ReadinessState::Ready => snapshot.map_or_else(
-                || {
-                    HealthResponseV2::failed(
-                        gregg_protocol::HealthCategory::CollectorFailure,
-                        "snapshot unavailable",
-                    )
-                },
-                |snapshot| HealthResponseV2::ready(snapshot.clone()),
-            ),
+            ReadinessState::Ready => match snapshot {
+                Some(snapshot) => {
+                    HealthResponseV2::try_ready(snapshot.clone()).unwrap_or_else(|_| {
+                        HealthResponseV2::failed(
+                            gregg_protocol::HealthCategory::CollectorFailure,
+                            "cached snapshot failed protocol validation",
+                        )
+                    })
+                }
+                None => HealthResponseV2::failed(
+                    gregg_protocol::HealthCategory::CollectorFailure,
+                    "snapshot unavailable",
+                ),
+            },
             ReadinessState::Warming => HealthResponseV2::warming_with_message(
                 self.message.as_deref().unwrap_or("collector warming up"),
             ),
@@ -344,6 +356,37 @@ impl HealthMetadata {
             self.v2_response(None)
         }
     }
+}
+
+/// Decision taken under a single read guard over `PublishedState`.
+enum ReadyHealthMemoV1 {
+    /// Answer already determined (stale, non-ready, or missing snapshot).
+    Immediate(Bytes, StatusCode),
+    /// A ready snapshot plus the memo cell that publication owns.
+    Serialize {
+        snapshot: Arc<StatusSnapshot>,
+        cell: HealthMemoCell,
+    },
+}
+
+/// v2 counterpart of [`ReadyHealthMemoV1`].
+enum ReadyHealthMemoV2 {
+    /// Answer already determined (stale, non-ready, or missing snapshot).
+    Immediate(Bytes, StatusCode),
+    /// A ready snapshot plus the memo cell that publication owns.
+    Serialize {
+        snapshot: Arc<StatusPayloadV2>,
+        cell: HealthMemoCell,
+    },
+}
+
+/// Which schema version a memo cell belongs to.
+#[derive(Clone, Copy)]
+enum MemoVersion {
+    /// The v1 `/v1/healthz` memo cell.
+    V1,
+    /// The v2 `/v2/healthz` memo cell.
+    V2,
 }
 
 enum StatusDataV1 {
@@ -425,7 +468,9 @@ impl ServerState {
     }
 
     #[allow(clippy::unused_self)]
-    fn serialize_v1_ready_health(
+    // Test builds park inside the serializer; release builds have no await.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+    async fn serialize_v1_ready_health(
         &self,
         snapshot: &StatusSnapshot,
     ) -> Result<Bytes, serde_json::Error> {
@@ -441,12 +486,15 @@ impl ServerState {
             }
             self.v1_health_serializations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.test_gate.serialize_hold().await;
         }
         serialize_ready_health_borrowed(snapshot)
     }
 
     #[allow(clippy::unused_self)]
-    fn serialize_v2_ready_health(
+    // Test builds park inside the serializer; release builds have no await.
+    #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
+    async fn serialize_v2_ready_health(
         &self,
         snapshot: &StatusSnapshotV2,
     ) -> Result<Bytes, serde_json::Error> {
@@ -462,6 +510,7 @@ impl ServerState {
             }
             self.v2_health_serializations
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.test_gate.serialize_hold().await;
         }
         serialize_ready_health_v2_borrowed(snapshot)
     }
@@ -650,49 +699,44 @@ impl ServerState {
         #[cfg(test)]
         self.test_gate.arrive().await;
 
-        let (snapshot, cell) = {
-            let published = self.published.read().await;
-            let snapshot_stale = self.is_stale(&published, now_unix_ms);
-            let ready = published.health.state == ReadinessState::Ready;
-            if snapshot_stale && ready {
-                let body = serialize_health(&HealthResponse::failed(
-                    gregg_protocol::HealthCategory::CollectorFailure,
-                    "cached snapshot is stale",
-                ))?;
-                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
-            }
-            if !ready {
-                let health = published.health.v1_response(published.snapshot.as_deref());
-                let status = if health.state == ReadinessState::Ready && !snapshot_stale {
-                    StatusCode::OK
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                };
-                let body = serialize_health(&health)?;
-                return Ok((body, status));
-            }
-            let Some(snapshot) = published.snapshot.clone() else {
-                let health = published.health.v1_response(None);
-                let body = serialize_health(&health)?;
-                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+        // Two attempts at most. The first may race a failure transition
+        // (the read guard is released while the memo initializes); the
+        // second observes the transition under a fresh read guard and
+        // returns its 503 body.
+        for attempt in 1..=2 {
+            let next = self.v1_health_now(now_unix_ms).await?;
+            let (snapshot, cell) = match next {
+                ReadyHealthMemoV1::Immediate(body, status) => return Ok((body, status)),
+                ReadyHealthMemoV1::Serialize { snapshot, cell } => (snapshot, cell),
             };
-            (snapshot, Arc::clone(&published.health_cell))
-        };
 
-        // Plan 144: per-publication single-flight memoization. The read
-        // guard above is dropped before awaiting the cell, so concurrent
-        // tasks cannot serialize the same snapshot more than once even if
-        // they all observe an empty cell. A failed init leaves the cell
-        // empty so later requests can retry.
-        if let Some(body) = cell.get() {
-            return Ok((body.clone(), StatusCode::OK));
+            // Plan 144: per-publication single-flight memoization. A failed
+            // init leaves the cell empty so later requests can retry.
+            let body = match cell.get() {
+                Some(body) => body.clone(),
+                None => cell
+                    .get_or_try_init(|| async { self.serialize_v1_ready_health(&snapshot).await })
+                    .await
+                    .map_err(|error| ServiceError::internal(error.to_string()))?
+                    .clone(),
+            };
+
+            if self.memo_is_current(&cell, MemoVersion::V1).await {
+                return Ok((body, StatusCode::OK));
+            }
+            if attempt == 2 {
+                break;
+            }
         }
-        let body = cell
-            .get_or_try_init(|| async { self.serialize_v1_ready_health(&snapshot) })
-            .await
-            .map_err(|error| ServiceError::internal(error.to_string()))?
-            .clone();
-        Ok((body, StatusCode::OK))
+
+        // The publication churned across both attempts. Fail closed instead
+        // of serving a `200` that no later reader would agree with.
+        let health = HealthResponse::failed(
+            gregg_protocol::HealthCategory::CollectorFailure,
+            "snapshot publication is changing",
+        );
+        let body = serialize_health(&health)?;
+        Ok((body, StatusCode::SERVICE_UNAVAILABLE))
     }
 
     /// Plan 144: v2 ready-health fast path, mirroring [`Self::v1_health_cached`].
@@ -703,49 +747,146 @@ impl ServerState {
         #[cfg(test)]
         self.test_gate.arrive().await;
 
-        let (snapshot_v2, cell) = {
-            let published = self.published.read().await;
-            let snapshot_stale = self.is_stale(&published, now_unix_ms);
-            let ready = published.health_v2.state == ReadinessState::Ready;
-            if snapshot_stale && ready {
-                let body = serialize_health_v2(&HealthResponseV2::failed(
-                    gregg_protocol::HealthCategory::CollectorFailure,
-                    "cached snapshot is stale",
-                ))?;
-                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
-            }
-            if !ready {
-                let health = published.health_v2.v2_response(
-                    published
-                        .snapshot_v2
-                        .as_deref()
-                        .map(|payload| &payload.snapshot),
-                );
-                let status = if health.state == ReadinessState::Ready && !snapshot_stale {
-                    StatusCode::OK
-                } else {
-                    StatusCode::SERVICE_UNAVAILABLE
-                };
-                let body = serialize_health_v2(&health)?;
-                return Ok((body, status));
-            }
-            let Some(snapshot_v2) = published.snapshot_v2.clone() else {
-                let health = published.health_v2.v2_response(None);
-                let body = serialize_health_v2(&health)?;
-                return Ok((body, StatusCode::SERVICE_UNAVAILABLE));
+        for attempt in 1..=2 {
+            let next = self.v2_health_now(now_unix_ms).await?;
+            let (snapshot_v2, cell) = match next {
+                ReadyHealthMemoV2::Immediate(body, status) => return Ok((body, status)),
+                ReadyHealthMemoV2::Serialize { snapshot, cell } => (snapshot, cell),
             };
-            (snapshot_v2, Arc::clone(&published.health_cell_v2))
-        };
 
-        if let Some(body) = cell.get() {
-            return Ok((body.clone(), StatusCode::OK));
+            let body = match cell.get() {
+                Some(body) => body.clone(),
+                None => cell
+                    .get_or_try_init(|| async {
+                        self.serialize_v2_ready_health(&snapshot_v2.snapshot).await
+                    })
+                    .await
+                    .map_err(|error| ServiceError::internal(error.to_string()))?
+                    .clone(),
+            };
+
+            if self.memo_is_current(&cell, MemoVersion::V2).await {
+                return Ok((body, StatusCode::OK));
+            }
+            if attempt == 2 {
+                break;
+            }
         }
-        let body = cell
-            .get_or_try_init(|| async { self.serialize_v2_ready_health(&snapshot_v2.snapshot) })
-            .await
-            .map_err(|error| ServiceError::internal(error.to_string()))?
-            .clone();
-        Ok((body, StatusCode::OK))
+
+        let health = HealthResponseV2::failed(
+            gregg_protocol::HealthCategory::CollectorFailure,
+            "snapshot publication is changing",
+        );
+        let body = serialize_health_v2(&health)?;
+        Ok((body, StatusCode::SERVICE_UNAVAILABLE))
+    }
+
+    async fn v1_health_now(
+        &self,
+        now_unix_ms: Option<u64>,
+    ) -> Result<ReadyHealthMemoV1, ServiceError> {
+        let published = self.published.read().await;
+        let snapshot_stale = self.is_stale(&published, now_unix_ms);
+        let ready = published.health.state == ReadinessState::Ready;
+        if snapshot_stale && ready {
+            let body = serialize_health(&HealthResponse::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            ))?;
+            return Ok(ReadyHealthMemoV1::Immediate(
+                body,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+        if !ready {
+            let health = published.health.v1_response(published.snapshot.as_deref());
+            let status = if health.state == ReadinessState::Ready && !snapshot_stale {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            let body = serialize_health(&health)?;
+            return Ok(ReadyHealthMemoV1::Immediate(body, status));
+        }
+        let Some(snapshot) = published.snapshot.clone() else {
+            let health = published.health.v1_response(None);
+            let body = serialize_health(&health)?;
+            return Ok(ReadyHealthMemoV1::Immediate(
+                body,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        };
+        Ok(ReadyHealthMemoV1::Serialize {
+            snapshot,
+            cell: Arc::clone(&published.health_cell),
+        })
+    }
+
+    async fn v2_health_now(
+        &self,
+        now_unix_ms: Option<u64>,
+    ) -> Result<ReadyHealthMemoV2, ServiceError> {
+        let published = self.published.read().await;
+        let snapshot_stale = self.is_stale(&published, now_unix_ms);
+        let ready = published.health_v2.state == ReadinessState::Ready;
+        if snapshot_stale && ready {
+            let body = serialize_health_v2(&HealthResponseV2::failed(
+                gregg_protocol::HealthCategory::CollectorFailure,
+                "cached snapshot is stale",
+            ))?;
+            return Ok(ReadyHealthMemoV2::Immediate(
+                body,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        }
+        if !ready {
+            let health = published.health_v2.v2_response(
+                published
+                    .snapshot_v2
+                    .as_deref()
+                    .map(|payload| &payload.snapshot),
+            );
+            let status = if health.state == ReadinessState::Ready && !snapshot_stale {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            let body = serialize_health_v2(&health)?;
+            return Ok(ReadyHealthMemoV2::Immediate(body, status));
+        }
+        let Some(snapshot_v2) = published.snapshot_v2.clone() else {
+            let health = published.health_v2.v2_response(None);
+            let body = serialize_health_v2(&health)?;
+            return Ok(ReadyHealthMemoV2::Immediate(
+                body,
+                StatusCode::SERVICE_UNAVAILABLE,
+            ));
+        };
+        Ok(ReadyHealthMemoV2::Serialize {
+            snapshot: snapshot_v2,
+            cell: Arc::clone(&published.health_cell_v2),
+        })
+    }
+
+    /// Re-check, after an awaited memo initialization, that the memoized ready
+    /// health is still the published one.
+    ///
+    /// The read guard is released while `get_or_try_init` awaits, so a
+    /// concurrent `set_failed()`/`update_snapshot()` can install a fresh memo
+    /// cell and move the state off `Ready`. Without this check the waiter
+    /// would answer `200` with a body every later reader would contradict.
+    async fn memo_is_current(&self, cell: &HealthMemoCell, version: MemoVersion) -> bool {
+        let published = self.published.read().await;
+        match version {
+            MemoVersion::V1 => {
+                published.health.state == ReadinessState::Ready
+                    && Arc::ptr_eq(&published.health_cell, cell)
+            }
+            MemoVersion::V2 => {
+                published.health_v2.state == ReadinessState::Ready
+                    && Arc::ptr_eq(&published.health_cell_v2, cell)
+            }
+        }
     }
 
     fn is_stale(&self, state: &PublishedState, now_unix_ms: Option<u64>) -> bool {
@@ -1007,6 +1148,20 @@ struct TestSerializeGate {
     /// have arrived, then releases them all simultaneously. `None` when
     /// disarmed so the request path is a no-op.
     barrier: StdMutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// `Some(hold)` when armed: the next ready-health serializer parks
+    /// *after* the published-state read guard is released, so a test can
+    /// install a publication change underneath an in-flight memo init.
+    hold: StdMutex<Option<Arc<TestSerializeHold>>>,
+}
+
+/// A one-shot rendezvous that parks a ready-health serializer mid-request.
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestSerializeHold {
+    /// Notified by the parked serializer once it is inside `serialize_*`.
+    entered: tokio::sync::Notify,
+    /// Notified by the test to let the parked serializer continue.
+    release: tokio::sync::Notify,
 }
 
 #[cfg(test)]
@@ -1014,6 +1169,7 @@ impl TestSerializeGate {
     fn new() -> Self {
         Self {
             barrier: StdMutex::new(None),
+            hold: StdMutex::new(None),
         }
     }
 
@@ -1036,6 +1192,27 @@ impl TestSerializeGate {
         *guard = None;
     }
 
+    /// Park the next ready-health serializer until the returned hold is
+    /// released. Returns the hold so the caller can await [`Self::wait_until_held`].
+    fn hold_serialization(&self) -> Arc<TestSerializeHold> {
+        let hold = Arc::new(TestSerializeHold::default());
+        let mut guard = self.hold.lock().expect("TestSerializeGate mutex poisoned");
+        *guard = Some(Arc::clone(&hold));
+        hold
+    }
+
+    fn take_hold(&self) -> Option<Arc<TestSerializeHold>> {
+        self.hold
+            .lock()
+            .expect("TestSerializeGate mutex poisoned")
+            .take()
+    }
+
+    /// Await until a serializer is parked inside the held section.
+    async fn wait_until_held(hold: &TestSerializeHold) {
+        hold.entered.notified().await;
+    }
+
     /// Wait at the gate if armed. Each task clones the `Arc<Barrier>` under
     /// the mutex, then calls `wait()` without holding the lock so concurrent
     /// arrivals are not serialized.
@@ -1049,6 +1226,14 @@ impl TestSerializeGate {
         };
         if let Some(barrier) = barrier {
             barrier.wait().await;
+        }
+    }
+
+    /// Park inside the ready-health serializer when a hold is armed.
+    async fn serialize_hold(&self) {
+        if let Some(hold) = self.take_hold() {
+            hold.entered.notify_one();
+            hold.release.notified().await;
         }
     }
 }

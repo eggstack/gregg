@@ -8,15 +8,16 @@
 //! their byte-count counterparts; no cross-check exists between a derived
 //! `usage_pct` and its `used_bytes`/`total_bytes` inputs.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use thiserror::Error;
 
 use crate::v2::{
     CommitMetrics, DiskIoMetrics, NetworkInterfaceMetrics, StatusPayloadV2, StatusSnapshotV2,
-    SwapMetrics, MAX_DISK_IO_ENTRIES, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES,
-    MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES, MAX_NETWORK_INTERFACE_ENTRIES,
-    MAX_RATE_BYTES_PER_SEC, SCHEMA_VERSION_V2,
+    SwapMetrics, MAX_CAPACITY_BITS_PER_SEC, MAX_CPU_FREQUENCY_HZ, MAX_DISK_IO_ENTRIES,
+    MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES, MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES,
+    MAX_NETWORK_INTERFACE_ENTRIES, MAX_RATE_BYTES_PER_SEC, SCHEMA_VERSION_V2,
 };
 use crate::{
     LoadAverage, MemoryMetrics, SystemIdentity, MAX_IDENTITY_FIELD_BYTES, MAX_SAMPLE_INTERVAL_MS,
@@ -68,7 +69,7 @@ pub enum ViolationKindV2 {
     SwapCapabilityMismatch,
     /// `memory_commit` capability and `commit` presence disagreed.
     CommitCapabilityMismatch,
-    /// A drive display name was empty.
+    /// A drive display name was empty, whitespace-only, or NUL-padded.
     EmptyDriveName,
     /// A drive display name exceeded the protocol bound.
     DriveNameTooLong { max_bytes: usize },
@@ -80,6 +81,8 @@ pub enum ViolationKindV2 {
     TooManyDrives { max_entries: usize },
     /// CPU frequency was explicitly reported as zero.
     CpuFrequencyZero,
+    /// CPU frequency exceeded the plausible maximum.
+    CpuFrequencyExceedsMaximum { max_hz: u64 },
     /// The disk-I/O collection exceeded the protocol bound.
     TooManyDiskIoDevices { max_entries: usize },
     /// A disk-I/O identity was empty or contained a NUL character.
@@ -106,6 +109,8 @@ pub enum ViolationKindV2 {
     DuplicateNetworkInterfaceId,
     /// A link capacity was explicitly reported as zero.
     ZeroCapacity,
+    /// A link capacity exceeded the plausible maximum.
+    CapacityExceedsMaximum { max_bits_per_sec: u64 },
     /// A loopback interface was incorrectly selected for aggregate capacity.
     LoopbackAggregateMember,
     /// A throughput rate exceeded the plausible maximum.
@@ -115,6 +120,7 @@ pub enum ViolationKindV2 {
 }
 
 impl fmt::Display for ViolationKindV2 {
+    #[allow(clippy::too_many_lines)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnsupportedSchemaVersion { found } => write!(
@@ -144,7 +150,9 @@ impl fmt::Display for ViolationKindV2 {
             Self::CommitCapabilityMismatch => {
                 f.write_str("commit must be Some(_) iff memory_commit capability is true")
             }
-            Self::EmptyDriveName => f.write_str("drive name must not be empty"),
+            Self::EmptyDriveName => {
+                f.write_str("drive name must be non-empty, non-blank, and NUL-free")
+            }
             Self::DriveNameTooLong { max_bytes } => {
                 write!(f, "drive name exceeds maximum length of {max_bytes} bytes")
             }
@@ -159,6 +167,9 @@ impl fmt::Display for ViolationKindV2 {
                 )
             }
             Self::CpuFrequencyZero => f.write_str("cpu frequency must be positive"),
+            Self::CpuFrequencyExceedsMaximum { max_hz } => {
+                write!(f, "cpu frequency exceeds maximum of {max_hz} Hz")
+            }
             Self::TooManyDiskIoDevices { max_entries } => write!(
                 f,
                 "disk-I/O device list exceeds maximum length of {max_entries} entries"
@@ -199,6 +210,10 @@ impl fmt::Display for ViolationKindV2 {
                 f.write_str("network interface identities must be unique")
             }
             Self::ZeroCapacity => f.write_str("capacity must be positive when present"),
+            Self::CapacityExceedsMaximum { max_bits_per_sec } => write!(
+                f,
+                "capacity exceeds maximum of {max_bits_per_sec} bits per second"
+            ),
             Self::LoopbackAggregateMember => {
                 f.write_str("loopback interfaces must not be aggregate members")
             }
@@ -289,14 +304,16 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         // Validate every entry even when the payload exceeds the protocol
         // bound: `TooManyDrives` rejects the payload as a whole, while the
         // per-entry violations give diagnostics visibility into problems in
-        // the excess entries.
+        // the excess entries. Duplicate detection uses a set so an
+        // attacker-sized list stays linear instead of quadratic.
+        let mut drive_names: HashSet<&str> = HashSet::new();
         for (index, drive) in drives.iter().enumerate() {
             let prefix = format!("drives[{index}]");
-            // Drive names are deliberately exempt from the NUL rejection
-            // applied to identity fields: that guard targets the Windows
-            // hostname NUL-padding regression class, while drive names are
-            // display-only labels bounded by `MAX_DRIVE_NAME_BYTES`.
-            if drive.name.is_empty() {
+            // A drive name is a display-only mount label, so it keeps its
+            // historical tolerance for unusual bytes, but it must still be
+            // a usable label: not empty, not whitespace-only, and free of
+            // the NUL padding that identity fields reject.
+            if drive.name.trim().is_empty() || drive.name.contains('\0') {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::EmptyDriveName,
                     format!("{prefix}.name"),
@@ -310,7 +327,14 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                     format!("{prefix}.name"),
                 ));
             }
-            if drive.total_bytes == 0 {
+            // An all-zero drive is a legitimate empty or placeholder volume
+            // (a zero-length tmpfs mount, a not-yet-populated device), so
+            // only reject a zero total that claims non-zero content. This
+            // mirrors `validate_memory_v2`/`validate_swap_v2`/
+            // `validate_commit_v2`.
+            if drive.total_bytes == 0
+                && (drive.used_bytes > 0 || drive.available_bytes.is_some_and(|a| a > 0))
+            {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::ZeroNotAllowed,
                     format!("{prefix}.total_bytes"),
@@ -331,10 +355,7 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
                     format!("{prefix}.available_bytes"),
                 ));
             }
-            if drives[..index]
-                .iter()
-                .any(|previous| previous.name == drive.name)
-            {
+            if !drive_names.insert(drive.name.as_str()) {
                 violations.push(ValidationViolationV2::new(
                     ViolationKindV2::DuplicateDriveName,
                     format!("{prefix}.name"),
@@ -343,18 +364,25 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
         }
     }
 
-    if payload.cpu_frequency_hz == Some(0) {
+    if payload.cpu_frequency_hz.is_some_and(|hz| hz == 0) {
         violations.push(ValidationViolationV2::new(
             ViolationKindV2::CpuFrequencyZero,
             "cpu_frequency_hz",
         ));
     }
+    if payload
+        .cpu_frequency_hz
+        .is_some_and(|hz| hz > MAX_CPU_FREQUENCY_HZ)
+    {
+        violations.push(ValidationViolationV2::new(
+            ViolationKindV2::CpuFrequencyExceedsMaximum {
+                max_hz: MAX_CPU_FREQUENCY_HZ,
+            },
+            "cpu_frequency_hz",
+        ));
+    }
     if let Some(disk_io) = &payload.disk_io {
-        validate_disk_io(
-            disk_io,
-            payload.drives.as_deref().unwrap_or(&[]),
-            &mut violations,
-        );
+        validate_disk_io(disk_io, payload.drives.as_deref(), &mut violations);
     }
     if let Some(network) = &payload.network {
         validate_network(network, &mut violations);
@@ -369,7 +397,7 @@ pub fn validate_payload_v2(payload: &StatusPayloadV2) -> Result<(), Vec<Validati
 
 fn validate_disk_io(
     disk_io: &crate::v2::DiskIoPayload,
-    drives: &[crate::v2::DriveMetrics],
+    drives: Option<&[crate::v2::DriveMetrics]>,
     out: &mut Vec<ValidationViolationV2>,
 ) {
     check_rate(
@@ -390,12 +418,15 @@ fn validate_disk_io(
             "disk_io.devices",
         ));
     }
+    // One membership set instead of a per-device linear scan: the
+    // `TooManyDiskIoDevices` violation does not stop per-entry validation,
+    // so the scan must stay linear over an attacker-sized list.
+    let known_drives: Option<HashSet<&str>> =
+        drives.map(|drives| drives.iter().map(|drive| drive.name.as_str()).collect());
+    let mut seen_ids: HashSet<&str> = HashSet::new();
     for (index, device) in disk_io.devices.iter().enumerate() {
-        validate_disk_io_device(index, device, drives, out);
-        if disk_io.devices[..index]
-            .iter()
-            .any(|previous| previous.id == device.id)
-        {
+        validate_disk_io_device(index, device, known_drives.as_ref(), out);
+        if !seen_ids.insert(device.id.as_str()) {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::DuplicateDiskIoId,
                 format!("disk_io.devices[{index}].id"),
@@ -407,11 +438,11 @@ fn validate_disk_io(
 fn validate_disk_io_device(
     index: usize,
     device: &DiskIoMetrics,
-    drives: &[crate::v2::DriveMetrics],
+    known_drives: Option<&HashSet<&str>>,
     out: &mut Vec<ValidationViolationV2>,
 ) {
     let prefix = format!("disk_io.devices[{index}]");
-    if device.id.is_empty() || device.id.contains('\0') {
+    if device.id.trim().is_empty() || device.id.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoIdInvalid,
             format!("{prefix}.id"),
@@ -429,13 +460,16 @@ fn validate_disk_io_device(
     if let Some(drive_name) = &device.drive_name {
         validate_disk_io_name(drive_name, format!("{prefix}.drive_name"), out);
         // Only enforce the association when the payload actually carries a
-        // drive list: `drives == None` means unavailable/legacy, where the
-        // reference cannot be verified.
-        if !drives.is_empty() && !drives.iter().any(|drive| &drive.name == drive_name) {
-            out.push(ValidationViolationV2::new(
-                ViolationKindV2::UnknownDriveAssociation,
-                format!("{prefix}.drive_name"),
-            ));
+        // drive list. `drives == None` means unavailable/legacy, where the
+        // reference cannot be verified; `Some([])` means "enumerated, none
+        // eligible", so any association is dangling.
+        if let Some(known_drives) = known_drives {
+            if !known_drives.contains(drive_name.as_str()) {
+                out.push(ValidationViolationV2::new(
+                    ViolationKindV2::UnknownDriveAssociation,
+                    format!("{prefix}.drive_name"),
+                ));
+            }
         }
     }
     check_rate(
@@ -454,7 +488,7 @@ fn validate_disk_io_name(name: &str, field: String, out: &mut Vec<ValidationViol
     // Unlike drive names (mount-path labels that historically contained odd
     // bytes and are length-only checked), disk-I/O names are protocol
     // identifiers and reject NUL like identity fields.
-    if name.is_empty() || name.contains('\0') {
+    if name.trim().is_empty() || name.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::DiskIoNameInvalid,
             field.as_str(),
@@ -499,12 +533,10 @@ fn validate_network(network: &crate::v2::NetworkPayload, out: &mut Vec<Validatio
             "network.interfaces",
         ));
     }
+    let mut seen_ids: HashSet<&str> = HashSet::new();
     for (index, interface) in network.interfaces.iter().enumerate() {
         validate_network_interface(index, interface, out);
-        if network.interfaces[..index]
-            .iter()
-            .any(|previous| previous.id == interface.id)
-        {
+        if !seen_ids.insert(interface.id.as_str()) {
             out.push(ValidationViolationV2::new(
                 ViolationKindV2::DuplicateNetworkInterfaceId,
                 format!("network.interfaces[{index}].id"),
@@ -519,7 +551,7 @@ fn validate_network_interface(
     out: &mut Vec<ValidationViolationV2>,
 ) {
     let prefix = format!("network.interfaces[{index}]");
-    if interface.id.is_empty() || interface.id.contains('\0') {
+    if interface.id.trim().is_empty() || interface.id.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::NetworkInterfaceIdInvalid,
             format!("{prefix}.id"),
@@ -533,7 +565,7 @@ fn validate_network_interface(
             format!("{prefix}.id"),
         ));
     }
-    if interface.name.is_empty() || interface.name.contains('\0') {
+    if interface.name.trim().is_empty() || interface.name.contains('\0') {
         out.push(ValidationViolationV2::new(
             ViolationKindV2::NetworkInterfaceNameInvalid,
             format!("{prefix}.name"),
@@ -580,11 +612,18 @@ fn validate_capacity(
     field: impl Into<String>,
     out: &mut Vec<ValidationViolationV2>,
 ) {
-    if capacity == Some(0) {
-        out.push(ValidationViolationV2::new(
+    match capacity {
+        Some(0) => out.push(ValidationViolationV2::new(
             ViolationKindV2::ZeroCapacity,
             field,
-        ));
+        )),
+        Some(bps) if bps > MAX_CAPACITY_BITS_PER_SEC => out.push(ValidationViolationV2::new(
+            ViolationKindV2::CapacityExceedsMaximum {
+                max_bits_per_sec: MAX_CAPACITY_BITS_PER_SEC,
+            },
+            field,
+        )),
+        Some(_) | None => {}
     }
 }
 
@@ -1902,18 +1941,206 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_total_drive_bytes() {
-        let payload = valid_payload(Some(vec![DriveMetrics {
+    fn zero_total_drive_is_valid_only_when_completely_empty() {
+        // An all-zero drive is a legitimate empty or placeholder volume,
+        // matching memory/swap/commit. Only a zero total that also claims
+        // content is rejected.
+        valid_payload(Some(vec![DriveMetrics {
             name: "/".into(),
             used_bytes: 0,
             total_bytes: 0,
             available_bytes: None,
+        }]))
+        .validate()
+        .expect("all-zero drive is valid");
+
+        for (used, available) in [(1, None), (0, Some(1))] {
+            let payload = valid_payload(Some(vec![DriveMetrics {
+                name: "/".into(),
+                used_bytes: used,
+                total_bytes: 0,
+                available_bytes: available,
+            }]));
+            let err = payload.validate().unwrap_err();
+            assert!(err.iter().any(|violation| {
+                violation.field == "drives[0].total_bytes"
+                    && violation.kind == ViolationKindV2::ZeroNotAllowed
+            }));
+        }
+    }
+
+    #[test]
+    fn blank_and_nul_padded_drive_names_are_rejected() {
+        for name in ["   ", "\t", "C:\\ "] {
+            let payload = valid_payload(Some(vec![DriveMetrics {
+                name: name.into(),
+                used_bytes: 0,
+                total_bytes: 1,
+                available_bytes: None,
+            }]));
+            let err = payload.validate().unwrap_err();
+            assert!(
+                err.iter()
+                    .any(|violation| violation.field == "drives[0].name"
+                        && violation.kind == ViolationKindV2::EmptyDriveName),
+                "expected EmptyDriveName for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blank_live_metric_identities_are_rejected() {
+        let mut payload = valid_payload(None);
+        payload.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "   ".into(),
+            name: "   ".into(),
+            read_bytes_per_sec: 0,
+            write_bytes_per_sec: 0,
+            drive_name: Some("   ".into()),
+        }]));
+        payload.network = Some(valid_network(vec![NetworkInterfaceMetrics {
+            id: "   ".into(),
+            name: "   ".into(),
+            rx_bytes_per_sec: 0,
+            tx_bytes_per_sec: 0,
+            rx_capacity_bps: None,
+            tx_capacity_bps: None,
+            is_loopback: false,
+            aggregate_member: false,
+        }]));
+        let err = payload.validate().unwrap_err();
+        assert!(err
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::DiskIoIdInvalid));
+        assert!(err
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::DiskIoNameInvalid));
+        assert!(err
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::NetworkInterfaceIdInvalid));
+        assert!(err
+            .iter()
+            .any(|violation| violation.kind == ViolationKindV2::NetworkInterfaceNameInvalid));
+    }
+
+    #[test]
+    fn empty_drive_list_makes_every_association_dangling() {
+        // `drives: Some([])` is "enumerated, nothing eligible", so any
+        // `drive_name` is a dangling reference. Only `drives: None`
+        // (unavailable/legacy) may carry an unverifiable association.
+        let mut payload = valid_payload(Some(Vec::new()));
+        payload.disk_io = Some(valid_disk_io(vec![DiskIoMetrics {
+            id: "sda".into(),
+            name: "sda".into(),
+            read_bytes_per_sec: 1,
+            write_bytes_per_sec: 2,
+            drive_name: Some("/".into()),
         }]));
         let err = payload.validate().unwrap_err();
         assert!(err.iter().any(|violation| {
-            violation.field == "drives[0].total_bytes"
-                && violation.kind == ViolationKindV2::ZeroNotAllowed
+            violation.field == "disk_io.devices[0].drive_name"
+                && violation.kind == ViolationKindV2::UnknownDriveAssociation
         }));
+
+        let mut legacy = valid_payload(None);
+        legacy.disk_io = payload.disk_io;
+        legacy
+            .validate()
+            .expect("absent drive list cannot be checked for associations");
+    }
+
+    #[test]
+    fn capacity_and_cpu_frequency_are_upper_bounded() {
+        use crate::v2::{MAX_CAPACITY_BITS_PER_SEC, MAX_CPU_FREQUENCY_HZ};
+
+        let mut payload = valid_payload(None);
+        payload.cpu_frequency_hz = Some(MAX_CPU_FREQUENCY_HZ);
+        payload.network = Some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: 0,
+            aggregate_tx_bytes_per_sec: 0,
+            aggregate_rx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+            aggregate_tx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+            interfaces: vec![NetworkInterfaceMetrics {
+                rx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                tx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                ..network_interface("eth0", "eth0")
+            }],
+        });
+        payload
+            .validate()
+            .expect("values at the upper bound validate");
+
+        let mut payload = valid_payload(None);
+        payload.cpu_frequency_hz = Some(u64::MAX);
+        payload.network = Some(NetworkPayload {
+            aggregate_rx_bytes_per_sec: 0,
+            aggregate_tx_bytes_per_sec: 0,
+            aggregate_rx_capacity_bps: Some(u64::MAX),
+            aggregate_tx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC + 1),
+            interfaces: vec![NetworkInterfaceMetrics {
+                rx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC + 1),
+                ..network_interface("eth0", "eth0")
+            }],
+        });
+        let err = payload.validate().unwrap_err();
+        assert!(err.iter().any(|violation| {
+            violation.field == "cpu_frequency_hz"
+                && matches!(
+                    violation.kind,
+                    ViolationKindV2::CpuFrequencyExceedsMaximum { .. }
+                )
+        }));
+        for field in [
+            "network.aggregate_rx_capacity_bps",
+            "network.aggregate_tx_capacity_bps",
+            "network.interfaces[0].rx_capacity_bps",
+        ] {
+            assert!(
+                err.iter().any(|violation| violation.field == field
+                    && matches!(
+                        violation.kind,
+                        ViolationKindV2::CapacityExceedsMaximum { .. }
+                    )),
+                "missing CapacityExceedsMaximum for {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn oversized_collections_stay_linear() {
+        // Duplicate detection must not be quadratic: an attacker-sized list
+        // is still validated (per-entry diagnostics survive the collection
+        // bound) without an O(n^2) scan. A generous wall-clock budget keeps
+        // the test honest without making it flaky.
+        let count = 200_000;
+        let mut drives: Vec<DriveMetrics> = (0..count)
+            .map(|index| DriveMetrics {
+                name: format!("/{index}"),
+                used_bytes: 0,
+                total_bytes: 1,
+                available_bytes: None,
+            })
+            .collect();
+        drives.push(DriveMetrics {
+            name: "/0".into(),
+            used_bytes: 0,
+            total_bytes: 1,
+            available_bytes: None,
+        });
+        let started = std::time::Instant::now();
+        let err = valid_payload(Some(drives)).validate().unwrap_err();
+        assert!(err.iter().any(
+            |v| v.field == "drives" && matches!(v.kind, ViolationKindV2::TooManyDrives { .. })
+        ));
+        assert!(err
+            .iter()
+            .any(|v| v.field == format!("drives[{count}].name")
+                && v.kind == ViolationKindV2::DuplicateDriveName));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "validation of {count} drives took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

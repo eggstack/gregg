@@ -96,7 +96,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 ## Schema protocol (`architecture/protocol.md`, `architecture/gregg-protocol.md`)
 
 - Client tries `/v2/status` first, falls back to v1 only on HTTP 404 from `/v2/status`. `/v2/status` is universal; `/v1/status` is Linux/macOS only (Windows 503).
-- Never fabricate: macOS `iowait_pct` null; Windows load/swap/iowait null, commit instead; `drives` null = unavailable/legacy, `[]` = none eligible; optional v2 freq/disk_io/network absent on old daemons stays absent. `system.name` = configured daemon name; `system.hostname` = native hostname. V2 caps required on all four fields; identity fields ≤512 UTF-8 bytes. `validate()` returns structured violations (V1: 9 kinds, V2: 34 kinds), not serde errors.
+- Never fabricate: macOS `iowait_pct` null; Windows load/swap/iowait null, commit instead; `drives` null = unavailable/legacy, `[]` = none eligible; optional v2 freq/disk_io/network absent on old daemons stays absent. `system.name` = configured daemon name; `system.hostname` = native hostname. V2 caps required on all four fields; identity fields ≤512 UTF-8 bytes. `validate()` returns structured violations (V1: 9 kinds, V2: 36 kinds), not serde errors.
 
 ## Versions and testing
 

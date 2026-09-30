@@ -122,15 +122,12 @@ pub fn compute_memory(info: &ParsedMeminfo) -> Result<MemorySample, CollectError
         (kb_to_bytes(avail_kb)?, true)
     };
 
-    if available_bytes > total_bytes {
-        // Kernel counter races can transiently exceed the total. Treat as a
-        // normalization error so callers can decide whether to clamp or
-        // surface the issue.
-        return Err(CollectError::new(
-            CollectErrorKind::Numeric,
-            "available memory exceeds total memory",
-        ));
-    }
+    // Kernel counter races can transiently report `MemAvailable` above
+    // `MemTotal` (a counter reset between the two reads). Clamp to the
+    // total, matching the macOS, Windows, and FreeBSD collectors: one
+    // transient race must not fail the whole `HostSample` and take CPU,
+    // load, disk, and network readiness with it.
+    let available_bytes = available_bytes.min(total_bytes);
 
     let used_bytes = total_bytes - available_bytes;
     Ok(MemorySample {

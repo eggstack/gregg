@@ -48,7 +48,10 @@ fn run_main() -> Result<(), Box<dyn Error>> {
         }
         #[cfg(unix)]
         greggd::cli::Command::Stop => {
-            let _ = greggd::cli::load_config(&config_path, config_was_explicit)?;
+            // Control-socket identity is derived from the config *path*
+            // alone (FNV-1a of the normalized path; never from host/port),
+            // so the config file is deliberately not loaded here. A corrupt or
+            // unreadable config must not block stopping a running daemon.
             match greggd::control::send_stop(&config_path) {
                 Ok(greggd::control::StopOutcome::Stopped { .. }) => {
                     println!("greggd stopped");

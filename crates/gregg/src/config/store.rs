@@ -251,10 +251,22 @@ impl ConfigStore {
 
     /// Atomically persist a configuration.
     ///
+    /// Takes the same in-process mutex and cross-process file lock as
+    /// [`Self::mutate`], so a direct write can never race another writer
+    /// and lose its update.
+    ///
     /// # Errors
     ///
-    /// Returns [`ConfigError`] if the write fails.
+    /// Returns [`ConfigError`] if the lock cannot be acquired or the write
+    /// fails.
     pub fn write(&self, config: &Config) -> Result<(), ConfigError> {
+        let _thread_guard = self.lock.lock().map_err(|_| ConfigError::LockPoisoned)?;
+        let _file_guard = self.acquire_lock()?;
+        self.write_locked(config)
+    }
+
+    /// Persist `config` assuming the caller already holds both locks.
+    fn write_locked(&self, config: &Config) -> Result<(), ConfigError> {
         config.write_atomic(&self.path)
     }
 
@@ -305,6 +317,21 @@ impl ConfigStore {
                 let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                 if result == 0 {
                     return Ok(FileLockGuard { file, handle: None });
+                }
+                // Only contention (`EWOULDBLOCK` == `EAGAIN` on Linux and
+                // macOS) is worth retrying. `EBADF`, `EINVAL`, `ENOLCK`, or
+                // `ENOTSUP` mean this descriptor or filesystem cannot lock
+                // at all; retrying them for the full timeout would
+                // misreport a real failure as `LockTimeout`. The Windows
+                // branch below distinguishes the same two classes.
+                let errno = std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO);
+                if errno != libc::EWOULDBLOCK && errno != libc::EAGAIN {
+                    return Err(ConfigError::Io {
+                        path: lock_path,
+                        source: std::io::Error::from_raw_os_error(errno),
+                    });
                 }
                 if std::time::Instant::now() >= deadline {
                     return Err(ConfigError::LockTimeout {
@@ -406,7 +433,7 @@ impl ConfigStore {
         if !violations.is_empty() {
             return Err(ConfigError::Validation(violations));
         }
-        self.write(&config)
+        self.write_locked(&config)
     }
 
     /// Load the config, run a mutation, validate, and persist — all under
@@ -430,7 +457,7 @@ impl ConfigStore {
         if !violations.is_empty() {
             return Err(ConfigError::Validation(violations));
         }
-        self.write(&config)?;
+        self.write_locked(&config)?;
         Ok(result)
     }
 
@@ -544,7 +571,7 @@ impl ConfigStore {
         }
 
         // Step 8: Atomically replace the live config.
-        self.write(&edited)?;
+        self.write_locked(&edited)?;
 
         Ok(())
     }

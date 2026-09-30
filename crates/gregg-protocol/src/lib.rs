@@ -155,3 +155,10 @@ pub const MAX_SAMPLE_INTERVAL_MS: u64 = 86_400_000;
 
 /// Maximum UTF-8 byte length accepted for any system identity field.
 pub const MAX_IDENTITY_FIELD_BYTES: usize = 512;
+
+/// Maximum UTF-8 byte length accepted for a health response `message`.
+///
+/// Health messages are short operator diagnostics ("collector warming up"),
+/// never metric payloads. The bound keeps a hostile or buggy peer from
+/// forcing an unbounded allocation before the response is classified.
+pub const MAX_HEALTH_MESSAGE_BYTES: usize = 512;

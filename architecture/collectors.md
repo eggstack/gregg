@@ -110,11 +110,16 @@ Prefers `MemAvailable` (kernel-computed). Falls back to
 `MemFree + Buffers + Cached + SReclaimable` on older kernels.
 
 ```
+available = min(available, total)   # transient counter race
 used = total - available
 usage_pct = used / total * 100
 ```
 
-Swap uses same formula with `SwapTotal` and `SwapFree`.
+`MemAvailable` can transiently exceed `MemTotal` (a counter reset between the
+two reads). Linux clamps, matching the macOS, Windows, and FreeBSD collectors,
+so one race never fails the whole `HostSample` and take CPU/load/disk/network
+readiness with it. Swap uses the same formula with `SwapTotal`/`SwapFree` and
+already clamps `SwapFree` to `SwapTotal`.
 
 ### Identity
 
@@ -322,6 +327,7 @@ Note: Windows kernel time includes idle time, unlike Linux.
 From `GlobalMemoryStatusEx`:
 
 ```
+available = min(available, total)   # transient counter race
 used = total - available
 usage_pct = used / total * 100
 ```
@@ -359,7 +365,7 @@ Empty hostnames are rejected (returns error).
 
 ### Drives
 
-From `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW`. Fixed and removable drives (`DRIVE_FIXED` and `DRIVE_REMOVABLE`) with positive capacity are candidates.
+From `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW`. Fixed and removable drives (`DRIVE_FIXED` and `DRIVE_REMOVABLE`) with positive capacity are candidates. Windows volume roots are case-insensitive, so case variants of one root (`C:\` / `c:\`) are collapsed before normalization; otherwise one volume would reach the wire twice and the protocol's duplicate-drive-name rule would reject the payload.
 
 ### Capabilities
 
@@ -401,12 +407,12 @@ abstraction; NetBSD/OpenBSD remain separate future backends.
 |------|---------------|
 | CPU | `kern.cp_time` (user/nice/sys/intr/idle); busy excludes idle; no `iowait` mapping |
 | Load | `getloadavg(3)` via libc |
-| Memory | `hw.physmem` + `hw.pagesize` + `vm.stats.vm.v_{free,inactive,cache,laundry}_count`; `available = (free+inactive+cache+laundry) * page_size` |
+| Memory | `hw.physmem` + `hw.pagesize` + `vm.stats.vm.v_{free,inactive,cache,laundry}_count`; `available = min((free+inactive+cache+laundry) * page_size, total)` |
 | Swap | Unsupported (truthful absence); `kvm_getswapinfo` unprivileged validation is a recorded follow-up |
 | Frequency | Unsupported (no validated unprivileged source); recorded follow-up |
 | Drives | `getmntinfo`/`statfs` via libc with `MNT_LOCAL` selection + shared normalization/slow-probe isolation |
 | Disk I/O | Base `libdevstat` (`devstat_checkversion` gate, null-kvm `devstat_getdevs`, generation-aware, plausibility-gated entries, shared reset-safe baselines) |
-| Network | `ifmib(4)` integer-MIB rows (`net.link.generic.system.ifcount` + `IFMIB_IFDATA` rows, sparse-tolerant, plausibility-gated, loopback detail-only) |
+| Network | `ifmib(4)` integer-MIB rows (`net.link.generic.system.ifcount` + `IFMIB_IFDATA` rows, sparse-tolerant, plausibility-gated, loopback detail-only). `ifmib_record` is unit tested against synthetic rows (name charset/length filtering, `IFF_UP` operational state, loopback by flag or `IFT_LOOP`, zero baudrate as unknown capacity) |
 
 Capabilities: `cpu_iowait=false`, `load_average=true`, `swap=false`,
 `memory_commit=false`, `drives/disk_io/network=true`, `cpu_frequency=false`.

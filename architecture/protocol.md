@@ -166,20 +166,33 @@ are:
 - `LoadCapabilityMismatch` — load presence disagrees with capability
 - `SwapCapabilityMismatch` — swap presence disagrees with capability
 - `CommitCapabilityMismatch` — commit presence disagrees with capability
-- `EmptyDriveName` — drive name is empty string
+- `EmptyDriveName` — drive name is empty, whitespace-only, or NUL-padded
 - `DriveNameTooLong` — drive name exceeds 512 UTF-8 bytes
 - `TooManyDrives` — more than 32 drive entries
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 16 structured kinds.
+live-metrics validation adds 18 structured kinds.
 
 The additive live-metrics validation extends this with bounded collection and
-string checks (disk/net IDs and names reject NUL; drive names check length
-only), duplicate-ID checks, positive CPU frequency/capacity checks,
+string checks (disk/net IDs and names reject NUL and blank values; drive names
+reject blank and NUL-padded labels), duplicate-ID checks, positive and bounded
+CPU frequency/capacity checks (`MAX_CPU_FREQUENCY_HZ` = 2^34 Hz,
+`MAX_CAPACITY_BITS_PER_SEC` = 2^48 bps, rejected as
+`CpuFrequencyExceedsMaximum`/`CapacityExceedsMaximum` instead of clamped),
 plausible aggregate throughput (`MAX_RATE_BYTES_PER_SEC` = 1 TiB/s, rejected
 as `RateExceedsMaximum` instead of clamped), and the loopback
 aggregate-member invariant. It does not require aggregate
 rates to equal the sum of detail records.
+
+Duplicate detection uses hash sets, not pairwise scans, so an
+attacker-sized collection is validated in linear time. Every entry is still
+validated individually after the `TooMany*` bound fires, so diagnostics for
+the excess entries are preserved. A disk-I/O `drive_name` association is
+required to match a payload drive whenever `drives` is `Some` (an empty
+`Some([])` makes any association dangling); only `drives: None`
+(unavailable/legacy) skips the check. A drive with `total_bytes == 0` is a
+legitimate empty or placeholder volume and is only rejected when it also
+claims non-zero `used_bytes`/`available_bytes`, matching memory/swap/commit.
 
 V2 validation rejects capability/value contradictions in both directions
 (`false` requires `None`, `true` requires `Some`; `None` + `true` is rejected —

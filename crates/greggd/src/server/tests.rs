@@ -2007,6 +2007,72 @@ async fn plan144_new_publication_owns_fresh_cells() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn health_memo_waiter_does_not_serve_ready_after_failure_transition() {
+    // The ready-health read guard is released while the memo initializes. A
+    // concurrent `set_failed()` installs a fresh cell and moves the state off
+    // `Ready`; the waiter must not answer `200` with the detached cell's body.
+    let state = ServerState::new();
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(1)
+            .build(),
+    )
+    .await;
+
+    let hold = state.test_gate.hold_serialization();
+    let raced = state.clone();
+    let first_handle = tokio::spawn(async move {
+        let response = call(&raced, get("/healthz")).await;
+        response.status()
+    });
+
+    TestSerializeGate::wait_until_held(&hold).await;
+    state.set_failed("collector failure").await;
+    hold.release.notify_one();
+    assert_eq!(first_handle.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // Every later reader must agree.
+    assert_response_status(
+        &call(&state, get("/healthz")).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+    );
+    assert_response_status(
+        &call(&state, get("/v2/healthz")).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn v2_health_memo_waiter_does_not_serve_ready_after_failure_transition() {
+    let state = ServerState::new();
+    update_both(
+        &state,
+        LinuxSnapshotBuilder::default()
+            .observed_at_unix_ms(1)
+            .build(),
+    )
+    .await;
+
+    let hold = state.test_gate.hold_serialization();
+    let raced = state.clone();
+    let first_handle = tokio::spawn(async move {
+        let response = call(&raced, get("/v2/healthz")).await;
+        response.status()
+    });
+
+    TestSerializeGate::wait_until_held(&hold).await;
+    state.set_failed("collector failure").await;
+    hold.release.notify_one();
+    assert_eq!(first_handle.await.unwrap(), StatusCode::SERVICE_UNAVAILABLE);
+
+    assert_response_status(
+        &call(&state, get("/v2/healthz")).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn plan144_old_publication_cell_cannot_contaminate_new() {
     let state = ServerState::new();
     update_both(

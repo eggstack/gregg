@@ -49,40 +49,51 @@ pub const DOWNLOAD_WALL_TIMEOUT: Duration = Duration::from_secs(100);
 /// Timeout for Cargo fallback builds.
 pub const CARGO_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// Wall-clock bound for a `curl`/`cargo` `--version` discovery probe.
+///
+/// Without this, an earlier-`PATH` shim that never exits blocks
+/// `resolve_plan`/`prepare_candidate` forever. Kept in line with the other
+/// discovery-scale bounds; a real `curl`/`cargo --version` returns in
+/// milliseconds.
+pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Locate `curl` in `PATH`.
+///
+/// The probe is bounded by [`DISCOVERY_TIMEOUT`] and killed/reaped past the
+/// deadline, like every other external invocation in this crate.
 pub fn find_curl() -> Result<String, UpdateError> {
-    for candidate in ["curl", "curl.exe"] {
-        if Command::new(candidate)
-            .arg("--version")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
-        {
-            return Ok(candidate.to_string());
-        }
-    }
-    Err(UpdateError::CurlMissing(
-        "curl not found in PATH".to_string(),
-    ))
+    discover_tool(
+        &["curl", "curl.exe"],
+        UpdateError::CurlMissing("curl not found in PATH".to_string()),
+    )
 }
 
 /// Locate `cargo` in `PATH`.
+///
+/// The probe is bounded by [`DISCOVERY_TIMEOUT`] and killed/reaped past the
+/// deadline, like every other external invocation in this crate.
 pub fn find_cargo() -> Result<String, UpdateError> {
-    for candidate in ["cargo", "cargo.exe"] {
-        if Command::new(candidate)
-            .arg("--version")
+    discover_tool(
+        &["cargo", "cargo.exe"],
+        UpdateError::CargoMissing("cargo not found in PATH".to_string()),
+    )
+}
+
+/// Run each candidate's `--version` under the shared bounded child runner and
+/// return the first one that exits successfully.
+fn discover_tool(candidates: &[&str], missing: UpdateError) -> Result<String, UpdateError> {
+    for candidate in candidates {
+        let mut cmd = Command::new(candidate);
+        cmd.arg("--version")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+            .stderr(Stdio::null());
+        if run_child_with_timeout(cmd, DISCOVERY_TIMEOUT)
+            .is_ok_and(|status| status.status.success())
         {
-            return Ok(candidate.to_string());
+            return Ok((*candidate).to_string());
         }
     }
-    Err(UpdateError::CargoMissing(
-        "cargo not found in PATH".to_string(),
-    ))
+    Err(missing)
 }
 
 /// Run `curl` with the given args and capture stdout. Used for small
@@ -270,7 +281,7 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
             // curl warning on stdout can never be accepted as an asset.
             let code_str = String::from_utf8_lossy(&out.stdout).trim().to_string();
             match code_str.parse::<u16>() {
-                Ok(code) if (200..300).contains(&code) => DownloadOutcome::Success,
+                Ok(code) if (200..300).contains(&code) => downloaded_asset_within_cap(dest),
                 Ok(code) => {
                     let _ = std::fs::remove_file(dest);
                     if code == 404 {
@@ -302,6 +313,31 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
         Err(e) => {
             let _ = std::fs::remove_file(dest);
             DownloadOutcome::Failed(format!("curl failed: {e}"))
+        }
+    }
+}
+
+/// Confirm a 2xx download actually landed within [`MAX_DOWNLOAD_BYTES`].
+///
+/// `--max-filesize` is the primary guard, but it is a curl-side
+/// best-effort: an older curl, a chunked response, or a regression that drops
+/// the flag would otherwise feed an oversized file to the checksum, chmod,
+/// and exec steps. This is the metadata-path equivalent of the
+/// `take(MAX+1)` + `body.len()` re-check used for the metadata capture, and
+/// it is the last chance to reject before the file becomes a candidate.
+fn downloaded_asset_within_cap(dest: &std::path::Path) -> DownloadOutcome {
+    match std::fs::metadata(dest) {
+        Ok(meta) if meta.len() <= MAX_DOWNLOAD_BYTES => DownloadOutcome::Success,
+        Ok(meta) => {
+            let _ = std::fs::remove_file(dest);
+            DownloadOutcome::Failed(format!(
+                "downloaded asset is {} bytes, exceeding the {MAX_DOWNLOAD_BYTES} byte maximum",
+                meta.len()
+            ))
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(dest);
+            DownloadOutcome::Failed(format!("downloaded asset is unreadable: {error}"))
         }
     }
 }
@@ -502,6 +538,73 @@ mod tests {
         assert!(
             error.to_string().contains("too large"),
             "unexpected error: {error}"
+        );
+    }
+
+    /// Stub `curl` that writes a body larger than `MAX_DOWNLOAD_BYTES` while
+    /// reporting HTTP 200, simulating a curl that ignored `--max-filesize`.
+    #[cfg(unix)]
+    fn stub_curl_oversized_asset(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("curl");
+        // Discover curl's `-o` target so the stub writes where the caller
+        // expects the asset, then produce one MiB block more than the cap.
+        let script = concat!(
+            "#!/bin/sh\n",
+            "printf '200'\n",
+            "out=\"\"\n",
+            "while [ \"$#\" -gt 0 ]; do\n",
+            "  if [ \"$1\" = \"-o\" ]; then out=\"$2\"; fi\n",
+            "  shift\n",
+            "done\n",
+            "dd if=/dev/zero of=\"$out\" bs=1048576 count=65 2>/dev/null\n",
+            "exit 0\n",
+        );
+        let _ = std::fs::write(&stub, script);
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stub.to_string_lossy().to_string()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn download_rejects_an_oversized_asset_even_on_http_200() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-oversize").unwrap();
+        let dir = temp.path().to_path_buf();
+        let dest = dir.join("asset");
+        let curl = stub_curl_oversized_asset(&dir);
+        let outcome = download_file(&curl, "https://example.invalid/asset", &dest);
+        assert!(
+            matches!(outcome, DownloadOutcome::Failed(_)),
+            "an oversized asset must never become a candidate"
+        );
+        assert!(!dest.exists(), "oversized partial must be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discovery_probe_is_bounded_and_kills_a_hanging_binary() {
+        // A shim earlier on PATH that never exits must not block discovery
+        // forever; the probe is killed and reaped past DISCOVERY_TIMEOUT.
+        use std::os::unix::fs::PermissionsExt;
+        let temp = crate::stage::create_temp_dir("gregg-update-test-discovery").unwrap();
+        let dir = temp.path().to_path_buf();
+        let stub = dir.join("curl");
+        std::fs::write(&stub, "#!/bin/sh\nsleep 120\n").unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let error = discover_tool(
+            &[
+                stub.to_str().expect("utf-8 stub path"),
+                "curl-absent-for-sure",
+            ],
+            UpdateError::CurlMissing("curl not found in PATH".to_string()),
+        )
+        .expect_err("a hanging probe must not report success");
+        assert!(matches!(error, UpdateError::CurlMissing(_)));
+        assert!(
+            started.elapsed() < DISCOVERY_TIMEOUT + Duration::from_secs(10),
+            "discovery took {:?}, which is not bounded",
+            started.elapsed()
         );
     }
 

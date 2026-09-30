@@ -9,6 +9,76 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Second audit corrective pass (bugs.md, 2026-09-30):** every actionable
+  finding from the workspace-wide logic/robustness audit is fixed.
+  Protocol: health envelopes enforce a total state/category allowlist
+  (`warming` carries only `warming`; `failed` carries only
+  `collector_failure`/`not_serving`; `ready` carries neither category nor
+  message), health `message` is bounded by `MAX_HEALTH_MESSAGE_BYTES` and
+  NUL-free, `HealthResponse::try_ready`/`HealthResponseV2::try_ready`
+  validate the snapshot before advertising `Ready` (the daemon serves a
+  `failed` envelope instead of a `200` for a snapshot that fails
+  validation), `drives: Some([])` makes any disk-I/O `drive_name` dangling
+  (only `drives: None` skips the check), drive names reject blank and
+  NUL-padded labels, duplicate detection is hash-set based (linear over an
+  attacker-sized collection) for drives, disk-I/O devices, and network
+  interfaces, disk/net IDs and names reject whitespace-only values, link
+  capacity and CPU frequency are upper-bounded (new
+  `CapacityExceedsMaximum`/`CpuFrequencyExceedsMaximum` kinds, 36
+  `ViolationKindV2` total), an all-zero `drives[].total_bytes` is a valid
+  empty/placeholder volume unless it also claims non-zero content, and
+  `test_support` gains a `MacosSnapshotV2Builder`. Host: Linux memory
+  clamps `MemAvailable` to `MemTotal` (matching macOS/Windows/FreeBSD) so a
+  transient kernel counter race no longer fails the whole `HostSample`, the
+  Windows `RawCpuTimes::total()` doc records that `GetSystemTimes` kernel
+  time already includes idle (a double-count "fix" would collapse
+  `usage_pct`), the FreeBSD `ifmib_record` production decoder is now unit
+  tested (the divergent dead `normalize_ifmib_row` helper is gone), and the
+  Windows collector collapses case-variant volume roots so `C:\` and `c:\`
+  cannot reach the wire as two drives. Daemon: the control-socket cleanup
+  guard is owned by the caller so the signal-driven shutdown path removes
+  the socket instead of relying on stale detection, control-socket identity
+  is canonicalized once per `run`/`stop` (removing a TOCTOU flip and the
+  `cwd`/symlink `<id>` divergence), `greggd stop` no longer loads the
+  config (identity is path-only, so a corrupt config cannot block stopping
+  a running daemon), systemd/launchd installs render the selected
+  `--config` path into `ExecStart`/`ProgramArguments` instead of a
+  hardcoded standard path, `uninstall`'s post-teardown endpoint re-probe
+  fails closed when the config cannot be loaded, Windows update re-queries
+  the SCM registration inside `quiesce_windows_service_if_needed` so an
+  owned-to-foreign transition cannot stop a foreign service, the ready-health
+  memo revalidates the published state after its awaited init so a
+  concurrent failure transition cannot produce a transient 200/503
+  divergence, the bounded `/v2/healthz` fetch has a total deadline (a
+  slow-loris peer could otherwise hold `status`/`croncheck`/`update`/
+  `uninstall` for ~48s), the uninstall writability probe uses a per-process
+  counter so two threads cannot collide on the same probe name, and
+  `greggd::cli::dispatch` is deprecated with an explicit contract (it cannot
+  distinguish an explicit `--config` from the implicit default).
+  Client: config system `host` rejects credentials, fragments, whitespace,
+  and control bytes, and system `name` matches `endpoint::validate_name`
+  (no surrounding whitespace, no control bytes, no `@ : /`) via the new
+  `InvalidName` violation, so a hand-edited config fails validation instead
+  of surfacing as a later `NetworkError`; the normal and condensed drive
+  detail heights share `valid_drive_detail_count` (a legal `drives: None` +
+  `disk_io: Some(..)` rendered header and I/O total in condensed but
+  nothing in normal); `CondensedRenderKey` carries the port so a port-only
+  config edit cannot reuse a stale memoized row, with the host-only online
+  label documented as a deliberate choice; EggPool endpoint parsing accepts
+  IPv6 zone IDs exactly like `gregg add`; the Unix `flock` path inspects
+  `errno` so `EBADF`/`EINVAL`/`ENOTSUP` surface as `Io` instead of a
+  5-second `LockTimeout`; and public `ConfigStore::write` takes the same
+  in-process mutex and file lock as `mutate` instead of bypassing the
+  documented cross-process protocol. Updater: `curl`/`cargo` discovery
+  probes run under the shared bounded child runner (5s) so an earlier-`PATH`
+  shim that hangs cannot block `resolve_plan`/`prepare_candidate` forever,
+  and a 2xx download is rejected unless the staged file is within
+  `MAX_DOWNLOAD_BYTES`. Installers: `--version` now accepts only strict
+  `X.Y.Z` (prerelease/build metadata is rejected at argument parse instead
+  of after download and staging), and the Cargo fallback staging root is
+  removed by an `EXIT` trap so a `die` in candidate verification no longer
+  leaks `/tmp/tmp.XXX/cargo-root`.
+
 - **Audit corrective pass (bugs.md, 2026-09-30):** minimal behavior-preserving
   fixes across workspace drift, validation, daemon, client, updater, and
   installers. Workspace/docs now name all five crates
@@ -19,7 +89,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   disk-I/O and per-interface network rates at `MAX_RATE_BYTES_PER_SEC`,
   rejects duplicate drive names, and rejects dangling `drive_name`
   associations (new `DuplicateDriveName`/`UnknownDriveAssociation` kinds;
-  34 `ViolationKindV2` total). Daemon: `systemctl is-system-running` probe
+  36 `ViolationKindV2` total; see the second audit entry below for the
+  capacity/frequency upper bounds). Daemon: `systemctl is-system-running` probe
   requires exit success, control-socket client timeout raised above the
   server 1s window with timeout errors surfaced, and dir-sync
   `PermissionDenied` now warns on all platforms. Client: endpoint names

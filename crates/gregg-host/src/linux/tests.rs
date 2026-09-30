@@ -198,6 +198,18 @@ fn memory_fallback_used_when_memavailable_missing() {
 }
 
 #[test]
+fn memory_clamps_available_above_total() {
+    // A transient kernel counter race must not fail the whole host sample:
+    // the macOS/Windows/FreeBSD collectors all clamp, so Linux must too.
+    let raw = "MemTotal:        1000 kB\nMemAvailable:     2000 kB\n";
+    let parsed = parse_meminfo(raw).expect("parses");
+    let mem = compute_memory(&parsed).expect("clamped");
+    assert_eq!(mem.total_bytes, 1_024_000);
+    assert_eq!(mem.used_bytes, 0);
+    assert!(!mem.fallback_used);
+}
+
+#[test]
 fn cpu_hotplug_refreshes_core_count() {
     let mut collector = LinuxCollector::with_source(
         source_from(

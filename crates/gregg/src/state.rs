@@ -891,11 +891,12 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
                 && state.selected_id.as_deref() == Some(system.id.as_str())
             {
                 let drives = if state.drives_expanded {
-                    system
-                        .latest
-                        .as_ref()
-                        .and_then(|snapshot| snapshot.drives.as_ref())
-                        .map_or(0, |_| valid_drive_detail_count(system))
+                    // Same helper as the condensed view: a legal
+                    // `drives = None` with `disk_io = Some(..)` still renders
+                    // the table heading plus the aggregate I/O total, so
+                    // gating on `drives.is_some()` here made the two views
+                    // disagree.
+                    valid_drive_detail_count(system)
                 } else {
                     0
                 };
@@ -2380,6 +2381,41 @@ mod tests {
         state.apply_action(Action::ToggleDrives);
         assert_eq!(entry_height(&state, 0), 6);
         assert_eq!(entry_height(&state, 1), 5);
+    }
+
+    #[test]
+    fn normal_and_condensed_drive_detail_heights_agree() {
+        // A legal v2 payload can carry `drives: None` together with
+        // `disk_io: Some(..)`. The condensed view renders the table heading
+        // plus the aggregate I/O total for that, so the normal view must
+        // reserve the same two rows.
+        let config = test_config_with_ids(&["a"]);
+        let mut state = AppState::from_config(&config);
+        for system in &mut state.systems {
+            system.reachability = Reachability::Online;
+            system.latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
+        }
+        state.systems[0].latest.as_mut().unwrap().drives = None;
+        state.systems[0].latest.as_mut().unwrap().disk_io =
+            Some(crate::normalized::NormalizedDiskIo {
+                aggregate_read_bytes_per_sec: 1,
+                aggregate_write_bytes_per_sec: 2,
+                devices: Vec::new(),
+            });
+
+        let normal_base = entry_height(&state, 0);
+        state.apply_action(Action::ToggleDrives);
+        let normal_expanded = entry_height(&state, 0);
+
+        state.system_view_mode = SystemViewMode::Condensed;
+        let condensed_expanded = entry_height(&state, 0);
+
+        assert_eq!(
+            normal_expanded - normal_base,
+            condensed_expanded - 1,
+            "both views must reserve the drive heading and I/O total rows"
+        );
+        assert_eq!(normal_expanded - normal_base, 2);
     }
 
     #[test]

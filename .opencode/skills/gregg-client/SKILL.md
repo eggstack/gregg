@@ -279,6 +279,9 @@ ambiguous or missing associations render `—`, and the aggregate is never
 recomputed from visible drive rows. `n` independently adds an aggregate
 network summary followed by interface rows, including loopback when supplied;
 unknown capacity preserves Rx/s and Tx/s while leaving utilization `—`.
+Both view modes share `valid_drive_detail_count` for entry height, so a legal
+v2 payload with `drives: None` plus `disk_io: Some(..)` reserves the same
+heading and I/O-total rows in normal and condensed.
 
 **Condensed view** (`ui/condensed.rs`): One row per system with
 tier-appropriate columns (Wide ≥ 64, Medium 48-63, Narrow 30-47,
@@ -296,7 +299,12 @@ collapse to anonymous status text.
 Condensed layout preparation preformats each online system once per render and
 borrows configured names/hosts for width measurement. Normal metric rows use a
 renderer-local stable-ID cache with a compact render key, cached suffix forms,
-and an index-aligned per-render table for visible entries.
+and an index-aligned per-render table for visible entries. Online rows (normal
+header and condensed HOST) render the configured name or the bare host
+**without** the port, because the condensed HOST column is the most
+width-constrained; offline/pending rows keep `name@host:port`.
+`CondensedRenderKey` carries the label *and* the port, so a port-only config
+edit still invalidates a memoized row.
 
 ## Configuration
 
@@ -322,8 +330,21 @@ name = "Web Server 01"
 ```
 
 Cross-process locking: `flock(2)` (Unix) / `LockFileEx` (Windows) on `<config>.lock`.
+Only contention is retried: the Unix path inspects `errno` and accepts
+`EWOULDBLOCK`/`EAGAIN`, surfacing `EBADF`/`EINVAL`/`ENOLCK`/`ENOTSUP` as
+`ConfigError::Io` instead of a 5-second `LockTimeout`. Every persistence path
+(`mutate`, `mutate_with_result`, `edit_transaction`, and the public
+`ConfigStore::write`) takes the same in-process mutex and file lock.
 Config mutation is synchronous and potentially blocking; the CLI runs it before
 starting Tokio, and async callers must use a blocking thread.
+
+`Config::validate` enforces the same host/name rules as the `gregg add` parsers,
+so a hand-edited config fails validation rather than surfacing later as a
+`NetworkError` or an unrenderable `nickname@host:port` string: `host` rejects
+scheme/path/query/fragment/credentials/brackets/whitespace/control, and `name`
+rejects surrounding whitespace, control bytes, and `@ : /` (matching
+`endpoint::validate_name`). `gregg eggpool add` accepts IPv6 zone IDs exactly
+like `gregg add` and stores the URL-safe `%25` form.
 
 Only one EggPool endpoint may be configured. `eggpool add` without
 `--replace` reports the dedicated `EggpoolAlreadyConfigured` configuration

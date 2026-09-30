@@ -218,7 +218,10 @@ struct AppState {
 **Viewport:** Computes visible range for mixed-height entries (legacy normal =
 5 rows, network-capable normal = 6 rows, condensed = 1 row). Selected-system
 drive and network detail lines are added centrally, so resize and scrolling do
-not rely on renderer-only offsets. Selected system is always visible.
+not rely on renderer-only offsets. Both view modes share
+`valid_drive_detail_count`, so a legal v2 payload with `drives: None` and
+`disk_io: Some(..)` reserves the same table-heading and `I/O TOTAL` rows in
+normal and condensed. Selected system is always visible.
 
 **First-batch snap:** `AppState::apply_batch` snaps `selected_id` and
 `viewport_top_id` to `display_order()[0]` only when `last_applied_generation
@@ -393,6 +396,14 @@ or missing value still renders the unavailable em-dash inside its own
 column, distinct from the normal-header `IO` token which is now
 omitted entirely.
 
+Online rows (normal header and condensed HOST) render the configured name, or
+the bare host when no name is configured, **without** the port: the online row
+is a one-line identity/metric summary and the condensed HOST column is the
+most width-constrained. Offline/pending rows keep the full
+`name@host:port` form because there is no metric row to disambiguate them.
+`CondensedRenderKey` therefore carries the label *and* the port, so a
+port-only config edit still invalidates a memoized row.
+
 Condensed tiers add `NET` between `DISK` and `LOAD` where the tier fits:
 Wide includes `NET` and `IOWAIT`, Medium includes `NET` and `LOAD`, Narrow
 includes `NET`, and Minimal retains only HOST/CPU/MEM. Natural-width fallback
@@ -440,9 +451,36 @@ Platform defaults:
 - Windows: `LockFileEx` exclusive lock on `<config>.lock`
 - Timeout: 5 seconds
 
+Only contention is retried. The Unix path inspects `errno` and accepts
+`EWOULDBLOCK`/`EAGAIN` as "someone else holds the lock"; anything else
+(`EBADF`, `EINVAL`, `ENOLCK`, `ENOTSUP`) is surfaced immediately as
+`ConfigError::Io` instead of being misreported as a 5-second
+`LockTimeout`. The Windows branch makes the same distinction between
+`LOCK_VIOLATION`/`ERROR_IO_INCOMPLETE` and other errors.
+
+Every persistence path — `mutate`, `mutate_with_result`, `edit_transaction`,
+and the public `ConfigStore::write` — takes the same in-process mutex and
+cross-process file lock, so no API can bypass the documented protocol and
+lose a concurrent update.
+
 Config mutations are synchronous because they use bounded OS-lock polling and
 filesystem I/O. The CLI performs them before creating its Tokio runtime;
 library callers from async tasks must move the mutation to a blocking thread.
+
+### Stored endpoint validation parity
+
+`Config::validate` enforces the same host and name rules that `gregg add`
+enforces through the CLI parsers, so a hand-edited config fails validation
+instead of surfacing later as a `NetworkError` or an unrenderable
+`nickname@host:port` string:
+
+- `host` rejects a scheme, path, query, fragment (`host#frag`), credentials
+  (`user@host`), IPv6 brackets, whitespace, and control bytes.
+- `name` rejects surrounding whitespace, control bytes, and `@ : /`, matching
+  `endpoint::validate_name` (reported as `ConfigViolation::InvalidName`).
+- `gregg eggpool add` accepts IPv6 zone IDs (`fe80::1%eth0`,
+  `[fe80::1%25eth0]:11300`) and stores the URL-safe `%25` form, exactly like
+  `gregg add`.
 
 ### CLI subcommands
 

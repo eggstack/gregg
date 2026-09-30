@@ -181,6 +181,15 @@ pub fn header_line(system: &SystemState, width: u16) -> String {
 /// If a name was configured by the operator, it is preferred for stable
 /// identity in the TUI regardless of what the daemon reports. The
 /// endpoint host is used as a fallback when no configured name exists.
+///
+/// Online rows deliberately render the name/host **without** the port: the
+/// condensed view is a one-line-per-system summary where the operator reads
+/// identity, not endpoints, and `name@host:port` would double the width of
+/// the most constrained column. Offline/pending rows keep the full
+/// `name@host:port` form because there is no metric row to disambiguate
+/// them. Config validation rejects duplicate `host:port` pairs but two
+/// endpoints that differ only by port are still legal, so the condensed
+/// render key carries the port independently of this label.
 fn display_name(system: &SystemState) -> &str {
     system
         .configured_name

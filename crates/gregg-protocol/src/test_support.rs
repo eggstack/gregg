@@ -689,3 +689,164 @@ impl WindowsSnapshotV2Builder {
         snap
     }
 }
+
+/// Builder for a v2 macOS snapshot.
+///
+/// macOS is the only supported platform that reports load averages while
+/// reporting neither CPU i/o-wait nor swap, so it needs its own builder to
+/// exercise that capability combination.
+#[derive(Debug, Clone)]
+pub struct MacosSnapshotV2Builder {
+    identity: IdentityFixture,
+    logical_cores: u32,
+    usage_pct: f32,
+    load: LoadAverage,
+    used_bytes: u64,
+    total_bytes: u64,
+    sample_interval_ms: u64,
+    observed_at_unix_ms: u64,
+    drives: Option<Vec<DriveMetrics>>,
+    cpu_frequency_hz: Option<u64>,
+    disk_io: Option<DiskIoPayload>,
+    network: Option<NetworkPayload>,
+}
+
+impl Default for MacosSnapshotV2Builder {
+    fn default() -> Self {
+        Self {
+            identity: IdentityFixture::macos(),
+            logical_cores: 8,
+            usage_pct: 18.7,
+            load: LoadAverage {
+                one: 2.10,
+                five: 1.85,
+                fifteen: 1.40,
+            },
+            used_bytes: 9_000_000_000,
+            total_bytes: 16_000_000_000,
+            sample_interval_ms: 1000,
+            observed_at_unix_ms: 1_716_460_800_000,
+            drives: None,
+            cpu_frequency_hz: None,
+            disk_io: None,
+            network: None,
+        }
+    }
+}
+
+impl MacosSnapshotV2Builder {
+    #[must_use]
+    pub const fn logical_cores(mut self, cores: u32) -> Self {
+        self.logical_cores = cores;
+        self
+    }
+
+    #[must_use]
+    pub const fn usage_pct(mut self, pct: f32) -> Self {
+        self.usage_pct = pct;
+        self
+    }
+
+    #[must_use]
+    pub const fn load(mut self, one: f32, five: f32, fifteen: f32) -> Self {
+        self.load = LoadAverage { one, five, fifteen };
+        self
+    }
+
+    #[must_use]
+    pub const fn memory(mut self, used_bytes: u64, total_bytes: u64) -> Self {
+        self.used_bytes = used_bytes;
+        self.total_bytes = total_bytes;
+        self
+    }
+
+    /// Override the sampling interval.
+    #[must_use]
+    pub const fn sample_interval_ms(mut self, ms: u64) -> Self {
+        self.sample_interval_ms = ms;
+        self
+    }
+
+    /// Override the observation timestamp.
+    #[must_use]
+    pub const fn observed_at_unix_ms(mut self, ms: u64) -> Self {
+        self.observed_at_unix_ms = ms;
+        self
+    }
+
+    #[must_use]
+    pub fn drives(mut self, drives: Option<Vec<DriveMetrics>>) -> Self {
+        self.drives = drives;
+        self
+    }
+
+    /// Override the optional current CPU frequency.
+    #[must_use]
+    pub const fn cpu_frequency_hz(mut self, frequency_hz: Option<u64>) -> Self {
+        self.cpu_frequency_hz = frequency_hz;
+        self
+    }
+
+    /// Override optional disk-I/O telemetry.
+    #[must_use]
+    pub fn disk_io(mut self, disk_io: Option<DiskIoPayload>) -> Self {
+        self.disk_io = disk_io;
+        self
+    }
+
+    /// Override optional network telemetry.
+    #[must_use]
+    pub fn network(mut self, network: Option<NetworkPayload>) -> Self {
+        self.network = network;
+        self
+    }
+
+    #[must_use]
+    pub fn build_payload(mut self) -> StatusPayloadV2 {
+        let drives = self.drives.take();
+        let cpu_frequency_hz = self.cpu_frequency_hz.take();
+        let disk_io = self.disk_io.take();
+        let network = self.network.take();
+        let snapshot = self.build();
+        let payload = StatusPayloadV2 {
+            snapshot,
+            drives,
+            cpu_frequency_hz,
+            disk_io,
+            network,
+        };
+        payload.validate().expect("macos v2 payload validates");
+        payload
+    }
+
+    #[must_use]
+    pub fn build(self) -> StatusSnapshotV2 {
+        let snap = StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms: self.observed_at_unix_ms,
+            sample_interval_ms: self.sample_interval_ms,
+            capabilities: MetricCapabilitiesV2 {
+                cpu_iowait: false,
+                load_average: true,
+                swap: false,
+                memory_commit: false,
+            },
+            system: self.identity.into_identity(),
+            cpu: CpuMetricsV2 {
+                logical_cores: self.logical_cores,
+                usage_pct: self.usage_pct,
+                iowait_pct: None,
+            },
+            load: Some(self.load),
+            memory: MemoryMetrics {
+                used_bytes: self.used_bytes,
+                total_bytes: self.total_bytes,
+                usage_pct: percent(self.used_bytes, self.total_bytes),
+            },
+            swap: None,
+            commit: None,
+        };
+        crate::validate_v2::validate_v2(&snap).expect("macos v2 snapshot validates");
+        snap
+    }
+}

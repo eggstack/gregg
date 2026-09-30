@@ -99,11 +99,15 @@ fn rejects_meminfo_missing_memtotal() {
 }
 
 #[test]
-fn rejects_meminfo_with_available_exceeding_total() {
+fn clamps_meminfo_with_available_exceeding_total() {
+    // A transient kernel counter race must not fail the whole `HostSample`
+    // (and with it CPU/load/disk/network readiness). The collector clamps,
+    // matching the macOS, Windows, and FreeBSD collectors.
     let raw = read_fixture("malformed_proc_meminfo_available_exceeds_total.txt");
     let parsed = parse_meminfo(&raw).expect("parses");
-    let err = compute_memory(&parsed).expect_err("must fail");
-    assert_eq!(err.kind, CollectErrorKind::Numeric);
+    let memory = compute_memory(&parsed).expect("clamped");
+    assert_eq!(memory.used_bytes, 0);
+    assert!(memory.total_bytes > 0);
 }
 
 #[test]

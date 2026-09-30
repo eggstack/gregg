@@ -133,7 +133,7 @@ pub async fn run_with_control_path<C: SystemCollector + 'static>(
     config: Config,
     config_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let shutdown = shutdown_with_control(config_path)
+    let (shutdown, _control_socket) = shutdown_with_control(config_path)
         .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     run_with_shutdown(collector, config, shutdown).await
 }
@@ -529,6 +529,11 @@ fn wait_for_shutdown_signal(
 /// The same graceful cleanup path is reached regardless of which source
 /// fires first.
 ///
+/// The returned [`crate::control::ControlSocketGuard`] owns removal of the
+/// socket file and must be held by the caller for the daemon's whole
+/// lifetime: the control task is still parked in `accept()` when a signal
+/// wins the race, so it can never clean up after itself on that path.
+///
 /// If neither candidate path could be bound with restrictive `0600`
 /// permissions, the function returns [`ControlSetupError::NoSecureControl`]
 /// so the foreground entry point can surface a clear diagnostic instead
@@ -537,15 +542,22 @@ fn wait_for_shutdown_signal(
 #[cfg(unix)]
 fn shutdown_with_control(
     config_path: &std::path::Path,
-) -> Result<impl std::future::Future<Output = &'static str>, crate::control::ControlSetupError> {
+) -> Result<
+    (
+        impl std::future::Future<Output = &'static str>,
+        crate::control::ControlSocketGuard,
+    ),
+    crate::control::ControlSetupError,
+> {
     use crate::control;
 
     let bound = control::bind_listener(config_path);
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-    let stop_rx = match bound {
+    let (stop_rx, guard) = match bound {
         control::ControlBind::Bound { listener, path } => {
+            let guard = control::ControlSocketGuard::new(path.clone());
             let _handle = control::spawn_stop_task(listener, path, stop_tx);
-            Some(stop_rx)
+            (Some(stop_rx), guard)
         }
         control::ControlBind::NotBound => {
             let _ = stop_tx;
@@ -559,7 +571,7 @@ fn shutdown_with_control(
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
 
-    Ok(async move {
+    let shutdown = async move {
         if let Some(rx) = stop_rx {
             let stop_fut = control::wait_for_stop_task(rx);
             tokio::select! {
@@ -580,7 +592,8 @@ fn shutdown_with_control(
                 _ = sigint.recv() => "SIGINT",
             }
         }
-    })
+    };
+    Ok((shutdown, guard))
 }
 
 #[cfg(test)]

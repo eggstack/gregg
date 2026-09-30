@@ -1055,6 +1055,32 @@ else
 fi
 expect_contains "$OUT" "Added " "131 disabled managed block truthfully reports a new integration"
 
+# --- 10. prerelease/build-metadata pins are rejected at argument parse ---------------
+#
+# The shared `validate_candidate` contract requires an exact "X.Y.Z"
+# candidate version, so accepting `--version 1.0.0-alpha` would only fail
+# later, after the download and staging work has already been done.
+
+for BAD_VERSION in 1.0.0-alpha 1.0.0+build 1.0 1.0.0.0; do
+  run_install --version "$BAD_VERSION" gregg
+  if [[ $STATUS -ne 0 ]]; then
+    ok "non-stable --version $BAD_VERSION is rejected"
+  else
+    fail "non-stable --version $BAD_VERSION should fail (out=$OUT)"
+  fi
+  expect_contains "$OUT" "--version must be X.Y.Z" "non-stable --version $BAD_VERSION prints the strict-format diagnostic"
+done
+
+# A `v`-prefixed stable pin is still accepted (the prefix is stripped).
+FAKE_VERSION="1.0.11"
+export FAKE_VERSION
+run_install --version v1.0.11 gregg
+if [[ $STATUS -eq 0 && "$("${DEST_DIR}/gregg" version)" == "gregg 1.0.11" ]]; then
+  ok "v-prefixed stable --version is still accepted"
+else
+  fail "v-prefixed stable --version (status=$STATUS, out=$OUT)"
+fi
+
 # --- summary -----------------------------------------------------------------------
 
 echo ""

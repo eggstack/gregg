@@ -30,6 +30,8 @@ pub enum ConfigViolation {
     InvalidEndpointPort { id: String, port: u16 },
     /// Endpoint name is empty.
     EmptyName { id: String },
+    /// Endpoint name is unusable in the `nickname@host:port` render path.
+    InvalidName { id: String, reason: String },
     /// Endpoint name exceeds maximum length.
     NameTooLong {
         id: String,
@@ -94,6 +96,9 @@ impl fmt::Display for ConfigViolation {
             }
             Self::EmptyName { id } => {
                 write!(f, "endpoint {id}: name is empty")
+            }
+            Self::InvalidName { id, reason } => {
+                write!(f, "endpoint {id}: invalid name: {reason}")
             }
             Self::NameTooLong { id, length, max } => {
                 write!(
@@ -475,6 +480,51 @@ port = 11310\n";
             .any(|v| matches!(v, ConfigViolation::EmptyName { .. })));
     }
     #[test]
+    fn system_name_rejects_unrenderable_spellings() {
+        // Parity with `endpoint::validate_name`: these names would render as
+        // ambiguous `nickname@host:port` strings.
+        // A whitespace-only name is reported as `EmptyName` instead, so it is
+        // not listed here.
+        for name in ["  padded  ", "a:b", "a@b", "a/b", "bad\nname"] {
+            let mut config = Config::default();
+            config.systems.push(SystemEntry {
+                id: "id1".into(),
+                host: "server".into(),
+                port: 80,
+                name: Some(name.to_string()),
+            });
+            let violations = config.validate();
+            assert!(
+                violations
+                    .iter()
+                    .any(|v| matches!(v, ConfigViolation::InvalidName { .. })),
+                "expected InvalidName for {name:?}"
+            );
+        }
+    }
+    #[test]
+    fn system_host_rejects_credentials_fragments_and_whitespace() {
+        // `gregg add` refuses `@` before persisting; a hand-edited config
+        // must produce the same validation error instead of a later
+        // `NetworkError` at poll time.
+        for host in ["user@server", "server#frag", "two words", "bad\u{0}host"] {
+            let mut config = Config::default();
+            config.systems.push(SystemEntry {
+                id: "id1".into(),
+                host: host.into(),
+                port: 80,
+                name: None,
+            });
+            let violations = config.validate();
+            assert!(
+                violations
+                    .iter()
+                    .any(|v| matches!(v, ConfigViolation::InvalidHost { .. })),
+                "expected InvalidHost for {host:?}"
+            );
+        }
+    }
+    #[test]
     fn long_system_name_fails() {
         let mut config = Config::default();
         config.systems.push(SystemEntry {
@@ -548,6 +598,10 @@ unknown_field = "oops"
                 port: 0,
             },
             ConfigViolation::EmptyName { id: "x".into() },
+            ConfigViolation::InvalidName {
+                id: "x".into(),
+                reason: "name contains '@'".into(),
+            },
             ConfigViolation::NameTooLong {
                 id: "x".into(),
                 length: 200,

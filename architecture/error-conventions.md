@@ -48,7 +48,7 @@ displayed endpoint set and scheduler endpoint set to diverge.
 
 The protocol crate's own validation surface is structured: `StatusSnapshot::validate()`,
 `StatusSnapshotV2::validate()`, `validate_v2()`, and `validate_payload_v2()`
-each return a list of violations (V1: 9 kinds; V2: 34 `ViolationKindV2`
+each return a list of violations (V1: 9 kinds; V2: 36 `ViolationKindV2`
 variants) rather than panicking or wrapping serde
 deserialization with opaque checks. This keeps forward compatibility
 manageable when additive fields appear in future schema versions.

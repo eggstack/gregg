@@ -22,7 +22,7 @@ service lifecycle. For platform metric collection itself, use the
 | Module | File | Purpose |
 |--------|------|---------|
 | `main` | `src/main.rs` | Binary boundary: logging init, diagnostics, exit-code classification |
-| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update`/`uninstall` coordinate lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
+| `cli` | `src/cli.rs` | Clap CLI and per-command dispatch (`update`/`uninstall` coordinate lifecycle, synchronously); `ExitCode` taxonomy; authoritative bounded health fetch (`fetch_health_bytes`: per-read timeout plus a 5s total deadline) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications; `dispatch()` is deprecated because it cannot distinguish an explicit `--config` from the implicit default, so the binary boundary uses `dispatch_with_config_intent` |
 | `run` | `src/run.rs` | Supervision loop; `RunOutcome`, public `run_with_shutdown()`, pub(crate) `run_with_shutdown_on_ready()` callback seam |
 | `config` | `src/config.rs` | TOML config, structured violations, atomic writes |
 | `control` | `src/control.rs` | Unix-only control socket for `greggd stop` (`STOP\n` → `OK\n`) |
@@ -72,10 +72,10 @@ cache preparation falls back to request-time serialization without panic.
 |---------|----------|
 | `run` | Foreground daemon; on Unix also binds the local control socket |
 | `stop` | Unix: single tiny control socket targeting only the local instance matching the resolved config identity. Windows: delegates to SCM. Idempotent when already stopped |
-| `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
+| `croncheck` | Watchdog for non-systemd supervisors: bounded raw HTTP `/v2/healthz` probe on the configured **local** bind (wildcards normalized to loopback). The fetch has a per-read timeout *and* a 5s total deadline, so a slow-loris peer cannot hold it open. Valid Gregg Ready/Warming/Failed means running; refusal alone permits detached `<current_exe> run`; unrelated, malformed, silent, or ambiguous peers return nonzero without spawning |
 | `configprint` | Read-only print of the canonical bind `host:port`; wildcards resolve to the primary local IP. No probe, no bind, no config mutation, no service management |
 | `status` | Read-only local diagnostics: version, config path, canonical bind `host:port`, bounded `/v2/healthz` classification (`ready`/`warming`/`failed`/`unreachable`/`not-gregg`, same probe authority as `croncheck`), detected startup-manager state. Exit 0 only when a valid Gregg endpoint answered; never starts/stops/restarts/installs, never infers process ownership, never invokes `sudo` |
-| `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + `/etc/gregg/greggd.toml` + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
+| `startup install` | Install and enable automatic startup (`auto` default; `--method systemd|launchd|cron`). Systemd uses `/usr/local/bin/greggd` + the **selected `--config`** (default `/etc/gregg/greggd.toml`, rendered into `ExecStart`) + `greggd` user/group + `/etc/systemd/system/greggd.service` (atomic, `daemon-reload`/`enable`/`start`/`restart`); launchd uses `/Library/LaunchDaemons/com.eggstack.greggd.plist` with the selected `--config` rendered into `ProgramArguments`; cron uses idempotent `# greggd managed watchdog` block with `@reboot` + `* * * * *` `croncheck` (shell-quoted, preserves unrelated crontab). Auto picks Windows→SCM, macOS→launchd, Linux systemd→systemd else cron. Identified systemd/launchd never silently falls back to cron; prints exact `sudo <exe> startup install --method <...>` and returns `PermissionDenied` without internal `sudo` |
 | `startup instructions` | Read-only: prints exact commands/paths for the detected or specified method without mutating state |
 | `restart` | Exact-executable-aware manager restart: only owned systemd/launchd/SCM registrations receive manager mutation; foreign same-config or unknown Unix ownership fails closed, a foreign different-known-config registration permits only the selected config's direct path, and Windows has no direct fallback for missing/foreign/unknown SCM. Otherwise Unix uses control `stop` + definitive endpoint-absence check + detached `run`; success requires a bounded valid Gregg health response, not merely process creation. Permission failures print exact platform-correct elevated guidance and return `PermissionDenied` without competing fallback |
 | `host` / `port` | Atomic persisted mutation; applies on next start |
@@ -89,14 +89,24 @@ cache preparation falls back to request-time serialization without panic.
   existing files use filesystem canonicalization so relative/absolute/symlink
   spellings converge; a missing implicit default uses a lexical absolute
   fallback. Identity is never derived from the parent directory alone — two
-  configs in one directory cannot cross-stop.
+  configs in one directory cannot cross-stop. The canonicalization happens
+  **once per `run`/`stop`** and the identity is threaded through the primary
+  and fallback derivations, so a file appearing between calls cannot flip the
+  canonical/lexical branch and a differing `cwd` cannot produce two `<id>`
+  values for one spelling.
 - Sockets are bound at their final path with the kernel's exclusive `bind`,
   then set to `0600` and verified; a concurrent creator can make the candidate
   fail but cannot be displaced by a rename. A failed `chmod` discards it.
 - Stale socket cleanup unlinks only when metadata confirms a socket **and**
   the connect error is `ConnectionRefused` or `NotFound`.
   `PermissionDenied` and unexpected errors never authorize unlinking.
-- Cleanup runs on every exit path, including signals and runtime errors.
+- Cleanup runs on every exit path, including signals and runtime errors. The
+  `ControlSocketGuard` is owned by `run_with_control_path` for the daemon's
+  whole lifetime, **not** by the control task: on the signal-driven path that
+  task is still parked in `accept()` when the runtime is torn down, so it can
+  never reach its own cleanup.
+- `greggd stop` never loads or validates the config; identity is path-only, so
+  a corrupt TOML cannot block stopping a running daemon.
 - Client reads and responses have a one-second deadline; malformed/partial clients are dropped, transient accept errors back off, and control-task failure cannot request daemon shutdown.
 - `stop` treats missing/refused candidates as idempotent "not running";
   unexpected I/O conditions yield `StopOutcome::Uncertain` (exit `3` at

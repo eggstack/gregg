@@ -4,9 +4,11 @@ use super::install::{
     elevated_command, ensure_config_preserved, is_privileged, manager_error_is_permission,
     repair_system_config_permissions, write_atomic_text, InstallError,
 };
+#[cfg(test)]
+use super::method::standard_systemd_config;
 use super::method::{
-    is_systemd_environment, standard_systemd_binary, standard_systemd_config,
-    standard_systemd_config_dir, standard_systemd_unit_path, StartupMethodArg,
+    is_systemd_environment, standard_systemd_binary, standard_systemd_config_dir,
+    standard_systemd_unit_path, StartupMethodArg,
 };
 use super::process::{run_bounded_command, MANAGER_COMMAND_TIMEOUT};
 use super::ArtifactOwnership;
@@ -18,8 +20,26 @@ use std::path::{Path, PathBuf};
 
 /// Canonical systemd unit. The installed binary can render this without a
 /// checkout. Keep it synchronized with `packaging/systemd/greggd.service`.
-pub fn systemd_unit_content() -> String {
-    const TEMPLATE: &str = r"[Unit]
+///
+/// `config_path` is the resolved `--config` the daemon must load. It is
+/// rendered into `ExecStart` so `greggd --config /custom.toml startup install
+/// --method systemd` registers the unit that actually reads that file; the
+/// default installation passes the standard `/etc/gregg/greggd.toml` and
+/// produces the packaged unit byte-for-byte.
+pub fn systemd_unit_content(config_path: &Path) -> String {
+    let template = SYSTEMD_UNIT_TEMPLATE.replace(
+        "ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml",
+        &format!(
+            "ExecStart=/usr/local/bin/greggd run --config {}",
+            config_path.display()
+        ),
+    );
+    template
+}
+
+/// Unit template with the canonical `ExecStart` config path substituted at
+/// install time.
+const SYSTEMD_UNIT_TEMPLATE: &str = r"[Unit]
 Description=Gregg metrics daemon
 Documentation=https://github.com/eggstack/gregg
 After=network-online.target
@@ -65,8 +85,6 @@ AmbientCapabilities=
 [Install]
 WantedBy=multi-user.target
 ";
-    TEMPLATE.to_string()
-}
 
 /// Canonical launchd plist. Keep synchronized with
 /// `packaging/launchd/com.eggstack.greggd.plist`.
@@ -262,6 +280,10 @@ fn systemd_manager_error(exe: &Path, args: &[&str], error: io::Error) -> Install
 }
 
 /// Install systemd service. `exe` is the current executable for elevated message.
+///
+/// `config_path` is the configuration the installed unit must load; it is
+/// rendered into `ExecStart` so `restart`/`update`/`uninstall` ownership
+/// checks see the same config the operator selected.
 pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallError> {
     // Verify systemd environment.
     if !is_systemd_environment() {
@@ -288,13 +310,11 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
         path: PathBuf::from("useradd greggd"),
         source: e,
     })?;
-    // Ensure config dir and default config
-    fs::create_dir_all(standard_systemd_config_dir()).map_err(|e| InstallError::Io {
-        path: standard_systemd_config_dir(),
-        source: e,
-    })?;
-    ensure_config_preserved(&standard_systemd_config()).map_err(|e| InstallError::Io {
-        path: standard_systemd_config(),
+    // Ensure the selected config dir and config exist. Using `config_path`
+    // (not the hardcoded standard path) is what makes an explicit
+    // `--config /custom.toml` install register the file the daemon will read.
+    ensure_config_preserved(config_path).map_err(|e| InstallError::Io {
+        path: config_path.to_path_buf(),
         source: e,
     })?;
     set_config_ownership().map_err(|e| InstallError::Io {
@@ -304,12 +324,12 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
     // Older installs left the system config 0600, which breaks
     // unprivileged `croncheck`/`status`/`configprint` with EACCES.
     // Normalize to 0644/0755 after chown (chown preserves mode).
-    repair_system_config_permissions(&standard_systemd_config()).map_err(|e| InstallError::Io {
-        path: standard_systemd_config(),
+    repair_system_config_permissions(config_path).map_err(|e| InstallError::Io {
+        path: config_path.to_path_buf(),
         source: e,
     })?;
     // Write unit atomically.
-    let unit_content = systemd_unit_content();
+    let unit_content = systemd_unit_content(config_path);
     let unit_path = standard_systemd_unit_path();
     write_atomic_text(&unit_path, &unit_content).map_err(|e| {
         if e.kind() == io::ErrorKind::PermissionDenied {
@@ -351,11 +371,9 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
         }
     }
     println!("greggd systemd service installed: {}", unit_path.display());
-    println!("config: {}", standard_systemd_config().display());
+    println!("config: {}", config_path.display());
     println!("status: systemctl status greggd");
     println!("logs:   journalctl -u greggd -f");
-    // Use config_path param to avoid unused warning; it is the caller's resolved config, which should match standard path.
-    let _ = config_path;
     Ok(())
 }
 pub(crate) fn restart_systemd(exe: &Path) -> Result<(), InstallError> {
@@ -520,13 +538,25 @@ mod tests {
 
     #[test]
     fn systemd_unit_content_contains_hardening() {
-        let content = systemd_unit_content();
+        let content = systemd_unit_content(&standard_systemd_config());
         assert!(content.contains("ExecStart=/usr/local/bin/greggd"));
         assert!(content.contains("NoNewPrivileges"));
         assert!(content.contains("ProtectSystem"));
         assert!(content.contains("[Service]"));
         assert!(content.contains("[Unit]"));
     }
+    #[test]
+    fn systemd_unit_renders_the_selected_config_path() {
+        let content = systemd_unit_content(Path::new("/srv/gregg/custom.toml"));
+        assert!(
+            content.contains("ExecStart=/usr/local/bin/greggd run --config /srv/gregg/custom.toml")
+        );
+        assert!(!content.contains("/etc/gregg/greggd.toml"));
+        // The default spelling must still be what the packaged unit has.
+        assert!(systemd_unit_content(&standard_systemd_config())
+            .contains("ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml"));
+    }
+
     #[test]
     fn embedded_systemd_unit_matches_packaging_file_when_present() {
         let packaging =
@@ -537,7 +567,7 @@ mod tests {
                 file_norm.push('\n');
             }
             assert_eq!(
-                systemd_unit_content(),
+                systemd_unit_content(&standard_systemd_config()),
                 file_norm,
                 "embedded systemd unit must stay synchronized with packaging/systemd/greggd.service"
             );

@@ -44,6 +44,21 @@ pub const MAX_LIVE_METRIC_NAME_BYTES: usize = 512;
 /// loudly instead of silently clamped.
 pub const MAX_RATE_BYTES_PER_SEC: u64 = 1 << 40;
 
+/// Maximum plausible link capacity in bits per second.
+///
+/// 2^48 bps (≈ 281 Tbps) is many orders of magnitude above any real link
+/// (the fastest shipping silicon is ~1.6 Tbps), so a larger value is a
+/// collector bug rather than a capacity reading. `None` still means
+/// "unknown" and remains valid.
+pub const MAX_CAPACITY_BITS_PER_SEC: u64 = 1 << 48;
+
+/// Maximum plausible host CPU frequency in Hz.
+///
+/// 2^34 Hz (≈ 17.2 GHz) is far above any current core clock, so a larger
+/// value is a collector bug rather than a frequency reading. `None` still
+/// means "unknown" and remains valid.
+pub const MAX_CPU_FREQUENCY_HZ: u64 = 1 << 34;
+
 /// Capacity metrics for one operator-visible mounted filesystem.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -369,6 +384,11 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
                         "ready health response must not include a category",
                     ));
                 }
+                if raw.message.is_some() {
+                    return Err(serde::de::Error::custom(
+                        "ready health response must not include a message",
+                    ));
+                }
             }
             crate::ReadinessState::Failed => {
                 if raw.snapshot.is_some() {
@@ -376,9 +396,9 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
                         "non-ready health response must not include a snapshot",
                     ));
                 }
-                if raw.category.is_none() {
+                if !crate::health::category_allowed(raw.state, raw.category) {
                     return Err(serde::de::Error::custom(
-                        "failed health response must include a category",
+                        "failed health response must include a failure category",
                     ));
                 }
             }
@@ -388,11 +408,16 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
                         "non-ready health response must not include a snapshot",
                     ));
                 }
-                if raw.category.is_none() {
+                if !crate::health::category_allowed(raw.state, raw.category) {
                     return Err(serde::de::Error::custom(
-                        "warming health response must include a category",
+                        "warming health response must include the warming category",
                     ));
                 }
+            }
+        }
+        if let Some(message) = raw.message.as_deref() {
+            if let Some(reason) = crate::health::message_violation(message) {
+                return Err(serde::de::Error::custom(reason));
             }
         }
         Ok(Self {
@@ -408,9 +433,15 @@ impl<'de> Deserialize<'de> for HealthResponseV2 {
 impl HealthResponseV2 {
     /// A `Ready` response wrapping the supplied v2 snapshot.
     ///
-    /// Callers must validate `snapshot` before constructing a ready response.
+    /// Prefer [`Self::try_ready`] when the snapshot comes from an untrusted
+    /// source: this constructor asserts the invariant in debug builds and
+    /// publishes the snapshot as-is in release builds.
     #[must_use]
     pub fn ready(snapshot: StatusSnapshotV2) -> Self {
+        debug_assert!(
+            snapshot.validate().is_ok(),
+            "ready v2 health responses require a validated snapshot"
+        );
         Self {
             schema_version: SCHEMA_VERSION_V2,
             state: crate::ReadinessState::Ready,
@@ -418,6 +449,21 @@ impl HealthResponseV2 {
             message: None,
             snapshot: Some(snapshot),
         }
+    }
+
+    /// A `Ready` response for a snapshot that is validated first.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured
+    /// [`ValidationViolationV2`](crate::ValidationViolationV2) list from
+    /// [`StatusSnapshotV2::validate`] so an invalid snapshot can never be
+    /// advertised as `Ready`.
+    pub fn try_ready(
+        snapshot: StatusSnapshotV2,
+    ) -> Result<Self, Vec<crate::ValidationViolationV2>> {
+        snapshot.validate()?;
+        Ok(Self::ready(snapshot))
     }
 
     /// A `Warming` response with a default message.
@@ -465,6 +511,35 @@ mod tests {
             kernel_name: "Linux".into(),
             kernel_release: "6.0.0".into(),
             architecture: "x86_64".into(),
+        }
+    }
+
+    /// A minimal, fully valid v2 snapshot for envelope-level tests.
+    fn v2_valid_snapshot() -> StatusSnapshotV2 {
+        StatusSnapshotV2 {
+            schema_version: SCHEMA_VERSION_V2,
+            observed_at_unix_ms: 1,
+            sample_interval_ms: 1000,
+            capabilities: MetricCapabilitiesV2 {
+                cpu_iowait: false,
+                load_average: false,
+                swap: false,
+                memory_commit: false,
+            },
+            system: v2_identity(),
+            cpu: CpuMetricsV2 {
+                logical_cores: 2,
+                usage_pct: 1.0,
+                iowait_pct: None,
+            },
+            load: None,
+            memory: crate::MemoryMetrics {
+                used_bytes: 1,
+                total_bytes: 2,
+                usage_pct: 50.0,
+            },
+            swap: None,
+            commit: None,
         }
     }
 
@@ -688,6 +763,73 @@ mod tests {
     fn v2_warming_health_requires_category() {
         let json = r#"{"schema_version":2,"state":"warming","message":"warming"}"#;
         assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_non_ready_states_reject_contradictory_categories() {
+        for (state, category) in [
+            ("warming", "collector_failure"),
+            ("warming", "not_serving"),
+            ("failed", "warming"),
+        ] {
+            let json = format!(
+                r#"{{"schema_version":2,"state":"{state}","category":"{category}","message":"x"}}"#
+            );
+            assert!(
+                serde_json::from_str::<HealthResponseV2>(&json).is_err(),
+                "{state} + {category} must be rejected"
+            );
+        }
+        for (state, category) in [
+            ("warming", "warming"),
+            ("failed", "collector_failure"),
+            ("failed", "not_serving"),
+        ] {
+            let json = format!(
+                r#"{{"schema_version":2,"state":"{state}","category":"{category}","message":"x"}}"#
+            );
+            let parsed: HealthResponseV2 = serde_json::from_str(&json).expect("valid pairing");
+            assert_eq!(
+                parsed.category,
+                Some(match category {
+                    "warming" => HealthCategory::Warming,
+                    "collector_failure" => HealthCategory::CollectorFailure,
+                    _ => HealthCategory::NotServing,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn v2_ready_health_rejects_a_message() {
+        let mut json = serde_json::to_value(HealthResponseV2::ready(v2_valid_snapshot())).unwrap();
+        json["message"] = serde_json::json!("hi");
+        let body = serde_json::to_string(&json).unwrap();
+        assert!(serde_json::from_str::<HealthResponseV2>(&body).is_err());
+    }
+
+    #[test]
+    fn v2_health_messages_are_bounded_and_nul_free() {
+        let oversize = "x".repeat(crate::MAX_HEALTH_MESSAGE_BYTES + 1);
+        let json = serde_json::to_string(&HealthResponseV2::failed(
+            HealthCategory::CollectorFailure,
+            oversize,
+        ))
+        .expect("serialize");
+        assert!(serde_json::from_str::<HealthResponseV2>(&json).is_err());
+
+        let json = r#"{"schema_version":2,"state":"failed","category":"collector_failure","message":"a\u0000b"}"#;
+        assert!(serde_json::from_str::<HealthResponseV2>(json).is_err());
+    }
+
+    #[test]
+    fn v2_try_ready_refuses_an_invalid_snapshot() {
+        let snapshot = v2_valid_snapshot();
+        HealthResponseV2::try_ready(snapshot.clone()).expect("valid snapshot is ready");
+
+        let mut invalid = snapshot;
+        invalid.cpu.logical_cores = 0;
+        assert!(HealthResponseV2::try_ready(invalid).is_err());
     }
 
     #[test]

@@ -25,13 +25,19 @@ pub struct RawCpuTimes {
 }
 
 impl RawCpuTimes {
-    /// Sum of kernel + user + idle.
+    /// Total tick count accumulated by `GetSystemTimes`.
+    ///
+    /// `GetSystemTimes` reports the *kernel* time as time spent in the
+    /// kernel **including idle time**, so `idle` is already a subset of
+    /// `kernel` and must not be added again. Adding it would double-count
+    /// idle and collapse `busy()` (and therefore `usage_pct`) toward zero.
     #[must_use]
     pub fn total(self) -> u64 {
         self.kernel.saturating_add(self.user)
     }
 
-    /// Busy time: total - idle.
+    /// Busy time: total - idle. `idle` is a subset of `total`, not a
+    /// separate component, so no saturation is lost in practice.
     #[must_use]
     pub fn busy(self) -> u64 {
         self.total().saturating_sub(self.idle)
@@ -736,7 +742,11 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             });
         }
         result.sort_by(|left, right| left.root.cmp(&right.root));
-        result.dedup_by(|left, right| left.root == right.root);
+        // Windows volume roots are case-insensitive, so `C:\` and `c:\` name
+        // the same volume. De-duplicate case-insensitively (the sort keeps
+        // variants adjacent) so the wire payload cannot carry one volume
+        // twice under two spellings.
+        result.dedup_by(|left, right| left.root.eq_ignore_ascii_case(&right.root));
         Ok(result)
     }
     #[cfg(not(target_os = "windows"))]

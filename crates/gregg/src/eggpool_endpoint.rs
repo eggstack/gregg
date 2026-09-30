@@ -77,7 +77,7 @@ impl EggpoolEndpointSpec {
             if host.is_empty() || input.get(close + 1..close + 2) != Some(":") {
                 return Err(EggpoolEndpointError::MalformedBrackets);
             }
-            if host.parse::<IpAddr>().is_err() {
+            if host.parse::<IpAddr>().is_err() && !is_ipv6_with_zone_id(host) {
                 return Err(EggpoolEndpointError::MalformedBrackets);
             }
             let port = parse_port(input.get(close + 2..).unwrap_or_default())?;
@@ -88,7 +88,7 @@ impl EggpoolEndpointSpec {
             });
         }
 
-        if input.parse::<IpAddr>().is_ok() {
+        if input.parse::<IpAddr>().is_ok() || is_ipv6_with_zone_id(input) {
             // `::1:8080` parses as an IPv6 literal but almost certainly means
             // host `::1` port `8080`; reject the ambiguous bare form so the
             // default port is never silently configured. Bracketed
@@ -132,6 +132,20 @@ fn normalize_host(host: &str) -> Result<String, EggpoolEndpointError> {
     if host.is_empty() {
         return Err(EggpoolEndpointError::EmptyHost);
     }
+    // URL authorities encode the zone separator as `%25`. Accept the
+    // operator-friendly bare `%zone` spelling and persist the URL-safe form
+    // so the request URL stays valid — identical to
+    // `endpoint::normalize_host`, so `gregg add` and `gregg eggpool add`
+    // accept and store the same host spellings.
+    if let Some((address, zone)) = host.split_once('%') {
+        if address.parse::<std::net::Ipv6Addr>().is_ok() && !zone.contains(':') {
+            let zone = zone.strip_prefix("25").unwrap_or(zone);
+            if zone.is_empty() {
+                return Err(EggpoolEndpointError::EmptyHost);
+            }
+            return Ok(format!("{address}%25{zone}"));
+        }
+    }
     // DNS names are lowercased at parse time because EggPool is a single
     // hosted service and case is irrelevant to routing. IP literals are
     // normalized through the standard library. The systems endpoint keeps
@@ -140,6 +154,16 @@ fn normalize_host(host: &str) -> Result<String, EggpoolEndpointError> {
     Ok(host
         .parse::<IpAddr>()
         .map_or_else(|_| host.to_ascii_lowercase(), |ip| ip.to_string()))
+}
+
+/// Mirror of `endpoint::is_ipv6_with_zone_id` for the `EggPool` parser
+/// (kept local to avoid cross-module coupling).
+fn is_ipv6_with_zone_id(host: &str) -> bool {
+    let Some((address, zone)) = host.split_once('%') else {
+        return false;
+    };
+    let zone = zone.strip_prefix("25").unwrap_or(zone);
+    !zone.is_empty() && !zone.contains(':') && address.parse::<std::net::Ipv6Addr>().is_ok()
 }
 
 fn parse_port(port: &str) -> Result<u16, EggpoolEndpointError> {
@@ -218,6 +242,29 @@ mod tests {
             assert!(EggpoolEndpointSpec::parse(input).is_err(), "{input}");
         }
         assert!(EggpoolEndpointSpec::parse("[::1]").is_err());
+    }
+
+    #[test]
+    fn accepts_ipv6_zone_ids_like_the_systems_endpoint() {
+        // `gregg add` accepts `fe80::1%eth0` and `[fe80::1%25eth0]:11300`
+        // and stores the URL-safe `%25` form. EggPool must agree.
+        assert_eq!(
+            EggpoolEndpointSpec::parse("fe80::1%eth0").unwrap().host,
+            "fe80::1%25eth0"
+        );
+        let bracketed = EggpoolEndpointSpec::parse("[fe80::1%eth0]:443").unwrap();
+        assert_eq!(bracketed.host, "fe80::1%25eth0");
+        assert!(bracketed.port_was_explicit);
+        assert_eq!(
+            EggpoolEndpointSpec::parse("[fe80::1%25eth0]:443")
+                .unwrap()
+                .host,
+            "fe80::1%25eth0"
+        );
+        // An empty zone is still rejected, not normalized into a dangling
+        // `%25`. A non-IP host containing `%` keeps the permissive DNS-name
+        // behavior of `gregg add` (parity, not a new restriction).
+        assert!(EggpoolEndpointSpec::parse("fe80::1%").is_err());
     }
 
     #[test]

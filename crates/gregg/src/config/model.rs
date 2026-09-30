@@ -220,33 +220,7 @@ impl Config {
                 });
             }
 
-            // Host validation.
-            let host = system.host.trim();
-            let normalized_host = if host.is_empty() {
-                violations.push(ConfigViolation::EmptyHost {
-                    id: system.id.clone(),
-                });
-                None
-            } else if host.contains("://")
-                || host.contains('/')
-                || host.contains('?')
-                || host.contains('[')
-                || host.contains(']')
-            {
-                violations.push(ConfigViolation::InvalidHost {
-                    id: system.id.clone(),
-                    host: host.to_string(),
-                });
-                None
-            } else if let Ok(normalized_host) = crate::endpoint::normalize_host(host) {
-                Some(normalized_host)
-            } else {
-                violations.push(ConfigViolation::InvalidHost {
-                    id: system.id.clone(),
-                    host: host.to_string(),
-                });
-                None
-            };
+            let normalized_host = validate_system_host(system, &mut violations);
 
             // Unique normalized address. Invalid hosts are already reported
             // above and must not also create misleading duplicate diagnostics.
@@ -268,21 +242,7 @@ impl Config {
                 });
             }
 
-            // Name validation.
-            if let Some(name) = &system.name {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    violations.push(ConfigViolation::EmptyName {
-                        id: system.id.clone(),
-                    });
-                } else if trimmed.len() > MAX_ENDPOINT_NAME_LEN {
-                    violations.push(ConfigViolation::NameTooLong {
-                        id: system.id.clone(),
-                        length: trimmed.len(),
-                        max: MAX_ENDPOINT_NAME_LEN,
-                    });
-                }
-            }
+            validate_system_name(system, &mut violations);
         }
 
         if let Some(eggpool) = &self.eggpool {
@@ -531,6 +491,91 @@ impl Config {
         Ok(())
     }
 }
+
+/// Validate one system host and return its normalized form.
+///
+/// A stored host is a single authority token: scheme, path, query, fragment
+/// (`host#frag`), credentials (`user@host`), IPv6 brackets, and embedded
+/// whitespace or control bytes all make it unusable as a dial target or a
+/// request URL. `gregg add` rejects `@` before persisting; this is the same
+/// guard for hand-edited config files, so a bad host is a validation error
+/// instead of a later `NetworkError` at poll time.
+fn validate_system_host(
+    system: &SystemEntry,
+    violations: &mut Vec<ConfigViolation>,
+) -> Option<String> {
+    let host = system.host.trim();
+    if host.is_empty() {
+        violations.push(ConfigViolation::EmptyHost {
+            id: system.id.clone(),
+        });
+        return None;
+    }
+    if host.contains("://")
+        || host.contains('/')
+        || host.contains('?')
+        || host.contains('#')
+        || host.contains('@')
+        || host.contains('[')
+        || host.contains(']')
+        || host.contains(char::is_whitespace)
+        || host.chars().any(char::is_control)
+    {
+        violations.push(ConfigViolation::InvalidHost {
+            id: system.id.clone(),
+            host: host.to_string(),
+        });
+        return None;
+    }
+    if let Ok(normalized) = crate::endpoint::normalize_host(host) {
+        return Some(normalized);
+    }
+    violations.push(ConfigViolation::InvalidHost {
+        id: system.id.clone(),
+        host: host.to_string(),
+    });
+    None
+}
+
+/// Validate one optional system display name.
+///
+/// Parity with `endpoint::validate_name`, which guards the
+/// `nickname@host:port` render path: surrounding whitespace, control bytes,
+/// and `@ : /` would make a stored name ambiguous or unrenderable, so they
+/// are rejected here rather than at render time.
+fn validate_system_name(system: &SystemEntry, violations: &mut Vec<ConfigViolation>) {
+    let Some(name) = &system.name else {
+        return;
+    };
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        violations.push(ConfigViolation::EmptyName {
+            id: system.id.clone(),
+        });
+    } else if name != trimmed {
+        violations.push(ConfigViolation::InvalidName {
+            id: system.id.clone(),
+            reason: "name must not have surrounding whitespace".to_string(),
+        });
+    } else if trimmed.chars().any(char::is_control) {
+        violations.push(ConfigViolation::InvalidName {
+            id: system.id.clone(),
+            reason: "name contains control characters".to_string(),
+        });
+    } else if trimmed.contains('@') || trimmed.contains(':') || trimmed.contains('/') {
+        violations.push(ConfigViolation::InvalidName {
+            id: system.id.clone(),
+            reason: "name contains '@', ':', or '/'".to_string(),
+        });
+    } else if trimmed.len() > MAX_ENDPOINT_NAME_LEN {
+        violations.push(ConfigViolation::NameTooLong {
+            id: system.id.clone(),
+            length: trimmed.len(),
+            max: MAX_ENDPOINT_NAME_LEN,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

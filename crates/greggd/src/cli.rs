@@ -404,6 +404,14 @@ pub(crate) enum CroncheckProbe {
 const CRONCHECK_TIMEOUT: Duration = Duration::from_millis(750);
 const MAX_CRONCHECK_RESPONSE_BYTES: usize = 256 * 1024;
 
+/// Total wall-clock bound for one bounded health fetch.
+///
+/// The per-`read` timeout alone is not a bound: a peer that dribbles one
+/// byte per `CRONCHECK_TIMEOUT` keeps the read loop alive indefinitely.
+/// This deadline is enforced across the whole exchange, so `status`,
+/// `croncheck`, `update`, and `uninstall` probes all stay bounded.
+const CRONCHECK_DEADLINE: Duration = Duration::from_secs(5);
+
 /// Classify a raw `/v2/healthz` response body into its readiness state.
 ///
 /// Returns `None` unless the response is a well-formed HTTP/1.x reply whose
@@ -459,6 +467,7 @@ enum FetchOutcome {
 /// connection/read deadline, bounded response body, no service-manager
 /// invocation, no mutation.
 fn fetch_health_bytes(target: SocketAddr) -> FetchOutcome {
+    let started = std::time::Instant::now();
     let mut stream = match TcpStream::connect_timeout(&target, CRONCHECK_TIMEOUT) {
         Ok(stream) => stream,
         Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
@@ -466,7 +475,6 @@ fn fetch_health_bytes(target: SocketAddr) -> FetchOutcome {
         }
         Err(_) => return FetchOutcome::Failed,
     };
-    let _ = stream.set_read_timeout(Some(CRONCHECK_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CRONCHECK_TIMEOUT));
     if stream
         .write_all(b"GET /v2/healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
@@ -477,6 +485,16 @@ fn fetch_health_bytes(target: SocketAddr) -> FetchOutcome {
     let mut response = Vec::new();
     let mut chunk = [0_u8; 4096];
     loop {
+        // Re-derive the per-read timeout from the total deadline on every
+        // iteration so a slow-loris peer cannot stretch the exchange past
+        // `CRONCHECK_DEADLINE` by trickling bytes just inside each read.
+        let remaining = CRONCHECK_DEADLINE
+            .checked_sub(started.elapsed())
+            .unwrap_or(Duration::ZERO);
+        if remaining.is_zero() {
+            return FetchOutcome::Failed;
+        }
+        let _ = stream.set_read_timeout(Some(remaining.min(CRONCHECK_TIMEOUT)));
         match stream.read(&mut chunk) {
             Ok(0) => break,
             Ok(read) => {
@@ -578,10 +596,19 @@ pub(crate) fn build_daemon_command_for(
     cmd
 }
 
-/// Dispatch a subcommand using the path's current existence as a compatibility
-/// fallback. The binary entry point uses [`dispatch_with_config_intent`] so a
-/// missing explicit path remains distinguishable from a missing default path.
+/// Dispatch a subcommand for a config path whose explicit/implicit intent is
+/// not available to the caller.
 ///
+/// This compatibility shim treats a path that does not exist as *implicit*,
+/// so `load_config` falls back to [`Config::default`] instead of returning
+/// [`ConfigError::Io`]. That is the wrong answer whenever the operator typed
+/// `--config /nonexistent.toml`, so the binary entry point must use
+/// [`dispatch_with_config_intent`] instead, which preserves the intent
+/// explicitly. Prefer that function in new code.
+#[deprecated(
+    since = "1.0.15",
+    note = "cannot distinguish an explicit --config from the implicit default; use dispatch_with_config_intent"
+)]
 /// # Errors
 ///
 /// Returns an error if the command fails.

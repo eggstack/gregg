@@ -610,12 +610,17 @@ fn purge_empty_dir_for(config_path: &Path) -> Option<PathBuf> {
 /// Probe that `dir` accepts a temporary file (practical writability
 /// preflight for artifact removal).
 fn probe_dir_writable(dir: &Path, exe: &Path, purge: bool) -> Result<(), UninstallError> {
+    // The per-process counter keeps two threads that share a pid and
+    // nanosecond timestamp from colliding on the same probe name, which
+    // would surface a spurious `AlreadyExists` as a preflight failure.
+    static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let probe = dir.join(format!(
-        ".greggd-uninstall-probe-{}-{}.tmp",
+        ".greggd-uninstall-probe-{}-{}-{}.tmp",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos()),
+        PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -854,6 +859,7 @@ pub fn run_uninstall(
 
 /// Execute a fully resolved plan (production resolves via
 /// [`run_uninstall`]; tests inject plans directly).
+#[allow(clippy::too_many_lines)]
 fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
     #[cfg(not(unix))]
     if let Some(ownership) = &plan.cargo {
@@ -917,7 +923,17 @@ fn execute_plan(plan: &UninstallPlan) -> Result<(), UninstallError> {
                         | crate::cli::HealthProbe::Failed
                 )
             }
-            Err(_) => false,
+            // Fail closed: an unreadable or removed config means the endpoint
+            // cannot be probed at all. Assuming "stopped" here would unlink
+            // the executable while a daemon may still be bound to it.
+            Err(error) => {
+                return Err(UninstallError::UncertainStop {
+                    message: format!(
+                        "cannot verify the daemon stopped: failed to load {}: {error}",
+                        plan.config_path.display()
+                    ),
+                });
+            }
         };
         if still_running {
             return Err(UninstallError::UncertainStop {

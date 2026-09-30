@@ -978,21 +978,21 @@ const PF_LINK: libc::c_int = 18;
 #[cfg(target_os = "freebsd")]
 const NETLINK_GENERIC: libc::c_int = 0;
 /// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 const IFMIB_IFDATA: libc::c_int = 2;
 /// sysctl MIB constants for ifmib (net/if_mib.h; stable ABI).
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 const IFDATA_GENERAL: libc::c_int = 1;
 /// Interface flag for loopback (net/if.h; stable ABI).
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 const IFF_LOOPBACK_FLAG: u32 = 0x8;
 /// Interface flag for administratively up (net/if.h; stable ABI).
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 const IFF_UP_FLAG: u32 = 0x1;
 /// Interface type for loopback (net/if_types.h; stable ABI).
 const IFT_LOOP_TYPE: u8 = 24;
 /// Interface name length (net/if.h `IFNAMSIZ`; stable ABI).
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 const IFNAMSIZ: usize = 16;
 
 /// `struct if_data` prefix through the byte counters, field-for-field
@@ -1000,7 +1000,7 @@ const IFNAMSIZ: usize = 16;
 /// hdrlen, link_state, vhid), `u16` datalen, `u32` mtu/metric, then `u64`
 /// baudrate and counters. Later kernel fields are not mapped; the row
 /// length is validated before the prefix is interpreted.
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 #[repr(C)]
 struct IfDataPrefix {
     ifi_type: u8,
@@ -1025,7 +1025,7 @@ struct IfDataPrefix {
 /// `struct ifmibdata` through `ifmd_data`, field-for-field from
 /// sys/net/if_mib.h (stable ABI): name, pcount, flags, snd_len,
 /// snd_maxlen, snd_drops, four filler ints, then `if_data`.
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 #[repr(C)]
 struct IfmibData {
     ifmd_name: [libc::c_char; IFNAMSIZ],
@@ -1095,7 +1095,7 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
     Ok(out)
 }
 
-#[cfg(target_os = "freebsd")]
+#[cfg(any(target_os = "freebsd", test))]
 fn ifmib_record(row: u32, data: &IfmibData) -> Option<RawNetworkInterface> {
     let name_len = data
         .ifmd_name
@@ -1144,35 +1144,47 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
 /// Normalize one ifmib row into an owned record (pure, host-independent).
 /// Kept small and total so mock tests prove sparse/loopback/reset handling
 /// while native decoding is validated.
-#[allow(dead_code)]
-fn normalize_ifmib_row(
-    index: u32,
+#[cfg(test)]
+fn synthetic_ifmib_row(
     name: &str,
     flags: u32,
     if_type: u8,
     rx_bytes: u64,
     tx_bytes: u64,
-    baudrate: Option<u64>,
-    operational: bool,
-) -> Option<RawNetworkInterface> {
-    const IFF_LOOPBACK: u32 = 0x8;
-    const IFT_LOOP: u8 = 24;
-    let trimmed = name.trim();
-    if trimmed.is_empty() || trimmed.contains('\0') {
-        return None;
+    baudrate: u64,
+) -> IfmibData {
+    let mut ifmd_name = [0 as libc::c_char; IFNAMSIZ];
+    for (slot, byte) in ifmd_name.iter_mut().zip(name.bytes()) {
+        *slot = libc::c_char::from(byte.cast_signed());
     }
-    let is_loopback = flags & IFF_LOOPBACK != 0 || if_type == IFT_LOOP;
-    Some(RawNetworkInterface {
-        id: format!("if{index}"),
-        name: trimmed.to_string(),
-        rx_bytes,
-        tx_bytes,
-        rx_capacity_bps: baudrate,
-        tx_capacity_bps: baudrate,
-        is_loopback,
-        operational,
-        aggregate_member: !is_loopback,
-    })
+    IfmibData {
+        ifmd_name,
+        ifmd_pcount: 0,
+        ifmd_flags: flags.cast_signed(),
+        ifmd_snd_len: 0,
+        ifmd_snd_maxlen: 0,
+        ifmd_snd_drops: 0,
+        ifmd_filler: [0; 4],
+        ifmd_data: IfDataPrefix {
+            ifi_type: if_type,
+            ifi_physical: 0,
+            ifi_addrlen: 0,
+            ifi_hdrlen: 0,
+            ifi_link_state: 0,
+            ifi_vhid: 0,
+            ifi_datalen: 0,
+            ifi_mtu: 1500,
+            ifi_metric: 0,
+            ifi_baudrate: baudrate,
+            ifi_ipackets: 0,
+            ifi_ierrors: 0,
+            ifi_opackets: 0,
+            ifi_oerrors: 0,
+            ifi_collisions: 0,
+            ifi_ibytes: rx_bytes,
+            ifi_obytes: tx_bytes,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -1193,16 +1205,60 @@ mod tests {
     }
 
     #[test]
-    fn ifmib_row_rejects_empty_and_flags_loopback() {
-        assert!(normalize_ifmib_row(1, "", 0, 6, 0, 0, None, true).is_none());
-        let loopback = normalize_ifmib_row(1, "lo0", 0x8, 24, 10, 20, None, true).expect("row");
-        assert!(loopback.is_loopback);
-        assert!(!loopback.aggregate_member);
-        let ether =
-            normalize_ifmib_row(2, "em0", 0x1, 6, 30, 40, Some(1_000_000_000), true).expect("row");
+    fn ifmib_record_rejects_unusable_names() {
+        // Empty name.
+        assert!(ifmib_record(1, &synthetic_ifmib_row("", 0, 6, 0, 0, 0)).is_none());
+        // Name with no NUL terminator: the full `IFNAMSIZ` buffer is used,
+        // which the production decoder refuses because it cannot be a
+        // NUL-terminated name.
+        let mut data = synthetic_ifmib_row("x", 0, 6, 0, 0, 0);
+        data.ifmd_name = [b'x'.cast_signed(); IFNAMSIZ];
+        assert!(ifmib_record(1, &data).is_none());
+        // Characters outside the allowed interface-name set.
+        assert!(ifmib_record(1, &synthetic_ifmib_row("em 0", 0, 6, 0, 0, 0)).is_none());
+        assert!(ifmib_record(1, &synthetic_ifmib_row("a/b", 0, 6, 0, 0, 0)).is_none());
+        // A valid name is accepted, proving the guards above are the
+        // reason for the rejection rather than an always-empty result.
+        assert!(ifmib_record(1, &synthetic_ifmib_row("vtnet0", 0, 6, 0, 0, 0)).is_some());
+    }
+
+    #[test]
+    fn ifmib_record_flags_loopback_and_operational_state() {
+        let by_flag =
+            ifmib_record(1, &synthetic_ifmib_row("lo0", 0x8, 6, 10, 20, 0)).expect("loopback row");
+        assert!(by_flag.is_loopback);
+        assert!(!by_flag.aggregate_member);
+        assert!(!by_flag.operational, "IFF_UP is not set");
+
+        let by_type = ifmib_record(2, &synthetic_ifmib_row("gif0", 0x1, 24, 1, 2, 0))
+            .expect("loopback by type row");
+        assert!(by_type.is_loopback, "IFT_LOOP implies loopback");
+        assert!(!by_type.aggregate_member);
+        assert!(by_type.operational, "IFF_UP is set");
+
+        let ether = ifmib_record(
+            3,
+            &synthetic_ifmib_row("em0", 0x1, 6, 30, 40, 1_000_000_000),
+        )
+        .expect("ethernet row");
         assert!(!ether.is_loopback);
         assert!(ether.aggregate_member);
+        assert!(ether.operational);
+        assert_eq!(ether.id, "if3");
+        assert_eq!(ether.rx_bytes, 30);
+        assert_eq!(ether.tx_bytes, 40);
         assert_eq!(ether.rx_capacity_bps, Some(1_000_000_000));
+        assert_eq!(ether.tx_capacity_bps, Some(1_000_000_000));
+
+        let down = ifmib_record(4, &synthetic_ifmib_row("em1", 0x0, 6, 0, 0, 0)).expect("row");
+        assert!(
+            !down.operational,
+            "IFF_UP clear means administratively down"
+        );
+        assert_eq!(
+            down.rx_capacity_bps, None,
+            "a zero baudrate is reported as unknown capacity"
+        );
     }
 
     #[test]

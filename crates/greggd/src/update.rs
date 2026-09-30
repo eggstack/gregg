@@ -330,23 +330,10 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
     // post-preparation observation is the sole mutation authority; any
     // earlier read-only query is diagnostics only and never decides a stop.
     #[cfg(target_os = "windows")]
-    let (lifecycle, post_registration) = {
-        let manager = crate::service::platform_service_manager();
-        let post = manager.query_registration().map_err(|error| {
-            let message = error.to_string();
-            if message.to_ascii_lowercase().contains("access denied")
-                || message.to_ascii_lowercase().contains("permission")
-            {
-                UpdateError::PermissionDenied {
-                    message: format!("failed to query Windows service ownership: {message}"),
-                    elevated: "run as Administrator: greggd update".to_string(),
-                }
-            } else {
-                UpdateError::Io(format!(
-                    "failed to query Windows service ownership; refusing unsafe update: {message}"
-                ))
-            }
-        })?;
+    let lifecycle = {
+        let post = crate::service::platform_service_manager()
+            .query_registration()
+            .map_err(windows_ownership_error)?;
         let lifecycle =
             decide_windows_update_lifecycle(&post, &original_exe).map_err(UpdateError::Io)?;
         // An owned-to-foreign/unknown transition across the (potentially
@@ -362,7 +349,7 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
             }
         }
         eprintln!("Current greggd {current}, latest {latest}, update lifecycle: {lifecycle}");
-        (lifecycle, post)
+        lifecycle
     };
     #[cfg(not(target_os = "windows"))]
     let lifecycle = {
@@ -372,7 +359,7 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
     };
 
     #[cfg(target_os = "windows")]
-    quiesce_windows_service_if_needed(&post_registration, &original_exe, lifecycle)?;
+    quiesce_windows_service_if_needed(&original_exe, lifecycle)?;
     gregg_update::stage::replace_current_exe(staged.path(), PROGRAM)?;
     eprintln!(
         "Replaced {PROGRAM} binary {current} -> {latest} via {}",
@@ -470,13 +457,18 @@ fn observe_unix_lifecycle(
 
 #[cfg(target_os = "windows")]
 fn quiesce_windows_service_if_needed(
-    registration: &ServiceRegistration,
     exe: &Path,
     lifecycle: UpdateLifecycle,
 ) -> Result<(), UpdateError> {
     // Revalidate ownership immediately before any service mutation: only an
-    // exact-owned running service may be stopped. Foreign, unmanaged, and
+    // exact-owned running service may be stopped. The registration is
+    // re-queried here rather than reused from the post-preparation read, so
+    // an owned-to-foreign/unknown transition during the replacement window
+    // cannot make this stop a foreign service. Foreign, unmanaged, and
     // stopped dispositions perform zero SCM mutation.
+    let registration = crate::service::platform_service_manager()
+        .query_registration()
+        .map_err(windows_ownership_error)?;
     let owned = registration
         .executable_path
         .as_deref()
@@ -530,6 +522,27 @@ fn quiesce_windows_service_if_needed(
         }
         // Owned stopped, unmanaged, and foreign paths: zero SCM mutation.
         _ => Ok(()),
+    }
+}
+
+/// Map a Windows SCM ownership-query failure onto the update error taxonomy.
+///
+/// A query that cannot answer must never be treated as "not owned": refusing
+/// is the fail-closed answer for both permission and unknown conditions.
+#[cfg(target_os = "windows")]
+fn windows_ownership_error(error: crate::service::ServiceError) -> UpdateError {
+    let message = error.to_string();
+    if message.to_ascii_lowercase().contains("access denied")
+        || message.to_ascii_lowercase().contains("permission")
+    {
+        UpdateError::PermissionDenied {
+            message: format!("failed to query Windows service ownership: {message}"),
+            elevated: "run as Administrator: greggd update".to_string(),
+        }
+    } else {
+        UpdateError::Io(format!(
+            "failed to query Windows service ownership; refusing unsafe update: {message}"
+        ))
     }
 }
 

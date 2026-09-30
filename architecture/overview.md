@@ -101,8 +101,8 @@ platform dependencies (`serde`, `serde_json`, `thiserror` only;
 - Schema v2: cross-platform shape with capability flags (`load_average`,
   `swap`, `memory_commit`, `cpu_iowait`), optional drives (≤32 entries),
   and additive live telemetry (CPU Hz, disk R/s/W/s, net Rx/s/Tx/s)
-  (`v2.rs`, `validate_v2.rs` — 34 `ViolationKindV2` variants: 16 base
-  + 18 live-telemetry/identity bounds).
+  (`v2.rs`, `validate_v2.rs` — 36 `ViolationKindV2` variants: 16 base
+  + 20 live-telemetry/identity bounds).
 - Health: `Ready` / `Warming` / `Failed` with coarse wire-safe categories
   (`health.rs`); validation returns `Vec<Violation>`, never serde errors.
 - Test fixtures: `test_support` builders + `tests/fixtures/` JSON payloads.
@@ -198,7 +198,10 @@ scheduler (timer) → PollBatch (generation) → AppState (reducer) → TUI (rea
    one owned sample into both wire shapes, and publishes typed `Arc` snapshots
    plus one compact status body per available version. The server never
    triggers collection and evaluates staleness live before serving cached
-   bytes.
+   bytes. Ready-health responses are memoized per publication; a waiter
+   revalidates the published state and memo cell after its awaited init, so a
+   concurrent failure transition cannot produce a transient `200` that later
+   readers would contradict.
 2. The client scheduler polls each endpoint per cadence; owned batches carry a
    generation so stale results are rejected; the reducer uses positional
    matching with stable-ID fallback and moves normalized payload data; the TUI
