@@ -16,6 +16,7 @@ Use this when implementing features that change crate boundaries, module structu
 | Document | Scope |
 |----------|-------|
 | [`overview.md`](../../../architecture/overview.md) | Bird's-eye view: data flow, module map, index of all documents |
+| [`README.md`](../../../architecture/README.md) | Directory index and purpose |
 | [`gregg-protocol.md`](../../../architecture/gregg-protocol.md) | Deep dive: protocol crate — wire types, schema versions, validation, test support |
 | [`gregg-update.md`](../../../architecture/gregg-update.md) | Deep dive: updater crate — version/target policy, download/verify/stage/replace mechanics |
 | [`greggd-daemon.md`](../../../architecture/greggd-daemon.md) | Deep dive: daemon crate — collectors, sampler, HTTP server, service management |

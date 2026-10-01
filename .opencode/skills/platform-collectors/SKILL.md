@@ -1,35 +1,44 @@
 ---
 name: platform-collectors
-description: Work with platform-specific metric collectors in greggd
+description: Work with native host telemetry in gregg-host and the greggd collector adapters
 ---
 
 ## What I do
 
-Guide agents through the platform-specific collector implementations (Linux, macOS, Windows).
+Guide agents through the native telemetry implementations (Linux, macOS,
+Windows, FreeBSD) in `gregg-host` and the thin platform adapters in
+`greggd/src/collector/`.
 
 ## When to use me
 
 Use this when modifying metric collection, adding new metrics, fixing collector bugs, or working with platform-specific code.
+
+Native acquisition lives in `crates/gregg-host/src/{linux,macos,windows,freebsd}/`
+plus shared `src/rate.rs` and `src/slow_probe.rs`. `crates/greggd/src/collector/`
+(`linux`/`macos`/`windows` only — no FreeBSD adapter; FreeBSD coverage is
+`gregg-host`-only on FreeBSD CI) holds the Gregg-owned `SystemCollector` trait,
+`CollectedMetrics`, v1/v2 conversion, and readiness mapping. See
+`architecture/collectors.md` for the full deep dive.
 
 ## Shared contract
 
 ### SystemCollector trait
 
 ```rust
-pub trait SystemCollector {
+pub trait SystemCollector: Send {
     fn identity(&self) -> Result<SystemIdentity, CollectError>;
     fn sample(&mut self) -> Result<CollectedMetrics, CollectError>;
     fn capabilities(&self) -> MetricCapabilities;      // v1
     fn capabilities_v2(&self) -> MetricCapabilitiesV2; // v2
-    fn supports_v1_snapshot(&self) -> bool;             // false on Windows
+    fn supports_v1_snapshot(&self) -> bool;             // default true, false on Windows
 }
 ```
 
 One call to `sample()` produces `CollectedMetrics` which converts to both v1 and v2 wire formats without duplicate collection.
 
-Byte-ratio percentages must use the shared `collector::clamped_usage_pct`
-helper so all platform collectors share the same zero, clamp, and non-finite
-behavior.
+Byte-ratio percentages must use the shared `gregg_host::clamped_usage_pct`
+helper (re-exported via `greggd::collector`) so all platform collectors share
+the same zero, clamp, and non-finite behavior.
 
 The daemon serves v2 status on every platform. Windows cannot produce a
 truthful v1 snapshot, so `/`, `/v1/status`, and `/healthz` return HTTP 503 with
@@ -41,11 +50,11 @@ after a valid sample.
 | Kind | Meaning |
 |------|---------|
 | `Warming` | First sample; no delta available yet |
-| `SourceUnavailable` | Kernel interface missing or unreadable |
+| `SourceUnavailable` | Kernel interface missing or unreadable (also used for unreadable identity fields) |
 | `Parse` | Content present but unparseable |
-| `CounterReset` | Kernel counter decreased (wrap or reset) |
+| `CounterReset` | Kernel counter wrapped, decreased, or produced a zero delta (identical counters / suspend) since the last sample |
 | `Numeric` | Arithmetic error (division by zero, overflow) |
-| `IdentityFallback` | Identity field unreadable; sampling fails without publishing a fabricated identity |
+| `IdentityFallback` | Reserved; currently unconstructed — identity failures surface as `SourceUnavailable`/`Parse`, never a fabricated identity |
 
 ### Common patterns
 
@@ -56,7 +65,7 @@ after a valid sample.
 
 ## Linux collector
 
-**Source:** `crates/greggd/src/collector/linux/`
+**Source:** `crates/gregg-host/src/linux/` (adapter: `crates/greggd/src/collector/linux/`)
 
 - CPU: `/proc/stat` — cumulative ticks, delta percentages
 - Memory: `/proc/meminfo` — prefers `MemAvailable`, falls back to `MemFree + Buffers + Cached + SReclaimable`
@@ -78,11 +87,11 @@ space-separated CPU-list forms. The aggregate disk set is separate from
 mounted capacity rows. Network slaves are not added to their master, down
 links do not contribute capacity, and loopback remains detail-only for
 capacity. All cumulative counters use the shared monotonic baseline helper in
-collector/rate.rs.
+`gregg-host/src/rate.rs`.
 
 ## macOS collector
 
-**Source:** `crates/greggd/src/collector/macos/`
+**Source:** `crates/gregg-host/src/macos/` (adapter: `crates/greggd/src/collector/macos/`)
 
 - CPU: Mach `HOST_CPU_LOAD_INFO` ticks — `user`, `system`, `idle`, `nice`
 - Memory: Mach `HOST_VM_INFO64` — availability-oriented (free + inactive)
@@ -108,7 +117,7 @@ FFI seam: `MacNativeQueries` trait. Production: `FfiNativeQueries`. Test: `MockN
 
 ## Windows collector
 
-**Source:** `crates/greggd/src/collector/windows/`
+**Source:** `crates/gregg-host/src/windows/` (adapter: `crates/greggd/src/collector/windows/`)
 
 - CPU: `GetSystemTimes` — idle, kernel (includes idle), user
 - Memory: `GlobalMemoryStatusEx`
@@ -136,6 +145,18 @@ Windows SCM startup pass the validated `Config::name` as `system.name`, while
 must decode only the UTF-16 units reported by the successful call so API
 buffer padding cannot produce a NUL in the wire identity.
 
+## FreeBSD collector
+
+**Source:** `crates/gregg-host/src/freebsd/` (native only — there is no
+`crates/greggd/src/collector/freebsd/` adapter; the full `greggd` product
+remains Linux/macOS/Windows).
+
+First post-extraction backend (Plan 136): FreeBSD sysctl-based collection
+through the same `SystemCollector`-compatible native surface, shared
+`rate.rs` baselines, and the `DriveRefreshCache` slow probe. Qualified on
+FreeBSD CI (`cargo test -p gregg-host`). NetBSD/OpenBSD remain explicit later
+ports.
+
 ## Key constraints
 
 - No external command execution for metrics collection
@@ -153,8 +174,9 @@ buffer padding cannot produce a NUL in the wire identity.
 ## Tests
 
 - Unit tests in every module with deterministic fixtures
-- 40+ JSON/text fixture files in `src/collector/test_fixtures/`
+- Facade freeze fixtures in `crates/greggd/src/collector/test_fixtures/`
 - Platform-native collector tests run only on the target OS
-- `MemorySource` (Linux) — in-memory file map for deterministic tests
+- `FileSource` (Linux) — file-read seam; `MemorySource` in-memory map for deterministic tests
 - `MockNativeQueries` (macOS) — injectable FFI with auto-increment CPU
 - `MockWindowsSource` (Windows) — injectable API with auto-increment CPU
+- FreeBSD native tests run on FreeBSD CI via `cargo test -p gregg-host --all-features`

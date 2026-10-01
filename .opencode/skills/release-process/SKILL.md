@@ -61,6 +61,18 @@ cargo publish -p gregg-update --locked
 
 Wait for crates.io availability before continuing.
 
+### 4c. Dry-run and publish gregg-host
+
+Native telemetry is a versioned dependency of `greggd`, so it must be on
+crates.io before the daemon dry-run resolves:
+
+```bash
+cargo publish -p gregg-host --dry-run --locked
+cargo publish -p gregg-host --locked
+```
+
+Wait for crates.io availability before continuing.
+
 ### 5. Dry-run dependent crates
 
 ```bash
@@ -69,7 +81,7 @@ cargo publish -p gregg --dry-run --locked
 ```
 
 Publication order is mandatory: `gregg-protocol` → `gregg-update` →
-`greggd` → `gregg`.
+`gregg-host` → `greggd` → `gregg`.
 
 ### 6. Publish daemon and client
 
@@ -171,7 +183,7 @@ prints `sudo`.
 
 ## Publication order
 
-**Mandatory:** `gregg-protocol` → `gregg-update` → `greggd` → `gregg`
+**Mandatory:** `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`
 
 ## Policy
 

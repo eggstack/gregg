@@ -36,10 +36,12 @@ product contract.
 - Follow existing code style and patterns.
 - Platform-specific code lives under `cfg(target_os = ...)` modules.
 - Unsafe Rust is permitted only in narrowly scoped modules:
-  `crates/greggd/src/collector/linux/source.rs` (statvfs),
-  `crates/greggd/src/collector/macos/ffi.rs` (Mach FFI),
-  `crates/greggd/src/collector/windows/source.rs`,
+  `crates/gregg-host/src/linux/source.rs` (statvfs),
+  `crates/gregg-host/src/macos/ffi.rs` (Mach FFI),
+  `crates/gregg-host/src/windows/source.rs`,
+  `crates/gregg-host/src/freebsd/source.rs`,
   `crates/greggd/src/startup/install.rs` (privilege probe),
+  `crates/greggd/src/cli.rs` (flock guard),
   `crates/gregg/src/config/lock.rs` + `config/store.rs` + `src/bin/lock_helper.rs`
   (Unix flock + Windows file lock), `crates/gregg/src/cli.rs` (executable probe).
   Every unsafe block must have a safety comment.

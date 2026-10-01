@@ -144,7 +144,8 @@ control sockets stay `0600`.
 - Inline unit tests in every module; server handler tests in `src/server/tests.rs`
 - `MemorySource` (Linux), mock FFI seams (macOS/Windows) — see `platform-collectors`
 - Integration: `tests/linux_collector.rs` (live `/proc` smoke),
-  `tests/windows_smoke.rs` (binary help + foreground daemon + v2 health)
+  `tests/windows_smoke.rs` (binary help + foreground daemon + v2 health),
+  `tests/installer_rerun.rs` (same-scope bootstrap replacement rules)
 - Windows SCM truth comes from `scripts/smoke-windows.ps1` in CI
 
 ## Deep dive

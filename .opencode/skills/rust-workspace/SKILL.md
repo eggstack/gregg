@@ -38,6 +38,7 @@ cargo test -p greggd --all-features -- collector::linux     # Linux adapter
 cargo test -p gregg-host --all-features -- macos     # macOS native
 cargo test -p greggd --all-features -- collector::macos     # macOS adapter
 cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows
+cargo test -p gregg-host --all-features              # FreeBSD native (runs on FreeBSD CI)
 ```
 
 **Running a single test:**

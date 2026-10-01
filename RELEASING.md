@@ -129,12 +129,30 @@ cargo search gregg-update --limit 1
 
 Confirm the exact `$VERSION` appears.
 
-## 5. Dry-run dependent crates (after protocol and updater publication)
+## 4c. Dry-run and publish gregg-host
 
-Dependent-crate dry-runs must wait for the new `gregg-protocol` and
-`gregg-update` versions to be visible on crates.io. The local release
-preflight does not run them because the registry has not yet indexed the
-new versions. Run them manually here:
+Native telemetry is a versioned dependency of `greggd`, so it must be on
+crates.io before the daemon dry-run resolves:
+
+```bash
+cargo publish -p gregg-host --dry-run --locked
+cargo publish -p gregg-host --locked
+```
+
+Wait for crates.io availability before continuing:
+
+```bash
+cargo search gregg-host --limit 1
+```
+
+Confirm the exact `$VERSION` appears.
+
+## 5. Dry-run dependent crates (after protocol, updater, and host publication)
+
+Dependent-crate dry-runs must wait for the new `gregg-protocol`,
+`gregg-update`, and `gregg-host` versions to be visible on crates.io.
+The local release preflight does not run them because the registry has not
+yet indexed the new versions. Run them manually here:
 
 ```bash
 cargo publish -p greggd --dry-run --locked
@@ -143,7 +161,7 @@ cargo publish -p gregg --dry-run --locked
 
 This is the authoritative dependent-package check because it resolves the
 published dependency versions from crates.io. Publication order is
-mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+mandatory: `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.
 
 ## 6. Publish daemon and client
 
@@ -401,7 +419,7 @@ visible.
 
 ## Policy
 
-- Publication order is mandatory: `gregg-protocol` → `gregg-update` → `greggd` → `gregg`.
+- Publication order is mandatory: `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.
 - A published crates.io version is immutable.
 - No repository automation performs crates.io publication, version bumping,
   or tag creation.
