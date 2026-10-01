@@ -1,6 +1,6 @@
 # Plan 148: eggserve 0.4 direct-server adoption
 
-Status: implementation complete; existing all-platform CI pending.
+Status: complete at implementation `2830498409885d6424905b7702b4f604e2399088`; existing CI run `36872317548` green across all six jobs.
 
 Depends on: completed Plan 127's EggServe direct-H1 daemon transport adoption and the current main branch. Independent of the remaining Plan 091 soak record and independent of Plan 147.
 
@@ -335,7 +335,7 @@ No new workflow, matrix, self-hosted runner, benchmark service, or evidence bund
 - [x] Fresh current-main and post-upgrade stripped `greggd` sizes were measured on `aarch64-unknown-linux-gnu`, stable toolchain, fat-LTO release profile: 2,694,616 bytes before and 2,694,616 bytes after (0 bytes, 0%).
 - [x] The measured size delta is below the review trigger; no size attribution or mitigation was needed.
 - [x] Persistent-loopback behavior and bounded shutdown remain healthy (`raw_wire_contract_preserved_by_eggserve_transport` repeats v1/v2 requests on one connection; runtime and lifecycle tests pin finite connection/request limits and bounded drain).
-- [ ] Strict clippy, stable full workspace tests, Rust 1.89 full workspace tests, docs, default local checks, and the existing six-job CI matrix are green. Local gates passed; CI is pending on the pushed implementation commit.
+- [x] Strict clippy, stable full workspace tests, Rust 1.89 full workspace tests, docs, default local checks, and the existing six-job CI matrix are green. Existing CI run `36872317548` passed Linux, macOS arm64, macOS Intel, Windows (including SCM smoke), MSRV Rust 1.89, and FreeBSD native.
 - [x] Current-state documentation names EggServe 0.4 truthfully; Plan 127 remains historical.
 - [x] Plan 091 and Plan 147 remain independent; neither is unblocked by this dependency upgrade.
 
@@ -355,6 +355,13 @@ current main: two redundant mutable-reference borrows in the supervision
 tests/docs. The follow-up corrects those diagnostics without changing runtime
 behavior or broadening the server upgrade.
 
+Subsequent CI runs exposed the same new assertion lint in the client and Linux
+host tests, a Windows-only unused mutable binding, and an existing macOS reset
+test whose recovery counters still decreased after re-baselining. Those
+assertions were clarified, the binding was made platform-specific, and the
+test now supplies monotonically increasing counters. These verification
+corrections preserve product behavior and made the existing matrix green.
+
 Local verification passed:
 
 - `cargo test -p greggd --all-targets --all-features server::tests` — 77 passed.
@@ -373,8 +380,8 @@ stable toolchain, `aarch64-unknown-linux-gnu`, and workspace fat-LTO release
 profile. The baseline and upgraded stripped executables are both 2,694,616
 bytes (0 bytes / 0.0% delta).
 
-Implementation commit: pending.
-Existing CI run: pending.
+Implementation commit: `2830498409885d6424905b7702b4f604e2399088`.
+Existing CI run: `36872317548` (success; six of six jobs).
 
 ## Explicit non-goals
 
