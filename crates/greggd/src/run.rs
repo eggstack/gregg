@@ -352,10 +352,10 @@ where
     // does not consume its handle. The selected handle is taken after the
     // select completes.
     let outcome = {
-        let Some(mut server_fut) = server_handle.as_mut() else {
+        let Some(server_fut) = server_handle.as_mut() else {
             return RunOutcome::Fatal("server task handle missing");
         };
-        let Some(mut sampler_fut) = sampler_handle.as_mut() else {
+        let Some(sampler_fut) = sampler_handle.as_mut() else {
             return RunOutcome::Fatal("sampler task handle missing");
         };
 
@@ -369,7 +369,7 @@ where
                     Err(error) => RunOutcome::ShutdownError(error),
                 }
             }
-            result = &mut server_fut => {
+            result = &mut *server_fut => {
                 match result {
                     Ok(Ok(())) => {
                         // Server exited cleanly without a shutdown signal — unexpected.
@@ -383,7 +383,7 @@ where
                     }
                 }
             }
-            result = &mut sampler_fut => {
+            result = &mut *sampler_fut => {
                 match result {
                     Ok(()) => {
                         // Sampler exited cleanly without a shutdown signal — unexpected.

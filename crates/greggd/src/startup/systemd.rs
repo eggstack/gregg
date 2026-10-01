@@ -608,7 +608,10 @@ mod tests {
 
     #[test]
     fn systemd_uninstall_missing_state_is_idempotent_noop() {
-        assert!(systemd_uninstall_steps(false, false).is_empty());
+        assert_eq!(
+            systemd_uninstall_steps(false, false),
+            [] as [super::SystemdUninstallStep; 0]
+        );
     }
 
     #[test]

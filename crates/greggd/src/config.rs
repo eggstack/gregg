@@ -660,7 +660,7 @@ mod tests {
     fn default_config_is_valid() {
         let config = Config::default();
         assert!(config.is_valid());
-        assert!(config.validate().is_empty());
+        assert_eq!(config.validate(), []);
     }
 
     #[test]
@@ -994,7 +994,7 @@ unknown_field = "oops"
     #[test]
     fn config_violation_display_messages() {
         let v = ConfigViolation::EmptyName;
-        assert!(!format!("{v}").is_empty());
+        assert_ne!(format!("{v}"), "");
 
         let v = ConfigViolation::NameTooLong {
             length: 200,

@@ -13,9 +13,9 @@
 //! ```
 //!
 //! CPU utilization requires two valid samples. The first sample returns
-//! [`CollectErrorKind::Warming`].
+//! [`crate::error::CollectErrorKind::Warming`].
 
-use crate::error::{CollectError, CollectErrorKind};
+use crate::error::CollectError;
 use crate::windows::source::RawCpuTimes;
 
 /// Percentage result derived from a counter interval.
@@ -33,11 +33,11 @@ pub const MAX_SINGLE_GROUP_LOGICAL_PROCESSORS: u32 = 64;
 ///
 /// # Behavior
 ///
-/// - Returns [`CollectErrorKind::CounterReset`] when `prev == curr` (identical
+/// - Returns [`crate::error::CollectErrorKind::CounterReset`] when `prev == curr` (identical
 ///   samples, zero delta).
-/// - Returns [`CollectErrorKind::CounterReset`] when any counter decreased.
-/// - Returns [`CollectErrorKind::CounterReset`] when `delta_total == 0`.
-/// - Returns [`CollectErrorKind::Numeric`] when the result is not finite.
+/// - Returns [`crate::error::CollectErrorKind::CounterReset`] when any counter decreased.
+/// - Returns [`crate::error::CollectErrorKind::CounterReset`] when `delta_total == 0`.
+/// - Returns [`crate::error::CollectErrorKind::Numeric`] when the result is not finite.
 ///
 /// # Formula
 ///
@@ -83,6 +83,7 @@ pub fn compute_cpu_percentages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CollectErrorKind;
 
     #[test]
     fn normal_delta() {

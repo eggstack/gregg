@@ -13,7 +13,7 @@
 //! usage_pct = delta(busy) / delta(total) * 100
 //! ```
 
-use crate::error::{CollectError, CollectErrorKind};
+use crate::error::CollectError;
 use crate::macos::ffi::RawCpuTicks;
 
 /// Percentage result derived from a counter interval.
@@ -24,13 +24,13 @@ pub struct CpuSample {
 
 /// Compute interval-derived CPU percentage from two [`RawCpuTicks`] readings.
 ///
-/// - Returns [`CollectErrorKind::Warming`] when this is the first sample
+/// - Returns [`crate::error::CollectErrorKind::Warming`] when this is the first sample
 ///   (callers should establish a baseline).
-/// - Returns [`CollectErrorKind::CounterReset`] when any counter decreased
+/// - Returns [`crate::error::CollectErrorKind::CounterReset`] when any counter decreased
 ///   between samples.
-/// - Returns [`CollectErrorKind::CounterReset`] when `delta_total == 0`
+/// - Returns [`crate::error::CollectErrorKind::CounterReset`] when `delta_total == 0`
 ///   to avoid division by zero.
-/// - Returns [`CollectErrorKind::Numeric`] when the result is not finite.
+/// - Returns [`crate::error::CollectErrorKind::Numeric`] when the result is not finite.
 pub fn compute_cpu_percentages(
     prev: &RawCpuTicks,
     curr: &RawCpuTicks,
@@ -64,6 +64,7 @@ pub fn compute_cpu_percentages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CollectErrorKind;
 
     #[test]
     fn normal_delta() {

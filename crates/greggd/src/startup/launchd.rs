@@ -532,7 +532,10 @@ mod tests {
 
     #[test]
     fn launchd_uninstall_missing_state_is_idempotent_noop() {
-        assert!(launchd_uninstall_steps(false, false).is_empty());
+        assert_eq!(
+            launchd_uninstall_steps(false, false),
+            [] as [super::LaunchdUninstallStep; 0]
+        );
         // Unloaded but present still removes the stale plist; loaded but
         // missing still boots out the stale job.
         assert_eq!(

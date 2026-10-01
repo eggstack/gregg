@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn service_display_name_is_human_readable() {
-        assert!(!SERVICE_DISPLAY_NAME.is_empty());
+        assert_ne!(SERVICE_DISPLAY_NAME, "");
         assert!(!SERVICE_DISPLAY_NAME.contains('\n'));
     }
 

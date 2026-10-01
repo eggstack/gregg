@@ -349,6 +349,12 @@ The source-level behavior, including Gregg's finite 300-second keep-alive
 lifetime, 1000-request connection cap, eight-second EggServe drain, and
 known-length shared status bytes, is unchanged.
 
+The first pushed CI run exposed Rust 1.99 lint failures already present in
+current main: two redundant mutable-reference borrows in the supervision
+`select!`, empty/nonempty assertion idioms, and a macOS-only import used by
+tests/docs. The follow-up corrects those diagnostics without changing runtime
+behavior or broadening the server upgrade.
+
 Local verification passed:
 
 - `cargo test -p greggd --all-targets --all-features server::tests` — 77 passed.
