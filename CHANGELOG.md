@@ -7,6 +7,8 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.15] - 2026-10-01
+
 ### Changed
 
 - **EggServe 0.4 direct-server adoption (Plan 148):** `greggd` now resolves

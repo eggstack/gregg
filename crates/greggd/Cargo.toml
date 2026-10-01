@@ -22,9 +22,9 @@ name = "greggd"
 path = "src/lib.rs"
 
 [dependencies]
-gregg-protocol = { version = "1.0.14", path = "../gregg-protocol" }
-gregg-host = { version = "1.0.14", path = "../gregg-host" }
-gregg-update = { version = "1.0.14", path = "../gregg-update" }
+gregg-protocol = { version = "1.0.15", path = "../gregg-protocol" }
+gregg-host = { version = "1.0.15", path = "../gregg-host" }
+gregg-update = { version = "1.0.15", path = "../gregg-update" }
 eggserve-primitives = { version = "0.2.2", default-features = false }
 eggserve-server = { version = "0.4", default-features = false }
 bytes = "1"
@@ -46,7 +46,7 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
-gregg-protocol = { version = "1.0.14", path = "../gregg-protocol", features = ["test_support"] }
+gregg-protocol = { version = "1.0.15", path = "../gregg-protocol", features = ["test_support"] }
 
 [lints]
 workspace = true

@@ -280,7 +280,7 @@ release from prebuilt binaries.
 
 **`Cargo.toml`** (workspace root):
 - Five members: `gregg-protocol`, `gregg-update`, `gregg-host`, `greggd`, `gregg`
-- One shared version from `[workspace.package]` (currently `1.0.14`),
+- One shared version from `[workspace.package]` (currently `1.0.15`),
    edition 2021, MSRV 1.89
 - Release profile: fat LTO, 1 codegen unit, stripped symbols, aborting panics
 
