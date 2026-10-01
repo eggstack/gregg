@@ -6,51 +6,62 @@
 //!   down cleanly.
 //!
 //! Both tests run only on Windows.
+//!
+//! Cargo builds the `greggd` binary before this integration test starts and
+//! exposes the exact path through `CARGO_BIN_EXE_greggd`, so the harness never
+//! runs a nested `cargo build`.
+//!
+//! The foreground smoke is written so a failure is diagnosable rather than a
+//! bare timeout: the port comes from an OS `127.0.0.1:0` allocation, child
+//! stdout/stderr are captured in files inside the test's temporary directory
+//! instead of unread pipes, readiness polling fails immediately when the child
+//! exits, and every exit path terminates and reaps the child.
 
 #![cfg(target_os = "windows")]
 
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+/// Overall readiness budget for one foreground daemon.
+///
+/// A healthy daemon satisfies this on ordinary hosted Windows; it is not
+/// raised to mask a startup failure, a bind failure, or a collector failure.
+const READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Poll cadence while waiting for readiness.
+const READY_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Maximum characters of a health body kept in the last-probe diagnostic.
+const PROBE_EXCERPT_CHARS: usize = 200;
+
+/// Maximum bytes of captured daemon output kept per stream, so a pathological
+/// child cannot flood CI logs. Only the tail is kept.
+const CAPTURE_TAIL_BYTES: usize = 8 * 1024;
+
+/// The `greggd` binary Cargo built for this integration test.
 fn binary_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/greggd.exe")
+    PathBuf::from(env!("CARGO_BIN_EXE_greggd"))
 }
 
-fn ensure_binary() {
-    let output = Command::new("cargo")
-        .args(["build", "-p", "greggd"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("cargo build should execute");
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!(
-            "cargo build must succeed\nstdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            stderr
-        );
-    }
-    let path = binary_path();
-    assert!(
-        path.exists(),
-        "greggd.exe should exist at {}",
-        path.display()
-    );
-}
-
-/// Derive a TCP port from the test name so parallel test binaries do not
-/// collide.  The result is in the dynamic range (49152..=65535).
-#[allow(clippy::cast_possible_truncation)]
-fn unique_port(name: &str) -> u16 {
-    let hash: u32 = name
-        .bytes()
-        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)));
-    (49152 + (hash % 16383)) as u16
+/// Ask the OS for a currently free loopback port.
+///
+/// The temporary listener is released immediately before `greggd` is spawned,
+/// which leaves a small unavoidable bind-after-release race. Resolving that
+/// race properly would need a broker or socket inheritance in production code;
+/// both are out of scope for a smoke test, and an early child exit from a lost
+/// race is reported explicitly by the readiness loop.
+fn free_loopback_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral loopback port");
+    let port = listener
+        .local_addr()
+        .expect("read the OS-selected loopback port")
+        .port();
+    drop(listener);
+    port
 }
 
 /// Send a raw HTTP/1.1 GET request and return `(status_code, body)`.
@@ -107,12 +118,308 @@ fn http_get(host: &str, port: u16, path: &str) -> Result<(u16, String), String> 
     Ok((status_code, body))
 }
 
+/// Bound a diagnostic excerpt without panicking on a char boundary.
+fn excerpt(text: &str, max_chars: usize) -> String {
+    let mut bounded: String = text.chars().take(max_chars).collect();
+    if text.chars().nth(max_chars).is_some() {
+        bounded.push_str("...");
+    }
+    bounded
+}
+
+/// Read the tail of one capture file, bounded so CI logs stay readable.
+fn capture_tail(path: &Path) -> String {
+    let Ok(bytes) = std::fs::read(path) else {
+        return "<capture file unavailable>".to_string();
+    };
+    if bytes.is_empty() {
+        return "<empty>".to_string();
+    }
+    let truncated = bytes.len() > CAPTURE_TAIL_BYTES;
+    let tail = if truncated {
+        &bytes[bytes.len() - CAPTURE_TAIL_BYTES..]
+    } else {
+        bytes.as_slice()
+    };
+    let text = String::from_utf8_lossy(tail).into_owned();
+    if truncated {
+        format!("[truncated to last {CAPTURE_TAIL_BYTES} bytes]\n{text}")
+    } else {
+        text
+    }
+}
+
+fn describe_exit(status: ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exited with code {code}"),
+        None => format!("terminated without an exit code ({status})"),
+    }
+}
+
+fn require(condition: bool, message: &str) -> Result<(), String> {
+    if condition {
+        Ok(())
+    } else {
+        Err(message.to_string())
+    }
+}
+
+/// The spawned foreground daemon plus everything a failure report needs.
+///
+/// Dropping this value terminates and reaps the child, so a failed assertion
+/// can never leave a live `greggd.exe` behind for later work in the same job.
+struct DaemonProcess {
+    child: Option<Child>,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+    config_path: PathBuf,
+    capture_dir: PathBuf,
+    port: u16,
+    started: Instant,
+    exit: Option<ExitStatus>,
+    terminated_by_test: bool,
+    last_probe: String,
+}
+
+impl DaemonProcess {
+    /// Spawn `greggd run` with file-backed stdout/stderr capture.
+    fn spawn(config_path: &Path, capture_dir: &Path, port: u16) -> Self {
+        let stdout_path = capture_dir.join("daemon-stdout.log");
+        let stderr_path = capture_dir.join("daemon-stderr.log");
+        let stdout = File::create(&stdout_path).expect("create daemon stdout capture file");
+        let stderr = File::create(&stderr_path).expect("create daemon stderr capture file");
+        let child = Command::new(binary_path())
+            .arg("--config")
+            .arg(config_path)
+            .arg("run")
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr))
+            .spawn()
+            .expect("spawn greggd");
+
+        Self {
+            child: Some(child),
+            stdout_path,
+            stderr_path,
+            config_path: config_path.to_path_buf(),
+            capture_dir: capture_dir.to_path_buf(),
+            port,
+            started: Instant::now(),
+            exit: None,
+            terminated_by_test: false,
+            last_probe: "no readiness probe completed".to_string(),
+        }
+    }
+
+    /// Record the most recent readiness probe outcome, bounded for reporting.
+    fn note_probe(&mut self, outcome: &str) {
+        self.last_probe = excerpt(outcome, PROBE_EXCERPT_CHARS);
+    }
+
+    /// Non-blocking child check; returns the exit status once the child is gone.
+    fn poll_exit(&mut self) -> Option<ExitStatus> {
+        let status = self.child.as_mut()?.try_wait().ok().flatten();
+        if status.is_some() {
+            self.exit = status;
+        }
+        status
+    }
+
+    /// Terminate and reap the child if it is still running. Never panics, so it
+    /// is safe to call from both the orderly path and `Drop`.
+    fn stop(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        match child.try_wait() {
+            Ok(Some(status)) => self.exit = Some(status),
+            Ok(None) => {
+                self.terminated_by_test = true;
+                let _ = child.kill();
+                if let Ok(status) = child.wait() {
+                    self.exit = Some(status);
+                }
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        self.child = None;
+    }
+
+    /// Wait for v2 health readiness, failing fast on an early child exit.
+    ///
+    /// v2 health is used because the v1 health response is never updated on
+    /// Windows (it stays `Warming`).
+    fn await_ready(&mut self) -> Result<(), String> {
+        while self.started.elapsed() < READY_TIMEOUT {
+            if let Some(status) = self.poll_exit() {
+                return Err(format!(
+                    "greggd {} before it became ready",
+                    describe_exit(status)
+                ));
+            }
+
+            match http_get("127.0.0.1", self.port, "/v2/healthz") {
+                Ok((status, body)) => {
+                    let state = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|json| {
+                            json.get("state")
+                                .and_then(serde_json::Value::as_str)
+                                .map(str::to_owned)
+                        });
+                    match state.as_deref() {
+                        Some("ready") if status == 200 => return Ok(()),
+                        Some(state) => self.note_probe(&format!(
+                            "HTTP {status} state={state} body={}",
+                            excerpt(&body, PROBE_EXCERPT_CHARS)
+                        )),
+                        None => self.note_probe(&format!(
+                            "HTTP {status} body is not a v2 health response: {}",
+                            excerpt(&body, PROBE_EXCERPT_CHARS)
+                        )),
+                    }
+                }
+                Err(error) => self.note_probe(&error),
+            }
+            std::thread::sleep(READY_POLL_INTERVAL);
+        }
+
+        Err(format!(
+            "daemon did not become ready within {READY_TIMEOUT:?}"
+        ))
+    }
+
+    /// Child lifecycle state as of teardown: whether the daemon was still alive
+    /// when the failure was detected, and how it ended.
+    fn child_state(&self) -> String {
+        match self.exit {
+            Some(status) if self.terminated_by_test => format!(
+                "still running at failure, terminated by this test ({})",
+                describe_exit(status)
+            ),
+            Some(status) => format!("exited before the failure ({})", describe_exit(status)),
+            None => "state unknown (no reap result)".to_string(),
+        }
+    }
+
+    /// Bounded diagnostic report: child state, request context, and the tail of
+    /// the daemon's own output.
+    fn report(&self, reason: &str) -> String {
+        format!(
+            "{reason}\n\
+             port: {}\n\
+             config: {}\n\
+             elapsed: {:?}\n\
+             child: {}\n\
+             last readiness probe: {}\n\
+             daemon stdout (tail):\n{}\n\
+             daemon stderr (tail):\n{}\n\
+             retained capture directory: {}",
+            self.port,
+            self.config_path.display(),
+            self.started.elapsed(),
+            self.child_state(),
+            self.last_probe,
+            capture_tail(&self.stdout_path),
+            capture_tail(&self.stderr_path),
+            self.capture_dir.display(),
+        )
+    }
+
+    /// Stop the child, then fail with the collected diagnostics.
+    fn fail(&mut self, reason: &str) -> ! {
+        self.stop();
+        panic!("{}", self.report(reason));
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+/// Validate the daemon's v2 status payload.
+fn check_v2_status(port: u16) -> Result<(), String> {
+    let (status, body) = http_get("127.0.0.1", port, "/v2/status")
+        .map_err(|error| format!("GET /v2/status should succeed: {error}"))?;
+    require(status == 200, "/v2/status should return 200")?;
+
+    // Validate JSON structure.
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        format!(
+            "/v2/status body should be valid JSON: {error} (body: {})",
+            excerpt(&body, PROBE_EXCERPT_CHARS)
+        )
+    })?;
+    require(json["schema_version"] == 2, "schema_version should be 2")?;
+
+    // Validate Windows capabilities.
+    let caps = &json["capabilities"];
+    require(
+        caps["cpu_iowait"].as_bool() == Some(false),
+        "cpu_iowait should be false",
+    )?;
+    require(
+        caps["load_average"].as_bool() == Some(false),
+        "load_average should be false",
+    )?;
+    require(
+        caps["swap"].as_bool() == Some(false),
+        "swap should be false",
+    )?;
+    require(
+        caps["memory_commit"].as_bool() == Some(true),
+        "memory_commit should be true",
+    )?;
+
+    // Validate identity.
+    require(
+        json["system"]["os_name"] == "windows",
+        "os_name should be windows",
+    )?;
+    require(
+        json["system"]["name"] == "smoke-test",
+        "configured name should be preserved",
+    )?;
+    let hostname = json["system"]["hostname"]
+        .as_str()
+        .ok_or_else(|| "hostname should be a string".to_string())?;
+    require(!hostname.is_empty(), "hostname should not be empty")?;
+    require(!hostname.contains('\0'), "hostname should not contain NUL")?;
+    let name = json["system"]["name"]
+        .as_str()
+        .ok_or_else(|| "name should be a string".to_string())?;
+    require(!name.contains('\0'), "name should not contain NUL")?;
+
+    // Validate metrics are present.
+    require(
+        json["cpu"]["logical_cores"].as_u64().unwrap_or(0) > 0,
+        "logical_cores should be > 0",
+    )?;
+    require(
+        json["memory"]["total_bytes"].as_u64().unwrap_or(0) > 0,
+        "memory total_bytes should be > 0",
+    )?;
+    require(
+        json["commit"].is_object(),
+        "commit should be present (not null)",
+    )?;
+
+    // Unsupported metrics absent.
+    require(json["load"].is_null(), "load should be null")?;
+    require(json["swap"].is_null(), "swap should be null")?;
+
+    Ok(())
+}
+
 // ===== Test 1: binary compiles and runs --help =====
 
 #[test]
 fn windows_daemon_binary_compiles_and_runs() {
-    ensure_binary();
-
     let help_output = Command::new(binary_path())
         .arg("--help")
         .output()
@@ -134,9 +441,7 @@ fn windows_daemon_binary_compiles_and_runs() {
 
 #[test]
 fn foreground_daemon_serves_v2_status() {
-    ensure_binary();
-
-    let port = unique_port("foreground_daemon_serves_v2_status");
+    let port = free_loopback_port();
     let tmp_dir = std::env::temp_dir().join(format!("greggd-smoke-{port}"));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir).expect("create temp dir");
@@ -153,87 +458,19 @@ stale_after_ms = 0
     );
     std::fs::write(&config_path, config).expect("write config");
 
-    // Start daemon as a child process.
-    let mut child = Command::new(binary_path())
-        .args(["--config", config_path.to_str().unwrap(), "run"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn greggd");
+    let mut daemon = DaemonProcess::spawn(&config_path, &tmp_dir, port);
 
-    let start = Instant::now();
-    let timeout = Duration::from_secs(30);
-
-    // Poll /v2/healthz until ready. Use v2 because the v1 health
-    // response is never updated on Windows (stays Warming).
-    let mut ready = false;
-    while start.elapsed() < timeout {
-        if let Ok((status, body)) = http_get("127.0.0.1", port, "/v2/healthz") {
-            if status == 200 && body.contains("\"ready\"") {
-                ready = true;
-                break;
-            }
-        }
-        std::thread::sleep(Duration::from_millis(200));
+    if let Err(reason) = daemon.await_ready() {
+        // The capture directory is left in place on failure; its path is part
+        // of the diagnostic and the content is already inlined in it.
+        daemon.fail(&reason);
     }
-    assert!(ready, "daemon did not become ready within {timeout:?}");
 
-    // Fetch /v2/status.
-    let (status, body) =
-        http_get("127.0.0.1", port, "/v2/status").expect("GET /v2/status should succeed");
-    assert_eq!(status, 200, "/v2/status should return 200");
+    if let Err(reason) = check_v2_status(port) {
+        daemon.fail(&reason);
+    }
 
-    // Validate JSON structure.
-    let json: serde_json::Value =
-        serde_json::from_str(&body).expect("/v2/status body should be valid JSON");
-    assert_eq!(json["schema_version"], 2, "schema_version should be 2");
-
-    // Validate Windows capabilities.
-    let caps = &json["capabilities"];
-    assert_eq!(caps["cpu_iowait"], false, "cpu_iowait should be false");
-    assert_eq!(caps["load_average"], false, "load_average should be false");
-    assert_eq!(caps["swap"], false, "swap should be false");
-    assert_eq!(caps["memory_commit"], true, "memory_commit should be true");
-
-    // Validate identity.
-    assert_eq!(
-        json["system"]["os_name"], "windows",
-        "os_name should be windows"
-    );
-    assert_eq!(
-        json["system"]["name"], "smoke-test",
-        "configured name should be preserved"
-    );
-    let hostname = json["system"]["hostname"]
-        .as_str()
-        .expect("hostname should be a string");
-    assert!(!hostname.is_empty(), "hostname should not be empty");
-    assert!(!hostname.contains('\0'), "hostname should not contain NUL");
-    let name = json["system"]["name"]
-        .as_str()
-        .expect("name should be a string");
-    assert!(!name.contains('\0'), "name should not contain NUL");
-
-    // Validate metrics are present.
-    assert!(
-        json["cpu"]["logical_cores"].as_u64().unwrap_or(0) > 0,
-        "logical_cores should be > 0"
-    );
-    assert!(
-        json["memory"]["total_bytes"].as_u64().unwrap_or(0) > 0,
-        "memory total_bytes should be > 0"
-    );
-    assert!(
-        json["commit"].is_object(),
-        "commit should be present (not null)"
-    );
-
-    // Unsupported metrics absent.
-    assert!(json["load"].is_null(), "load should be null");
-    assert!(json["swap"].is_null(), "swap should be null");
-
-    // Shut down the daemon.
-    child.kill().expect("kill daemon");
-    let _ = child.wait();
+    // Orderly teardown: stop and reap the child, then drop its files.
+    daemon.stop();
     let _ = std::fs::remove_dir_all(&tmp_dir);
 }
