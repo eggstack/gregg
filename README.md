@@ -5,28 +5,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/crates/d/gregg.svg)](https://crates.io/crates/gregg)
 
-A compact terminal monitor for observing CPU, memory, swap, load, disk usage,
-and optional live throughput across multiple machines over LAN.
+A compact terminal monitor for CPU, memory, swap, load, disk, and optional
+live throughput across multiple machines over LAN.
 
-A lightweight daemon (`greggd`) runs on each machine you want to monitor and exposes a read-only HTTP/1 JSON API on port `11310`, served by EggServe's direct H1 runtime. The `gregg` client polls configured daemons and renders a live TUI.
-
-Schema-v2 status responses may include best-effort native live telemetry: current
-CPU frequency, de-duplicated disk read/write bytes per second, and directional
-network throughput with link capacities. Values are omitted when the host API
-cannot provide them; no privilege escalation or external metrics command is
-used.
-
-## Supported targets
-
-| Platform | Architecture | Rust target | Asset suffix |
-| --- | --- | --- | --- |
-| Linux | x86-64 | `x86_64-unknown-linux-gnu` | `x86_64-unknown-linux-gnu` |
-| Linux | ARM64 (64-bit Raspberry Pi / Le Potato) | `aarch64-unknown-linux-gnu` | `aarch64-unknown-linux-gnu` |
-| macOS | Intel (x86-64) | `x86_64-apple-darwin` | `x86_64-apple-darwin` |
-| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` | `aarch64-apple-darwin` |
-| Windows | x86-64 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc.exe` |
-
-Linux assets target glibc 2.17. macOS binaries are unsigned (approve via System Settings or `xattr -d com.apple.quarantine`). Linux ARMv7 is source-build only.
+A lightweight daemon (`greggd`) runs on each monitored machine and serves a
+read-only JSON API on port `11310`. The `gregg` client polls your fleet and
+renders a live TUI.
 
 ## Quickstart
 
@@ -38,8 +22,7 @@ Linux / macOS:
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | sudo bash -s -- greggd
 ```
 
-This installs the daemon and registers automatic startup. For a user-local
-install without a system service, run without `sudo`:
+Without `sudo` for a user-local install (no system service):
 
 ```bash
 curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh | bash -s -- greggd
@@ -68,11 +51,7 @@ curl -fsSL https://github.com/eggstack/gregg/releases/latest/download/install.sh
   && export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The trailing `export` runs in your invoking shell (a piped installer is a
-child process and cannot change its parent's environment), so `gregg` is
-immediately resolvable without restarting the terminal. The shorter pipeline
-without the trailing `export` remains valid when `~/.local/bin` is already on
-`PATH` or when opening a later shell after profile persistence.
+(Append the trailing `export` only when `~/.local/bin` is not yet on `PATH`.)
 
 Windows (PowerShell):
 
@@ -80,22 +59,15 @@ Windows (PowerShell):
 .\install.ps1 -Component Gregg
 ```
 
-Alternative (any platform with Rust 1.89+, or source-only hosts such as ARMv7):
+No compiler needed. With Rust 1.89+ (or on source-only hosts such as ARMv7):
 
 ```bash
 cargo install gregg --locked
 cargo install greggd --locked
 ```
 
-Non-root Unix installs land in `$HOME/.local/bin` and persist that directory
-to your user shell profile for future shells (zsh `~/.zshrc` honoring a safe
-`ZDOTDIR`, bash `~/.bashrc` on Linux and login-aware `~/.bash_profile` /
-`~/.bash_login` / `~/.profile` selection on macOS; idempotent, never
-evaluated or sourced, `--no-shell-profile` opts out). System installs to
-`/usr/local/bin` never touch shell profiles. Uninstall never removes the
-generic `$HOME/.local/bin` PATH entry. See
-[docs/installation.md](docs/installation.md) for pinned versions, direct
-downloads, and installer details.
+See [Installation](docs/installation.md) for pinned versions, direct
+downloads, PATH/profile behavior, and the Cargo fallback.
 
 ### 3. Add endpoints and launch
 
@@ -108,17 +80,25 @@ gregg
 ```
 
 `gregg add` requires an explicit port (`host:port`,
-`nickname@host:port`, or `http://host:port/`). Host-only input is rejected.
+`nickname@host:port`, or `http://host:port/`); host-only input is rejected
+and HTTPS is never accepted. `gregg remove` accepts host-only input. See
+[Client](docs/client.md).
 
-## Configuration
+## Supported targets
 
-Daemon config file:
+| Platform | Architecture | Rust target / asset suffix |
+| --- | --- | --- |
+| Linux | x86-64 | `x86_64-unknown-linux-gnu` |
+| Linux | ARM64 (Pi / Le Potato) | `aarch64-unknown-linux-gnu` |
+| macOS | Intel (x86-64) | `x86_64-apple-darwin` |
+| macOS | Apple Silicon (arm64) | `aarch64-apple-darwin` |
+| Windows | x86-64 | `x86_64-pc-windows-msvc.exe` |
 
-| Platform | Path |
-| --- | --- |
-| Linux | `/etc/gregg/greggd.toml` |
-| macOS | `/Library/Application Support/gregg/greggd.toml` |
-| Windows | `%ProgramData%\gregg\greggd.toml` |
+Linux assets target glibc 2.17. macOS binaries are unsigned (approve via
+System Settings or `xattr -d com.apple.quarantine`). Linux ARMv7 is
+source-build only.
+
+## Essential commands
 
 ```bash
 greggd host 127.0.0.1              # restrict to localhost (SSH tunnel only)
@@ -126,63 +106,22 @@ greggd port 11311                  # change the listen port
 greggd startup install             # register automatic startup (systemd / launchd / cron / SCM)
 greggd restart                     # manager-aware restart
 greggd update                      # update to the latest stable release
-greggd uninstall --dry-run         # preview removal (mutates nothing)
-greggd uninstall                   # remove this daemon binary + startup integration (config preserved)
-greggd uninstall --purge           # also remove the daemon config file (destructive)
 greggd stop                        # stop the local daemon
 greggd configprint                 # print the configured bind address
 greggd status                      # read-only diagnostics: version, bind, health, startup state
-```
+greggd uninstall --dry-run         # preview removal (mutates nothing)
 
-System daemon configs contain no secrets and are world-readable (`0644`)
-so unprivileged `croncheck`/`status`/`configprint` work; the Unix control
-socket stays owner-only (`0600`), so `stop`/`restart` of a system service
-still need the daemon owner or root.
-
-Client config: Linux `~/.config/gregg/gregg.toml` (honors `XDG_CONFIG_HOME`),
-macOS `~/Library/Application Support/gregg/gregg.toml`, Windows
-`%APPDATA%\gregg\gregg.toml`.
-
-Rerunning a bootstrap installer at the same scope replaces that scope's
-component in place (first install vs update is reported; an unrelated
-executable at the canonical path is never overwritten). Prebuilt and Cargo
-fallback daemon installs use the same post-install startup finalization.
-For a non-root same-scope `greggd` replacement, a daemon that was healthy
-before replacement is transitioned to the new process with the config-specific
-`stop` + `croncheck` path; stopped or first-install daemons remain stopped.
-`gregg update` / `greggd update` instead update the exact invoked binary.
-`gregg uninstall` / `greggd uninstall` remove only the exact invoked binary;
-daemon startup artifacts are removed only when their command targets that
-same executable. Foreign or ambiguous manager/cron artifacts are preserved.
-Configuration is preserved unless `--purge` is passed. See
-[Installation](docs/installation.md).
-
-`greggd restart` mutates a systemd, launchd, or Windows SCM manager only when
-its registration targets the exact invoked daemon executable. Foreign or
-unknown ownership fails closed; Unix may use the config-specific direct path
-only when a foreign manager is known to target a different config.
-
-`greggd update` prepares the candidate fully before observing exact-executable
-lifecycle and before any stop: Unix combines systemd/launchd ownership with
-selected-config health after preparation (a foreign inactive manager cannot
-mask a running direct daemon; a foreign active manager using the selected
-config is preserved), Windows revalidates `query_registration()` immediately
-before quiescence (only an owned running/start-pending service may stop, owned
-stop-pending waits stopped without restart, foreign/unknown/not-installed do
-zero SCM mutation, owned-to-foreign fails before replacement). Only
-`ManagedRunning`/`DirectRunning` restart via `restart_daemon()`; stopped and
-foreign installations stay stopped/preserved without fabricated restart
-claims.
-
-```bash
 gregg list                         # list configured endpoints
 gregg remove 192.168.1.10          # host-only remove is supported
 gregg edit                         # open config in $EDITOR
 gregg update                       # update the client
 gregg uninstall --dry-run          # preview removal (mutates nothing)
-gregg uninstall                    # remove only this client binary (config preserved)
-gregg uninstall --purge            # also remove the client config file (destructive)
 ```
+
+Add `--purge` to either `uninstall` to also remove its config file
+(destructive); config is preserved by default. Reinstalling at the same scope
+replaces that component in place; `update` upgrades the exact invoked binary.
+See [Daemon](docs/daemon.md) and [Client](docs/client.md).
 
 ## TUI navigation
 
@@ -195,32 +134,12 @@ gregg uninstall --purge            # also remove the client config file (destruc
 
 ## Live metrics and compatibility
 
-Schema-v2 live telemetry is additive and optional. The client still tries
-`/v2/status` first and falls back to a v1-only daemon only on HTTP 404, so
-older daemons remain online with CPU, memory, load, swap, and historical drive
-behavior intact. Pre-feature v2 daemons likewise remain healthy; they simply
-omit the newer fields. Gregg does not track daemon versions over the wire.
-
-CPU frequency, when present, is the current OS-reported frequency in raw Hz,
-not a base or maximum-clock claim. macOS may omit it because Gregg uses no
-privileged or undocumented frequency mechanism. Disk capacity (`used / total`)
-and disk I/O are separate accounting domains: `R/s` and `W/s` are byte rates,
-and per-drive rates appear only for exact device associations. Network `Rx/s`
-and `Tx/s` are byte rates; NET utilization uses the maximum valid directional
-rate against its link capacity, so full-duplex traffic is not double-counted.
-Loopback can appear in `n` detail but is excluded from aggregate capacity.
-
-Use `d` for disk details, `n` for network/interface details, and `v` for the
-width-aware condensed view. See [Display](docs/display.md) for the mixed-fleet
-row and width policies.
-
-The client keeps the full-frame Ratatui renderer and redraws it only for
-render-visible poll, input, resize, configuration, EggPool, or highlight
-changes; unmapped input does not rebuild the frame. The daemon publishes typed
-snapshots and prepares compact v1/v2 status JSON once per successful sample,
-while stale/failure decisions remain live for every request. A stale response
-preserves the latest collector-failure diagnostic; age-only staleness uses the
-explicit `cached snapshot is stale` message.
+Beyond the core CPU/memory/load/swap/drive gauges, v2 daemons may report
+best-effort live telemetry: current CPU frequency, disk `R/s`/`W/s` byte
+rates, and directional network `Rx/s`/`Tx/s` with link capacities. Values are
+omitted (never fabricated) when the host API cannot provide them, and older
+daemons stay online with their historical metrics intact. See
+[Display](docs/display.md) for row and width policies.
 
 ## Docs
 
