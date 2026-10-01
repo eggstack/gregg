@@ -146,19 +146,26 @@ jobs:
   freebsd:
     name: FreeBSD (gregg-host native)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: gregg-ci-freebsd-${{ github.ref }}
+      cancel-in-progress: true
     steps:
       - name: Check out sources
         uses: actions/checkout@v4
 
       # Provenance: vmactions/freebsd-vm is the widely used community
-      # FreeBSD VM action (used across the Rust ecosystem); pinned to v1.1.9
+      # FreeBSD VM action (used across the Rust ecosystem); pinned to v1.5.8
       # with a fixed FreeBSD 14.2 release image. Only gregg-host is qualified
       # here; the full greggd product remains Linux/macOS/Windows.
+      # The job carries a repository-owned 20-minute outer bound and
+      # synchronizes sources one way only (no guest build-tree copyback).
       - name: Native gregg-host qualification on FreeBSD 14.2
-        uses: vmactions/freebsd-vm@v1.1.9
+        uses: vmactions/freebsd-vm@v1.5.8
         with:
           release: "14.2"
-          usesh: true
+          sync: rsync
+          copyback: false
           prepare: pkg install -y curl ca_root_nss
           run: |
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
