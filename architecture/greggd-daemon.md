@@ -75,12 +75,15 @@ requested through the control handle while completion remains a critical task
 whose clean exit, error, or panic is supervised. Its eight-second drain window
 fits inside Gregg's outer ten-second cleanup deadline. The H1 runtime explicitly
 keeps connection and request admission at semaphore maximums, sets 100 header
-fields and a 417,792-byte parser/header ceiling, and disables the total
-connection lifetime so healthy pooled clients are not forced to reconnect.
-EggServe requires finite header, handler, body, idle-keepalive, and response
-write deadlines; the selected values are 10, 30, 30, 60, and 30 seconds. GET
-bodies are ignored up to 64 KiB. These limits bound stalled or oversized
-transport work and do not change the status protocol.
+fields and a 417,792-byte parser/header ceiling, and bounds total connection
+lifetime so a keep-alive connection cannot remain indefinitely.
+EggServe 0.4 uses the direct H1 service boundary with `eggserve-primitives`
+0.2.2. Gregg's explicit limits include a 300-second connection lifetime and a
+1000-request per-connection cap. EggServe requires finite header, handler,
+body, idle-keepalive, and response-write deadlines; the selected values are
+10, 30, 30, 60, and 30 seconds. GET bodies are ignored up to 64 KiB. These
+limits bound stalled or oversized transport work and do not change the status
+protocol.
 
 ### Runtime ownership and Windows SCM shutdown
 

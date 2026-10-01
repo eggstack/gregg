@@ -71,11 +71,11 @@ defined in `collector/mod.rs` (re-exporting `gregg_host::DriveRefreshCache`). On
 
 ## HTTP server module
 
-The daemon uses EggServe's direct H1 runtime through `eggserve-server` and
-canonical transport values from `eggserve-primitives`; it does not depend on
-EggServe core/static compatibility crates or direct Hyper. The server lives
-under `crates/greggd/src/server/` and serves five
-read-only endpoints:
+The daemon uses EggServe 0.4's direct H1 runtime (`eggserve-server = "0.4"`)
+and canonical transport values from `eggserve-primitives = "0.2.2"`; it does
+not depend on EggServe core/static compatibility crates or direct Hyper. The
+server lives under `crates/greggd/src/server/` and serves five read-only
+endpoints:
 
 - `/` and `/v1/status` — return the cached v1 `StatusSnapshot` as JSON on
   Linux/macOS. On Windows they return `503 Service Unavailable` with a

@@ -25,8 +25,8 @@ path = "src/lib.rs"
 gregg-protocol = { version = "1.0.14", path = "../gregg-protocol" }
 gregg-host = { version = "1.0.14", path = "../gregg-host" }
 gregg-update = { version = "1.0.14", path = "../gregg-update" }
-eggserve-primitives = { version = "0.2", default-features = false }
-eggserve-server = { version = "0.2", default-features = false }
+eggserve-primitives = { version = "0.2.2", default-features = false }
+eggserve-server = { version = "0.4", default-features = false }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util"] }

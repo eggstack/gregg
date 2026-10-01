@@ -1,6 +1,6 @@
 # Plan 148: eggserve 0.4 direct-server adoption
 
-Status: planned.
+Status: implementation complete; existing all-platform CI pending.
 
 Depends on: completed Plan 127's EggServe direct-H1 daemon transport adoption and the current main branch. Independent of the remaining Plan 091 soak record and independent of Plan 147.
 
@@ -318,26 +318,57 @@ No new workflow, matrix, self-hosted runner, benchmark service, or evidence bund
 
 ## Acceptance criteria
 
-- [ ] `crates/greggd/Cargo.toml` permits `eggserve-server 0.4.x` and requires at least `eggserve-primitives 0.2.2` with default features disabled.
-- [ ] `Cargo.lock` resolves `eggserve-server 0.4.0` and `eggserve-primitives 0.2.2`.
-- [ ] No unrelated dependency is opportunistically upgraded.
-- [ ] The dependency-only upgrade is attempted before any application source change.
-- [ ] Any required source adaptation is confined to the private Gregg/EggServe server boundary and is justified by a concrete 0.4 API difference.
-- [ ] All five public routes, GET/HEAD, 404/405, headers, framing, schemas, and readiness/staleness behavior remain compatible with current main.
-- [ ] The current explicit runtime limits remain semantically unchanged, including 512 connection/request concurrency, 300-second total lifetime, 1000-request per-connection cap, and eight-second inner graceful shutdown.
-- [ ] Pre-bound listener ownership and readiness ordering remain unchanged.
-- [ ] Split `ServerControl` / `ServerCompletion` supervision remains intact and unexpected server completion remains daemon-critical.
-- [ ] Gregg's outer ten-second cleanup deadline remains authoritative.
-- [ ] Cached status bodies remain shared known-length `Bytes` streams without full-body copy/reserialization.
-- [ ] Plan-144 ready-health single-flight semantics remain green.
-- [ ] No trailers are introduced on Gregg responses.
-- [ ] No EggServe core/static/H3/Tower/http-interop/TLS/H2/H3/QUIC/Python capability enters Gregg's server graph.
-- [ ] Fresh current-main and post-upgrade stripped `greggd` sizes are recorded under the same conditions.
-- [ ] Any >=5% and >=128 KiB growth is attributed and explicitly accepted or corrected before closure.
-- [ ] Persistent-loopback behavior and bounded shutdown remain healthy.
-- [ ] Strict clippy, full workspace tests, Rust 1.89 tests, docs, default local checks, and the existing six-job CI matrix are green.
-- [ ] Current-state documentation names the 0.4 server line truthfully while Plan 127 remains historical.
-- [ ] Plan 091 and Plan 147 remain independent.
+- [x] `crates/greggd/Cargo.toml` permits `eggserve-server 0.4.x` and requires at least `eggserve-primitives 0.2.2` with default features disabled.
+- [x] `Cargo.lock` resolves `eggserve-server 0.4.0` and `eggserve-primitives 0.2.2`.
+- [x] No unrelated package version was opportunistically upgraded. Cargo reassigned four lockfile references among already-locked `windows-sys` versions; package versions remain unchanged.
+- [x] The dependency-only upgrade was attempted before any application source change; unchanged `greggd` compiled against 0.4.0.
+- [x] No source adaptation was required.
+- [x] All five public routes, GET/HEAD, 404/405, headers, framing, schemas, and readiness/staleness behavior remain compatible with current main (`raw_wire_contract_preserved_by_eggserve_transport`; all 77 server tests passed).
+- [x] The current explicit runtime limits remain semantically unchanged, including 512 connection/request concurrency, 300-second total lifetime, 1000-request per-connection cap, and eight-second inner graceful shutdown (`eggserve_runtime_keeps_bounded_lifetime_and_explicit_bounds`).
+- [x] Pre-bound listener ownership and readiness ordering remain unchanged (`readiness_runs_once_after_successful_bind`; `bind_failure_does_not_publish_readiness`).
+- [x] Split `ServerControl` / `ServerCompletion` supervision remains intact and unexpected server completion remains daemon-critical (all 20 run tests passed).
+- [x] Gregg's outer ten-second cleanup deadline remains authoritative (`shutdown_deadline_is_bounded`; `non_cooperative_task_is_aborted_after_deadline`).
+- [x] Cached status bodies remain shared known-length `Bytes` streams without full-body copy/reserialization (`status_serialization_is_cached_per_publication`).
+- [x] Plan-144 ready-health single-flight semantics remain green (concurrent v1/v2 serialization tests passed).
+- [x] No trailers are introduced on Gregg responses (known-length response path and raw wire framing tests remain unchanged).
+- [x] No EggServe core/static/H3/Tower/http-interop/TLS/H2/H3/QUIC/Python capability enters Gregg's server graph (`cargo tree` feature inspection shows only direct EggServe server/primitives).
+- [x] Fresh current-main and post-upgrade stripped `greggd` sizes were measured on `aarch64-unknown-linux-gnu`, stable toolchain, fat-LTO release profile: 2,694,616 bytes before and 2,694,616 bytes after (0 bytes, 0%).
+- [x] The measured size delta is below the review trigger; no size attribution or mitigation was needed.
+- [x] Persistent-loopback behavior and bounded shutdown remain healthy (`raw_wire_contract_preserved_by_eggserve_transport` repeats v1/v2 requests on one connection; runtime and lifecycle tests pin finite connection/request limits and bounded drain).
+- [ ] Strict clippy, stable full workspace tests, Rust 1.89 full workspace tests, docs, default local checks, and the existing six-job CI matrix are green. Local gates passed; CI is pending on the pushed implementation commit.
+- [x] Current-state documentation names EggServe 0.4 truthfully; Plan 127 remains historical.
+- [x] Plan 091 and Plan 147 remain independent; neither is unblocked by this dependency upgrade.
+
+## Implementation record
+
+The manifest-only upgrade succeeded without application source changes. The
+existing server and lifecycle tests remain the compatibility oracle. The final
+feature graph contains `eggserve-server 0.4.0` and
+`eggserve-primitives 0.2.2`; no Tower/Axum/TLS/H2/H3/QUIC path is enabled.
+The source-level behavior, including Gregg's finite 300-second keep-alive
+lifetime, 1000-request connection cap, eight-second EggServe drain, and
+known-length shared status bytes, is unchanged.
+
+Local verification passed:
+
+- `cargo test -p greggd --all-targets --all-features server::tests` — 77 passed.
+- `cargo test -p greggd --all-targets --all-features run::tests` — 20 passed.
+- `cargo fmt --all -- --check`.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+- `cargo test --workspace --all-targets --all-features`.
+- `cargo +1.89 test --workspace --all-targets --all-features`.
+- `cargo doc --workspace --no-deps` (succeeded; existing unrelated private-link warnings remain).
+- `./scripts/check-local.sh`.
+- `cargo check -p greggd --locked --all-targets --all-features`.
+- Both EggServe `cargo tree` feature inspections and the filtered dependency graph.
+
+Binary size comparison used two detached worktrees at the same source commit,
+stable toolchain, `aarch64-unknown-linux-gnu`, and workspace fat-LTO release
+profile. The baseline and upgraded stripped executables are both 2,694,616
+bytes (0 bytes / 0.0% delta).
+
+Implementation commit: pending.
+Existing CI run: pending.
 
 ## Explicit non-goals
 

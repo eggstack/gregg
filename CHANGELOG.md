@@ -7,6 +7,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **EggServe 0.4 direct-server adoption (Plan 148):** `greggd` now resolves
+  `eggserve-server 0.4.0` with `eggserve-primitives 0.2.2`. Existing routes,
+  response framing, shared cached bodies, split server supervision, and
+  explicit runtime limits (including the 300-second connection lifetime and
+  1000-request cap) remain unchanged; no protocol behavior changed.
+
 ### Fixed
 
 - **Second audit corrective pass (bugs.md, 2026-09-30):** every actionable
