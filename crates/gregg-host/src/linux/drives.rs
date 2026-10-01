@@ -266,10 +266,9 @@ mod tests {
                 block_size: 1,
             },
         );
-        assert!(
-            collect_with_limits(&source, &CollectionLimits::gregg_defaults())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            collect_with_limits(&source, &CollectionLimits::gregg_defaults()).unwrap(),
+            []
         );
     }
 

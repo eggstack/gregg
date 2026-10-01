@@ -1068,7 +1068,7 @@ mod tests {
             Box::new(EndpointError::PortZero),
         ];
         for err in cases {
-            assert!(!format!("{err}").is_empty());
+            assert_ne!(format!("{err}"), "");
         }
     }
 
@@ -1087,7 +1087,7 @@ mod tests {
         let ep = spec.into_endpoint();
         assert_eq!(ep.host, "192.168.1.1");
         assert_eq!(ep.port, 8080);
-        assert!(!ep.id.is_empty());
+        assert_ne!(ep.id, "");
     }
 
     // --- Edge cases ---

@@ -611,7 +611,7 @@ unknown_field = "oops"
             },
         ];
         for v in &violations {
-            assert!(!format!("{v}").is_empty());
+            assert_ne!(format!("{v}"), "");
         }
     }
 

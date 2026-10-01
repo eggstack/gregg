@@ -56,7 +56,7 @@ fn counter_reset_then_recovery() {
         cpu: RawCpuTicks {
             user: 600,
             system: 250,
-            idle: 4500,
+            idle: 8500,
             nice: 60,
         },
         ..MockNativeQueries::success()

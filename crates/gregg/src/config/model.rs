@@ -593,7 +593,7 @@ mod tests {
     fn default_config_is_valid() {
         let config = Config::default();
         assert!(config.is_valid());
-        assert!(config.validate().is_empty());
+        assert_eq!(config.validate(), []);
     }
     #[test]
     fn default_config_has_correct_values() {
@@ -603,7 +603,7 @@ mod tests {
         assert_eq!(config.request_timeout_ms, 1500);
         assert_eq!(config.max_concurrent_requests, 16);
         assert_eq!(config.default_port, 11310);
-        assert!(config.systems.is_empty());
+        assert_eq!(config.systems, []);
         assert!(config.eggpool.is_none());
     }
 

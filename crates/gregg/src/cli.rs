@@ -1488,7 +1488,7 @@ mod tests {
         cmd_remove(&store, "SERVER.local:11310").unwrap();
 
         let config = store.load_existing().unwrap();
-        assert!(config.systems.is_empty());
+        assert_eq!(config.systems, []);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1827,7 +1827,7 @@ mod tests {
         assert!(result.is_err(), "two name sources must be rejected");
 
         let config = store.load_existing().unwrap_or_default();
-        assert!(config.systems.is_empty());
+        assert_eq!(config.systems, []);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1910,7 +1910,7 @@ mod tests {
         cmd_remove(&store, "192.168.1.1").unwrap();
 
         let config = store.load_existing().unwrap();
-        assert!(config.systems.is_empty());
+        assert_eq!(config.systems, []);
 
         let _ = fs::remove_dir_all(&dir);
     }

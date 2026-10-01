@@ -1075,7 +1075,7 @@ mod tests {
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 24, 8);
         // Should not crash, should render something.
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at width 24: {header}");
     }
@@ -1086,7 +1086,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 32, 8);
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at width 32: {header}");
     }
@@ -1097,7 +1097,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 40, 8);
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at width 40: {header}");
     }
@@ -1108,7 +1108,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 60, 8);
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at width 60: {header}");
     }
@@ -1119,7 +1119,7 @@ mod tests {
         let mut state = AppState::from_config(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 120, 8);
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at width 120: {header}");
     }
@@ -1747,7 +1747,7 @@ mod tests {
         apply_online(&mut state, 0, linux_snap());
         // Width 24 = minimum valid width, height 5 = minimum valid height.
         let output = render_state(&state, 24, 5);
-        assert!(!output.trim().is_empty());
+        assert_ne!(output.trim(), "");
         let header = output.lines().next().unwrap();
         assert!(header.contains('x'), "header at 24x4: {header}");
     }

@@ -634,7 +634,10 @@ fn probe_dir_writable(dir: &Path, exe: &Path, purge: bool) -> Result<(), Uninsta
     static PROBE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let count = PROBE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let rand_suffix = {
+        #[cfg(unix)]
         let mut buf = [0_u8; 4];
+        #[cfg(not(unix))]
+        let buf = [0_u8; 4];
         #[cfg(unix)]
         {
             use std::io::Read;
