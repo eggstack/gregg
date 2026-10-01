@@ -1,6 +1,6 @@
 # Plan 150: Windows foreground smoke reliability corrective pass
 
-Status: planned.
+Status: complete at implementation `2ceafcd3d4a7223b29c3f29051ab91c61e82553e`; CI run `36919813734` green across all six jobs.
 
 Depends on: current post-Plan-149 main state. Independent of the remaining Plan 091 soak record and Plans 147-149 semantics.
 
@@ -263,23 +263,23 @@ If the corrected smoke fails again, its diagnostics must identify whether the ch
 
 ## Acceptance criteria
 
-- [ ] `windows_smoke.rs` uses Cargo's `CARGO_BIN_EXE_greggd` integration-test binary path or an MSRV-compatible equivalent.
-- [ ] The smoke no longer executes nested `cargo build -p greggd` subprocesses.
-- [ ] The foreground smoke selects a loopback port from an OS `127.0.0.1:0` allocation rather than a deterministic test-name hash.
-- [ ] No new random/port-allocation dependency is introduced.
-- [ ] Child stdout/stderr are not left as unread pipes.
-- [ ] Failure diagnostics include bounded daemon stdout/stderr, selected port/config context, and the last readiness probe outcome.
-- [ ] The readiness loop checks `child.try_wait()` and fails immediately with exit status when the daemon exits.
-- [ ] A child that remains alive but fails to become ready still fails at the thirty-second outer readiness deadline.
-- [ ] Every panic/error/success path guarantees child termination and reaping.
-- [ ] A failed smoke cannot leave a live `greggd.exe` for later tests in the Windows job.
-- [ ] The existing v2 status, Windows capability, identity, and metric assertions remain at least as strong.
-- [ ] No `greggd` production runtime, collector, service-manager, protocol, API, or configuration behavior changes unless the corrected diagnostics expose a separately demonstrated product defect.
-- [ ] No CI retry wrapper, `continue-on-error`, test skip, or Windows-job weakening is introduced.
-- [ ] Focused native Windows smoke passes with normal test-harness concurrency.
-- [ ] The full existing Windows workspace test/build/SCM path passes.
-- [ ] One ordinary six-job CI run is green.
-- [ ] Closure records the exact implementation SHA and exact CI run ID.
+- [x] `windows_smoke.rs` uses Cargo's `CARGO_BIN_EXE_greggd` integration-test binary path or an MSRV-compatible equivalent.
+- [x] The smoke no longer executes nested `cargo build -p greggd` subprocesses.
+- [x] The foreground smoke selects a loopback port from an OS `127.0.0.1:0` allocation rather than a deterministic test-name hash.
+- [x] No new random/port-allocation dependency is introduced.
+- [x] Child stdout/stderr are not left as unread pipes.
+- [x] Failure diagnostics include bounded daemon stdout/stderr, selected port/config context, and the last readiness probe outcome.
+- [x] The readiness loop checks `child.try_wait()` and fails immediately with exit status when the daemon exits.
+- [x] A child that remains alive but fails to become ready still fails at the thirty-second outer readiness deadline.
+- [x] Every panic/error/success path guarantees child termination and reaping.
+- [x] A failed smoke cannot leave a live `greggd.exe` for later tests in the Windows job.
+- [x] The existing v2 status, Windows capability, identity, and metric assertions remain at least as strong.
+- [x] No `greggd` production runtime, collector, service-manager, protocol, API, or configuration behavior changes unless the corrected diagnostics expose a separately demonstrated product defect.
+- [x] No CI retry wrapper, `continue-on-error`, test skip, or Windows-job weakening is introduced.
+- [x] Focused native Windows smoke passes with normal test-harness concurrency.
+- [x] The full existing Windows workspace test/build/SCM path passes.
+- [x] One ordinary six-job CI run is green.
+- [x] Closure records the exact implementation SHA and exact CI run ID.
 
 ## Explicit non-goals
 
@@ -310,3 +310,103 @@ Start in `crates/greggd/tests/windows_smoke.rs`.
 The first goal is not to guess why run `36915516145` timed out. Make the smoke incapable of hiding the reason: remove nested Cargo builds and deterministic-port selection, make child lifetime explicit, and surface startup output/exit state immediately.
 
 If the corrected harness then exposes a real daemon readiness defect, preserve that evidence and open the smallest product corrective rather than masking it with a longer timeout or retry.
+
+## Closure record
+
+Implemented in `2ceafcd3d4a7223b29c3f29051ab91c61e82553e` (single commit;
+`git show --stat` shows `crates/greggd/tests/windows_smoke.rs` only, +357/-120).
+No production source, workflow, script, manifest, or documentation file changed.
+
+What landed, mapped to the implementation sections above:
+
+- **A.** `binary_path()` is now `env!("CARGO_BIN_EXE_greggd")`. `ensure_binary()`
+  and its nested `cargo build -p greggd` subprocess are gone; the Windows job's
+  test step now contains no nested `Compiling greggd` activity. The
+  `--help` behavioral assertion is retained unchanged.
+- **B.** `unique_port()` (and its `cast_possible_truncation` allowance) is
+  replaced by `free_loopback_port()`, which binds `127.0.0.1:0`, reads the
+  OS-selected port, and drops the listener immediately before spawning. The
+  residual bind-after-release race is documented in the function's doc comment
+  and is deliberately not engineered away. No dependency was added.
+- **C.** The child gets `Stdio::from(File)` handles writing to
+  `daemon-stdout.log` / `daemon-stderr.log` in the test's temp directory, so
+  there are no unread pipes. `capture_tail()` bounds each stream to the last
+  8 KiB (tail-kept, truncation marked), and reports `<empty>` /
+  `<capture file unavailable>` rather than guessing. No reader threads exist.
+- **D.** `await_ready()` calls `poll_exit()` (`Child::try_wait`) on every
+  iteration and returns immediately when the daemon has exited. `last_probe`
+  records either the connection error or `HTTP <status> state=<state> body=…`,
+  bounded to 200 characters, so a timeout distinguishes never-listening,
+  live-but-warming/failed, and non-v2-body responses. Readiness now requires
+  HTTP 200 plus an exactly parsed `"state": "ready"` instead of a
+  `body.contains("\"ready\"")` substring.
+- **E.** `DaemonProcess` owns the child; `stop()` kills and reaps it and is
+  called from both `Drop` and the explicit success path, so a failed assertion
+  cannot leave a live `greggd.exe`. The temp directory is removed best-effort on
+  success and retained on failure, where its path is part of the report. The
+  report itself carries the reason, port, config path, elapsed time, child
+  state, last probe, and both bounded output tails.
+- **F.** `READY_TIMEOUT` is still `Duration::from_secs(30)` and
+  `READY_POLL_INTERVAL` is still 200 ms. Nothing was raised to mask a failure.
+- **G.** The `/v2/status` 200, `schema_version == 2`, Windows capability,
+  identity, metric-present, and null-`load`/`swap` assertions are preserved and
+  expressed as `Result` checks so a failure reports through the same
+  diagnostic path. Capability checks now use `as_bool() == Some(false/true)`,
+  which additionally rejects a missing or null flag.
+
+Verification:
+
+- `cargo fmt --all -- --check` passed.
+- `./scripts/check-local.sh` passed (`all checks passed (mode: default)`).
+- Because the file is `#![cfg(target_os = "windows")]` and cannot compile on
+  Linux, a temporary cfg-stripped copy was compiled and linted locally with
+  `cargo clippy -p greggd --all-features --tests` (pedantic warn level): clean,
+  zero warnings. The copy was deleted before the commit.
+- The same temporary copy was used to exercise the harness mechanics against a
+  real foreground `greggd` on Linux with a platform-appropriate status body
+  (also deleted before the commit). Observed behavior: the happy path passed;
+  a daemon that exited immediately failed in 200 ms with
+  `exited with code 1` and the daemon's own captured stderr
+  (`configuration validation failed: - port 0 is outside valid range 1..=65535`);
+  a live child that never listened still failed at the full 30 s deadline with
+  `still running at failure, terminated by this test` and
+  `connect to 127.0.0.1:<port>: Connection refused`; dropping the owner without
+  an explicit stop reaped the child (the `/proc/<pid>` entry was gone); and the
+  capture tail truncated, bounded, and reported empty/absent files correctly.
+- Native Windows truth: CI run `36919813734` (commit `2ceafcd3`) green across
+  all six jobs — Linux, macOS arm64, macOS Intel, Windows, MSRV Rust 1.89, and
+  FreeBSD 14.2 native `gregg-host`. The Windows job's Test step passed with
+  both smoke tests running under default harness concurrency
+  (`windows_daemon_binary_compiles_and_runs ... ok` at 20:14:56.69Z,
+  `foreground_daemon_serves_v2_status ... ok` at 20:14:57.19Z), followed by the
+  release `greggd` and `gregg` builds and the Windows SCM lifecycle smoke. The
+  smoke test binary went from 49.63 s in the failing run `36915516145` (18.5 s of
+  it the nested `cargo build`) to about 0.53 s.
+- No timeout, retry, `continue-on-error`, skip, or Windows-job weakening was
+  added, and the workflow file is byte-identical to its pre-plan state.
+
+Scope reconciliation:
+
+- Only `crates/greggd/tests/windows_smoke.rs` changed. `greggd` runtime,
+  collector, sampler, server, SCM service, protocol, API, and configuration
+  behavior are untouched, so no corrected product defect was exposed and no
+  separately scoped product corrective was needed.
+- Inspected `architecture/greggd-daemon.md` and
+  `.opencode/skills/greggd-daemon/SKILL.md`, which describe this test as
+  "binary help + foreground daemon + v2 health polling". That remains accurate
+  and no stale statement names the nested build or the hash-derived port, so no
+  live-doc edit was required. Nothing user-visible changed, so no
+  `README.md`, crate README, or `CHANGELOG.md` entry applies (same treatment as
+  completed Plan 149). Plans 074/075/149 history was not rewritten.
+- The root cause of run `36915516145` remains unproven — the old harness
+  discarded exactly the evidence that would have shown it, and the corrected
+  harness did not reproduce it. The commit that added this plan
+  (`fd9433675b31afcf92cc6c5dc31811abfe52403a`, run `36917837384`) was green
+  with the old harness, which is consistent with a transient hosted-runner
+  condition rather than a product regression.
+
+Future-plan impact: Plan 150 is terminal in the dependency order
+(`149 -> 150`); it unblocks nothing further. The two remaining open plans were
+already recorded as independent of it and keep their statuses unchanged: Plan
+091 stays in implementation progress pending its extended soak record, and Plan
+147 stays planned. No index status beyond Plan 150 itself required a change.
