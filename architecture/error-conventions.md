@@ -1,6 +1,6 @@
 # Error conventions
 
-Each crate (`gregg-protocol`, `gregg-update`, `greggd`, `gregg`) owns a
+Each crate (`gregg-protocol`, `gregg-update`, `gregg-host`, `greggd`, `gregg`) owns a
 crate-local typed error boundary using `thiserror` (the protocol crate never
 exposes application errors). Internal errors stay internal: application code
 returns the typed error, command entry points render concise diagnostics, and
@@ -55,8 +55,10 @@ manageable when additive fields appear in future schema versions.
 
 ## Collector errors
 
-The collector module (`crates/greggd/src/collector/error.rs`) defines
-`CollectErrorKind` with these variants:
+The collector module defines `CollectErrorKind` via re-export
+(`crates/greggd/src/collector/error.rs` re-exports the canonical taxonomy in
+`crates/gregg-host/src/error.rs`, Plan 135 facade preserves the
+`greggd::collector::error::` paths) with these variants:
 
 - **Warming** — first sample not yet available; counters have no delta.
 - **SourceUnavailable** — a procfs/sysfs entry is missing or unreadable.

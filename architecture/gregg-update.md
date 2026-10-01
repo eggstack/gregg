@@ -59,17 +59,21 @@ Both binaries share the same binary-first policy (see also
    `current_exe_path()`; replacement is `self_replace(candidate)` against the
    implicit current exe — Unix same-filesystem atomic rename where practical,
    Windows running-image semantics — preserving symlink targets, never
-   overwriting the symlink file itself). Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
-   the same helper for running-image semantics. Never elevate internally;
-   permission failures surface exit `4` with an exact platform-correct rerun
-   hint: `sudo <exe> update` on Unix, or the exact executable/operation from
-   an Administrator terminal/PowerShell on Windows.
+  overwriting the symlink file itself). Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
+  the same helper for running-image semantics. Never elevate internally;
+  permission failures return `PermissionDenied` with a platform-correct rerun
+  hint: `sudo <exe> update` on Unix, or the exact executable/operation from
+  an Administrator terminal/PowerShell on Windows (`greggd` maps it to exit
+  `4`; `gregg` surfaces it as operation failure exit `3` with the hint in the
+  message — exit mapping is caller-owned).
 
 ## Caller split
 
 - `crates/gregg/src/update.rs` — thin CLI adapter: binds the client identity
-  and delegates the full flow to `run_simple_update`, preserving exact outcome
-  strings (`AlreadyCurrent` / `UpdatedBinary` / `UpdatedFromCargo`).
+  and delegates the full flow to `run_simple_update`, preserving variant
+  structure with program-prefixed `Display`
+  (`AlreadyCurrent` / `UpdatedBinary` / `UpdatedFromCargo`; the shared crate
+  has no `UpdatedButRestartFailed` — `greggd` adds it).
 - `crates/greggd/src/update.rs` — lifecycle coordinator: binds the daemon
   identity, permission-probes before download, prepares via
   `prepare_candidate`, observes exact-executable `UpdateLifecycle` only after
@@ -109,7 +113,8 @@ target in all consumers at once, never in one place alone.
   application crate. No install receipt is kept.
 - Bounded execution everywhere: crates.io 15s / 256 KiB, download 90s
   (100s wall) / 64 MiB, capture/probe/candidate 20s/20s/5s, Cargo 600s,
-  `cargo --list` 30s, `curl`/`cargo` discovery probes 5s (run through the
+  `cargo --list` 30s (`LIST_TIMEOUT` in `uninstall.rs::cargo_lists_package`,
+  byte cap in `exec.rs::MAX_CARGO_LIST_BYTES`), `curl`/`cargo` discovery probes 5s (run through the
   same bounded child runner, so an earlier-`PATH` shim that never exits is
   killed and reaped instead of blocking `resolve_plan`), owner-private
   `TempDir 0700`, partial-file removal, kill/reap (no orphaned compilers), no

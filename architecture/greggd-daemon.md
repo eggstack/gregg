@@ -21,9 +21,9 @@ SCM `service` / `start` path.
 | `main` | `src/main.rs` | Binary boundary: CLI parsing, logging, error reporting, exit-code classification, and platform collector dispatch |
 | `lib` | `src/lib.rs` | Library root, re-exports all modules |
 | `cli` | `src/cli.rs` | Clap CLI: `run`, `stop`, `croncheck` (bounded `/v2/healthz` watchdog; spawns `run` only on refusal), `configprint`, `status` (read-only diagnostic composition), `host`, `port`, `version`, `update` (daemon lifecycle coordination over `gregg-update`), `uninstall [--dry-run] [--purge]` (exact-exe removal + owned startup teardown, dry-run/purge), `startup install`/`instructions` (`--method auto|systemd|launchd|cron`), `restart` (universal manager-aware; SCM on Windows / direct on Unix); Windows adds `start` and hidden `service` SCM entry; global `--config/-c`; authoritative bounded health fetch (`fetch_health_bytes`) with detail (`probe_health`) and watchdog (`probe_greggd`) classifications |
-| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all delegating into the shared `run_with_shutdown()` core; `RunOutcome`, 10s graceful shutdown deadline, Unix control-socket + Windows SCM entry alongside SIGTERM/SIGINT |
+| `run` | `src/run.rs` | Foreground daemon: wiring + supervision loop; entry points `run()`, `run_with_shutdown()`, Unix `run_with_control_path()`, cross-platform `run_with_control_path_or_default()`, all funneling into the shared `run_with_shutdown_on_ready()` core (foreground passes a no-op `on_ready`; Windows SCM passes the `RUNNING` publisher invoked only after listener bind); `RunOutcome`, 10s graceful shutdown deadline, Unix control-socket + Windows SCM entry alongside SIGTERM/SIGINT |
 | `config` | `src/config.rs` | TOML config, validation, atomic writes; `ConfigViolation`, `AtomicWriteError` |
-| `control` | `src/control.rs` | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest) computed once per operation, config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` is owned by the caller (`run_with_control_path`) so socket-file removal happens on every exit path, including signal-driven shutdown where the stop task is still parked in `accept()` |
+| `control` | `src/control.rs` (Unix-only) | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest) computed once per operation, config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` is owned by the caller (`run_with_control_path`) so socket-file removal happens on every exit path, including signal-driven shutdown where the stop task is still parked in `accept()` |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `Clock`/`RealClock` (`SyntheticClock` is test-only) |
 | `server/mod` | `src/server/mod.rs` | EggServe direct H1 service, endpoints, staleness; `ServerState`, public `Config`, private `PublishedState` (`ServerConfigError` in `server/error`); `server/tests.rs` holds the handler tests |
@@ -34,8 +34,8 @@ SCM `service` / `start` path.
 | `status` | `src/status.rs` | Read-only `status` model: `StatusReport`, `health_token`, `status_outcome`, `Display`, injected `gather_status`, stable `render_status`, `status_is_present` (valid endpoint = ready/warming/failed, same running definition as `croncheck`) |
 | `update` | `src/update.rs` | Exact-executable-aware lifecycle coordinator over the shared `gregg-update` mechanism: binds daemon identity, prepares the candidate via `prepare_candidate`, observes `UpdateLifecycle` after preparation (Unix systemd/launchd ownership + selected-config health; Windows `query_registration()` revalidated immediately before quiescence **and re-queried again inside `quiesce_windows_service_if_needed`**, with owned-to-foreign failing before replacement), quiesces only an owned Windows SCM running service (owned stop-pending waits stopped without restart; foreign/unknown/not-installed perform zero SCM mutation), replaces, then restarts only `ManagedRunning`/`DirectRunning` through `restart_daemon()` with `UpdatedButRestartFailed` partial-success; preserves the Plan 102 prepare-before-quiesce transaction rule |
 | `uninstall` | `src/uninstall.rs` | Component-safe daemon uninstall: independent read-only discovery per artifact, pure `plan_from_discovery` shared by `--dry-run` and execution, preflight before teardown, manager teardown via the startup owners + SCM `unregister`, direct control-stop with uncertain-stop blocking deletion, config preserved by default with `--purge` removing only resolved files |
-| `service/mod` | `src/service/mod.rs` | `ServiceManager` trait and bounded `ServiceRegistration` observations |
-| `service/windows` | `src/service/windows.rs` | Windows: SCM integration, native state plus bounded parsing of the registered `lpBinaryPathName` command into an exact image-path ownership target |
+| `service/mod` | `src/service/mod.rs` (`cfg(any(target_os = "windows", test))`) | `ServiceManager` trait and bounded `ServiceRegistration` observations |
+| `service/windows` | `src/service/windows.rs` (Windows; fake adapter under `cfg(test)`) | Windows: SCM integration, native state plus bounded parsing of the registered `lpBinaryPathName` command into an exact image-path ownership target |
 
 ## Architecture
 
@@ -119,8 +119,8 @@ does not panic inside reusable daemon code.
 | `GET`/`HEAD /v2/status` | `status_handler_v2` | v2 payload (200) or v2 health (503) |
 | `GET`/`HEAD /healthz` | `health_handler` | v1 health (200 if ready, 503 otherwise) |
 | `GET`/`HEAD /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
-| Known route, other method | — | 405 + `Allow: GET, HEAD` |
-| Other | `fallback_handler` | 404 `text/plain` |
+| Known route, other method | — | 405 + `Allow: GET,HEAD` |
+| Other | `fallback_handler` | 404 `text/plain; charset=utf-8` |
 
 **Published state:** Typed v1/v2 snapshots, compact successful status bytes,
 minimal health metadata, observation time, and failure count are published
@@ -128,7 +128,10 @@ under one state lock. Sampler-owned `Arc` snapshots cross the publication
 boundary without deep cloning. Status JSON is serialized once per successful
 publication and repeated fresh requests clone `Bytes`; if preparation fails,
 the typed snapshot remains authoritative and the request path serializes it on
-demand. Each handler takes one coherent generation, so its HTTP status and
+demand. Ready-health bodies use a separate per-publication `OnceCell` memo
+(`health_cell`/`health_cell_v2`), populated via borrowed serialization and
+revalidated after the await so a concurrent failure transition cannot make a
+waiter answer `200` for a superseded publication. Each handler takes one coherent generation, so its HTTP status and
 JSON body cannot describe different publications. Windows publishes v2
 metrics and returns a v1 `not_serving` health response with `503` because v1
 is structurally unavailable.
@@ -140,9 +143,12 @@ failure thresholds are evaluated for every request before cached bytes are
 served; stale data returns the existing collector-failure health response even
 when old successful bytes remain stored.
 
-**Staleness policy:** The daemon wires `max_consecutive_failures = 0`
-(disabled), so only the age-based path is live in production; the
-failure-count policy remains test-only. If `max_snapshot_age > 0` and the
+**Staleness policy:** The daemon wires `max_consecutive_failures = 3`
+(`run.rs::DEFAULT_MAX_CONSECUTIVE_FAILURES`) alongside `stale_after_ms`, so a
+short burst of collector failures marks the preserved snapshot stale (503)
+instead of serving `200` while health reports failure
+(`ServerState::new()`/`Config::default()` use `0`; the count policy is
+production-live, not test-only). If `max_snapshot_age > 0` and the
 latest published observation is too old, the server
 returns 503, including for v2-only Windows publication. The snapshot is preserved (not cleared) for stale serving. A 503 body is always a failed health response: if staleness trips while the stored health state still says `ready`, the handlers substitute a `CollectorFailure` failure ("cached snapshot is stale"), so the body can never contradict the status code.
 
@@ -188,7 +194,7 @@ The sampler owns the clock and cadence. Key behaviors:
 ### Configuration
 
 ```toml
-name = "greggd"           # display name, max 128 bytes
+name = "greggd"           # display name, max 128 characters
 host = "0.0.0.0"          # bind address
 port = 11310              # TCP port (1-65535)
 sample_interval_ms = 1000 # 250-60000
@@ -196,7 +202,7 @@ stale_after_ms = 10000    # 0 = disabled, else > sample_interval_ms
 ```
 
 `name` is the human-readable `system.name` in published snapshots. It must be
-non-empty, at most 128 bytes, and contain no control characters. Foreground
+non-empty, at most 128 characters, and contain no control characters. Foreground
 startup and the Windows SCM worker load and validate the config before creating
 their native collector, then pass that name as the collector display-name
 override. `system.hostname` is collected independently from the native host
@@ -370,13 +376,13 @@ discarded at the collector boundary and does not fabricate a zero value.
 
 | Platform | Source | Key interfaces |
 |----------|--------|---------------|
-| Linux | `collector/linux/` | `/proc/stat`, CPUFreq sysfs, `/sys/block/*/stat`, `/proc/net/dev`, network sysfs, mounts, `statvfs` |
-| macOS | `collector/macos/` | Mach/sysctl, `getloadavg`, `libc::getmntinfo`/`statfs`, `NET_RT_IFLIST2`/`if_msghdr2` with `getifaddrs`/`if_data` fallback, IOKit block statistics |
-| Windows | `collector/windows/` | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, processor power, disk IOCTL, IP Helper |
+| Linux | `gregg-host/src/linux/` (facade `collector/linux/`) | `/proc/stat`, CPUFreq sysfs, `/sys/block/*/stat`, `/proc/net/dev`, network sysfs, mounts, `statvfs` |
+| macOS | `gregg-host/src/macos/` (facade `collector/macos/`) | Mach/sysctl, `getloadavg`, `libc::getmntinfo`/`statfs`, `NET_RT_IFLIST2`/`if_msghdr2` with `getifaddrs`/`if_data` fallback, IOKit block statistics |
+| Windows | `gregg-host/src/windows/` (facade `collector/windows/`) | `GetSystemTimes`, `GlobalMemoryStatusEx`, `GetPerformanceInfo`, processor power, disk IOCTL, IP Helper |
 
 ## Tests
 
-### Unit tests
+### Unit tests (counts as of 2026-10-01; approximate, not a contract)
 
 Most modules have inline `#[cfg(test)]` tests (`server` keeps its handler
 tests in the separate `server/tests.rs` file):

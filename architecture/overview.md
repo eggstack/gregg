@@ -233,7 +233,7 @@ own client, auth, cadence, and rendering — see
 | Release policy | `scripts/release-targets.txt`, `release-preflight.sh`, `release-check-assets.sh`, `release-install-zig.sh` | Single 5-target table + version/tag/registry preflight + asset validation | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | Loopback/SOAK smokes | `scripts/verify-installed-daemon.sh`, `test-verify-installed-daemon.sh`, `smoke-windows.ps1` (SCM), `run-mixed-fleet-sustained.py` + `scripts/tests/` (`fake-greggd.py`, `fleet-fixture.py`, `test-install-rerun.sh`, `test_sustained_runner.py`) | Bounded daemon health smoke, Windows lifecycle proof, ignored sustained-workload driver | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | Installers | `packaging/install.sh` / `install.ps1` (bootstrap, binary-first) + legacy `install-linux.sh` / `install-macos.sh` / `install-windows.ps1`, `uninstall-windows.ps1` (`greggd uninstall` wrapper), `systemd/` unit, `launchd/` plist | Default install path; Cargo fallback for `armv7l`/unknown only | [scripts-and-packaging.md](scripts-and-packaging.md) |
-| CI / release workflows | `.github/workflows/ci.yml`, `release-binaries.yml` | Linux fmt/clippy/tests + native macOS/Windows + MSRV 1.89; tag-only 5-target draft release (glibc 2.17) | [scripts-and-packaging.md](scripts-and-packaging.md) |
+| CI / release workflows | `.github/workflows/ci.yml`, `release-binaries.yml` | Linux fmt/clippy/tests + native macOS (arm64 + Intel) / Windows SCM smoke / FreeBSD `gregg-host` native + MSRV 1.89; tag-only 5-target draft release (glibc 2.17) | [scripts-and-packaging.md](scripts-and-packaging.md) |
 | User docs | `docs/{installation,daemon,client,display,api,development}.md` | Behavior-facing manuals (install, daemon, client, rendering, API) | — |
 | Skills | `.opencode/skills/` (`rust-workspace`, `greggd-daemon`, `gregg-client`, `protocol-wire`, `platform-collectors`, `release-process`, `eggpool`, `architecture-docs`, `plans-workflow`) | Task-scoped agent guidance shadowing the architecture docs | matching deep dive |
 | Plans | `plans/` (index: `plans/README.md`) | Sequencing + acceptance criteria; completion rule lives there | [plans-workflow skill](../.opencode/skills/plans-workflow/SKILL.md) |
@@ -255,7 +255,8 @@ own client, auth, cadence, and rendering — see
 - **Testing**: unit fixtures + mock seams (`FileSource`, `MacNativeQueries`,
   `WindowsSource`), protocol JSON fixtures, TUI buffer tests, `test_support`
   builders, `lock_helper` behind `test-helper`, platform-native collector
-  gates (`collector::linux` / `macos` / `windows`).
+  gates (`greggd` `collector::linux` / `macos` / `windows`, plus `gregg-host`
+  FreeBSD native; full `greggd` remains Linux/macOS/Windows).
 
 ---
 
@@ -270,7 +271,7 @@ own client, auth, cadence, and rendering — see
 | [gregg-update.md](gregg-update.md) | Updater crate: version/target policy, download/verify/stage/replace mechanics |
 | [greggd-daemon.md](greggd-daemon.md) | Daemon crate: collectors wiring, sampler, HTTP server, CLI, service management |
 | [gregg-client.md](gregg-client.md) | Client crate: CLI, polling, state engine, TUI, EggPool |
-| [collectors.md](collectors.md) | Platform collectors: Linux, macOS, Windows native collection |
+| [collectors.md](collectors.md) | Platform collectors: `gregg-host` native Linux/macOS/Windows/FreeBSD collection + `greggd` adapter facade |
 | [scripts-and-packaging.md](scripts-and-packaging.md) | Scripts, installers, service definitions, CI, release workflows |
 
 ### Cross-cutting decisions

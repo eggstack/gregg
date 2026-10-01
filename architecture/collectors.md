@@ -28,7 +28,7 @@ All collector byte-ratio percentages use the shared
 `collector::clamped_usage_pct` helper so v1 and v2 platform paths have the
 same zero, clamp, and non-finite behavior.
 
-Optional live telemetry uses the shared collector/rate.rs baseline helper.
+Optional live telemetry uses the shared `gregg-host/src/rate.rs` baseline helper.
 Cumulative two-direction counters are keyed by native identity and divided by
 actual monotonic elapsed time. First observations, counter decreases, zero or
 backward elapsed time, and identity disappearance/reappearance all establish a
@@ -63,8 +63,10 @@ filesystem call cannot extend critical daemon shutdown.
 
 ### Drive normalization
 
-`collector/drives.rs` provides shared normalization (46 `test_fixtures/` files;
-39 tests in `linux/tests.rs` plus source/drive helpers):
+`gregg-host/src/drives.rs` provides shared normalization (46 `test_fixtures/`
+files under `crates/greggd/src/collector/test_fixtures/` for the facade freeze
+suite; 39 tests in `greggd` facade `linux/tests.rs`, 12 in `gregg-host`
+`linux/tests.rs`, plus source/drive helpers):
 - Validate candidates (non-empty identity/name, name ≤512 bytes, positive total, `free ≤ total`, `available ≤ total`)
 - Deduplicate by identity (`sort_by(identity,name)` → `dedup_by(identity)`, keeping the smallest name)
 
@@ -78,7 +80,7 @@ both free values from `GetDiskFreeSpaceExW`. Used space is `total − total_free
 
 ## Linux collector
 
-**Source:** `crates/greggd/src/collector/linux/`
+**Source:** `crates/gregg-host/src/linux/` (facade: `crates/greggd/src/collector/linux/`)
 
 | Module | File | Purpose |
 |--------|------|---------|
@@ -169,7 +171,7 @@ do not add capacity, and loopback is detail-only for capacity.
 
 ## macOS collector
 
-**Source:** `crates/greggd/src/collector/macos/`
+**Source:** `crates/gregg-host/src/macos/` (facade: `crates/greggd/src/collector/macos/`)
 
 | Module | File | Purpose |
 |--------|------|---------|
@@ -284,7 +286,7 @@ was found.
 
 ## Windows collector
 
-**Source:** `crates/greggd/src/collector/windows/`
+**Source:** `crates/gregg-host/src/windows/` (facade: `crates/greggd/src/collector/windows/`)
 
 | Module | File | Purpose |
 |--------|------|---------|
@@ -442,11 +444,14 @@ Located in `crates/greggd/src/collector/test_fixtures/`:
 
 Native collection, daemon sampling, and wire protocol have distinct owners:
 
-- **Native collection** (`crates/greggd/src/collector/`): acquisition,
+- **Native collection** (`crates/gregg-host/src/`): acquisition,
   delta arithmetic, `CounterBaselines` rates with actual monotonic elapsed
   time, drive normalization/bounding, slow-probe isolation, and the typed
   `Warming`/`CounterReset`/source/parse/numeric taxonomy. No clock, cadence,
-  HTTP, or schema-version decisions live here.
+  HTTP, or schema-version decisions live here. `greggd` keeps the Gregg-owned
+  `SystemCollector`/`CollectedMetrics`/`into_snapshot_pair` facade with
+  `HostCollector`/`HostSample` underneath; there is no `collector/freebsd`
+  adapter in the daemon (FreeBSD is `gregg-host`-only).
 - **Daemon sampler** (`crates/greggd/src/sampler.rs`): cadence, wall-clock
   timestamps, readiness (`Warming`/`CounterReset` never fail; hard failures
   fail and preserve the last snapshot), v1/v2 conversion dispatch, and

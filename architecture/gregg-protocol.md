@@ -19,9 +19,9 @@ depends on nothing from either.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1` (`SCHEMA_VERSION_V2` lives in `v2.rs`), `MAX_IDENTITY_FIELD_BYTES = 512`, `MAX_SAMPLE_INTERVAL_MS = 86_400_000`, `#![forbid(unsafe_code)]` |
+| `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1` (`SCHEMA_VERSION_V2` lives in `v2.rs`), `MAX_IDENTITY_FIELD_BYTES = 512`, `MAX_HEALTH_MESSAGE_BYTES = 512`, `MAX_SAMPLE_INTERVAL_MS = 86_400_000`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities`; public entry is `StatusSnapshot::validate()` |
-| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `DiskIoMetrics`, `DiskIoPayload`, `NetworkInterfaceMetrics`, `NetworkPayload`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES`, `MAX_DISK_IO_ENTRIES`, `MAX_NETWORK_INTERFACE_ENTRIES`, `MAX_LIVE_METRIC_ID_BYTES`, `MAX_LIVE_METRIC_NAME_BYTES`, `MAX_RATE_BYTES_PER_SEC` |
+| `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `CommitMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `DiskIoMetrics`, `DiskIoPayload`, `NetworkInterfaceMetrics`, `NetworkPayload`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES`, `MAX_DISK_IO_ENTRIES`, `MAX_NETWORK_INTERFACE_ENTRIES`, `MAX_LIVE_METRIC_ID_BYTES`, `MAX_LIVE_METRIC_NAME_BYTES`, `MAX_RATE_BYTES_PER_SEC`, `MAX_CAPACITY_BITS_PER_SEC`, `MAX_CPU_FREQUENCY_HZ` |
 | `validate` | `src/validate.rs` | V1 validation: 9 violation kinds (`validate()` is `pub(crate)`; callers use `StatusSnapshot::validate()`) |
 | `validate_v2` | `src/validate_v2.rs` | V2 validation: base and live-metrics violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
 | `health` | `src/health.rs` | `HealthResponse` (V1-only) plus shared `ReadinessState` / `HealthCategory` (`Warming`, `CollectorFailure`, `NotServing`) also used by V2 |
@@ -91,7 +91,7 @@ additive JSON changes from silently loosening invariants.
 | Kind | What it catches |
 |------|----------------|
 | `UnsupportedSchemaVersion` | `schema_version` != 1 |
-| `ZeroNotAllowed` | Timestamps, `logical_cores`, or byte totals = 0 (`memory`/`swap.total_bytes == 0` with nonzero used/usage, `drives[].total_bytes == 0`, `commit.limit_bytes == 0`) |
+| `ZeroNotAllowed` | Timestamps, `logical_cores`, or `memory`/`swap.total_bytes == 0` with nonzero used/usage |
 | `SampleIntervalOutOfRange` | `sample_interval_ms` exceeds 24-hour protocol maximum |
 | `PercentageNotFinite` | NaN or infinity in percentage fields |
 | `PercentageOutOfRange` | Percentage outside `0.0..=100.0` |
@@ -175,7 +175,8 @@ Windows v2-only publication returns v1 `NotServing` health with HTTP 503;
 v2 status and health remain independently ready after a valid sample.
 
 Both v1 (`HealthResponse`) and v2 (`HealthResponseV2`) have constructors for
-each state: `ready()`, `warming()`, `warming_with_message()`, `failed()`.
+each state: `ready()`, `try_ready()`, `warming()`, `warming_with_message()`,
+`try_warming_with_message()`, `failed()`, `try_failed()`.
 `ready()` asserts the snapshot invariant in debug builds; `try_ready()`
 validates first and returns the structured violation list, and the daemon
 serves a `failed` envelope instead of a `200` when a cached snapshot fails
@@ -193,7 +194,7 @@ defaults:
 | `LinuxSnapshotBuilder` | V1 Linux snapshot with iowait |
 | `MacosSnapshotBuilder` | V1 macOS snapshot without iowait |
 | `LinuxSnapshotV2Builder` | V2 Linux snapshot with optional drives/live telemetry and `build_payload()` |
-| `MacosSnapshotV2Builder` | V2 macOS snapshot (load average, no iowait, no swap) with optional drives/live telemetry and `build_payload()` |
+| `MacosSnapshotV2Builder` | V2 macOS snapshot test fixture (load average, no iowait; test-only swap-absent edge — native `gregg-host` macOS and `macos-v2.json` report `swap: true` from `vm.swapusage`) with optional drives/live telemetry and `build_payload()` |
 | `WindowsSnapshotV2Builder` | V2 Windows snapshot with commit, optional live telemetry, and `build_payload()` |
 
 `IdentityFixture` provides `linux()`, `macos()`, and `windows()` const

@@ -20,7 +20,7 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop (6 `select!` arms: shutdown, poll batches, EggPool results, input events, highlight deadline, pending refresh backpressure), TUI wiring (update is synchronous, before Tokio) |
+| `main` | `src/main.rs` | Entry point, event loop (6 `select!` biased arms in source order: shutdown, input events, poll batches, EggPool results, highlight deadline, pending refresh backpressure — input before batches so flooded batches cannot starve `Quit`), TUI wiring (update is synchronous, before Tokio) |
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
 | `update` | `src/update.rs` | Thin `run_simple_update` adapter binding the client identity |
 | `uninstall` | `src/uninstall.rs` | Exact-exe client removal plan/execution (`purge_empty_dir_for` only the standard parent) |
@@ -81,12 +81,15 @@ renders a Ratatui-based terminal UI.
 
 ### Event loop
 
-The main event loop in `main.rs` uses `tokio::select!` biased to process:
+The main event loop in `main.rs` uses `tokio::select!` biased in this source
+order:
 
-1. **Poll batches** from the scheduler → apply to state
-2. **EggPool results** from the worker → apply to state
-3. **User input events** from crossterm → translate to actions → apply to state
-4. **Highlight deadline** (`tokio::time::Sleep` arm) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
+1. Shutdown (`CancellationToken`)
+2. **User input events** from crossterm → translate to actions → apply to state (input before batches so a flooded batch cannot starve `Quit`)
+3. **Poll batches** from the scheduler → apply to state
+4. **EggPool results** from the worker → apply to state (close marks the worker unavailable, Systems polling continues)
+5. **Highlight deadline** (`tokio::time::Sleep` arm, parked far-future while dormant) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
+6. **Pending Systems refresh backpressure** — a `try_send Full` defers the endpoint replacement + reconcile without blocking input, rendering, or batches
 
 The loop keeps a local dirty flag. It draws the initial frame immediately,
 then redraws only after a poll batch, EggPool result/worker transition, mapped
@@ -146,10 +149,11 @@ Config → Endpoint list → PollScheduler → PollBatch channel → AppState re
   that one ordered result per endpoint per generation.
 
 The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives
-the replacement endpoint vector, and awaits delivery through the bounded
-scheduler command channel before reconciling `AppState`. A full channel creates
-backpressure in a pending event-loop branch rather than blocking input,
-rendering, or poll-batch processing; a closed receiver returns through the
+the replacement endpoint vector, and delivers it through the bounded
+scheduler command channel. `try_send` success reconciles the `ConfigStore`
+replacement immediately with an immediate poll; only `Full` installs a
+`PendingSystemRefresh` that reconciles after delivery, and a closed receiver
+returns through the
 TUI's normal error boundary. Failed config loads retain the
 last-known-good state, issue an ordinary best-effort refresh, and display the
 reload error in the existing diagnostic line until a later reload succeeds.
@@ -323,12 +327,15 @@ through `resolve_system_suffixes` (via the shared `metric_prefix_width`
 helper) so mixed `SWP`/`COMMIT` fleets budget and render suffixes
 against the same structural prefix width.
 
-Normal metric rows are cached in a renderer-local map keyed by stable system ID
-and a compact render key containing only values that affect row text and NET
-presence. Cached rows retain natural and percentage-only suffix forms. Each
-render builds an index-aligned optional row table so visible entries do not
-search the fleet repeatedly. Condensed mode preformats each online system once
-per render and measures configured names/hosts by borrowing their strings.
+Normal metric rows are cached cross-render in a renderer-local map keyed by
+stable system ID and a compact render key containing only values that affect
+row text and NET presence. Cached rows retain natural and percentage-only
+suffix forms. Each render builds an index-aligned optional row table so
+visible entries do not search the fleet repeatedly. Condensed values are
+cached cross-render in `HashMap<stable ID, {CondensedRenderKey,
+Rc<PreformattedValues>}>` (the key includes label and port, so a port-only
+edit invalidates the memo), not reformatted every render; condensed
+measurement borrows configured names/hosts.
 
 Production polling consumes owned `PollBatch` payloads through an internal
 reducer path, moving normalized identity/detail strings and collections. The
@@ -336,7 +343,7 @@ borrowed `apply_batch(&PollBatch)` and normalization constructors remain the
 compatibility/reference paths. Ordered scheduler results use positional
 stable-ID matching with a safe fallback for reordered or synthetic batches.
 
-**Offline rendering** (`ui/system_block.rs::render_offline`): When the
+**Offline rendering (normal view, `ui/system_block.rs::render_offline`):** When the
 configured client name is set the row reads `name@host:port offline`;
 otherwise it reads `host:port offline` and never duplicates the host.
 The configured client name persists on `SystemEntry.name`; the daemon's
@@ -399,10 +406,13 @@ omitted entirely.
 Online rows (normal header and condensed HOST) render the configured name, or
 the bare host when no name is configured, **without** the port: the online row
 is a one-line identity/metric summary and the condensed HOST column is the
-most width-constrained. Offline/pending rows keep the full
+most width-constrained. Normal-view offline/pending rows keep the full
 `name@host:port` form because there is no metric row to disambiguate them.
-`CondensedRenderKey` therefore carries the label *and* the port, so a
-port-only config edit still invalidates a memoized row.
+Condensed status rows (`ui/condensed.rs::status_line`) render truncated
+`name|host + status` only (no `@host:port` in text); identity is preserved via
+the fleet-wide HOST budget. `CondensedRenderKey` still carries the label
+*and* the port separately, so a port-only config edit still invalidates a
+memoized row.
 
 Condensed tiers add `NET` between `DISK` and `LOAD` where the tier fits:
 Wide includes `NET` and `IOWAIT`, Medium includes `NET` and `LOAD`, Narrow
@@ -492,7 +502,7 @@ instead of surfacing later as a `NetworkError` or an unrenderable
 | `refresh` | Set the global polling interval (seconds) |
 | `edit` | Open config in editor |
 | `version` | Print client version |
-| `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves exact outcome strings); full flow (`run_simple_update`) lives in `gregg-update` |
+| `update` | Thin CLI adapter over the shared `gregg-update` mechanism (binds program identity, preserves variant structure with program-prefixed `Display`); full flow (`run_simple_update`) lives in `gregg-update` |
 | `uninstall [--dry-run] [--purge]` | Remove only the exact invoked client executable (sibling `greggd` survives; no directory recursion); config preserved by default, `--purge` removes only the resolved config file after successful Unix Cargo package removal, `--dry-run` shows Cargo plus config intent without mutation; Windows Cargo-owned installs print the zero-mutation handoff; never inits the TUI runtime |
 | `eggpool add/list/remove` | Manage the single EggPool endpoint; adding another requires `--replace` and reports a configuration conflict otherwise |
 

@@ -1,5 +1,7 @@
 # macOS collector diagnostic comparison notes
 
+Code: `crates/gregg-host/src/macos/` (facade `crates/greggd/src/collector/macos/`).
+
 This document records expected differences between `greggd`'s macOS collector
 output and the values shown by Activity Monitor, `top`, and `vm_stat`. These
 differences are intentional design choices, not bugs.

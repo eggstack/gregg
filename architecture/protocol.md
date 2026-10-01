@@ -147,7 +147,8 @@ are:
 
 - `UnsupportedSchemaVersion { found: u16 }`
 - `ZeroNotAllowed` (for `observed_at_unix_ms`, `sample_interval_ms`,
-  `cpu.logical_cores`)
+  `cpu.logical_cores`, plus `memory`/`swap.total_bytes == 0` with nonzero
+  used/usage)
 - `SampleIntervalOutOfRange` — `sample_interval_ms` exceeds 24 hours
 - `PercentageNotFinite`
 - `PercentageOutOfRange`
@@ -171,7 +172,14 @@ are:
 - `TooManyDrives` — more than 32 drive entries
 
 The base v2 contract has 16 violation kinds (9 from v1 + 7 additional);
-live-metrics validation adds 18 structured kinds.
+live-metrics validation adds 20 structured kinds (`CpuFrequencyZero`,
+`CpuFrequencyExceedsMaximum`, `TooManyDiskIoDevices`, `DiskIoIdInvalid`/`TooLong`,
+`DiskIoNameInvalid`/`TooLong`, `DuplicateDiskIoId`, `DuplicateDriveName`,
+`UnknownDriveAssociation`, `TooManyNetworkInterfaces`,
+`NetworkInterfaceIdInvalid`/`TooLong`, `NetworkInterfaceNameInvalid`/`TooLong`,
+`DuplicateNetworkInterfaceId`, `ZeroCapacity`, `CapacityExceedsMaximum`,
+`LoopbackAggregateMember`, `RateExceedsMaximum`, plus identity/collection
+bounds), for 36 `ViolationKindV2` variants total.
 
 The additive live-metrics validation extends this with bounded collection and
 string checks (disk/net IDs and names reject NUL and blank values; drive names
@@ -265,6 +273,10 @@ Windows implementation lives behind `cfg(target_os = "windows")` and
 uses native Windows APIs (`GetSystemTimes`, `GlobalMemoryStatusEx`,
 `GetPerformanceInfo`, `GetComputerNameExW`, `RtlGetVersion`) through
 raw `extern "system"` FFI. No external commands are executed.
+Native acquisition lives in `gregg-host` (`linux/`/`macos/`/`windows/` plus
+`freebsd/` for host-only coverage); `greggd` keeps the Gregg-owned
+`SystemCollector` facade with `HostCollector` underneath. Full `greggd`
+remains Linux/macOS/Windows; FreeBSD is `gregg-host`-only.
 
 For collector semantics and acceptance criteria, see the
 collector phase plans under [`plans/`](../plans/).

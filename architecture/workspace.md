@@ -8,7 +8,7 @@ crates/gregg-protocol    library    versioned wire types and compatibility rules
 crates/gregg-update      library    shared binary-first self-update mechanics (internal, Plan 104)
 crates/gregg-host        library    native host telemetry (Linux/macOS/Windows/FreeBSD, rate math, slow probe)
 crates/greggd           bin + lib  Linux/macOS/Windows metrics daemon + service-management CLI (lib exposes the collector for integration tests)
-crates/gregg            binary     endpoint-management CLI + polling/state engine + Ratatui TUI
+crates/gregg            lib + bin (+ lock_helper test helper)  endpoint-management CLI + polling/state engine + Ratatui TUI
 ```
 
 The `gregg` client compiles and runs natively on Windows x86-64, Linux, and macOS. The `greggd` daemon compiles and runs on Linux, macOS, and Windows x86-64. `gregg-host` additionally carries a FreeBSD backend (Plan 136), qualified on FreeBSD CI; the full `greggd` product remains Linux/macOS/Windows.
@@ -65,7 +65,9 @@ Within each binary crate, the following are kept separate:
 Native telemetry lives in `gregg-host` (`src/linux/`, `src/macos/`,
 `src/windows/`, `src/freebsd/` plus shared `src/rate.rs` and
 `src/slow_probe.rs`). The daemon's thin adapters live under
-`crates/greggd/src/collector/`. Platform-specific
+`crates/greggd/src/collector/` (`linux`/`macos`/`windows` only; there is no
+`collector/freebsd` adapter — FreeBSD coverage is `gregg-host`-only on
+FreeBSD CI). Platform-specific
 collectors are `cfg(target_os = ...)`-gated and share the `SystemCollector` trait
 defined in `collector/mod.rs` (re-exporting `gregg_host::DriveRefreshCache`). Only one platform module is compiled per target.
 
@@ -447,7 +449,8 @@ invariants are the only exceptions: the native collectors
 (`gregg-host/src/linux/source.rs` for `statvfs`,
 `gregg-host/src/macos/ffi.rs` for Mach, `gregg-host/src/windows/source.rs`,
 `gregg-host/src/freebsd/source.rs`), the
-`greggd` startup privilege probe (`startup/install.rs` for `geteuid`), and
+`greggd` startup privilege probe (`startup/install.rs` for `geteuid`) and the
+daemon CLI Unix config-lock guard (`greggd/src/cli.rs` for `flock`), and
 the client config lock (`gregg/src/config/lock.rs`, `config/store.rs`,
 `bin/lock_helper.rs` for `flock`/`LockFileEx`) plus the client executable
 probe (`gregg/src/cli.rs` for `access`). No unsafe pointers or borrowed
@@ -481,9 +484,10 @@ and dependency bans:
   crates produce warnings.
 - **Licences:** only MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause,
   ISC, Zlib, and CDLA-Permissive-2.0 are allowed.
-- **Bans:** multiple versions of the same crate produce warnings.
+- **Bans:** multiple versions of the same crate produce warnings
+  (`wildcards = "allow"`).
 - **Sources:** only crates.io is permitted; unknown registries and git sources
-  are denied (`wildcards = "allow"`; `RUSTSEC-2026-0185` ignored as a disabled
+  are denied (`RUSTSEC-2026-0185` ignored as a disabled
   optional HTTP/3 dependency with the feature off).
 
 ## Testing strategy
@@ -498,8 +502,10 @@ cargo test --workspace --all-targets --all-features
 
 The manual `check-local.sh --release` preflight adds full Clippy,
 documentation, package/version checks, installation smoke, and the protocol
-publish dry-run. Ordinary CI runs Linux fmt/Clippy/tests, native macOS and
-Windows checks, and one Rust 1.89 job running the full workspace tests; it does not build docs,
+publish dry-run. Ordinary CI runs Linux fmt/Clippy/tests, native macOS
+(arm64 + Intel matrix) and Windows checks (release builds of both binaries +
+SCM smoke), FreeBSD VM `gregg-host` native qualification, and one Rust 1.89
+job running the full workspace tests; it does not build docs,
 publish, or upload evidence.
 
 Platform-specific collector tests use deterministic fixtures and mock

@@ -11,9 +11,9 @@ definitions, and packaging infrastructure.
 
 Primary local validation scripts. Two modes:
 
-**Default mode (short routine loop, `check-local.sh` uses `--all-targets --all-features`):**
+**Default mode (short routine loop, both scripts default to `--all-targets --all-features`):**
 1. `cargo fmt --all -- --check`
-2. `cargo test --workspace --all-targets --all-features` (`check-local.ps1` default is bare `cargo test --workspace`)
+2. `cargo test --workspace --all-targets --all-features`
 
 **`--release` mode** (adds):
 1. Full workspace Clippy and documentation
@@ -34,8 +34,9 @@ Bounded loopback smoke test for greggd:
 5. Validates `/v2/status` JSON against jq schema
 6. Sends SIGTERM and verifies clean shutdown
 
-Handles port collisions with retry logic. Used by both `check-local.sh` and
-`check-local.ps1` release modes.
+Handles port collisions with retry logic. Used by `check-local.sh` release
+mode; `check-local.ps1` mirrors it with an inline PowerShell smoke
+(`Invoke-InstalledDaemonSmoke`).
 
 ### test-verify-installed-daemon.sh
 
@@ -203,7 +204,7 @@ survives. Config preserved by default.
 
 ### Service definitions
 
-**systemd** (`packaging/systemd/greggd.service`):
+**systemd** (`packaging/systemd/greggd.service`; hardening subset — see the unit file for the full set including `ReadWritePaths`, `RestrictSUIDSGID`/`Realtime`, `LockPersonality`, `IPAddressAllow`, `RuntimeDirectory`):
 - Runs as `greggd` user/group, `ExecStart=/usr/local/bin/greggd run --config /etc/gregg/greggd.toml`
 - Security hardening: `NoNewPrivileges`, `ProtectSystem=strict`,
   `ProtectHome`, `ReadOnlyPaths=/proc /sys`, `PrivateTmp`,
@@ -245,6 +246,7 @@ pull requests:
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
 - **Windows** (`windows-2022`): all-target, all-feature workspace tests, release
   `greggd` **and** `gregg` builds (component-safety uninstall proof), and the bounded SCM lifecycle smoke
+- **FreeBSD**: `gregg-host` native qualification on a 14.2 VM (full `greggd` remains Linux/macOS/Windows)
 - **MSRV**: full workspace test run with Rust 1.89
 
 Release-only workflow (`.github/workflows/release-binaries.yml`) runs only on
@@ -285,7 +287,8 @@ release from prebuilt binaries.
 **`deny.toml`** (cargo-deny):
 - Advisory checking, license auditing, dependency bans
 - Allowed licenses: MIT, Apache-2.0, Unicode-3.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, CDLA-Permissive-2.0
-- Sources: only crates.io (`wildcards = "allow"`, git denied)
+- Bans: multiple versions warn (`wildcards = "allow"`)
+- Sources: only crates.io (git denied)
 
 **`rust-toolchain.toml`**:
 - Pinned to `stable` channel with the `minimal` profile plus `rustfmt` and `clippy` components

@@ -14,7 +14,7 @@ and that contributors should read before reorganising code across boundaries.
 | [`gregg-update.md`](gregg-update.md) | Deep dive: updater crate — version/target policy, download/verify/stage/replace mechanics. |
 | [`greggd-daemon.md`](greggd-daemon.md) | Deep dive: daemon crate — collectors, sampler, HTTP server, service management. |
 | [`gregg-client.md`](gregg-client.md) | Deep dive: client crate — CLI, polling, state engine, TUI, EggPool. |
-| [`collectors.md`](collectors.md) | Deep dive: platform collectors — Linux, macOS, Windows native metric collection. |
+| [`collectors.md`](collectors.md) | Deep dive: platform collectors — `gregg-host` native Linux/macOS/Windows/FreeBSD collection + `greggd` facade. |
 | [`scripts-and-packaging.md`](scripts-and-packaging.md) | Deep dive: scripts, installers, service definitions, CI. |
 
 ## Cross-cutting decisions
