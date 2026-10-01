@@ -1,6 +1,6 @@
 # Plan 149: FreeBSD CI VM bootstrap reliability corrective pass
 
-Status: planned.
+Status: complete at implementation `8de5c123193c149112cbe94530ffd609bfe092b1`; CI run `36908815046` green across all six jobs.
 
 Depends on: completed Plans 136-137 and the current six-job CI baseline. Independent of the remaining Plan 091 soak record and Plans 147-148.
 
@@ -210,23 +210,23 @@ If the FreeBSD job fails before Gregg tests under the new action, diagnose wheth
 
 ## Acceptance criteria
 
-- [ ] `.github/workflows/ci.yml` no longer uses `vmactions/freebsd-vm@v1.1.9`.
-- [ ] The FreeBSD job uses current `vmactions/freebsd-vm@v1.5.8`.
-- [ ] FreeBSD `release: "14.2"` remains pinned exactly.
-- [ ] The deprecated/ignored `usesh` input is removed.
-- [ ] The FreeBSD job has a repository-owned `timeout-minutes: 20` outer bound.
-- [ ] A VM bootstrap/readiness wedge can no longer hold the job until GitHub's six-hour limit.
-- [ ] Same-ref superseded FreeBSD jobs are cancelled without applying concurrency cancellation to the other CI jobs.
-- [ ] Source synchronization remains explicit `rsync`.
-- [ ] `copyback: false` prevents the unused guest build tree from being copied back to the Ubuntu runner.
-- [ ] `cache-after-prepare` is not introduced as part of this reliability correction.
-- [ ] The FreeBSD job remains blocking/fail-closed; no `continue-on-error`, skip, or compile-only downgrade is introduced.
-- [ ] The native test command remains `cargo test -p gregg-host --all-features`.
-- [ ] No FreeBSD collector production code, protocol behavior, daemon behavior, metric semantics, or support claim changes.
-- [ ] No Linux/macOS/Windows/MSRV CI behavior changes.
-- [ ] Live CI documentation no longer names the obsolete FreeBSD action/version where applicable; Plans 136-137 remain historical.
-- [ ] One ordinary implementation CI run is green across all six current jobs.
-- [ ] Closure records the exact implementation SHA and CI run ID.
+- [x] `.github/workflows/ci.yml` no longer uses `vmactions/freebsd-vm@v1.1.9`.
+- [x] The FreeBSD job uses current `vmactions/freebsd-vm@v1.5.8`.
+- [x] FreeBSD `release: "14.2"` remains pinned exactly.
+- [x] The deprecated/ignored `usesh` input is removed.
+- [x] The FreeBSD job has a repository-owned `timeout-minutes: 20` outer bound.
+- [x] A VM bootstrap/readiness wedge can no longer hold the job until GitHub's six-hour limit.
+- [x] Same-ref superseded FreeBSD jobs are cancelled without applying concurrency cancellation to the other CI jobs.
+- [x] Source synchronization remains explicit `rsync`.
+- [x] `copyback: false` prevents the unused guest build tree from being copied back to the Ubuntu runner.
+- [x] `cache-after-prepare` is not introduced as part of this reliability correction.
+- [x] The FreeBSD job remains blocking/fail-closed; no `continue-on-error`, skip, or compile-only downgrade is introduced.
+- [x] The native test command remains `cargo test -p gregg-host --all-features`.
+- [x] No FreeBSD collector production code, protocol behavior, daemon behavior, metric semantics, or support claim changes.
+- [x] No Linux/macOS/Windows/MSRV CI behavior changes.
+- [x] Live CI documentation no longer names the obsolete FreeBSD action/version where applicable; Plans 136-137 remain historical.
+- [x] One ordinary implementation CI run is green across all six current jobs.
+- [x] Closure records the exact implementation SHA and CI run ID.
 
 ## Explicit non-goals
 
@@ -254,3 +254,56 @@ Do not include:
 Start with `.github/workflows/ci.yml` only.
 
 The key invariant is that the native FreeBSD qualification remains exactly as strong while the infrastructure around it becomes bounded and current. If `vmactions/freebsd-vm@v1.5.8` exposes an incompatibility with Gregg's exact FreeBSD 14.2 job, diagnose that incompatibility before considering any broader workflow redesign. Do not paper over an upstream bootstrap failure by weakening `gregg-host` tests.
+
+## Closure record
+
+Implemented in `8de5c123193c149112cbe94530ffd609bfe092b1` (single workflow-only
+commit; `git diff` shows the FreeBSD job only, all other jobs byte-identical).
+
+What landed, verified against the committed workflow by YAML parse plus
+`git diff`:
+
+- FreeBSD job uses `vmactions/freebsd-vm@v1.5.8`; no `v1.1.9` reference remains
+  anywhere in the workflow.
+- Provenance comment updated to name `v1.5.8` and to record the outer bound
+  and one-way source sync.
+- `release: "14.2"` pinned exactly; `prepare` (`pkg install -y curl
+  ca_root_nss`) and `run` (rustup stable + `cargo test -p gregg-host
+  --all-features`) byte-identical to before.
+- Deprecated `usesh: true` removed; `sync: rsync` + `copyback: false` set
+  explicitly; no `cache-after-prepare` introduced.
+- Job-level `timeout-minutes: 20`, establishing the bounded-failure property
+  structurally: a bootstrap/readiness wedge can no longer hold the job until
+  GitHub's six-hour limit.
+- Job-level `concurrency: gregg-ci-freebsd-${{ github.ref }}` with
+  `cancel-in-progress: true`; Linux/macOS/Windows/MSRV jobs have no timeout,
+  no concurrency, and no `continue-on-error` changes.
+- The FreeBSD job remains blocking/fail-closed: no `continue-on-error`, no
+  fail-open `if:`, no retry loop, no compile-only downgrade.
+- No collector, protocol, daemon, metric-semantics, dependency, MSRV, TUI,
+  installer, updater, or release change.
+
+Live-documentation reconciliation (section F): inspected `AGENTS.md`,
+`plans/README.md`, `architecture/collectors.md`,
+`.opencode/skills/platform-collectors/SKILL.md`, and
+`architecture/scripts-and-packaging.md`. None of them names the old
+`v1.1.9` action or implies an unbounded FreeBSD job, so no live-doc edits
+were required. Plans 136-137 are untouched and remain the historical
+collector evidence. No `CHANGELOG.md` entry, as supported FreeBSD behavior
+is unchanged.
+
+Verification:
+
+- `cargo fmt --all -- --check` passed.
+- `./scripts/check-local.sh` passed (`all checks passed (mode: default)`).
+- Implementation CI run `36908815046` (commit `8de5c12`) green across all
+  six current jobs: Linux, macOS arm64, macOS Intel, Windows (incl. SCM
+  smoke), MSRV Rust 1.89, and FreeBSD 14.2 native `gregg-host` under the
+  upgraded action. The FreeBSD job ran healthy first try in about five
+  minutes (19:25:57Z-19:30:56Z), well inside the twenty-minute bound.
+
+Future-plan impact: none of the remaining open plans depended on this work.
+Plan 091 (long-running soak record) stays in progress, Plan 147 (EggFetch
+0.2.1 patch) stays planned; both were already recorded independent of Plan
+149, and Plan 149 is terminal in the dependency order (`137 -> 149`). No
+plan index status beyond Plan 149 itself required changes.

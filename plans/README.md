@@ -332,15 +332,19 @@ semantically independent of each other and of the remaining Plan 091 soak
 record; if implemented on parallel branches, the second merge must re-resolve
 the shared `Cargo.lock` against current main.
 
-Plan 149 is the planned FreeBSD CI VM-bootstrap reliability corrective pass.
-The native FreeBSD collector remains complete under Plans 136-137; the defect
-is the legacy `vmactions/freebsd-vm@v1.1.9` CI wrapper intermittently reaching
+Plan 149 is complete at implementation `8de5c12` with CI run
+`36908815046` green across all six jobs (Linux, both macOS jobs, Windows
+SCM smoke, MSRV Rust 1.89, and FreeBSD 14.2 native `gregg-host` under the
+upgraded action in about five minutes). The native FreeBSD collector
+remains complete under Plans 136-137; the defect
+was the legacy `vmactions/freebsd-vm@v1.1.9` CI wrapper intermittently reaching
 `First boot` and then polling `VM is booting` until GitHub's six-hour limit.
-Plan 149 upgrades that existing job to maintained `v1.5.8` while retaining
-the exact FreeBSD 14.2 floor, adds a twenty-minute repository-owned outer
-timeout, cancels superseded same-ref FreeBSD jobs, and disables unused guest
-build-tree copyback. It is CI-infrastructure corrective work only and is
-independent of Plan 091 and Plans 147-148.
+Plan 149 upgraded that existing job to maintained `v1.5.8` while retaining
+the exact FreeBSD 14.2 floor, added a twenty-minute repository-owned outer
+timeout, cancelled superseded same-ref FreeBSD jobs, and disabled unused guest
+build-tree copyback. It is CI-infrastructure corrective work only and was
+independent of Plan 091 and Plans 147-148; Plans 091 and 147 keep their
+existing statuses.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -487,7 +491,7 @@ excluded.
 | [`146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md`](146-post-campaign-record-and-cpu-set-boundary-corrective-pass.md) | Reconcile Plans 144-145 closure evidence/status and harden Plan-145 CPU-set visibility/cardinality semantics without reopening the runtime corrections | complete at `9651b68`; truthful 144/145 status + CI `36338426733`, private CPU-set identity helpers, exact 8192-distinct-identity cardinality bound preserving sparse CPU numbers; CI `36457308977` green across all six jobs; terminal for the 138-146 campaign |
 | [`147-eggfetch-0-2-1-patch-adoption.md`](147-eggfetch-0-2-1-patch-adoption.md) | Advance the existing lean EggFetch client resolution from 0.2.0 to published 0.2.1 without widening features or changing Systems/EggPool behavior | planned; depends on completed 125/current main; independent of 091 and 148 |
 | [`148-eggserve-0-4-direct-server-adoption.md`](148-eggserve-0-4-direct-server-adoption.md) | Advance greggd to eggserve-server 0.4.0 + eggserve-primitives 0.2.2 while preserving current wire, lifecycle, runtime-limit, cached-body, and direct-H1 contracts | complete at `2830498409885d6424905b7702b4f604e2399088`; CI `36872317548` green across six jobs; depends on completed 127/current main; independent of 091 and 147 |
-| [`149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md`](149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md) | Bound and modernize the existing FreeBSD 14.2 native CI VM bootstrap without changing collector semantics or qualification strength | planned; depends on completed 136-137/current main; independent of 091 and 147-148 |
+| [`149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md`](149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md) | Bound and modernize the existing FreeBSD 14.2 native CI VM bootstrap without changing collector semantics or qualification strength | complete at `8de5c12`; CI `36908815046` green across all six jobs; terminal after 137, independent of 091 and 147-148 |
 
 Dependency order:
 
