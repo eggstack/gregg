@@ -336,8 +336,13 @@ desired state`).
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
   `cargo test --workspace --all-targets --all-features` all pass.
 - `./scripts/check-local.sh` passed.
-- Ordinary CI is recorded in `plans/README.md` once the workflow run for
-  `4f9debe` completes; no new workflow or job was added.
+- Ordinary CI: run `37029539823` at commit `72729c4` (the commit that
+  contains implementation `4f9debe`) is green across all six jobs — Linux,
+  macOS arm64, macOS Intel, Windows SCM smoke, MSRV Rust 1.89, and FreeBSD 14.2
+  native `gregg-host`. The workflow run started for `4f9debe` itself
+  (`37029481092`) was cancelled by the follow-up closure-record push, and the
+  same tree passed in the follow-up run. No new workflow, job, or matrix was
+  added.
 
 ### Scope reconciliation
 

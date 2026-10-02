@@ -493,8 +493,13 @@ client pane`).
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
   `cargo test --workspace --all-targets --all-features` all pass.
 - `./scripts/check-local.sh` passed.
-- Ordinary CI is recorded in `plans/README.md` once the workflow run for
-  `7b88e43` completes; no new workflow or job was added.
+- Ordinary CI: run `37034974349` at commit `299f98b` (the commit that contains
+  implementation `7b88e43`) is green across all six jobs — Linux, macOS arm64,
+  macOS Intel, Windows SCM smoke, MSRV Rust 1.89, and FreeBSD 14.2 native
+  `gregg-host`. The workflow run started for `7b88e43` itself (`37034928208`)
+  was cancelled by the follow-up closure-record push, and the identical tree
+  passed in the follow-up run. Current `main` at `9d2fcff` is green in run
+  `37035252848` across all six jobs. No new workflow, job, or matrix was added.
 
 ### Scope reconciliation
 
