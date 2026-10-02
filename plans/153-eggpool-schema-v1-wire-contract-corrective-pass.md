@@ -346,7 +346,9 @@ workflow was added, and no EggPool build or network access is required by any
 test. Existing CI run `37046499078` at the closure push `0f158db` (which
 contains implementation `195724c`) is green across all six jobs — Linux, macOS
 arm64, macOS Intel, Windows SCM smoke, MSRV Rust 1.89, and FreeBSD 14.2 native
-`gregg-host`. No new workflow, job, or matrix was added.
+`gregg-host`. The identical tree's documentation follow-up run `37047352164`
+at `263e16b` is also green across all six jobs. No new workflow, job, or
+matrix was added.
 
 ### Scope reconciliation
 
