@@ -221,6 +221,6 @@ extra JSON fields stay tolerated.
 - Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
 - Plan 152 is complete on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
 - Plan 153 is complete: the private schema-v1 consumer matches EggPool's canonical consumed wire shape (`proxy.routable_accounts` / `proxy.enabled_accounts`, `providers[].provider_id`, `providers[].last_observation`) with producer-aligned 256/96/64 bounds. Plan 152's `id` / `observation` / root-count synthetic fixture is not a supported schema and no alias preserves it.
-- Plan 154's implementation is complete: the Plan-153 fixture's ignored runtime/provider examples now use EggPool's actual `RuntimeHealthSummary` / `ProviderHealthSummary` field names. Hosted CI closure is pending. Do not change production decoding or expand `EggpoolHealthSnapshot` merely to retain ignored evidence fields.
+- Plan 154 is complete: the Plan-153 fixture's ignored runtime/provider examples now use EggPool's actual `RuntimeHealthSummary` / `ProviderHealthSummary` field names. Do not change production decoding or expand `EggpoolHealthSnapshot` merely to retain ignored evidence fields.
 
 Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.

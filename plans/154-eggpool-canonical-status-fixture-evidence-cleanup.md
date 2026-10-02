@@ -1,6 +1,6 @@
 # Plan 154: EggPool canonical status fixture evidence cleanup
 
-Status: implementing.
+Status: complete.
 
 Depends on: completed Plan 153/current main. Independent of the remaining Plan 091 soak record.
 
@@ -213,7 +213,7 @@ Use ordinary existing CI for hosted closure. No new job/matrix.
 - [x] Plan 153 receives an append-only evidence correction note; its functional closure history is preserved.
 - [x] `plans/README.md` registers Plan 154 and `153 -> 154`, with truthful active-plan status.
 - [x] Focused/local checks pass.
-- [ ] Ordinary CI passes.
+- [x] Ordinary CI passes.
 - [x] No dependency/config/API/workflow/release or EggPool-repository change is introduced.
 
 ## Stop conditions
@@ -232,4 +232,22 @@ Completed locally:
 - Inspected the pinned upstream source and confirmed the representative ignored field names against the serialized structs.
 - Passed `cargo test -p gregg --all-targets --all-features -- eggpool` (75 library + 4 binary tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`, and `./scripts/check-local.sh`.
 
-Implementation commit and existing CI run are recorded after push below.
+Implementation landed in commit `fd2491838eae5b2f168abc0633b10586c690bf23`.
+Existing CI run `37053403192` passed all six jobs at that commit: Linux,
+macOS arm64, macOS Intel, Windows SCM smoke, MSRV Rust 1.89, and FreeBSD
+14.2 native `gregg-host`. No new workflow, job, or matrix was added.
+
+### Scope and future-plan reconciliation
+
+Only `crates/gregg/src/eggpool.rs`, `.opencode/skills/eggpool/SKILL.md`,
+`plans/README.md`, and planning records changed. Production decoding, the
+normalized health model, worker, state, UI, auth, cadence, body ceilings,
+bounds, dependencies, configuration, API behavior, workflows, release
+machinery, and the EggPool repository were untouched. All stop conditions
+remained clear.
+
+Plan 153's production correction remains valid; its ignored-field fixture
+examples alone were overclaimed as canonical. Plan 154 owns and closes that
+evidence correction. Future-plan review found no plan blocked by Plan 154 and
+no plan newly unblocked by it. Plan 091 remains the only in-progress plan,
+gated solely on its own extended soak record.
