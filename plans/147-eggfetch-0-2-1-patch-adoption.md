@@ -1,6 +1,8 @@
 # Plan 147: eggfetch 0.2.1 patch adoption
 
-Status: planned.
+Status: planned and eligible (not blocked by Plan 091 or Plans 151-152); the recorded 0.2.1 target is one patch behind what upstream has since published, so implementation should retarget to the current patch first.
+
+Target-version correction (2026-10-02, after Plans 151-152 closed): upstream `eggstack/eggfetch` has since published `eggfetch-core 0.2.2` (MSRV 1.89, which matches this workspace) after the 0.2.1 release this plan was written against. The live defect is unchanged — `Cargo.lock` still resolves `0.2.0` and `crates/gregg/Cargo.toml` still requires `version = "0.2"` with the lean `standard-http1 + tls-rustls` recipe — but implementing the recorded `--precise 0.2.1` step verbatim would close the plan one patch behind what is published. Retarget the step and the "0.2.1" acceptance wording to the current patch (and attribute whatever 0.2.1 -> 0.2.2 changes) before executing, or amend the plan first. Nothing else in this plan's contract changes: it stays a lockfile-first, feature-graph-stable, semantics-preserving adoption with no application source change expected.
 
 Depends on: completed Plan 125's `eggfetch-core 0.2` lean-client adoption and the current main branch. Independent of the remaining Plan 091 soak record and independent of Plan 148.
 
