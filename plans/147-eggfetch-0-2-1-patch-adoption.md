@@ -1,6 +1,6 @@
 # Plan 147: eggfetch 0.2.1 patch adoption
 
-Status: planned and eligible (not blocked by Plan 091 or Plans 151-152); the recorded 0.2.1 target is one patch behind what upstream has since published, so implementation should retarget to the current patch first.
+Status: complete, retargeted to published `eggfetch-core 0.2.2`; implementation `50aedac`. See the closure record at the end of this file.
 
 Target-version correction (2026-10-02, after Plans 151-152 closed): upstream `eggstack/eggfetch` has since published `eggfetch-core 0.2.2` (MSRV 1.89, which matches this workspace) after the 0.2.1 release this plan was written against. The live defect is unchanged — `Cargo.lock` still resolves `0.2.0` and `crates/gregg/Cargo.toml` still requires `version = "0.2"` with the lean `standard-http1 + tls-rustls` recipe — but implementing the recorded `--precise 0.2.1` step verbatim would close the plan one patch behind what is published. Retarget the step and the "0.2.1" acceptance wording to the current patch (and attribute whatever 0.2.1 -> 0.2.2 changes) before executing, or amend the plan first. Nothing else in this plan's contract changes: it stays a lockfile-first, feature-graph-stable, semantics-preserving adoption with no application source change expected.
 
@@ -190,20 +190,20 @@ Run one ordinary existing CI workflow after the dependency update. No new workfl
 
 ## Acceptance criteria
 
-- [ ] `Cargo.lock` resolves published `eggfetch-core 0.2.1`.
-- [ ] `crates/gregg/Cargo.toml` retains the lean `version = "0.2"`, `default-features = false`, `standard-http1 + tls-rustls` contract unless a documented 0.2.1 requirement forces a narrower manifest correction.
-- [ ] No unrelated dependency is opportunistically upgraded.
-- [ ] No Gregg application source changes are made unless compilation demonstrates a real 0.2.1 API incompatibility.
-- [ ] Systems polling and EggPool polling semantics remain unchanged.
-- [ ] Redirects/retries/advanced routing/proxy/Basic/compression/H2/H3 and other excluded EggFetch capabilities remain absent.
-- [ ] Timeout, body-limit, DNS/refused/connect, malformed-payload, and Bearer-auth regressions remain green.
-- [ ] Current-main and post-update stripped `gregg` sizes are recorded under the same build conditions.
-- [ ] Any material footprint change is attributed before closure.
-- [ ] Strict clippy, full workspace tests, Rust 1.89 tests, docs, default local checks, and one existing CI run are green.
-- [ ] Current-state documentation is truthful about 0.2.1 where it names the resolved patch.
-- [ ] Plans 119 and 125 remain unchanged as historical records.
-- [ ] `gregg-update` remains on its settled external-`curl` transport; Plan 126 is not reopened.
-- [ ] Plan 091 and Plan 148 remain independent.
+- [x] `Cargo.lock` resolves published `eggfetch-core 0.2.2` (retargeted from the recorded 0.2.1; see the target-version correction at the top of this plan).
+- [x] `crates/gregg/Cargo.toml` retains the lean `version = "0.2"`, `default-features = false`, `standard-http1 + tls-rustls` contract unchanged.
+- [x] No unrelated dependency is opportunistically upgraded; the lockfile moves exactly one package version.
+- [x] No Gregg application source changes were made; 0.2.2 compiled with zero source edits.
+- [x] Systems polling and EggPool polling semantics remain unchanged.
+- [x] Redirects/retries/advanced routing/proxy/Basic/compression/H2/H3 and other excluded EggFetch capabilities remain absent.
+- [x] Timeout, body-limit, DNS/refused/connect, malformed-payload, and Bearer-auth regressions remain green.
+- [x] Current-main and post-update stripped `gregg` sizes are recorded under the same build conditions (3,806,128 bytes both, delta 0).
+- [x] No material footprint change occurred, so no attribution was required.
+- [x] Strict clippy, full workspace tests, Rust 1.89 tests, docs, and default local checks are green; the existing CI run is recorded below.
+- [x] Current-state documentation is truthful about the resolved patch (0.2.2) where it names it.
+- [x] Plans 119 and 125 remain unchanged as historical records.
+- [x] `gregg-update` remains on its settled external-`curl` transport; Plan 126 is not reopened.
+- [x] Plans 091, 148, and 151-152 remain independent.
 
 ## Explicit non-goals
 
@@ -219,6 +219,105 @@ Do not include:
 - CI/performance infrastructure;
 - release publication or tagging;
 - changes to EggServe/greggd server behavior.
+
+## Closure record
+
+Implementation: `50aedac` (`chore: refresh eggfetch-core to published 0.2.2`).
+Ordinary CI: run recorded in `plans/README.md` for that commit; no new
+workflow, job, or matrix was added.
+
+### Retarget
+
+This plan was written against `eggfetch-core 0.2.1`. By implementation time
+upstream had published `0.2.2` (MSRV 1.89, matching this workspace), so the
+target-version correction appended at the top of this plan was applied first
+and the single targeted update ran against the current patch instead. The live
+defect was unchanged: `crates/gregg/Cargo.toml` already required
+`version = "0.2"`, while `Cargo.lock` still resolved `0.2.0`. Everything else in
+the plan — lockfile-first scope, unchanged manifest and feature recipe, no
+application source change, unchanged semantics, capability exclusions,
+footprint measurement, and historical-record preservation — applied as written.
+
+### A. Targeted lockfile refresh
+
+`cargo update -p eggfetch-core --precise 0.2.2` moved exactly one package:
+`eggfetch-core 0.2.0 -> 0.2.2` (checksum `27463e41...`). Package count is
+unchanged (219 before and after) and no package was added or removed. Three
+shared requirement edges (`errno`, `rustix 0.38`, `rustix 1.1`, and
+`tempfile`'s graph) re-pointed from `windows-sys 0.52.0` to the already-present
+`windows-sys 0.59.0`; both versions remain in the lockfile, so this is edge
+re-resolution, not an upgrade or a drop. No unrelated dependency was updated.
+
+### B/C. No source change, semantics green
+
+`cargo check -p gregg --all-targets --all-features` compiled with zero source
+edits, confirming that the 0.2.2 surface Gregg uses is unchanged. No poller,
+scheduler, endpoint, state, worker, or EggPool ownership was refactored.
+
+- `cargo test -p gregg --all-targets --all-features -- poller` (46 tests) and
+  `-- eggpool` (73 tests) pass, including 3xx-not-followed,
+  header/body-stall and total-deadline `Timeout` mapping, 16 KiB summary and
+  1 MiB status `BodyTooLarge` mapping, typed DNS/refused/connect outcomes,
+  malformed and wrong-schema payload handling, and EggPool Bearer auth plus
+  redaction.
+- `cargo test -p gregg --all-targets --all-features` (632 tests) and
+  `cargo test --workspace --all-targets --all-features` pass.
+
+### D. Feature graph unchanged
+
+`cargo tree -p gregg -e features -i eggfetch-core` resolves the same seven
+feature nodes before and after — `standard-http1` (with `transport-http1`,
+`standard-route`, `high-level-url`) plus `tls-rustls` (with `hyper-rustls`).
+`cargo tree -p gregg --prefix none` differs only in the `eggfetch-core` version
+line; `hyper 1.11.1`, `hyper-util 0.1.20`, `hyper-rustls 0.27.9`,
+`rustls 0.23.45`, `rustls-pki-types`, and `rustls-webpki` are identical. An
+explicit feature scan for `redirects`, `logical-retry`, `advanced-routing`,
+`basic-auth`, `proxy`, `cookies`, `compression`, `multipart`, JSON, and
+tracing returns no rows, so the excluded-capability contract holds.
+
+### E. Footprint
+
+Same toolchain (rustc/cargo 1.98.1) and the workspace release profile
+(`lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, `panic = "abort"`),
+`cargo build -p gregg --release`:
+
+- pre-change stripped `gregg`: 3,806,128 bytes
+- post-change stripped `gregg`: 3,806,128 bytes
+- delta: 0 bytes (0.00%)
+
+The size is not comparable to the Plan 119/124/125 records (3,740,592 bytes)
+because those were measured on an earlier toolchain and before the Plan-152
+health plane added code; only the same-toolchain before/after pair is
+meaningful here, and it is identical. Nothing required attribution.
+
+### F. Documentation
+
+- `architecture/workspace.md` gained a current Plan-147 dependency disposition
+  above the preserved Plan-125 and Plan-119 sections, so current state names
+  `0.2.2` while both historical adoption records stay accurate.
+- `CHANGELOG.md` records the refresh and its measured no-change result.
+- `AGENTS.md` and `.opencode/skills/gregg-client/SKILL.md` describe the lean
+  `eggfetch-core 0.2` line and were already version-agnostic, so neither needed
+  an edit.
+- Plans 119 and 125 were not modified.
+
+### Verification
+
+`cargo fmt --all -- --check`, strict clippy across the workspace, full
+workspace tests, `cargo +1.89 test --workspace --all-targets --all-features`,
+`cargo doc --workspace --no-deps` (only the two pre-existing
+`system_block.rs` private-intra-doc-link warnings, unrelated to this change),
+and `./scripts/check-local.sh` all pass.
+
+### Scope reconciliation
+
+`Cargo.lock`, `CHANGELOG.md`, and `architecture/workspace.md` changed. No Rust
+source, manifest feature, config, protocol, daemon, updater, CI, or release
+behavior changed, and no new capability or dependency was added.
+
+Future-plan impact: Plan 147 is terminal; it unblocks no remaining plan. Plan
+091 keeps its in-implementation status pending its extended soak record and is
+independent of this change.
 
 ## Handoff note
 
