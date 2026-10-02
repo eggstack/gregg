@@ -371,11 +371,12 @@ Plan 147 is complete as a lockfile-only refresh of the already-selected lean
 published 0.2.2: one package version moved, the resolved feature graph and the
 excluded-capability set are identical, every transport regression stayed green,
 and the stripped fat-LTO `gregg` binary is byte-identical before and after. It
-was never blocked by Plan 091 or by Plans 151-152. With Plan 147 and Plans
-151-152 closed, Plan 091 is the only remaining in-progress plan in the index,
-and it is gated only on its own extended soak record.
+was never blocked by Plan 091 or by Plans 151-152. Plan 147 remains closed.
+Plan 091 is still gated only on its own extended soak record; post-Plan-152
+cross-repository review has since opened independent Plan 153 for the EggPool
+schema-v1 wire correction.
 
-Plans 151-152 are the completed post-closure EggPool corrective line. Plan 151
+Plans 151-152 are the completed implementation baseline for the post-closure EggPool corrective line, with one current wire-contract follow-up in Plan 153. Plan 151
 is complete at implementation `4f9debe` with existing CI run `37029539823`
 green across all six jobs: it replaces the August-25 `d31d72f`
 drop-on-full worker-control contract without blocking terminal input with one
@@ -395,7 +396,15 @@ baseline; their closure records are not rewritten, but now carry supersession
 notes where later behavior changed, and Plan 062's status line marks it a
 historical record whose pressure contract was replaced. Both plans are
 client-only, add no dependency/workflow/config schema, and are independent of
-the remaining Plan 091 soak record and planned Plan 147.
+the remaining Plan 091 soak record and completed Plan 147.
+
+Post-closure cross-repository review found that Plan 152's local schema-v1
+fixture does not match EggPool's actual serialized `ProxyStatusSnapshot`:
+provider rows use `provider_id` / `last_observation`, proxy account counts
+are nested under `proxy`, and EggPool's producer bounds are 96-byte provider
+IDs / 64-byte reason codes rather than Gregg's 64 / 128. Plan 153 is planned
+as the narrow correction and test-provenance pass. While it is open, Plans 091
+and 153 are the only in-progress plans in the index.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -546,7 +555,8 @@ excluded.
 | [`150-windows-foreground-smoke-reliability-corrective-pass.md`](150-windows-foreground-smoke-reliability-corrective-pass.md) | Make the native Windows foreground daemon smoke deterministic, fail-fast, diagnostic, and process-clean without changing product behavior | complete at `2ceafcd3`; CI `36919813734` green across all six jobs; Cargo-provided binary path, OS-selected loopback port, file-backed bounded child diagnostics, early child-exit detection, guaranteed reaping; terminal after 149, independent of 091 and 147-149 |
 
 | [`151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md`](151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md) | Replace lossy EggPool try_send/Busy command pressure with nonblocking latest-desired-state convergence and clarify local worker-state naming | complete at `4f9debe`; CI `37029539823` green across all six jobs; watch-based `EggpoolDesiredState` + `EggpoolWorkerState` (no `Busy`), deterministic pressure/convergence tests, local checks green; post-closure correction to 056-062/d31d72f; independent of 091 and 147 |
-| [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | complete at `7b88e43`; CI `37034974349` green across all six jobs, current `main` `9d2fcff` green in `37035252848`; typed health model, per-route 1 MiB status ceiling, concurrent dual-plane worker read, separate health freshness in AppState, compact `Health:` token and provider counts, full compatibility matrix, local checks green; depends on completed 151; independent of 091 and 147 |
+| [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | complete at `7b88e43`; CI `37034974349` green across all six jobs, current `main` `9d2fcff` green in `37035252848`; typed health model, per-route 1 MiB status ceiling, concurrent dual-plane worker read, separate health freshness in AppState, compact `Health:` token and provider counts, full compatibility matrix, local checks green; depends on completed 151; post-closure wire-contract defect owned by Plan 153; independent of 091 and 147 |
+| [`153-eggpool-schema-v1-wire-contract-corrective-pass.md`](153-eggpool-schema-v1-wire-contract-corrective-pass.md) | Correct Plan-152 status JSON field names/placement and producer bounds against EggPool's canonical schema-v1 `ProxyStatusSnapshot`, with upstream-provenance regression fixture | planned; depends on completed 152/current main; independent of 091 |
 
 Dependency order:
 
@@ -562,6 +572,7 @@ Dependency order:
 149 -> 150
 062 + 070 + current main -> 151
 151 -> 152
+152 -> 153
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -607,7 +618,8 @@ Dependency order:
 148 depends on completed 127 plus current main and advances only the already-selected direct EggServe H1 server boundary to eggserve-server 0.4.0 / eggserve-primitives 0.2.2 with compatibility qualification; it is complete at `2830498409885d6424905b7702b4f604e2399088`, with existing CI run `36872317548` green across all six jobs. It is independent of Plan 091 and Plan 147. Plans 147 and 148 may be implemented in parallel semantically, but both touch Cargo.lock, so the second integration must re-resolve against the first if their branches overlap.
 149 depends on completed Plans 136-137 plus current main and corrects only the existing FreeBSD native CI VM bootstrap boundary: upgrade the maintained VM action while retaining FreeBSD 14.2, add a twenty-minute outer job timeout, cancel superseded same-ref FreeBSD jobs, and disable unused VM copyback. It is independent of Plan 091 and Plans 147-148 and does not reopen collector implementation or native qualification semantics.
 151 depends on completed Plans 056-062, the Plan-070 async-state-machine review, and the current main state after the intentional `d31d72f` nonblocking change. It owns only the EggPool worker-control contract: one retained latest desired active/period/generation state published without waiting for capacity, local worker-state naming separate from EggPool service health, and deterministic pressure/convergence coverage. It is complete at `4f9debe`, is independent of Plan 091 and Plan 147, changes no daemon/protocol/collector/config/workflow surface, and unblocks Plan 152 only.
-152 depends on completed Plan 151's convergent worker and adds EggPool's schema-version-1 authenticated GET /api/status as an independent health plane beside the existing four-metric summary. It is complete at `7b88e43` with existing CI run `37034974349` green across all six jobs, is terminal for the EggPool corrective line (`062 + 070 + main -> 151 -> 152`), and unblocks no remaining plan. It is independent of Plan 091 and Plan 147, changes no `greggd`/`gregg-protocol`/`EggPool`/config surface, and does not reopen the four summary metric meanings.
+152 depends on completed Plan 151's convergent worker and adds EggPool's schema-version-1 authenticated GET /api/status as an independent health plane beside the existing four-metric summary. It is complete at `7b88e43` with existing CI run `37034974349` green across all six jobs. Post-closure review found a local wire-fixture/schema mismatch; Plan 153 owns that correction without reopening Plan 151 or the valid Plan-152 dual-plane architecture. Plan 152 remains independent of Plan 091 and Plan 147, changes no `greggd`/`gregg-protocol`/`EggPool`/config surface, and does not reopen the four summary metric meanings.
+153 depends on completed Plan 152/current main and corrects only the schema-v1 consumer contract: canonical nested proxy account counts, `provider_id`, `last_observation`, producer-aligned 96-byte provider IDs / 64-byte reason codes, and an upstream-provenance fixture that prevents Gregg-local mock shape from masquerading as cross-repo compatibility. It is independent of Plan 091 and adds no dependency, configuration, endpoint, cadence, worker, pane, daemon/protocol, workflow, or release surface.
 150 depends on the current post-149 main state only as its source/CI baseline. It corrected the Windows integration smoke harness exposed by failed CI run `36915516145`: Cargo-provided binary discovery, OS-selected loopback port allocation, bounded file-backed child diagnostics, early child-exit detection, and guaranteed process cleanup. It is complete at `2ceafcd3` with existing CI run `36919813734` green across all six jobs, is terminal in the dependency order (`149 -> 150`), and unblocks no remaining plan. It is independent of Plan 091 and Plans 147-149 semantics and did not change daemon, collector, SCM, protocol, or workflow architecture.
 ```
 

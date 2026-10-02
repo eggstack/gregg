@@ -513,3 +513,12 @@ generic datasource/status framework was introduced.
 Future-plan impact: Plan 152 is the last plan in the EggPool corrective line
 and unblocks no further plan. Plans 091 and 147 remain independent of it and
 keep their existing statuses.
+
+
+## Post-closure correction note (2026-10-02)
+
+Cross-repository review after closure compared Gregg's private `EggpoolStatusWire` and synthetic loopback fixtures directly with EggPool main `299a0b3657667af509742a184e658c14df22d406` (`rust/src/operations/status.rs::ProxyStatusSnapshot`). The Plan-152 transport, dual-plane worker, reducer freshness, rendering, authentication, body ceilings, and recorded CI results remain valid, but the provider-bearing schema-v1 wire qualification is not.
+
+Confirmed mismatches: EggPool nests `routable_accounts` / `enabled_accounts` under `proxy`, emits `providers[].provider_id` and `providers[].last_observation`, and bounds provider IDs/reason codes at 96/64 bytes; Gregg's Plan-152 decoder/fixture used root counts, `id`, `observation`, and 64/128-byte bounds. Because `EggpoolProviderWire.id` is required, a real provider-bearing EggPool status snapshot fails serde decoding even though the synthetic Plan-152 matrix passes.
+
+Plan 153 owns the narrow correction: canonical schema-v1 names/placement, producer-aligned bounds, an upstream-provenance fixture, and registry reconciliation. Preserve this closure record as truthful evidence for what `7b88e43` implemented and what Gregg-local CI demonstrated; do not rewrite it as if the cross-repository mismatch had been known at closure.

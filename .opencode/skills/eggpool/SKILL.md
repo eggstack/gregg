@@ -170,5 +170,6 @@ gregg eggpool remove <host>
 
 - Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
 - Plan 152 is implemented on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
+- Plan 153 is the active post-closure wire correction. Current EggPool schema v1 uses `proxy.routable_accounts` / `proxy.enabled_accounts`, `providers[].provider_id`, and `providers[].last_observation`; producer bounds are 256 provider rows, 96-byte provider IDs, and 64-byte reason codes. Do not copy Plan 152's stale `id` / `observation` / root-count synthetic fixture or add compatibility aliases for that never-upstream shape.
 
 Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.
