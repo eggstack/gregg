@@ -191,11 +191,17 @@ using HTTP port `11300` by default. Use `--https`, `--name`,
 variable name is persisted; the secret is never read by these commands.
 Adding a second source without `--replace` reports a configuration conflict,
 not a name-validation error.
-The TUI consumes only `/api/stats/summary` and requires EggPool's dashboard/
-statistics routes to be enabled. It displays accounted tokens, provider
-cache-read share, output tokens per second, and average TTFT for `1h`, `24h`,
-`7d`, or `30d`; it does not display a request-level cache hit rate or invent
-values when a metric is unavailable. `j`/Down and `k`/Up select the period,
+The TUI reads two independent `EggPool` routes. The four periodized metrics
+come only from `/api/stats/summary` and require EggPool's dashboard/statistics
+routes to be enabled: accounted tokens, provider cache-read share, output
+tokens per second, and average TTFT for `1h`, `24h`, `7d`, or `30d`. The pane
+does not display a request-level cache hit rate or invent values when a metric
+is unavailable. Current service health comes separately from EggPool's
+schema-version-1 `/api/status`, which stays authenticated even when the
+dashboard is public; the pane header shows a bounded `Health: ready |
+degraded | unready | unknown` token plus a one-line provider count summary. An
+older EggPool without `/api/status` keeps the metrics and reports health as
+unsupported, and a failed health read never hides a valid summary. `j`/Down and `k`/Up select the period,
 while `h`/Left and `l`/Right enter or leave the pane. `Ctrl-R` refreshes only
 the active pane, and EggPool's active refresh cadence is fixed at 60 seconds.
 Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.

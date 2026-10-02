@@ -83,6 +83,18 @@ Only one EggPool endpoint is supported (`gregg eggpool add
 pool.local:11300`); use `--replace` to change an existing one. Without it,
 the command reports an already-configured endpoint conflict.
 
+The pane has two independent read-only planes. `/api/stats/summary` supplies
+the four periodized metrics for the selected window. EggPool's
+schema-version-1 `/api/status` supplies current service health: the header
+shows a plain `Health: ready`, `degraded`, `unready`, or `unknown` token, and
+the footer may add a bounded provider count summary such as
+`Providers: 2 ready · 1 degraded · 1 unavailable`. Health is never inferred
+from the summary outcome, and a failed health read never hides valid metrics.
+EggPool keeps `/api/status` authenticated even when its dashboard is public, so
+a public EggPool with no configured `api_key_env` shows metrics with health
+reported as auth required. An older EggPool without the route keeps the
+metrics and reports health as unsupported.
+
 ## TUI navigation
 
 - `j` / `k` (or arrow keys): move between systems

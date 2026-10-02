@@ -12,7 +12,21 @@ use url::Url;
 use crate::clock::{Clock, RealClock};
 use crate::config::EggpoolEntry;
 
+/// Summary decoded-body ceiling. The compact four-value payload stays far
+/// below this bound.
 const MAX_RESPONSE_BYTES: usize = 16 * 1024;
+/// Status decoded-body ceiling, aligned with `EggPool`'s own bounded status
+/// client. It is applied per request so the summary route keeps its 16 KiB
+/// limit.
+const MAX_STATUS_RESPONSE_BYTES: usize = 1024 * 1024;
+/// Provider rows `EggPool` itself bounds in one status snapshot.
+const MAX_STATUS_PROVIDER_ROWS: usize = 256;
+/// Bounded provider identity length accepted before rendering.
+const MAX_PROVIDER_ID_BYTES: usize = 64;
+/// Bounded reason-code length accepted before rendering.
+const MAX_STATUS_REASON_BYTES: usize = 128;
+/// The only status schema version Gregg treats as authoritative.
+const STATUS_SCHEMA_VERSION: u64 = 1;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The four fixed rolling windows supported by `EggPool`'s summary API.
@@ -133,20 +147,211 @@ pub enum EggpoolFetchOutcome {
     InvalidEndpoint,
 }
 
+/// `EggPool`'s server-reported proxy health, independent of Gregg's local
+/// worker lifecycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EggpoolProxyHealth {
+    /// The proxy reports itself ready to serve requests.
+    Ready,
+    /// The proxy is serving with reduced capability.
+    Degraded,
+    /// The proxy reports itself unable to serve requests.
+    Unready,
+}
+
+impl EggpoolProxyHealth {
+    /// The plain status word used as the primary signal.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Unready => "unready",
+        }
+    }
+}
+
+/// `EggPool`'s server-reported provider health.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EggpoolProviderHealth {
+    /// The provider is usable.
+    Ready,
+    /// The provider is usable with reduced capability.
+    Degraded,
+    /// The provider is currently unusable.
+    Unavailable,
+    /// The provider is administratively disabled.
+    Disabled,
+    /// `EggPool` does not know the provider state, including a value this
+    /// client does not recognize.
+    Unknown,
+}
+
+impl EggpoolProviderHealth {
+    /// The plain status word used in the bounded provider count summary.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Degraded => "degraded",
+            Self::Unavailable => "unavailable",
+            Self::Disabled => "disabled",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    fn from_wire(value: &str) -> Self {
+        match value {
+            "ready" => Self::Ready,
+            "degraded" => Self::Degraded,
+            "unavailable" => Self::Unavailable,
+            "disabled" => Self::Disabled,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// `EggPool`'s most recent observation of one provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EggpoolProviderObservation {
+    /// The most recent probe verified the provider.
+    Verified,
+    /// The most recent probe failed.
+    Failed,
+    /// The most recent observation is older than `EggPool` accepts.
+    Stale,
+    /// The provider has never been observed.
+    Never,
+}
+
+impl EggpoolProviderObservation {
+    fn from_wire(value: &str) -> Option<Self> {
+        match value {
+            "verified" => Some(Self::Verified),
+            "failed" => Some(Self::Failed),
+            "stale" => Some(Self::Stale),
+            "never" => Some(Self::Never),
+            _ => None,
+        }
+    }
+}
+
+/// One decoded provider row of bounded health context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EggpoolProviderRow {
+    /// Bounded provider identity reported by `EggPool`.
+    pub id: String,
+    /// The provider health `EggPool` reports.
+    pub status: EggpoolProviderHealth,
+    /// The most recent observation, or `None` when absent or unrecognized.
+    pub observation: Option<EggpoolProviderObservation>,
+}
+
+/// A validated, display-ready `EggPool` service-health snapshot.
+///
+/// This is `EggPool`'s own operational health. It never describes Gregg's
+/// worker, and Gregg never infers it from a transport failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EggpoolHealthSnapshot {
+    /// The decoded schema version, always `1`.
+    pub schema_version: u64,
+    /// The proxy status `EggPool` reports.
+    pub proxy: EggpoolProxyHealth,
+    /// Whether `EggPool` reports the proxy as available.
+    pub available: bool,
+    /// Bounded reason code, when `EggPool` supplies one.
+    pub reason_code: Option<String>,
+    /// Uptime in seconds, when reported.
+    pub uptime_seconds: Option<f64>,
+    /// Model count, when reported.
+    pub model_count: Option<u64>,
+    /// Routable account count, when reported.
+    pub routable_accounts: Option<u64>,
+    /// Enabled account count, when reported.
+    pub enabled_accounts: Option<u64>,
+    /// Bounded provider context, never a drill-down table.
+    pub providers: Vec<EggpoolProviderRow>,
+}
+
+impl EggpoolHealthSnapshot {
+    /// Count providers per reported health, ordered ready, degraded,
+    /// unavailable, disabled, unknown.
+    #[must_use]
+    pub fn provider_counts(&self) -> [usize; 5] {
+        let mut counts = [0; 5];
+        for row in &self.providers {
+            let index = match row.status {
+                EggpoolProviderHealth::Ready => 0,
+                EggpoolProviderHealth::Degraded => 1,
+                EggpoolProviderHealth::Unavailable => 2,
+                EggpoolProviderHealth::Disabled => 3,
+                EggpoolProviderHealth::Unknown => 4,
+            };
+            counts[index] += 1;
+        }
+        counts
+    }
+}
+
+/// A safe, stable classification of one `EggPool` health read.
+///
+/// A transport failure is never reported as a `EggPool`-reported proxy
+/// status: `EggPool`'s internal unavailable state is not emitted by this
+/// endpoint, so a failed read is a local transport fact only.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EggpoolHealthFetchOutcome {
+    /// A validated health snapshot was received.
+    Online(EggpoolHealthSnapshot),
+    /// `EggPool` requires credentials this configuration cannot supply.
+    AuthenticationRequired,
+    /// The credentials lack permission.
+    Forbidden,
+    /// This `EggPool` does not expose a status route.
+    Unsupported,
+    /// The configured key cannot be encoded into a valid `Authorization` header.
+    InvalidApiKey,
+    /// The request exceeded its timeout.
+    Timeout,
+    /// The host refused the connection.
+    ConnectionRefused,
+    /// DNS resolution failed.
+    DnsFailure,
+    /// Another network error occurred.
+    NetworkError,
+    /// `EggPool` returned another HTTP status.
+    HttpStatus(u16),
+    /// The response exceeded the bounded status body limit.
+    BodyTooLarge,
+    /// The response was not valid JSON of the expected shape.
+    DecodeError,
+    /// The status schema version is not one this client understands.
+    UnsupportedSchema,
+    /// The decoded payload violated the bounded contract.
+    InvalidStatus,
+    /// The configured endpoint cannot be represented as a valid request URL.
+    InvalidEndpoint,
+}
+
 /// One completed or superseded worker request.
+///
+/// The summary and health planes are independent: partial success is the
+/// normal case and is never collapsed into a single success or failure.
 #[derive(Debug)]
 pub struct EggpoolResult {
     /// Worker generation for stale-result rejection.
     pub generation: u64,
-    /// Period requested by this attempt.
+    /// Period requested by this attempt. Health has no period; this
+    /// generation owns both planes.
     pub period: EggpoolPeriod,
     /// Request start time.
     #[allow(dead_code)] // Retained for refresh-latency diagnostics.
     pub started_at: Instant,
     /// Request completion time.
     pub completed_at: Instant,
-    /// Stable request outcome.
-    pub outcome: EggpoolFetchOutcome,
+    /// Summary-plane outcome.
+    pub summary: EggpoolFetchOutcome,
+    /// Health-plane outcome.
+    pub health: EggpoolHealthFetchOutcome,
 }
 
 type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
@@ -187,6 +392,27 @@ impl EggpoolClient {
         Self { client, env_lookup }
     }
 
+    /// Resolve the configured request-local credential.
+    ///
+    /// A missing or empty environment variable is reported separately from a
+    /// configured value that cannot be encoded, because the two planes treat
+    /// an absent key differently: the summary route stops, while the status
+    /// route may still be readable when the dashboard is public.
+    fn credential(&self, endpoint: &EggpoolEntry) -> Result<Option<AuthScheme>, CredentialError> {
+        let Some(name) = endpoint.api_key_env.as_deref() else {
+            return Ok(None);
+        };
+        let Some(value) = (self.env_lookup)(name).filter(|value| !value.is_empty()) else {
+            return Err(CredentialError::Missing(name.to_string()));
+        };
+        let Ok(value) = value.into_string() else {
+            return Err(CredentialError::Unusable);
+        };
+        AuthScheme::bearer(value)
+            .map(Some)
+            .map_err(|_| CredentialError::Unusable)
+    }
+
     /// Fetch one validated summary. No automatic retry or alternate endpoint
     /// is attempted.
     pub async fn fetch(
@@ -194,15 +420,13 @@ impl EggpoolClient {
         endpoint: &EggpoolEntry,
         period: EggpoolPeriod,
     ) -> EggpoolFetchOutcome {
-        let auth_token = match endpoint.api_key_env.as_deref() {
-            None => None,
-            Some(name) => match (self.env_lookup)(name) {
-                Some(value) if !value.is_empty() => match value.into_string() {
-                    Ok(value) => Some(value),
-                    Err(_) => return missing_key(name),
-                },
-                _ => return missing_key(name),
-            },
+        let auth = match self.credential(endpoint) {
+            Ok(auth) => auth,
+            // A present-but-unencodable secret is surfaced as an invalid
+            // summary rather than a missing-key misclassification. The
+            // secret is dropped here and never retained in the outcome.
+            Err(CredentialError::Missing(name)) => return missing_key(&name),
+            Err(CredentialError::Unusable) => return EggpoolFetchOutcome::InvalidSummary,
         };
 
         let Ok(url) = summary_url(endpoint, period) else {
@@ -216,19 +440,11 @@ impl EggpoolClient {
         else {
             return EggpoolFetchOutcome::InvalidEndpoint;
         };
-        if let Some(token) = auth_token {
-            let Ok(auth) = AuthScheme::bearer(token) else {
-                // The configured secret is present but contains characters
-                // that cannot be encoded into a valid `Authorization` header
-                // value; surface it as an invalid summary rather than a
-                // missing-key misclassification. The secret is dropped here
-                // and never retained in the outcome.
-                return EggpoolFetchOutcome::InvalidSummary;
-            };
+        if let Some(auth) = auth {
             builder = builder.auth(auth);
         }
 
-        let mut response = match builder.send_detailed().await {
+        let response = match builder.send_detailed().await {
             Ok(response) => response,
             Err(failure) => return classify_request_error(&failure),
         };
@@ -241,24 +457,9 @@ impl EggpoolClient {
                 status => EggpoolFetchOutcome::HttpStatus(status),
             };
         }
-        let body = match response.bytes().await {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                if matches!(error, EggfetchError::DecodedBodyTooLarge) {
-                    return EggpoolFetchOutcome::BodyTooLarge;
-                }
-                if matches!(
-                    error,
-                    EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
-                ) {
-                    // 0.1.7 enforces `Timeout.total` as one absolute
-                    // wall-clock deadline through response-body EOF, so a
-                    // body-stage timeout honors the configured
-                    // whole-request deadline category.
-                    return EggpoolFetchOutcome::Timeout;
-                }
-                return EggpoolFetchOutcome::NetworkError;
-            }
+        let body = match read_body(response).await {
+            Ok(body) => body,
+            Err(failure) => return classify_body_error(&failure),
         };
         let Ok(wire) = serde_json::from_slice::<EggpoolSummaryWire>(&body) else {
             return EggpoolFetchOutcome::DecodeError;
@@ -268,6 +469,87 @@ impl EggpoolClient {
             EggpoolFetchOutcome::Online,
         )
     }
+
+    /// Read `EggPool`'s schema-version-1 service-health snapshot.
+    ///
+    /// This is a separate current-health plane. It never changes summary
+    /// metric meaning, and no outbound provider probe, quota use, or mutation
+    /// is triggered: only `EggPool`'s own read-only status route is read.
+    pub async fn fetch_health(&self, endpoint: &EggpoolEntry) -> EggpoolHealthFetchOutcome {
+        // Unlike the summary route, an absent key still sends the request:
+        // `EggPool` keeps `/api/status` authenticated even when dashboard
+        // pages are public, and the server's own answer is authoritative.
+        let auth = match self.credential(endpoint) {
+            Ok(auth) => auth,
+            Err(CredentialError::Missing(_)) => None,
+            Err(CredentialError::Unusable) => {
+                return EggpoolHealthFetchOutcome::InvalidApiKey;
+            }
+        };
+
+        let Ok(url) = status_url(endpoint) else {
+            return EggpoolHealthFetchOutcome::InvalidEndpoint;
+        };
+        let url = url.as_str().to_string();
+        let Ok(mut builder) = self
+            .client
+            .get(&url)
+            // A per-request ceiling raises only this route; the client-wide
+            // default stays at the summary bound.
+            .map(|b| b.max_decoded_body_size(MAX_STATUS_RESPONSE_BYTES))
+        else {
+            return EggpoolHealthFetchOutcome::InvalidEndpoint;
+        };
+        if let Some(auth) = auth {
+            builder = builder.auth(auth);
+        }
+
+        let response = match builder.send_detailed().await {
+            Ok(response) => response,
+            Err(failure) => return classify_health_request_error(&failure),
+        };
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            return match status {
+                401 => EggpoolHealthFetchOutcome::AuthenticationRequired,
+                403 => EggpoolHealthFetchOutcome::Forbidden,
+                // An older `EggPool` without a status route is explicitly
+                // unsupported, not a statistics failure.
+                404 => EggpoolHealthFetchOutcome::Unsupported,
+                status => EggpoolHealthFetchOutcome::HttpStatus(status),
+            };
+        }
+        let body = match read_body(response).await {
+            Ok(body) => body,
+            Err(failure) => return classify_health_body_error(&failure),
+        };
+        let Ok(wire) = serde_json::from_slice::<EggpoolStatusWire>(&body) else {
+            return EggpoolHealthFetchOutcome::DecodeError;
+        };
+        // A future schema is never treated as authoritative; it degrades to
+        // an explicit unsupported health state and never invalidates the
+        // summary plane.
+        if wire.schema_version != STATUS_SCHEMA_VERSION {
+            return EggpoolHealthFetchOutcome::UnsupportedSchema;
+        }
+        normalize_health(&wire).map_or(
+            EggpoolHealthFetchOutcome::InvalidStatus,
+            EggpoolHealthFetchOutcome::Online,
+        )
+    }
+}
+
+/// Why a configured credential could not be used for one request.
+enum CredentialError {
+    /// The configured environment variable is absent or empty.
+    Missing(String),
+    /// A present value cannot be encoded into a valid `Authorization` header.
+    Unusable,
+}
+
+/// Consume one bounded response body, surfacing typed body-stage failures.
+async fn read_body(mut response: eggfetch_core::Response) -> Result<Vec<u8>, EggfetchError> {
+    response.bytes().await.map(Vec::from)
 }
 
 fn missing_key(name: &str) -> EggpoolFetchOutcome {
@@ -276,7 +558,8 @@ fn missing_key(name: &str) -> EggpoolFetchOutcome {
     }
 }
 
-fn summary_url(endpoint: &EggpoolEntry, period: EggpoolPeriod) -> Result<Url, ()> {
+/// Build the normalized `scheme://host:port` origin for one endpoint.
+fn origin_prefix(endpoint: &EggpoolEntry) -> Result<String, ()> {
     let host = endpoint
         .host
         .strip_prefix('[')
@@ -288,14 +571,19 @@ fn summary_url(endpoint: &EggpoolEntry, period: EggpoolPeriod) -> Result<Url, ()
     } else {
         host.clone()
     };
-    let mut url = Url::parse(&format!(
-        "{}://{}:{}/api/stats/summary",
-        endpoint.scheme, host, endpoint.port
-    ))
-    .map_err(|_| ())?;
+    Ok(format!("{}://{}:{}", endpoint.scheme, host, endpoint.port))
+}
+
+fn summary_url(endpoint: &EggpoolEntry, period: EggpoolPeriod) -> Result<Url, ()> {
+    let mut url =
+        Url::parse(&format!("{}/api/stats/summary", origin_prefix(endpoint)?)).map_err(|_| ())?;
     url.query_pairs_mut()
         .append_pair("period", period.api_value());
     Ok(url)
+}
+
+fn status_url(endpoint: &EggpoolEntry) -> Result<Url, ()> {
+    Url::parse(&format!("{}/api/status", origin_prefix(endpoint)?)).map_err(|_| ())
 }
 
 fn normalize_summary(
@@ -322,6 +610,103 @@ fn normalize_summary(
     })
 }
 
+/// The schema-version-1 `/api/status` payload Gregg decodes.
+///
+/// Only the fields needed to validate the contract and render compact health
+/// are decoded; unknown extra fields are ignored so a future `EggPool` build
+/// does not invalidate the snapshot.
+#[derive(Debug, Deserialize)]
+struct EggpoolStatusWire {
+    schema_version: u64,
+    proxy: EggpoolProxyWire,
+    #[serde(default)]
+    providers: Vec<EggpoolProviderWire>,
+    #[serde(default)]
+    routable_accounts: Option<u64>,
+    #[serde(default)]
+    enabled_accounts: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EggpoolProxyWire {
+    status: String,
+    #[serde(default)]
+    available: bool,
+    #[serde(default)]
+    reason_code: Option<String>,
+    #[serde(default)]
+    uptime_seconds: Option<f64>,
+    #[serde(default)]
+    model_count: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct EggpoolProviderWire {
+    id: String,
+    /// Absent in a future build means the state is genuinely unknown, not
+    /// a decode failure for the whole health plane.
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    observation: Option<String>,
+}
+
+/// Validate one schema-version-1 status payload against the bounded contract.
+fn normalize_health(wire: &EggpoolStatusWire) -> Result<EggpoolHealthSnapshot, ()> {
+    let proxy = match wire.proxy.status.as_str() {
+        "ready" => EggpoolProxyHealth::Ready,
+        "degraded" => EggpoolProxyHealth::Degraded,
+        "unready" => EggpoolProxyHealth::Unready,
+        _ => return Err(()),
+    };
+    if !bounded_optional(wire.proxy.reason_code.as_deref(), MAX_STATUS_REASON_BYTES) {
+        return Err(());
+    }
+    if !wire
+        .proxy
+        .uptime_seconds
+        .is_none_or(|value| value.is_finite() && value >= 0.0)
+    {
+        return Err(());
+    }
+    if wire.providers.len() > MAX_STATUS_PROVIDER_ROWS {
+        return Err(());
+    }
+    let mut providers = Vec::with_capacity(wire.providers.len());
+    for row in &wire.providers {
+        if !bounded_optional(Some(row.id.as_str()), MAX_PROVIDER_ID_BYTES) {
+            return Err(());
+        }
+        providers.push(EggpoolProviderRow {
+            id: row.id.clone(),
+            status: row.status.as_deref().map_or(
+                EggpoolProviderHealth::Unknown,
+                EggpoolProviderHealth::from_wire,
+            ),
+            observation: row
+                .observation
+                .as_deref()
+                .and_then(EggpoolProviderObservation::from_wire),
+        });
+    }
+    Ok(EggpoolHealthSnapshot {
+        schema_version: wire.schema_version,
+        proxy,
+        available: wire.proxy.available,
+        reason_code: wire.proxy.reason_code.clone(),
+        uptime_seconds: wire.proxy.uptime_seconds,
+        model_count: wire.proxy.model_count,
+        routable_accounts: wire.routable_accounts,
+        enabled_accounts: wire.enabled_accounts,
+        providers,
+    })
+}
+
+/// Bound an optional identity or reason string before it can be rendered.
+fn bounded_optional(value: Option<&str>, max_bytes: usize) -> bool {
+    value.is_none_or(|value| !value.is_empty() && value.len() <= max_bytes)
+}
+
 fn classify_request_error(failure: &RequestFailure) -> EggpoolFetchOutcome {
     if matches!(failure.error(), EggfetchError::DecodedBodyTooLarge) {
         return EggpoolFetchOutcome::BodyTooLarge;
@@ -334,6 +719,49 @@ fn classify_request_error(failure: &RequestFailure) -> EggpoolFetchOutcome {
         Some(NetworkFailureKind::ConnectionRefused) => EggpoolFetchOutcome::ConnectionRefused,
         Some(NetworkFailureKind::Connect | _) | None => EggpoolFetchOutcome::NetworkError,
     }
+}
+
+fn classify_body_error(error: &EggfetchError) -> EggpoolFetchOutcome {
+    if matches!(error, EggfetchError::DecodedBodyTooLarge) {
+        return EggpoolFetchOutcome::BodyTooLarge;
+    }
+    if matches!(
+        error,
+        EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
+    ) {
+        // eggfetch enforces `Timeout.total` as one absolute wall-clock
+        // deadline through response-body EOF, so a body-stage timeout
+        // honors the configured whole-request deadline category.
+        return EggpoolFetchOutcome::Timeout;
+    }
+    EggpoolFetchOutcome::NetworkError
+}
+
+fn classify_health_request_error(failure: &RequestFailure) -> EggpoolHealthFetchOutcome {
+    if matches!(failure.error(), EggfetchError::DecodedBodyTooLarge) {
+        return EggpoolHealthFetchOutcome::BodyTooLarge;
+    }
+    if failure.is_timeout() {
+        return EggpoolHealthFetchOutcome::Timeout;
+    }
+    match failure.network_failure_kind() {
+        Some(NetworkFailureKind::Dns) => EggpoolHealthFetchOutcome::DnsFailure,
+        Some(NetworkFailureKind::ConnectionRefused) => EggpoolHealthFetchOutcome::ConnectionRefused,
+        Some(NetworkFailureKind::Connect | _) | None => EggpoolHealthFetchOutcome::NetworkError,
+    }
+}
+
+fn classify_health_body_error(error: &EggfetchError) -> EggpoolHealthFetchOutcome {
+    if matches!(error, EggfetchError::DecodedBodyTooLarge) {
+        return EggpoolHealthFetchOutcome::BodyTooLarge;
+    }
+    if matches!(
+        error,
+        EggfetchError::Timeout { .. } | EggfetchError::TransportIoTimeout { .. }
+    ) {
+        return EggpoolHealthFetchOutcome::Timeout;
+    }
+    EggpoolHealthFetchOutcome::NetworkError
 }
 
 /// The single latest `EggPool` worker intent owned by the reducer.
@@ -473,7 +901,7 @@ where
                     }
                 }, if worker.request.is_some() => {
                     worker.request = None;
-                    let (generation, period, started_at, outcome) = match completed {
+                    let (generation, period, started_at, summary, health) = match completed {
                         Some(Ok(tuple)) => tuple,
                         // A panicked fetch task must still deliver a
                         // result so the pane's Refreshing status
@@ -486,9 +914,10 @@ where
                             worker.desired.period,
                             clock.now(),
                             EggpoolFetchOutcome::NetworkError,
+                            EggpoolHealthFetchOutcome::NetworkError,
                         ),
                     };
-                    let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
+                    let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), summary, health }).await;
                     if worker.desired.active {
                         // Two clocks: `started_at`/`completed_at` use wall-clock
                         // `now()` while the refresh deadline uses the Tokio
@@ -508,8 +937,14 @@ where
     }
 }
 
-/// One completed `EggPool` request.
-type RequestTask = tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)>;
+/// One completed `EggPool` request carrying both independent planes.
+type RequestTask = tokio::task::JoinHandle<(
+    u64,
+    EggpoolPeriod,
+    Instant,
+    EggpoolFetchOutcome,
+    EggpoolHealthFetchOutcome,
+)>;
 
 /// Plan 151: worker-side convergence onto the latest desired state.
 ///
@@ -594,8 +1029,15 @@ fn spawn_request<C: Clock + Clone + Send + 'static>(
     let clock = clock.clone();
     tokio::spawn(async move {
         let started_at = clock.now();
-        let outcome = client.fetch(&endpoint, period).await;
-        (generation, period, started_at, outcome)
+        // The summary and health planes are read concurrently inside this
+        // one request task, so a slow or unavailable status route never
+        // delays a valid summary and vice versa. Both are aborted together
+        // when this request is superseded.
+        let (summary, health) = tokio::join!(
+            client.fetch(&endpoint, period),
+            client.fetch_health(&endpoint)
+        );
+        (generation, period, started_at, summary, health)
     })
 }
 
@@ -889,21 +1331,31 @@ mod tests {
                         // A superseded request may already be abandoned, so
                         // recorded paths are not proof of a delivered
                         // result; convergence is asserted from results.
+                        // Only summary paths are recorded: the health plane
+                        // is asserted from the delivered result.
+                        let is_summary = path.starts_with("/api/stats/summary");
                         let period = path.split("period=").nth(1).unwrap_or("1h").to_string();
-                        let _ = request_tx.send(path).await;
+                        if is_summary {
+                            let _ = request_tx.send(path).await;
+                        }
                         // Hold the response until the gate opens.
                         while !*gate_rx.borrow_and_update() {
                             if gate_rx.changed().await.is_err() {
                                 return;
                             }
                         }
-                        let ordinal = ordinal.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                        let summary = format!(
-                            "{{\"period\":\"{period}\",\"accounted_tokens\":{ordinal},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}"
-                        );
+                        let body = if is_summary {
+                            let ordinal =
+                                ordinal.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            format!(
+                                "{{\"period\":\"{period}\",\"accounted_tokens\":{ordinal},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}"
+                            )
+                        } else {
+                            healthy_status_body("ready", "ready", "verified").clone()
+                        };
                         let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{summary}",
-                            summary.len()
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                            body.len()
                         );
                         if stream.write_all(response.as_bytes()).await.is_err() {
                             return;
@@ -921,6 +1373,123 @@ mod tests {
             .windows(4)
             .position(|window| window == b"\r\n\r\n")
             .map(|at| at + 4)
+    }
+
+    /// A minimal valid schema-version-1 status payload.
+    fn healthy_status_body(proxy: &str, provider: &str, observation: &str) -> String {
+        format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"{proxy}\",\"available\":true,\"uptime_seconds\":42.5,\"model_count\":3}},\"routable_accounts\":5,\"enabled_accounts\":6,\"providers\":[{{\"id\":\"openai\",\"status\":\"{provider}\",\"observation\":\"{observation}\"}}]}}"
+        )
+    }
+
+    /// One canned response for a read-only `EggPool` route.
+    #[derive(Clone)]
+    struct RouteReply {
+        status: String,
+        body: String,
+    }
+
+    impl RouteReply {
+        fn ok(body: String) -> Self {
+            Self {
+                status: "200 OK".to_owned(),
+                body,
+            }
+        }
+
+        fn status(status: &str) -> Self {
+            Self {
+                status: status.to_owned(),
+                body: String::new(),
+            }
+        }
+    }
+
+    /// A loopback `EggPool` that answers both read-only routes with
+    /// caller-supplied replies, so the two planes can fail independently.
+    async fn server_routes(
+        summary: RouteReply,
+        status: RouteReply,
+    ) -> (u16, mpsc::Receiver<String>, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = mpsc::channel(32);
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let request_tx = request_tx.clone();
+                let summary = summary.clone();
+                let status = status.clone();
+                tokio::spawn(async move {
+                    let mut buffered = vec![0; 8192];
+                    let mut used = 0;
+                    loop {
+                        let head = loop {
+                            if let Some(at) = find_header_end(&buffered[..used]) {
+                                break String::from_utf8_lossy(&buffered[..at]).into_owned();
+                            }
+                            if used == buffered.len() {
+                                return;
+                            }
+                            let Ok(count) = stream.read(&mut buffered[used..]).await else {
+                                return;
+                            };
+                            if count == 0 {
+                                return;
+                            }
+                            used += count;
+                        };
+                        let Some(path) = head
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_string)
+                        else {
+                            return;
+                        };
+                        let _ = request_tx.send(path.clone()).await;
+                        let reply = if path.starts_with("/api/stats/summary") {
+                            &summary
+                        } else {
+                            &status
+                        };
+                        let response = format!(
+                            "HTTP/1.1 {}\r\nContent-Length: {}\r\n\r\n{}",
+                            reply.status,
+                            reply.body.len(),
+                            reply.body
+                        );
+                        if stream.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        used = 0;
+                    }
+                });
+            }
+        });
+        (port, request_rx, task)
+    }
+
+    fn summary_body(period: &str) -> String {
+        format!(
+            r#"{{"period":"{period}","accounted_tokens":42,"cache_read_ratio":0.25,"tokens_per_second":1.5,"avg_ttft_ms":12.0,"streamed_requests":3}}"#
+        )
+    }
+
+    async fn fetch_both(
+        port: u16,
+        api_key_env: Option<&str>,
+    ) -> (EggpoolFetchOutcome, EggpoolHealthFetchOutcome) {
+        let client = EggpoolClient::new(Duration::from_secs(2));
+        let endpoint = endpoint(port, api_key_env);
+        tokio::join!(
+            client.fetch(&endpoint, EggpoolPeriod::Hour),
+            client.fetch_health(&endpoint)
+        )
     }
 
     fn worker_for(port: u16, cancel: &tokio_util::sync::CancellationToken) -> EggpoolWorker {
@@ -1213,7 +1782,8 @@ mod tests {
             .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         let result = next_result(&mut worker).await;
-        assert_eq!(result.outcome, EggpoolFetchOutcome::NetworkError);
+        assert_eq!(result.summary, EggpoolFetchOutcome::NetworkError);
+        assert_eq!(result.health, EggpoolHealthFetchOutcome::NetworkError);
         assert_eq!((result.generation, result.period), (1, EggpoolPeriod::Hour));
         cancel.cancel();
     }
@@ -1239,7 +1809,11 @@ mod tests {
             "/api/stats/summary?period=1h"
         );
         let result = next_result(&mut worker).await;
-        assert!(matches!(result.outcome, EggpoolFetchOutcome::Online(_)));
+        assert!(matches!(result.summary, EggpoolFetchOutcome::Online(_)));
+        assert!(matches!(
+            result.health,
+            EggpoolHealthFetchOutcome::Online(_)
+        ));
         // The fake clock never advances, so both timestamps pin to its
         // anchor instead of wall-clock instants.
         assert_eq!(result.started_at, anchor);
@@ -1330,7 +1904,11 @@ mod tests {
         gate.send(true).ok();
         let result = next_result(&mut worker).await;
         assert_eq!((result.generation, result.period), (3, EggpoolPeriod::Week));
-        assert!(matches!(result.outcome, EggpoolFetchOutcome::Online(_)));
+        assert!(matches!(result.summary, EggpoolFetchOutcome::Online(_)));
+        assert!(matches!(
+            result.health,
+            EggpoolHealthFetchOutcome::Online(_)
+        ));
         // The abandoned requests never mutate visible state.
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
@@ -1391,7 +1969,7 @@ mod tests {
         let final_result = final_result.expect("a newest-generation result");
         assert_eq!(final_result.period, EggpoolPeriod::Month);
         assert!(matches!(
-            final_result.outcome,
+            final_result.summary,
             EggpoolFetchOutcome::Online(_)
         ));
 
@@ -1444,6 +2022,102 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn worker_delivers_both_planes_and_partial_success() {
+        // The gated server answers the summary route normally and returns a
+        // degraded health snapshot, so one result carries both planes.
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        gate.send(true).ok();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
+        );
+        let result = next_result(&mut worker).await;
+        assert!(matches!(result.summary, EggpoolFetchOutcome::Online(_)));
+        let EggpoolHealthFetchOutcome::Online(snapshot) = result.health else {
+            panic!("the health plane is delivered with the summary plane");
+        };
+        assert_eq!(snapshot.proxy, EggpoolProxyHealth::Ready);
+        assert_eq!(snapshot.providers.len(), 1);
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test]
+    async fn a_stalled_health_route_does_not_hide_a_summary_failure() {
+        // A status route that never answers must not be confused with a
+        // `EggPool`-reported proxy status, and the summary plane keeps its
+        // own outcome.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server_task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buffered = vec![0; 8192];
+                    let mut used = 0;
+                    loop {
+                        if find_header_end(&buffered[..used]).is_some() {
+                            let head = String::from_utf8_lossy(&buffered[..used]).into_owned();
+                            let path = head
+                                .lines()
+                                .next()
+                                .unwrap_or_default()
+                                .split_whitespace()
+                                .nth(1)
+                                .unwrap_or_default()
+                                .to_string();
+                            if path.starts_with("/api/stats/summary") {
+                                let body = summary_body("1h");
+                                let response = format!(
+                                    "HTTP/1.1 503 Service Unavailable\r\nContent-Length: {}\r\n\r\n{body}",
+                                    body.len()
+                                );
+                                if stream.write_all(response.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                            } else {
+                                // Never answer the status route.
+                                std::future::pending::<()>().await;
+                            }
+                            used = 0;
+                        } else {
+                            if used == buffered.len() {
+                                return;
+                            }
+                            let Ok(count) = stream.read(&mut buffered[used..]).await else {
+                                return;
+                            };
+                            if count == 0 {
+                                return;
+                            }
+                            used += count;
+                        }
+                    }
+                });
+            }
+        });
+
+        let client = EggpoolClient::new(Duration::from_millis(200));
+        let endpoint = endpoint(port, None);
+        let (summary, health) = tokio::join!(
+            client.fetch(&endpoint, EggpoolPeriod::Hour),
+            client.fetch_health(&endpoint)
+        );
+        assert_eq!(summary, EggpoolFetchOutcome::HttpStatus(503));
+        // A transport failure is a local fact, never a reported proxy state.
+        assert_eq!(health, EggpoolHealthFetchOutcome::Timeout);
+        server_task.abort();
+        let _ = server_task.await;
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn closed_control_channel_reports_a_missing_worker() {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = worker_for(1, &cancel);
@@ -1466,6 +2140,379 @@ mod tests {
         assert!(app.eggpool_desired_state().is_none());
     }
 
+    #[tokio::test]
+    async fn health_decodes_ready_degraded_and_unready_proxy_states() {
+        for (proxy, expected) in [
+            ("ready", EggpoolProxyHealth::Ready),
+            ("degraded", EggpoolProxyHealth::Degraded),
+            ("unready", EggpoolProxyHealth::Unready),
+        ] {
+            let (port, _requests, server) = server_routes(
+                RouteReply::ok(summary_body("1h")),
+                RouteReply::ok(healthy_status_body(proxy, "ready", "verified")),
+            )
+            .await;
+            let (summary, health) = fetch_both(port, None).await;
+            assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+            let EggpoolHealthFetchOutcome::Online(snapshot) = health else {
+                panic!("expected a health snapshot for proxy {proxy}");
+            };
+            assert_eq!(snapshot.schema_version, 1);
+            assert_eq!(snapshot.proxy, expected);
+            assert!(snapshot.available);
+            assert_eq!(snapshot.uptime_seconds, Some(42.5));
+            assert_eq!(snapshot.model_count, Some(3));
+            assert_eq!(snapshot.routable_accounts, Some(5));
+            assert_eq!(snapshot.enabled_accounts, Some(6));
+            server.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn health_decodes_every_provider_state_without_conflation() {
+        let body =
+            r#"{"schema_version":1,"proxy":{"status":"degraded","available":true},"providers":[
+            {"id":"a","status":"ready","observation":"verified"},
+            {"id":"b","status":"degraded","observation":"failed"},
+            {"id":"c","status":"unavailable","observation":"stale"},
+            {"id":"d","status":"disabled","observation":"never"},
+            {"id":"e","status":"something-new","observation":"also-new"},
+            {"id":"f"}
+        ]}"#
+            .replace('\n', "");
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        let (_summary, health) = fetch_both(port, None).await;
+        let EggpoolHealthFetchOutcome::Online(snapshot) = health else {
+            panic!("expected a health snapshot");
+        };
+        let statuses: Vec<EggpoolProviderHealth> =
+            snapshot.providers.iter().map(|row| row.status).collect();
+        assert_eq!(
+            statuses,
+            [
+                EggpoolProviderHealth::Ready,
+                EggpoolProviderHealth::Degraded,
+                EggpoolProviderHealth::Unavailable,
+                EggpoolProviderHealth::Disabled,
+                // An unrecognized value is genuinely unknown, not a guess.
+                EggpoolProviderHealth::Unknown,
+                EggpoolProviderHealth::Unknown,
+            ]
+        );
+        let observations: Vec<Option<EggpoolProviderObservation>> = snapshot
+            .providers
+            .iter()
+            .map(|row| row.observation)
+            .collect();
+        assert_eq!(
+            observations,
+            [
+                Some(EggpoolProviderObservation::Verified),
+                Some(EggpoolProviderObservation::Failed),
+                Some(EggpoolProviderObservation::Stale),
+                Some(EggpoolProviderObservation::Never),
+                None,
+                None,
+            ]
+        );
+        assert_eq!(
+            snapshot.provider_counts(),
+            [1, 1, 1, 1, 2],
+            "bounded provider counts follow the decoded rows"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn public_summary_with_authenticated_health_stays_usable() {
+        // EggPool keeps `/api/status` authenticated even when the dashboard
+        // is public. No key is configured, so the status read is
+        // unauthenticated and answered with 401.
+        let (port, mut requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::status("401 Unauthorized"),
+        )
+        .await;
+        // No key is configured, so both reads are unauthenticated: the
+        // public summary still succeeds and only the status route is refused.
+        let client = EggpoolClient::new(Duration::from_secs(2));
+        let endpoint = endpoint(port, None);
+        let (summary, health) = tokio::join!(
+            client.fetch(&endpoint, EggpoolPeriod::Hour),
+            client.fetch_health(&endpoint)
+        );
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::AuthenticationRequired);
+        let seen: Vec<String> = std::iter::from_fn(|| requests.try_recv().ok()).collect();
+        assert!(seen.contains(&"/api/stats/summary?period=1h".to_owned()));
+        assert!(seen.contains(&"/api/status".to_owned()));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn older_eggpool_status_404_is_unsupported_not_a_summary_failure() {
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::status("404 Not Found"),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::Unsupported);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn disabled_dashboard_keeps_valid_health_visible() {
+        let (port, _requests, server) = server_routes(
+            RouteReply::status("404 Not Found"),
+            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert_eq!(summary, EggpoolFetchOutcome::StatsUnavailable);
+        let EggpoolHealthFetchOutcome::Online(snapshot) = health else {
+            panic!("health stays available when the dashboard is disabled");
+        };
+        assert_eq!(snapshot.proxy, EggpoolProxyHealth::Ready);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn status_statuses_and_body_limit_are_bounded_separately() {
+        for (status, expected) in [
+            ("403 Forbidden", EggpoolHealthFetchOutcome::Forbidden),
+            (
+                "503 Service Unavailable",
+                EggpoolHealthFetchOutcome::HttpStatus(503),
+            ),
+        ] {
+            let (port, _requests, server) = server_routes(
+                RouteReply::ok(summary_body("1h")),
+                RouteReply::status(status),
+            )
+            .await;
+            let (_summary, health) = fetch_both(port, None).await;
+            assert_eq!(health, expected);
+            server.abort();
+        }
+        let oversized = "x".repeat(MAX_STATUS_RESPONSE_BYTES + 1);
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(oversized),
+        )
+        .await;
+        let (_summary, health) = fetch_both(port, None).await;
+        assert_eq!(health, EggpoolHealthFetchOutcome::BodyTooLarge);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn status_ceiling_is_per_route_and_does_not_widen_the_summary() {
+        // A status payload larger than the summary bound still decodes,
+        // proving the per-request ceiling rather than one global limit.
+        let padding = "x".repeat(MAX_RESPONSE_BYTES * 2);
+        let body = healthy_status_body("ready", "ready", "verified").replace(
+            "\"schema_version\":1",
+            &format!("\"schema_version\":1,\"note\":\"{padding}\""),
+        );
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert!(matches!(health, EggpoolHealthFetchOutcome::Online(_)));
+        server.abort();
+
+        // The summary route keeps its own 16 KiB ceiling.
+        let big_summary = format!(
+            "{{\"period\":\"1h\",\"pad\":\"{}\"}}",
+            "x".repeat(MAX_RESPONSE_BYTES + 1)
+        );
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(big_summary),
+            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert_eq!(summary, EggpoolFetchOutcome::BodyTooLarge);
+        assert!(matches!(health, EggpoolHealthFetchOutcome::Online(_)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_status_never_invalidates_a_good_summary() {
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok("not json at all".to_owned()),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::DecodeError);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn malformed_summary_never_invalidates_a_good_health_snapshot() {
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok("{\"period\":".to_owned()),
+            RouteReply::ok(healthy_status_body("degraded", "degraded", "failed")),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert_eq!(summary, EggpoolFetchOutcome::DecodeError);
+        assert!(matches!(health, EggpoolHealthFetchOutcome::Online(_)));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unknown_schema_and_invalid_status_are_explicit_and_nonfatal() {
+        let future = healthy_status_body("ready", "ready", "verified")
+            .replace("\"schema_version\":1", "\"schema_version\":2");
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(future)).await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::UnsupportedSchema);
+        server.abort();
+
+        let unknown_proxy = healthy_status_body("sideways", "ready", "verified");
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(unknown_proxy),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::InvalidStatus);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_status_contract_rejects_unbounded_payloads() {
+        let long_id = "i".repeat(MAX_PROVIDER_ID_BYTES + 1);
+        let body = format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{{\"id\":\"{long_id}\",\"status\":\"ready\"}}]}}"
+        );
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        assert_eq!(
+            fetch_both(port, None).await.1,
+            EggpoolHealthFetchOutcome::InvalidStatus
+        );
+        server.abort();
+
+        let long_reason = "r".repeat(MAX_STATUS_REASON_BYTES + 1);
+        let body = format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"unready\",\"available\":false,\"reason_code\":\"{long_reason}\"}}}}"
+        );
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        assert_eq!(
+            fetch_both(port, None).await.1,
+            EggpoolHealthFetchOutcome::InvalidStatus
+        );
+        server.abort();
+
+        let negative_uptime =
+            r#"{"schema_version":1,"proxy":{"status":"ready","available":true,"uptime_seconds":-1.0}}"#
+                .to_owned();
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(negative_uptime),
+        )
+        .await;
+        assert_eq!(
+            fetch_both(port, None).await.1,
+            EggpoolHealthFetchOutcome::InvalidStatus
+        );
+        server.abort();
+
+        let mut providers: Vec<String> = (0..=MAX_STATUS_PROVIDER_ROWS)
+            .map(|index| format!(r#"{{"id":"p{index}","status":"ready"}}"#))
+            .collect();
+        providers.retain(|_| true);
+        let body = format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{}]}}",
+            providers.join(",")
+        );
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        assert_eq!(
+            fetch_both(port, None).await.1,
+            EggpoolHealthFetchOutcome::InvalidStatus
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn health_never_renders_or_retains_the_configured_secret() {
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+        )
+        .await;
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(2),
+            Arc::new(|_| Some(OsString::from("secret-value"))),
+        );
+        let endpoint = endpoint(port, Some("KEY"));
+        let health = client.fetch_health(&endpoint).await;
+        assert!(matches!(health, EggpoolHealthFetchOutcome::Online(_)));
+        assert!(!format!("{health:?}").contains("secret-value"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn unusable_health_credential_is_reported_without_sending() {
+        let (port, mut requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+        )
+        .await;
+        let client = EggpoolClient::with_env_lookup(
+            Duration::from_secs(2),
+            Arc::new(|_| Some(OsString::from("bad\nvalue"))),
+        );
+        assert_eq!(
+            client.fetch_health(&endpoint(port, Some("KEY"))).await,
+            EggpoolHealthFetchOutcome::InvalidApiKey
+        );
+        assert!(requests.try_recv().is_err());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn invalid_endpoint_is_reported_by_both_planes() {
+        let client = EggpoolClient::new(Duration::from_secs(1));
+        let endpoint = EggpoolEntry {
+            host: "fe80::1%eth0".into(),
+            port: 11300,
+            ..endpoint(11300, None)
+        };
+        assert_eq!(
+            client.fetch(&endpoint, EggpoolPeriod::Hour).await,
+            EggpoolFetchOutcome::InvalidEndpoint
+        );
+        assert_eq!(
+            client.fetch_health(&endpoint).await,
+            EggpoolHealthFetchOutcome::InvalidEndpoint
+        );
+    }
+
+    #[test]
+    fn status_url_normalizes_bracketed_ipv6() {
+        let endpoint = EggpoolEntry {
+            host: "[2001:db8::1]".into(),
+            port: 8080,
+            ..endpoint(8080, None)
+        };
+        assert_eq!(
+            status_url(&endpoint).unwrap().as_str(),
+            "http://[2001:db8::1]:8080/api/status"
+        );
+    }
     #[test]
     fn invalid_summary_is_rejected() {
         let wire = EggpoolSummaryWire {

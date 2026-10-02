@@ -23,6 +23,28 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   reducer generation for passive refreshes, and stops on `CancellationToken`
   with no queued shutdown command.
 
+### Added
+
+- **EggPool service-health status plane (Plan 152):** the optional `EggPool`
+  pane now also reads EggPool's schema-version-1 authenticated
+  `GET /api/status` beside the existing `/api/stats/summary` metrics. The pane
+  header gains a bounded `Health: ready | degraded | unready | unknown` token
+  and the footer may show a compact provider count summary such as
+  `Providers: 2 ready · 1 degraded · 1 unavailable`. The four periodized
+  metrics, their meaning, and the 16 KiB summary body limit are unchanged; the
+  status route has its own 1 MiB ceiling aligned with EggPool's bounded status
+  client. Both reads happen concurrently inside the existing worker request, so
+  a slow or unavailable status route never delays a valid summary, and
+  `AppState` keeps health freshness (`health`, `last_health_success_at`,
+  `last_health_attempt_at`, `last_health_error`) separate from summary state —
+  a failed health refresh keeps the previous snapshot but marks it stale, and a
+  summary failure never hides valid service health. An older `EggPool` without
+  the route keeps working and reports health as unsupported, a public dashboard
+  with no configured key reports health as auth required, and an unknown future
+  schema version degrades to an explicit unsupported health state. No provider
+  probe, quota use, account/model drill-down, new credential field, or
+  `EggPool`/`greggd`/`gregg-protocol` change is introduced.
+
 ### Removed
 
 - **EggPool `Busy` worker state (Plan 151):** the `EggpoolStatus` reducer/UI

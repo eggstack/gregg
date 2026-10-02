@@ -54,10 +54,39 @@ gregg eggpool remove <host>
 ## Client
 
 - Dedicated `eggfetch-core` client (lean `standard-http1` 0.2 + Rustls: redirect following not compiled, two idle per host, explicit whole-request deadline with absolute `total` through response-body EOF, no retry)
-- Sends `GET /api/stats/summary?period=...`
-- 16 KiB decoded-body cap (eggfetch owns the limit; fixed, chunked, and close-delimited over-cap bodies map to `BodyTooLarge`)
-- Bearer token from environment variable via request-local `AuthScheme::bearer` (invalid values map to `InvalidSummary`; never stored in outcomes)
+- Two independent read-only planes:
+  - summary: `GET /api/stats/summary?period=...` with a per-request 16 KiB cap
+  - health: `GET /api/status` (Plan 152) with a per-request 1 MiB cap, the same
+    scheme/host/port normalization, no query, and the same 401/403/404
+    classification split (`AuthenticationRequired`/`Forbidden`/`Unsupported`)
+- The client-wide default cap stays at 16 KiB, so the per-route status cap
+  never widens the summary route
+- Bearer token from environment variable via request-local `AuthScheme::bearer`
+  (invalid values map to `InvalidSummary`/`InvalidApiKey`; never stored in
+  outcomes). An absent key stops the summary request but still sends the health
+  request, because EggPool keeps `/api/status` authenticated even when its
+  dashboard is public
 - Fixed periods: `1h`, `24h`, `7d`, `30d`
+
+## Health plane (`/api/status`, Plan 152)
+
+- `EggpoolProxyHealth` = `Ready`/`Degraded`/`Unready`;
+  `EggpoolProviderHealth` = `Ready`/`Degraded`/`Unavailable`/`Disabled`/`Unknown`;
+  `EggpoolProviderObservation` = `Verified`/`Failed`/`Stale`/`Never`
+- These are `EggPool`-reported facts. A transport failure is never rendered as
+  a proxy-reported unavailable state, and health is never inferred from the
+  local worker state or the summary outcome
+- `schema_version` must be `1`; a future version is an explicit unsupported
+  health state, not a decode crash, and never invalidates the summary plane
+- Bounded before rendering: ≤256 provider rows, ≤64-byte provider IDs,
+  ≤128-byte reason codes, finite non-negative uptime
+- `AppState` holds health separately from summary state; a failed health read
+  keeps the previous snapshot but marks it stale, and a period change applies to
+  the summary payload only
+- The worker reads both planes concurrently in its single request task and
+  delivers both outcomes, so partial success is preserved
+- Never add a provider/account/model drill-down, a second cadence, a second
+  credential field, or a health-triggered provider probe
 
 ## Worker
 
@@ -101,7 +130,12 @@ gregg eggpool remove <host>
 
 - Compact pending/success/stale/error states
 - Shows exactly four summary values
-- Keeps same-period prior result visible when a later refresh fails
+- Header: `EggPool — <identity>    Health: <ready|degraded|unready|unknown>    Window: <period>`;
+  the health token is dropped before identity/window are truncated
+- Footer priority: worker unavailable/refreshing, summary refresh failure, then
+  a bounded `Providers: N ready · M degraded ...` count
+- Keeps same-period prior result visible when a later refresh fails, and marks
+  a retained health snapshot stale after a failed health refresh
 - Pane, period, and drive-expansion state are transient
 
 ## Key constraints
@@ -114,6 +148,10 @@ gregg eggpool remove <host>
 ## Tests
 
 - Unit tests in every module
+- Compatibility matrix in `src/eggpool.rs`: ready/degraded/unready proxy,
+  every provider state, public summary + 401 status, older EggPool 404,
+  dashboard-disabled summary, independent malformed/oversized cases, unknown
+  schema version, bounded-contract rejection, and no secret in outcomes
 - Worker regression tests in `src/eggpool.rs`: generation retention across
   passive refresh, request-relative deadlines tied to activation triggers,
   nonblocking latest-desired-state publication under rapid input, convergence
@@ -131,6 +169,6 @@ gregg eggpool remove <host>
 ## Corrective-plan status
 
 - Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
-- Plan 152 follows Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
+- Plan 152 is implemented on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
 
 Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.

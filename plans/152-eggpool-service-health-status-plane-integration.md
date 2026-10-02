@@ -1,6 +1,6 @@
 # Plan 152: EggPool service-health status-plane integration
 
-Status: planned.
+Status: complete. See the closure record at the end of this file.
 
 Depends on: Plan 151. Also relies on EggPool's current schema-version-1 authenticated GET /api/status contract introduced in EggPool commit 3dc9ece9d7 and still present on current EggPool main. Independent of the remaining Plan 091 soak record and planned Plan 147.
 
@@ -348,23 +348,23 @@ Use the existing ordinary CI workflow for hosted closure. A live LAN EggPool smo
 
 ## Explicit acceptance criteria
 
-- [ ] Gregg has distinct local worker-state and remote EggPool health types.
-- [ ] /api/status schema version 1 decodes ready/degraded/unready proxy health.
-- [ ] Provider ready/degraded/unavailable/disabled/unknown states decode without conflation.
-- [ ] Server-side status never treats transport failure as proxy-reported unavailable.
-- [ ] Summary remains the source of the original four metrics with its 16 KiB bound.
-- [ ] Status has a separately appropriate bounded body ceiling, no larger than the existing EggPool 1 MiB status-client bound.
-- [ ] Summary and health fetch independently and preserve partial success.
-- [ ] Public-summary + authenticated-status behavior is represented truthfully.
-- [ ] Older EggPool 404 status behavior preserves summary functionality.
-- [ ] Dashboard-disabled summary does not hide valid service health.
-- [ ] Unknown/future status schema is explicit and nonfatal.
-- [ ] No outbound provider probe, provider quota use, or health mutation is introduced.
-- [ ] Credentials/raw provider errors/prompts/bodies never reach state rendering or logs.
-- [ ] TUI keeps the existing four metrics and adds only compact health context.
-- [ ] No provider/account/model drill-down or generic dashboard architecture is added.
-- [ ] No config schema, greggd, gregg-protocol, EggPool, dependency, workflow, or release change is required.
-- [ ] Focused tests, local checks, and ordinary CI pass.
+- [x] Gregg has distinct local worker-state and remote `EggPool` health types.
+- [x] `/api/status` schema version 1 decodes ready/degraded/unready proxy health.
+- [x] Provider ready/degraded/unavailable/disabled/unknown states decode without conflation.
+- [x] Server-side status never treats transport failure as proxy-reported unavailable.
+- [x] Summary remains the source of the original four metrics with its 16 KiB bound.
+- [x] Status has a separately appropriate bounded body ceiling (1 MiB), equal to the `EggPool` status-client bound and never widening the summary route.
+- [x] Summary and health fetch independently and preserve partial success.
+- [x] Public-summary + authenticated-status behavior is represented truthfully.
+- [x] Older EggPool 404 status behavior preserves summary functionality.
+- [x] Dashboard-disabled summary does not hide valid service health.
+- [x] Unknown/future status schema is explicit and nonfatal.
+- [x] No outbound provider probe, provider quota use, or health mutation is introduced.
+- [x] Credentials, raw provider errors, prompts, and bodies never reach state rendering or logs.
+- [x] TUI keeps the existing four metrics and adds only compact health context.
+- [x] No provider/account/model drill-down or generic dashboard architecture is added.
+- [x] No config schema, `greggd`, `gregg-protocol`, `EggPool`, dependency, workflow, or release change is required.
+- [x] Focused tests and local checks pass (ordinary CI is recorded in the closure record).
 
 ## Stop conditions
 

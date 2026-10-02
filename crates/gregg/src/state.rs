@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use crate::action::Action;
 use crate::config::Config;
 use crate::eggpool::{
-    EggpoolDesiredState, EggpoolFetchOutcome, EggpoolPeriod, EggpoolResult, EggpoolSummary,
+    EggpoolDesiredState, EggpoolFetchOutcome, EggpoolHealthFetchOutcome, EggpoolHealthSnapshot,
+    EggpoolPeriod, EggpoolResult, EggpoolSummary,
 };
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
@@ -92,8 +93,18 @@ pub struct EggpoolState {
     pub last_success_at: Option<Instant>,
     /// Completion time of the last request attempt.
     pub last_attempt_at: Option<Instant>,
-    /// Most recent non-cancelled failure.
+    /// Most recent non-cancelled summary failure.
     pub last_error: Option<EggpoolFetchOutcome>,
+    /// Latest valid `EggPool` service-health snapshot, independent of the
+    /// selected summary period.
+    pub health: Option<EggpoolHealthSnapshot>,
+    /// Completion time of the last successful health read.
+    pub last_health_success_at: Option<Instant>,
+    /// Completion time of the last health read attempt.
+    pub last_health_attempt_at: Option<Instant>,
+    /// Most recent health failure. Its presence means any retained
+    /// snapshot is not current.
+    pub last_health_error: Option<EggpoolHealthFetchOutcome>,
 }
 
 /// Per-system mutable state.
@@ -180,6 +191,10 @@ impl AppState {
             last_success_at: None,
             last_attempt_at: None,
             last_error: None,
+            health: None,
+            last_health_success_at: None,
+            last_health_attempt_at: None,
+            last_health_error: None,
         });
         Self {
             systems,
@@ -732,8 +747,11 @@ impl AppState {
 
     /// Plan 143: `EggPool` result application reporting render-visible change.
     ///
-    /// Returns `false` for stale generations/periods and for cancelled
-    /// outcomes that leave visible state untouched (already idle).
+    /// The summary and health planes are applied independently, so a
+    /// partial result is the normal case: a failed health refresh never
+    /// erases a successful summary, and a failed summary never erases valid
+    /// service health. Returns `false` for stale generations/periods and for
+    /// cancelled outcomes that leave visible state untouched (already idle).
     pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
         let Some(eggpool) = self.eggpool.as_mut() else {
             return false;
@@ -741,27 +759,72 @@ impl AppState {
         if result.generation != eggpool.request_generation || result.period != eggpool.period {
             return false;
         }
-        if matches!(result.outcome, EggpoolFetchOutcome::Cancelled) {
+        if matches!(result.summary, EggpoolFetchOutcome::Cancelled) {
             // A cancelled worker leaves `Refreshing` forever unless
-            // resolved. Return to `Idle` without touching
-            // `last_attempt_at` or `last_error`.
+            // resolved. Return to `Idle` without touching `last_attempt_at`,
+            // `last_error`, or any health state.
             if eggpool.worker_state != EggpoolWorkerState::Idle {
                 eggpool.worker_state = EggpoolWorkerState::Idle;
                 return true;
             }
             return false;
         }
-        eggpool.worker_state = EggpoolWorkerState::Idle;
+        let mut changed = false;
+        if eggpool.worker_state != EggpoolWorkerState::Idle {
+            eggpool.worker_state = EggpoolWorkerState::Idle;
+            changed = true;
+        }
+        // Summary plane: the selected period only.
+        if eggpool.last_attempt_at != Some(result.completed_at) {
+            changed = true;
+        }
         eggpool.last_attempt_at = Some(result.completed_at);
-        match &result.outcome {
+        match &result.summary {
             EggpoolFetchOutcome::Online(summary) => {
+                if eggpool.summary.as_ref() != Some(summary) {
+                    changed = true;
+                }
                 eggpool.summary = Some(summary.clone());
                 eggpool.last_success_at = Some(result.completed_at);
+                if eggpool.last_error.is_some() {
+                    changed = true;
+                }
                 eggpool.last_error = None;
             }
-            error => eggpool.last_error = Some(error.clone()),
+            error => {
+                if eggpool.last_error.as_ref() != Some(error) {
+                    changed = true;
+                }
+                eggpool.last_error = Some(error.clone());
+            }
         }
-        true
+        // Health plane: current service health, with no period.
+        if eggpool.last_health_attempt_at != Some(result.completed_at) {
+            changed = true;
+        }
+        eggpool.last_health_attempt_at = Some(result.completed_at);
+        match &result.health {
+            EggpoolHealthFetchOutcome::Online(snapshot) => {
+                if eggpool.health.as_ref() != Some(snapshot) {
+                    changed = true;
+                }
+                eggpool.health = Some(snapshot.clone());
+                eggpool.last_health_success_at = Some(result.completed_at);
+                if eggpool.last_health_error.is_some() {
+                    changed = true;
+                }
+                eggpool.last_health_error = None;
+            }
+            error => {
+                if eggpool.last_health_error.as_ref() != Some(error) {
+                    changed = true;
+                }
+                // A previous snapshot stays visible, but the renderer marks
+                // it as no longer current rather than claiming freshness.
+                eggpool.last_health_error = Some(error.clone());
+            }
+        }
+        changed
     }
 
     /// Mark an `EggPool` activation or manual refresh as a new request.
@@ -817,6 +880,8 @@ impl AppState {
         eggpool.period = next;
         eggpool.request_generation = eggpool.request_generation.saturating_add(1);
         eggpool.worker_state = EggpoolWorkerState::Refreshing;
+        // A period applies to the summary plane only; service health has no
+        // period and stays visible.
         eggpool.summary = None;
         eggpool.last_error = None;
     }
@@ -1617,6 +1682,7 @@ mod tests {
     fn eggpool_results_reject_stale_or_mismatched_requests_and_retain_same_period_failures() {
         let mut state = AppState::from_config(&eggpool_config(false));
         state.apply_action(Action::MoveDown);
+        let generation = state.begin_eggpool_request().unwrap().1;
         let now = Instant::now();
         let summary = EggpoolSummary {
             accounted_tokens: 42,
@@ -1625,12 +1691,13 @@ mod tests {
             avg_ttft_ms: Some(12.0),
             period: EggpoolPeriod::Day,
         };
-        let result = |generation, period, outcome| EggpoolResult {
+        let result = |generation, period, summary| EggpoolResult {
             generation,
             period,
             started_at: now,
             completed_at: now,
-            outcome,
+            summary,
+            health: EggpoolHealthFetchOutcome::Unsupported,
         };
         state.apply_eggpool_result(&result(
             0,
@@ -1639,25 +1706,29 @@ mod tests {
         ));
         assert!(state.eggpool.as_ref().unwrap().summary.is_none());
         state.apply_eggpool_result(&result(
-            1,
+            generation,
             EggpoolPeriod::Hour,
             EggpoolFetchOutcome::Online(summary.clone()),
         ));
         assert!(state.eggpool.as_ref().unwrap().summary.is_none());
         state.apply_eggpool_result(&result(
-            1,
+            generation,
             EggpoolPeriod::Day,
             EggpoolFetchOutcome::Online(summary),
         ));
         assert!(state.eggpool.as_ref().unwrap().summary.is_some());
-        state.apply_eggpool_result(&result(1, EggpoolPeriod::Day, EggpoolFetchOutcome::Timeout));
+        state.apply_eggpool_result(&result(
+            generation,
+            EggpoolPeriod::Day,
+            EggpoolFetchOutcome::Timeout,
+        ));
         assert!(state.eggpool.as_ref().unwrap().summary.is_some());
         assert!(matches!(
             state.eggpool.as_ref().unwrap().last_error,
             Some(EggpoolFetchOutcome::Timeout)
         ));
         state.apply_eggpool_result(&result(
-            1,
+            generation,
             EggpoolPeriod::Day,
             EggpoolFetchOutcome::Online(EggpoolSummary {
                 accounted_tokens: 43,
@@ -1678,6 +1749,152 @@ mod tests {
                 .accounted_tokens,
             43
         );
+    }
+
+    fn health_snapshot(proxy: crate::eggpool::EggpoolProxyHealth) -> EggpoolHealthSnapshot {
+        EggpoolHealthSnapshot {
+            schema_version: 1,
+            proxy,
+            available: true,
+            reason_code: None,
+            uptime_seconds: Some(10.0),
+            model_count: Some(2),
+            routable_accounts: Some(1),
+            enabled_accounts: Some(1),
+            providers: vec![crate::eggpool::EggpoolProviderRow {
+                id: "openai".into(),
+                status: crate::eggpool::EggpoolProviderHealth::Ready,
+                observation: Some(crate::eggpool::EggpoolProviderObservation::Verified),
+            }],
+        }
+    }
+
+    #[test]
+    fn eggpool_summary_and_health_planes_are_applied_independently() {
+        let mut state = AppState::from_config(&eggpool_config(false));
+        let generation = state.begin_eggpool_request().unwrap().1;
+        let now = Instant::now();
+        let result = |summary, health| EggpoolResult {
+            generation,
+            period: EggpoolPeriod::Hour,
+            started_at: now,
+            completed_at: now,
+            summary,
+            health,
+        };
+
+        // A good health snapshot is retained even when the summary failed.
+        state.apply_eggpool_result(&result(
+            EggpoolFetchOutcome::Timeout,
+            EggpoolHealthFetchOutcome::Online(health_snapshot(
+                crate::eggpool::EggpoolProxyHealth::Degraded,
+            )),
+        ));
+        let eggpool = state.eggpool.as_ref().unwrap();
+        assert!(eggpool.summary.is_none());
+        assert!(matches!(
+            eggpool.last_error,
+            Some(EggpoolFetchOutcome::Timeout)
+        ));
+        assert_eq!(
+            eggpool.health.as_ref().unwrap().proxy,
+            crate::eggpool::EggpoolProxyHealth::Degraded
+        );
+        assert!(eggpool.last_health_error.is_none());
+        assert!(eggpool.last_health_success_at.is_some());
+
+        // A failed health refresh keeps the previous snapshot visible and
+        // records that it is no longer current.
+        state.apply_eggpool_result(&result(
+            EggpoolFetchOutcome::Online(EggpoolSummary {
+                accounted_tokens: 7,
+                cache_read_ratio: None,
+                output_tokens_per_second: 1.0,
+                avg_ttft_ms: None,
+                period: EggpoolPeriod::Hour,
+            }),
+            EggpoolHealthFetchOutcome::ConnectionRefused,
+        ));
+        let eggpool = state.eggpool.as_ref().unwrap();
+        assert_eq!(eggpool.summary.as_ref().unwrap().accounted_tokens, 7);
+        assert!(eggpool.last_error.is_none());
+        assert_eq!(
+            eggpool.health.as_ref().unwrap().proxy,
+            crate::eggpool::EggpoolProxyHealth::Degraded
+        );
+        assert!(matches!(
+            eggpool.last_health_error,
+            Some(EggpoolHealthFetchOutcome::ConnectionRefused)
+        ));
+        assert!(eggpool.last_health_attempt_at.is_some());
+
+        // A successful health refresh replaces it and clears the error.
+        state.apply_eggpool_result(&result(
+            EggpoolFetchOutcome::Online(EggpoolSummary {
+                accounted_tokens: 8,
+                cache_read_ratio: None,
+                output_tokens_per_second: 1.0,
+                avg_ttft_ms: None,
+                period: EggpoolPeriod::Hour,
+            }),
+            EggpoolHealthFetchOutcome::Online(health_snapshot(
+                crate::eggpool::EggpoolProxyHealth::Ready,
+            )),
+        ));
+        let eggpool = state.eggpool.as_ref().unwrap();
+        assert_eq!(
+            eggpool.health.as_ref().unwrap().proxy,
+            crate::eggpool::EggpoolProxyHealth::Ready
+        );
+        assert!(eggpool.last_health_error.is_none());
+    }
+
+    #[test]
+    fn eggpool_period_change_keeps_health_and_rejects_another_periods_summary() {
+        let mut state = AppState::from_config(&eggpool_config(false));
+        let now = Instant::now();
+        let generation = state.eggpool.as_ref().unwrap().request_generation;
+        let result = |period, summary| EggpoolResult {
+            generation,
+            period,
+            started_at: now,
+            completed_at: now,
+            summary,
+            health: EggpoolHealthFetchOutcome::Online(health_snapshot(
+                crate::eggpool::EggpoolProxyHealth::Ready,
+            )),
+        };
+        state.apply_eggpool_result(&result(
+            EggpoolPeriod::Hour,
+            EggpoolFetchOutcome::Online(EggpoolSummary {
+                accounted_tokens: 1,
+                cache_read_ratio: None,
+                output_tokens_per_second: 1.0,
+                avg_ttft_ms: None,
+                period: EggpoolPeriod::Hour,
+            }),
+        ));
+        assert!(state.eggpool.as_ref().unwrap().health.is_some());
+
+        // A period move is a summary-plane change only.
+        state.apply_action(crate::action::Action::MoveDown);
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
+        assert!(
+            state.eggpool.as_ref().unwrap().health.is_some(),
+            "service health has no period"
+        );
+        let other_period = result(
+            EggpoolPeriod::Hour,
+            EggpoolFetchOutcome::Online(EggpoolSummary {
+                accounted_tokens: 99,
+                cache_read_ratio: None,
+                output_tokens_per_second: 1.0,
+                avg_ttft_ms: None,
+                period: EggpoolPeriod::Hour,
+            }),
+        );
+        assert!(!state.apply_eggpool_result_changed(&other_period));
+        assert!(state.eggpool.as_ref().unwrap().summary.is_none());
     }
 
     #[test]

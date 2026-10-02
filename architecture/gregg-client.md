@@ -514,12 +514,48 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - Dedicated `eggfetch_core::Client` (lean `standard-http1` + Rustls
   profile: redirect following not compiled, two idle per host, explicit
   five-field whole-request deadline with absolute `total` through
-  response-body EOF, 16 KiB decoded-body cap, no automatic retry),
-  isolated from Systems polling
-- Sends `/api/stats/summary?period=...`
-- Request-local `AuthScheme::bearer` (invalid values map to
-  `InvalidSummary`; secrets never enter outcomes, logs, or URLs)
+  response-body EOF, 16 KiB client-wide decoded-body cap, no automatic
+  retry), isolated from Systems polling
+- Summary plane: `/api/stats/summary?period=...` with a per-request 16 KiB cap
+- Health plane (Plan 152): `/api/status` with a per-request 1 MiB cap aligned
+  with EggPool's own bounded status client. The client-wide default stays at
+  the summary bound, so raising this one route never widens the summary route.
+- Request-local `AuthScheme::bearer` (invalid values map to `InvalidSummary` for
+  the summary plane and `InvalidApiKey` for the health plane; secrets never
+  enter outcomes, logs, or URLs)
 - Bearer token from environment variable (never stored in outcomes)
+- An absent or empty key stops the summary request as `MissingApiKeyEnv` but
+  still sends the health request unauthenticated, because EggPool keeps
+  `/api/status` authenticated even when the dashboard is public; the server's
+  own 401/403 answer is authoritative
+
+**Health plane** (`/api/status`, Plan 152):
+- `EggpoolProxyHealth` (`Ready`/`Degraded`/`Unready`),
+  `EggpoolProviderHealth` (`Ready`/`Degraded`/`Unavailable`/`Disabled`/`Unknown`),
+  and `EggpoolProviderObservation` (`Verified`/`Failed`/`Stale`/`Never`) are
+  `EggPool`-reported facts, never inferred from a transport failure
+- `schema_version` must be `1`; a future version is `UnsupportedSchema`, and an
+  unrecognized proxy status or an out-of-contract payload is `InvalidStatus` —
+  both explicit, nonfatal, and never invalidating the summary plane
+- Bounded before rendering: provider rows ≤ 256, provider IDs ≤ 64 bytes,
+  reason codes ≤ 128 bytes, finite non-negative uptime
+- `EggpoolHealthFetchOutcome` keeps 401 (`AuthenticationRequired`), 403
+  (`Forbidden`), and 404 (`Unsupported`, not a statistics failure) distinct
+- Status reads never trigger an outbound provider probe, quota use, or
+  mutation
+- `AppState` owns health separately (`health`, `last_health_success_at`,
+  `last_health_attempt_at`, `last_health_error`). A failed health refresh keeps
+  the previous snapshot visible but marks it stale; summary success/failure
+  updates only summary state and vice versa. A period applies to the summary
+  payload only.
+- The worker reads both planes concurrently inside its single request task, so a
+  slow or unavailable status route never delays a valid summary, and one result
+  carries both outcomes rather than a collapsed success/failure.
+- TUI: a compact header `Health: <ready|degraded|unready|unknown>` token
+  (dropped before the identity/window tokens at narrow widths) plus an optional
+  bounded footer count such as `Providers: 2 ready · 1 degraded · 1
+  unavailable`. Footer priority: worker diagnostics, summary failure, provider
+  counts. The four metric rows never change.
 - Host normalization errors, including URL forms unsupported by the pinned URL
   parser, are reported as `InvalidEndpoint` rather than transport failures.
   Body-stage typed timeouts map to `Timeout`; ordinary post-header body
