@@ -223,8 +223,12 @@ Do not include:
 ## Closure record
 
 Implementation: `50aedac` (`chore: refresh eggfetch-core to published 0.2.2`).
-Ordinary CI: run recorded in `plans/README.md` for that commit; no new
-workflow, job, or matrix was added.
+Ordinary CI: run `37038881606` at commit `e5c3231` (the commit that contains
+`50aedac`) is green across all six jobs — Linux, macOS arm64, macOS Intel,
+Windows SCM smoke, MSRV Rust 1.89, and FreeBSD 14.2 native `gregg-host`. The
+workflow run started for `50aedac` itself (`37038811552`) was cancelled by the
+follow-up closure-record push, and the identical tree passed in the follow-up
+run. No new workflow, job, or matrix was added.
 
 ### Retarget
 
