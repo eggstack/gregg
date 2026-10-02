@@ -367,3 +367,12 @@ gated solely on its own extended soak record. No other planned or in-progress
 plan depended on Plan 153. The pre-existing stale `Status: planned` header on
 the retired Plan 064 file remains the unenumerated artifact already recorded in
 Plan 146's closure and is not remade here.
+
+
+## Post-closure evidence note (2026-10-02)
+
+A later cross-repository evidence review confirmed that Plan 153's production correction remains valid against current EggPool main `43c987ea458bd563d5108fd8051ad31185704bb0`: the consumed fields (`proxy.routable_accounts`, `proxy.enabled_accounts`, `providers[].provider_id`, `providers[].last_observation`) and 256/96/64 producer bounds are unchanged.
+
+The review found one narrower qualification issue. The fixture described as canonical uses some locally invented fields only in the portion Gregg deliberately ignores: `runtime.pid` / `runtime.started_at`, provider `account_count`, and a nested `last_probe` object. EggPool's actual `RuntimeHealthSummary` instead serializes `generation`, `digest_prefix`, `reload`, `tasks`, `db`, and `retiring`; `ProviderHealthSummary` serializes explicit enabled/total/routable/backoff/unavailable account counts plus `model_count`, `last_probe_age_seconds`, `last_probe_latency_ms`, `last_probe_status_code`, and `reason_code`.
+
+Those ignored-field differences do not affect Gregg's functional decoding and do not reopen the Plan-153 wire fix. Plan 154 owns the evidence-only cleanup so the provenance fixture and its comments are structurally canonical for fields Gregg both consumes and ignores. Preserve this closure record and its CI evidence as written.

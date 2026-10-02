@@ -372,11 +372,12 @@ published 0.2.2: one package version moved, the resolved feature graph and the
 excluded-capability set are identical, every transport regression stayed green,
 and the stripped fat-LTO `gregg` binary is byte-identical before and after. It
 was never blocked by Plan 091 or by Plans 151-153. Plan 147 remains closed.
-Plan 091 is still gated only on its own extended soak record; the independent
-Plan 153 EggPool schema-v1 wire correction opened by post-Plan-152
-cross-repository review is now closed.
+Plan 091 is still gated only on its own extended soak record. Completed Plan
+153 fixed the EggPool schema-v1 production wire contract; post-closure evidence
+review has opened independent Plan 154 to make its canonical fixture's ignored
+runtime/provider fields exactly match EggPool's serialized structs.
 
-Plans 151-153 are the completed implementation baseline for the post-closure EggPool corrective line, which is now closed. Plan 151
+Plans 151-153 are the completed functional implementation baseline for the post-closure EggPool corrective line. Plan 154 is a narrow evidence-only fixture cleanup and does not reopen that production behavior. Plan 151
 is complete at implementation `4f9debe` with existing CI run `37029539823`
 green across all six jobs: it replaces the August-25 `d31d72f`
 drop-on-full worker-control contract without blocking terminal input with one
@@ -410,9 +411,13 @@ one-over tests, one provenance-recorded canonical fixture (upstream repo,
 commit, and `ProxyStatusSnapshot` type) replaced the self-authored matrix
 payload, and a negative regression proves the never-upstream
 `id`/`observation`/root-count shape is not a supported schema. No serde alias
-was added. The EggPool corrective line is now closed through Plan 153, and
-Plan 091 is again the only in-progress plan, still gated solely on its own
-extended soak record.
+was added. A later evidence review found that some fields included only as
+ignored examples in the so-called canonical fixture (`runtime.pid`,
+`runtime.started_at`, `account_count`, and nested `last_probe`) are not the
+actual fields serialized by EggPool's `RuntimeHealthSummary` /
+`ProviderHealthSummary`. Plan 154 is planned to make that fixture literally
+canonical without changing the already-correct decoder. While it is open,
+Plans 091 and 154 are the only in-progress plans.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -564,7 +569,8 @@ excluded.
 
 | [`151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md`](151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md) | Replace lossy EggPool try_send/Busy command pressure with nonblocking latest-desired-state convergence and clarify local worker-state naming | complete at `4f9debe`; CI `37029539823` green across all six jobs; watch-based `EggpoolDesiredState` + `EggpoolWorkerState` (no `Busy`), deterministic pressure/convergence tests, local checks green; post-closure correction to 056-062/d31d72f; independent of 091 and 147 |
 | [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | complete at `7b88e43`; CI `37034974349` green across all six jobs, current `main` `9d2fcff` green in `37035252848`; typed health model, per-route 1 MiB status ceiling, concurrent dual-plane worker read, separate health freshness in AppState, compact `Health:` token and provider counts, full compatibility matrix, local checks green; depends on completed 151; post-closure wire-contract defect corrected by completed Plan 153; independent of 091 and 147 |
-| [`153-eggpool-schema-v1-wire-contract-corrective-pass.md`](153-eggpool-schema-v1-wire-contract-corrective-pass.md) | Correct Plan-152 status JSON field names/placement and producer bounds against EggPool's canonical schema-v1 `ProxyStatusSnapshot`, with upstream-provenance regression fixture | complete at `195724c`; `proxy`-nested account counts, `provider_id`/`last_observation`, producer-aligned 256/96/64 bounds with exact/one-over tests, one canonical provenance-recorded fixture replacing the synthetic matrix, negative regression locking out the never-upstream `id`/`observation`/root-count shape; CI `37046499078` green across all six jobs, local checks green; terminal for the EggPool corrective line; independent of 091 |
+| [`153-eggpool-schema-v1-wire-contract-corrective-pass.md`](153-eggpool-schema-v1-wire-contract-corrective-pass.md) | Correct Plan-152 status JSON field names/placement and producer bounds against EggPool's canonical schema-v1 `ProxyStatusSnapshot`, with upstream-provenance regression fixture | complete at `195724c`; `proxy`-nested account counts, `provider_id`/`last_observation`, producer-aligned 256/96/64 bounds with exact/one-over tests, one canonical provenance-recorded fixture replacing the synthetic matrix, negative regression locking out the never-upstream `id`/`observation`/root-count shape; CI `37046499078` green across all six jobs, local checks green; functional correction complete; fixture-evidence cleanup owned by Plan 154; independent of 091 |
+| [`154-eggpool-canonical-status-fixture-evidence-cleanup.md`](154-eggpool-canonical-status-fixture-evidence-cleanup.md) | Make Plan-153's canonical status fixture structurally identical to EggPool schema-v1 for ignored runtime/provider fields, without changing production decoding or behavior | planned; depends on completed 153/current main; evidence/test/docs only; independent of 091 |
 
 Dependency order:
 
@@ -581,6 +587,7 @@ Dependency order:
 062 + 070 + current main -> 151
 151 -> 152
 152 -> 153
+153 -> 154
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
