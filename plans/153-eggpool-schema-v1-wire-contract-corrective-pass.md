@@ -376,3 +376,13 @@ A later cross-repository evidence review confirmed that Plan 153's production co
 The review found one narrower qualification issue. The fixture described as canonical uses some locally invented fields only in the portion Gregg deliberately ignores: `runtime.pid` / `runtime.started_at`, provider `account_count`, and a nested `last_probe` object. EggPool's actual `RuntimeHealthSummary` instead serializes `generation`, `digest_prefix`, `reload`, `tasks`, `db`, and `retiring`; `ProviderHealthSummary` serializes explicit enabled/total/routable/backoff/unavailable account counts plus `model_count`, `last_probe_age_seconds`, `last_probe_latency_ms`, `last_probe_status_code`, and `reason_code`.
 
 Those ignored-field differences do not affect Gregg's functional decoding and do not reopen the Plan-153 wire fix. Plan 154 owns the evidence-only cleanup so the provenance fixture and its comments are structurally canonical for fields Gregg both consumes and ignores. Preserve this closure record and its CI evidence as written.
+
+### Plan 154 closure note (2026-10-02)
+
+Plan 153's production wire correction remains valid. Only the ignored-field
+examples in its provenance fixture and accompanying commentary were
+overclaimed as canonical: `runtime.pid` / `runtime.started_at`,
+`account_count`, and nested `last_probe` were not fields serialized by the
+pinned EggPool schema-v1 structs. Plan 154 owns and closes that evidence-only
+cleanup. Plan 153's production behavior and original closure evidence remain
+unchanged.

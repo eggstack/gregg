@@ -108,9 +108,10 @@ root.proxy.reason_code
 ```
 
 Provenance of that shape: `eggstack/eggpool` commit
-`299a0b3657667af509742a184e658c14df22d406`, serde JSON. The account counts are
-nested under `proxy`, and provider identity/observation come from
-`provider_id` / `last_observation`.
+`43c987ea458bd563d5108fd8051ad31185704bb0`, serde JSON from
+`ProxyStatusSnapshot` and its `ProxyHealthSummary`, `ProviderHealthSummary`,
+and `RuntimeHealthSummary` nested types. The Gregg fixture is structurally
+canonical with synthetic values; it is not a byte-for-byte live response.
 
 Fields EggPool emits that Gregg deliberately does not model, and must keep
 ignoring: `observed_at`; `runtime.{generation,digest_prefix,reload,tasks,db,retiring}`;
@@ -121,8 +122,9 @@ ignoring: `observed_at`; `runtime.{generation,digest_prefix,reload,tasks,db,reti
 extra JSON fields stay tolerated.
 
 - `canonical_status_body` in `src/eggpool.rs::tests` is the single passing
-  status fixture and records the upstream provenance in its doc comment. Use
-  it for new status cases instead of hand-rolling a payload.
+  status fixture and records the upstream provenance in its doc comment. Its
+  ignored runtime/provider details use the exact schema-v1 field names listed
+  above. Use it for new status cases instead of hand-rolling a payload.
 - Never add a serde alias or fallback for the never-upstream Plan-152 shape
   (`id` instead of `provider_id`, `observation` instead of
   `last_observation`, root-level account counts). `gregg_local_status_shape_is_not_a_supported_schema`
@@ -219,6 +221,6 @@ extra JSON fields stay tolerated.
 - Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
 - Plan 152 is complete on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
 - Plan 153 is complete: the private schema-v1 consumer matches EggPool's canonical consumed wire shape (`proxy.routable_accounts` / `proxy.enabled_accounts`, `providers[].provider_id`, `providers[].last_observation`) with producer-aligned 256/96/64 bounds. Plan 152's `id` / `observation` / root-count synthetic fixture is not a supported schema and no alias preserves it.
-- Plan 154 is the active evidence-only cleanup: the Plan-153 fixture's ignored runtime/provider examples must be changed from locally invented `runtime.pid` / `runtime.started_at`, `account_count`, and nested `last_probe` fields to EggPool's actual `RuntimeHealthSummary` / `ProviderHealthSummary` field names. Do not change production decoding or expand `EggpoolHealthSnapshot` merely to retain ignored evidence fields.
+- Plan 154's implementation is complete: the Plan-153 fixture's ignored runtime/provider examples now use EggPool's actual `RuntimeHealthSummary` / `ProviderHealthSummary` field names. Hosted CI closure is pending. Do not change production decoding or expand `EggpoolHealthSnapshot` merely to retain ignored evidence fields.
 
 Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.

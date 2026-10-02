@@ -1394,8 +1394,9 @@ mod tests {
     ///
     /// ```text
     /// repo:          eggstack/eggpool
-    /// commit:        299a0b3657667af509742a184e658c14df22d406
+    /// commit:        43c987ea458bd563d5108fd8051ad31185704bb0
     /// type:          rust/src/operations/status.rs::ProxyStatusSnapshot
+    /// nested types:  ProxyHealthSummary / ProviderHealthSummary / RuntimeHealthSummary
     /// serialization: serde JSON
     /// ```
     ///
@@ -1403,14 +1404,16 @@ mod tests {
     /// under `proxy`, and provider rows carry `provider_id` /
     /// `last_observation`. The payload also carries the canonical fields Gregg
     /// does not display (`observed_at`, `runtime`, `proxy.ready`,
-    /// `proxy.version`, `proxy.base_url`, provider account counts, probe
-    /// detail, and the provider reason code), which must decode as ignored.
+    /// `proxy.version`, `proxy.base_url`, provider account/probe details, and
+    /// the provider reason code), which must decode as ignored. This is a
+    /// structurally canonical synthetic fixture, not a byte-for-byte capture
+    /// from a live `EggPool` response.
     /// A payload that does not match this shape is not a passing schema, so
     /// this constructor is the single source of the status matrix instead of
     /// a locally invented variant.
     fn canonical_status_body(proxy: &str, provider: &str, observation: &str) -> String {
         format!(
-            "{{\"schema_version\":1,\"observed_at\":\"2026-10-02T12:00:00Z\",\"runtime\":{{\"pid\":4242,\"started_at\":\"2026-10-02T11:00:00Z\"}},\"proxy\":{{\"status\":\"{proxy}\",\"available\":true,\"ready\":true,\"version\":\"0.9.1\",\"base_url\":\"http://127.0.0.1:11300\",\"uptime_seconds\":42.5,\"model_count\":3,\"routable_accounts\":5,\"enabled_accounts\":6}},\"providers\":[{{\"provider_id\":\"openai\",\"status\":\"{provider}\",\"last_observation\":\"{observation}\",\"account_count\":2,\"routable_accounts\":2,\"enabled_accounts\":2,\"last_probe\":{{\"checked_at\":\"2026-10-02T11:59:58Z\",\"latency_ms\":31}},\"reason_code\":null}}]}}"
+            "{{\"schema_version\":1,\"observed_at\":\"2026-10-02T12:00:00Z\",\"runtime\":{{\"generation\":17,\"digest_prefix\":\"0123456789ab\",\"reload\":\"idle\",\"tasks\":\"4/4\",\"db\":\"ok\",\"retiring\":0}},\"proxy\":{{\"status\":\"{proxy}\",\"available\":true,\"ready\":true,\"version\":\"0.9.1\",\"base_url\":\"http://127.0.0.1:11300\",\"uptime_seconds\":42.5,\"model_count\":3,\"routable_accounts\":5,\"enabled_accounts\":6}},\"providers\":[{{\"provider_id\":\"openai\",\"status\":\"{provider}\",\"last_observation\":\"{observation}\",\"enabled_accounts\":2,\"total_accounts\":2,\"routable_accounts\":1,\"backoff_accounts\":1,\"unavailable_accounts\":1,\"model_count\":3,\"last_probe_age_seconds\":2,\"last_probe_latency_ms\":31,\"last_probe_status_code\":200,\"reason_code\":\"slow\"}}]}}"
         )
     }
 
@@ -2515,17 +2518,26 @@ mod tests {
 
     #[tokio::test]
     async fn canonical_upstream_status_snapshot_decodes_and_ignores_unmodeled_fields() {
-        // Provenance: eggstack/eggpool 299a0b3657667af509742a184e658c14df22d406,
-        // rust/src/operations/status.rs::ProxyStatusSnapshot, serde JSON. This
+        // Provenance: eggstack/eggpool 43c987ea458bd563d5108fd8051ad31185704bb0,
+        // rust/src/operations/status.rs::ProxyStatusSnapshot and its nested
+        // health summary types, serialized as serde JSON. This
         // payload carries the canonical fields Gregg does not model
-        // (`observed_at`, `runtime`, `proxy.ready`, `proxy.version`,
+        // (`observed_at`, canonical runtime fields, `proxy.ready`,
+        // `proxy.version`,
         // `proxy.base_url`, provider account counts, provider probe detail,
         // and the provider reason code) so a passing fixture cannot silently
         // diverge from the upstream serialization again.
         let body = r#"{
             "schema_version": 1,
             "observed_at": "2026-10-02T12:00:00Z",
-            "runtime": {"pid": 4242, "started_at": "2026-10-02T11:00:00Z"},
+            "runtime": {
+                "generation": 17,
+                "digest_prefix": "0123456789ab",
+                "reload": "idle",
+                "tasks": "4/4",
+                "db": "ok",
+                "retiring": 0
+            },
             "proxy": {
                 "status": "ready",
                 "available": true,
@@ -2543,10 +2555,15 @@ mod tests {
                     "provider_id": "openai",
                     "status": "degraded",
                     "last_observation": "stale",
-                    "account_count": 2,
-                    "routable_accounts": 1,
                     "enabled_accounts": 2,
-                    "last_probe": {"checked_at": "2026-10-02T11:59:58Z", "latency_ms": 31},
+                    "total_accounts": 2,
+                    "routable_accounts": 1,
+                    "backoff_accounts": 1,
+                    "unavailable_accounts": 1,
+                    "model_count": 3,
+                    "last_probe_age_seconds": 2,
+                    "last_probe_latency_ms": 31,
+                    "last_probe_status_code": 200,
                     "reason_code": "slow"
                 }
             ]

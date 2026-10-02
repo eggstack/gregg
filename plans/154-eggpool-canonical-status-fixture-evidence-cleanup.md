@@ -1,6 +1,6 @@
 # Plan 154: EggPool canonical status fixture evidence cleanup
 
-Status: planned.
+Status: implementing.
 
 Depends on: completed Plan 153/current main. Independent of the remaining Plan 091 soak record.
 
@@ -202,18 +202,19 @@ Use ordinary existing CI for hosted closure. No new job/matrix.
 
 ## Acceptance criteria
 
-- [ ] The canonical status fixture contains no runtime/provider field name that is absent from the pinned EggPool schema-v1 structs unless explicitly labeled as a deliberate unknown-field test outside the canonical fixture.
-- [ ] `runtime` uses `generation`, `digest_prefix`, `reload`, `tasks`, `db`, and `retiring`.
-- [ ] Provider ignored detail uses canonical account/model/probe/reason fields: `enabled_accounts`, `total_accounts`, `routable_accounts`, `backoff_accounts`, `unavailable_accounts`, `model_count`, `last_probe_age_seconds`, `last_probe_latency_ms`, `last_probe_status_code`, and `reason_code`.
-- [ ] Canonical consumed fields remain `provider_id`, `status`, `last_observation`, and proxy-nested account counts.
-- [ ] The canonical fixture still decodes `Online` without expanding Gregg's normalized health model to retain ignored fields.
-- [ ] The Plan-152 never-upstream shape remains rejected.
-- [ ] Production decoder, worker, state, UI, auth, cadence, body limits, and bounds are unchanged.
-- [ ] Fixture provenance names the exact EggPool commit/type(s) actually inspected and does not claim byte-for-byte capture unless performed.
-- [ ] Plan 153 receives an append-only evidence correction note; its functional closure history is preserved.
-- [ ] `plans/README.md` registers Plan 154 and `153 -> 154`, with truthful active-plan status.
-- [ ] Focused/local checks and ordinary CI pass.
-- [ ] No dependency/config/API/workflow/release or EggPool-repository change is introduced.
+- [x] The canonical status fixture contains no runtime/provider field name that is absent from the pinned EggPool schema-v1 structs unless explicitly labeled as a deliberate unknown-field test outside the canonical fixture.
+- [x] `runtime` uses `generation`, `digest_prefix`, `reload`, `tasks`, `db`, and `retiring`.
+- [x] Provider ignored detail uses canonical account/model/probe/reason fields: `enabled_accounts`, `total_accounts`, `routable_accounts`, `backoff_accounts`, `unavailable_accounts`, `model_count`, `last_probe_age_seconds`, `last_probe_latency_ms`, `last_probe_status_code`, and `reason_code`.
+- [x] Canonical consumed fields remain `provider_id`, `status`, `last_observation`, and proxy-nested account counts.
+- [x] The canonical fixture still decodes `Online` without expanding Gregg's normalized health model to retain ignored fields.
+- [x] The Plan-152 never-upstream shape remains rejected.
+- [x] Production decoder, worker, state, UI, auth, cadence, body limits, and bounds are unchanged.
+- [x] Fixture provenance names the exact EggPool commit/type(s) actually inspected and does not claim byte-for-byte capture unless performed.
+- [x] Plan 153 receives an append-only evidence correction note; its functional closure history is preserved.
+- [x] `plans/README.md` registers Plan 154 and `153 -> 154`, with truthful active-plan status.
+- [x] Focused/local checks pass.
+- [ ] Ordinary CI passes.
+- [x] No dependency/config/API/workflow/release or EggPool-repository change is introduced.
 
 ## Stop conditions
 
@@ -221,4 +222,14 @@ Stop and split a new corrective plan if implementation discovers any mismatch in
 
 ## Closure record
 
-Not yet implemented.
+Completed locally:
+
+- Replaced the ignored runtime example in `canonical_status_body` and the dedicated upstream-shaped regression with EggPool's `RuntimeHealthSummary` field names.
+- Replaced the invented provider `account_count` / nested `last_probe` examples with `ProviderHealthSummary` account, model, probe-age/latency/status, and reason fields.
+- Refreshed fixture provenance to EggPool commit `43c987ea458bd563d5108fd8051ad31185704bb0`, identifying `ProxyStatusSnapshot` and all three nested summary types. The fixture is documented as structurally canonical with synthetic values, not a live byte capture.
+- Kept consumed fields, normalized health assertions, and the negative never-upstream Plan-152 regression. No production code or normalized-model fields changed.
+- Reconciled the EggPool skill and plan index; Plan 091 remains independent and is still gated only on its extended soak record. Plan 154 unblocks no future plan.
+- Inspected the pinned upstream source and confirmed the representative ignored field names against the serialized structs.
+- Passed `cargo test -p gregg --all-targets --all-features -- eggpool` (75 library + 4 binary tests), `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`, and `./scripts/check-local.sh`.
+
+Implementation commit and existing CI run are recorded after push below.
