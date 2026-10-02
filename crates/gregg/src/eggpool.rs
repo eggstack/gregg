@@ -838,6 +838,10 @@ pub struct EggpoolWorker {
 }
 
 /// Start one worker for one configured `EggPool` endpoint.
+///
+/// The single request task reads the summary and service-health planes
+/// concurrently, so neither plane can delay the other and both are aborted
+/// together when the desired state supersedes them.
 pub fn spawn_worker(
     client: EggpoolClient,
     endpoint: EggpoolEntry,
