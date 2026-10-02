@@ -365,17 +365,21 @@ did not reproduce it. Plans 091 and 147 were already independent and keep their
 statuses, and Plan 150 is terminal in the dependency order.
 
 
-Plans 151-152 are the active post-closure EggPool corrective line. Plan 151
-corrects the August-25 d31d72f drop-on-full worker-control contract without
-blocking terminal input: the target is one retained latest desired
-active/period/generation state, explicit local worker-state naming, and no
-Busy-as-dropped-command semantics. Plan 152 then adds EggPool's newer
-schema-version-1 authenticated GET /api/status as an independent health plane
-alongside the existing /api/stats/summary metrics. The original Plans 056-062
-remain a completed historical summary-pane baseline; their closure records are
-not rewritten, but now carry supersession notes where later behavior changed.
-Both plans are client-only, add no dependency/workflow/config schema, and are
-independent of the remaining Plan 091 soak record and planned Plan 147.
+Plans 151-152 are the post-closure EggPool corrective line. Plan 151 is
+complete at implementation `4f9debe`: it replaces the August-25 `d31d72f`
+drop-on-full worker-control contract without blocking terminal input with one
+retained latest desired active/period/generation state published synchronously
+through `EggpoolControl`, explicit `EggpoolWorkerState` naming
+(`Idle`/`Refreshing`/`WorkerUnavailable`, no `Busy`), and deterministic
+pressure/convergence coverage. Plan 152 is the next active plan and adds
+EggPool's newer schema-version-1 authenticated GET /api/status as an
+independent health plane alongside the existing /api/stats/summary metrics.
+The original Plans 056-062 remain a completed historical summary-pane
+baseline; their closure records are not rewritten, but now carry supersession
+notes where later behavior changed, and Plan 062's status line marks it a
+historical record whose pressure contract was replaced. Both plans are
+client-only, add no dependency/workflow/config schema, and are independent of
+the remaining Plan 091 soak record and planned Plan 147.
 
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
@@ -525,7 +529,7 @@ excluded.
 | [`149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md`](149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md) | Bound and modernize the existing FreeBSD 14.2 native CI VM bootstrap without changing collector semantics or qualification strength | complete at `8de5c12`; CI `36908815046` green across all six jobs; terminal after 137, independent of 091 and 147-148 |
 | [`150-windows-foreground-smoke-reliability-corrective-pass.md`](150-windows-foreground-smoke-reliability-corrective-pass.md) | Make the native Windows foreground daemon smoke deterministic, fail-fast, diagnostic, and process-clean without changing product behavior | complete at `2ceafcd3`; CI `36919813734` green across all six jobs; Cargo-provided binary path, OS-selected loopback port, file-backed bounded child diagnostics, early child-exit detection, guaranteed reaping; terminal after 149, independent of 091 and 147-149 |
 
-| [`151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md`](151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md) | Replace lossy EggPool try_send/Busy command pressure with nonblocking latest-desired-state convergence and clarify local worker-state naming | planned; post-closure correction to 056-062/d31d72f; independent of 091 and 147 |
+| [`151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md`](151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md) | Replace lossy EggPool try_send/Busy command pressure with nonblocking latest-desired-state convergence and clarify local worker-state naming | complete at `4f9debe`; watch-based `EggpoolDesiredState` + `EggpoolWorkerState` (no `Busy`), deterministic pressure/convergence tests, local checks green; post-closure correction to 056-062/d31d72f; independent of 091 and 147 |
 | [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | planned; depends on 151; independent of 091 and 147 |
 
 Dependency order:
@@ -586,6 +590,8 @@ Dependency order:
 147 depends on completed 125 plus current main and advances only the already-selected lean EggFetch 0.2 client to published patch 0.2.1; it is independent of Plan 091 and Plan 148.
 148 depends on completed 127 plus current main and advances only the already-selected direct EggServe H1 server boundary to eggserve-server 0.4.0 / eggserve-primitives 0.2.2 with compatibility qualification; it is complete at `2830498409885d6424905b7702b4f604e2399088`, with existing CI run `36872317548` green across all six jobs. It is independent of Plan 091 and Plan 147. Plans 147 and 148 may be implemented in parallel semantically, but both touch Cargo.lock, so the second integration must re-resolve against the first if their branches overlap.
 149 depends on completed Plans 136-137 plus current main and corrects only the existing FreeBSD native CI VM bootstrap boundary: upgrade the maintained VM action while retaining FreeBSD 14.2, add a twenty-minute outer job timeout, cancel superseded same-ref FreeBSD jobs, and disable unused VM copyback. It is independent of Plan 091 and Plans 147-148 and does not reopen collector implementation or native qualification semantics.
+151 depends on completed Plans 056-062, the Plan-070 async-state-machine review, and the current main state after the intentional `d31d72f` nonblocking change. It owns only the EggPool worker-control contract: one retained latest desired active/period/generation state published without waiting for capacity, local worker-state naming separate from EggPool service health, and deterministic pressure/convergence coverage. It is complete at `4f9debe`, is independent of Plan 091 and Plan 147, changes no daemon/protocol/collector/config/workflow surface, and unblocks Plan 152 only.
+152 depends on completed Plan 151's convergent worker and adds EggPool's schema-version-1 authenticated GET /api/status as an independent health plane beside the existing four-metric summary. It is the active plan, is independent of Plan 091 and Plan 147, and does not reopen the four summary metric meanings.
 150 depends on the current post-149 main state only as its source/CI baseline. It corrected the Windows integration smoke harness exposed by failed CI run `36915516145`: Cargo-provided binary discovery, OS-selected loopback port allocation, bounded file-backed child diagnostics, early child-exit detection, and guaranteed process cleanup. It is complete at `2ceafcd3` with existing CI run `36919813734` green across all six jobs, is terminal in the dependency order (`149 -> 150`), and unblocks no remaining plan. It is independent of Plan 091 and Plans 147-149 semantics and did not change daemon, collector, SCM, protocol, or workflow architecture.
 ```
 
@@ -600,6 +606,8 @@ runtime/API-preserving coordinated release/qualification patch, so the plan is
 deliberately lockfile-first and retains Plan 125's lean
 `standard-http1 + tls-rustls` feature boundary rather than reopening client
 transport architecture.
+
+Plan 151 is separately justified by the 2026-10-02 review of the `d31d72f` design: `try_send` plus `Busy` guarantees the input path never waits on a slow worker but can drop a state-changing command, so a visible pane/period/generation can advance while the worker never sees the transition, and a dropped `Deactivate` can leave passive EggPool polling armed after returning to Systems. Plan 152 is separately justified because Gregg consumes only `/api/stats/summary` and therefore cannot distinguish its own local worker lifecycle from whether the configured EggPool proxy and its providers are ready, degraded, or unready.
 
 Plan 148 is separately justified by the published EggServe 0.4.0 server line:
 Gregg's direct `eggserve-server = "0.2"` requirement prevents Cargo from

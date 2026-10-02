@@ -246,4 +246,107 @@ Stop and split follow-up work if correction requires:
 
 ## Closure record
 
-Not yet implemented.
+Implementation: `4f9debe` (`fix: converge EggPool worker on one nonblocking
+desired state`).
+
+### Workstream A: one nonblocking latest desired state
+
+- Added `EggpoolDesiredState { active, period, generation }` and
+  `EggpoolControl`, a `tokio::sync::watch` sender wrapper whose `publish`
+  is synchronous and capacity-free. It reports a closed worker through
+  `EggpoolWorkerClosed` and exposes the retained value through `published`
+  for observation, so there is no second control path.
+- `EggpoolCommand`, its bounded `mpsc` channel, `try_send`, and the `Shutdown`
+  command are gone. `AppState::eggpool_desired_state()` derives `active` from
+  the visible pane, so the pane itself is the deactivation authority.
+- The event loop now publishes whenever the reducer-owned desired state
+  changes, replacing the per-transition command branches.
+
+### Workstream B: deterministic convergence in the worker
+
+- `spawn_worker`/`spawn_worker_with_clock` hold one `EggpoolWorkerState`
+  (newest desired state, at most one in-flight request, passive deadline).
+  `converge` returns whether an immediate request is required: inactive aborts
+  in-flight work and clears the deadline without emitting a synthetic result,
+  while a new active state, changed period, or changed generation aborts
+  obsolete work and starts exactly one request.
+- The passive-deadline arm adopts the newest published state before deciding,
+  so a pending deactivation/period/manual change always wins over a passive
+  deadline and a passive refresh can never fetch superseded intent. It uses the
+  current desired period and generation and never increments the generation.
+- Cancellation aborts the request and terminates the worker; dropping the
+  control publisher also terminates it, so no queued shutdown command is
+  required.
+
+### Workstream C: local worker-state naming
+
+- `EggpoolStatus` became `EggpoolWorkerState` with `Idle`, `Refreshing`, and
+  `WorkerUnavailable`; the `EggpoolState::status` field became `worker_state`.
+  `Busy` and `mark_eggpool_busy` were deleted along with the "worker busy"
+  pane text. `EggpoolFetchOutcome` remains the summary-transport classification
+  and is unchanged. No config or wire surface changed.
+
+### Workstream D: deterministic tests
+
+- New worker coverage: `rapid_publication_never_waits_for_worker_capacity`
+  (a 9,998-publication burst completes without yielding and converges on the
+  newest generation), `worker_held_in_flight_converges_on_the_final_desired_state`,
+  `rapid_period_changes_converge_on_the_final_period_and_generation`,
+  `activation_then_deactivation_under_pressure_arms_no_passive_refresh` (no
+  request or result for at least 120 seconds of paused time),
+  `closed_control_channel_reports_a_missing_worker`, and
+  `unconfigured_state_has_no_worker_control_or_request`.
+- Existing cadence/generation/cancellation/panic-recovery tests were rewritten
+  onto the new control surface; the manual-refresh case now asserts that an
+  unchanged period still produces a new generation and request.
+- The removed `full_command_channel_does_not_block_dispatch_and_marks_busy` was
+  replaced by main-event-loop tests: `rapid_eggpool_state_changes_never_block_systems_dispatch`
+  (2,000 synchronous pane/period transitions, then a Systems refresh that is
+  still delivered), `closed_eggpool_control_channel_marks_worker_unavailable`,
+  `clamped_eggpool_period_does_not_change_desired_state`, and
+  `pane_and_refresh_desired_state_are_scoped_to_active_pane`.
+- The loopback summary server now serves keep-alive connections concurrently and
+  can hold responses open on demand, which is what makes abort-then-refetch
+  convergence observable. Positive waits are bounded by a real-clock watchdog
+  thread rather than a Tokio timer: in a paused-time test an armed timer lets
+  virtual clock auto-advance race the loopback round trip and produce a
+  spurious failure that does not exist in real time. No production-duration
+  sleep and no process-level terminal harness was added.
+
+### Workstream E: reconciliation
+
+- `plans/056-...md`: phase-map rows 61/62 and the dependency note now describe
+  Phase 61/62 as the original awaited-delivery baseline, `d31d72f` as the
+  intentional later change, and Plan 151 as the current correction.
+- `plans/061-...md`: unchanged; its existing supersession note already records
+  the 2026-10-02 review and Plan 151 ownership.
+- `plans/062-...md`: status line now marks the phase a historical record whose
+  pressure contract was superseded, consistent with its supersession note.
+- `architecture/gregg-client.md`, `.opencode/skills/eggpool/SKILL.md`, and one
+  `AGENTS.md` invariant now describe the retained latest-state contract; the
+  Plan-070 rejection note is reconciled rather than deleted.
+- `CHANGELOG.md` records the delivery change and the removal of the visible
+  `Busy` state.
+
+### Verification
+
+- `cargo test -p gregg --all-targets --all-features -- eggpool` (47 tests) and
+  the client bin suite (9 tests) pass.
+- `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
+  `cargo test --workspace --all-targets --all-features` all pass.
+- `./scripts/check-local.sh` passed.
+- Ordinary CI is recorded in `plans/README.md` once the workflow run for
+  `4f9debe` completes; no new workflow or job was added.
+
+### Scope reconciliation
+
+Only `crates/gregg` plus active documentation and planning records changed.
+`greggd`, `gregg-protocol`, `gregg-host`, `gregg-update`, EggPool, the config
+schema, packaging, workflows, and release scripts are untouched, and no
+dependency, generalized channel/actor framework, retry system, or config
+option was added.
+
+Future-plan impact: Plan 151 unblocks Plan 152, which is the only plan that
+depended on this worker contract. Plans 091 and 147 are independent of it and
+keep their statuses.
