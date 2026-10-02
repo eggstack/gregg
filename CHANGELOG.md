@@ -9,6 +9,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **EggFetch 0.2 patch refresh (Plan 147):** `Cargo.lock` now resolves
+  published `eggfetch-core 0.2.2` while the `gregg` manifest keeps the lean
+  `version = "0.2"`, `default-features = false`, `standard-http1` +
+  `tls-rustls` contract. The diff is one package version (three shared
+  `windows-sys` requirement edges re-resolved between already-present
+  versions; no package added or removed), no application source change was
+  needed, the resolved feature graph is unchanged, redirect/retry/proxy/H2/H3
+  and the other excluded capabilities stay absent, all transport regressions
+  (3xx passthrough, absolute total deadline, body ceilings, typed DNS/refused/
+  timeout, Bearer redaction) stay green, and the stripped fat-LTO release
+  `gregg` is byte-identical before and after the refresh. `gregg-update`
+  remains on external `curl`; Plan 126 is not reopened.
+
 - **EggPool desired-state delivery and worker-state correction (Plan 151):**
   the client no longer publishes bounded `EggPool` commands with `try_send`.
   `AppState` now owns one latest desired state

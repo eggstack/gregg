@@ -339,6 +339,25 @@ service-management) are untouched. `Cargo.lock` is intentionally
 re-resolved under the new floor and all `--locked` repository/install
 paths remain valid.
 
+### Dependency dispositions (Plan 147, eggfetch 0.2 patch refresh)
+
+`Cargo.lock` now resolves published `eggfetch-core 0.2.2` while
+`crates/gregg/Cargo.toml` keeps the lean `version = "0.2"`,
+`default-features = false`, `standard-http1` + `tls-rustls` contract. The
+lockfile diff is one package version; three shared `windows-sys` requirement
+edges re-resolved between already-present versions and no package was added
+or removed. The 0.2.2 Rust surface Gregg uses is unchanged, so no application
+source change was needed: 3xx passthrough, the absolute `Timeout.total`
+body-stage mapping, the 16 KiB summary and 1 MiB EggPool status body ceilings,
+Bearer redaction, and typed DNS/refused/timeout/body-limit outcomes all
+regressed green, and the resolved feature graph still owns only
+`standard-http1` (→ `transport-http1`, `standard-route`, `high-level-url`)
+plus `tls-rustls`. The stripped fat-LTO release `gregg` remeasured at
+3,806,128 bytes on the current toolchain, byte-identical before and after the
+refresh (delta 0). Plans 119 and 125 remain the historical 0.1.7 and 0.2.0
+adoption records. `gregg-update` remains on external `curl`; Plan 126 is not
+reopened.
+
 ### Dependency dispositions (Plan 125, eggfetch 0.2 adoption)
 
 Plan 125 moves the Plan 119 lean transport to published `eggfetch-core 0.2.0`
