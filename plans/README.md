@@ -361,9 +361,19 @@ with bounded failure diagnostics. The thirty-second deadline, 200-ms cadence,
 and existing status/capability/identity/metric assertions are unchanged, and no
 daemon, collector, SCM, HTTP, or CI behavior changes. The old harness's failure
 cause remains unproven because it discarded that evidence; the corrected smoke
-did not reproduce it. Plans 091 and 147 were already independent and keep their
-statuses, and Plan 150 is terminal in the dependency order.
+did not reproduce it. Plans 091 and 147 were already independent and kept their
+statuses as of this closure (Plan 147 is since complete; see its record), and
+Plan 150 is terminal in the dependency order.
 
+
+Plan 147 is complete as a lockfile-only refresh of the already-selected lean
+`eggfetch-core 0.2` client, retargeted from its recorded 0.2.1 to the then
+published 0.2.2: one package version moved, the resolved feature graph and the
+excluded-capability set are identical, every transport regression stayed green,
+and the stripped fat-LTO `gregg` binary is byte-identical before and after. It
+was never blocked by Plan 091 or by Plans 151-152. With Plan 147 and Plans
+151-152 closed, Plan 091 is the only remaining in-progress plan in the index,
+and it is gated only on its own extended soak record.
 
 Plans 151-152 are the completed post-closure EggPool corrective line. Plan 151
 is complete at implementation `4f9debe` with existing CI run `37029539823`
