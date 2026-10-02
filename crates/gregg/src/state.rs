@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 
 use crate::action::Action;
 use crate::config::Config;
-use crate::eggpool::{EggpoolFetchOutcome, EggpoolPeriod, EggpoolResult, EggpoolSummary};
+use crate::eggpool::{
+    EggpoolDesiredState, EggpoolFetchOutcome, EggpoolPeriod, EggpoolResult, EggpoolSummary,
+};
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
 use crate::poller::{OfflineReason, PollBatch, PollOutcome};
@@ -58,16 +60,18 @@ pub enum Pane {
     Eggpool,
 }
 
-/// Whether the `EggPool` pane is waiting for or displaying a request.
+/// Whether Gregg's local `EggPool` worker is idle, working, or gone.
+///
+/// Plan 151: this describes only local machinery. `EggPool`'s own proxy
+/// and provider service health is a separate fact (Plan 152) and is never
+/// inferred from these variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EggpoolStatus {
+pub enum EggpoolWorkerState {
     /// No request is currently in flight.
     Idle,
-    /// A request has been requested and is being dispatched.
+    /// Gregg published a current desired request and awaits its result.
     Refreshing,
-    /// The last command could not be queued; the worker was busy.
-    Busy,
-    /// The local worker is unavailable; no request can be dispatched.
+    /// Gregg's local worker or control path is gone; nothing can dispatch.
     WorkerUnavailable,
 }
 
@@ -80,8 +84,8 @@ pub struct EggpoolState {
     pub period: EggpoolPeriod,
     /// Latest desired request identity.
     pub request_generation: u64,
-    /// Current request status.
-    pub status: EggpoolStatus,
+    /// Current local worker state.
+    pub worker_state: EggpoolWorkerState,
     /// Last successful summary for the selected period.
     pub summary: Option<EggpoolSummary>,
     /// Completion time of the last successful request.
@@ -171,7 +175,7 @@ impl AppState {
             endpoint,
             period: EggpoolPeriod::Hour,
             request_generation: 0,
-            status: EggpoolStatus::Idle,
+            worker_state: EggpoolWorkerState::Idle,
             summary: None,
             last_success_at: None,
             last_attempt_at: None,
@@ -741,13 +745,13 @@ impl AppState {
             // A cancelled worker leaves `Refreshing` forever unless
             // resolved. Return to `Idle` without touching
             // `last_attempt_at` or `last_error`.
-            if eggpool.status != EggpoolStatus::Idle {
-                eggpool.status = EggpoolStatus::Idle;
+            if eggpool.worker_state != EggpoolWorkerState::Idle {
+                eggpool.worker_state = EggpoolWorkerState::Idle;
                 return true;
             }
             return false;
         }
-        eggpool.status = EggpoolStatus::Idle;
+        eggpool.worker_state = EggpoolWorkerState::Idle;
         eggpool.last_attempt_at = Some(result.completed_at);
         match &result.outcome {
             EggpoolFetchOutcome::Online(summary) => {
@@ -764,22 +768,30 @@ impl AppState {
     pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
         let eggpool = self.eggpool.as_mut()?;
         eggpool.request_generation = eggpool.request_generation.saturating_add(1);
-        eggpool.status = EggpoolStatus::Refreshing;
+        eggpool.worker_state = EggpoolWorkerState::Refreshing;
         Some((eggpool.period, eggpool.request_generation))
     }
 
     /// Mark the local worker as unavailable without exposing a channel error.
     pub fn mark_eggpool_worker_unavailable(&mut self) {
         if let Some(eggpool) = self.eggpool.as_mut() {
-            eggpool.status = EggpoolStatus::WorkerUnavailable;
+            eggpool.worker_state = EggpoolWorkerState::WorkerUnavailable;
         }
     }
 
-    /// Mark the pane as busy because the worker's command queue was full.
-    pub fn mark_eggpool_busy(&mut self) {
-        if let Some(eggpool) = self.eggpool.as_mut() {
-            eggpool.status = EggpoolStatus::Busy;
-        }
+    /// Plan 151: return the single latest desired worker state.
+    ///
+    /// The worker converges onto this value; there is no command queue, so
+    /// activation, period changes, manual refreshes, and deactivation can
+    /// never be dropped. `active` follows the visible pane, so leaving the
+    /// pane always converges the worker to inactive.
+    #[must_use]
+    pub fn eggpool_desired_state(&self) -> Option<EggpoolDesiredState> {
+        self.eggpool.as_ref().map(|eggpool| EggpoolDesiredState {
+            active: self.active_pane == Pane::Eggpool,
+            period: eggpool.period,
+            generation: eggpool.request_generation,
+        })
     }
 
     /// Return the current `EggPool` request identity without changing state.
@@ -804,7 +816,7 @@ impl AppState {
         }
         eggpool.period = next;
         eggpool.request_generation = eggpool.request_generation.saturating_add(1);
-        eggpool.status = EggpoolStatus::Refreshing;
+        eggpool.worker_state = EggpoolWorkerState::Refreshing;
         eggpool.summary = None;
         eggpool.last_error = None;
     }

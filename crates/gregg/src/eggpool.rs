@@ -336,40 +336,75 @@ fn classify_request_error(failure: &RequestFailure) -> EggpoolFetchOutcome {
     }
 }
 
-/// Commands accepted by the single optional `EggPool` worker.
+/// The single latest `EggPool` worker intent owned by the reducer.
+///
+/// Plan 151: the pane already tracks `active`, `period`, and a refresh
+/// nonce in one place, so the worker contract is one retained latest
+/// desired state rather than a lossy command queue. Publication is
+/// synchronous and capacity-free, therefore it can never drop a
+/// state-changing transition and never stalls the input path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EggpoolCommand {
-    /// Activate the pane and fetch immediately.
-    Activate {
-        /// The selected period.
-        period: EggpoolPeriod,
-        /// State generation assigned to this request.
-        generation: u64,
-    },
-    /// Deactivate periodic refreshes.
-    Deactivate,
-    /// Change period and fetch immediately.
-    SetPeriod {
-        /// The selected period.
-        period: EggpoolPeriod,
-        /// State generation assigned to this request.
-        generation: u64,
-    },
-    /// Fetch immediately for the current/requested period.
-    Refresh {
-        /// The selected period.
-        period: EggpoolPeriod,
-        /// State generation assigned to this request.
-        generation: u64,
-    },
-    /// Stop the worker promptly.
-    Shutdown,
+pub struct EggpoolDesiredState {
+    /// Whether the `EggPool` pane is currently visible.
+    pub active: bool,
+    /// The selected rolling window.
+    pub period: EggpoolPeriod,
+    /// Refresh nonce owned by the reducer; never incremented by the worker.
+    pub generation: u64,
 }
 
-/// Handle for the optional worker's command and result channels.
+impl EggpoolDesiredState {
+    /// The inactive desired state published before any activation.
+    const INACTIVE: Self = Self {
+        active: false,
+        period: EggpoolPeriod::Hour,
+        generation: 0,
+    };
+}
+
+/// The worker control channel closed: no live worker can receive intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EggpoolWorkerClosed;
+
+impl std::fmt::Display for EggpoolWorkerClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EggPool worker control channel is closed")
+    }
+}
+
+impl std::error::Error for EggpoolWorkerClosed {}
+
+/// Nonblocking publisher of the latest desired `EggPool` worker state.
+///
+/// A watch sender never waits for capacity and never queues: it retains
+/// the newest value until the worker observes it, and it still reports a
+/// closed worker so the pane can show `WorkerUnavailable`.
+#[derive(Debug, Clone)]
+pub struct EggpoolControl {
+    sender: tokio::sync::watch::Sender<EggpoolDesiredState>,
+}
+
+impl EggpoolControl {
+    /// Publish the newest desired state. Never blocks, never drops a
+    /// state-changing transition, and never overwrites a newer intent.
+    pub fn publish(&self, desired: EggpoolDesiredState) -> Result<(), EggpoolWorkerClosed> {
+        self.sender.send(desired).map_err(|_| EggpoolWorkerClosed)
+    }
+
+    /// Return the newest published desired state.
+    ///
+    /// This is the retained value the worker converges onto; observing it
+    /// requires no second control path.
+    #[must_use]
+    pub fn published(&self) -> EggpoolDesiredState {
+        *self.sender.borrow()
+    }
+}
+
+/// Handle for the optional worker's control and result channels.
 pub struct EggpoolWorker {
-    /// Send commands to the worker.
-    pub commands: tokio::sync::mpsc::Sender<EggpoolCommand>,
+    /// Publish the latest desired worker state.
+    pub control: EggpoolControl,
     /// Receive completed results.
     pub results: tokio::sync::mpsc::Receiver<EggpoolResult>,
 }
@@ -394,119 +429,166 @@ pub fn spawn_worker_with_clock<C>(
 where
     C: Clock + Clone + Send + 'static,
 {
-    let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(4);
+    let (control_tx, mut control_rx) = tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
     let (result_tx, result_rx) = tokio::sync::mpsc::channel(4);
     tokio::spawn(async move {
-        let mut active = false;
-        let mut period = EggpoolPeriod::Hour;
-        let mut generation: u64 = 0;
-        let mut request: Option<
-            tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)>,
-        > = None;
-        let mut next_refresh_at: Option<tokio::time::Instant> = None;
+        let mut worker = EggpoolWorkerState::new();
         loop {
             tokio::select! {
                 () = cancel.cancelled() => {
-                    if let Some(request) = request.take() { request.abort(); }
+                    worker.abort_request();
                     break;
                 }
-                command = command_rx.recv() => match command {
-                    Some(EggpoolCommand::Activate { period: requested, generation: requested_generation }) => {
-                        if let Some(old_request) = request.take() {
-                            old_request.abort();
-                        }
-                        active = true;
-                        period = requested;
-                        generation = requested_generation;
-                        request = Some(start_request(&client, &endpoint, period, generation, &clock));
-                        next_refresh_at = None;
-                    }
-                    Some(EggpoolCommand::Deactivate) => {
-                        active = false;
-                        next_refresh_at = None;
-                        // Promptly release the in-flight fetch. Its result
-                        // would be discarded as stale after reactivation
-                        // anyway, so there is no reason to keep the task
-                        // (and its connection) running to completion.
-                        if let Some(old_request) = request.take() {
-                            old_request.abort();
-                        }
-                    }
-                    Some(EggpoolCommand::SetPeriod { period: requested, generation: requested_generation }
-                        | EggpoolCommand::Refresh { period: requested, generation: requested_generation }) => {
-                        period = requested;
-                        generation = requested_generation;
-                        if active {
-                            if let Some(old_request) = request.take() {
-                                old_request.abort();
-                            }
-                            request =
-                                Some(start_request(&client, &endpoint, period, generation, &clock));
-                            next_refresh_at = None;
-                        }
-                    }
-                    Some(EggpoolCommand::Shutdown) | None => {
-                        if let Some(request) = request { request.abort(); }
+                changed = control_rx.changed() => {
+                    if changed.is_err() {
+                        // No publisher remains, so no desired state can
+                        // supersede this one. Cancel is not required here.
+                        worker.abort_request();
                         break;
                     }
-                },
+                    if worker.converge(*control_rx.borrow_and_update()) {
+                        worker.start_request(&client, &endpoint, &clock);
+                    }
+                }
                 _ = async {
-                    let deadline = next_refresh_at?;
+                    let deadline = worker.next_refresh_at?;
                     tokio::time::sleep_until(deadline).await;
                     Some(())
-                }, if active && request.is_none() && next_refresh_at.is_some() => {
-                    request = Some(start_request(&client, &endpoint, period, generation, &clock));
-                    next_refresh_at = None;
+                }, if worker.next_refresh_at.is_some() => {
+                    // Adopt the newest published state first: a pending
+                    // deactivation, period change, or manual refresh must
+                    // win over this passive deadline, and a passive
+                    // refresh must never fetch superseded intent.
+                    worker.next_refresh_at = None;
+                    let desired = *control_rx.borrow_and_update();
+                    let superseded = worker.converge(desired);
+                    if superseded || (desired.active && worker.request.is_none()) {
+                        worker.start_request(&client, &endpoint, &clock);
+                    }
                 }
                 completed = async {
-                    match request.as_mut() {
+                    match worker.request.as_mut() {
                         Some(handle) => Some(handle.await),
                         None => None,
                     }
-                }, if request.is_some() => {
-                    request = None;
+                }, if worker.request.is_some() => {
+                    worker.request = None;
                     let (generation, period, started_at, outcome) = match completed {
                         Some(Ok(tuple)) => tuple,
                         // A panicked fetch task must still deliver a
                         // result so the pane's Refreshing status
                         // resolves instead of stalling until the next
                         // periodic refresh. The in-flight request always
-                        // carries the worker's current generation and
+                        // carries the newest desired generation and
                         // period, so those are safe to reuse here.
                         Some(Err(_)) | None => (
-                            generation,
-                            period,
+                            worker.desired.generation,
+                            worker.desired.period,
                             clock.now(),
                             EggpoolFetchOutcome::NetworkError,
                         ),
                     };
                     let _ = result_tx.send(EggpoolResult { generation, period, started_at, completed_at: clock.now(), outcome }).await;
-                    if active {
+                    if worker.desired.active {
                         // Two clocks: `started_at`/`completed_at` use wall-clock
                         // `now()` while the refresh deadline uses the Tokio
                         // timer clock `tokio_now()`. A fake clock must advance
                         // the wall clock for timestamps and rely on the runtime
                         // clock for deadlines (see `FakeClock`); advancing one
                         // without the other breaks refresh scheduling silently.
-                        next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
+                        worker.next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
                     }
                 }
             }
         }
     });
     EggpoolWorker {
-        commands: command_tx,
+        control: EggpoolControl { sender: control_tx },
         results: result_rx,
     }
 }
 
-fn start_request<C: Clock + Clone + Send + 'static>(
+/// One completed `EggPool` request.
+type RequestTask = tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)>;
+
+/// Plan 151: worker-side convergence onto the latest desired state.
+///
+/// Desired states the worker never observed individually are coalesced:
+/// only the newest state is authoritative.
+struct EggpoolWorkerState {
+    /// The newest desired state this worker has converged onto.
+    desired: EggpoolDesiredState,
+    /// At most one in-flight request.
+    request: Option<RequestTask>,
+    /// Request-relative passive deadline, armed only after completion.
+    next_refresh_at: Option<tokio::time::Instant>,
+}
+
+impl EggpoolWorkerState {
+    fn new() -> Self {
+        Self {
+            desired: EggpoolDesiredState::INACTIVE,
+            request: None,
+            next_refresh_at: None,
+        }
+    }
+
+    /// Converge onto `desired`; return `true` when a request for it must
+    /// start immediately.
+    ///
+    /// - inactive desired state aborts in-flight work, clears the passive
+    ///   deadline, and never emits a synthetic result;
+    /// - a newly active, changed period, or changed generation aborts
+    ///   obsolete work and starts exactly one request for the newest state;
+    /// - an unchanged desired state leaves current work untouched.
+    fn converge(&mut self, desired: EggpoolDesiredState) -> bool {
+        let supersedes = desired.active
+            && (!self.desired.active
+                || self.desired.period != desired.period
+                || self.desired.generation != desired.generation);
+        self.desired = desired;
+        if !desired.active {
+            self.next_refresh_at = None;
+            self.abort_request();
+            return false;
+        }
+        if supersedes {
+            self.abort_request();
+            self.next_refresh_at = None;
+            return true;
+        }
+        false
+    }
+
+    fn start_request<C: Clock + Clone + Send + 'static>(
+        &mut self,
+        client: &EggpoolClient,
+        endpoint: &EggpoolEntry,
+        clock: &C,
+    ) {
+        self.request = Some(spawn_request(
+            client,
+            endpoint,
+            self.desired.period,
+            self.desired.generation,
+            clock,
+        ));
+    }
+
+    fn abort_request(&mut self) {
+        if let Some(request) = self.request.take() {
+            request.abort();
+        }
+    }
+}
+
+fn spawn_request<C: Clock + Clone + Send + 'static>(
     client: &EggpoolClient,
     endpoint: &EggpoolEntry,
     period: EggpoolPeriod,
     generation: u64,
     clock: &C,
-) -> tokio::task::JoinHandle<(u64, EggpoolPeriod, Instant, EggpoolFetchOutcome)> {
+) -> RequestTask {
     let client = client.clone();
     let endpoint = endpoint.clone();
     let clock = clock.clone();
@@ -523,73 +605,9 @@ mod tests {
     use crate::config::EggpoolScheme;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::mpsc;
 
-    async fn server_many(
-        hold: bool,
-        delay: Duration,
-    ) -> (
-        u16,
-        mpsc::Receiver<String>,
-        oneshot::Sender<()>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let (request_tx, request_rx) = mpsc::channel(8);
-        let (release_tx, release_rx) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let mut ordinal = 0u64;
-            loop {
-                let (mut stream, _) = listener.accept().await.unwrap();
-                let mut request = vec![0; 8192];
-                let mut used = 0;
-                loop {
-                    let count = stream.read(&mut request[used..]).await.unwrap();
-                    if count == 0 {
-                        return;
-                    }
-                    used += count;
-                    if request[..used]
-                        .windows(4)
-                        .any(|window| window == b"\r\n\r\n")
-                    {
-                        break;
-                    }
-                }
-                let request = String::from_utf8_lossy(&request[..used]);
-                let path = request
-                    .lines()
-                    .next()
-                    .unwrap_or_default()
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or_default()
-                    .to_string();
-                request_tx.send(path.clone()).await.unwrap();
-                if hold {
-                    let _ = release_rx.await;
-                    return;
-                }
-                tokio::time::sleep(delay).await;
-                let period = path.split("period=").nth(1).unwrap_or("1h");
-                let body = format!("{{\"period\":\"{period}\",\"accounted_tokens\":{},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}", ordinal + 1);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                ordinal += 1;
-                if hold {
-                    return;
-                }
-            }
-        });
-        (port, request_rx, release_tx, task)
-    }
-
-    fn endpoint(port: u16, api_key_env: Option<&str>) -> EggpoolEntry {
+    pub(super) fn endpoint(port: u16, api_key_env: Option<&str>) -> EggpoolEntry {
         EggpoolEntry {
             id: "id".into(),
             host: "127.0.0.1".into(),
@@ -780,27 +798,187 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn worker_passive_refresh_keeps_generation_and_updates_state() {
-        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
-        let cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = spawn_worker(
+    fn desired(period: EggpoolPeriod, generation: u64) -> EggpoolDesiredState {
+        EggpoolDesiredState {
+            active: true,
+            period,
+            generation,
+        }
+    }
+
+    fn inactive(period: EggpoolPeriod, generation: u64) -> EggpoolDesiredState {
+        EggpoolDesiredState {
+            active: false,
+            period,
+            generation,
+        }
+    }
+
+    /// A real-clock watchdog so a broken worker fails a test instead of
+    /// hanging the harness.
+    ///
+    /// It deliberately uses an OS thread rather than a Tokio timer: in a
+    /// paused-time test, arming a timer would let virtual clock
+    /// auto-advance race the loopback round trip.
+    fn watchdog() -> tokio::sync::oneshot::Receiver<()> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(15));
+            // The receiver may already be gone; that is fine.
+            let _ = sender.send(());
+        });
+        receiver
+    }
+
+    /// A loopback summary server that records every request path and holds
+    /// every response until the returned gate opens.
+    ///
+    /// Connections are keep-alive and served concurrently, matching how a
+    /// real HTTP server behaves when Gregg aborts a superseded request and
+    /// immediately issues another one.
+    async fn server_gated() -> (
+        u16,
+        mpsc::Receiver<String>,
+        tokio::sync::watch::Sender<bool>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (request_tx, request_rx) = mpsc::channel(64);
+        let (gate_tx, gate_rx) = tokio::sync::watch::channel(false);
+        let ordinal = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let request_tx = request_tx.clone();
+                let mut gate_rx = gate_rx.clone();
+                let ordinal = Arc::clone(&ordinal);
+                tokio::spawn(async move {
+                    let mut buffered = vec![0; 8192];
+                    let mut used = 0;
+                    loop {
+                        // Read one complete request head. `GET` carries no
+                        // body, so the header terminator frames the request.
+                        let head = loop {
+                            if let Some(at) = find_header_end(&buffered[..used]) {
+                                break String::from_utf8_lossy(&buffered[..at]).into_owned();
+                            }
+                            if used == buffered.len() {
+                                return;
+                            }
+                            let Ok(count) = stream.read(&mut buffered[used..]).await else {
+                                return;
+                            };
+                            if count == 0 {
+                                return;
+                            }
+                            used += count;
+                        };
+                        let Some(path) = head
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .split_whitespace()
+                            .nth(1)
+                            .map(str::to_string)
+                        else {
+                            return;
+                        };
+                        // A superseded request may already be abandoned, so
+                        // recorded paths are not proof of a delivered
+                        // result; convergence is asserted from results.
+                        let period = path.split("period=").nth(1).unwrap_or("1h").to_string();
+                        let _ = request_tx.send(path).await;
+                        // Hold the response until the gate opens.
+                        while !*gate_rx.borrow_and_update() {
+                            if gate_rx.changed().await.is_err() {
+                                return;
+                            }
+                        }
+                        let ordinal = ordinal.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                        let summary = format!(
+                            "{{\"period\":\"{period}\",\"accounted_tokens\":{ordinal},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}"
+                        );
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{summary}",
+                            summary.len()
+                        );
+                        if stream.write_all(response.as_bytes()).await.is_err() {
+                            return;
+                        }
+                        used = 0;
+                    }
+                });
+            }
+        });
+        (port, request_rx, gate_tx, task)
+    }
+
+    fn find_header_end(bytes: &[u8]) -> Option<usize> {
+        bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|at| at + 4)
+    }
+
+    fn worker_for(port: u16, cancel: &tokio_util::sync::CancellationToken) -> EggpoolWorker {
+        spawn_worker(
             EggpoolClient::new(Duration::from_secs(10)),
             endpoint(port, None),
             cancel.clone(),
-        );
+        )
+    }
+
+    async fn next_request(requests: &mut mpsc::Receiver<String>) -> String {
+        let watchdog = watchdog();
+        tokio::select! {
+            biased;
+            path = requests.recv() => path.expect("the request channel stays open"),
+            _ = watchdog => panic!("no EggPool summary request was issued"),
+        }
+    }
+
+    async fn next_result(worker: &mut EggpoolWorker) -> EggpoolResult {
+        let watchdog = watchdog();
+        tokio::select! {
+            biased;
+            result = worker.results.recv() => result.expect("the result channel stays open"),
+            _ = watchdog => panic!("no EggPool worker result was delivered"),
+        }
+    }
+
+    async fn stop(
+        worker: &mut EggpoolWorker,
+        cancel: &tokio_util::sync::CancellationToken,
+        server: tokio::task::JoinHandle<()>,
+    ) {
+        cancel.cancel();
+        // Cancellation needs no queued command and terminates promptly.
+        assert!(worker.results.recv().await.is_none());
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_passive_refresh_keeps_generation_and_updates_state() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        gate.send(true).ok();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
         let mut app = crate::state::AppState::from_config(&app_config(port));
-        let (period, generation) = app.begin_eggpool_request().unwrap();
+        app.begin_eggpool_request();
         worker
-            .commands
-            .send(EggpoolCommand::Activate { period, generation })
-            .await
+            .control
+            .publish(app.eggpool_desired_state().unwrap())
             .unwrap();
+
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let first = worker.results.recv().await.unwrap();
+        let first = next_result(&mut worker).await;
         assert_eq!((first.generation, first.period), (1, EggpoolPeriod::Hour));
         app.apply_eggpool_result(&first);
         assert_eq!(
@@ -817,10 +995,12 @@ mod tests {
         tokio::time::advance(REFRESH_INTERVAL).await;
         tokio::task::yield_now().await;
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let passive = worker.results.recv().await.unwrap();
+        let passive = next_result(&mut worker).await;
+        // A passive refresh reuses the current generation; the worker
+        // never increments the reducer-owned nonce.
         assert_eq!(
             (passive.generation, passive.period),
             (1, EggpoolPeriod::Hour)
@@ -837,39 +1017,27 @@ mod tests {
             2
         );
 
-        worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
-            .unwrap();
-        cancel.cancel();
-        server_task.abort();
-        let _ = server_task.await;
+        stop(&mut worker, &cancel, server_task).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn worker_deadlines_are_relative_to_activation_triggers_and_deactivation() {
-        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        gate.send(true).ok();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)),
-            endpoint(port, None),
-            cancel.clone(),
-        );
+        let mut worker = worker_for(port, &cancel);
+        // The passive deadline is relative to the activation trigger, not
+        // to worker construction.
         tokio::time::advance(Duration::from_secs(59)).await;
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let _ = worker.results.recv().await;
+        let _ = next_result(&mut worker).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
@@ -877,109 +1045,97 @@ mod tests {
         tokio::time::advance(Duration::from_secs(59)).await;
         tokio::task::yield_now().await;
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let _ = worker.results.recv().await;
+        let _ = next_result(&mut worker).await;
 
+        // A manual refresh at an unchanged period is still observable
+        // because the generation changed.
         tokio::time::advance(Duration::from_secs(59)).await;
         worker
-            .commands
-            .send(EggpoolCommand::Refresh {
-                period: EggpoolPeriod::Hour,
-                generation: 2,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 2))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let _ = worker.results.recv().await;
+        let refreshed = next_result(&mut worker).await;
+        assert_eq!(
+            (refreshed.generation, refreshed.period),
+            (2, EggpoolPeriod::Hour)
+        );
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
         tokio::time::advance(Duration::from_secs(59)).await;
         tokio::task::yield_now().await;
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let _ = worker.results.recv().await;
+        let _ = next_result(&mut worker).await;
 
         tokio::time::advance(Duration::from_secs(59)).await;
         worker
-            .commands
-            .send(EggpoolCommand::SetPeriod {
-                period: EggpoolPeriod::Day,
-                generation: 3,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Day, 3))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=24h"
         );
-        let _ = worker.results.recv().await;
+        let changed = next_result(&mut worker).await;
+        assert_eq!(
+            (changed.generation, changed.period),
+            (3, EggpoolPeriod::Day)
+        );
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
         tokio::time::advance(Duration::from_secs(59)).await;
         tokio::task::yield_now().await;
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=24h"
         );
-        let _ = worker.results.recv().await;
+        let _ = next_result(&mut worker).await;
 
+        // Leaving the pane clears the deadline without fabricating a new
+        // request generation.
         worker
-            .commands
-            .send(EggpoolCommand::Deactivate)
-            .await
+            .control
+            .publish(inactive(EggpoolPeriod::Day, 3))
             .unwrap();
         tokio::time::advance(Duration::from_secs(120)).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
 
-        worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
-            .unwrap();
-        cancel.cancel();
-        server_task.abort();
-        let _ = server_task.await;
+        stop(&mut worker, &cancel, server_task).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn worker_passive_refresh_interval_starts_after_completion() {
-        let (port, mut requests, _release, server_task) =
-            server_many(false, Duration::from_secs(5)).await;
+        let (port, mut requests, gate, server_task) = server_gated().await;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(30)),
-            endpoint(port, None),
-            cancel.clone(),
-        );
+        let mut worker = worker_for(port, &cancel);
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
 
+        // The deadline is armed only after the request completes.
         tokio::time::advance(REFRESH_INTERVAL).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
 
-        tokio::time::advance(Duration::from_secs(5)).await;
-        let _ = worker.results.recv().await;
+        gate.send(true).ok();
+        let _ = next_result(&mut worker).await;
         tokio::time::advance(Duration::from_secs(59)).await;
         tokio::task::yield_now().await;
         assert!(requests.try_recv().is_err());
@@ -987,73 +1143,46 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         tokio::task::yield_now().await;
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
 
-        worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
-            .unwrap();
-        cancel.cancel();
-        server_task.abort();
-        let _ = server_task.await;
+        stop(&mut worker, &cancel, server_task).await;
     }
 
     #[tokio::test(start_paused = true)]
     async fn worker_cancellation_aborts_an_in_flight_request() {
-        let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
+        let (port, mut requests, gate, server_task) = server_gated().await;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)),
-            endpoint(port, None),
-            cancel.clone(),
-        );
+        let mut worker = worker_for(port, &cancel);
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        cancel.cancel();
-        assert!(worker.results.recv().await.is_none());
-        let _ = release.send(());
-        server_task.abort();
-        let _ = server_task.await;
+        stop(&mut worker, &cancel, server_task).await;
+        gate.send(true).ok();
     }
 
     #[tokio::test(start_paused = true)]
     async fn worker_deactivation_aborts_an_in_flight_request() {
-        let (port, mut requests, release, server_task) = server_many(true, Duration::ZERO).await;
+        let (port, mut requests, gate, server_task) = server_gated().await;
         let cancel = tokio_util::sync::CancellationToken::new();
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(600)),
-            endpoint(port, None),
-            cancel.clone(),
-        );
+        let mut worker = worker_for(port, &cancel);
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
         worker
-            .commands
-            .send(EggpoolCommand::Deactivate)
-            .await
+            .control
+            .publish(inactive(EggpoolPeriod::Hour, 1))
             .unwrap();
         // The aborted fetch must not deliver a result.
         tokio::time::advance(Duration::from_secs(1)).await;
@@ -1065,15 +1194,8 @@ mod tests {
         assert!(requests.try_recv().is_err());
         assert!(worker.results.try_recv().is_err());
 
-        worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
-            .unwrap();
-        cancel.cancel();
-        let _ = release.send(());
-        server_task.abort();
-        let _ = server_task.await;
+        stop(&mut worker, &cancel, server_task).await;
+        gate.send(true).ok();
     }
 
     #[tokio::test(start_paused = true)]
@@ -1087,27 +1209,19 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = spawn_worker(client, endpoint(1, Some("KEY")), cancel.clone());
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
-        let result = worker.results.recv().await.expect("a result is delivered");
+        let result = next_result(&mut worker).await;
         assert_eq!(result.outcome, EggpoolFetchOutcome::NetworkError);
         assert_eq!((result.generation, result.period), (1, EggpoolPeriod::Hour));
-        worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
-            .unwrap();
         cancel.cancel();
     }
 
     #[tokio::test(start_paused = true)]
     async fn worker_result_timestamps_come_from_the_injected_clock() {
-        let (port, mut requests, _release, server_task) = server_many(false, Duration::ZERO).await;
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        gate.send(true).ok();
         let cancel = tokio_util::sync::CancellationToken::new();
         let anchor = Instant::now();
         let mut worker = spawn_worker_with_clock(
@@ -1117,31 +1231,239 @@ mod tests {
             crate::clock::FakeClock::new(anchor),
         );
         worker
-            .commands
-            .send(EggpoolCommand::Activate {
-                period: EggpoolPeriod::Hour,
-                generation: 1,
-            })
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
         assert_eq!(
-            requests.recv().await.unwrap(),
+            next_request(&mut requests).await,
             "/api/stats/summary?period=1h"
         );
-        let result = worker.results.recv().await.unwrap();
+        let result = next_result(&mut worker).await;
         assert!(matches!(result.outcome, EggpoolFetchOutcome::Online(_)));
         // The fake clock never advances, so both timestamps pin to its
         // anchor instead of wall-clock instants.
         assert_eq!(result.started_at, anchor);
         assert_eq!(result.completed_at, anchor);
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rapid_publication_never_waits_for_worker_capacity() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        // The activation leaves a request in flight for the whole burst:
+        // the pressure the old bounded queue dropped commands under.
         worker
-            .commands
-            .send(EggpoolCommand::Shutdown)
-            .await
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
             .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
+        );
+
+        let burst = async {
+            for generation in 2..10_000u64 {
+                worker
+                    .control
+                    .publish(desired(EggpoolPeriod::Month, generation))
+                    .expect("a live worker control channel");
+            }
+        };
+        tokio::select! {
+            biased;
+            () = tokio::task::yield_now() => {
+                panic!("desired-state publication blocked on the worker");
+            }
+            () = burst => {}
+        }
+        // The retained latest value is the newest publication.
+        assert_eq!(
+            worker.control.published(),
+            desired(EggpoolPeriod::Month, 9_999)
+        );
+
+        gate.send(true).ok();
+        let result = next_result(&mut worker).await;
+        assert_eq!(
+            (result.generation, result.period),
+            (9_999, EggpoolPeriod::Month)
+        );
+        // Intermediate states are coalesced rather than replayed, and no
+        // passive request follows immediately.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(worker.results.try_recv().is_err());
+
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_held_in_flight_converges_on_the_final_desired_state() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
+        );
+
+        // Supersede the in-flight request while its response is still
+        // held; obsolete work is aborted and the newest state is served.
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Day, 2))
+            .unwrap();
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Week, 3))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=7d"
+        );
+        gate.send(true).ok();
+        let result = next_result(&mut worker).await;
+        assert_eq!((result.generation, result.period), (3, EggpoolPeriod::Week));
+        assert!(matches!(result.outcome, EggpoolFetchOutcome::Online(_)));
+        // The abandoned requests never mutate visible state.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(worker.results.try_recv().is_err());
+
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rapid_period_changes_converge_on_the_final_period_and_generation() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        for (generation, period) in [
+            (1, EggpoolPeriod::Hour),
+            (2, EggpoolPeriod::Day),
+            (3, EggpoolPeriod::Week),
+            (4, EggpoolPeriod::Month),
+        ] {
+            worker.control.publish(desired(period, generation)).unwrap();
+        }
+
+        // The newest state is authoritative; intermediate requests are
+        // optional, but every delivered result belongs to a published state
+        // and the newest state must be served last.
+        let mut requests_seen = 0;
+        let mut final_result = None;
+        while final_result.is_none() {
+            let path = next_request(&mut requests).await;
+            requests_seen += 1;
+            assert!(
+                matches!(
+                    path.as_str(),
+                    "/api/stats/summary?period=1h"
+                        | "/api/stats/summary?period=24h"
+                        | "/api/stats/summary?period=7d"
+                        | "/api/stats/summary?period=30d"
+                ),
+                "unexpected request {path}"
+            );
+            assert!(
+                requests_seen <= 4,
+                "no more than one request per published period: {requests_seen}"
+            );
+            // Answer every request once the worker has served one, so a
+            // superseded request cannot hold the newest one hostage.
+            gate.send(true).ok();
+            let result = next_result(&mut worker).await;
+            assert!(
+                (1..=4).contains(&result.generation),
+                "undelivered generation {}",
+                result.generation
+            );
+            if result.generation == 4 {
+                final_result = Some(result);
+            }
+        }
+        let final_result = final_result.expect("a newest-generation result");
+        assert_eq!(final_result.period, EggpoolPeriod::Month);
+        assert!(matches!(
+            final_result.outcome,
+            EggpoolFetchOutcome::Online(_)
+        ));
+
+        // The converged result is not followed by an immediate extra
+        // request; the passive deadline is 60 seconds.
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn activation_then_deactivation_under_pressure_arms_no_passive_refresh() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
+        );
+
+        for (generation, period) in [
+            (2, EggpoolPeriod::Day),
+            (3, EggpoolPeriod::Week),
+            (4, EggpoolPeriod::Month),
+        ] {
+            worker.control.publish(desired(period, generation)).unwrap();
+        }
+        // Leaving the the pane converges the worker to inactive even
+        // while earlier requests are still being superseded.
+        worker
+            .control
+            .publish(inactive(EggpoolPeriod::Month, 4))
+            .unwrap();
+        gate.send(true).ok();
+
+        // No passive request may appear after leaving the pane, and no
+        // synthetic result may be emitted for deactivation.
+        tokio::time::advance(Duration::from_secs(120)).await;
+        tokio::task::yield_now().await;
+        assert!(requests.try_recv().is_err());
+        assert!(worker.results.try_recv().is_err());
+
+        stop(&mut worker, &cancel, server_task).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn closed_control_channel_reports_a_missing_worker() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(1, &cancel);
         cancel.cancel();
-        server_task.abort();
-        let _ = server_task.await;
+        // The worker task owns the only receiver; once it exits, the
+        // control channel is closed rather than silently accepting intent.
+        assert!(worker.results.recv().await.is_none());
+        assert_eq!(
+            worker.control.publish(desired(EggpoolPeriod::Hour, 1)),
+            Err(EggpoolWorkerClosed)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unconfigured_state_has_no_worker_control_or_request() {
+        // Invariant 8: no worker, control channel, timer, or request
+        // exists when EggPool is not configured.
+        let app = crate::state::AppState::from_config(&crate::config::Config::default());
+        assert!(app.eggpool.is_none());
+        assert!(app.eggpool_desired_state().is_none());
     }
 
     #[test]

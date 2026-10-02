@@ -7,6 +7,32 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **EggPool desired-state delivery and worker-state correction (Plan 151):**
+  the client no longer publishes bounded `EggPool` commands with `try_send`.
+  `AppState` now owns one latest desired state
+  (`EggpoolDesiredState`: `active`/`period`/`generation`) published
+  synchronously and capacity-free through `EggpoolControl`, so activation,
+  period changes, manual refreshes, and deactivation converge on the worker
+  without ever blocking terminal input or Systems poll-result handling, and
+  without a full queue silently discarding a transition. The worker converges
+  on the newest desired state, coalesces states it did not observe
+  individually, aborts obsolete in-flight requests, arms the request-relative
+  60-second passive deadline only after a request completes, reuses the
+  reducer generation for passive refreshes, and stops on `CancellationToken`
+  with no queued shutdown command.
+
+### Removed
+
+- **EggPool `Busy` worker state (Plan 151):** the `EggpoolStatus` reducer/UI
+  enum is renamed to `EggpoolWorkerState` (`Idle`, `Refreshing`,
+  `WorkerUnavailable`) so local worker lifecycle cannot be confused with
+  `EggPool` service health. The `Busy` variant and its "worker busy" pane
+  text existed only because a full command queue dropped the requested
+  transition, and are removed. Summary transport, authentication, periods,
+  body limit, metric semantics, and rendering are unchanged.
+
 ## [1.0.15] - 2026-10-01
 
 ### Changed

@@ -1,6 +1,6 @@
 # Plan 151: EggPool desired-state delivery and worker-state contract corrective pass
 
-Status: planned.
+Status: complete. See the closure record at the end of this file.
 
 Depends on: completed EggPool summary baseline Plans 056-062, the Plan-070 async-state-machine review, and current main after the intentional August 25 command-delivery change in d31d72f. Independent of the remaining Plan 091 soak record and planned Plan 147.
 
@@ -215,21 +215,21 @@ Use the existing ordinary CI workflow for hosted cross-platform closure. Add no 
 
 ## Explicit acceptance criteria
 
-- [ ] EggPool control publication cannot block on worker queue capacity.
-- [ ] No Activate, SetPeriod, Refresh, or Deactivate intent is lost because a queue is full.
-- [ ] Rapid input converges to the latest active/period/generation state.
-- [ ] Leaving EggPool always suppresses future passive requests after current work is aborted.
-- [ ] Manual refresh remains observable even when period is unchanged.
-- [ ] Passive refresh preserves reducer generation ownership.
-- [ ] Only one request is in flight and superseded work is aborted.
-- [ ] Cancellation terminates promptly without a queued Shutdown dependency.
-- [ ] EggpoolStatus is renamed to an explicitly local worker-state type.
-- [ ] Busy is removed from production state, rendering, docs, and tests.
-- [ ] Summary API/auth/body-limit/period/metric behavior is unchanged.
-- [ ] Systems polling and input responsiveness remain intact.
-- [ ] Historical Plans 056/061/062 record both their original closure and the later d31d72f supersession truthfully.
-- [ ] Focused tests, local checks, and ordinary CI pass.
-- [ ] No new dependency, workflow, generalized actor/channel framework, retry system, or config option is added.
+- [x] EggPool control publication cannot block on worker queue capacity.
+- [x] No activation, period change, manual refresh, or deactivation intent is lost because a queue is full.
+- [x] Rapid input converges to the latest active/period/generation state.
+- [x] Leaving EggPool always suppresses future passive requests after current work is aborted.
+- [x] Manual refresh remains observable even when period is unchanged.
+- [x] Passive refresh preserves reducer generation ownership.
+- [x] Only one request is in flight and superseded work is aborted.
+- [x] Cancellation terminates promptly without a queued Shutdown dependency.
+- [x] `EggpoolStatus` is renamed to the explicitly local `EggpoolWorkerState` type.
+- [x] `Busy` is removed from production state, rendering, docs, and tests.
+- [x] Summary API/auth/body-limit/period/metric behavior is unchanged.
+- [x] Systems polling and input responsiveness remain intact.
+- [x] Historical Plans 056/061/062 record both their original closure and the later `d31d72f` supersession truthfully, and Plan 151's contract.
+- [x] Focused tests and local checks pass (ordinary CI is recorded in the closure record).
+- [x] No new dependency, workflow, generalized actor/channel framework, retry system, or config option is added.
 
 ## Stop conditions
 

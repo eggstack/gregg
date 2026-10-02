@@ -61,18 +61,33 @@ gregg eggpool remove <host>
 
 ## Worker
 
-- Background task with command channel
+- Background task holding one `EggpoolDesiredState` watch receiver plus a
+  bounded result channel
 - 60-second passive refresh when active
 - Generation-based staleness like greggd polling
 - Created only for configured EggPool state
 - Activated when pane is visible, deactivated when hidden
-- Cancelled during TUI shutdown
-- Command dispatch uses `try_send`: a full queue drops the command and sets
-  `EggpoolStatus::Busy` (rendered as "worker busy") instead of blocking the
-  event loop; a closed channel still marks `WorkerUnavailable`
-- Keep command ordering, refresh nonces/generations, stale-result rejection,
-  and request-relative deadlines intact. A latest-state channel is not an
-  automatic simplification if it adds state transitions or tests.
+- Cancelled during TUI shutdown; no queued shutdown command exists
+- Plan 151 contract: the reducer owns one latest desired state
+  (`active`/`period`/`generation`) and publishes it synchronously through
+  `EggpoolControl::publish`. Publication is capacity-free, so the input path
+  never waits on the worker and no activation, period change, manual refresh,
+  or deactivation is ever dropped. There is no `Busy` state.
+- The worker converges on the newest desired state, coalescing states it did
+  not observe individually, aborting obsolete in-flight work, arming the
+  request-relative passive deadline only after completion, and reusing the
+  reducer generation for passive refreshes
+- A closed control channel is the only failure and surfaces
+  `EggpoolWorkerState::WorkerUnavailable`
+
+## Local worker state vs EggPool health
+
+- `EggpoolWorkerState` is `Idle` / `Refreshing` / `WorkerUnavailable` and
+  describes only Gregg machinery
+- `EggpoolFetchOutcome` values are summary-transport facts and are never
+  folded into worker lifecycle
+- EggPool's own proxy/provider service health is a separate model sourced from
+  `/api/status` (Plan 152) and must not be inferred from worker state
 
 ## TUI navigation
 
@@ -101,18 +116,21 @@ gregg eggpool remove <host>
 - Unit tests in every module
 - Worker regression tests in `src/eggpool.rs`: generation retention across
   passive refresh, request-relative deadlines tied to activation triggers,
-  bounded command delivery, inactive gating, in-flight cancellation, and
-  panic-in-fetch recovery
+  nonblocking latest-desired-state publication under rapid input, convergence
+  on the final period/generation, deactivation arming no passive refresh,
+  in-flight cancellation, closed control channel, and panic-in-fetch recovery
+- Use a loopback summary server that can hold responses open plus paused Tokio
+  time for cadence; bound positive waits with a real-clock watchdog thread
+  rather than a Tokio timer, because a paused-time timer lets virtual clock
+  auto-advance race the loopback round trip
 - Full polling-loop drivers (`mixed_fleet_evidence.rs`,
   `sustained_workload.rs`) exercise greggd systems polling; they are not
   EggPool-specific
 
 
-## Active corrective plans
+## Corrective-plan status
 
-Current main still uses the d31d72f try_send + EggpoolStatus::Busy behavior described above. That is descriptive of the checked-in implementation, not the forward correctness target.
+- Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
+- Plan 152 follows Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
 
-- Plan 151 is active and supersedes drop-on-full as the desired contract. It requires a nonblocking latest-desired-state handoff so Activate/period/refresh/deactivate intent converges without awaiting queue capacity; it also separates the local worker-state name from remote EggPool health.
-- Plan 152 follows Plan 151 and adds EggPool schema-v1 GET /api/status as an independent health plane alongside the existing summary metrics.
-
-When implementing these plans, follow their acceptance criteria rather than preserving Busy merely because it appears in current code. Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard.
+Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.

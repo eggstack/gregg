@@ -9,7 +9,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
 use crate::eggpool::EggpoolFetchOutcome;
-use crate::state::{AppState, EggpoolStatus};
+use crate::state::{AppState, EggpoolWorkerState};
 use crate::ui::text::truncate_width;
 
 #[allow(clippy::too_many_lines)]
@@ -42,11 +42,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         ..area
     };
     let Some(summary) = eggpool.summary.as_ref() else {
-        let message = if eggpool.status == EggpoolStatus::WorkerUnavailable {
+        let message = if eggpool.worker_state == EggpoolWorkerState::WorkerUnavailable {
             "EggPool worker unavailable".to_owned()
-        } else if eggpool.status == EggpoolStatus::Busy {
-            "EggPool worker busy; retry".to_owned()
-        } else if eggpool.status == EggpoolStatus::Refreshing {
+        } else if eggpool.worker_state == EggpoolWorkerState::Refreshing {
             "Loading summary…".to_owned()
         } else if let Some(error) = eggpool.last_error.as_ref() {
             outcome_text(error)
@@ -97,7 +95,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         .y
         .saturating_add(4)
         .min(area.bottom().saturating_sub(1));
-    if eggpool.status == EggpoolStatus::WorkerUnavailable {
+    if eggpool.worker_state == EggpoolWorkerState::WorkerUnavailable {
         f.render_widget(
             Paragraph::new("worker unavailable"),
             Rect {
@@ -107,17 +105,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 height: 1,
             },
         );
-    } else if eggpool.status == EggpoolStatus::Busy {
-        f.render_widget(
-            Paragraph::new("worker busy"),
-            Rect {
-                x: area.x,
-                y: footer_y,
-                width: area.width,
-                height: 1,
-            },
-        );
-    } else if eggpool.status == EggpoolStatus::Refreshing {
+    } else if eggpool.worker_state == EggpoolWorkerState::Refreshing {
         f.render_widget(
             Paragraph::new("refreshing"),
             Rect {

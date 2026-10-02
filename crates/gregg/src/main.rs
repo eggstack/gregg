@@ -137,20 +137,15 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
 
     let eggpool_worker = spawn_eggpool_worker(&config, timeout, cancel.clone());
     if app_state.active_pane == state::Pane::Eggpool {
-        if let (Some((period, generation)), Some(worker)) =
-            (app_state.begin_eggpool_request(), eggpool_worker.as_ref())
+        app_state.begin_eggpool_request();
+        if let (Some(desired), Some(worker)) =
+            (app_state.eggpool_desired_state(), eggpool_worker.as_ref())
         {
-            send_eggpool_command(
-                &mut app_state,
-                &worker.commands,
-                eggpool::EggpoolCommand::Activate { period, generation },
-            );
+            publish_eggpool_desired_state(&mut app_state, &worker.control, desired);
         }
     }
 
-    let eggpool_commands = eggpool_worker
-        .as_ref()
-        .map(|worker| worker.commands.clone());
+    let eggpool_control = eggpool_worker.as_ref().map(|worker| worker.control.clone());
     let mut eggpool_results = eggpool_worker.map(|worker| worker.results);
 
     let mut terminal = terminal::Terminal::init()?;
@@ -172,17 +167,16 @@ async fn run_tui(store: config::ConfigStore) -> Result<(), Box<dyn std::error::E
         &cancel,
         &scheduler_tx,
         &store,
-        eggpool_commands.as_ref(),
+        eggpool_control.as_ref(),
         &mut eggpool_results,
     )
     .await;
 
     event_stream.shutdown();
     terminal.restore();
-    if let Some(commands) = eggpool_commands {
-        // Never block teardown on a dead worker with a full channel.
-        let _ = commands.try_send(eggpool::EggpoolCommand::Shutdown);
-    }
+    // Plan 151: the worker needs no queued shutdown command. Dropping the
+    // control publisher and cancelling terminate it promptly.
+    drop(eggpool_control);
     cancel.cancel();
 
     result
@@ -197,7 +191,7 @@ async fn run_event_loop(
     cancel: &tokio_util::sync::CancellationToken,
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: &config::ConfigStore,
-    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+    eggpool_control: Option<&eggpool::EggpoolControl>,
     eggpool_results: &mut Option<tokio::sync::mpsc::Receiver<eggpool::EggpoolResult>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut pending_system_refresh: Option<PendingSystemRefresh> = None;
@@ -252,7 +246,7 @@ async fn run_event_loop(
                                     action,
                                     scheduler_tx,
                                     Some(store),
-                                    eggpool_commands,
+                                    eggpool_control,
                                 ).await?;
                             }
                             // Plan 087: a successful Systems selection-
@@ -365,9 +359,9 @@ async fn dispatch_action(
     app_state: &mut state::AppState,
     action: action::Action,
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
-    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+    eggpool_control: Option<&eggpool::EggpoolControl>,
 ) {
-    dispatch_action_with_store(app_state, action, scheduler_tx, None, eggpool_commands)
+    dispatch_action_with_store(app_state, action, scheduler_tx, None, eggpool_control)
         .await
         .expect("scheduler refresh without a config store cannot fail");
 }
@@ -377,78 +371,67 @@ async fn dispatch_action_with_store(
     action: action::Action,
     scheduler_tx: &tokio::sync::mpsc::Sender<scheduler::SchedulerCommand>,
     store: Option<&config::ConfigStore>,
-    eggpool_commands: Option<&tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>>,
+    eggpool_control: Option<&eggpool::EggpoolControl>,
 ) -> Result<bool, SchedulerUnavailable> {
     // Plan 143: drive the dirty gate from the reducer result plus explicit
-    // extras the reducer never touches (EggPool request identity/status
-    // and the `config_reload_error` diagnostic owned by refresh paths).
+    // extras the reducer never touches (EggPool request identity/local
+    // worker state and the `config_reload_error` diagnostic owned by
+    // refresh paths).
     let before_eggpool = app_state.eggpool_request();
-    let before_eggpool_status = app_state.eggpool.as_ref().map(|eggpool| eggpool.status);
+    let before_eggpool_worker = app_state
+        .eggpool
+        .as_ref()
+        .map(|eggpool| eggpool.worker_state);
     let before_error = app_state.config_reload_error.clone();
     let is_refresh = matches!(action, action::Action::RefreshNow);
-    let before_pane = app_state.active_pane;
-    let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
+    // Plan 151: activation and manual refresh are the only transitions that
+    // mint a new refresh generation; period moves mint one inside the
+    // reducer and deactivation never fabricates one.
+    let before_desired = app_state.eggpool_desired_state();
     let reducer_changed = app_state.apply_action_changed(action);
 
-    let Some(commands) = eggpool_commands else {
+    let dirty = |app_state: &state::AppState| {
+        reducer_changed
+            || before_eggpool != app_state.eggpool_request()
+            || before_eggpool_worker
+                != app_state
+                    .eggpool
+                    .as_ref()
+                    .map(|eggpool| eggpool.worker_state)
+            || before_error != app_state.config_reload_error
+    };
+
+    let Some(control) = eggpool_control else {
         if is_refresh {
             return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(reducer_changed
-            || before_eggpool != app_state.eggpool_request()
-            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
-            || before_error != app_state.config_reload_error);
+        return Ok(dirty(app_state));
     };
 
     if is_refresh {
         if app_state.active_pane == state::Pane::Eggpool {
-            if let Some((period, generation)) = app_state.begin_eggpool_request() {
-                send_eggpool_command(
-                    app_state,
-                    commands,
-                    eggpool::EggpoolCommand::Refresh { period, generation },
-                );
-            }
+            app_state.begin_eggpool_request();
         } else {
             return refresh_systems(app_state, scheduler_tx, store).await;
         }
-        return Ok(reducer_changed
-            || before_eggpool != app_state.eggpool_request()
-            || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
-            || before_error != app_state.config_reload_error);
-    }
-
-    if before_pane != app_state.active_pane {
-        match app_state.active_pane {
-            state::Pane::Eggpool => {
-                if let Some((period, generation)) = app_state.begin_eggpool_request() {
-                    send_eggpool_command(
-                        app_state,
-                        commands,
-                        eggpool::EggpoolCommand::Activate { period, generation },
-                    );
-                }
-            }
-            state::Pane::Systems => {
-                send_eggpool_command(app_state, commands, eggpool::EggpoolCommand::Deactivate);
-            }
-        }
-    } else if before_pane == state::Pane::Eggpool
-        && before_period != app_state.eggpool.as_ref().map(|eggpool| eggpool.period)
+    } else if app_state.active_pane == state::Pane::Eggpool
+        && before_desired.is_some_and(|desired| !desired.active)
     {
-        if let Some((period, generation)) = app_state.eggpool_request() {
-            send_eggpool_command(
-                app_state,
-                commands,
-                eggpool::EggpoolCommand::SetPeriod { period, generation },
-            );
+        // Entering the pane activates the worker with a fresh generation.
+        app_state.begin_eggpool_request();
+    }
+
+    // Plan 151: one nonblocking latest-desired-state publication replaces
+    // per-transition commands. Nothing here awaits worker capacity, and no
+    // activation, period change, manual refresh, or deactivation can be
+    // dropped while the worker is busy.
+    if let Some(desired) = app_state.eggpool_desired_state() {
+        if before_desired != Some(desired) {
+            publish_eggpool_desired_state(app_state, control, desired);
         }
     }
 
-    Ok(reducer_changed
-        || before_eggpool != app_state.eggpool_request()
-        || before_eggpool_status != app_state.eggpool.as_ref().map(|eggpool| eggpool.status)
-        || before_error != app_state.config_reload_error)
+    Ok(dirty(app_state))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -563,22 +546,20 @@ async fn refresh_systems(
     }
 }
 
-/// Queue one `EggPool` command without ever blocking the event loop.
+/// Publish the latest desired `EggPool` worker state.
 ///
-/// The command channel is bounded by design; when it is momentarily full
-/// the command is dropped and the pane is surfaced as busy instead of
-/// stalling key handling and poll-batch processing behind a slow fetch.
-fn send_eggpool_command(
+/// Plan 151: publication is synchronous and capacity-free, so the input
+/// path never waits on a slow worker and a full queue can never discard a
+/// state-changing transition. A closed worker is the only failure and is
+/// surfaced as `WorkerUnavailable`; there is no busy substitute for
+/// failed convergence.
+fn publish_eggpool_desired_state(
     app_state: &mut state::AppState,
-    commands: &tokio::sync::mpsc::Sender<eggpool::EggpoolCommand>,
-    command: eggpool::EggpoolCommand,
+    control: &eggpool::EggpoolControl,
+    desired: eggpool::EggpoolDesiredState,
 ) {
-    match commands.try_send(command) {
-        Ok(()) => {}
-        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => app_state.mark_eggpool_busy(),
-        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-            app_state.mark_eggpool_worker_unavailable();
-        }
+    if control.publish(desired).is_err() {
+        app_state.mark_eggpool_worker_unavailable();
     }
 }
 
@@ -626,68 +607,112 @@ mod tests {
         }
     }
 
+    /// A live `EggPool` worker control handle for one unreachable
+    /// loopback endpoint. Requests fail fast, so the control contract can
+    /// be observed without any external service.
+    fn eggpool_control() -> (eggpool::EggpoolControl, tokio_util::sync::CancellationToken) {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker = eggpool::spawn_worker(
+            eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            EggpoolEntry {
+                id: "eggpool".into(),
+                host: "127.0.0.1".into(),
+                port: 1,
+                scheme: EggpoolScheme::Http,
+                name: None,
+                api_key_env: None,
+            },
+            cancel.clone(),
+        );
+        (worker.control.clone(), cancel)
+    }
+
+    fn desired(
+        active: bool,
+        period: eggpool::EggpoolPeriod,
+        generation: u64,
+    ) -> eggpool::EggpoolDesiredState {
+        eggpool::EggpoolDesiredState {
+            active,
+            period,
+            generation,
+        }
+    }
+
     #[tokio::test]
-    async fn pane_and_refresh_commands_are_scoped_to_active_pane() {
+    async fn pane_and_refresh_desired_state_are_scoped_to_active_pane() {
         let mut app = mixed_state();
-        let (commands, mut received) = tokio::sync::mpsc::channel(4);
+        let (control, cancel) = eggpool_control();
         let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel(4);
 
         dispatch_action(
             &mut app,
             action::Action::NextPane,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
         assert_eq!(app.active_pane, state::Pane::Eggpool);
-        assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Activate {
-                period: eggpool::EggpoolPeriod::Hour,
-                generation: 1
-            })
-        ));
+        assert_eq!(
+            control.published(),
+            desired(true, eggpool::EggpoolPeriod::Hour, 1)
+        );
 
         dispatch_action(
             &mut app,
             action::Action::RefreshNow,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
-        assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Refresh {
-                period: eggpool::EggpoolPeriod::Hour,
-                generation: 2
-            })
-        ));
+        // A manual refresh at an unchanged period is still observable.
+        assert_eq!(
+            control.published(),
+            desired(true, eggpool::EggpoolPeriod::Hour, 2)
+        );
         assert!(refresh_rx.try_recv().is_err());
+
+        dispatch_action(
+            &mut app,
+            action::Action::MoveDown,
+            &refresh_tx,
+            Some(&control),
+        )
+        .await;
+        assert_eq!(
+            control.published(),
+            desired(true, eggpool::EggpoolPeriod::Day, 3)
+        );
 
         dispatch_action(
             &mut app,
             action::Action::PreviousPane,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
         assert_eq!(app.active_pane, state::Pane::Systems);
-        assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Deactivate)
-        ));
+        // Leaving the pane never fabricates a new request generation.
+        assert_eq!(
+            control.published(),
+            desired(false, eggpool::EggpoolPeriod::Day, 3)
+        );
         dispatch_action(
             &mut app,
             action::Action::RefreshNow,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
         assert!(matches!(
             refresh_rx.try_recv(),
             Ok(scheduler::SchedulerCommand::Refresh)
         ));
-        assert!(received.try_recv().is_err());
+        assert_eq!(
+            control.published(),
+            desired(false, eggpool::EggpoolPeriod::Day, 3)
+        );
+        cancel.cancel();
     }
 
     #[tokio::test]
@@ -981,92 +1006,155 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn full_command_channel_does_not_block_dispatch_and_marks_busy() {
+    async fn rapid_eggpool_state_changes_never_block_systems_dispatch() {
         let mut app = mixed_state();
-        let (commands, mut received) = tokio::sync::mpsc::channel(1);
-        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
-        commands
-            .send(eggpool::EggpoolCommand::Deactivate)
-            .await
-            .unwrap();
+        let (control, cancel) = eggpool_control();
+        let (refresh_tx, mut refresh_rx) = tokio::sync::mpsc::channel(4);
 
-        // The single slot is occupied; dispatch must return immediately
-        // instead of stalling the event loop behind a slow fetch.
-        let dispatch = dispatch_action(
-            &mut app,
-            action::Action::NextPane,
-            &refresh_tx,
-            Some(&commands),
-        );
-        tokio::select! {
-            () = tokio::task::yield_now() => {
-                panic!("dispatch blocked on a full eggpool command channel");
+        // Rapid EggPool transitions (period moves, deactivation, and
+        // reactivation) must never stall input handling or Systems
+        // poll-result processing behind worker capacity. Only EggPool
+        // control is under observation here, so the burst stays
+        // synchronous: any pending await would fail this test.
+        let burst = async {
+            for _ in 0..2_000 {
+                dispatch_action(
+                    &mut app,
+                    action::Action::MoveDown,
+                    &refresh_tx,
+                    Some(&control),
+                )
+                .await;
+                dispatch_action(
+                    &mut app,
+                    action::Action::PreviousPane,
+                    &refresh_tx,
+                    Some(&control),
+                )
+                .await;
+                dispatch_action(
+                    &mut app,
+                    action::Action::MoveUp,
+                    &refresh_tx,
+                    Some(&control),
+                )
+                .await;
+                dispatch_action(
+                    &mut app,
+                    action::Action::NextPane,
+                    &refresh_tx,
+                    Some(&control),
+                )
+                .await;
             }
-            () = dispatch => {}
+        };
+        tokio::select! {
+            biased;
+            () = tokio::task::yield_now() => {
+                panic!("dispatch blocked on EggPool worker capacity");
+            }
+            () = burst => {}
         }
-        assert_eq!(app.active_pane, state::Pane::Eggpool);
+        // The burst ends with the pane deactivated, and the retained
+        // latest state matches the reducer exactly.
+        assert_eq!(app.active_pane, state::Pane::Systems);
+        let published = control.published();
+        assert!(!published.active);
         assert_eq!(
-            app.eggpool.as_ref().unwrap().status,
-            state::EggpoolStatus::Busy
+            published.generation,
+            app.eggpool.as_ref().unwrap().request_generation
         );
+        assert_eq!(published.period, app.eggpool.as_ref().unwrap().period);
 
-        // Only the pre-filled command was ever queued; the dropped
-        // Activate must not surface later.
-        assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Deactivate)
-        ));
-        assert!(received.try_recv().is_err());
-
-        // Once capacity frees up, the next command is delivered normally.
+        // Systems polling stays responsive after the burst.
         dispatch_action(
             &mut app,
-            action::Action::PreviousPane,
+            action::Action::RefreshNow,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
-        assert_eq!(app.active_pane, state::Pane::Systems);
         assert!(matches!(
-            received.recv().await,
-            Some(eggpool::EggpoolCommand::Deactivate)
+            refresh_rx.try_recv(),
+            Ok(scheduler::SchedulerCommand::Refresh)
         ));
-    }
-
-    #[tokio::test]
-    async fn closed_eggpool_command_channel_marks_worker_unavailable() {
-        let mut app = mixed_state();
-        let (commands, receiver) = tokio::sync::mpsc::channel(1);
-        drop(receiver);
-        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
+        // Reactivating still publishes a fresh generation.
         dispatch_action(
             &mut app,
             action::Action::NextPane,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
+        )
+        .await;
+        assert_eq!(app.active_pane, state::Pane::Eggpool);
+        assert!(control.published().active);
+        assert!(control.published().generation > published.generation);
+        cancel.cancel();
+    }
+
+    #[tokio::test]
+    async fn closed_eggpool_control_channel_marks_worker_unavailable() {
+        let mut app = mixed_state();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = eggpool::spawn_worker(
+            eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            EggpoolEntry {
+                id: "eggpool".into(),
+                host: "127.0.0.1".into(),
+                port: 1,
+                scheme: EggpoolScheme::Http,
+                name: None,
+                api_key_env: None,
+            },
+            cancel.clone(),
+        );
+        let control = worker.control.clone();
+        let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
+        cancel.cancel();
+        // The worker exits on cancellation, so publication now has no
+        // live worker to reach.
+        assert!(worker.results.recv().await.is_none());
+        dispatch_action(
+            &mut app,
+            action::Action::NextPane,
+            &refresh_tx,
+            Some(&control),
         )
         .await;
         assert_eq!(
-            app.eggpool.as_ref().unwrap().status,
-            state::EggpoolStatus::WorkerUnavailable
+            app.eggpool.as_ref().unwrap().worker_state,
+            state::EggpoolWorkerState::WorkerUnavailable
         );
     }
 
     #[tokio::test]
-    async fn clamped_eggpool_period_does_not_send_a_command() {
+    async fn clamped_eggpool_period_does_not_change_desired_state() {
         let config = AppStateBuilder::mixed();
         let mut app = state::AppState::from_config(&config);
-        app.apply_action(action::Action::NextPane);
-        let (commands, mut received) = tokio::sync::mpsc::channel(4);
+        let (control, cancel) = eggpool_control();
         let (refresh_tx, _) = tokio::sync::mpsc::channel(1);
 
+        dispatch_action(
+            &mut app,
+            action::Action::NextPane,
+            &refresh_tx,
+            Some(&control),
+        )
+        .await;
+        let before = control.published();
+        assert_eq!(before.generation, 1);
+
+        // The shortest period cannot move, so neither the desired state nor
+        // the refresh generation changes.
         dispatch_action(
             &mut app,
             action::Action::MoveUp,
             &refresh_tx,
-            Some(&commands),
+            Some(&control),
         )
         .await;
-        assert!(received.try_recv().is_err());
+        assert_eq!(control.published(), before);
+        assert_eq!(app.eggpool.as_ref().unwrap().request_generation, 1);
+        cancel.cancel();
     }
 }

@@ -310,8 +310,8 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 | 58 | `058-eggpool-summary-client-and-refresh.md` | Add the typed summary response, conditional authentication, bounded request/error handling, fixed periods, and proportionate refresh worker. |
 | 59 | `059-eggpool-pane-state-controls-and-rendering.md` | Separate pane state from system layout, remap controls, add period-aware state and the compact EggPool renderer. |
 | 60 | `060-eggpool-pane-integration-and-lightweight-closure.md` | Reconcile runtime wiring, compatibility, docs, focused tests, and ordinary local/CI closure without new infrastructure. |
-| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth; runtime correction implemented at `1b77da1`, final verification owned by Phase 62, later command-delivery semantics superseded by `d31d72f`. |
-| 62 | `062-eggpool-worker-regression-coverage-and-closure-polish.md` | Added deterministic generation/cadence/pressure/deactivation/cancellation/no-config coverage and closed the baseline at `38d89bf`; `d31d72f` later replaced its pressure contract, with current correction owned by Plan 151. |
+| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth; runtime correction implemented at `1b77da1`, final verification owned by Phase 62, and its awaited command delivery later superseded by `d31d72f` and then by Plan 151. |
+| 62 | `062-eggpool-worker-regression-coverage-and-closure-polish.md` | Added deterministic generation/cadence/pressure/deactivation/cancellation/no-config coverage and closed the baseline at `38d89bf`; its pressure test asserted eventual delivery under bounded command capacity, `d31d72f` later replaced that assertion with drop-plus-`Busy`, and Plan 151 now owns the current nonblocking convergence contract. |
 
 ## Dependency graph
 
@@ -323,7 +323,7 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 61 -> 62
 ```
 
-Phase 59 may use synthetic summary values before the HTTP worker is complete. Phase 60 is the only phase that should perform final cross-module runtime reconciliation.
+Phase 59 may use synthetic summary values before the HTTP worker is complete. Phase 60 is the only phase that should perform final cross-module runtime reconciliation. Phases 61-62 closed the roadmap's original awaited-delivery contract; Plan 151 is the post-closure correction to the command-delivery behavior those phases described, and it does not change the summary wire, metric, configuration, or rendering baseline above.
 
 ## Program scope
 

@@ -1,6 +1,6 @@
 # Phase 62: EggPool worker regression coverage and closure polish
 
-Status: completed; implementation `38d89bf`; ordinary CI `30683027208` passed.
+Status: completed as a historical record; implementation `38d89bf`; ordinary CI `30683027208` passed. Its command-pressure contract was later superseded by `d31d72f` and then replaced by the nonblocking latest-desired-state contract in Plan 151; see the post-closure supersession note at the end of this file.
 
 ## Objective
 

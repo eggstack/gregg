@@ -526,24 +526,45 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
   failures stay `NetworkError`.
 
 **Worker** (`spawn_worker`):
-- Background task with bounded command and result channels
+- Background task holding one `EggpoolDesiredState` watch receiver and a
+  bounded result channel
 - 60-second passive refresh when active
 - Generation-based staleness like greggd polling
-- In-flight requests are aborted on superseding commands and shutdown
-- Command dispatch uses `try_send` and never blocks the event loop: a
-  momentarily full queue drops the command and surfaces `EggpoolStatus::Busy`
-  ("worker busy") in the pane; a closed channel still marks the worker
-  unavailable
+- Plan 151: desired state (`active`/`period`/`generation`) is published
+  synchronously and capacity-free, so the input path never waits on the
+  worker and no activation, period change, manual refresh, or deactivation
+  can be discarded under pressure
+- The worker converges on the newest desired state, coalescing states it did
+  not observe individually, aborting obsolete in-flight work, and arming a
+  fresh request-relative deadline only after a request completes
+- Deactivation aborts in-flight work, clears the passive deadline, and emits
+  no synthetic result; passive refresh reuses the reducer generation
+- Cancellation aborts in-flight work and terminates the worker without a
+  queued shutdown command; a closed control channel surfaces
+  `EggpoolWorkerState::WorkerUnavailable`
+
+**Local worker state** (`EggpoolWorkerState`):
+- `Idle`, `Refreshing` (Gregg published a current desired request and awaits
+  its result), `WorkerUnavailable` (Gregg's local worker/control path is
+  gone)
+- These describe Gregg machinery only. EggPool's own proxy and provider
+  service health is a separate fact (Plan 152) and is never inferred here.
+- The former `Busy` variant existed only because a full bounded command queue
+  dropped the requested transition; it was removed with the queue.
 
 The CLI permits one configured EggPool endpoint. A second `eggpool add`
 without `--replace` returns the dedicated `EggpoolAlreadyConfigured`
 configuration violation; `--replace` updates the existing entry.
 
-Plan 070 also evaluated replacing the command channel with a latest-state
-`watch` channel. It was rejected because refresh nonces, generation ownership,
-period changes, deactivation, and request-relative deadlines would remain a
-state machine without reducing the production or test surface. The bounded
-command channel preserves ordered commands and responsive systems polling.
+Plan 070 evaluated replacing the command channel with a latest-state `watch`
+channel and rejected it as an unreduced state machine; commit `d31d72f` then
+adopted nonblocking `try_send` plus `Busy` so the input path could never wait
+on a slow worker. The 2026-10-02 review found that drop-on-full can leave
+reducer intent and worker intent divergent, including a dropped `Deactivate`
+that leaves passive polling armed after returning to Systems. Plan 151
+supersedes both designs: `watch` publication is synchronous and capacity-free,
+so it cannot block the input path and cannot discard a state-changing
+transition. Commit `d31d72f` remains a truthful historical record.
 
 **Periods:** `Hour`, `Day`, `Week`, `Month` — cycled with `longer()`/`shorter()`
 
