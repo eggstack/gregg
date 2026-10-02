@@ -347,6 +347,6 @@ schema, packaging, workflows, and release scripts are untouched, and no
 dependency, generalized channel/actor framework, retry system, or config
 option was added.
 
-Future-plan impact: Plan 151 unblocks Plan 152, which is the only plan that
-depended on this worker contract. Plans 091 and 147 are independent of it and
-keep their statuses.
+Future-plan impact: Plan 151 unblocked Plan 152, which is now complete at
+`7b88e43`; 151/152 are the terminal pair of the EggPool corrective line. Plans
+091 and 147 are independent of it and keep their statuses.

@@ -69,6 +69,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 - `AppState::apply_batch` snaps selection/viewport to `display_order()[0]` only on the first accepted batch (`last_applied_generation == 0`); later batches and `Ctrl-R` preserve selection. No second scroll state machine.
 - Production event loop consumes owned `PollBatch`; borrowed `apply_batch(&PollBatch)` and borrowed normalization constructors are compat paths. Ordered results use positional matching with stable-ID fallback; endpoint host/port validation gates every mutation.
 - EggPool control is one nonblocking retained latest desired state (`EggpoolDesiredState` active/period/generation published through `EggpoolControl::publish`). Never reintroduce a lossy bounded command queue, `try_send` drop semantics, a queued `Shutdown`, or `EggpoolStatus::Busy`; leaving the pane must always converge the worker inactive, and a closed control channel is `EggpoolWorkerState::WorkerUnavailable`. Local worker state is never EggPool proxy/provider health.
+- The EggPool pane has two independent read-only planes: `/api/stats/summary` (four periodized metrics, 16 KiB cap) and EggPool schema-v1 `/api/status` (current proxy/provider health, 1 MiB per-request cap, separate reducer freshness). One worker result carries both outcomes — never collapse them, never render a transport failure as EggPool-reported health, and never add a second credential field, health cadence, or provider/account/model drill-down.
 
 ### TUI rendering (`architecture/gregg-client.md`)
 

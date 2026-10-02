@@ -382,4 +382,129 @@ Stop and split work if implementation would require:
 
 ## Closure record
 
-Not yet implemented.
+Implementation: `7b88e43` (`feat: add EggPool service-health status plane to the
+client pane`).
+
+### Workstream A: typed schema-v1 health model
+
+- Added `EggpoolProxyHealth` (`Ready`/`Degraded`/`Unready`),
+  `EggpoolProviderHealth` (`Ready`/`Degraded`/`Unavailable`/`Disabled`/`Unknown`),
+  `EggpoolProviderObservation` (`Verified`/`Failed`/`Stale`/`Never`),
+  `EggpoolProviderRow`, `EggpoolHealthSnapshot`, and
+  `EggpoolHealthFetchOutcome`. They are deliberately distinct from Plan 151's
+  `EggpoolWorkerState`.
+- `EggpoolStatusWire` decodes only what the pane needs and ignores unknown extra
+  fields. A provider row whose `status` is absent or unrecognized decodes as
+  `Unknown`; an unrecognized `observation` decodes as `None` rather than a
+  fabricated one.
+- Validation bounds the contract: `schema_version == 1`, a known proxy status,
+  at most 256 provider rows (EggPool's own ceiling), provider IDs ≤ 64 bytes,
+  reason codes ≤ 128 bytes, and finite non-negative uptime. A future schema
+  version is `UnsupportedSchema`; other violations are `InvalidStatus`. Both are
+  explicit and nonfatal.
+
+### Workstream B: separately bounded `/api/status` fetch
+
+- `fetch_health` shares the summary client's transport, deadline, pooling, and
+  origin normalization, sends `GET /api/status` with no query, and uses
+  request-local bearer auth.
+- Credential handling is now shared and explicit: an absent or empty
+  `api_key_env` stops the summary request (`MissingApiKeyEnv`, unchanged) but
+  still sends the health request, because EggPool keeps `/api/status`
+  authenticated even when the dashboard is public. A present-but-unencodable key
+  maps to `InvalidSummary` and `InvalidApiKey` respectively and is dropped
+  without being sent.
+- 401, 403, and 404 are classified separately; 404 is `Unsupported`, not
+  `StatsUnavailable`.
+- The status route requests a 1 MiB per-request ceiling while the client-wide
+  default stays at the 16 KiB summary bound. eggfetch resolves
+  `request_limit.or(client_default)`, so the raise is request-local;
+  `status_ceiling_is_per_route_and_does_not_widen_the_summary` proves both
+  directions (a >32 KiB status payload decodes, an oversized summary is still
+  `BodyTooLarge`).
+
+### Workstream C: concurrent independent refresh
+
+- The single worker request task reads both planes with `tokio::join!`, so
+  neither delays the other and both are aborted together on supersession or
+  deactivation. One `EggpoolResult` now carries `summary` and `health`
+  outcomes; partial success is never collapsed. Activation, manual refresh,
+  passive 60-second refresh, and period changes all read both planes in the same
+  cycle with no second cadence or cache scheduler.
+
+### Workstream D: independent health freshness in `AppState`
+
+- Added `health`, `last_health_success_at`, `last_health_attempt_at`, and
+  `last_health_error` to `EggpoolState`, and made
+  `apply_eggpool_result_changed` report render-visible change across both planes.
+- Rules implemented: success replaces the snapshot and clears the health error; a
+  failed refresh keeps the previous snapshot but records the error so the
+  renderer marks it stale; a period applies only to the summary payload; the
+  existing generation/period rejection still guards both planes, and no second
+  generation system was added.
+
+### Workstream E: compact presentation
+
+- Header: `EggPool — <identity>    Health: <ready|degraded|unready|unknown>    Window: <period>`.
+  The health token is dropped before the identity or window label is truncated,
+  so narrow terminals keep identity/window usability and the four metric rows
+  never wrap.
+- Footer priority is worker diagnostics, then summary refresh failure, then a
+  bounded `Providers: 2 ready · 1 degraded · 1 unavailable` count (or
+  `Providers: none reported`). The four metric labels are unchanged and are
+  asserted by the renderer tests. Status words carry the signal; color was not
+  required.
+- No scrolling provider table, account/model list, raw probe error, runtime
+  diagnostics, chart, or third pane was added.
+
+### Workstream F: compatibility coverage
+
+- Synthetic loopback matrix: ready/degraded/unready; every provider state and
+  observation; public summary with 401 status; summary OK with 404 status;
+  summary 404 with status OK; summary malformed with status OK; summary OK with
+  status malformed; summary OK with oversized status; per-route ceilings;
+  `schema_version != 1`; unknown proxy status; over-long provider ID, reason
+  code, negative uptime, and 257 provider rows; unusable credential; invalid
+  endpoint; no secret in `Debug`.
+- `a_stalled_health_route_does_not_hide_a_summary_failure` proves a status route
+  that never answers is a local `Timeout` fact while the summary 503 is
+  preserved — transport failure is never rendered as a reported proxy state.
+- `worker_delivers_both_planes_and_partial_success` proves one worker result
+  carries both planes.
+
+### Workstream G: documentation
+
+- Updated `README.md` (unchanged: the quickstart never described the pane
+  contents), `crates/gregg/README.md`, `docs/client.md`,
+  `architecture/gregg-client.md`, `.opencode/skills/eggpool/SKILL.md`, and
+  `CHANGELOG.md`. `docs/display.md` describes Systems layout only and needed no
+  change. `AGENTS.md` needed no new invariant because Plan 151's EggPool
+  control rule already forbids conflating local worker state with `EggPool`
+  health.
+- `plans/056-...md` and `plans/151-...md` keep their records: the summary
+  baseline remains valid and Plan 152 is additive post-closure work. `d31d72f`
+  and the Phase-61/62 closure records are untouched.
+
+### Verification
+
+- `cargo test -p gregg --all-targets --all-features -- eggpool` (73 tests),
+  `-- ui::eggpool` (11 tests), `-- state::tests`, and `-- main::tests` pass.
+- `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`, and
+  `cargo test --workspace --all-targets --all-features` all pass.
+- `./scripts/check-local.sh` passed.
+- Ordinary CI is recorded in `plans/README.md` once the workflow run for
+  `7b88e43` completes; no new workflow or job was added.
+
+### Scope reconciliation
+
+Only `crates/gregg` plus active documentation and planning records changed.
+`greggd`, `gregg-protocol`, `gregg-host`, `gregg-update`, the `EggPool`
+repository, the configuration schema, and release/installer workflows are
+untouched. No dependency was added, and no second credential field, second
+cadence, health-triggered probe, account/model drill-down, database access, or
+generic datasource/status framework was introduced.
+
+Future-plan impact: Plan 152 is the last plan in the EggPool corrective line
+and unblocks no further plan. Plans 091 and 147 remain independent of it and
+keep their existing statuses.

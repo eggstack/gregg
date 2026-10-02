@@ -2,7 +2,7 @@
 
 Status: completed through Phase 62; implementation `38d89bf`; ordinary CI `30683027208` passed. Original implementation `1406c2b`, corrective runtime implementation `1b77da1`, and their CI runs remain historical records.
 
-Post-closure follow-up (2026-10-02): the summary wire/metric baseline remains valid, but d31d72f later intentionally superseded Phase 61/62 awaited command delivery with try_send + Busy, and EggPool added its first-class schema-v1 /api/status health endpoint after this roadmap closed. Plan 151 owns current nonblocking desired-state convergence/local worker-state correction; Plan 152 owns additive service-health consumption. Do not read the original Phase-61/62 pressure wording as a description of current main.
+Post-closure follow-up (2026-10-02): the summary wire/metric baseline remains valid, but d31d72f later intentionally superseded Phase 61/62 awaited command delivery with try_send + Busy, and EggPool added its first-class schema-v1 /api/status health endpoint after this roadmap closed. Plan 151 owns current nonblocking desired-state convergence/local worker-state correction; Plan 152 owns additive service-health consumption. Do not read the original Phase-61/62 pressure wording as a description of current main. Both corrections are now complete: Plan 151 at `4f9debe` and Plan 152 at `7b88e43`. Plan 152 is additive only — the four summary metrics, their periods, and this roadmap's wire and configuration baseline are unchanged.
 
 ## Purpose
 
