@@ -19,12 +19,16 @@ const MAX_RESPONSE_BYTES: usize = 16 * 1024;
 /// client. It is applied per request so the summary route keeps its 16 KiB
 /// limit.
 const MAX_STATUS_RESPONSE_BYTES: usize = 1024 * 1024;
-/// Provider rows `EggPool` itself bounds in one status snapshot.
+/// Provider rows `EggPool` itself bounds in one status snapshot
+/// (`MAX_STATUS_PROVIDERS`).
 const MAX_STATUS_PROVIDER_ROWS: usize = 256;
-/// Bounded provider identity length accepted before rendering.
-const MAX_PROVIDER_ID_BYTES: usize = 64;
-/// Bounded reason-code length accepted before rendering.
-const MAX_STATUS_REASON_BYTES: usize = 128;
+/// Bounded provider identity length accepted before rendering, mirroring
+/// `EggPool`'s own `MAX_PROVIDER_ID_CHARS` bound on bytes retained in status
+/// output.
+const MAX_PROVIDER_ID_BYTES: usize = 96;
+/// Bounded reason-code length accepted before rendering, mirroring
+/// `EggPool`'s own `MAX_REASON_CODE_CHARS` bound.
+const MAX_STATUS_REASON_BYTES: usize = 64;
 /// The only status schema version Gregg treats as authoritative.
 const STATUS_SCHEMA_VERSION: u64 = 1;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
@@ -612,19 +616,19 @@ fn normalize_summary(
 
 /// The schema-version-1 `/api/status` payload Gregg decodes.
 ///
-/// Only the fields needed to validate the contract and render compact health
-/// are decoded; unknown extra fields are ignored so a future `EggPool` build
-/// does not invalidate the snapshot.
+/// The decoded names and nesting mirror `EggPool`'s serialized
+/// `ProxyStatusSnapshot` (see the canonical provenance recorded on the
+/// `canonical_status_body` test fixture): account counts live under `proxy`,
+/// and provider rows carry `provider_id` / `last_observation`. Only the fields
+/// needed to validate the contract and render compact health are decoded;
+/// unknown extra fields are ignored so a future `EggPool` build does not
+/// invalidate the snapshot.
 #[derive(Debug, Deserialize)]
 struct EggpoolStatusWire {
     schema_version: u64,
     proxy: EggpoolProxyWire,
     #[serde(default)]
     providers: Vec<EggpoolProviderWire>,
-    #[serde(default)]
-    routable_accounts: Option<u64>,
-    #[serde(default)]
-    enabled_accounts: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -638,17 +642,21 @@ struct EggpoolProxyWire {
     uptime_seconds: Option<f64>,
     #[serde(default)]
     model_count: Option<u64>,
+    #[serde(default)]
+    routable_accounts: Option<u64>,
+    #[serde(default)]
+    enabled_accounts: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
 struct EggpoolProviderWire {
-    id: String,
+    provider_id: String,
     /// Absent in a future build means the state is genuinely unknown, not
     /// a decode failure for the whole health plane.
     #[serde(default)]
     status: Option<String>,
     #[serde(default)]
-    observation: Option<String>,
+    last_observation: Option<String>,
 }
 
 /// Validate one schema-version-1 status payload against the bounded contract.
@@ -674,17 +682,17 @@ fn normalize_health(wire: &EggpoolStatusWire) -> Result<EggpoolHealthSnapshot, (
     }
     let mut providers = Vec::with_capacity(wire.providers.len());
     for row in &wire.providers {
-        if !bounded_optional(Some(row.id.as_str()), MAX_PROVIDER_ID_BYTES) {
+        if !bounded_optional(Some(row.provider_id.as_str()), MAX_PROVIDER_ID_BYTES) {
             return Err(());
         }
         providers.push(EggpoolProviderRow {
-            id: row.id.clone(),
+            id: row.provider_id.clone(),
             status: row.status.as_deref().map_or(
                 EggpoolProviderHealth::Unknown,
                 EggpoolProviderHealth::from_wire,
             ),
             observation: row
-                .observation
+                .last_observation
                 .as_deref()
                 .and_then(EggpoolProviderObservation::from_wire),
         });
@@ -696,8 +704,8 @@ fn normalize_health(wire: &EggpoolStatusWire) -> Result<EggpoolHealthSnapshot, (
         reason_code: wire.proxy.reason_code.clone(),
         uptime_seconds: wire.proxy.uptime_seconds,
         model_count: wire.proxy.model_count,
-        routable_accounts: wire.routable_accounts,
-        enabled_accounts: wire.enabled_accounts,
+        routable_accounts: wire.proxy.routable_accounts,
+        enabled_accounts: wire.proxy.enabled_accounts,
         providers,
     })
 }
@@ -1355,7 +1363,7 @@ mod tests {
                                 "{{\"period\":\"{period}\",\"accounted_tokens\":{ordinal},\"cache_read_ratio\":null,\"tokens_per_second\":1.5,\"avg_ttft_ms\":12.0,\"streamed_requests\":0}}"
                             )
                         } else {
-                            healthy_status_body("ready", "ready", "verified").clone()
+                            canonical_status_body("ready", "ready", "verified")
                         };
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
@@ -1379,10 +1387,30 @@ mod tests {
             .map(|at| at + 4)
     }
 
-    /// A minimal valid schema-version-1 status payload.
-    fn healthy_status_body(proxy: &str, provider: &str, observation: &str) -> String {
+    /// A valid schema-version-1 status payload in `EggPool`'s own serialized
+    /// shape.
+    ///
+    /// Upstream provenance for every passing status fixture in this module:
+    ///
+    /// ```text
+    /// repo:          eggstack/eggpool
+    /// commit:        299a0b3657667af509742a184e658c14df22d406
+    /// type:          rust/src/operations/status.rs::ProxyStatusSnapshot
+    /// serialization: serde JSON
+    /// ```
+    ///
+    /// Field names and placement follow that type: account counts are nested
+    /// under `proxy`, and provider rows carry `provider_id` /
+    /// `last_observation`. The payload also carries the canonical fields Gregg
+    /// does not display (`observed_at`, `runtime`, `proxy.ready`,
+    /// `proxy.version`, `proxy.base_url`, provider account counts, probe
+    /// detail, and the provider reason code), which must decode as ignored.
+    /// A payload that does not match this shape is not a passing schema, so
+    /// this constructor is the single source of the status matrix instead of
+    /// a locally invented variant.
+    fn canonical_status_body(proxy: &str, provider: &str, observation: &str) -> String {
         format!(
-            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"{proxy}\",\"available\":true,\"uptime_seconds\":42.5,\"model_count\":3}},\"routable_accounts\":5,\"enabled_accounts\":6,\"providers\":[{{\"id\":\"openai\",\"status\":\"{provider}\",\"observation\":\"{observation}\"}}]}}"
+            "{{\"schema_version\":1,\"observed_at\":\"2026-10-02T12:00:00Z\",\"runtime\":{{\"pid\":4242,\"started_at\":\"2026-10-02T11:00:00Z\"}},\"proxy\":{{\"status\":\"{proxy}\",\"available\":true,\"ready\":true,\"version\":\"0.9.1\",\"base_url\":\"http://127.0.0.1:11300\",\"uptime_seconds\":42.5,\"model_count\":3,\"routable_accounts\":5,\"enabled_accounts\":6}},\"providers\":[{{\"provider_id\":\"openai\",\"status\":\"{provider}\",\"last_observation\":\"{observation}\",\"account_count\":2,\"routable_accounts\":2,\"enabled_accounts\":2,\"last_probe\":{{\"checked_at\":\"2026-10-02T11:59:58Z\",\"latency_ms\":31}},\"reason_code\":null}}]}}"
         )
     }
 
@@ -2153,7 +2181,7 @@ mod tests {
         ] {
             let (port, _requests, server) = server_routes(
                 RouteReply::ok(summary_body("1h")),
-                RouteReply::ok(healthy_status_body(proxy, "ready", "verified")),
+                RouteReply::ok(canonical_status_body(proxy, "ready", "verified")),
             )
             .await;
             let (summary, health) = fetch_both(port, None).await;
@@ -2176,12 +2204,12 @@ mod tests {
     async fn health_decodes_every_provider_state_without_conflation() {
         let body =
             r#"{"schema_version":1,"proxy":{"status":"degraded","available":true},"providers":[
-            {"id":"a","status":"ready","observation":"verified"},
-            {"id":"b","status":"degraded","observation":"failed"},
-            {"id":"c","status":"unavailable","observation":"stale"},
-            {"id":"d","status":"disabled","observation":"never"},
-            {"id":"e","status":"something-new","observation":"also-new"},
-            {"id":"f"}
+            {"provider_id":"a","status":"ready","last_observation":"verified"},
+            {"provider_id":"b","status":"degraded","last_observation":"failed"},
+            {"provider_id":"c","status":"unavailable","last_observation":"stale"},
+            {"provider_id":"d","status":"disabled","last_observation":"never"},
+            {"provider_id":"e","status":"something-new","last_observation":"also-new"},
+            {"provider_id":"f"}
         ]}"#
             .replace('\n', "");
         let (port, _requests, server) =
@@ -2271,7 +2299,7 @@ mod tests {
     async fn disabled_dashboard_keeps_valid_health_visible() {
         let (port, _requests, server) = server_routes(
             RouteReply::status("404 Not Found"),
-            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+            RouteReply::ok(canonical_status_body("ready", "ready", "verified")),
         )
         .await;
         let (summary, health) = fetch_both(port, None).await;
@@ -2317,7 +2345,7 @@ mod tests {
         // A status payload larger than the summary bound still decodes,
         // proving the per-request ceiling rather than one global limit.
         let padding = "x".repeat(MAX_RESPONSE_BYTES * 2);
-        let body = healthy_status_body("ready", "ready", "verified").replace(
+        let body = canonical_status_body("ready", "ready", "verified").replace(
             "\"schema_version\":1",
             &format!("\"schema_version\":1,\"note\":\"{padding}\""),
         );
@@ -2335,7 +2363,7 @@ mod tests {
         );
         let (port, _requests, server) = server_routes(
             RouteReply::ok(big_summary),
-            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+            RouteReply::ok(canonical_status_body("ready", "ready", "verified")),
         )
         .await;
         let (summary, health) = fetch_both(port, None).await;
@@ -2361,7 +2389,7 @@ mod tests {
     async fn malformed_summary_never_invalidates_a_good_health_snapshot() {
         let (port, _requests, server) = server_routes(
             RouteReply::ok("{\"period\":".to_owned()),
-            RouteReply::ok(healthy_status_body("degraded", "degraded", "failed")),
+            RouteReply::ok(canonical_status_body("degraded", "degraded", "failed")),
         )
         .await;
         let (summary, health) = fetch_both(port, None).await;
@@ -2372,7 +2400,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_schema_and_invalid_status_are_explicit_and_nonfatal() {
-        let future = healthy_status_body("ready", "ready", "verified")
+        let future = canonical_status_body("ready", "ready", "verified")
             .replace("\"schema_version\":1", "\"schema_version\":2");
         let (port, _requests, server) =
             server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(future)).await;
@@ -2381,7 +2409,7 @@ mod tests {
         assert_eq!(health, EggpoolHealthFetchOutcome::UnsupportedSchema);
         server.abort();
 
-        let unknown_proxy = healthy_status_body("sideways", "ready", "verified");
+        let unknown_proxy = canonical_status_body("sideways", "ready", "verified");
         let (port, _requests, server) = server_routes(
             RouteReply::ok(summary_body("1h")),
             RouteReply::ok(unknown_proxy),
@@ -2393,60 +2421,209 @@ mod tests {
         server.abort();
     }
 
+    /// A canonical status payload with `rows` provider rows whose
+    /// `provider_id` is `p` plus the row index, used for the exact
+    /// provider-row boundary.
+    fn canonical_status_body_with_rows(rows: usize) -> String {
+        let providers: Vec<String> = (0..rows)
+            .map(|index| format!(r#"{{"provider_id":"p{index}","status":"ready"}}"#))
+            .collect();
+        format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{}]}}",
+            providers.join(",")
+        )
+    }
+
+    /// A canonical status payload with one provider row of exactly `id_bytes`
+    /// ASCII bytes, used for the exact provider-identity boundary.
+    fn canonical_status_body_with_id(id_bytes: usize) -> String {
+        let long_id = "i".repeat(id_bytes);
+        format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{{\"provider_id\":\"{long_id}\",\"status\":\"ready\"}}]}}"
+        )
+    }
+
+    /// A canonical status payload whose proxy reason code is exactly
+    /// `reason_bytes` ASCII bytes, used for the exact reason-code boundary.
+    fn canonical_status_body_with_reason(reason_bytes: usize) -> String {
+        let reason = "r".repeat(reason_bytes);
+        format!(
+            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"unready\",\"available\":false,\"reason_code\":\"{reason}\"}}}}"
+        )
+    }
+
+    /// Read one canonical status body and return the health outcome.
+    async fn health_of(body: String) -> EggpoolHealthFetchOutcome {
+        let (port, _requests, server) =
+            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        let health = fetch_both(port, None).await.1;
+        server.abort();
+        health
+    }
+
+    /// Read one canonical status body and report whether it was accepted.
+    async fn health_accepts(body: String) -> bool {
+        matches!(health_of(body).await, EggpoolHealthFetchOutcome::Online(_))
+    }
+
     #[tokio::test]
-    async fn bounded_status_contract_rejects_unbounded_payloads() {
-        let long_id = "i".repeat(MAX_PROVIDER_ID_BYTES + 1);
-        let body = format!(
-            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{{\"id\":\"{long_id}\",\"status\":\"ready\"}}]}}"
-        );
-        let (port, _requests, server) =
-            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
-        assert_eq!(
-            fetch_both(port, None).await.1,
-            EggpoolHealthFetchOutcome::InvalidStatus
-        );
-        server.abort();
+    async fn bounded_status_contract_matches_the_producer_bounds_exactly() {
+        // The limits are EggPool's own producer constants, and the fixtures
+        // use literal byte/row counts so a drifted bound fails here instead of
+        // quietly moving the expectation with the constant.
+        assert_eq!(MAX_PROVIDER_ID_BYTES, 96);
+        assert_eq!(MAX_STATUS_REASON_BYTES, 64);
+        assert_eq!(MAX_STATUS_PROVIDER_ROWS, 256);
 
-        let long_reason = "r".repeat(MAX_STATUS_REASON_BYTES + 1);
-        let body = format!(
-            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"unready\",\"available\":false,\"reason_code\":\"{long_reason}\"}}}}"
-        );
-        let (port, _requests, server) =
-            server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
-        assert_eq!(
-            fetch_both(port, None).await.1,
-            EggpoolHealthFetchOutcome::InvalidStatus
-        );
-        server.abort();
+        // Each bound is exact, not conservative: the limit decodes and one
+        // byte/row more is rejected.
+        for (id_bytes, accepted) in [(96, true), (97, false)] {
+            assert_eq!(
+                health_accepts(canonical_status_body_with_id(id_bytes)).await,
+                accepted,
+                "a 96-byte provider ID decodes and 97 bytes is rejected"
+            );
+        }
 
+        for (reason_bytes, accepted) in [(64, true), (65, false)] {
+            assert_eq!(
+                health_accepts(canonical_status_body_with_reason(reason_bytes)).await,
+                accepted,
+                "a 64-byte reason code decodes and 65 bytes is rejected"
+            );
+        }
+
+        for (rows, accepted) in [(256, true), (257, false)] {
+            assert_eq!(
+                health_accepts(canonical_status_body_with_rows(rows)).await,
+                accepted,
+                "256 provider rows decode and 257 rows are rejected"
+            );
+        }
+
+        // An out-of-contract number is rejected the same way, independent of
+        // the three length bounds.
         let negative_uptime =
             r#"{"schema_version":1,"proxy":{"status":"ready","available":true,"uptime_seconds":-1.0}}"#
                 .to_owned();
-        let (port, _requests, server) = server_routes(
-            RouteReply::ok(summary_body("1h")),
-            RouteReply::ok(negative_uptime),
-        )
-        .await;
         assert_eq!(
-            fetch_both(port, None).await.1,
-            EggpoolHealthFetchOutcome::InvalidStatus
+            health_of(negative_uptime).await,
+            EggpoolHealthFetchOutcome::InvalidStatus,
+            "negative uptime is not a plausible EggPool report"
         );
-        server.abort();
+    }
 
-        let mut providers: Vec<String> = (0..=MAX_STATUS_PROVIDER_ROWS)
-            .map(|index| format!(r#"{{"id":"p{index}","status":"ready"}}"#))
-            .collect();
-        providers.retain(|_| true);
-        let body = format!(
-            "{{\"schema_version\":1,\"proxy\":{{\"status\":\"ready\",\"available\":true}},\"providers\":[{}]}}",
-            providers.join(",")
-        );
+    #[tokio::test]
+    async fn canonical_upstream_status_snapshot_decodes_and_ignores_unmodeled_fields() {
+        // Provenance: eggstack/eggpool 299a0b3657667af509742a184e658c14df22d406,
+        // rust/src/operations/status.rs::ProxyStatusSnapshot, serde JSON. This
+        // payload carries the canonical fields Gregg does not model
+        // (`observed_at`, `runtime`, `proxy.ready`, `proxy.version`,
+        // `proxy.base_url`, provider account counts, provider probe detail,
+        // and the provider reason code) so a passing fixture cannot silently
+        // diverge from the upstream serialization again.
+        let body = r#"{
+            "schema_version": 1,
+            "observed_at": "2026-10-02T12:00:00Z",
+            "runtime": {"pid": 4242, "started_at": "2026-10-02T11:00:00Z"},
+            "proxy": {
+                "status": "ready",
+                "available": true,
+                "ready": true,
+                "version": "0.9.1",
+                "base_url": "http://127.0.0.1:11300",
+                "uptime_seconds": 3600.5,
+                "model_count": 7,
+                "routable_accounts": 5,
+                "enabled_accounts": 6,
+                "reason_code": null
+            },
+            "providers": [
+                {
+                    "provider_id": "openai",
+                    "status": "degraded",
+                    "last_observation": "stale",
+                    "account_count": 2,
+                    "routable_accounts": 1,
+                    "enabled_accounts": 2,
+                    "last_probe": {"checked_at": "2026-10-02T11:59:58Z", "latency_ms": 31},
+                    "reason_code": "slow"
+                }
+            ]
+        }"#
+        .replace('\n', "");
         let (port, _requests, server) =
             server_routes(RouteReply::ok(summary_body("1h")), RouteReply::ok(body)).await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        let EggpoolHealthFetchOutcome::Online(snapshot) = health else {
+            panic!("the upstream-shaped provider-bearing payload must decode Online: {health:?}");
+        };
+        assert_eq!(snapshot.schema_version, 1);
+        assert_eq!(snapshot.proxy, EggpoolProxyHealth::Ready);
+        assert!(snapshot.available);
+        // Account counts come from `proxy`, never from the provider rows or a
+        // root-level field.
+        assert_eq!(snapshot.routable_accounts, Some(5));
+        assert_eq!(snapshot.enabled_accounts, Some(6));
+        assert_eq!(snapshot.model_count, Some(7));
+        assert_eq!(snapshot.uptime_seconds, Some(3600.5));
+        // Provider identity and observation survive normalization from
+        // `provider_id` / `last_observation`.
+        assert_eq!(snapshot.providers.len(), 1);
+        assert_eq!(snapshot.providers[0].id, "openai");
         assert_eq!(
-            fetch_both(port, None).await.1,
-            EggpoolHealthFetchOutcome::InvalidStatus
+            snapshot.providers[0].status,
+            EggpoolProviderHealth::Degraded
         );
+        assert_eq!(
+            snapshot.providers[0].observation,
+            Some(EggpoolProviderObservation::Stale)
+        );
+        // The provider's own reason code is not the proxy's, and is ignored.
+        assert_eq!(snapshot.reason_code, None);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn gregg_local_status_shape_is_not_a_supported_schema() {
+        // The never-upstream Plan-152 shape used `id`/`observation` on provider
+        // rows and root-level account counts. No alias preserves it: a
+        // provider row without `provider_id` is a decode failure, and root
+        // counts no longer populate the snapshot.
+        let gregg_local = r#"{"schema_version":1,
+            "proxy":{"status":"ready","available":true,"uptime_seconds":42.5,"model_count":3},
+            "routable_accounts":5,"enabled_accounts":6,
+            "providers":[{"id":"openai","status":"ready","observation":"verified"}]}"#
+            .replace('\n', "");
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(gregg_local),
+        )
+        .await;
+        let (summary, health) = fetch_both(port, None).await;
+        assert!(matches!(summary, EggpoolFetchOutcome::Online(_)));
+        assert_eq!(health, EggpoolHealthFetchOutcome::DecodeError);
+        server.abort();
+
+        // With no provider rows the proxy still decodes, but the misplaced
+        // root counts must read as absent rather than being invented.
+        let mislaid_counts = r#"{"schema_version":1,
+            "proxy":{"status":"ready","available":true},
+            "routable_accounts":5,"enabled_accounts":6,
+            "providers":[]}"#
+            .replace('\n', "");
+        let (port, _requests, server) = server_routes(
+            RouteReply::ok(summary_body("1h")),
+            RouteReply::ok(mislaid_counts),
+        )
+        .await;
+        let EggpoolHealthFetchOutcome::Online(snapshot) = fetch_both(port, None).await.1 else {
+            panic!("a provider-free status payload still decodes");
+        };
+        assert_eq!(snapshot.proxy, EggpoolProxyHealth::Ready);
+        assert_eq!(snapshot.routable_accounts, None);
+        assert_eq!(snapshot.enabled_accounts, None);
         server.abort();
     }
 
@@ -2454,7 +2631,7 @@ mod tests {
     async fn health_never_renders_or_retains_the_configured_secret() {
         let (port, _requests, server) = server_routes(
             RouteReply::ok(summary_body("1h")),
-            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+            RouteReply::ok(canonical_status_body("ready", "ready", "verified")),
         )
         .await;
         let client = EggpoolClient::with_env_lookup(
@@ -2472,7 +2649,7 @@ mod tests {
     async fn unusable_health_credential_is_reported_without_sending() {
         let (port, mut requests, server) = server_routes(
             RouteReply::ok(summary_body("1h")),
-            RouteReply::ok(healthy_status_body("ready", "ready", "verified")),
+            RouteReply::ok(canonical_status_body("ready", "ready", "verified")),
         )
         .await;
         let client = EggpoolClient::with_env_lookup(

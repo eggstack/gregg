@@ -537,8 +537,16 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - `schema_version` must be `1`; a future version is `UnsupportedSchema`, and an
   unrecognized proxy status or an out-of-contract payload is `InvalidStatus` —
   both explicit, nonfatal, and never invalidating the summary plane
-- Bounded before rendering: provider rows ≤ 256, provider IDs ≤ 64 bytes,
-  reason codes ≤ 128 bytes, finite non-negative uptime
+- Bounded before rendering: provider rows ≤ 256, provider IDs ≤ 96 bytes,
+  reason codes ≤ 64 bytes, finite non-negative uptime. These are the exact
+  producer-owned bounds (`MAX_STATUS_PROVIDERS`, `MAX_PROVIDER_ID_CHARS`,
+  `MAX_REASON_CODE_CHARS`), not conservative substitutes
+- The decoder mirrors EggPool's serialized `ProxyStatusSnapshot` (Plan 153):
+  account counts are read from `proxy.routable_accounts` /
+  `proxy.enabled_accounts`, and provider identity/observation come from
+  `providers[].provider_id` / `providers[].last_observation`. The fixture that
+  qualifies the contract records its upstream repo/commit/type provenance, and
+  no serde alias preserves any non-upstream field name
 - `EggpoolHealthFetchOutcome` keeps 401 (`AuthenticationRequired`), 403
   (`Forbidden`), and 404 (`Unsupported`, not a statistics failure) distinct
 - Status reads never trigger an outbound provider probe, quota use, or

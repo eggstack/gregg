@@ -78,8 +78,10 @@ gregg eggpool remove <host>
   local worker state or the summary outcome
 - `schema_version` must be `1`; a future version is an explicit unsupported
   health state, not a decode crash, and never invalidates the summary plane
-- Bounded before rendering: ≤256 provider rows, ≤64-byte provider IDs,
-  ≤128-byte reason codes, finite non-negative uptime
+- Bounded before rendering: ≤256 provider rows, ≤96-byte provider IDs,
+  ≤64-byte reason codes, finite non-negative uptime. These are EggPool's own
+  producer bounds (`MAX_STATUS_PROVIDERS`, `MAX_PROVIDER_ID_CHARS`,
+  `MAX_REASON_CODE_CHARS`), not conservative substitutes
 - `AppState` holds health separately from summary state; a failed health read
   keeps the previous snapshot but marks it stale, and a period change applies to
   the summary payload only
@@ -87,6 +89,43 @@ gregg eggpool remove <host>
   delivers both outcomes, so partial success is preserved
 - Never add a provider/account/model drill-down, a second cadence, a second
   credential field, or a health-triggered provider probe
+
+## Schema-v1 wire contract (Plan 153)
+
+Gregg decodes EggPool's serialized
+`rust/src/operations/status.rs::ProxyStatusSnapshot`. The canonical field
+names and placement are:
+
+```text
+root.schema_version            root.providers[].provider_id
+root.proxy.status              root.providers[].status
+root.proxy.available           root.providers[].last_observation
+root.proxy.uptime_seconds
+root.proxy.model_count
+root.proxy.routable_accounts
+root.proxy.enabled_accounts
+root.proxy.reason_code
+```
+
+Provenance of that shape: `eggstack/eggpool` commit
+`299a0b3657667af509742a184e658c14df22d406`, serde JSON. The account counts are
+nested under `proxy`, and provider identity/observation come from
+`provider_id` / `last_observation`.
+
+Fields EggPool emits that Gregg deliberately does not model, and must keep
+ignoring: `observed_at`, `runtime`, `proxy.ready`, `proxy.version`,
+`proxy.base_url`, provider account counts, provider probe detail, and the
+provider-level reason code. Unknown extra JSON fields stay tolerated.
+
+- `canonical_status_body` in `src/eggpool.rs::tests` is the single passing
+  status fixture and records the upstream provenance in its doc comment. Use
+  it for new status cases instead of hand-rolling a payload.
+- Never add a serde alias or fallback for the never-upstream Plan-152 shape
+  (`id` instead of `provider_id`, `observation` instead of
+  `last_observation`, root-level account counts). `gregg_local_status_shape_is_not_a_supported_schema`
+  locks that out.
+- EggPool's CLI-only proxy `unavailable` state is not a server-reported value:
+  an unknown proxy status stays `InvalidStatus`.
 
 ## Worker
 
@@ -152,6 +191,12 @@ gregg eggpool remove <host>
   every provider state, public summary + 401 status, older EggPool 404,
   dashboard-disabled summary, independent malformed/oversized cases, unknown
   schema version, bounded-contract rejection, and no secret in outcomes
+- Schema-v1 wire qualifications in `src/eggpool.rs`: an upstream-provenance
+  `ProxyStatusSnapshot` payload that decodes `Online` while ignoring
+  unmodeled canonical fields, a negative regression proving the Plan-152
+  Gregg-local shape is not a supported schema, and exact-boundary acceptance
+  plus one-over rejection for 96-byte provider IDs, 64-byte reason codes, and
+  256 provider rows
 - Worker regression tests in `src/eggpool.rs`: generation retention across
   passive refresh, request-relative deadlines tied to activation triggers,
   nonblocking latest-desired-state publication under rapid input, convergence
@@ -169,7 +214,7 @@ gregg eggpool remove <host>
 ## Corrective-plan status
 
 - Plan 151 is complete: the drop-on-full `try_send` + `Busy` design from `d31d72f` is superseded by the retained latest-desired-state contract described above. `d31d72f` remains a truthful historical record.
-- Plan 152 is implemented on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
-- Plan 153 is the active post-closure wire correction. Current EggPool schema v1 uses `proxy.routable_accounts` / `proxy.enabled_accounts`, `providers[].provider_id`, and `providers[].last_observation`; producer bounds are 256 provider rows, 96-byte provider IDs, and 64-byte reason codes. Do not copy Plan 152's stale `id` / `observation` / root-count synthetic fixture or add compatibility aliases for that never-upstream shape.
+- Plan 152 is complete on top of Plan 151 and adds EggPool schema-v1 `GET /api/status` as an independent health plane alongside the existing summary metrics.
+- Plan 153 is complete: the private schema-v1 consumer now matches EggPool's canonical wire shape (`proxy.routable_accounts` / `proxy.enabled_accounts`, `providers[].provider_id`, `providers[].last_observation`) with producer-aligned 256/96/64 bounds and an upstream-provenance fixture. Plan 152's `id` / `observation` / root-count synthetic fixture is not a supported schema and no alias preserves it. Plan 153 is the last plan in the EggPool corrective line; no follow-up is planned.
 
 Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard, and do not reintroduce `Busy` or a lossy control queue.

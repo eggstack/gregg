@@ -7,6 +7,25 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **EggPool schema-v1 status wire contract (Plan 153):** the optional
+  EggPool pane's health reader now matches the JSON EggPool actually
+  serializes (`rust/src/operations/status.rs::ProxyStatusSnapshot` at
+  `eggstack/eggpool` `299a0b36`). Account counts are read from
+  `proxy.routable_accounts` / `proxy.enabled_accounts` instead of the document
+  root, and provider identity and observation come from
+  `providers[].provider_id` and `providers[].last_observation` instead of the
+  never-upstream `id` / `observation`. Plan 152's synthetic fixture validated a
+  Gregg-invented shape, so a real provider-bearing status response failed to
+  decode while CI stayed green. The bounded contract is now aligned with
+  EggPool's own producer limits — 256 provider rows, 96-byte provider IDs, and
+  64-byte reason codes (previously 256/64/128) — with exact-limit and
+  one-over regressions for each. The status matrix, ceiling split (1 MiB
+  status, 16 KiB summary), dual-plane worker, freshness, authentication, and
+  rendering are unchanged, and no compatibility alias is added for the
+  Gregg-local shape.
+
 ### Changed
 
 - **EggFetch 0.2 patch refresh (Plan 147):** `Cargo.lock` now resolves
