@@ -1,6 +1,6 @@
 # Plan 153: EggPool schema-v1 wire-contract corrective pass
 
-Status: planned.
+Status: complete. See the closure record at the end of this file.
 
 Depends on: completed Plan 152/current main. Independent of the remaining Plan 091 soak record.
 
@@ -190,21 +190,21 @@ Use ordinary existing CI for hosted closure. No new job/matrix.
 
 ## Acceptance criteria
 
-- [ ] Gregg accepts the canonical field placement/names emitted by EggPool schema-v1 `ProxyStatusSnapshot`.
-- [ ] Account counts are read from `proxy`.
-- [ ] Provider identity comes from `provider_id`.
-- [ ] Provider observation comes from `last_observation`.
-- [ ] A provider-bearing upstream-shaped payload decodes `Online`.
-- [ ] Provider identity/observation and proxy account counts survive normalization.
-- [ ] Bounds are 256 providers, 96-byte provider IDs, and 64-byte reason codes, with exact/one-over tests.
-- [ ] Status remains capped at 1 MiB and summary at 16 KiB.
-- [ ] Plan-152 concurrency, partial success, auth, compatibility, freshness, and rendering remain unchanged.
-- [ ] No alias/fallback preserves the never-upstream old fixture as a supported schema.
-- [ ] The canonical fixture records EggPool source commit/type provenance and includes ignored canonical fields.
-- [ ] No EggPool build/network dependency is added to Gregg tests or CI.
-- [ ] Plan 152 receives an append-only correction note and registry status/dependencies are truthful.
-- [ ] Focused checks and ordinary CI pass.
-- [ ] No dependency/config/endpoint/cadence/worker/pane/daemon/protocol/workflow/release scope is added.
+- [x] Gregg accepts the canonical field placement/names emitted by EggPool schema-v1 `ProxyStatusSnapshot`.
+- [x] Account counts are read from `proxy`.
+- [x] Provider identity comes from `provider_id`.
+- [x] Provider observation comes from `last_observation`.
+- [x] A provider-bearing upstream-shaped payload decodes `Online`.
+- [x] Provider identity/observation and proxy account counts survive normalization.
+- [x] Bounds are 256 providers, 96-byte provider IDs, and 64-byte reason codes, with exact/one-over tests.
+- [x] Status remains capped at 1 MiB and summary at 16 KiB.
+- [x] Plan-152 concurrency, partial success, auth, compatibility, freshness, and rendering remain unchanged.
+- [x] No alias/fallback preserves the never-upstream old fixture as a supported schema.
+- [x] The canonical fixture records EggPool source commit/type provenance and includes ignored canonical fields.
+- [x] No EggPool build/network dependency is added to Gregg tests or CI.
+- [x] Plan 152 receives an append-only correction note and registry status/dependencies are truthful.
+- [x] Focused checks and ordinary CI pass.
+- [x] No dependency/config/endpoint/cadence/worker/pane/daemon/protocol/workflow/release scope is added.
 
 ## Stop conditions
 
@@ -212,4 +212,154 @@ Split new work if this requires an EggPool API/schema change, shared generated b
 
 ## Closure record
 
-Not yet implemented.
+Implementation: `195724c1a1787e22b7288062a5fc45c51739a628`. The work was bounded to the private schema-v1 consumer, its qualification fixtures, active documentation, and planning records.
+
+### Workstream A: corrected wire mirror
+
+`crates/gregg/src/eggpool.rs` now decodes the canonical field set:
+
+- `EggpoolProxyWire` gained `routable_accounts` / `enabled_accounts`, and
+  `EggpoolStatusWire` no longer declares them at the document root.
+- `EggpoolProviderWire` requires `provider_id` and reads `last_observation`
+  instead of `id` / `observation`.
+- `normalize_health` sources the account counts from `wire.proxy` and maps
+  `provider_id` -> `EggpoolProviderRow.id` and `last_observation` ->
+  `EggpoolProviderRow.observation`. The public model, the ready/degraded/
+  unready proxy mapping, the provider-state and unknown-value policies, the
+  future-schema handling, and the rejection of an unknown proxy status are
+  unchanged, and EggPool's CLI-only proxy `unavailable` state is still not
+  accepted as a server-reported value.
+- `observed_at`, `runtime`, `proxy.ready`, `proxy.version`, `proxy.base_url`,
+  provider account counts, probe detail, and the provider reason code remain
+  unmodeled and ignored, and no serde alias or fallback was added for any
+  never-upstream name.
+
+### Workstream B: producer-owned bounds
+
+`MAX_STATUS_PROVIDER_ROWS = 256`, `MAX_PROVIDER_ID_BYTES = 96`,
+`MAX_STATUS_REASON_BYTES = 64`, and `MAX_STATUS_RESPONSE_BYTES = 1024 * 1024`
+now match EggPool's `MAX_STATUS_PROVIDERS`, `MAX_PROVIDER_ID_CHARS`,
+`MAX_REASON_CODE_CHARS`, and status-client ceiling. The summary bound stays
+16 KiB and is still applied per route.
+
+`bounded_status_contract_matches_the_producer_bounds_exactly` asserts the
+three constants against literal 96/64/256 values and then proves each limit is
+exact using ASCII fixtures: 96 bytes decodes and 97 is rejected, 64 decodes and
+65 is rejected, 256 rows decode and 257 are rejected. Literal counts are used
+deliberately so a drifted bound fails the test instead of moving the
+expectation with the constant. Negative uptime remains rejected in the same
+test.
+
+Mutation-checked rather than assumed: reverting the bounds to the old 64/128/256
+values and the field names to `id` / `observation` fails 13 EggPool tests
+including all three new ones, and moving the account counts back to the
+document root fails `canonical_upstream_status_snapshot_decodes_and_ignores_unmodeled_fields`,
+`gregg_local_status_shape_is_not_a_supported_schema`, and
+`health_decodes_ready_degraded_and_unready_proxy_states`. The suite is not
+vacuous.
+
+### Workstream C: upstream-provenance fixture
+
+`canonical_status_body` replaces `healthy_status_body` as the single passing
+status fixture for the module. Its doc comment records the provenance —
+`eggstack/eggpool`, commit `299a0b3657667af509742a184e658c14df22d406`, type
+`rust/src/operations/status.rs::ProxyStatusSnapshot`, serde JSON — and states
+that a payload that does not match that shape is not a passing schema.
+
+`canonical_upstream_status_snapshot_decodes_and_ignores_unmodeled_fields` reads
+a full upstream-shaped payload carrying `schema_version: 1`, root `observed_at`
+and `runtime`, `proxy.status` / `available` / `uptime_seconds` /
+`model_count` / `routable_accounts` / `enabled_accounts` plus the ignored
+`proxy.ready` / `proxy.version` / `proxy.base_url`, and one provider row with
+`provider_id`, a real status, `last_observation`, and ignored provider account
+counts, probe detail, and reason code. It asserts `Online`, `schema_version`,
+proxy `Ready`, `available`, `uptime_seconds`, `model_count`, counts `5`/`6`
+read from `proxy`, the preserved provider id `openai`, the provider
+`Degraded`/`Stale` state, and that the provider's own `reason_code` is not
+mistaken for the proxy's.
+
+`gregg_local_status_shape_is_not_a_supported_schema` is the negative
+regression: the Plan-152 payload with `id`/`observation` and root counts is
+`DecodeError`, and a provider-free payload carrying only root counts still
+decodes the proxy but reports both counts as absent. No alias exists for the
+old shape.
+
+### Workstream D: the existing matrix on the canonical shape
+
+Rather than keeping two matrices, every existing passing status fixture now
+uses the canonical constructor, and
+`health_decodes_every_provider_state_without_conflation` emits
+`provider_id` / `last_observation` rows directly. Retained coverage:
+ready/degraded/unready proxy; every provider state including unrecognized and
+absent; verified/failed/stale/never observations; public summary + 401 status;
+summary OK + 404 status; summary 404 + status OK; malformed status and
+malformed summary each independent of the other plane; oversized status;
+per-route 16 KiB summary and 1 MiB status ceilings; 403 and 503 status codes;
+future schema and invalid proxy status; bounded rejection; unusable
+credential; invalid endpoint; no secret in `Debug`; a stalled health route that
+does not hide a summary failure; and one worker result carrying both planes.
+`crates/gregg/src/state.rs`, `crates/gregg/src/ui/eggpool.rs`,
+`crates/gregg/src/main.rs`, `greggd`, `gregg-protocol`, `gregg-host`, and
+`gregg-update` are untouched, which is why `state::tests` and `ui::eggpool`
+needed no change.
+
+The focused EggPool suite contains a passing payload with the exact tokens
+`provider_id`, `last_observation`, `proxy`-nested
+`routable_accounts`/`enabled_accounts`, and a representative `runtime`, and
+`grep` confirms no `alias` attribute exists in the module.
+
+### Workstream E: planning and documentation reconciliation
+
+- Plan 152 already carried its append-only post-closure correction note
+  recording this defect; it is preserved verbatim and its historical
+  implementation and CI record are not rewritten.
+- `plans/README.md` records Plan 153 as complete, adds `152 -> 153`, and states
+  that the EggPool corrective line is finished.
+- `.opencode/skills/eggpool/SKILL.md` gained a "Schema-v1 wire contract"
+  section with the canonical field list, the ignored-field list, the upstream
+  provenance, and the explicit prohibition on aliases for the Plan-152 shape;
+  the stale `≤64-byte provider IDs, ≤128-byte reason codes` bound line is
+  corrected to 96/64 and the corrective-plan status is updated.
+- `architecture/gregg-client.md` records the producer-aligned 96/64 bounds and
+  the canonical names/placement.
+- `CHANGELOG.md` gained a concise `Fixed` entry describing the corrected wire
+  contract, the reason the previous fixture hid the defect, and the realigned
+  bounds.
+- `README.md`, `docs/client.md`, and `crates/gregg/README.md` were inspected:
+  they describe the visible pane contract only and contained no incorrect wire
+  detail, so no change was warranted. The visible pane contract is unchanged.
+
+### Verification
+
+```text
+cargo test -p gregg --all-targets --all-features -- eggpool    # 75 + 4 passed
+cargo test -p gregg --all-targets --all-features -- ui::eggpool # 11 passed
+cargo test -p gregg --all-targets --all-features -- state::tests # 57 passed
+cargo fmt --all -- --check                                     # clean
+cargo clippy --workspace --all-targets --all-features -- -D warnings  # clean
+cargo test --workspace --all-targets --all-features            # all suites passed
+./scripts/check-local.sh                                       # all checks passed
+```
+
+Ordinary existing CI is the hosted closure mechanism; no new job, matrix, or
+workflow was added, and no EggPool build or network access is required by any
+test. Exact CI run IDs are recorded in `plans/README.md` after the closure
+push.
+
+### Scope reconciliation
+
+Only `crates/gregg/src/eggpool.rs` plus documentation and planning records
+changed. No dependency was added, no `Cargo.toml`/`Cargo.lock` change exists,
+and no configuration field, endpoint, cadence, worker contract, pane,
+`greggd`/`gregg-protocol`/`gregg-host`/`gregg-update` surface, workflow, or
+release step was touched. The stop conditions were not reached: no EggPool
+API/schema change, shared binding crate, EggPool dependency, Plan-151 worker
+change, summary/cadence change, drill-down UI, new credential field, or
+cross-repo CI orchestration was required.
+
+Future-plan impact: Plan 153 is terminal for the EggPool corrective line and
+unblocks no further plan. Plan 091 remains the only in-progress plan, still
+gated solely on its own extended soak record. No other planned or in-progress
+plan depended on Plan 153. The pre-existing stale `Status: planned` header on
+the retired Plan 064 file remains the unenumerated artifact already recorded in
+Plan 146's closure and is not remade here.
