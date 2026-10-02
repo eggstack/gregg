@@ -404,3 +404,10 @@ A test exposing a concrete additional defect in the existing worker may justify 
 - Ordinary CI: run `30683027208` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
 - Phase 62 added bounded synthetic loopback coverage for passive generation retention, activation-relative cadence, manual refresh and period-change deadline resets, deactivation gating, bounded command pressure, prompt cancellation, and no-config worker construction.
 - Roadmap 56 is now closed through Phase 62; Phase 61 remains the valid runtime correction and Phase 62 owns the missing verification coverage.
+
+
+## Post-closure supersession note (2026-10-02)
+
+The Phase-62 pressure/convergence tests were correct for the 38d89bf closure baseline. Commit d31d72f later intentionally replaced awaited command delivery with try_send + EggpoolStatus::Busy and rewrote the pressure test to assert that a full queue drops Activate without blocking. Current main therefore deliberately supersedes this phase's pressure contract while retaining its generation, cadence, inactive-gating, cancellation, and no-config coverage.
+
+The 2026-10-02 review identified the resulting desired-state convergence risk. Plan 151 owns the replacement with a nonblocking latest-desired-state contract; Plan 152 separately owns the newer EggPool /api/status service-health plane. Preserve this closure record as historical evidence rather than treating it as current-main behavior.

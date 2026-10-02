@@ -511,3 +511,10 @@ Do not rewrite history to claim the original run covered the new regression test
 - Local verification: ./scripts/check-local.sh passed on Linux.
 - Ordinary CI: run `30681153449` passed Linux, macOS arm64, macOS Intel, Windows, and Rust 1.75 MSRV jobs.
 - Phase 61 corrected periodic generation ownership, request-relative cadence, reliable command delivery, worker-channel closure handling, active five-row metadata, and Roadmap 56 closure truth. Its implementation remains valid; Phase 62 supplies the missing deterministic worker regression coverage and owns final closure.
+
+
+## Post-closure supersession note (2026-10-02)
+
+This phase's awaited bounded-delivery correction was valid at implementation 1b77da1 and was the contract verified by Phase 62. Commit d31d72f later intentionally changed EggPool command publication to nonblocking try_send, added EggpoolStatus::Busy, and changed the pressure regression to require drop + busy instead of eventual delivery. Current main therefore no longer implements this phase's command-pressure contract, although its generation/cadence/cancellation corrections remain relevant.
+
+The 2026-10-02 review found that drop-on-full can leave reducer desired state and worker state divergent, including a dropped Deactivate that can leave passive polling armed after returning to Systems. Plan 151 owns the current nonblocking convergence correction and historical reconciliation. This note does not rewrite the original closure as false when recorded.

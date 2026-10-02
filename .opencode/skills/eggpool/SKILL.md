@@ -106,3 +106,13 @@ gregg eggpool remove <host>
 - Full polling-loop drivers (`mixed_fleet_evidence.rs`,
   `sustained_workload.rs`) exercise greggd systems polling; they are not
   EggPool-specific
+
+
+## Active corrective plans
+
+Current main still uses the d31d72f try_send + EggpoolStatus::Busy behavior described above. That is descriptive of the checked-in implementation, not the forward correctness target.
+
+- Plan 151 is active and supersedes drop-on-full as the desired contract. It requires a nonblocking latest-desired-state handoff so Activate/period/refresh/deactivate intent converges without awaiting queue capacity; it also separates the local worker-state name from remote EggPool health.
+- Plan 152 follows Plan 151 and adds EggPool schema-v1 GET /api/status as an independent health plane alongside the existing summary metrics.
+
+When implementing these plans, follow their acceptance criteria rather than preserving Busy merely because it appears in current code. Do not alter the four summary metric semantics or broaden Gregg into an EggPool dashboard.

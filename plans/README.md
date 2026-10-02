@@ -364,6 +364,19 @@ cause remains unproven because it discarded that evidence; the corrected smoke
 did not reproduce it. Plans 091 and 147 were already independent and keep their
 statuses, and Plan 150 is terminal in the dependency order.
 
+
+Plans 151-152 are the active post-closure EggPool corrective line. Plan 151
+corrects the August-25 d31d72f drop-on-full worker-control contract without
+blocking terminal input: the target is one retained latest desired
+active/period/generation state, explicit local worker-state naming, and no
+Busy-as-dropped-command semantics. Plan 152 then adds EggPool's newer
+schema-version-1 authenticated GET /api/status as an independent health plane
+alongside the existing /api/stats/summary metrics. The original Plans 056-062
+remain a completed historical summary-pane baseline; their closure records are
+not rewritten, but now carry supersession notes where later behavior changed.
+Both plans are client-only, add no dependency/workflow/config schema, and are
+independent of the remaining Plan 091 soak record and planned Plan 147.
+
 Plan 098 is the coordination roadmap for binary distribution (Plans 099-101);
 it narrowly supersedes the former Plans 036-039 statement that GitHub releases
 never contain binary attachments and Actions never creates release artifacts,
@@ -512,6 +525,9 @@ excluded.
 | [`149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md`](149-freebsd-ci-vm-bootstrap-reliability-corrective-pass.md) | Bound and modernize the existing FreeBSD 14.2 native CI VM bootstrap without changing collector semantics or qualification strength | complete at `8de5c12`; CI `36908815046` green across all six jobs; terminal after 137, independent of 091 and 147-148 |
 | [`150-windows-foreground-smoke-reliability-corrective-pass.md`](150-windows-foreground-smoke-reliability-corrective-pass.md) | Make the native Windows foreground daemon smoke deterministic, fail-fast, diagnostic, and process-clean without changing product behavior | complete at `2ceafcd3`; CI `36919813734` green across all six jobs; Cargo-provided binary path, OS-selected loopback port, file-backed bounded child diagnostics, early child-exit detection, guaranteed reaping; terminal after 149, independent of 091 and 147-149 |
 
+| [`151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md`](151-eggpool-desired-state-delivery-and-worker-state-corrective-pass.md) | Replace lossy EggPool try_send/Busy command pressure with nonblocking latest-desired-state convergence and clarify local worker-state naming | planned; post-closure correction to 056-062/d31d72f; independent of 091 and 147 |
+| [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | planned; depends on 151; independent of 091 and 147 |
+
 Dependency order:
 
 ```text
@@ -524,6 +540,8 @@ Dependency order:
 127 -> 148
 137 -> 149
 149 -> 150
+062 + 070 + current main -> 151
+151 -> 152
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -827,7 +845,7 @@ Preserved exclusions:
 | [`000-roadmap-v1.md`](000-roadmap-v1.md) with Plans 001-009 | Original workspace, collectors, daemon, client, TUI, and testing foundation | implemented baseline |
 | [`036-release-simplification-and-windows-support-roadmap.md`](036-release-simplification-and-windows-support-roadmap.md) with Plans 037-047 | Manual release model, minimal CI, Windows client/collector/service support, and verification simplification | completed |
 | [`048-drive-metrics-and-multiview-tui-roadmap.md`](048-drive-metrics-and-multiview-tui-roadmap.md) with Plans 049-055 | Bounded drive records, cross-platform collection, fleet scrolling, normal/condensed views, and drive expansion | completed |
-| [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) with Plans 057-062 | One optional EggPool endpoint, four fixed periods/metrics, bounded worker, and compact second pane | completed |
+| [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) with Plans 057-062 | One optional EggPool endpoint, four fixed periods/metrics, bounded worker, and compact second pane | completed historical baseline; post-closure command/status corrections tracked by Plans 151-152 |
 | [`063-narrow-correctness-and-simplification-roadmap.md`](063-narrow-correctness-and-simplification-roadmap.md) with Plans 064-065 | Windows v2 staleness, strict endpoint parsing, package truth, verification deduplication, and runtime cleanup | completed; CI run `30964819950` passed |
 
 Plans 010-035 describing retired staged release/evidence work remain archived under `plans/archive/v1.0.1-release/` and are not current requirements.

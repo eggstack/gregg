@@ -2,6 +2,8 @@
 
 Status: completed through Phase 62; implementation `38d89bf`; ordinary CI `30683027208` passed. Original implementation `1406c2b`, corrective runtime implementation `1b77da1`, and their CI runs remain historical records.
 
+Post-closure follow-up (2026-10-02): the summary wire/metric baseline remains valid, but d31d72f later intentionally superseded Phase 61/62 awaited command delivery with try_send + Busy, and EggPool added its first-class schema-v1 /api/status health endpoint after this roadmap closed. Plan 151 owns current nonblocking desired-state convergence/local worker-state correction; Plan 152 owns additive service-health consumption. Do not read the original Phase-61/62 pressure wording as a description of current main.
+
 ## Purpose
 
 Add one optional EggPool statistics pane to the `gregg` client TUI without broadening Gregg into a general dashboard or changing `greggd`/`gregg-protocol`.
@@ -308,8 +310,8 @@ Do not print raw response bodies, credentials, or long reqwest error chains in t
 | 58 | `058-eggpool-summary-client-and-refresh.md` | Add the typed summary response, conditional authentication, bounded request/error handling, fixed periods, and proportionate refresh worker. |
 | 59 | `059-eggpool-pane-state-controls-and-rendering.md` | Separate pane state from system layout, remap controls, add period-aware state and the compact EggPool renderer. |
 | 60 | `060-eggpool-pane-integration-and-lightweight-closure.md` | Reconcile runtime wiring, compatibility, docs, focused tests, and ordinary local/CI closure without new infrastructure. |
-| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth. | runtime correction implemented at `1b77da1`; final verification owned by Phase 62 |
-| 62 | `062-eggpool-worker-regression-coverage-and-closure-polish.md` | Add the missing deterministic worker generation, cadence, pressure, deactivation, cancellation, and no-config coverage, then close Roadmap 56 truthfully. | active verification; depends on 061 |
+| 61 | `061-eggpool-refresh-correctness-and-closure.md` | Correct periodic generation ownership, request-relative cadence, reliable command delivery, deterministic timing tests, stale metadata, and Roadmap 56 closure truth; runtime correction implemented at `1b77da1`, final verification owned by Phase 62, later command-delivery semantics superseded by `d31d72f`. |
+| 62 | `062-eggpool-worker-regression-coverage-and-closure-polish.md` | Added deterministic generation/cadence/pressure/deactivation/cancellation/no-config coverage and closed the baseline at `38d89bf`; `d31d72f` later replaced its pressure contract, with current correction owned by Plan 151. |
 
 ## Dependency graph
 
