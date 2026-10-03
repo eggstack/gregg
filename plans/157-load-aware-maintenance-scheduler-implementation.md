@@ -1,6 +1,12 @@
 # Plan 157: Load-aware maintenance scheduler implementation
 
-Status: planned; blocked on Plan 156 qualification.
+Status: in implementation; Plan 156 qualification is complete.
+
+Current implementation passes local functional coverage and Unix smoke, but
+the stripped release binary is 3,272,456 bytes: +175,256 bytes over Plan 156's
+3,097,200-byte baseline and 44,184 bytes over its 128 KiB cap. The footprint
+gate remains open; this plan is not ready for closure until the implementation
+is reduced below the cap or the design is revised under a new qualification.
 
 Depends on: completed Plan 156. Independent of the remaining Plan 091 soak record except that implementation must not alter Plan-091 croncheck/control semantics.
 

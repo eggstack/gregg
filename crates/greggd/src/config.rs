@@ -29,6 +29,24 @@ pub const MAX_PORT: u16 = 65535;
 
 /// Maximum length for the display name after trimming.
 pub const MAX_NAME_LEN: usize = 128;
+/// Maximum configured scheduled jobs.
+pub const MAX_JOBS: usize = 64;
+/// Maximum Unicode scalar values in a job name.
+pub const MAX_JOB_NAME_CHARS: usize = 96;
+/// Maximum argv entries in one job.
+pub const MAX_COMMAND_ARGS: usize = 64;
+/// Maximum UTF-8 bytes in one argv entry.
+pub const MAX_COMMAND_ARG_BYTES: usize = 4096;
+/// Minimum load retry interval.
+pub const MIN_RETRY_INTERVAL_MS: u64 = 10_000;
+/// Maximum load retry interval.
+pub const MAX_RETRY_INTERVAL_MS: u64 = 3_600_000;
+/// Default load retry interval.
+pub const DEFAULT_RETRY_INTERVAL_MS: u64 = 300_000;
+/// Default maximum load wait.
+pub const DEFAULT_MAX_WAIT_MS: u64 = 86_400_000;
+/// Maximum load wait.
+pub const MAX_MAX_WAIT_MS: u64 = 604_800_000;
 
 #[cfg(unix)]
 fn ensure_config_directory(dir: &Path) -> std::io::Result<()> {
@@ -71,6 +89,63 @@ pub struct Config {
     /// Duration in milliseconds after which a snapshot is considered stale.
     /// A value of `0` disables age-based staleness.
     pub stale_after_ms: u64,
+    /// Explicit opt-in for configured jobs running as Unix euid 0.
+    #[serde(default)]
+    pub allow_privileged_jobs: bool,
+    /// Locally scheduled argv commands. Missing means no scheduled jobs.
+    #[serde(default)]
+    pub jobs: Vec<ScheduledJobConfig>,
+}
+
+/// One local maintenance command and its optional cached-load gate.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ScheduledJobConfig {
+    /// Stable operator-facing job name.
+    pub name: String,
+    /// Five-field cron schedule in local civil time.
+    pub schedule: String,
+    /// Executable and arguments, passed directly without a shell.
+    pub command: Vec<String>,
+    /// Optional current working directory; not resolved during config loading.
+    #[serde(default)]
+    pub working_dir: Option<PathBuf>,
+    /// Optional inclusive load threshold.
+    #[serde(default)]
+    pub max_load: Option<f32>,
+    /// Load averaging period: `1m`, `5m`, or `15m` (defaults to `15m`).
+    #[serde(default)]
+    pub load_window: Option<String>,
+    /// Delay between cached-load retries.
+    #[serde(default)]
+    pub retry_interval_ms: Option<u64>,
+    /// Maximum time a due occurrence may remain load-deferred.
+    #[serde(default)]
+    pub max_wait_ms: Option<u64>,
+}
+
+/// Platform class used by scheduler-specific validation and its tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JobPlatform {
+    Unix,
+    Windows,
+}
+
+impl JobPlatform {
+    const fn current() -> Self {
+        #[cfg(unix)]
+        {
+            Self::Unix
+        }
+        #[cfg(windows)]
+        {
+            Self::Windows
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self::Unix
+        }
+    }
 }
 
 impl Default for Config {
@@ -81,6 +156,8 @@ impl Default for Config {
             port: 11310,
             sample_interval_ms: 1000,
             stale_after_ms: 10_000,
+            allow_privileged_jobs: false,
+            jobs: Vec::new(),
         }
     }
 }
@@ -128,6 +205,10 @@ impl Config {
     /// problem at once rather than fixing them one at a time.
     #[must_use]
     pub fn validate(&self) -> Vec<ConfigViolation> {
+        self.validate_for(JobPlatform::current())
+    }
+
+    fn validate_for(&self, job_platform: JobPlatform) -> Vec<ConfigViolation> {
         let mut violations = Vec::new();
 
         // Name validation.
@@ -168,6 +249,27 @@ impl Config {
                 stale_after_ms: self.stale_after_ms,
                 sample_interval_ms: self.sample_interval_ms,
             });
+        }
+
+        if self.jobs.len() > MAX_JOBS {
+            violations.push(ConfigViolation::InvalidJobs(format!(
+                "jobs has {} entries; maximum is {MAX_JOBS}",
+                self.jobs.len()
+            )));
+        }
+        let mut names = std::collections::HashSet::new();
+        for (index, job) in self.jobs.iter().enumerate() {
+            for error in job.validate(job_platform) {
+                violations.push(ConfigViolation::InvalidJobs(format!(
+                    "jobs[{index}].{error}"
+                )));
+            }
+            if !names.insert(job.name.as_str()) {
+                violations.push(ConfigViolation::InvalidJobs(format!(
+                    "jobs[{index}].name duplicates {:?}",
+                    job.name
+                )));
+            }
         }
 
         violations
@@ -408,6 +510,121 @@ impl Config {
     pub fn stale_after_ms(&self) -> u64 {
         self.stale_after_ms
     }
+
+    /// Fail closed when root would otherwise silently gain command execution.
+    pub(crate) fn validate_job_authority(&self, is_unix_root: bool) -> Result<(), ConfigError> {
+        if is_unix_root && !self.jobs.is_empty() && !self.allow_privileged_jobs {
+            return Err(ConfigError::PrivilegedJobsOptInRequired);
+        }
+        Ok(())
+    }
+}
+
+impl ScheduledJobConfig {
+    fn validate(&self, platform: JobPlatform) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.name.trim().is_empty() {
+            errors.push("name must be non-empty".to_owned());
+        }
+        if self.name.chars().count() > MAX_JOB_NAME_CHARS {
+            errors.push(format!("name exceeds {MAX_JOB_NAME_CHARS} characters"));
+        }
+        if self.name.chars().any(char::is_control) {
+            errors.push("name contains control characters".to_owned());
+        }
+        if self.schedule.len() > crate::scheduler::schedule::MAX_SCHEDULE_BYTES {
+            errors.push(format!(
+                "schedule exceeds {} UTF-8 bytes",
+                crate::scheduler::schedule::MAX_SCHEDULE_BYTES
+            ));
+        } else if let Err(error) = crate::scheduler::schedule::LocalSchedule::parse(&self.schedule)
+        {
+            errors.push(format!("schedule: {error}"));
+        }
+        if self.command.is_empty() || self.command[0].is_empty() {
+            errors.push("command must contain a non-empty executable".to_owned());
+        }
+        if self.command.len() > MAX_COMMAND_ARGS {
+            errors.push(format!("command exceeds {MAX_COMMAND_ARGS} argv entries"));
+        }
+        for (index, value) in self.command.iter().enumerate() {
+            if value.len() > MAX_COMMAND_ARG_BYTES {
+                errors.push(format!(
+                    "command[{index}] exceeds {MAX_COMMAND_ARG_BYTES} UTF-8 bytes"
+                ));
+            }
+            if value.chars().any(char::is_control) {
+                errors.push(format!("command[{index}] contains control characters"));
+            }
+        }
+        if let Some(path) = &self.working_dir {
+            match path.to_str() {
+                Some(value) if !value.is_empty() && !value.chars().any(char::is_control) => {}
+                Some(_) => errors.push("working_dir must be non-empty and control-free".to_owned()),
+                None => errors.push("working_dir is not valid UTF-8".to_owned()),
+            }
+        }
+
+        match self.max_load {
+            Some(load) if !load.is_finite() || load < 0.0 => {
+                errors.push("max_load must be finite and non-negative".to_owned());
+            }
+            Some(_) => {}
+            None => {
+                if self.load_window.is_some() {
+                    errors.push("load_window requires max_load".to_owned());
+                }
+                if self.retry_interval_ms.is_some() {
+                    errors.push("retry_interval_ms requires max_load".to_owned());
+                }
+                if self.max_wait_ms.is_some() {
+                    errors.push("max_wait_ms requires max_load".to_owned());
+                }
+            }
+        }
+        if self.max_load.is_some() {
+            if self
+                .load_window
+                .as_deref()
+                .is_some_and(|window| !matches!(window, "1m" | "5m" | "15m"))
+            {
+                errors.push("load_window must be one of 1m, 5m, or 15m".to_owned());
+            }
+            let retry = self.retry_interval_ms.unwrap_or(DEFAULT_RETRY_INTERVAL_MS);
+            let max_wait = self.max_wait_ms.unwrap_or(DEFAULT_MAX_WAIT_MS);
+            if !(MIN_RETRY_INTERVAL_MS..=MAX_RETRY_INTERVAL_MS).contains(&retry) {
+                errors.push(format!(
+                    "retry_interval_ms must be {MIN_RETRY_INTERVAL_MS}..={MAX_RETRY_INTERVAL_MS}"
+                ));
+            }
+            if max_wait == 0 || max_wait > MAX_MAX_WAIT_MS {
+                errors.push(format!("max_wait_ms must be 1..={MAX_MAX_WAIT_MS}"));
+            }
+            if retry > max_wait {
+                errors.push("retry_interval_ms must not exceed max_wait_ms".to_owned());
+            }
+            if platform == JobPlatform::Windows {
+                errors.push("max_load is unsupported on Windows".to_owned());
+            }
+        }
+        errors
+    }
+
+    pub(crate) fn effective_load_window(&self) -> &'static str {
+        match self.load_window.as_deref().unwrap_or("15m") {
+            "1m" => "1m",
+            "5m" => "5m",
+            _ => "15m",
+        }
+    }
+
+    pub(crate) fn effective_retry_interval_ms(&self) -> u64 {
+        self.retry_interval_ms.unwrap_or(DEFAULT_RETRY_INTERVAL_MS)
+    }
+
+    pub(crate) fn effective_max_wait_ms(&self) -> u64 {
+        self.max_wait_ms.unwrap_or(DEFAULT_MAX_WAIT_MS)
+    }
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -523,6 +740,8 @@ pub enum ConfigError {
     },
     /// Configuration failed validation.
     Validation(Vec<ConfigViolation>),
+    /// Root must explicitly acknowledge scheduled command execution.
+    PrivilegedJobsOptInRequired,
     /// Atomic write operation failed.
     AtomicWrite {
         path: PathBuf,
@@ -548,6 +767,10 @@ impl fmt::Display for ConfigError {
                 }
                 Ok(())
             }
+            Self::PrivilegedJobsOptInRequired => write!(
+                f,
+                "scheduled jobs will execute as root; set allow_privileged_jobs = true to opt in"
+            ),
             Self::AtomicWrite { path, source } => {
                 write!(f, "atomic write to {} failed: {source}", path.display())
             }
@@ -560,7 +783,7 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::Validation(_) => None,
+            Self::Validation(_) | Self::PrivilegedJobsOptInRequired => None,
             Self::AtomicWrite { source, .. } => Some(source),
         }
     }
@@ -618,6 +841,8 @@ pub enum ConfigViolation {
         stale_after_ms: u64,
         sample_interval_ms: u64,
     },
+    /// Scheduled-job fields failed validation.
+    InvalidJobs(String),
 }
 
 impl fmt::Display for ConfigViolation {
@@ -648,12 +873,15 @@ impl fmt::Display for ConfigViolation {
                     "stale_after_ms {stale_after_ms} must be 0 (disabled) or greater than sample_interval_ms {sample_interval_ms}"
                 )
             }
+            Self::InvalidJobs(message) => f.write_str(message),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
 
     #[test]
@@ -669,6 +897,175 @@ mod tests {
         let toml = config.to_toml().unwrap();
         let parsed = Config::parse(&toml, None).unwrap();
         assert_eq!(config, parsed);
+    }
+
+    fn test_job(name: &str) -> ScheduledJobConfig {
+        ScheduledJobConfig {
+            name: name.to_owned(),
+            schedule: "0 3 * * 0".to_owned(),
+            command: vec!["/usr/bin/true".to_owned()],
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        }
+    }
+
+    #[test]
+    fn old_config_defaults_jobs_and_privileged_opt_in() {
+        let config = Config::parse(
+            "name = 'old'\nhost = '127.0.0.1'\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n",
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.jobs.len(), 0);
+        assert!(!config.allow_privileged_jobs);
+    }
+
+    #[test]
+    fn valid_time_and_load_gated_jobs_round_trip() {
+        let mut config = Config::default();
+        config.jobs = vec![test_job("time-only"), test_job("heavy")];
+        config.jobs[1].max_load = Some(8.0);
+        let serialized = config.to_toml().unwrap();
+        let parsed = Config::parse(&serialized, None).unwrap();
+        assert_eq!(config, parsed);
+        assert_eq!(parsed.jobs[1].effective_load_window(), "15m");
+        assert_eq!(
+            parsed.jobs[1].effective_retry_interval_ms(),
+            DEFAULT_RETRY_INTERVAL_MS
+        );
+        assert_eq!(parsed.jobs[1].effective_max_wait_ms(), DEFAULT_MAX_WAIT_MS);
+    }
+
+    #[test]
+    fn job_names_schedules_commands_and_load_bounds_are_validated() {
+        let mut config = Config::default();
+        config.jobs = vec![test_job("same"), test_job("same")];
+        config.jobs[0].schedule = "0 0 * * * *".to_owned();
+        config.jobs[0].command.clear();
+        config.jobs[1].max_load = Some(f32::NAN);
+        config.jobs[1].load_window = Some("2m".to_owned());
+        let violations = config.validate();
+        let text = violations
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "duplicates",
+            "five cron fields",
+            "command must",
+            "finite and non-negative",
+            "load_window",
+        ] {
+            assert!(text.contains(expected), "missing {expected} from {text}");
+        }
+
+        let mut config = Config::default();
+        config.jobs = vec![test_job("bounds")];
+        config.jobs[0].max_load = Some(2.0);
+        config.jobs[0].retry_interval_ms = Some(MIN_RETRY_INTERVAL_MS - 1);
+        config.jobs[0].max_wait_ms = Some(MAX_MAX_WAIT_MS + 1);
+        assert!(!config.is_valid());
+    }
+
+    #[test]
+    fn windows_rejects_load_gate_and_unix_accepts_time_only() {
+        let mut config = Config::default();
+        config.jobs = vec![test_job("load")];
+        config.jobs[0].max_load = Some(1.0);
+        assert!(config
+            .validate_for(JobPlatform::Windows)
+            .iter()
+            .any(|v| v.to_string().contains("unsupported on Windows")));
+        assert_eq!(config.validate_for(JobPlatform::Unix).len(), 0);
+    }
+
+    #[test]
+    fn every_scheduler_bound_and_load_relationship_is_enforced() {
+        let mut config = Config::default();
+        let mut job = test_job(&"n".repeat(MAX_JOB_NAME_CHARS + 1));
+        job.schedule = "0 0 * * * 2026".to_owned();
+        job.command = vec!["x".to_owned(); MAX_COMMAND_ARGS + 1];
+        job.command[0] = String::new();
+        job.command[1] = "x".repeat(MAX_COMMAND_ARG_BYTES + 1);
+        job.working_dir = Some(PathBuf::from("/path/that/need/not/exist"));
+        job.max_load = Some(8.0);
+        job.load_window = Some("2m".to_owned());
+        job.retry_interval_ms = Some(MAX_RETRY_INTERVAL_MS + 1);
+        job.max_wait_ms = Some(MIN_RETRY_INTERVAL_MS);
+        config.jobs = vec![job];
+        let text = config
+            .validate()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for expected in [
+            "name exceeds",
+            "five cron fields",
+            "non-empty executable",
+            "argv entries",
+            "UTF-8 bytes",
+            "load_window",
+            "retry_interval_ms",
+        ] {
+            assert!(text.contains(expected), "missing {expected} from {text}");
+        }
+        assert!(!text.contains("working_dir"));
+
+        let mut config = Config::default();
+        config.jobs = vec![test_job("missing-threshold")];
+        config.jobs[0].retry_interval_ms = Some(MIN_RETRY_INTERVAL_MS);
+        assert!(config.validate().iter().any(|v| v
+            .to_string()
+            .contains("retry_interval_ms requires max_load")));
+
+        for max_load in [-1.0, f32::INFINITY, f32::NAN] {
+            let mut config = Config::default();
+            config.jobs = vec![test_job("invalid-load")];
+            config.jobs[0].max_load = Some(max_load);
+            assert!(config
+                .validate()
+                .iter()
+                .any(|v| v.to_string().contains("finite and non-negative")));
+        }
+
+        let mut config = Config::default();
+        config.jobs = vec![test_job("retry-after-wait")];
+        config.jobs[0].max_load = Some(1.0);
+        config.jobs[0].retry_interval_ms = Some(20_000);
+        config.jobs[0].max_wait_ms = Some(10_000);
+        assert!(config
+            .validate()
+            .iter()
+            .any(|v| v.to_string().contains("must not exceed")));
+
+        let mut config = Config::default();
+        config.jobs = (0..=MAX_JOBS)
+            .map(|index| test_job(&format!("job-{index}")))
+            .collect();
+        assert!(config
+            .validate()
+            .iter()
+            .any(|v| v.to_string().contains("maximum is 64")));
+    }
+
+    #[test]
+    fn unix_root_jobs_need_explicit_opt_in_but_empty_config_is_allowed() {
+        let mut config = Config::default();
+        assert!(config.validate_job_authority(true).is_ok());
+        config.jobs.push(test_job("root-risk"));
+        assert!(config
+            .validate_job_authority(true)
+            .unwrap_err()
+            .to_string()
+            .contains("allow_privileged_jobs = true"));
+        config.allow_privileged_jobs = true;
+        assert!(config.validate_job_authority(true).is_ok());
+        assert!(config.validate_job_authority(false).is_ok());
     }
 
     #[test]
@@ -1136,6 +1533,7 @@ unknown_field = "oops"
             sample_interval_ms: 10,
             stale_after_ms: 5,
             host: "0.0.0.0".parse().unwrap(),
+            ..Config::default()
         };
         let violations = config.validate();
         assert!(violations.len() >= 3);

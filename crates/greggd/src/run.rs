@@ -19,12 +19,13 @@ use std::time::Duration;
 use gregg_protocol::v2::SCHEMA_VERSION_V2;
 use gregg_protocol::{ReadinessState, SCHEMA_VERSION_V1};
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use tracing::{info, warn};
 
 use crate::collector::SystemCollector;
 use crate::config::Config;
 use crate::sampler::{RealClock, Sampler};
+use crate::scheduler::{self, LoadGateState};
 use crate::server::error::ServerError;
 use crate::server::{Config as ServerConfig, ServerState};
 
@@ -225,6 +226,10 @@ where
         "greggd starting"
     );
 
+    #[cfg(unix)]
+    config.validate_job_authority(crate::startup::install::is_privileged())?;
+    #[cfg(not(unix))]
+    config.validate_job_authority(false)?;
     let server_config = ServerConfig {
         host: config.host(),
         port: config.port(),
@@ -282,22 +287,59 @@ where
         return Err(error);
     }
 
+    let (load_tx, scheduler_handle) = if config.jobs.is_empty() {
+        (None, None)
+    } else {
+        let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
+        let scheduler_jobs = config.jobs.clone();
+        let shutdown_rx = shutdown_tx.subscribe();
+        let handle = tokio::spawn(async move {
+            scheduler::run(scheduler_jobs, load_rx, shutdown_rx)
+                .await
+                .unwrap_or_else(|error| panic!("maintenance scheduler failed: {error}"));
+        });
+        (Some(load_tx), Some(handle))
+    };
+
     // Spawn the sampler task.
     let sampler_handle = {
         let shutdown_rx = shutdown_tx.subscribe();
         let state = server_state.clone();
+        let load_tx = load_tx.clone();
         let mut sampler = Sampler::with_interval(collector, RealClock, interval_ms)?;
-
-        tokio::spawn(async move {
+        let sampler_task = async move {
             sampler
                 .run(shutdown_rx, |readiness, snap, snap_v2| {
                     let state = state.clone();
+                    let load_tx = load_tx.clone();
                     async move {
+                        if let Some(load_tx) = load_tx {
+                            let load = snap_v2.as_deref().and_then(|payload| payload.snapshot.load);
+                            let _ = load_tx.send(LoadGateState { readiness, load });
+                        }
                         sync_sampler_state(&state, readiness, snap, snap_v2).await;
                     }
                 })
                 .await;
-        })
+        };
+        if let Some(mut scheduler_handle) = scheduler_handle {
+            tokio::spawn(async move {
+                tokio::pin!(sampler_task);
+                tokio::select! {
+                    () = &mut sampler_task => {
+                        if let Err(error) = scheduler_handle.await {
+                            panic!("maintenance scheduler task failed: {error}");
+                        }
+                    }
+                    result = &mut scheduler_handle => match result {
+                        Ok(()) => sampler_task.await,
+                        Err(error) => panic!("maintenance scheduler task failed: {error}"),
+                    }
+                }
+            })
+        } else {
+            tokio::spawn(sampler_task)
+        }
     };
 
     // Keep the typed EggServe completion future under the existing task
@@ -317,7 +359,6 @@ where
     let mut sampler_handle = Some(sampler_handle);
 
     let outcome = supervise(&mut server_handle, &mut sampler_handle, shutdown).await;
-
     // Notify remaining tasks to shut down.
     let _ = shutdown_tx.send(());
     server_control.shutdown();
@@ -649,6 +690,7 @@ mod tests {
             port,
             sample_interval_ms: 250,
             stale_after_ms: 1000,
+            ..Config::default()
         }
     }
 

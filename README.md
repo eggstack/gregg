@@ -141,6 +141,11 @@ omitted (never fabricated) when the host API cannot provide them, and older
 daemons stay online with their historical metrics intact. See
 [Display](docs/display.md) for row and width policies.
 
+`greggd` can also run optional local maintenance commands from five-field cron
+schedules. Jobs execute directly as the daemon's OS user, one at a time, and
+can defer against cached Unix load averages. See [Daemon](docs/daemon.md) for
+the TOML schema, identity restrictions, and deferral behavior.
+
 ## Docs
 
 - [Installation](docs/installation.md) — installer behavior, pinned versions, direct downloads, Cargo fallback

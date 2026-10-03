@@ -57,6 +57,13 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Load-aware maintenance scheduler (Plans 156-157):** `greggd` can run
+  optional five-field local cron jobs as direct argv commands, with cached
+  1m/5m/15m load gates, bounded deferral/coalescing, one global child slot,
+  same-principal execution, and bounded direct-child shutdown. Existing configs
+  remain job-free by default; no remote control API or persistent replay is
+  added.
+
 - **EggPool service-health status plane (Plan 152):** the optional `EggPool`
   pane now also reads EggPool's schema-version-1 authenticated
   `GET /api/status` beside the existing `/api/stats/summary` metrics. The pane

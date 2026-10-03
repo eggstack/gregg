@@ -138,6 +138,7 @@ mod tests {
             port: 11310,
             sample_interval_ms: 1000,
             stale_after_ms: 5000,
+            ..Config::default()
         }
     }
 

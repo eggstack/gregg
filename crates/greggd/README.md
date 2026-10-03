@@ -78,6 +78,26 @@ startup/direct-stop work before delegating the executable to Cargo and applies
 
 `greggd update` queries the latest stable `greggd` crate on crates.io, downloads the exact `vX.Y.Z` GitHub asset plus `.sha256`, verifies checksum and candidate `version` before any replacement, observes exact-executable `UpdateLifecycle` only after full preparation (Unix ownership + selected health; Windows SCM ownership revalidated immediately before quiescence, owned-to-foreign fails pre-replacement), then atomically replaces the current executable (same-filesystem rename on Unix, `self-replace` on Windows) and restarts only `ManagedRunning`/`DirectRunning` via ownership-aware `restart_daemon()` (owned Windows running/start-pending may stop, owned stop-pending waits stopped without restart, foreign/unknown/not-installed do zero SCM mutation; Unix foreign same-config preserved, foreign inactive cannot mask direct running); intentionally stopped/foreign services remain stopped/preserved and a successful replacement with failed restart reports `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and returns nonzero. No background checks or `sudo`. The shared download/verify/stage/replace mechanism lives in the internal `gregg-update` crate; `greggd` owns only activation/restart coordination.
 
+## Scheduled maintenance
+
+Optional `[[jobs]]` entries in the daemon TOML run five-field local cron
+schedules as direct argv commands. The scheduler uses cached load averages on
+Unix, defers high-load work for at most 24 hours by default, coalesces missed
+occurrences, and runs one Gregg-managed child globally at a time. It does not
+replay work missed while the daemon was stopped.
+
+Commands always run as greggd's current OS principal. The Linux system service
+runs as `greggd` with `ProtectHome=true`, so it generally cannot access a
+developer home directory; use a rootless user-local daemon for that work. Jobs
+under a Unix euid-0 daemon require `allow_privileged_jobs = true`, including
+the macOS system LaunchDaemon. Windows supports time-only jobs; load gates are
+rejected because load averages are unsupported. Command arguments are visible
+in the readable config and are not a secret store. Gregg invokes no implicit
+shell; a shell must be an explicit argv executable.
+
+See [daemon configuration](../../docs/daemon.md#scheduled-maintenance) for the
+complete example and bounds.
+
 Ensure the daemon is running. `croncheck` is a watchdog for cron, Task
 Scheduler, and other supervisors without built-in readiness monitoring. It
 probes `/v2/healthz` with bounded raw HTTP on the configured local endpoint,

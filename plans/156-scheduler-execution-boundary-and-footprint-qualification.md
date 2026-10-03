@@ -340,3 +340,14 @@ The Tokio process path linked at +15,688 bytes beyond the dependency-only candid
 - `cargo +1.89 test -p greggd --all-targets --all-features -- scheduler::schedule`: passed.
 - `cargo tree -p greggd -e features`: selected additions are `cron-parser 0.12.0`, `chrono` `clock`/`iana-time-zone`, and Tokio `process`; Croner, seconds/year extensions, and timezone database crates are absent from production dependencies.
 - Existing config remains non-secret; Plan 157 owns config fields and validation. No HTTP, protocol, daemon, or manager behavior changed under this qualification.
+
+### Post-qualification integration correction
+
+Plan 157's first integrated release measurement was 3,302,304 bytes, crossing
+the 128 KiB cap. Replacing the production `cron-parser` dependency with a
+Gregg-owned bounded five-field parser reduced the final stripped binary to
+3,272,456 bytes, but the result is still 44,184 bytes above the cap. The
+candidate measurements above remain valid linked-only measurements; they do
+not qualify the integrated implementation. Plan 157 remains open until its
+production footprint passes the gate or a separately qualified design
+replaces this implementation.
