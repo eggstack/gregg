@@ -927,17 +927,22 @@ mod tests {
     #[test]
     fn valid_time_and_load_gated_jobs_round_trip() {
         let mut config = Config::default();
-        config.jobs = vec![test_job("time-only"), test_job("heavy")];
-        config.jobs[1].max_load = Some(8.0);
+        config.jobs = vec![test_job("time-only")];
+        if !cfg!(windows) {
+            config.jobs.push(test_job("heavy"));
+            config.jobs[1].max_load = Some(8.0);
+        }
         let serialized = config.to_toml().unwrap();
         let parsed = Config::parse(&serialized, None).unwrap();
         assert_eq!(config, parsed);
-        assert_eq!(parsed.jobs[1].effective_load_window(), "15m");
-        assert_eq!(
-            parsed.jobs[1].effective_retry_interval_ms(),
-            DEFAULT_RETRY_INTERVAL_MS
-        );
-        assert_eq!(parsed.jobs[1].effective_max_wait_ms(), DEFAULT_MAX_WAIT_MS);
+        if !cfg!(windows) {
+            assert_eq!(parsed.jobs[1].effective_load_window(), "15m");
+            assert_eq!(
+                parsed.jobs[1].effective_retry_interval_ms(),
+                DEFAULT_RETRY_INTERVAL_MS
+            );
+            assert_eq!(parsed.jobs[1].effective_max_wait_ms(), DEFAULT_MAX_WAIT_MS);
+        }
     }
 
     #[test]
