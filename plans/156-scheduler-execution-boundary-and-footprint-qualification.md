@@ -308,6 +308,8 @@ The output of this plan is a precise implementation choice, not a generalized sc
 
 Plan 156 completed as the qualification gate for Plan 157. The production scheduler remains unwired at this point; `scheduler::schedule` is the tested cron/time boundary that Plan 157 will consume.
 
+Closure commit: `f35e1369c36cc38de5bd5e9e42f4a27d338db1e1`.
+
 ### Selected contract
 
 - Commands execute as the existing greggd principal. No identity changes, privilege helpers, manager-policy changes, environment map, or remote command interface are permitted. Unix euid 0 with configured jobs requires `allow_privileged_jobs = true`; the default is false. Windows does not detect administrator status and rejects load-gated jobs.
