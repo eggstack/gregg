@@ -126,6 +126,7 @@ pub struct ScheduledJobConfig {
 
 /// Platform class used by scheduler-specific validation and its tests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) enum JobPlatform {
     Unix,
     Windows,
