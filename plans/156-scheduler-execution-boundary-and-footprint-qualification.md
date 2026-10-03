@@ -1,6 +1,6 @@
 # Plan 156: Scheduler execution-boundary and footprint qualification
 
-Status: planned.
+Status: complete.
 
 Depends on: Plan 155 and current main. Independent of the remaining Plan 091 soak record.
 
@@ -272,23 +272,23 @@ If temporary candidate patches are committed for reproducibility, keep them on a
 
 ## Acceptance criteria
 
-- [ ] Same-principal execution is the locked first-release authority model.
-- [ ] No sudo/user switching/credential mechanism is introduced.
-- [ ] Root/euid-0 Unix jobs require an explicit allow_privileged_jobs opt-in.
-- [ ] Canonical Linux/macOS service sandboxing is unchanged.
-- [ ] argv-only command semantics are locked; no implicit shell.
-- [ ] Config remains non-secret; no per-job environment/secret map is added.
-- [ ] Five-field local cron semantics are tested and documented.
-- [ ] DST gap/overlap behavior is explicitly recorded.
-- [ ] cron/time candidates are measured against actual stripped greggd.
-- [ ] Selected cron/time approach stays within the 5% and 128 KiB footprint gates, or the plan stops for redesign.
-- [ ] Rust 1.89 MSRV is demonstrated for the selected approach.
-- [ ] Tokio-process versus bounded std-process supervision is measured/compared.
-- [ ] The selected process mechanism never blocks the current-thread runtime while a child runs.
-- [ ] stdin/stdout/stderr policy is bounded and explicit.
-- [ ] In-flight shutdown behavior is explicit and testable.
-- [ ] Config cardinality/string/duration bounds are fixed for Plan 157.
-- [ ] No remote API, persistence, workflow engine, service-manager weakening, or product scheduler behavior lands accidentally.
+- [x] Same-principal execution is the locked first-release authority model.
+- [x] No sudo/user switching/credential mechanism is introduced.
+- [x] Root/euid-0 Unix jobs require an explicit allow_privileged_jobs opt-in.
+- [x] Canonical Linux/macOS service sandboxing is unchanged.
+- [x] argv-only command semantics are locked; no implicit shell.
+- [x] Config remains non-secret; no per-job environment/secret map is added.
+- [x] Five-field local cron semantics are tested and documented.
+- [x] DST gap/overlap behavior is explicitly recorded.
+- [x] cron/time candidates are measured against actual stripped greggd.
+- [x] Selected cron/time approach stays within the 5% and 128 KiB footprint gates, or the plan stops for redesign.
+- [x] Rust 1.89 MSRV is demonstrated for the selected approach.
+- [x] Tokio-process versus bounded std-process supervision is measured/compared.
+- [x] The selected process mechanism never blocks the current-thread runtime while a child runs.
+- [x] stdin/stdout/stderr policy is bounded and explicit.
+- [x] In-flight shutdown behavior is explicit and testable.
+- [x] Config cardinality/string/duration bounds are fixed for Plan 157.
+- [x] No remote API, persistence, workflow engine, service-manager weakening, or product scheduler behavior lands accidentally.
 
 ## Stop conditions
 
@@ -303,3 +303,40 @@ Stop and revise Plan 155/157 rather than forcing implementation if:
 ## Handoff
 
 The output of this plan is a precise implementation choice, not a generalized scheduler framework. Record exact crate versions/features, binary deltas, dependency deltas, shutdown semantics, and cron/DST behavior in the closure section so Plan 157 can be executed mechanically.
+
+## Closure record
+
+Plan 156 completed as the qualification gate for Plan 157. The production scheduler remains unwired at this point; `scheduler::schedule` is the tested cron/time boundary that Plan 157 will consume.
+
+### Selected contract
+
+- Commands execute as the existing greggd principal. No identity changes, privilege helpers, manager-policy changes, environment map, or remote command interface are permitted. Unix euid 0 with configured jobs requires `allow_privileged_jobs = true`; the default is false. Windows does not detect administrator status and rejects load-gated jobs.
+- Commands are argv arrays, with optional `working_dir`; Gregg adds no shell, secrets, or environment values. stdin/stdout/stderr are null. An explicit operator-supplied shell remains a direct argv executable whose descendants are outside Gregg's process-tree guarantee.
+- Select `cron-parser 0.12.0` and `chrono 0.4.45` with `clock`, plus Tokio's existing `process` feature. Cron syntax is five fields, numeric values, lists, ranges, wildcards, and steps; numeric weekdays are 0-6. `@hourly`, `@daily`, `@weekly`, and `@monthly` are normalized by Gregg. Restricted DOM and DOW use traditional OR semantics through the wrapper's minimum of the DOM-only, DOW-only, and parser results.
+- The timestamp's timezone controls local civil scheduling. A nonexistent spring-forward time is skipped until its next ordinary matching occurrence. Both real instants in a fall-back repeated minute are returned in chronological order. `next_after` is strictly exclusive, including at startup. Month/weekday names are not accepted in the first implementation.
+- Use `tokio::process::Command`, `kill_on_drop(true)`, direct-child kill on shutdown, and child wait under the daemon's one shared 10-second cleanup deadline. Shutdown launches no new work; no recursive process-tree guarantee is made. The single-thread Tokio runtime remains free while the child runs.
+- Plan-157 configuration bounds: 64 jobs; 96 Unicode scalar values per job name; 128 schedule UTF-8 bytes; 64 argv values; 4096 UTF-8 bytes per argv value; retry 10,000..=3,600,000 ms (default 300,000); max wait default 86,400,000 and max 604,800,000 ms. Thresholds are finite/non-negative; windows are 1m/5m/15m. Retry must not exceed max wait.
+
+### Footprint and dependency qualification
+
+Release measurements used the repository profile (`lto = "fat"`, one codegen unit, `strip = "symbols"`) and `stat` on `target/release/greggd`:
+
+| Candidate | Bytes | Delta from baseline | Result |
+|---|---:|---:|---|
+| Main baseline | 3,097,200 | — | Reference |
+| `cron-parser` + local-time wrapper linked | 3,174,352 | +77,152 (+2.49%) | Selected |
+| Tokio process path linked without cron wrapper | 3,115,560 | +18,360 total; +15,688 beyond chrono dependency-only build | Selected |
+| Combined cron/time + process linked candidate | 3,189,848 | +92,648 (+2.99%) | Passes both gates |
+| `croner 4.0.1` + chrono local-time path | 3,203,648 | +106,448 (+3.44%) | Rejected; larger, fixed-time fall overlap runs once rather than returning both instants |
+| `croner` + process path | 3,219,016 | +121,816 (+3.93%) | Under gates, but only 9,256 bytes below the absolute cap |
+
+The active gate is the smaller of 5% or 128 KiB: 131,072 bytes over baseline. The combined selected candidate has 38,424 bytes of headroom for the state machine/integration; Plan 157 must remeasure final production code and reduce it if it crosses that cap. The rejected `cron-parser`-incompatible hypothesis was checked: its native restricted-day conjunction differs from the roadmap, so the Gregg wrapper creates the OR union using three parsed schedules.
+
+The Tokio process path linked at +15,688 bytes beyond the dependency-only candidate and composes child wait, kill, and scheduler deadlines directly. A bounded std-process waiter would have to transfer child ownership to a blocking reaper, which prevents portable direct-child termination without polling or platform-specific signaling; no smaller lifecycle-correct adapter was identified. The async Tokio adapter is selected for the explicit shutdown contract.
+
+### Evidence
+
+- `cargo test -p greggd --all-targets --all-features -- scheduler::schedule`: three deterministic schedule/DST tests passed.
+- `cargo +1.89 test -p greggd --all-targets --all-features -- scheduler::schedule`: passed.
+- `cargo tree -p greggd -e features`: selected additions are `cron-parser 0.12.0`, `chrono` `clock`/`iana-time-zone`, and Tokio `process`; Croner, seconds/year extensions, and timezone database crates are absent from production dependencies.
+- Existing config remains non-secret; Plan 157 owns config fields and validation. No HTTP, protocol, daemon, or manager behavior changed under this qualification.
