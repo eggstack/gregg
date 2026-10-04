@@ -408,6 +408,9 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
     }
 
     if buf.is_empty() {
+        // Deliberately the same answer the Unix arm gives a zero-length read,
+        // so the two platforms cannot diverge here. No caller passes an empty
+        // buffer; `serve_inner` reuses one fixed non-empty buffer.
         return Ok(0);
     }
     let mut available: u32 = 0;
