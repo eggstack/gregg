@@ -88,6 +88,7 @@ CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux run
 - Reusable `greggd` lib code returns errors (no printing/`exit()`); binary maps to exit codes `0` ok · `1` config · `2` service · `3` runtime · `4` permission.
 - `greggd` publishes typed `Arc` snapshots and cached compact v1/v2 status bytes coherently under one `PublishedState` write. Status handlers evaluate current staleness/failure policy before serving cached bytes; health getters still reconstruct the source-compatible typed envelopes on demand.
 - `greggd` HTTP transport sets explicit runtime limits including a 300-second total connection lifetime and 1000-request per-connection cap, and serves cached `Bytes` through a known-length stream without payload copies. Request bodies are bounded at 64 KiB; GET/HEAD route behavior is retained.
+- Optional maintenance jobs run as the existing greggd principal with direct argv, never an implicit shell or injected environment; Unix euid 0 requires `allow_privileged_jobs = true`. Reuse only the sampler's cached load through a non-waking watch read, retain one pending occurrence per job and one global child slot, and keep the two-second direct-child shutdown bound inside shared cleanup. Do not replay downtime or weaken systemd/launchd/SCM sandboxing. Windows rejects load gates.
 
 ### Daemon runtime / release (`architecture/greggd-daemon.md`, `architecture/scripts-and-packaging.md`)
 

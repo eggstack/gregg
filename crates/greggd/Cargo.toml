@@ -29,7 +29,8 @@ eggserve-primitives = { version = "0.2.2", default-features = false }
 eggserve-server = { version = "0.4", default-features = false }
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "sync", "time", "signal", "fs", "io-util", "process"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -45,6 +46,7 @@ windows-service = ">=0.6.0, <0.8"
 libc = "0.2"
 
 [dev-dependencies]
+chrono-tz = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "sync", "io-util"] }
 gregg-protocol = { version = "1.0.15", path = "../gregg-protocol", features = ["test_support"] }
 

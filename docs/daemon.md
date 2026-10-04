@@ -21,6 +21,74 @@ sample_interval_ms = 1000
 stale_after_ms = 10000
 ```
 
+### Scheduled maintenance
+
+Jobs are optional and default to an empty list, so existing configs keep their
+monitoring behavior. A load-gated weekly job can be configured as:
+
+```toml
+allow_privileged_jobs = false
+
+[[jobs]]
+name = "cargo-cleanme-deep"
+schedule = "0 3 * * 0"
+command = ["/usr/local/bin/cargo-cleanme", "scan", "--deep"]
+working_dir = "/home/user/projects"
+max_load = 8.0
+load_window = "15m"
+retry_interval_ms = 300000
+max_wait_ms = 86400000
+```
+
+A time-only job omits all load fields:
+
+```toml
+[[jobs]]
+name = "refresh-local-index"
+schedule = "15 */6 * * *"
+command = ["/usr/local/bin/refresh-index"]
+```
+
+Schedules use exactly five numeric cron fields with lists, ranges, wildcards,
+and steps; weekdays are `0` through `6` (Sunday is `0`). The supported aliases
+are `@hourly`, `@daily`, `@weekly`, and `@monthly`. Day-of-month and day-of-week
+use traditional cron OR matching when both are restricted. Schedules use local
+civil time. A spring-forward time that does not exist is skipped; both real
+instants in a fall-back repeated minute run in chronological order. Startup
+chooses the first occurrence strictly after its reference time. Missed work is
+not replayed after daemon downtime.
+
+Commands are argv arrays and execute directly. Gregg does not parse a command
+string or add a shell; shell syntax requires an explicit shell argv such as
+`["/bin/sh", "-c", "..."]`. There is no per-job environment or secret map.
+The config is readable by diagnostic commands, so command arguments must not
+contain credentials or tokens. stdin, stdout, and stderr are discarded.
+
+Jobs always run as greggd's current OS principal. The Linux system service runs
+as `greggd` with `ProtectHome=true` and strict filesystem sandboxing, so it
+generally cannot maintain a developer's home directory; use a user-owned,
+rootless daemon for such jobs. On Unix, euid 0 with any configured jobs fails
+closed unless `allow_privileged_jobs = true` is set. This flag does not change
+the process identity or weaken service sandboxing. In particular, jobs under
+the privileged macOS system LaunchDaemon need that explicit opt-in. Windows
+supports time-only jobs and rejects `max_load` while load averages are
+unsupported.
+
+Load windows are `1m`, `5m`, or `15m` (default `15m`). Thresholds are inclusive.
+Missing, warming, failed, or high load defers the occurrence; retry defaults
+to five minutes and maximum wait defaults to 24 hours. Retry is bounded from
+10 seconds to one hour, max wait is at most seven days, and retry cannot exceed
+max wait. An expired pending occurrence is dropped once. At most one pending
+occurrence is retained per job, repeated matches coalesce without extending
+the original deadline, and exactly one scheduled command runs globally. Load
+is rechecked before each sequential launch. Nonzero command exits are logged
+and are not retried; the next cron occurrence is authoritative.
+
+Shutdown stops new launches, terminates the direct child, and waits for it
+within a two-second child bound inside the daemon's shared ten-second cleanup
+deadline. Gregg does not guarantee termination of descendants created by an
+explicit shell or pipeline.
+
 The display name (`name`) must be non-empty, at most 128 bytes, and contain
 no control characters. Override the file location per-invocation with
 `greggd run --config /path/to/greggd.toml`.

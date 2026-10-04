@@ -472,4 +472,19 @@ When closing Plan 091, record:
 7. sustained soak duration and concise observations for PID, snapshot advancement, RSS, and FD behavior;
 8. any platform-specific limitation that could not be directly exercised locally.
 
+### Interim smoke evidence — 2026-10-03
+
+On the Linux host, the release binary passed a temporary-config lifecycle
+smoke: `/v2/status` timestamps advanced from `1791057154362` to
+`1791057155368` and `1791057157372`; a silent Unix control client did not
+interrupt sampling; `croncheck` recognized the ready daemon, started one
+replacement after an explicit stop/refused endpoint, and a subsequent
+`croncheck` did not start a duplicate. The replacement was stopped through the
+config-specific control socket. Temporary files were under
+`/tmp/greggd-plan091-smoke-a6hz9k0g` and are not part of the repository.
+
+This short lifecycle smoke is not sustained-soak evidence. The requested
+overnight/24-hour stability observation remains outstanding, so Plan 091
+remains open.
+
 Update `plans/README.md` only after those acceptance criteria are truthful. Preserve prior Plans 076-090 as historical records; where their old `croncheck` wording conflicts with the current product requirement, Plan 091 is the authoritative superseding contract rather than rewriting old implementation history.

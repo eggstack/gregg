@@ -51,14 +51,12 @@ health endpoint before deciding whether to spawn. Deterministic regressions and
 local lifecycle evidence are required before closure; the extended soak remains
 manual evidence rather than CI infrastructure.
 
-Plans 155-157 define a new planned load-aware maintenance scheduler line for
-`greggd`. Plan 155 is the coordination roadmap, Plan 156 qualifies execution
-authority plus cron/process footprint and lifecycle choices, and Plan 157 owns
-the bounded implementation. This line is independent of Plan 091 and does not
-change current product behavior until implementation lands. It preserves the
-read-only HTTP boundary, reuses cached sampler load, forbids privilege
-escalation/service-sandbox weakening, bounds pending work to one occurrence per
-job, and targets one globally serialized scheduled command at a time.
+Plans 155-157 define the load-aware maintenance scheduler line for `greggd`.
+Plan 156 is complete with the cron/time choice and measured Tokio process path;
+Plan 157 is now unblocked and owns the bounded implementation. The line is
+independent of Plan 091 and preserves the read-only HTTP boundary, cached
+sampler load, same-principal execution, service sandboxing, one pending
+occurrence per job, and one global child slot.
 
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
@@ -581,8 +579,8 @@ excluded.
 | [`153-eggpool-schema-v1-wire-contract-corrective-pass.md`](153-eggpool-schema-v1-wire-contract-corrective-pass.md) | Correct Plan-152 status JSON field names/placement and producer bounds against EggPool's canonical schema-v1 `ProxyStatusSnapshot`, with upstream-provenance regression fixture | complete at `195724c`; `proxy`-nested account counts, `provider_id`/`last_observation`, producer-aligned 256/96/64 bounds with exact/one-over tests, one canonical provenance-recorded fixture replacing the synthetic matrix, negative regression locking out the never-upstream `id`/`observation`/root-count shape; CI `37046499078` green across all six jobs, local checks green; functional correction complete; fixture-evidence cleanup owned by Plan 154; independent of 091 |
 | [`154-eggpool-canonical-status-fixture-evidence-cleanup.md`](154-eggpool-canonical-status-fixture-evidence-cleanup.md) | Make Plan-153's canonical status fixture structurally identical to EggPool schema-v1 for ignored runtime/provider fields, without changing production decoding or behavior | complete at `fd24918`; CI `37053403192` green across all six jobs; focused/local checks green; independent of 091; unblocks no remaining plan |
 | [`155-load-aware-maintenance-scheduler-roadmap.md`](155-load-aware-maintenance-scheduler-roadmap.md) | Coordinate an optional bounded local cron-like maintenance scheduler for greggd with cached-load deferral, coalescing, anti-herd serialization, and no remote execution surface | planned; depends on current post-154 main; independent of 091; coordinates Plans 156-157 |
-| [`156-scheduler-execution-boundary-and-footprint-qualification.md`](156-scheduler-execution-boundary-and-footprint-qualification.md) | Qualify same-principal execution, privileged-Unix opt-in, five-field local cron semantics, parser/time footprint, process supervision, stdio bounds, and shutdown behavior before scheduler code lands | planned; depends on 155; must stay within Gregg's 5% and 128 KiB stripped-binary gates; independent of 091 |
-| [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | planned; blocked on completed 156; independent of 091; no protocol/remote-control/persistent-queue scope |
+| [`156-scheduler-execution-boundary-and-footprint-qualification.md`](156-scheduler-execution-boundary-and-footprint-qualification.md) | Qualify same-principal execution, privileged-Unix opt-in, five-field local cron semantics, parser/time footprint, process supervision, stdio bounds, and shutdown behavior before scheduler code lands | complete at `f35e1369c36cc38de5bd5e9e42f4a27d338db1e1`; the cron-parser + chrono + Tokio-process linked candidate passed its prototype gate and unblocked 157; Plan 157's integrated binary exceeded the cap, so its correction record replaces cron-parser with the bounded internal parser and keeps 157 open; independent of 091 |
+| [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | in implementation; unblocked by completed 156; independent of 091; no protocol/remote-control/persistent-queue scope |
 
 Dependency order:
 
@@ -603,7 +601,7 @@ Dependency order:
 current post-154 main -> 155
 155 -> 156
 156 -> 157
-155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 must qualify execution identity, local five-field cron semantics, process lifecycle, and actual stripped-binary/dependency deltas before product behavior lands; 157 is blocked on 156 and owns the bounded scheduler implementation, cached-load handoff, coalescing, one-global-child anti-herd policy, documentation, and qualification.
+155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and the measured stripped-binary/dependency delta; 157 is unblocked and owns the bounded scheduler implementation, cached-load handoff, coalescing, one-global-child anti-herd policy, documentation, and qualification.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;

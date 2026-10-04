@@ -44,6 +44,14 @@ service lifecycle. For platform metric collection itself, use the
   `ServiceMain` worker owns exactly one current-thread runtime.
 - SCM reports `RUNNING` only after the shared daemon core binds its listener
   (the `on_ready` seam fires post-bind).
+- Configured maintenance jobs add one scheduler subsystem only when the job
+  list is non-empty. It reads cached sampler load from a watch channel without
+  waking on each sample; it executes direct argv as the existing OS principal,
+  retains one pending occurrence per job and one global child, and terminates
+  only its direct child during shutdown. Never add an implicit shell, secret
+  environment map, missed-job replay, remote execution route, or sandbox
+  weakening. Unix root requires the explicit `allow_privileged_jobs` opt-in;
+  Windows rejects load-gated jobs.
 - SIGTERM/SIGINT, SCM Stop/Shutdown, and a successful `STOP\n` on the control
   socket all feed the same nonblocking one-shot shutdown signal into
   `run_with_shutdown()` (10s graceful deadline).

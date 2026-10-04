@@ -860,6 +860,8 @@ pub fn dispatch_with_config_intent(
 
 #[cfg(all(test, not(target_os = "windows")))]
 mod native_tests {
+    #![allow(clippy::field_reassign_with_default)]
+
     use super::*;
     use clap::Parser;
     use std::net::TcpListener;
@@ -1078,8 +1080,24 @@ mod native_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
+        let mut config = Config::default();
+        config.allow_privileged_jobs = true;
+        config.jobs.push(crate::config::ScheduledJobConfig {
+            name: "preserved-job".to_owned(),
+            schedule: "0 3 * * 0".to_owned(),
+            command: vec!["/usr/bin/true".to_owned()],
+            working_dir: Some(std::path::PathBuf::from("/tmp/not-required")),
+            max_load: Some(8.0),
+            load_window: Some("5m".to_owned()),
+            retry_interval_ms: Some(60_000),
+            max_wait_ms: Some(120_000),
+        });
+        config.write_atomic(&path).unwrap();
         mutate_config(&path, false, |config| config.port = 11320).unwrap();
-        assert_eq!(Config::load(&path).unwrap().port, 11320);
+        let updated = Config::load(&path).unwrap();
+        assert_eq!(updated.port, 11320);
+        assert!(updated.allow_privileged_jobs);
+        assert_eq!(updated.jobs, config.jobs);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1814,7 +1814,7 @@ mod tests {
 
     #[test]
     fn cmd_add_rejects_inline_nickname_with_flag_name() {
-        let dir = tmp_dir("add_ambiguous_name");
+        let dir = tmp_dir("add_inline_flag_ambiguity");
         let path = dir.join("config.toml");
         let store = ConfigStore::new(path);
 

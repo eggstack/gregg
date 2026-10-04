@@ -26,6 +26,7 @@ SCM `service` / `start` path.
 | `control` | `src/control.rs` (Unix-only) | Unix-domain control socket for `greggd stop`; normalized config identity (FNV-1a digest) computed once per operation, config-adjacent primary + temp-dir fallback paths; `ControlSocketGuard` is owned by the caller (`run_with_control_path`) so socket-file removal happens on every exit path, including signal-driven shutdown where the stop task is still parked in `accept()` |
 | `net` | `src/net.rs` | Local-network address resolution for `configprint`: resolves a wildcard bind host to the primary local IP via a transient UDP `connect()` (no packets sent) |
 | `sampler` | `src/sampler.rs` | Periodic sampling loop, readiness lifecycle; `SamplerError`, `Clock`/`RealClock` (`SyntheticClock` is test-only) |
+| `scheduler` | `src/scheduler.rs`, `src/scheduler/schedule.rs` | Optional local maintenance engine: strict five-field cron wrapper, bounded pending state, cached sampler load feed, one Tokio child slot, direct-child shutdown |
 | `server/mod` | `src/server/mod.rs` | EggServe direct H1 service, endpoints, staleness; `ServerState`, public `Config`, private `PublishedState` (`ServerConfigError` in `server/error`); `server/tests.rs` holds the handler tests |
 | `server/error` | `src/server/error.rs` | Server error types |
 | `collector/mod` | `src/collector/mod.rs` | Gregg-owned `SystemCollector` trait, `CollectedMetrics`, authoritative `into_snapshot_pair()` (plus `into_snapshot` / `into_snapshot_v2` / `into_status_payload_v2`); `CollectError`/`CollectErrorKind`, `clamped_usage_pct`/`finalize_percentage`, `CounterBaselines`, `DriveCandidate`/`normalize`, and `DriveRefreshCache` re-exported from `gregg-host` at the same paths; platform `linux`/`macos`/`windows` facades delegate production sampling to `gregg-host` (Plans 133-135) |
@@ -191,6 +192,24 @@ The sampler owns the clock and cadence. Key behaviors:
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.
 
+### Scheduled maintenance
+
+The scheduler is spawned only when the validated config has jobs. It receives
+the sampler's latest readiness and optional v2 load scalar through a Tokio
+watch channel. It only borrows that state at due/retry decisions; sampler
+publication does not wake the scheduler. Warming, failed, or missing load is
+unavailable and fails closed. It never probes collectors or HTTP.
+
+The engine owns one parsed schedule and at most one pending occurrence per
+configured job. It scans at most 64 jobs for the next cron/retry/expiry
+deadline, sleeps until that deadline, child completion, or shutdown, and has
+one global child slot. Pending selection uses oldest pending time and stable
+config order. Every load-gated launch rechecks the latest cached load. No
+occurrence history is persisted or replayed after restart. The process adapter
+uses direct Tokio argv execution with all standard streams null and
+`kill_on_drop`; active-child termination and wait stay inside the shared
+shutdown deadline.
+
 ### Configuration
 
 ```toml
@@ -199,7 +218,24 @@ host = "0.0.0.0"          # bind address
 port = 11310              # TCP port (1-65535)
 sample_interval_ms = 1000 # 250-60000
 stale_after_ms = 10000    # 0 = disabled, else > sample_interval_ms
+allow_privileged_jobs = false
+
+[[jobs]]
+name = "cargo-cleanme-deep"
+schedule = "0 3 * * 0"
+command = ["/usr/local/bin/cargo-cleanme", "scan", "--deep"]
+working_dir = "/home/user/projects"
+max_load = 8.0
+load_window = "15m"
+retry_interval_ms = 300000
+max_wait_ms = 86400000
 ```
+
+Scheduled commands run under the existing OS principal and do not use an
+implicit shell. The readable config is not a secret store. Linux systemd's
+`ProtectHome=true` may make developer paths inaccessible; rootless user-local
+daemon execution is the supported path for those jobs. Unix euid 0 requires
+the explicit privileged-job flag; Windows rejects load gates.
 
 `name` is the human-readable `system.name` in published snapshots. It must be
 non-empty, at most 128 characters, and contain no control characters. Foreground

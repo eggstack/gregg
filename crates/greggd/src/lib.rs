@@ -18,6 +18,8 @@ pub mod net;
 pub mod run;
 /// Periodic sampling loop that collects metrics and manages daemon state.
 pub mod sampler;
+/// Local maintenance scheduler.
+pub(crate) mod scheduler;
 /// HTTP server for the daemon status and health endpoints.
 pub mod server;
 /// Windows Service Control Manager integration.
