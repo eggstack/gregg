@@ -5,6 +5,9 @@ use chrono::{DateTime, Datelike, NaiveDate, TimeZone};
 /// Maximum UTF-8 byte length accepted for a cron expression.
 pub(crate) const MAX_SCHEDULE_BYTES: usize = 128;
 const MAX_SEARCH_DAYS: usize = 146_097; // One Gregorian 400-year cycle.
+/// First date of the satisfiability scan. It is a fixed Gregorian epoch, not
+/// the current date, so calendar proof never reads the wall clock.
+const SATISFIABILITY_EPOCH_YEAR: i32 = 2000;
 
 /// Parsed schedule fields. Each mask uses the field's natural numeric value.
 #[derive(Debug, Clone)]
@@ -53,6 +56,29 @@ impl LocalSchedule {
             month_day_wildcard,
             week_day_wildcard,
         })
+    }
+
+    /// Prove that at least one Gregorian date in a 400-year cycle satisfies
+    /// this schedule.
+    ///
+    /// The walk starts at a fixed calendar epoch, uses the same
+    /// [`Self::date_matches`] semantics as runtime scheduling, and stops at the
+    /// first match, so it is deterministic, independent of the current wall
+    /// clock and of the host timezone, and allocation-free.
+    pub(crate) fn is_satisfiable(&self) -> bool {
+        let Some(mut date) = NaiveDate::from_ymd_opt(SATISFIABILITY_EPOCH_YEAR, 1, 1) else {
+            return false;
+        };
+        for _ in 0..MAX_SEARCH_DAYS {
+            if self.date_matches(date) {
+                return true;
+            }
+            let Some(next) = date.succ_opt() else {
+                break;
+            };
+            date = next;
+        }
+        false
     }
 
     /// Return the next matching instant strictly after `after`.
@@ -255,6 +281,47 @@ mod tests {
 
         let instant = local(2026, 10, 3, 12, 0);
         assert!(every_minute.next_after(&instant).unwrap() > instant);
+    }
+
+    #[test]
+    fn satisfiability_rejects_only_calendar_impossible_expressions() {
+        for expression in [
+            "* * * * *",
+            "0 0 29 2 *",
+            "0 0 31 1,3,5,7,8,10,12 *",
+            // Traditional DOM/DOW OR behavior: the impossible day-of-month is
+            // still satisfied by a Monday in February.
+            "0 0 31 2 1",
+            "0 0 * 2 1",
+            "0 0 31 2 1-5",
+            "0 0 30 2,4 *",
+        ] {
+            assert!(
+                LocalSchedule::parse(expression).unwrap().is_satisfiable(),
+                "{expression}"
+            );
+        }
+        for expression in ["0 0 31 2 *", "0 0 30 2 *", "0 0 31 2,4 *", "0 0 31 2 */1"] {
+            let schedule = LocalSchedule::parse(expression).unwrap();
+            assert!(!schedule.is_satisfiable(), "{expression}");
+            // A satisfiable expression is the exact complement of an
+            // uncomputable next occurrence.
+            assert_eq!(
+                schedule.is_satisfiable(),
+                schedule.next_after(&local(2026, 1, 1, 0, 0)).is_ok(),
+                "{expression}"
+            );
+        }
+    }
+
+    #[test]
+    fn leap_day_schedule_finds_a_real_leap_year_occurrence() {
+        let leap = LocalSchedule::parse("0 0 29 2 *").unwrap();
+        let next = leap
+            .next_after(&local(2025, 3, 1, 0, 0))
+            .unwrap()
+            .date_naive();
+        assert_eq!(next, NaiveDate::from_ymd_opt(2028, 2, 29).unwrap());
     }
 
     #[test]

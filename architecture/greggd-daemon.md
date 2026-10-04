@@ -201,14 +201,24 @@ publication does not wake the scheduler. Warming, failed, or missing load is
 unavailable and fails closed. It never probes collectors or HTTP.
 
 The engine owns one parsed schedule and at most one pending occurrence per
-configured job. It scans at most 64 jobs for the next cron/retry/expiry
-deadline, sleeps until that deadline, child completion, or shutdown, and has
-one global child slot. Pending selection uses oldest pending time and stable
-config order. Every load-gated launch rechecks the latest cached load. No
-occurrence history is persisted or replayed after restart. The process adapter
-uses direct Tokio argv execution with all standard streams null and
-`kill_on_drop`; active-child termination and wait stay inside the shared
-shutdown deadline.
+configured job, and borrows operator configuration instead of copying it. It
+scans at most 64 jobs for the next cron/retry/expiry deadline, sleeps until
+that deadline, child completion, or shutdown, and has one global child slot.
+Pending selection is an allocation-free bounded scan over job state: the
+oldest pending time wins with config order as the stable tie breaker, and
+no candidate vector is built merely to choose a job. Every load-gated launch
+rechecks the latest cached load. No occurrence history is persisted or
+replayed after restart. The process adapter uses direct Tokio argv execution
+with all standard streams null and `kill_on_drop`; active-child termination
+and wait stay inside the shared shutdown deadline.
+
+Configuration loading already proves that a parsed schedule can be satisfied by
+at least one Gregorian date, using a fixed calendar epoch and the same
+day-matching semantics as runtime scheduling, so a calendar-impossible
+expression such as `0 0 31 2 *` is an `InvalidJobs` violation before the
+listener binds. A later schedule-arithmetic failure is an internal time-domain
+error: it propagates through the existing scheduler fatal task boundary instead
+of substituting a fabricated retry date.
 
 ### Configuration
 

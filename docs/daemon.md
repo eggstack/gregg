@@ -52,11 +52,14 @@ command = ["/usr/local/bin/refresh-index"]
 Schedules use exactly five numeric cron fields with lists, ranges, wildcards,
 and steps; weekdays are `0` through `6` (Sunday is `0`). The supported aliases
 are `@hourly`, `@daily`, `@weekly`, and `@monthly`. Day-of-month and day-of-week
-use traditional cron OR matching when both are restricted. Schedules use local
-civil time. A spring-forward time that does not exist is skipped; both real
-instants in a fall-back repeated minute run in chronological order. Startup
-chooses the first occurrence strictly after its reference time. Missed work is
-not replayed after daemon downtime.
+use traditional cron OR matching when both are restricted. A schedule that no
+Gregorian date can satisfy, such as `0 0 31 2 *`, is rejected as an
+`InvalidJobs` configuration violation before the daemon binds its listener, so
+an impossible expression never reaches runtime. Schedules use local civil
+time. A spring-forward time that does not exist is skipped; both real instants
+in a fall-back repeated minute run in chronological order. Startup chooses the
+first occurrence strictly after its reference time. Missed work is not
+replayed after daemon downtime.
 
 Commands are argv arrays and execute directly. Gregg does not parse a command
 string or add a shell; shell syntax requires an explicit shell argv such as

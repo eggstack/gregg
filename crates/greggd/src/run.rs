@@ -208,7 +208,7 @@ where
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn run_with_shutdown_on_ready<C, S, F>(
     collector: C,
-    config: Config,
+    mut config: Config,
     shutdown: S,
     on_ready: F,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -291,7 +291,7 @@ where
         (None, None)
     } else {
         let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
-        let scheduler_jobs = config.jobs.clone();
+        let scheduler_jobs = std::mem::take(&mut config.jobs);
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = tokio::spawn(async move {
             scheduler::run(scheduler_jobs, load_rx, shutdown_rx)

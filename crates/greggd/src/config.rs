@@ -538,9 +538,18 @@ impl ScheduledJobConfig {
                 "schedule exceeds {} UTF-8 bytes",
                 crate::scheduler::schedule::MAX_SCHEDULE_BYTES
             ));
-        } else if let Err(error) = crate::scheduler::schedule::LocalSchedule::parse(&self.schedule)
-        {
-            errors.push(format!("schedule: {error}"));
+        } else {
+            match crate::scheduler::schedule::LocalSchedule::parse(&self.schedule) {
+                // A syntactically valid expression that no Gregorian date can
+                // satisfy would otherwise survive configuration loading and
+                // fail when the scheduler computes its first occurrence.
+                Ok(schedule) if !schedule.is_satisfiable() => {
+                    errors
+                        .push("schedule: no calendar date can satisfy this expression".to_owned());
+                }
+                Ok(_) => {}
+                Err(error) => errors.push(format!("schedule: {error}")),
+            }
         }
         if self.command.is_empty() || self.command[0].is_empty() {
             errors.push("command must contain a non-empty executable".to_owned());
@@ -975,6 +984,42 @@ mod tests {
         config.jobs[0].retry_interval_ms = Some(MIN_RETRY_INTERVAL_MS - 1);
         config.jobs[0].max_wait_ms = Some(MAX_MAX_WAIT_MS + 1);
         assert!(!config.is_valid());
+    }
+
+    #[test]
+    fn calendar_impossible_schedules_fail_validation() {
+        for expression in ["0 0 31 2 *", "0 0 30 2 *", "0 0 31 2,4 *"] {
+            let mut config = Config::default();
+            config.jobs = vec![test_job("impossible")];
+            config.jobs[0].schedule = expression.to_owned();
+            let text = config
+                .validate()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                text.contains("no calendar date can satisfy this expression"),
+                "{expression}: {text}"
+            );
+            assert!(matches!(
+                config.validate().first(),
+                Some(ConfigViolation::InvalidJobs(_))
+            ));
+        }
+
+        for expression in [
+            "0 0 29 2 *",
+            "0 0 31 1,3,5,7,8,10,12 *",
+            // Traditional DOM/DOW OR behavior keeps these satisfiable.
+            "0 0 31 2 1",
+            "0 0 * 2 1",
+        ] {
+            let mut config = Config::default();
+            config.jobs = vec![test_job("satisfiable")];
+            config.jobs[0].schedule = expression.to_owned();
+            assert_eq!(config.validate(), [], "{expression}");
+        }
     }
 
     #[test]

@@ -9,6 +9,28 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Calendar-impossible maintenance schedules (Plan 158):** a syntactically
+  valid cron expression that no Gregorian date can satisfy — for example
+  `0 0 31 2 *` — is now rejected as an `InvalidJobs` configuration violation
+  during config loading, before the daemon binds its listener or launches
+  runtime tasks. Satisfiability is a pure calendar walk over one 400-year
+  cycle from a fixed epoch, using the same day-matching semantics as runtime
+  scheduling, so it never reads the current clock or the host timezone and
+  preserves traditional day-of-month/day-of-week OR behavior (`0 0 31 2 1`
+  stays valid because a Monday in February satisfies it). A later
+  schedule-arithmetic failure is an internal time-domain error: it now
+  propagates through the existing scheduler fatal task boundary instead of
+  silently rescheduling the job 366 days out.
+
+- **Scheduler selection and launch cost (Plan 158):** pending selection is an
+  allocation-free bounded scan over at most 64 jobs instead of building and
+  sorting a candidate vector on every launch decision, the engine borrows
+  validated job configuration instead of cloning it per job and per launch,
+  and the daemon hands the job list to the scheduler task by move rather than
+  a deep copy. Oldest-pending ordering with config-order tie breaking,
+  load-gate deferral, one global child slot, max-wait expiry, coalescing, and
+  direct-child shutdown are unchanged.
+
 - **EggPool schema-v1 status wire contract (Plan 153):** the optional
   EggPool pane's health reader now matches the JSON EggPool actually
   serializes (`rust/src/operations/status.rs::ProxyStatusSnapshot` at

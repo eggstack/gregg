@@ -51,7 +51,10 @@ service lifecycle. For platform metric collection itself, use the
   only its direct child during shutdown. Never add an implicit shell, secret
   environment map, missed-job replay, remote execution route, or sandbox
   weakening. Unix root requires the explicit `allow_privileged_jobs` opt-in;
-  Windows rejects load-gated jobs.
+  Windows rejects load-gated jobs. Configuration validation rejects a schedule
+  that no Gregorian date can satisfy (for example `0 0 31 2 *`) before the
+  listener binds; a later schedule-arithmetic failure propagates to the
+  scheduler's fatal task boundary instead of substituting a fallback date.
 - SIGTERM/SIGINT, SCM Stop/Shutdown, and a successful `STOP\n` on the control
   socket all feed the same nonblocking one-shot shutdown signal into
   `run_with_shutdown()` (10s graceful deadline).

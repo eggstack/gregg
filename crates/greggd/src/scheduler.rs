@@ -43,44 +43,77 @@ struct PendingOccurrence {
     waiting_logged: bool,
 }
 
+/// Per-job runtime state. Operator configuration stays borrowed from the
+/// validated configuration so a launch decision never copies it.
 #[derive(Debug)]
-struct RuntimeJob {
-    config: ScheduledJobConfig,
+struct JobState {
     schedule: LocalSchedule,
     next_due: DateTime<Local>,
     pending: Option<PendingOccurrence>,
 }
 
 #[derive(Debug)]
-struct Engine {
-    jobs: Vec<RuntimeJob>,
+struct Engine<'a> {
+    configs: &'a [ScheduledJobConfig],
+    states: Vec<JobState>,
 }
 
+/// A selected job, identified by its configuration index so the direct child
+/// can be spawned from the borrowed configuration before the next await.
 #[derive(Debug)]
 struct Launch {
-    job: ScheduledJobConfig,
+    index: usize,
     pending_age: Duration,
     observed_load: Option<f32>,
     load_window: Option<&'static str>,
 }
 
-impl Engine {
-    fn new(configs: &[ScheduledJobConfig], wall_now: DateTime<Local>) -> Result<Self, String> {
+/// Cached-load gate evaluation for a load-gated job: the inclusive verdict,
+/// the selected window, the observed value, and the configured threshold. A
+/// time-only job has no gate. Warming, failed, or missing load fails closed.
+fn load_gate(
+    config: &ScheduledJobConfig,
+    load: LoadGateState,
+) -> Option<(bool, &'static str, Option<f32>, f32)> {
+    let threshold = config.max_load?;
+    let (window, observed) = config.max_load.map(|_| {
+        let window = config.effective_load_window();
+        let value = match (load.readiness, load.load) {
+            (ReadinessState::Ready, Some(values)) => Some(match window {
+                "1m" => values.one,
+                "5m" => values.five,
+                _ => values.fifteen,
+            }),
+            _ => None,
+        };
+        (window, value)
+    })?;
+    Some((
+        observed.is_some_and(|value| value.is_finite() && value <= threshold),
+        window,
+        observed,
+        threshold,
+    ))
+}
+
+impl<'a> Engine<'a> {
+    fn new(configs: &'a [ScheduledJobConfig], wall_now: DateTime<Local>) -> Result<Self, String> {
         if configs.len() > MAX_JOBS {
             return Err(format!("scheduler has more than {MAX_JOBS} jobs"));
         }
-        let mut jobs = Vec::with_capacity(configs.len());
+        let mut states = Vec::with_capacity(configs.len());
         for config in configs {
             let schedule = LocalSchedule::parse(&config.schedule)?;
-            let next_due = schedule.next_after(&wall_now)?;
-            jobs.push(RuntimeJob {
-                config: config.clone(),
+            let next_due = schedule
+                .next_after(&wall_now)
+                .map_err(|error| format!("job {:?}: {error}", config.name))?;
+            states.push(JobState {
                 schedule,
                 next_due,
                 pending: None,
             });
         }
-        Ok(Self { jobs })
+        Ok(Self { configs, states })
     }
 
     fn tick(
@@ -89,35 +122,38 @@ impl Engine {
         now: Instant,
         load: LoadGateState,
         slot_available: bool,
-    ) -> Option<Launch> {
-        for runtime in &mut self.jobs {
-            if runtime.next_due <= wall_now {
-                if let Some(pending) = &mut runtime.pending {
+    ) -> Result<Option<Launch>, String> {
+        let configs = self.configs;
+        for (index, state) in self.states.iter_mut().enumerate() {
+            let config = &configs[index];
+            if state.next_due <= wall_now {
+                if let Some(pending) = &mut state.pending {
                     pending.coalesced = true;
                 } else {
-                    runtime.pending = Some(PendingOccurrence {
+                    state.pending = Some(PendingOccurrence {
                         since: now,
                         retry_at: now,
                         coalesced: false,
                         waiting_logged: false,
                     });
                 }
-                match runtime.schedule.next_after(&wall_now) {
-                    Ok(next) => runtime.next_due = next,
-                    Err(error) => {
-                        tracing::error!(job = %runtime.config.name, %error, "unable to calculate next scheduled occurrence");
-                        runtime.next_due = wall_now + chrono::Duration::days(366);
-                    }
-                }
+                // Configuration validation already rejects calendar-impossible
+                // expressions, so a failure here is an internal time-domain
+                // error. It reaches the existing scheduler fatal boundary
+                // instead of fabricating a replacement schedule.
+                state.next_due = state
+                    .schedule
+                    .next_after(&wall_now)
+                    .map_err(|error| format!("job {:?}: {error}", config.name))?;
             }
-            if runtime.pending.as_ref().is_some_and(|pending| {
+            if state.pending.as_ref().is_some_and(|pending| {
                 now.saturating_duration_since(pending.since)
-                    >= Duration::from_millis(runtime.config.effective_max_wait_ms())
-                    && runtime.config.max_load.is_some()
+                    >= Duration::from_millis(config.effective_max_wait_ms())
+                    && config.max_load.is_some()
             }) {
-                let pending = runtime.pending.take().expect("pending checked above");
+                let pending = state.pending.take().expect("pending checked above");
                 tracing::info!(
-                    job = %runtime.config.name,
+                    job = %config.name,
                     pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
                     coalesced = pending.coalesced,
                     "scheduled job expired waiting for load"
@@ -126,65 +162,74 @@ impl Engine {
         }
 
         if !slot_available {
-            return None;
+            return Ok(None);
         }
 
-        let mut candidates = self
-            .jobs
-            .iter()
-            .enumerate()
-            .filter_map(|(index, runtime)| {
-                let pending = runtime.pending.as_ref()?;
-                (pending.retry_at <= now).then_some((index, pending.since))
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|(index, since)| (*since, *index));
-        for (candidate, _) in candidates {
-            let runtime = &mut self.jobs[candidate];
-            let pending = runtime.pending.as_mut().expect("candidate is pending");
-            let selected_load = runtime.config.max_load.map(|_| {
-                let window = runtime.config.effective_load_window();
-                let value = match (load.readiness, load.load) {
-                    (ReadinessState::Ready, Some(values)) => Some(match window {
-                        "1m" => values.one,
-                        "5m" => values.five,
-                        _ => values.fifteen,
-                    }),
-                    _ => None,
-                };
-                (window, value)
-            });
-            if let (Some(threshold), Some((window, observed))) =
-                (runtime.config.max_load, selected_load)
+        // Bounded selection over at most MAX_JOBS jobs: the oldest eligible
+        // candidate wins with config order as the stable tie breaker. No
+        // candidate vector is built merely to choose the next job.
+        let mut selected: Option<(Instant, usize)> = None;
+        for (index, state) in self.states.iter().enumerate() {
+            let Some(pending) = state.pending.as_ref() else {
+                continue;
+            };
+            if pending.retry_at > now
+                || load_gate(&configs[index], load).is_some_and(|(allowed, ..)| !allowed)
             {
-                let allowed = observed.is_some_and(|value| value.is_finite() && value <= threshold);
-                if !allowed {
-                    if !pending.waiting_logged {
-                        tracing::info!(
-                            job = %runtime.config.name,
-                            load_window = window,
-                            observed_load = observed,
-                            max_load = threshold,
-                            pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
-                            "scheduled job pending: load gate"
-                        );
-                        pending.waiting_logged = true;
-                    }
-                    pending.retry_at =
-                        now + Duration::from_millis(runtime.config.effective_retry_interval_ms());
-                    continue;
-                }
+                continue;
             }
-
-            let pending = runtime.pending.take().expect("candidate is pending");
-            return Some(Launch {
-                job: runtime.config.clone(),
-                pending_age: now.saturating_duration_since(pending.since),
-                observed_load: selected_load.and_then(|(_, value)| value),
-                load_window: selected_load.map(|(window, _)| window),
-            });
+            let key = (pending.since, index);
+            if selected.is_none_or(|current| key < current) {
+                selected = Some(key);
+            }
         }
-        None
+        let Some((since, index)) = selected else {
+            return Ok(None);
+        };
+
+        // Defer every load-blocked candidate that would have been visited
+        // before the winner, so an older blocked job neither hides nor is
+        // hidden by the job that takes the free global slot.
+        for (blocked, state) in self.states.iter_mut().enumerate() {
+            let Some(pending) = state.pending.as_ref() else {
+                continue;
+            };
+            if pending.retry_at > now || (pending.since, blocked) >= (since, index) {
+                continue;
+            }
+            let config = &configs[blocked];
+            let Some((allowed, window, observed, threshold)) = load_gate(config, load) else {
+                continue;
+            };
+            if allowed {
+                continue;
+            }
+            let pending = state.pending.as_mut().expect("candidate is pending");
+            if !pending.waiting_logged {
+                tracing::info!(
+                    job = %config.name,
+                    load_window = window,
+                    observed_load = observed,
+                    max_load = threshold,
+                    pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
+                    "scheduled job pending: load gate"
+                );
+                pending.waiting_logged = true;
+            }
+            pending.retry_at = now + Duration::from_millis(config.effective_retry_interval_ms());
+        }
+
+        let pending = self.states[index]
+            .pending
+            .take()
+            .expect("selected candidate is pending");
+        let gate = load_gate(&configs[index], load);
+        Ok(Some(Launch {
+            index,
+            pending_age: now.saturating_duration_since(pending.since),
+            observed_load: gate.and_then(|(_, _, observed, _)| observed),
+            load_window: gate.map(|(_, window, _, _)| window),
+        }))
     }
 
     fn next_deadline(
@@ -194,21 +239,22 @@ impl Engine {
         slot_available: bool,
     ) -> Instant {
         let mut deadline = None;
-        for runtime in &self.jobs {
-            let until_due = (runtime.next_due - wall_now)
+        for (index, state) in self.states.iter().enumerate() {
+            let config = &self.configs[index];
+            let until_due = (state.next_due - wall_now)
                 .to_std()
                 .unwrap_or(Duration::ZERO);
             let candidate = now + until_due;
             deadline = Some(deadline.map_or(candidate, |current: Instant| current.min(candidate)));
-            if let Some(pending) = &runtime.pending {
+            if let Some(pending) = &state.pending {
                 if slot_available {
                     deadline = Some(
                         deadline.map_or(pending.retry_at, |current| current.min(pending.retry_at)),
                     );
                 }
-                if runtime.config.max_load.is_some() {
-                    let expiry = pending.since
-                        + Duration::from_millis(runtime.config.effective_max_wait_ms());
+                if config.max_load.is_some() {
+                    let expiry =
+                        pending.since + Duration::from_millis(config.effective_max_wait_ms());
                     deadline = Some(deadline.map_or(expiry, |current| current.min(expiry)));
                 }
             }
@@ -218,13 +264,16 @@ impl Engine {
 
     #[cfg(test)]
     fn pending_count(&self) -> usize {
-        self.jobs.iter().filter(|job| job.pending.is_some()).count()
+        self.states
+            .iter()
+            .filter(|job| job.pending.is_some())
+            .count()
     }
 }
 
-struct RunningChild {
+struct RunningChild<'a> {
     child: tokio::process::Child,
-    job_name: String,
+    job_name: &'a str,
     started: Instant,
 }
 
@@ -234,24 +283,24 @@ enum SchedulerWake {
     Shutdown,
 }
 
-fn start_child(launch: &Launch) -> Result<RunningChild, String> {
-    let Some(executable) = launch.job.command.first() else {
+fn start_child(job: &ScheduledJobConfig) -> Result<RunningChild<'_>, String> {
+    let Some(executable) = job.command.first() else {
         return Err("validated command has no executable".to_owned());
     };
     let mut command = Command::new(executable);
     command
-        .args(&launch.job.command[1..])
+        .args(&job.command[1..])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
-    if let Some(working_dir) = &launch.job.working_dir {
+    if let Some(working_dir) = &job.working_dir {
         command.current_dir(working_dir);
     }
     let child = command.spawn().map_err(|error| error.to_string())?;
     Ok(RunningChild {
         child,
-        job_name: launch.job.name.clone(),
+        job_name: &job.name,
         started: Instant::now(),
     })
 }
@@ -263,15 +312,16 @@ pub(crate) async fn run(
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), String> {
     let mut engine = Engine::new(&jobs, Local::now())?;
-    let mut active: Option<RunningChild> = None;
+    let mut active: Option<RunningChild<'_>> = None;
     loop {
         let now = Instant::now();
         let wall_now = Local::now();
-        if let Some(launch) = engine.tick(wall_now, now, *load_rx.borrow(), active.is_none()) {
-            match start_child(&launch) {
+        if let Some(launch) = engine.tick(wall_now, now, *load_rx.borrow(), active.is_none())? {
+            let job = &jobs[launch.index];
+            match start_child(job) {
                 Ok(child) => {
                     tracing::info!(
-                        job = %launch.job.name,
+                        job = %job.name,
                         pending_age_ms = duration_millis(launch.pending_age),
                         load_window = launch.load_window,
                         observed_load = launch.observed_load,
@@ -279,11 +329,7 @@ pub(crate) async fn run(
                     );
                     active = Some(child);
                 }
-                Err(error) => tracing::info!(
-                    job = %launch.job.name,
-                    %error,
-                    "scheduled job completed"
-                ),
+                Err(error) => tracing::info!(job = %job.name, %error, "scheduled job completed"),
             }
             continue;
         }
@@ -352,6 +398,28 @@ pub(crate) async fn run(
 }
 
 #[cfg(test)]
+impl<'a> Engine<'a> {
+    /// Build an engine whose jobs bypass configuration validation so a
+    /// calendar-impossible schedule can reach the runtime failure path.
+    fn new_unchecked(configs: &'a [ScheduledJobConfig], wall_now: DateTime<Local>) -> Self {
+        let states = configs
+            .iter()
+            .map(|config| {
+                let schedule =
+                    LocalSchedule::parse(&config.schedule).expect("test schedule parses");
+                let next_due = schedule.next_after(&wall_now).unwrap_or(wall_now);
+                JobState {
+                    schedule,
+                    next_due,
+                    pending: None,
+                }
+            })
+            .collect();
+        Self { configs, states }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #![allow(clippy::field_reassign_with_default)]
 
@@ -389,8 +457,8 @@ mod tests {
         let wall = wall_time();
         let config = job("argv", None);
         let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
-        assert!(engine.jobs[0].next_due > wall);
-        let due = engine.jobs[0].next_due;
+        assert!(engine.states[0].next_due > wall);
+        let due = engine.states[0].next_due;
         let launch = engine
             .tick(
                 due,
@@ -398,8 +466,10 @@ mod tests {
                 LoadGateState::UNAVAILABLE,
                 true,
             )
+            .unwrap()
             .unwrap();
-        assert_eq!(launch.job.command, ["/bin/true", "--flag"]);
+        assert_eq!(launch.index, 0);
+        assert_eq!(config.command, ["/bin/true", "--flag"]);
     }
 
     #[test]
@@ -408,13 +478,14 @@ mod tests {
         let mut config = job("heavy", Some(1.0));
         config.retry_interval_ms = Some(10_000);
         config.max_wait_ms = Some(120_000);
-        let mut engine = Engine::new(&[config], wall).unwrap();
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
         let since = Instant::now();
-        let due = engine.jobs[0].next_due;
+        let due = engine.states[0].next_due;
         assert!(engine
             .tick(due, since, LoadGateState::UNAVAILABLE, false)
+            .unwrap()
             .is_none());
-        let retry_due = engine.jobs[0].next_due;
+        let retry_due = engine.states[0].next_due;
         let retry_wall = retry_due;
         assert!(engine
             .tick(
@@ -423,10 +494,11 @@ mod tests {
                 LoadGateState::UNAVAILABLE,
                 false,
             )
+            .unwrap()
             .is_none());
         assert_eq!(engine.pending_count(), 1);
-        assert_eq!(engine.jobs[0].pending.as_ref().unwrap().since, since);
-        assert!(engine.jobs[0].pending.as_ref().unwrap().coalesced);
+        assert_eq!(engine.states[0].pending.as_ref().unwrap().since, since);
+        assert!(engine.states[0].pending.as_ref().unwrap().coalesced);
         assert!(engine
             .tick(
                 retry_wall,
@@ -434,6 +506,7 @@ mod tests {
                 LoadGateState::UNAVAILABLE,
                 false,
             )
+            .unwrap()
             .is_none());
         assert_eq!(engine.pending_count(), 0);
     }
@@ -448,8 +521,8 @@ mod tests {
         ] {
             let mut config = job(window, Some(8.0));
             config.load_window = Some(window.to_owned());
-            let mut engine = Engine::new(&[config], wall).unwrap();
-            let due = engine.jobs[0].next_due;
+            let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+            let due = engine.states[0].next_due;
             let launch = engine
                 .tick(
                     due,
@@ -457,21 +530,25 @@ mod tests {
                     ready(values.0, values.1, values.2),
                     true,
                 )
+                .unwrap()
                 .unwrap();
             assert_eq!(launch.observed_load, Some(expected));
+            assert_eq!(launch.load_window, Some(window));
         }
 
         let mut config = job("high", Some(8.0));
         config.retry_interval_ms = Some(10_000);
-        let mut engine = Engine::new(&[config], wall).unwrap();
-        let due = engine.jobs[0].next_due;
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let due = engine.states[0].next_due;
         let since = Instant::now();
         assert!(engine
             .tick(due, since, ready(8.01, 8.01, 8.01), true)
+            .unwrap()
             .is_none());
-        let retry_at = engine.jobs[0].pending.as_ref().unwrap().retry_at;
+        let retry_at = engine.states[0].pending.as_ref().unwrap().retry_at;
         let launch = engine
             .tick(due, retry_at, ready(8.0, 8.0, 8.0), true)
+            .unwrap()
             .unwrap();
         assert_eq!(launch.observed_load, Some(8.0));
     }
@@ -481,21 +558,45 @@ mod tests {
         let wall = wall_time();
         let configs = [job("first", None), job("second", None), job("third", None)];
         let mut engine = Engine::new(&configs, wall).unwrap();
-        let due = engine.jobs[0].next_due;
+        let due = engine.states[0].next_due;
         let mono = Instant::now();
         let first = engine
             .tick(due, mono, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
             .unwrap();
-        assert_eq!(first.job.name, "first");
+        assert_eq!(configs[first.index].name, "first");
         assert!(engine
             .tick(due, mono, LoadGateState::UNAVAILABLE, false)
+            .unwrap()
             .is_none());
         assert_eq!(engine.pending_count(), 2);
         assert!(engine.next_deadline(due, mono, false) > mono);
         let second = engine
             .tick(due, mono, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
             .unwrap();
-        assert_eq!(second.job.name, "second");
+        assert_eq!(configs[second.index].name, "second");
+    }
+
+    #[test]
+    fn five_deferred_jobs_still_produce_one_global_launch_each() {
+        let wall = wall_time();
+        let configs: Vec<_> = (0..5)
+            .map(|index| job(&format!("job-{index}"), Some(8.0)))
+            .collect();
+        let mut engine = Engine::new(&configs, wall).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        let mut launched = Vec::new();
+        for _ in 0..5 {
+            let launch = engine
+                .tick(due, mono, ready(1.0, 1.0, 1.0), true)
+                .unwrap()
+                .expect("one job per free slot");
+            launched.push(configs[launch.index].name.clone());
+        }
+        assert_eq!(launched, ["job-0", "job-1", "job-2", "job-3", "job-4"]);
+        assert_eq!(engine.pending_count(), 0);
     }
 
     #[test]
@@ -505,11 +606,39 @@ mod tests {
         heavy.retry_interval_ms = Some(10_000);
         let configs = [heavy, job("time-only", None)];
         let mut engine = Engine::new(&configs, wall).unwrap();
-        let due = engine.jobs[0].next_due;
+        let due = engine.states[0].next_due;
         let launch = engine
             .tick(due, Instant::now(), ready(1.0, 1.0, 1.0), true)
+            .unwrap()
             .unwrap();
-        assert_eq!(launch.job.name, "time-only");
+        assert_eq!(configs[launch.index].name, "time-only");
+        // The older blocked job is still pending and was deferred, not dropped.
+        let blocked = engine.states[0].pending.as_ref().unwrap();
+        assert!(blocked.retry_at > Instant::now());
+    }
+
+    #[test]
+    fn only_candidates_older_than_the_winner_are_deferred() {
+        let wall = wall_time();
+        let mut older = job("older-blocked", Some(8.0));
+        older.retry_interval_ms = Some(10_000);
+        let mut younger = job("younger-blocked", Some(8.0));
+        younger.retry_interval_ms = Some(30_000);
+        let configs = [older, job("time-only", None), younger];
+        let mut engine = Engine::new(&configs, wall).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        let launch = engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(configs[launch.index].name, "time-only");
+        // The older blocked job is deferred and stays pending.
+        let older = engine.states[0].pending.as_ref().unwrap();
+        assert_eq!(older.retry_at, mono + Duration::from_millis(10_000));
+        // The younger blocked job sorts after the winner and is left untouched.
+        let younger = engine.states[2].pending.as_ref().unwrap();
+        assert_eq!(younger.retry_at, mono);
     }
 
     #[test]
@@ -517,53 +646,90 @@ mod tests {
         let wall = wall_time();
         let configs = [job("first", Some(8.0)), job("second", Some(8.0))];
         let mut engine = Engine::new(&configs, wall).unwrap();
-        let due = engine.jobs[0].next_due;
+        let due = engine.states[0].next_due;
         let mono = Instant::now();
-        let first = engine.tick(due, mono, ready(7.9, 7.9, 7.9), true).unwrap();
-        assert_eq!(first.job.name, "first");
+        let first = engine
+            .tick(due, mono, ready(7.9, 7.9, 7.9), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(configs[first.index].name, "first");
         assert!(engine
             .tick(due, mono, ready(7.9, 7.9, 7.9), false)
+            .unwrap()
             .is_none());
         assert_eq!(engine.pending_count(), 1);
-        assert!(engine.tick(due, mono, ready(9.0, 9.0, 9.0), true).is_none());
+        assert!(engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
         assert_eq!(engine.pending_count(), 1);
-        let retry = engine.jobs[1].pending.as_ref().unwrap().retry_at;
-        let second = engine.tick(due, retry, ready(8.0, 8.0, 8.0), true).unwrap();
-        assert_eq!(second.job.name, "second");
+        let retry = engine.states[1].pending.as_ref().unwrap().retry_at;
+        let second = engine
+            .tick(due, retry, ready(8.0, 8.0, 8.0), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(configs[second.index].name, "second");
     }
 
     #[tokio::test]
     async fn spawn_failure_is_terminal_for_the_occurrence() {
         let wall = wall_time();
-        let mut engine = Engine::new(&[job("bad-exe", None)], wall).unwrap();
-        let due = engine.jobs[0].next_due;
-        let mut launch = engine
+        let mut config = job("bad-exe", None);
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let due = engine.states[0].next_due;
+        let launch = engine
             .tick(due, Instant::now(), LoadGateState::UNAVAILABLE, true)
+            .unwrap()
             .unwrap();
-        launch.job.command[0] = "/greggd-test-does-not-exist".to_owned();
-        assert!(start_child(&launch).is_err());
+        assert_eq!(launch.index, 0);
         assert_eq!(engine.pending_count(), 0);
+        config.command[0] = "/greggd-test-does-not-exist".to_owned();
+        assert!(start_child(&config).is_err());
+    }
+
+    #[test]
+    fn schedule_failure_propagates_instead_of_fabricating_a_fallback() {
+        let wall = wall_time();
+        let mut impossible = job("impossible", None);
+        impossible.schedule = "0 0 31 2 *".to_owned();
+        let configs = [job("valid", None), impossible];
+        let mut engine = Engine::new_unchecked(&configs, wall);
+        let due = wall;
+        let error = engine
+            .tick(due, Instant::now(), LoadGateState::UNAVAILABLE, true)
+            .expect_err("a calendar-impossible schedule is a runtime failure");
+        assert!(error.contains("impossible"), "{error}");
+        assert_eq!(engine.states[1].next_due, due);
+    }
+
+    #[tokio::test]
+    async fn impossible_schedule_reaches_the_run_error_boundary() {
+        let mut impossible = job("impossible", None);
+        impossible.schedule = "0 0 30 2 *".to_owned();
+        let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+        drop(load_tx);
+        let error = run(vec![impossible], load_rx, shutdown_rx.resubscribe())
+            .await
+            .expect_err("the scheduler reports an unsatisfiable schedule");
+        assert!(error.contains("impossible"), "{error}");
+        drop(shutdown_tx);
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn active_direct_child_is_terminated_and_reaped_on_shutdown() {
-        let launch = Launch {
-            job: ScheduledJobConfig {
-                name: "long-test-child".to_owned(),
-                schedule: "* * * * *".to_owned(),
-                command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
-                working_dir: None,
-                max_load: None,
-                load_window: None,
-                retry_interval_ms: None,
-                max_wait_ms: None,
-            },
-            pending_age: Duration::ZERO,
-            observed_load: None,
+        let job = ScheduledJobConfig {
+            name: "long-test-child".to_owned(),
+            schedule: "* * * * *".to_owned(),
+            command: vec!["/bin/sleep".to_owned(), "30".to_owned()],
+            working_dir: None,
+            max_load: None,
             load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
         };
-        let mut child = start_child(&launch).unwrap();
+        let mut child = start_child(&job).unwrap();
         child.child.start_kill().unwrap();
         let result = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
             .await

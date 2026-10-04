@@ -84,7 +84,9 @@ Optional `[[jobs]]` entries in the daemon TOML run five-field local cron
 schedules as direct argv commands. The scheduler uses cached load averages on
 Unix, defers high-load work for at most 24 hours by default, coalesces missed
 occurrences, and runs one Gregg-managed child globally at a time. It does not
-replay work missed while the daemon was stopped.
+replay work missed while the daemon was stopped. A schedule that no Gregorian
+date can satisfy (`0 0 31 2 *`) is rejected as a configuration violation
+before the daemon starts, rather than failing later during scheduling.
 
 Commands always run as greggd's current OS principal. The Linux system service
 runs as `greggd` with `ProtectHome=true`, so it generally cannot access a
