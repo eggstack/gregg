@@ -127,19 +127,34 @@
 pub mod v2;
 
 mod health;
+mod scheduler;
 mod snapshot;
 mod validate;
+mod validate_scheduler;
 mod validate_v2;
 
 #[cfg(feature = "test_support")]
 pub mod test_support;
 
 pub use health::{HealthCategory, HealthResponse, ReadinessState};
+pub use scheduler::{
+    json_escaped_len, output_text_from_bytes, truncate_to_escaped_budget, SchedulerEpochV2,
+    SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2, SchedulerJobV2,
+    SchedulerLoadGateV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
+    SchedulerRunSummaryV2, SchedulerSummaryV2, DEFAULT_SCHEDULER_HISTORY_LIMIT,
+    MAX_SCHEDULER_HISTORY_BODY_BYTES, MAX_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_JOBS,
+    MAX_SCHEDULER_JOB_NAME_BYTES, MAX_SCHEDULER_OUTPUT_BYTES, MAX_SCHEDULER_OUTPUT_TEXT_BYTES,
+    MAX_SCHEDULER_SCHEDULE_BYTES, MAX_SCHEDULER_SUMMARY_BODY_BYTES,
+};
 pub use snapshot::{
     CpuMetrics, LoadAverage, MemoryMetrics, MetricCapabilities, StatusSnapshot, SwapMetrics,
     SystemIdentity,
 };
 pub use validate::{ValidationViolation, ViolationKind};
+pub use validate_scheduler::{
+    history_body_exceeds_budget, validate_history, validate_summary, ValidationViolationScheduler,
+    ViolationKindScheduler,
+};
 pub use validate_v2::{validate_payload_v2, validate_v2, ValidationViolationV2, ViolationKindV2};
 
 /// Schema major version implemented by this crate (version 1).

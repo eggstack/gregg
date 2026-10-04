@@ -15,6 +15,11 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 use serde::{Deserialize, Serialize};
 
+/// Plan 162: frozen per-job scheduler history depth.
+pub use gregg_protocol::{
+    DEFAULT_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_JOBS,
+};
+
 /// Minimum allowed sample interval in milliseconds.
 pub const MIN_SAMPLE_INTERVAL_MS: u64 = 250;
 
@@ -30,6 +35,9 @@ pub const MAX_PORT: u16 = 65535;
 /// Maximum length for the display name after trimming.
 pub const MAX_NAME_LEN: usize = 128;
 /// Maximum configured scheduled jobs.
+///
+/// Also the maximum number of job entries in one scheduler wire document, so
+/// a document that validates can always be produced by a conforming daemon.
 pub const MAX_JOBS: usize = 64;
 /// Maximum Unicode scalar values in a job name.
 pub const MAX_JOB_NAME_CHARS: usize = 96;
@@ -95,6 +103,15 @@ pub struct Config {
     /// Locally scheduled argv commands. Missing means no scheduled jobs.
     #[serde(default)]
     pub jobs: Vec<ScheduledJobConfig>,
+    /// Plan 162: retained terminal scheduler records kept per job in memory.
+    ///
+    /// `None` means [`DEFAULT_SCHEDULER_HISTORY_LIMIT`]. `Some(0)` disables
+    /// record retention entirely while keeping the live scheduler summary
+    /// available. Values above [`MAX_SCHEDULER_HISTORY_LIMIT`] are rejected
+    /// before the listener binds. There is deliberately no path, database, or
+    /// log-file setting: scheduler history is memory-only.
+    #[serde(default)]
+    pub scheduler_history_limit: Option<usize>,
 }
 
 /// One local maintenance command and its optional cached-load gate.
@@ -159,7 +176,20 @@ impl Default for Config {
             stale_after_ms: 10_000,
             allow_privileged_jobs: false,
             jobs: Vec::new(),
+            scheduler_history_limit: None,
         }
+    }
+}
+
+impl Config {
+    /// Plan 162: effective per-job terminal history depth.
+    ///
+    /// Missing configuration retains the default of exactly five records; an
+    /// explicit `0` means "keep live state, retain no records".
+    #[must_use]
+    pub fn scheduler_history_limit(&self) -> usize {
+        self.scheduler_history_limit
+            .unwrap_or(DEFAULT_SCHEDULER_HISTORY_LIMIT)
     }
 }
 
@@ -257,6 +287,14 @@ impl Config {
                 "jobs has {} entries; maximum is {MAX_JOBS}",
                 self.jobs.len()
             )));
+        }
+        if let Some(limit) = self.scheduler_history_limit {
+            if limit > MAX_SCHEDULER_HISTORY_LIMIT {
+                violations.push(ConfigViolation::InvalidSchedulerHistoryLimit {
+                    found: limit,
+                    max: MAX_SCHEDULER_HISTORY_LIMIT,
+                });
+            }
         }
         let mut names = std::collections::HashSet::new();
         for (index, job) in self.jobs.iter().enumerate() {
@@ -853,6 +891,13 @@ pub enum ConfigViolation {
     },
     /// Scheduled-job fields failed validation.
     InvalidJobs(String),
+    /// `scheduler_history_limit` exceeded the frozen hard maximum.
+    InvalidSchedulerHistoryLimit {
+        /// Configured value.
+        found: usize,
+        /// Frozen hard maximum.
+        max: usize,
+    },
 }
 
 impl fmt::Display for ConfigViolation {
@@ -884,6 +929,10 @@ impl fmt::Display for ConfigViolation {
                 )
             }
             Self::InvalidJobs(message) => f.write_str(message),
+            Self::InvalidSchedulerHistoryLimit { found, max } => write!(
+                f,
+                "scheduler_history_limit {found} exceeds the maximum of {max} (0 disables record retention)"
+            ),
         }
     }
 }
@@ -931,6 +980,65 @@ mod tests {
         .unwrap();
         assert_eq!(config.jobs.len(), 0);
         assert!(!config.allow_privileged_jobs);
+    }
+
+    #[test]
+    fn missing_scheduler_history_limit_retains_the_default() {
+        // Plan 162: missing configuration means exactly five records per job.
+        let config = Config::parse(
+            "name = 'greggd'\nhost = '127.0.0.1'\nport = 11310\nsample_interval_ms = 1000\nstale_after_ms = 10000\n",
+            None,
+        )
+        .unwrap();
+        assert_eq!(config.scheduler_history_limit, None);
+        assert_eq!(
+            config.scheduler_history_limit(),
+            DEFAULT_SCHEDULER_HISTORY_LIMIT
+        );
+        assert_eq!(DEFAULT_SCHEDULER_HISTORY_LIMIT, 5);
+        assert_eq!(MAX_SCHEDULER_JOBS, MAX_JOBS);
+    }
+
+    #[test]
+    fn scheduler_history_limit_accepts_the_documented_range() {
+        let mut config = Config::default();
+        for limit in [
+            0,
+            1,
+            DEFAULT_SCHEDULER_HISTORY_LIMIT,
+            MAX_SCHEDULER_HISTORY_LIMIT,
+        ] {
+            config.scheduler_history_limit = Some(limit);
+            assert!(config.is_valid(), "limit {limit} should be accepted");
+            assert_eq!(config.scheduler_history_limit(), limit);
+        }
+    }
+
+    #[test]
+    fn scheduler_history_limit_above_the_hard_maximum_is_rejected() {
+        let mut config = Config::default();
+        config.scheduler_history_limit = Some(MAX_SCHEDULER_HISTORY_LIMIT + 1);
+        assert!(!config.is_valid());
+        let text = config
+            .validate()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            text.contains("scheduler_history_limit"),
+            "missing from {text}"
+        );
+    }
+
+    #[test]
+    fn scheduler_history_limit_does_not_require_configured_jobs() {
+        // An operator may choose retention before any job exists; refusing that
+        // would force a pointless edit to the job list.
+        let mut config = Config::default();
+        config.scheduler_history_limit = Some(3);
+        assert_eq!(config.jobs.len(), 0);
+        assert!(config.is_valid());
     }
 
     #[test]

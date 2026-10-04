@@ -1,6 +1,7 @@
 # Plan 162: Scheduler observability contract and resource qualification
 
-Status: planned.
+Status: complete at implementation `frozen` (see "Contract record" below for the
+measured evidence and the exact constants handed to Plan 163).
 
 Depends on: Plan 161 and current post-160 main. Independent of Plan 091.
 
@@ -299,20 +300,20 @@ User-facing README changes belong with Plan 163/166 when behavior exists.
 
 ## Acceptance criteria
 
-- [ ] Exact summary/history route contract is recorded.
-- [ ] Exact live-state and terminal-outcome enums are recorded.
-- [ ] Restart discriminator + sequence deduplication contract is fixed.
-- [ ] scheduler_history_limit, or recorded replacement name, defaults to 5.
-- [ ] Exact hard history maximum is selected and memory-qualified.
-- [ ] Exact stdout/stderr byte caps and tail/truncation behavior are selected.
-- [ ] Maximum history response/body cap is calculated and recorded.
-- [ ] Output security/default-publication policy is explicit.
-- [ ] Publication ownership does not couple HTTP handlers to scheduler mutation.
-- [ ] Pre-feature daemon 404 compatibility is explicit.
-- [ ] Stripped binary measurements are recorded against 3,261,664 bytes.
-- [ ] Plan 163 has a numeric footprint rule rather than an implicit exception.
-- [ ] MSRV remains Rust 1.89 and no unnecessary dependency is introduced.
-- [ ] ./scripts/check-local.sh passes for any kept code changes.
+- [x] Exact summary/history route contract is recorded.
+- [x] Exact live-state and terminal-outcome enums are recorded.
+- [x] Restart discriminator + sequence deduplication contract is fixed.
+- [x] `scheduler_history_limit` defaults to 5.
+- [x] Exact hard history maximum is selected and memory-qualified.
+- [x] Exact stdout/stderr byte caps and tail/truncation behavior are selected.
+- [x] Maximum history response/body cap is calculated and recorded.
+- [x] Output security/default-publication policy is explicit.
+- [x] Publication ownership does not couple HTTP handlers to scheduler mutation.
+- [x] Pre-feature daemon 404 compatibility is explicit.
+- [x] Stripped binary measurements are recorded against 3,261,664 bytes.
+- [x] Plan 163 has a numeric footprint rule rather than an implicit exception.
+- [x] MSRV remains Rust 1.89 and no unnecessary dependency is introduced.
+- [x] `./scripts/check-local.sh` passes for the kept code changes.
 
 ## Stop conditions
 
@@ -331,3 +332,185 @@ Stop and revise Plan 161 before Plan 163 if:
 
 Plan 163 begins only after this plan records exact resource and wire constants.
 Do not let implementation choose larger caps ad hoc.
+
+---
+
+## Contract record
+
+This is the frozen answer to every question above. The wire types, validation,
+and the daemon configuration setting landed here; the product behavior is
+Plan 163's. Nothing below may be widened by implementation judgment.
+
+### 1. Routes and types
+
+Additive v2 routes, kept out of `StatusPayloadV2`:
+
+~~~text
+GET/HEAD /v2/scheduler            -> SchedulerSummaryV2
+GET/HEAD /v2/scheduler/history    -> SchedulerHistoryV2
+~~~
+
+`GET` returns compact JSON; `HEAD` matches status/headers with no body under the
+server's existing conventions. Unknown methods keep the existing `405` policy
+and unknown paths keep `404`. A new daemon with no configured jobs returns a
+valid empty document, never `404`.
+
+Types live in `gregg-protocol` (`src/scheduler.rs`, validated by
+`src/validate_scheduler.rs`) because they are independently deployed wire
+types. The Gregg client-daemon IPC DTOs are explicitly **not** in that crate.
+
+### 2. Live-state and terminal-outcome vocabulary
+
+`SchedulerJobStateV2`: `Idle`, `WaitingForSlot`, `LoadHigh`, `LoadUnavailable`,
+`Running`. Both load-deferred states are distinguishable, and
+`LoadUnavailable` is validated to carry no `observed` reading, so a client
+cannot render a missing load as `0`.
+
+`SchedulerOutcomeV2`: `Success`, `Failed`, `SpawnFailed`, `WaitFailed`,
+`LoadExpired`, `Cancelled`. Validation rejects an `exit_code`/`signal` or a
+`duration_ms` on any outcome that never ran a child, so an expired or
+failed-to-start occurrence cannot masquerade as an executed one.
+
+`Cancelled` is published only when a record survives long enough to be served;
+a daemon shutdown clears memory-only history, so a remote client may never
+observe the final occurrence of a lifetime. That limitation is documented
+rather than papered over.
+
+### 3. Record identity and deduplication
+
+Identity is the pair `(SchedulerEpochV2, sequence)`.
+
+`SchedulerEpochV2` is `started_at_unix_ms` plus a `nonce` (FNV-1a over pid,
+start time, and a process-lifetime counter). No new dependency. The `nonce`
+exists because a wall-clock start alone can collide when two restarts land in
+one millisecond. The recorded collision assumption: a peer can be
+indistinguishable only when a new process starts in the same millisecond *and*
+reuses the same pid *and* the same counter value. This is a deduplication aid,
+never an authentication token.
+
+`history_revision` changes only when retained terminal history changes, so a
+job moving to load-delayed does not force a client history refetch.
+
+### 4. History depth
+
+- `scheduler_history_limit` (top-level daemon config, `Option<usize>`).
+- Missing means exactly `5` (`DEFAULT_SCHEDULER_HISTORY_LIMIT`).
+- Hard maximum is `10` (`MAX_SCHEDULER_HISTORY_LIMIT`); above that, existing
+  config validation fails before the listener binds.
+- **Zero explicitly means history disabled**: live state is still served, and
+  the history document is served with empty record lists. This was chosen over
+  rejecting `0` so an operator can stop retaining command output without
+  deleting the setting.
+- No path, database, journal, or log-spool setting exists.
+
+### 5. Output caps and truncation
+
+- `MAX_SCHEDULER_OUTPUT_BYTES = 1024` — raw captured tail, per stream. Separate
+  caps per stream so a noisy stdout cannot erase the only useful stderr
+  diagnostic. Candidates measured: 256 (truncates ordinary multi-line
+  diagnostics too aggressively), 1024 (chosen), 4096 (doubles worst-case
+  retained bytes for no diagnostic gain once the text cap applies).
+- `MAX_SCHEDULER_OUTPUT_TEXT_BYTES = 512` — published text, per stream, measured
+  in **JSON-escaped** bytes.
+
+The escaped basis is the load-bearing decision. `serde_json` renders a C0
+control byte as six bytes, so a naive "512 bytes of text" cap could still emit
+3 KiB of JSON per stream. `json_escaped_len` and `truncate_to_escaped_budget`
+make the published length an exact function of the character sequence, so the
+body maximum is closed by construction rather than discovered after
+serialization.
+
+Order of operations: bound raw bytes -> convert lossily -> enforce the escaped
+budget. `truncated` is set if either stage dropped anything, and is independent
+per stream. A test pins `json_escaped_len` against real `serde_json` output so
+the budget cannot silently drift from the actual serializer.
+
+### 6. Body budget (calculated and measured)
+
+Derived maximum = `MAX_SCHEDULER_JOBS (64)` x `MAX_SCHEDULER_HISTORY_LIMIT
+(10)` records, each with two streams at 512 escaped bytes plus bounded metadata.
+
+Measured with the pathological shape (all 64 jobs at depth 10, every stream
+filled to the escaped budget): **832,022 bytes**.
+
+- `MAX_SCHEDULER_HISTORY_BODY_BYTES = 1 MiB` (1,048,576) — the client cap,
+  20.6% above the measured maximum.
+- `MAX_SCHEDULER_SUMMARY_BODY_BYTES = 64 KiB` — the summary client cap; a
+  summary carries no output, so this is orders of magnitude above its shape and
+  is the same order as the existing v2 status cap.
+
+`representative_maximum_history_stays_inside_the_body_budget` asserts the exact
+832,022 figure, so widening any frozen constant or changing serialization fails
+a test instead of invalidating the published cap.
+
+### 7. Memory attributable to history/output
+
+Worst case (64 jobs at the hard maximum): 640 records x 2 streams x 512
+escaped bytes = 655,360 bytes of published text plus bounded per-record
+metadata. At the default depth of 5 it is 327,680 bytes. Zero jobs is zero.
+
+### 8. Binary footprint
+
+Baseline `3,261,664` bytes (stripped release `greggd`, `lto = "fat"`,
+`codegen-units = 1`, `strip = "symbols"`, `panic = "abort"`).
+
+Stage 1 measured — protocol/schema/config additions only, before the daemon
+references the types: **3,267,776** (+6,112 / +0.187%). The cost is small
+because unused serde derives are dead-code-eliminated; the real cost appears
+when Plan 163 actually constructs and serializes these documents.
+
+Stages 2-4 are Plan 163's to measure against the rule below.
+
+### 9. Output publication policy
+
+**Published by default**, with no new setting. Rationale, recorded so it is not
+re-litigated:
+
+- the operator configured the job and chose the listener address;
+- caps are enforced before serialization, and no `argv`, `working_dir`,
+  environment, or service identity is published;
+- suppressing output by default would defeat the stated observability goal.
+
+No authentication, TLS, token, or per-client ACL is introduced by this line.
+The documentation obligation is explicit: any principal that can reach the
+configured `greggd` HTTP listener can read scheduler history and output.
+
+### 10. Pre-feature daemon compatibility
+
+A `404` from `/v2/scheduler` means **scheduler observability unsupported**, not
+host offline. The system stays online with cron capability marked unsupported.
+Network/5xx failure retains last-known cron data behind a stale marker that is
+independent of Systems reachability. Validation deliberately treats absence as
+absence: it never turns a missing route into a protocol error.
+
+### 11. Publication ownership
+
+A separate scheduler publication object, **not** the high-frequency metrics
+`PublishedState`. Sharing one lock would couple low-frequency history to
+high-frequency sampler publication for no benefit. Handlers read one coherent
+snapshot and serialize it themselves; they never await scheduler mutation, hold
+a scheduler lock while serializing, or touch configuration, telemetry, or
+processes.
+
+### 12. Numeric rule handed to Plan 163
+
+**Plan 163's stripped release `greggd` must not exceed 3,400,000 bytes**
+(+138,336 / +4.24% over the 3,261,664 baseline).
+
+Above that, Plan 163 stops and opens an explicit re-baseline decision plan with
+component attribution. It does not silently establish a new baseline. Plan 167
+re-measures and enforces the same number.
+
+### Kept code changes
+
+- `crates/gregg-protocol/src/scheduler.rs` (new) — frozen wire types, escaped
+  length helpers, output conversion.
+- `crates/gregg-protocol/src/validate_scheduler.rs` (new) — structured
+  validation plus the maximum-body proof.
+- `crates/gregg-protocol/src/lib.rs` — module wiring and re-exports.
+- `crates/greggd/src/config.rs` — `scheduler_history_limit` setting, its
+  default/zero semantics, bounds validation, and the frozen re-exports.
+
+No dependency was added, so MSRV stays 1.89 and no ablation of a candidate
+dependency was required. `cargo test -p gregg-protocol --all-features` and
+`cargo test -p greggd --all-features --lib` are green.
