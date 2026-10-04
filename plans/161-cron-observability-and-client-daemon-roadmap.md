@@ -1,0 +1,369 @@
+# Plan 161: Cron observability and Gregg client-daemon roadmap
+
+Status: planned.
+
+Depends on: completed scheduler line through Plan 160 and current main at
+e399a4e05fa95b73823f7bef19de051685685bb4. Independent of the remaining
+Plan 091 sustained-soak record.
+
+## Objective
+
+Add an operator-facing cron observability path to Gregg while correcting the
+current client process architecture so one background Gregg client daemon owns
+fleet polling and multiple TUI processes consume its cached state.
+
+The operator goal is deliberately narrow:
+
+- greggd exposes which local maintenance jobs are configured, when they are
+  due, whether they are running or load-delayed, and a bounded in-memory record
+  of recent terminal outcomes;
+- each greggd keeps a configurable number of recent records per job in memory,
+  defaulting to five, with no scheduler-history disk writes;
+- recent records include bounded stdout and stderr tails sufficient to diagnose
+  ordinary maintenance jobs without allowing an unbounded child pipe or log
+  database;
+- gregg gains plain c as the cron detail control beside d (drives) and n
+  (network);
+- a selected system's cron view makes configured schedules, next run, last run,
+  recent outcomes/output, and current load deferral visible at a glance;
+- the polling/data plane moves out of each TUI instance into one config-specific
+  background Gregg client daemon so multiple TUIs do not duplicate endpoint
+  polling;
+- the client daemon can remain running after all TUIs exit and therefore retain
+  a longer bounded in-memory cron backlog than any one remote greggd response;
+- invoking bare gregg ensures the correct client daemon is running before
+  attaching the TUI;
+- user-scoped startup installation gives the daemon a persistent background
+  lifecycle without turning Gregg into a system-wide privileged service.
+
+This is an observability and client-process-boundary line. It is not a remote
+scheduler-management line.
+
+## Current baseline
+
+The post-Plan-160 scheduler already provides:
+
+- strict five-field local-civil cron semantics plus the four existing aliases;
+- one pending occurrence per job;
+- one global scheduled child;
+- cached sampler load gating with 1m/5m/15m selection;
+- bounded retry and maximum wait;
+- coalescing instead of missed-run replay;
+- same-principal direct argv execution;
+- a two-second direct-child shutdown bound;
+- minute-scale civil-clock reconciliation;
+- no persistent queue or job database;
+- no scheduler task at all when jobs is empty.
+
+The missing observability is structural rather than an execution bug:
+
+- scheduler state lives only in crates/greggd/src/scheduler.rs;
+- stdout/stderr are currently Stdio::null();
+- completed executions are logged and discarded;
+- the daemon HTTP surface has no scheduler routes;
+- gregg polls every configured endpoint itself;
+- every additional TUI process therefore owns another polling scheduler and
+  another EggPool worker;
+- AppState currently mixes fleet data with TUI-only selection/view state.
+
+Plan 159 also established a scheduler-specific stripped greggd baseline of
+3,261,664 bytes. Scheduler-related growth beyond that value requires a new
+measured review. This line owns that review rather than silently spending the
+old budget.
+
+## Architecture to establish
+
+The target process graph is:
+
+~~~text
+remote hosts
+  greggd ---+
+  greggd ---+-- read-only HTTP --> gregg client daemon -- local IPC --> gregg TUI
+  greggd ---+                         |                         +-----> gregg TUI
+                                      +-- bounded in-memory fleet/cron cache
+~~~
+
+The client daemon remains a mode of the existing gregg executable for this
+line. Do not introduce a separately distributed greggc/fourth application
+binary merely to achieve process separation.
+
+A future GUI should be able to consume the same local daemon boundary, but GUI
+implementation is explicitly out of scope.
+
+## Ownership boundaries
+
+### greggd owns
+
+- execution of locally configured jobs;
+- authoritative current scheduler state;
+- the remote per-job history ring;
+- bounded output capture;
+- scheduler summary/history serialization;
+- all load-delay reasoning.
+
+### Gregg client daemon owns
+
+- endpoint polling and generation/concurrency control;
+- v2-first metrics normalization;
+- optional scheduler-summary/history polling;
+- EggPool polling/control already owned by the current client;
+- the longer bounded local cron cache;
+- config reconciliation for the polling plane;
+- fan-out of latest coherent state to local frontends.
+
+### Gregg TUI owns
+
+- terminal lifecycle;
+- selected system and viewport;
+- normal/condensed presentation;
+- drive/network/cron expansion state;
+- cron sub-selection/scrolling needed only for presentation;
+- transient selection highlighting;
+- rendering and keyboard input.
+
+The TUI must not regain direct remote polling as the ordinary production path
+after the client-daemon cutover. A focused test/helper path may still inject
+state directly.
+
+## Remote API boundary
+
+Scheduler observability is additive and read-only. Do not merge history into
+ordinary /v2/status: metrics are polled frequently and scheduler output may be
+materially larger.
+
+The intended shape is:
+
+~~~text
+GET/HEAD /v2/scheduler
+GET/HEAD /v2/scheduler/history
+~~~
+
+Plan 162 owns the exact wire types, bounds, compatibility behavior, and
+footprint qualification before Plan 163 lands product behavior.
+
+No endpoint may:
+
+- create/edit/delete jobs;
+- start/cancel a job;
+- mutate daemon configuration;
+- accept command input;
+- expose a shell;
+- weaken the existing private-LAN/read-only server model.
+
+## Scheduler history policy
+
+The default remote history depth is five completed/terminal occurrences per
+configured job. The depth is configurable but must have a small hard maximum
+chosen and recorded by Plan 162.
+
+History is memory-only:
+
+- daemon restart clears it;
+- no sqlite/database/journal/log-spool directory;
+- no replay after restart;
+- no periodic history write;
+- no fsync/write amplification from scheduler execution.
+
+Terminal records must include non-child outcomes relevant to operator
+correctness, including load-wait expiry and spawn failure. A recent-runs display
+that silently omits failed-to-start or expired occurrences is not truthful.
+
+Output capture is bounded. Plan 162 must select exact stdout/stderr byte limits
+and prove a worst-case memory/body-size budget before implementation. Plan 163
+must drain child pipes concurrently while the child runs; wait_with_output or
+another whole-output accumulator is not acceptable.
+
+## Security boundary for output
+
+Scheduler output is more sensitive than CPU/memory telemetry. The line must
+make the trust model explicit.
+
+At minimum:
+
+- command argv/working-directory values are not newly exposed merely to render
+  cron status; the operator-facing job name and schedule are sufficient;
+- output is bounded before publication;
+- arbitrary output bytes are converted to a bounded JSON-safe representation;
+- the TUI sanitizes terminal control/ANSI sequences before rendering;
+- documentation states that any principal able to reach the configured greggd
+  HTTP listener can read the scheduler history/output endpoint;
+- no credentials, auth scheme, TLS system, or secret store are introduced by
+  this line.
+
+If Plan 162 concludes that default output publication is unacceptable under the
+existing unauthenticated LAN boundary, it may add one narrow explicit
+configuration policy, but it must preserve the requested default operator UX
+unless a concrete security reason is recorded.
+
+## Local client-daemon boundary
+
+The daemon is per-user and config-specific. Two gregg processes using the same
+normalized config identity attach to the same daemon. Distinct explicit configs
+may have distinct daemon instances.
+
+Use native local IPC:
+
+- Unix: config-specific Unix-domain socket with restrictive ownership/mode;
+- Windows: config-specific named pipe with a same-user access policy.
+
+Do not use a discoverable unauthenticated TCP listener for the local client
+daemon.
+
+The local protocol is internal to the gregg crate and versioned by a small
+handshake. Do not put TUI/client-daemon implementation DTOs into gregg-protocol,
+whose purpose is the independently deployed remote greggd wire contract.
+
+The local stream should publish latest coherent state, not queue every metrics
+sample. Slow frontends may skip superseded generations. Cron history remains
+available from the daemon-owned cache and therefore is not lost merely because
+a TUI skipped intermediate UI updates.
+
+## Configuration and reload boundary
+
+The existing config remains authoritative.
+
+- No filesystem watcher is added.
+- Ctrl-R becomes a request to the client daemon to reload/reconcile the selected
+  config.
+- Successful non-TUI config mutations (add, remove, refresh, and edit after the
+  editor exits) should notify an already-running matching daemon to reconcile;
+  absence of a daemon is not an error.
+- Invalid reload keeps the last-known-good polling state and returns a visible
+  diagnostic to attached frontends.
+- Stable endpoint IDs/generation protections remain authoritative.
+
+## Lifecycle direction
+
+Bare gregg performs a bounded local-daemon handshake before entering the TUI.
+If the matching daemon is absent, it launches the exact current executable in
+client-daemon mode under a launch lock, waits boundedly for readiness, then
+attaches.
+
+Plan 165 owns durable per-user startup semantics. Reuse/refactor Gregg's
+existing lifecycle primitives where they genuinely apply, but do not copy
+system-level greggd privilege assumptions into a user-level client daemon.
+
+Expected managers:
+
+- Linux: user systemd when available, with a bounded fallback appropriate to a
+  user process;
+- macOS: LaunchAgent, not system LaunchDaemon;
+- Windows: user-session startup mechanism, not a LocalService SCM service.
+
+System-wide binary installation must not guess which human account should own a
+client daemon.
+
+## Planned sequence
+
+### Plan 162 - scheduler observability contract and resource qualification
+
+Freeze scheduler status/history wire types, state/outcome vocabulary,
+history-depth bounds, output-tail limits, body caps, in-memory cost, and
+stripped-binary budget before product implementation.
+
+### Plan 163 - greggd scheduler history and read-only API
+
+Implement live scheduler publication, bounded history/output capture, the new
+read-only routes, config validation, protocol fixtures, and deterministic
+scheduler/server tests.
+
+### Plan 164 - Gregg client-daemon core and local IPC
+
+Move remote Systems/EggPool polling ownership behind one config-specific local
+daemon, establish same-user IPC/handshake, latest-state fan-out, and
+config-reload/control semantics. Keep the TUI presentation-only.
+
+This plan may be developed in parallel with Plans 162-163 after the Plan-161
+boundary is accepted because it does not require scheduler wire details.
+
+### Plan 165 - client-daemon lifecycle, install, update, and uninstall
+
+Make bare gregg lazily ensure/attach the daemon, add per-user startup
+registration and ownership-safe stop/status/restart behavior, and reconcile
+bootstrap/update/uninstall semantics.
+
+### Plan 166 - cron cache and TUI observability
+
+Add scheduler polling/history merge to the client daemon, a longer bounded
+local in-memory cache, plain c cron detail, load-delay presentation, recent
+outcomes/output, mixed-version compatibility, and control-sequence
+sanitization.
+
+### Plan 167 - correctness, multi-client, and footprint closure
+
+Prove one polling plane with multiple TUIs, daemon/TUI/restart behavior,
+bounded memory/output, mixed old/new daemons, load delay and output-flood
+behavior, native IPC/lifecycle truth, and measured binary/runtime impact.
+Reconcile active docs and this roadmap.
+
+## Dependency graph
+
+~~~text
+160 -> 161
+161 -> 162 -> 163
+161 -> 164 -> 165
+163 + 164 -> 166
+163 + 165 + 166 -> 167
+~~~
+
+Plan 091 remains independent.
+
+## Preserved exclusions
+
+This line does not add:
+
+- remote scheduler mutation;
+- arbitrary command execution from Gregg;
+- persistent scheduler history;
+- persistent client cron history;
+- job dependency graphs;
+- catch-up replay;
+- alerts/notifications;
+- Prometheus/exporter support;
+- web UI;
+- GUI implementation;
+- public-internet hardening/TLS/auth;
+- process monitoring;
+- a generalized task runner;
+- a separately distributed client-daemon executable unless Plan 164 proves the
+  same-binary mode impossible and records why.
+
+## Completion criteria
+
+This roadmap closes only when Plans 162-167 demonstrate all of the following:
+
+- [ ] greggd exposes bounded read-only scheduler summary/history without
+      changing /v2/status metrics semantics.
+- [ ] Default remote history depth is five and is configurable within a hard
+      bound.
+- [ ] No scheduler history is persisted to disk.
+- [ ] Child stdout/stderr are drained without deadlock and retained only under
+      fixed byte bounds.
+- [ ] Current load-delayed/unavailable/slot-wait/running state is truthful.
+- [ ] Terminal history includes success, command failure, spawn failure, and
+      load-expiry outcomes as applicable.
+- [ ] Old greggd versions without scheduler routes remain ordinary online
+      systems with cron observability marked unsupported.
+- [ ] One config-specific Gregg client daemon owns polling for multiple TUIs.
+- [ ] Closing all TUIs does not stop the background daemon.
+- [ ] Bare gregg starts an absent matching daemon safely and attaches.
+- [ ] Per-user startup ownership is available on supported platforms without
+      creating a privileged system client service.
+- [ ] Client update/uninstall do not leave a knowingly incompatible owned
+      daemon attached to the new binary.
+- [ ] The client daemon maintains only bounded in-memory cron history.
+- [ ] Plain c provides the requested scheduler view beside d and n.
+- [ ] Output rendered in the terminal cannot inject terminal control sequences.
+- [ ] Multiple TUIs do not multiply remote Systems or EggPool polling cadence.
+- [ ] greggd growth beyond the Plan-159 scheduler baseline and gregg client
+      growth are measured and explicitly accepted or corrected.
+- [ ] No new workflow/job/matrix is required unless native-platform truth
+      cannot be obtained from the existing CI jobs.
+
+## Handoff
+
+Begin with Plan 162 and Plan 164. Plan 162 must freeze the remote scheduler
+observability/resource contract before Plan 163 changes greggd. Plan 164 may
+proceed independently because the client-daemon split is already justified by
+duplicate polling and future frontend reuse. Do not start with TUI rendering:
+the c view belongs after both data planes exist.
