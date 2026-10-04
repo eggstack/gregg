@@ -183,7 +183,7 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
             .collect(),
         ..Config::default()
     };
-    let mut state = AppState::from_config(&config);
+    let mut state = AppState::synthetic(&config);
     let cancel = CancellationToken::new();
     let (refresh_tx, refresh_rx) = mpsc::channel(2);
     let scheduler = PollScheduler::new(
@@ -250,7 +250,7 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
     );
     state.apply_batch(&first);
     assert_eq!(state.systems.len(), modes.len() + 1);
-    assert_eq!(state.last_applied_generation, 1);
+    assert_eq!(state.last_applied_generation(), 1);
     for id in ["healthy", "slow", "stale"] {
         assert_eq!(
             state
@@ -290,7 +290,7 @@ async fn production_state_engine_tracks_mixed_fleet_and_recovery() {
         .expect("recovery generation timed out")
         .expect("scheduler closed before recovery generation");
     state.apply_batch(&second);
-    assert_eq!(state.last_applied_generation, 2);
+    assert_eq!(state.last_applied_generation(), 2);
     assert_eq!(
         state
             .systems

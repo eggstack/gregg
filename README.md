@@ -130,7 +130,25 @@ See [Daemon](docs/daemon.md) and [Client](docs/client.md).
 - `v`: toggle normal/condensed layout
 - `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
-- `Ctrl-R`: reload config and poll immediately
+- `Ctrl-R`: ask the client daemon to re-read the config and poll immediately
+
+## The client daemon
+
+`gregg` is a frontend. A separate, same-user process — the *client daemon* —
+owns all remote polling for one configuration file and serves TUI windows over a
+local endpoint, so a second window costs a socket instead of a second copy of
+the fleet's polling, and closing the last window does not stop observation.
+
+```text
+gregg daemon run     # run it in the foreground (it never self-daemonizes)
+gregg daemon status   # is one running for this config?
+gregg daemon stop     # stop it
+```
+
+Each configuration gets its own daemon on its own `0600` endpoint. The TUI
+attaches to it, reads no config file, and opens no network connection; if the
+daemon is not there it says so instead of quietly polling behind its back. See
+[Client](docs/client.md).
 
 ## Live metrics and compatibility
 

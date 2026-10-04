@@ -311,7 +311,7 @@ mod tests {
             }),
             ..Config::default()
         };
-        AppState::from_config(&config)
+        AppState::synthetic(&config)
     }
 
     fn buffer(state: &AppState, width: u16, height: u16) -> String {

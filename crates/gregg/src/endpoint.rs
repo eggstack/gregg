@@ -7,6 +7,8 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use serde::{Deserialize, Serialize};
+
 /// Default port for greggd endpoints.
 pub const DEFAULT_PORT: u16 = 11310;
 
@@ -14,7 +16,12 @@ pub const DEFAULT_PORT: u16 = 11310;
 pub const MAX_ENDPOINT_NAME_LEN: usize = 128;
 
 /// A parsed and normalized remote endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+///
+/// Plan 164: `Serialize`/`Deserialize` exist so the client daemon can publish
+/// the endpoint itself rather than a re-derived display string. A frontend
+/// needs the host and port to lay out a row, and rebuilding them from a label
+/// would let the two ends disagree about what an endpoint is.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Endpoint {
     /// Stable unique identifier (UUID v4).
     pub id: String,

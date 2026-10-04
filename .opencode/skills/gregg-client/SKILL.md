@@ -61,29 +61,57 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 Client configuration bounds `request_timeout_ms` to 100..=60,000 milliseconds
 so a malformed timeout cannot hold bounded polling permits indefinitely.
 
+### Client daemon (Plan 164) — the TUI is a frontend
+
+`gregg` owns **no** remote polling. A separate foreground process per config,
+`gregg daemon run`, holds the endpoint HTTP client, `PollScheduler`, normalized
+fleet state, the `EggPool` worker, and the `Ctrl-R` reload boundary. The TUI
+reads no config file and opens no network connection.
+
+- **Identity/endpoint:** FNV-1a of the normalized config path, `0600` Unix
+  socket beside that config (temp-dir fallback), Windows named pipe with an
+  owner-only SDDL and `PIPE_REJECT_REMOTE_CLIENTS`. One daemon per config; two
+  configs never share one.
+- **Handshake:** carries `PROTOCOL_VERSION` *and* the expected config identity.
+  A mismatch is refused, so a TUI is never fed another config's fleet and
+  `daemon status`/`stop` identify their target without a PID file.
+- **Fan-out:** `watch` slot, serialized **once** per publication. A slow
+  frontend skips to the newest generation (documents are complete). Control
+  acks ride a small per-connection channel.
+- **Ownership boundary:** `FleetState` holds the reducers. `AppState` in a TUI
+  has no batch/EggPool/reload entry point; `AppState::adopt_snapshot` is its
+  only fleet writer. `#[cfg(test)] test_fleet` lets renderer tests drive the
+  real publish/adopt path and is absent from production builds.
+- **No fallback.** A frontend that cannot reach a compatible daemon reports the
+  reason and exits. Never add a direct-polling fallback.
+
 ### Event loop
 
 The main event loop uses `tokio::select!` biased to process:
-1. **Poll batches** from the scheduler → apply to state
-2. **EggPool results** from the worker → apply to state
-3. **User input events** from crossterm → translate to actions → apply to state
-4. **Highlight deadline** (`tokio::time::Sleep` arm; Plan 087) — when armed by a selection-changing Systems action, it dispatches `Action::ClearSelectionHighlight` roughly ten seconds later so the reverse-video styling disappears even when no other event fires.
+1. **User input events** from crossterm → translate to actions → apply to presentation state, forward daemon-bound requests (input before frames so a flood of documents cannot starve `Quit`)
+2. **Daemon frames** → `Snapshot` is adopted; `Hello`/`ControlAck` are not render-visible; `ShuttingDown`/`VersionMismatch`/`ProtocolError` exit with the daemon's reason
+3. **Highlight deadline** (`tokio::time::Sleep` arm; Plan 087) — when armed by a selection-changing Systems action, it dispatches `Action::ClearSelectionHighlight` roughly ten seconds later so the reverse-video styling disappears even when no other event fires.
 
 The loop draws the initial frame immediately and then gates complete-frame
-draws with a local dirty flag. Accepted poll/EggPool transitions, mapped
-render-visible actions, resize, highlight expiry, and successful config
-replacement set it; unmapped keys and no-op channel wakeups do not draw. The
-highlight timer is parked at a far-future sleep when inactive; the select arm
-never fires spuriously. Do not introduce partial-region rendering.
+draws with a local dirty flag. An adopted document sets it when
+`adopt_snapshot` sees a render-visible change — endpoint, configured name,
+reachability, normalized snapshot, offline reason, EggPool window/worker/data
+planes. Timestamps and latency are excluded on purpose, so an advancing age
+does not force a frame. A document that is not newer than the last applied one
+is skipped entirely. Mapped render-visible actions, resize, and highlight
+expiry also set it; unmapped keys and no-op wakeups do not draw. The highlight
+timer is parked at a far-future sleep when inactive; the select arm never fires
+spuriously. Do not introduce partial-region rendering.
 
 ### Action/Reducer pattern
 
-All state changes go through the `Action` enum. `AppState::apply_action()` and `apply_batch()` are pure, deterministic functions. The renderer reads `AppState` projections without performing I/O.
+All presentation changes go through the `Action` enum. `AppState::apply_action_changed()` is pure and deterministic and is the only writer of presentation state; `AppState::adopt_snapshot()` is the only writer of fleet state. The renderer reads `AppState` projections without performing I/O. Poll batches, `EggPool` results, and config reloads are reduced by `FleetState` inside the daemon and reach a frontend as complete documents.
 
 ### Polling pipeline
 
 ```
-Config → Endpoint list → PollScheduler → PollBatch channel → AppState reducer
+Config → Endpoint list → PollScheduler → PollBatch channel → FleetState (daemon)
+      → encode once → watch::channel<Document> → AppState::adopt_snapshot (TUI)
 ```
 
 **Scheduler** (`scheduler.rs`):
@@ -162,10 +190,15 @@ struct AppState {
 
 **Display order:** Online systems first (stable order), then offline/pending.
 **Viewport:** Computes visible range for mixed-height entries; selected system always visible.
-**First-batch snap:** `AppState::apply_batch` snaps `selected_id` and
-`viewport_top_id` to `display_order()[0]` only when
-`last_applied_generation == 0` before the batch is applied. Later
-batches and `Ctrl-R` reloads preserve ordinary selection/viewport.
+**One-time placement:** `AppState::adopt_snapshot` snaps `selected_id` and
+`viewport_top_id` to `display_order()[0]` on the first document carrying
+`poll_initialized == true` — the first *polled* reachability, not the first
+document. The daemon publishes once at bind with every system `pending`, so
+keying on the first document would pin selection to the first configured
+system and never move it when the first batch reveals that system is offline.
+The daemon therefore publishes that one-time transition even when it changed
+nothing visible, so the placement cannot be deferred onto an unrelated later
+change. Every later document preserves ordinary selection/viewport.
 
 **Plan 087 logical vs visual selection:** `selected_id` is the
 persistent logical selection (drives `d` and viewport behavior).
@@ -188,7 +221,7 @@ never activate the Systems-device highlight.
 | `n` | Toggle network detail expansion; legacy systems are a no-op |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
-| `Ctrl-R` | Reload Systems config and replace/poll endpoints; on EggPool, refresh pane |
+| `Ctrl-R` | Ask the daemon to re-read the config and poll; on EggPool, refresh pane |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 
 ### Width degradation
@@ -354,7 +387,38 @@ EggPool URL-normalization and URL-representation failures are reported as
 
 ## Ctrl-R config reload
 
-The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives the replacement endpoint vector, and awaits delivery through the bounded scheduler command channel. A full channel creates ordered pending backpressure without blocking input, rendering, or poll-batch processing; a closed receiver returns through the TUI error boundary. Failed config loads retain last-known-good state, issue an ordinary refresh, and display the reload error in the diagnostic line until a later reload succeeds.
+Still the only reload boundary; there is no filesystem watcher. The Systems-pane
+`Ctrl-R` sends `DaemonRequest::ReloadConfig` over the local channel. The daemon
+re-reads the file **from its own resolved startup path** (never a
+frontend-supplied one), reconciles retained systems by stable id, swaps or
+clears the `EggPool` entry, and republishes. A failed load retains
+last-known-good fleet state, still issues an ordinary refresh so a bad file
+cannot freeze metrics that were already being collected, and publishes a
+diagnostic the renderer shows until a later reload succeeds.
+
+The request rides a bounded channel and is written by the frame reader, so it
+interleaves with incoming documents; a full channel is reported, never waited
+on. The reload's outcome is visible only in the next document, so `ControlAck`
+is not render-visible.
+
+`gregg add` / `remove` / `refresh` send the same request after a successful
+mutation, best-effort and silently — absence is the common case and must never
+turn a successful mutation into an error.
+
+## EggPool convergence (Plan 164)
+
+The worker is daemon-owned. Each frontend publishes its **whole**
+`(active, period, refresh)` intent — a replacement, not a delta — and the daemon
+reduces every attached frontend's intent: `active` is true if any frontend has
+the pane open, `period` is the shortest window any of them asked for. Both are
+order-independent, so two windows cannot race the worker into two activations,
+and the last pane leaving always converges it to inactive. Intents are keyed by
+the accept loop's stable subscriber id and retired on disconnect, so a frontend
+that refreshes often cannot leave a stale active entry behind. `j`/`k` records a
+*request* in `AppState::eggpool_period_request`; the pane only ever shows a
+period the daemon actually fetched. `refresh: true` is the manual-refresh escape
+hatch, without which a re-sent identical intent could not mint a new worker
+generation.
 
 ## Key constraints
 

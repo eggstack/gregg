@@ -20,7 +20,13 @@ renders a Ratatui-based terminal UI.
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `main` | `src/main.rs` | Entry point, event loop (6 `select!` biased arms in source order: shutdown, input events, poll batches, EggPool results, highlight deadline, pending refresh backpressure — input before batches so flooded batches cannot starve `Quit`), TUI wiring (update is synchronous, before Tokio) |
+| `main` | `src/main.rs` | Entry point and the TUI event loop (3 `select!` biased arms in source order: shutdown, input events, daemon frames — input before frames so a flood of state documents cannot starve `Quit`). Reads no config file and opens no network connection; `update` is synchronous, before Tokio |
+| `clientd/identity` | `src/clientd/identity.rs` | Per-config FNV-1a identity of the normalized config path; endpoint candidate paths (config-adjacent primary, temp-dir fallback) |
+| `clientd/protocol` | `src/clientd/protocol.rs` | Local IPC wire contract: `PROTOCOL_VERSION`, 8-hex length prefix, `FrontendFrame` / `DaemonRequest`, encode/decode caps. Deliberately **not** in `gregg-protocol` — same binary, same host, version handshake instead of forward compatibility |
+| `clientd/ipc` | `src/clientd/ipc.rs` | Endpoint transport. Unix: `0600` socket, non-blocking discipline, stale reclamation (must be a socket **and** unconnectable). Windows: named pipe with an owner-only SDDL and `PIPE_REJECT_REMOTE_CLIENTS` |
+| `clientd/snapshot` | `src/clientd/snapshot.rs` | `FrontendSnapshot` and per-system / EggPool DTOs. Timestamps cross as Unix ms because `Instant` cannot be transported |
+| `clientd/daemon` | `src/clientd/daemon.rs` | The client daemon: owns `FleetState`, the poll scheduler, the EggPool worker, and the `Ctrl-R` reload boundary; `watch`-channel fan-out; `attach` / `status` / `stop` |
+| `clientd/frontend` | `src/clientd/frontend.rs` | The TUI's side: dial, handshake, request sender (`ControlSink`), and the single socket-owning frame reader |
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
 | `update` | `src/update.rs` | Thin `run_simple_update` adapter binding the client identity |
 | `uninstall` | `src/uninstall.rs` | Exact-exe client removal plan/execution (`purge_empty_dir_for` only the standard parent) |
@@ -85,19 +91,80 @@ The main event loop in `main.rs` uses `tokio::select!` biased in this source
 order:
 
 1. Shutdown (`CancellationToken`)
-2. **User input events** from crossterm → translate to actions → apply to state (input before batches so a flooded batch cannot starve `Quit`)
-3. **Poll batches** from the scheduler → apply to state
-4. **EggPool results** from the worker → apply to state (close marks the worker unavailable, Systems polling continues)
-5. **Highlight deadline** (`tokio::time::Sleep` arm, parked far-future while dormant) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
-6. **Pending Systems refresh backpressure** — a `try_send Full` defers the endpoint replacement + reconcile without blocking input, rendering, or batches
+2. **User input events** from crossterm → translate to actions → apply to presentation state, and forward anything that crosses the process boundary to the daemon (input before frames so a flood of state documents cannot starve `Quit`)
+3. **Daemon frames** → `FrontendFrame::Snapshot` is adopted into the render model; `Hello` and `ControlAck` are not render-visible; `ShuttingDown`, `VersionMismatch`, and `ProtocolError` exit with the daemon's own reason
+4. **Highlight deadline** (`tokio::time::Sleep` arm, parked far-future while dormant) — when armed, the loop dispatches `Action::ClearSelectionHighlight` and re-renders so the reverse-video styling disappears even when no other event fires
 
 The loop keeps a local dirty flag. It draws the initial frame immediately,
-then redraws only after a poll batch, EggPool result/worker transition, mapped
-render-visible action, terminal resize, highlight expiry, or successful config
-replacement. Unmapped keys and channel wakeups that do not change visible
-state do not rebuild a frame. Gregg still submits complete frames to Ratatui;
-Ratatui remains responsible for cell diffing and there is no partial-render
-architecture.
+then redraws only when a document is adopted with a render-visible change, or
+after a mapped render-visible action, terminal resize, or highlight expiry.
+`AppState::adopt_snapshot` is the sole decider: it compares what a renderer can
+actually see (endpoint, configured name, reachability, normalized snapshot,
+offline reason, EggPool window/worker/data planes) and explicitly ignores
+timestamps and latency, so an age that advanced does not force a frame. A
+document that is not newer than the last applied one is skipped, not rendered —
+that is the point of a latest-state channel. Unmapped keys and channel wakeups
+that do not change visible state do not rebuild a frame. Gregg still submits
+complete frames to Ratatui; Ratatui remains responsible for cell diffing and
+there is no partial-render architecture.
+
+### Client daemon (Plan 164)
+
+Ownership of everything derived from the network lives in `gregg daemon run`,
+a foreground process per configuration file. A TUI that owned its own poller
+would multiply the fleet's request budget by the number of open windows, and
+closing one window would silently stop a fraction of what the operator is
+watching. Here, a second window costs a socket and closing the last window
+changes nothing about polling.
+
+```
+Config → PollScheduler + EggPool worker → FleetState → encode once
+                                                     → watch::channel<Document>
+Frontend A ─┐                                        ├─ write same bytes
+Frontend B ─┴────────────────────────────────────────┘
+```
+
+- **Identity.** One daemon per config, keyed by an FNV-1a digest of the
+  normalized config path, on a `0600` socket beside that config. Two configs
+  never share a daemon; one daemon never serves another config's fleet.
+- **Handshake.** Carries the protocol version *and* the expected config
+  identity. A TUI is refused rather than fed another config's systems, and
+  `gregg daemon status`/`stop` identify their target through the handshake
+  rather than a process name or PID file.
+- **Fan-out.** `watch`, not a queue: a frontend that cannot keep up observes a
+  newer generation and skips the ones it missed, which is safe because every
+  document is complete. Each document is serialized **once** and every frontend
+  is handed the same bytes, so publication cost does not scale with open
+  windows — the same discipline `greggd` uses for its scheduler cell. Control
+  acknowledgements are the one non-latest-state message and ride a small
+  per-connection channel, so one frontend's request cannot displace another's
+  state.
+- **Ownership boundary in code.** `FleetState` holds the reducer that consumes
+  poll batches, EggPool results, and reloads. `AppState` in a frontend has no
+  such entry point; its only fleet writer is `adopt_snapshot`. The
+  `#[cfg(test)] test_fleet` shadow on `AppState` lets renderer tests drive the
+  *real* publish/adopt path, and does not exist in a production build.
+- **First-document vs first-reachability.** The daemon publishes once at bind,
+  before any poll has completed, with every system `pending`. A frontend
+  places its selection on the first document that carries *polled*
+  reachability (`FrontendSnapshot::poll_initialized`), not on the first
+  document it hears. The daemon therefore publishes the initialization
+  transition once even when it changed nothing visible — otherwise the
+  placement would be deferred onto some unrelated later change and undo
+  whatever the operator had selected in between.
+- **EggPool convergence.** The worker is daemon-owned. Each frontend publishes
+  its whole `(active, period)` intent, and the daemon reduces the set:
+  `active` is true if any frontend has the pane open, `period` is the shortest
+  window any of them asked for. Both are order-independent, so two windows
+  cannot race the worker into two activations, and the last pane leaving always
+  converges the worker to inactive. Intents are keyed by the accept loop's
+  stable subscriber id, so a frontend that refreshes often cannot leave a stale
+  active entry behind.
+- **No fallback.** A frontend that cannot reach a compatible daemon reports the
+  reason and exits. A silent direct-polling fallback would double the request
+  budget exactly when the daemon is unhealthy and would make the failure
+  invisible. Plan 165 turns an *absent* endpoint into a bounded lazy launch; it
+  does not relax this.
 
 The highlight deadline is the only transient timer the loop owns.
 Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)

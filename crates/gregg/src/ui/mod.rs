@@ -470,7 +470,7 @@ mod tests {
 
     fn apply_offline(state: &mut AppState, index: usize) {
         let mut batch = make_offline_batch(state, index);
-        batch.generation = state.last_applied_generation + 1;
+        batch.generation = state.last_applied_generation() + 1;
         state.apply_batch(&batch);
     }
 
@@ -505,7 +505,7 @@ mod tests {
     #[test]
     fn render_empty_config() {
         let config = Config::default();
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         let output = render_state(&state, 80, 24);
         assert!(
             output.contains("No sources configured"),
@@ -518,7 +518,7 @@ mod tests {
     #[test]
     fn render_too_small_width() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 20, 24);
         assert!(
@@ -530,7 +530,7 @@ mod tests {
     #[test]
     fn render_too_small_height() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 2);
         assert!(
@@ -544,7 +544,7 @@ mod tests {
     #[test]
     fn render_online_linux_system() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 8);
         assert!(!output.contains("NET"));
@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn render_online_macos_system() {
         let config = test_config(&["mac1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, macos_snap());
         let output = render_state(&state, 80, 8);
 
@@ -610,7 +610,7 @@ mod tests {
     #[test]
     fn render_offline_system() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let output = render_state(&state, 80, 4);
         assert!(
@@ -622,7 +622,7 @@ mod tests {
     #[test]
     fn render_offline_row_shows_stable_failure_category() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let output = render_state(&state, 80, 4);
         assert!(
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn render_offline_row_truncates_reason_within_width() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let width = 30u16;
         let output = render_state(&state, width, 4);
@@ -651,7 +651,7 @@ mod tests {
     #[test]
     fn render_pending_row_carries_no_failure_category() {
         let config = test_config(&["web1"]);
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         let output = render_state(&state, 80, 4);
         assert!(output.contains("pending"), "{output}");
         assert!(!output.contains('('), "{output}");
@@ -661,7 +661,7 @@ mod tests {
     fn render_offline_system_preserves_configured_ip() {
         let mut config = test_config(&["web1"]);
         config.systems[0].host = "192.168.183.143".into();
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let output = render_state(&state, 80, 4);
         assert!(output.contains("192.168.183.143:11310"), "{output}");
@@ -672,7 +672,7 @@ mod tests {
     fn render_offline_unicode_name_uses_display_width_for_padding() {
         let mut config = test_config(&["サーバー"]);
         config.systems[0].name = Some("é".into());
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
 
         let width = 40u16;
@@ -699,7 +699,7 @@ mod tests {
     #[test]
     fn render_pending_system() {
         let config = test_config(&["web1"]);
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         let output = render_state(&state, 80, 4);
         assert!(
             output.contains("pending"),
@@ -712,7 +712,7 @@ mod tests {
     #[test]
     fn render_mixed_online_offline() {
         let config = test_config(&["a", "b", "c", "d"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Make b and d online (leave a and c pending).
         apply_online(&mut state, 1, linux_snap());
         state.apply_batch(&PollBatch {
@@ -765,7 +765,7 @@ mod tests {
     #[test]
     fn render_selected_online_system() {
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -802,7 +802,7 @@ mod tests {
     #[test]
     fn render_selected_offline_system() {
         let config = test_config(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         // Plan 087: visual highlight must be explicitly activated to
         // render the REVERSED modifier.
@@ -826,7 +826,7 @@ mod tests {
         // Plan 087: at startup no system may be visually reversed even
         // though `selected_id` is already populated deterministically.
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -875,7 +875,7 @@ mod tests {
         // without touching the logical `selected_id`. The renderer
         // then renders the system block without `REVERSED`.
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -914,7 +914,7 @@ mod tests {
         // navigates, even if `selected_id` is logically unchanged (for
         // example when `MoveDown` is clamped at the last row).
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn render_header_wide() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 120, 8);
         let header = output.lines().next().unwrap();
@@ -957,7 +957,7 @@ mod tests {
     #[test]
     fn render_header_medium() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 50, 8);
         let header = output.lines().next().unwrap();
@@ -974,7 +974,7 @@ mod tests {
     #[test]
     fn render_header_narrow() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 32, 8);
         let header = output.lines().next().unwrap();
@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn render_bar_zero_percent() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap_custom(0.0, 0.0, 4));
         let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
@@ -1005,7 +1005,7 @@ mod tests {
     #[test]
     fn render_bar_50_percent() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap_custom(50.0, 0.0, 4));
         let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
@@ -1023,7 +1023,7 @@ mod tests {
     #[test]
     fn render_bar_100_percent() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap_custom(100.0, 0.0, 4));
         let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn render_bar_high_percent() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap_custom(99.9, 0.0, 4));
         let output = render_state(&state, 120, 8);
         let cpu_line = output.lines().nth(1).unwrap();
@@ -1051,7 +1051,7 @@ mod tests {
     #[test]
     fn render_zero_swap() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default().swap(0, 0).build();
         apply_online(&mut state, 0, snap);
         let output = render_state(&state, 120, 8);
@@ -1071,7 +1071,7 @@ mod tests {
     #[test]
     fn render_at_width_24() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 24, 8);
         // Should not crash, should render something.
@@ -1083,7 +1083,7 @@ mod tests {
     #[test]
     fn render_at_width_32() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 32, 8);
         assert_ne!(output.trim(), "");
@@ -1094,7 +1094,7 @@ mod tests {
     #[test]
     fn render_at_width_40() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 40, 8);
         assert_ne!(output.trim(), "");
@@ -1105,7 +1105,7 @@ mod tests {
     #[test]
     fn render_at_width_60() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 60, 8);
         assert_ne!(output.trim(), "");
@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn render_at_width_120() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 120, 8);
         assert_ne!(output.trim(), "");
@@ -1130,7 +1130,7 @@ mod tests {
     fn viewport_scrolling() {
         let names: Vec<&str> = (0..6).map(|_| "sys").collect();
         let config = test_config(&names);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Make all systems online (five base rows each).
         for i in 0..6 {
             apply_online(&mut state, i, linux_snap());
@@ -1164,7 +1164,7 @@ mod tests {
             port: 11310,
             name: Some("サーバー①".into()),
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default().build();
         apply_online(&mut state, 0, snap);
 
@@ -1183,7 +1183,7 @@ mod tests {
     #[test]
     fn online_system_uses_five_rows() {
         let config = test_config(&["s1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // Height 5 = exactly one online system, no room for key hint.
         let output = render_state(&state, 80, 5);
@@ -1194,7 +1194,7 @@ mod tests {
     #[test]
     fn render_populated_disk_and_selected_drive_details() {
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
             NormalizedDrive {
@@ -1239,7 +1239,7 @@ mod tests {
     #[test]
     fn render_unavailable_disk_does_not_show_zero_percent() {
         let config = test_config(&["legacy"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 120, 5);
         let disk = output.lines().nth(4).unwrap();
@@ -1251,7 +1251,7 @@ mod tests {
     #[test]
     fn offline_system_uses_one_row() {
         let config = test_config(&["s1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         // Height 1 = exactly one offline system, no room for key hint.
         let output = render_state(&state, 80, 1);
@@ -1262,7 +1262,7 @@ mod tests {
     #[test]
     fn pending_system_uses_one_row() {
         let config = test_config(&["s1"]);
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         // Height 1 = exactly one pending system, no room for key hint.
         let output = render_state(&state, 80, 1);
         let nonblank = count_nonblank_lines(&output);
@@ -1272,7 +1272,7 @@ mod tests {
     #[test]
     fn mixed_online_offline_row_counts() {
         let config = test_config(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         apply_offline(&mut state, 1);
         // c is pending (default).
@@ -1289,7 +1289,7 @@ mod tests {
     #[test]
     fn io_wait_shown_for_linux() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default().iowait_pct(3.7).build();
         apply_online(&mut state, 0, snap);
         let output = render_state(&state, 80, 8);
@@ -1303,7 +1303,7 @@ mod tests {
     #[test]
     fn io_wait_none_for_macos() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, macos_snap());
         let output = render_state(&state, 80, 8);
         let header = output.lines().next().unwrap();
@@ -1327,7 +1327,7 @@ mod tests {
         // followed by three spaces because the omitted IO token left
         // its leading separator behind.
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, macos_snap());
         let output = render_state(&state, 120, 8);
         let header = output.lines().next().unwrap().trim_end();
@@ -1353,7 +1353,7 @@ mod tests {
         // normalized snapshot directly to exercise the renderer
         // invariant.
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let payload = LinuxSnapshotV2Builder::default().build_payload();
         apply_online_v2(&mut state, 0, payload, 1);
         // Strip the IO value while keeping the capability flag set.
@@ -1377,7 +1377,7 @@ mod tests {
     #[test]
     fn load_averages_rendered_in_header() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default()
             .load(1.50, 2.00, 0.75)
             .build();
@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn core_count_in_cpu_bar() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default().logical_cores(16).build();
         apply_online(&mut state, 0, snap);
         let output = render_state(&state, 120, 8);
@@ -1413,7 +1413,7 @@ mod tests {
     #[test]
     fn mem_bar_shows_usage_detail() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default()
             .memory(8_000_000_000, 16_000_000_000)
             .build();
@@ -1433,7 +1433,7 @@ mod tests {
     #[test]
     fn swap_bar_shows_usage_detail() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default()
             .swap(1_000_000_000, 4_000_000_000)
             .build();
@@ -1453,7 +1453,7 @@ mod tests {
     #[test]
     fn multiple_online_systems_render_independently() {
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap_custom(10.0, 0.0, 4));
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -1484,7 +1484,7 @@ mod tests {
     #[test]
     fn empty_config_at_various_sizes() {
         let config = Config::default();
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         for &(w, h) in &[(80, 24), (40, 12), (20, 5), (120, 40)] {
             let output = render_state(&state, w, h);
             assert!(output.contains("No sources"), "at {w}x{h}: {output}");
@@ -1494,7 +1494,7 @@ mod tests {
     #[test]
     fn too_small_at_minimum_boundary() {
         let config = test_config(&["s"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // Width 23 is just below the minimum of 24.
         let output = render_state(&state, 23, 24);
@@ -1507,7 +1507,7 @@ mod tests {
     #[test]
     fn too_small_height_at_boundary() {
         let config = test_config(&["s"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // Height 3 is just below the minimum of 4.
         let output = render_state(&state, 80, 3);
@@ -1520,7 +1520,7 @@ mod tests {
     #[test]
     fn width_exactly_24_is_not_too_small() {
         let config = test_config(&["s"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 24, 5);
         assert!(
@@ -1534,7 +1534,7 @@ mod tests {
     #[test]
     fn height_exactly_4_is_too_small_for_online_base() {
         let config = test_config(&["s"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 4);
         assert!(output.contains("terminal too small"));
@@ -1543,7 +1543,7 @@ mod tests {
     #[test]
     fn selection_changes_reversed_style() {
         let config = test_config(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -1607,7 +1607,7 @@ mod tests {
         // is cleared the drives must still expand/collapse for the
         // logically selected system.
         let config = test_config(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.selection_highlight_active = true;
         let selected = state.selected_id.clone();
@@ -1639,7 +1639,7 @@ mod tests {
             name: None,
             api_key_env: None,
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_action(crate::action::Action::MoveDown);
         assert!(state.selection_highlight_active);
@@ -1675,7 +1675,7 @@ mod tests {
             name: None,
             api_key_env: None,
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // Move to EggPool.
         state.apply_action(crate::action::Action::NextPane);
@@ -1693,7 +1693,7 @@ mod tests {
     #[test]
     fn cpu_iowait_linux_header_shows_percentage() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default().iowait_pct(1.2).build();
         apply_online(&mut state, 0, snap);
         let output = render_state(&state, 80, 8);
@@ -1713,7 +1713,7 @@ mod tests {
             port: 11310,
             name: None,
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         let output = render_state(&state, 80, 8);
         let header = output.lines().next().unwrap();
@@ -1726,7 +1726,7 @@ mod tests {
     #[test]
     fn offline_system_displays_address() {
         let config = test_config(&["web1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let output = render_state(&state, 80, 4);
         // The offline line format is "name@host:port offline ..."
@@ -1743,7 +1743,7 @@ mod tests {
     #[test]
     fn very_narrow_width_just_above_minimum() {
         let config = test_config(&["x"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // Width 24 = minimum valid width, height 5 = minimum valid height.
         let output = render_state(&state, 24, 5);
@@ -1755,7 +1755,7 @@ mod tests {
     #[test]
     fn wide_terminal_renders_full_header() {
         let config = test_config(&["box"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = LinuxSnapshotBuilder::default()
             .load(1.00, 2.00, 3.00)
             .logical_cores(32)
@@ -1779,7 +1779,7 @@ mod tests {
     #[test]
     fn no_systems_configured_always_shows_message() {
         let config = Config::default();
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         for &(w, h) in &[(80, 24), (40, 10), (120, 50)] {
             let output = render_state(&state, w, h);
             assert!(
@@ -1792,7 +1792,7 @@ mod tests {
     #[test]
     fn offline_dot_padding() {
         let config = test_config(&["short"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         let output = render_state(&state, 80, 4);
         let line = output.lines().next().unwrap();
@@ -1806,7 +1806,7 @@ mod tests {
     #[test]
     fn offline_no_padding_when_tight() {
         let config = test_config(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         // Width that barely fits the label.
         let output = render_state(&state, 24, 4);
@@ -1825,7 +1825,7 @@ mod tests {
     fn display_order_affects_rendering() {
         // Config order: a, b, c. Make c and a online.
         let config = test_config(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -1853,7 +1853,7 @@ mod tests {
     #[test]
     fn render_two_offline_systems() {
         let config = test_config(&["x", "y"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_offline(&mut state, 0);
         state.apply_batch(&PollBatch {
             generation: 2,
@@ -1879,7 +1879,7 @@ mod tests {
     #[test]
     fn resize_round_trip_wide_narrow_wide() {
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
 
         // Wide → narrow → wide should not crash and should adapt content.
@@ -1910,7 +1910,7 @@ mod tests {
     #[test]
     fn key_hint_appears_when_extra_space() {
         let config = test_config(&["s1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // 12 rows: 4 for system, 8 extra → hint should appear.
         let output = render_state(&state, 80, 12);
@@ -1925,7 +1925,7 @@ mod tests {
     #[test]
     fn key_hint_absent_when_no_extra_space() {
         let config = test_config(&["s1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         // 5 rows: exactly one system, no extra space.
         let output = render_state(&state, 80, 5);
@@ -1938,7 +1938,7 @@ mod tests {
     #[test]
     fn config_reload_error_is_rendered_in_the_diagnostic_line() {
         let config = test_config(&["s1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.config_reload_error = Some("config reload failed: invalid TOML".into());
 
         let output = render_state(&state, 80, 7);
@@ -1950,7 +1950,7 @@ mod tests {
     fn render_online_system_without_snapshot_does_not_crash() {
         // System is Online but latest is None (edge case).
         let config = test_config(&["s"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Manually set reachability to Online without providing a snapshot.
         state.systems[0].reachability = Reachability::Online;
         // latest is None.
@@ -1964,7 +1964,7 @@ mod tests {
     #[test]
     fn render_windows_system_shows_commit_row() {
         let config = test_config(&["win1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = WindowsSnapshotV2Builder::default().build_payload();
         let system = &state.systems[0];
         let batch = PollBatch {
@@ -1997,7 +1997,7 @@ mod tests {
     #[test]
     fn rendered_linux_metric_geometry_is_aligned_at_representative_widths() {
         let config = test_config(&["linux"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
 
         for width in [24u16, 32, 40, 60, 80] {
@@ -2076,7 +2076,7 @@ mod tests {
     #[test]
     fn rendered_windows_metric_geometry_keeps_commit_aligned_at_representative_widths() {
         let config = test_config(&["windows"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let payload = WindowsSnapshotV2Builder::default().build_payload();
         apply_online_v2(&mut state, 0, payload, 1);
 
@@ -2138,7 +2138,7 @@ mod tests {
     #[test]
     fn render_condensed_width_tiers_and_header_geometry() {
         let config = test_config(&["fleet-host"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.system_view_mode = crate::state::SystemViewMode::Condensed;
 
@@ -2158,7 +2158,7 @@ mod tests {
     #[test]
     fn render_condensed_expansion_keeps_base_row_and_details() {
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.system_view_mode = crate::state::SystemViewMode::Condensed;
         state.drives_expanded = true;
@@ -2178,7 +2178,7 @@ mod tests {
     #[test]
     fn live_metric_expansions_render_without_changing_selection() {
         let config = test_config(&["live"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let payload = LinuxSnapshotV2Builder::default()
             .cpu_frequency_hz(Some(2_400_000_000))
             .drives(Some(vec![DriveMetrics {
@@ -2233,7 +2233,7 @@ mod tests {
     #[test]
     fn normal_network_row_is_per_system_and_cache_tracks_transitions() {
         let config = test_config(&["network", "legacy"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online_v2(
             &mut state,
             0,
@@ -2282,7 +2282,7 @@ mod tests {
     #[test]
     fn mixed_fleet_renders_protocol_capabilities_and_selected_details_in_both_views() {
         let config = test_config(&["legacy", "linux", "mac", "windows", "offline", "pending"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         apply_online_v2(
             &mut state,
@@ -2442,7 +2442,7 @@ mod tests {
                 name: Some(format!("box{i}")),
             });
         }
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online_v2(
             &mut state,
             0,
@@ -2498,7 +2498,7 @@ mod tests {
                 name: Some((*name).to_string()),
             });
         }
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online_v2(
             &mut state,
             0,
@@ -2528,7 +2528,7 @@ mod tests {
         let names: Vec<String> = (0..6).map(|i| format!("sys{i}")).collect();
         let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let config = test_config(&name_refs);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Apply one batch with all six systems so they all become online
         // in the same generation.
         let results: Vec<crate::poller::PollResult> = (0..6)
@@ -2595,7 +2595,7 @@ mod tests {
         let names: Vec<String> = (0..3).map(|i| format!("srv{i}")).collect();
         let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
         let config = test_config(&name_refs);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Apply one batch containing all three systems so each becomes
         // online in the same generation.
         let results: Vec<crate::poller::PollResult> = (0..3)
@@ -2663,7 +2663,7 @@ mod tests {
     #[test]
     fn drive_detail_columns_align_across_mixed_unit_drives() {
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
             NormalizedDrive {
@@ -2719,7 +2719,7 @@ mod tests {
     #[test]
     fn drive_detail_remaining_falls_back_to_total_minus_used() {
         let config = test_config(&["legacy"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
             name: "/".into(),
@@ -2745,7 +2745,7 @@ mod tests {
         // A drive list that scrolls in one row should not move the
         // separator or percent columns.
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
             NormalizedDrive {
@@ -2805,7 +2805,7 @@ mod tests {
     fn drive_detail_unicode_name_uses_terminal_cells() {
         // Wide-character mount names must not push the numeric columns.
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![
             NormalizedDrive {
@@ -2849,7 +2849,7 @@ mod tests {
         // At a constrained width the full shape should degrade to
         // either Compact or Minimal without overflowing.
         let config = test_config(&["storage"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.systems[0].latest.as_mut().unwrap().drives = Some(vec![NormalizedDrive {
             name: "/mnt/long/mount/point".into(),
@@ -2895,7 +2895,7 @@ mod tests {
                 name: Some((*name).to_string()),
             });
         }
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let results: Vec<crate::poller::PollResult> = (0..3)
             .map(|i| crate::poller::PollResult {
                 system_id: state.systems[i].id.clone(),
@@ -3045,7 +3045,7 @@ mod tests {
                 name: Some((*name).to_string()),
             });
         }
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let results: Vec<crate::poller::PollResult> = (0..2)
             .map(|i| crate::poller::PollResult {
                 system_id: state.systems[i].id.clone(),
@@ -3084,7 +3084,7 @@ mod tests {
         // Wide/Medium/Narrow/Minimal must drop the same lower-priority
         // columns as before, in the same order.
         let config = test_config(&["srv"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         apply_online(&mut state, 0, linux_snap());
         state.system_view_mode = crate::state::SystemViewMode::Condensed;
 
@@ -3128,7 +3128,7 @@ mod tests {
             port: 11310,
             name: Some("srv".into()),
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let results: Vec<crate::poller::PollResult> = (0..2)
             .map(|i| crate::poller::PollResult {
                 system_id: state.systems[i].id.clone(),
@@ -3187,7 +3187,7 @@ mod tests {
             port: 11310,
             name: Some("alpha".into()),
         });
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.system_view_mode = crate::state::SystemViewMode::Condensed;
         let now = Instant::now();
         state.apply_batch(&PollBatch {
@@ -3263,7 +3263,7 @@ mod tests {
                     name: None,
                 });
             }
-            let mut state = AppState::from_config(&config);
+            let mut state = AppState::synthetic(&config);
             state.system_view_mode = crate::state::SystemViewMode::Condensed;
             let now = Instant::now();
             let results = state

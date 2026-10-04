@@ -24,11 +24,19 @@
 //! shared with a whole fleet, while this is a same-binary, same-host channel
 //! whose version is verified by handshake rather than by forward compatibility.
 
+pub mod daemon;
+pub mod frontend;
 pub mod identity;
 pub mod ipc;
 pub mod protocol;
 pub mod snapshot;
 
+pub use daemon::{
+    attach, run_daemon, status, stop, AttachError, Attachment, DaemonError, DaemonStatus,
+};
+pub use frontend::{
+    ControlSink, EggpoolIntentRequest, FrameStream, FrontError, FrontendLink, FrontendSender,
+};
 pub use identity::{
     client_daemon_id, fallback_socket_path, primary_socket_path, socket_candidates,
     ClientDaemonIdentity,

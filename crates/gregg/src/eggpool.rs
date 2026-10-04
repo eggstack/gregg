@@ -34,7 +34,7 @@ const STATUS_SCHEMA_VERSION: u64 = 1;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The four fixed rolling windows supported by `EggPool`'s summary API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EggpoolPeriod {
     /// The most recent hour.
     Hour,
@@ -116,7 +116,11 @@ pub struct EggpoolSummary {
 }
 
 /// A safe, stable classification of one `EggPool` fetch attempt.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Plan 164: `Serialize`/`Deserialize` let the client daemon publish the real
+/// classification to frontends instead of a pre-rendered string, so the TUI
+/// keeps choosing its own wording for a transport failure.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EggpoolFetchOutcome {
     /// A validated summary was received.
     Online(EggpoolSummary),
@@ -302,7 +306,7 @@ impl EggpoolHealthSnapshot {
 /// A transport failure is never reported as a `EggPool`-reported proxy
 /// status: `EggPool`'s internal unavailable state is not emitted by this
 /// endpoint, so a failed read is a local transport fact only.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EggpoolHealthFetchOutcome {
     /// A validated health snapshot was received.
     Online(EggpoolHealthSnapshot),
@@ -1571,7 +1575,7 @@ mod tests {
         gate.send(true).ok();
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = worker_for(port, &cancel);
-        let mut app = crate::state::AppState::from_config(&app_config(port));
+        let mut app = crate::state::AppState::synthetic(&app_config(port));
         app.begin_eggpool_request();
         worker
             .control
@@ -2170,7 +2174,7 @@ mod tests {
     async fn unconfigured_state_has_no_worker_control_or_request() {
         // Invariant 8: no worker, control channel, timer, or request
         // exists when EggPool is not configured.
-        let app = crate::state::AppState::from_config(&crate::config::Config::default());
+        let app = crate::state::AppState::synthetic(&crate::config::Config::default());
         assert!(app.eggpool.is_none());
         assert!(app.eggpool_desired_state().is_none());
     }

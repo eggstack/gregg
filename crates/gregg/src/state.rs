@@ -1,13 +1,26 @@
 //! Application state model for the polling engine and TUI.
 //!
-//! [`AppState`] owns the list of monitored systems, the selection, and the
-//! viewport. It is mutated exclusively through [`Action`]s and poll
-//! [`PollBatch`]es, making the reducer deterministic and testable.
+//! Plan 164 splits this module along the process boundary, and the split is a
+//! *type* boundary, not a naming convention:
+//!
+//! - [`FleetState`] is everything derived from the network. It is owned by the
+//!   client daemon, mutated only by poll batches, `EggPool` results, and config
+//!   reloads, and serialized to frontends by [`FleetState::to_dto`].
+//! - [`AppState`] is the frontend's render model. Its fleet fields are a
+//!   *published copy* written by exactly one function,
+//!   [`AppState::adopt_snapshot`], and its presentation fields are written only
+//!   by [`AppState::apply_action_changed`].
+//!
+//! There is deliberately no other writer. A TUI that could still apply a
+//! [`PollBatch`] or mint an `EggPool` request generation would own remote
+//! polling state, and two such TUIs would each poll the fleet — which is the
+//! duplication this architecture exists to remove.
 
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::action::Action;
+use crate::clientd::snapshot::{EggpoolSnapshotDto, FrontendSnapshot, SystemSnapshotDto};
 use crate::config::Config;
 use crate::eggpool::{
     EggpoolDesiredState, EggpoolFetchOutcome, EggpoolHealthFetchOutcome, EggpoolHealthSnapshot,
@@ -133,89 +146,84 @@ pub struct SystemState {
     pub offline_reason: Option<OfflineReason>,
 }
 
-/// The top-level application state.
+/// The display order: online systems first (in configured order), then
+/// offline/pending systems (in configured order).
+///
+/// A free function so the daemon's [`FleetState`] and the frontend's
+/// [`AppState`] cannot disagree about what "display order" means.
+#[must_use]
+pub fn display_order_of(systems: &[SystemState]) -> Vec<usize> {
+    // One allocation: online indices are appended first, then a second
+    // pass appends the offline/pending indices, preserving configured
+    // order within each group.
+    let mut order = Vec::with_capacity(systems.len());
+    for (index, system) in systems.iter().enumerate() {
+        if matches!(system.reachability, Reachability::Online) {
+            order.push(index);
+        }
+    }
+    for (index, system) in systems.iter().enumerate() {
+        if matches!(
+            system.reachability,
+            Reachability::Offline | Reachability::Pending
+        ) {
+            order.push(index);
+        }
+    }
+    order
+}
+
+/// Everything in the client that is derived from the network.
+///
+/// This is the client daemon's own state. It is never serialized to a
+/// frontend directly: [`FleetState::to_dto`] projects it into the local IPC
+/// DTO so that process-local `Instant` values never have to cross the
+/// boundary.
 #[derive(Debug)]
-pub struct AppState {
+pub struct FleetState {
     /// Ordered list of all monitored systems.
     pub systems: Vec<SystemState>,
-    /// Currently selected system, by stable ID.
-    pub selected_id: Option<SystemId>,
-    /// The first visible system in the viewport, by stable ID.
-    pub viewport_top_id: Option<SystemId>,
     /// Last generation whose results were applied.
     pub last_applied_generation: u64,
     /// Current refresh status.
     pub refresh_status: RefreshStatus,
-    /// Diagnostic from the most recent rejected Systems config reload.
+    /// Diagnostic from the most recent rejected config reload.
     pub config_reload_error: Option<String>,
-    /// Terminal dimensions (width, height), if known.
-    pub terminal_size: Option<(u16, u16)>,
-    /// Currently active top-level pane.
-    pub active_pane: Pane,
-    /// Current Systems presentation mode.
-    pub system_view_mode: SystemViewMode,
-    /// Whether the selected online system's drives are expanded.
-    pub drives_expanded: bool,
-    /// Whether the selected online system's network details are expanded.
-    /// This is independent of drive expansion so both telemetry families
-    /// can be inspected at once.
-    pub network_expanded: bool,
-    /// Plan 087: whether the logical selection is currently being
-    /// visually highlighted with `Modifier::REVERSED`. Independent of
-    /// `selected_id`; cleared by the event-loop timer (about ten
-    /// seconds of inactivity) and on pane changes away from Systems.
-    /// Logical selection itself remains available for keyboard actions
-    /// (`d` and friends) when this flag is `false`.
-    pub selection_highlight_active: bool,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
 }
 
-impl AppState {
-    /// Create initial state from a configuration.
-    ///
-    /// All systems start in [`Reachability::Pending`]. The first system
-    /// (in display order) is selected if any systems exist.
+impl FleetState {
+    /// Create fleet state from a configuration. Every system starts
+    /// [`Reachability::Pending`].
     #[must_use]
     pub fn from_config(config: &Config) -> Self {
-        let systems: Vec<SystemState> = config.systems.iter().map(system_from_entry).collect();
-
-        let selected_id = systems.first().map(|s| s.id.clone());
-        let viewport_top_id = selected_id.clone();
-
-        let eggpool = config.eggpool.clone().map(|endpoint| EggpoolState {
-            endpoint,
-            period: EggpoolPeriod::Hour,
-            request_generation: 0,
-            worker_state: EggpoolWorkerState::Idle,
-            summary: None,
-            last_success_at: None,
-            last_attempt_at: None,
-            last_error: None,
-            health: None,
-            last_health_success_at: None,
-            last_health_attempt_at: None,
-            last_health_error: None,
-        });
         Self {
-            systems,
-            selected_id,
-            viewport_top_id,
+            systems: config.systems.iter().map(system_from_entry).collect(),
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
             config_reload_error: None,
-            terminal_size: None,
-            active_pane: if config.systems.is_empty() && eggpool.is_some() {
-                Pane::Eggpool
-            } else {
-                Pane::Systems
-            },
-            system_view_mode: SystemViewMode::Normal,
-            drives_expanded: false,
-            network_expanded: false,
-            selection_highlight_active: false,
-            eggpool,
+            eggpool: config.eggpool.clone().map(|endpoint| EggpoolState {
+                endpoint,
+                period: EggpoolPeriod::Hour,
+                request_generation: 0,
+                worker_state: EggpoolWorkerState::Idle,
+                summary: None,
+                last_success_at: None,
+                last_attempt_at: None,
+                last_error: None,
+                health: None,
+                last_health_success_at: None,
+                last_health_attempt_at: None,
+                last_health_error: None,
+            }),
         }
+    }
+
+    /// Return the display order of the current fleet.
+    #[must_use]
+    pub fn display_order(&self) -> Vec<usize> {
+        display_order_of(&self.systems)
     }
 
     /// Reconcile the configured system endpoint list while retaining safe
@@ -223,9 +231,12 @@ impl AppState {
     ///
     /// Plan 140: retained entries are moved out of the old-ID map instead
     /// of deep-cloned, avoiding `NormalizedSnapshot` copies during reload.
+    ///
+    /// Selection and viewport are *not* touched here: they belong to a
+    /// frontend, and a frontend repairs them against the reconciled fleet in
+    /// [`AppState::adopt_snapshot`].
     pub fn reconcile_systems(&mut self, config: &Config) {
         let old_systems = std::mem::take(&mut self.systems);
-        let old_selected = self.selected_id.clone();
         let mut old_by_id = old_systems
             .into_iter()
             .map(|system| (system.id.clone(), system))
@@ -251,58 +262,35 @@ impl AppState {
                 }
             })
             .collect();
-
-        self.selected_id = old_selected
-            .filter(|id| self.systems.iter().any(|system| &system.id == id))
-            .or_else(|| self.systems.first().map(|system| system.id.clone()));
-        self.viewport_top_id = self
-            .viewport_top_id
-            .take()
-            .filter(|id| self.systems.iter().any(|system| &system.id == id))
-            .or_else(|| self.selected_id.clone());
-        ensure_selected_visible(self);
-        if self.systems.is_empty() {
-            self.selected_id = None;
-            self.viewport_top_id = None;
-        }
     }
 
-    /// Record a rejected Systems config reload for the renderer.
+    /// Record a rejected config reload for publication to frontends.
     pub fn set_config_reload_error(&mut self, error: String) {
         self.config_reload_error = Some(error);
     }
 
-    /// Clear the rejected Systems config reload diagnostic after a success.
+    /// Clear the rejected config reload diagnostic after a success.
     pub fn clear_config_reload_error(&mut self) {
         self.config_reload_error = None;
     }
 
-    /// Apply a poll batch to the state.
+    /// Apply a borrowed poll batch, reporting whether any *fleet* field
+    /// changed.
     ///
-    /// Rejects batches whose generation is less than or equal to the
-    /// most recently applied generation, except for the scheduler's single
-    /// `u64::MAX` to `1` wrap. For each result: updates reachability, latest
-    /// snapshot, timestamps, latency, and error.
+    /// Selection and viewport are deliberately excluded: they are per
+    /// frontend, and the daemon has no business choosing them. Returns `false`
+    /// for a rejected generation and for an accepted batch in which every
+    /// result was ignored or left fleet data identical.
     pub fn apply_batch(&mut self, batch: &PollBatch) {
         let _ = self.apply_batch_changed(batch);
     }
 
-    /// Plan 143: borrowed batch application reporting render-visible change.
-    ///
-    /// Returns `false` for rejected generations and for accepted batches
-    /// where every result was ignored or left render-visible state
-    /// identical (reachability, normalized snapshot, offline provenance,
-    /// selection/viewport). Timestamps/latency alone never force a frame.
+    /// Borrowed batch application reporting fleet-visible change.
     pub fn apply_batch_changed(&mut self, batch: &PollBatch) -> bool {
-        // The scheduler advances by exactly one and wraps only MAX -> 1;
-        // do not accept a skipped-generation wrap as a fresh batch.
         if !self.accept_batch_generation(batch.generation) {
             return false;
         }
 
-        let was_initialized = self.last_applied_generation == 0;
-        let selected_before = self.selected_id.clone();
-        let viewport_before = self.viewport_top_id.clone();
         let mut visible_changed = false;
         let mut id_map: Option<std::collections::HashMap<String, usize>> = None;
 
@@ -382,10 +370,8 @@ impl AppState {
             }
         }
 
-        self.finish_batch(batch.generation, was_initialized);
+        self.last_applied_generation = batch.generation;
         visible_changed
-            || self.selected_id != selected_before
-            || self.viewport_top_id != viewport_before
     }
 
     /// Apply an owned poll batch, moving successful payload data into the
@@ -394,16 +380,12 @@ impl AppState {
         let _ = self.apply_batch_owned_changed(batch);
     }
 
-    /// Plan 143: owned batch application reporting render-visible change,
-    /// mirroring [`Self::apply_batch_changed`] without cloning payloads.
+    /// Owned batch application reporting fleet-visible change.
     pub fn apply_batch_owned_changed(&mut self, batch: PollBatch) -> bool {
         if !self.accept_batch_generation(batch.generation) {
             return false;
         }
 
-        let was_initialized = self.last_applied_generation == 0;
-        let selected_before = self.selected_id.clone();
-        let viewport_before = self.viewport_top_id.clone();
         let mut visible_changed = false;
         let mut id_map: Option<std::collections::HashMap<String, usize>> = None;
         let PollBatch {
@@ -413,7 +395,14 @@ impl AppState {
             ..
         } = batch;
         for (result_index, result) in results.into_iter().enumerate() {
-            let mut missed = false;
+            if id_map.is_none()
+                && self
+                    .systems
+                    .get(result_index)
+                    .is_none_or(|system| system.id != result.system_id)
+            {
+                id_map = Some(self.build_result_index_map());
+            }
             let Some(system_index) = self.resolve_result_index_with_map(
                 result_index,
                 &result.system_id,
@@ -421,17 +410,6 @@ impl AppState {
             ) else {
                 continue;
             };
-            if id_map.is_none()
-                && self
-                    .systems
-                    .get(result_index)
-                    .is_none_or(|system| system.id != result.system_id)
-            {
-                missed = true;
-            }
-            if missed {
-                id_map = Some(self.build_result_index_map());
-            }
             let (before_reachability, before_reason) = {
                 let system = &self.systems[system_index];
                 (system.reachability, system.offline_reason.clone())
@@ -487,10 +465,8 @@ impl AppState {
             }
         }
 
-        self.finish_batch(generation, was_initialized);
+        self.last_applied_generation = generation;
         visible_changed
-            || self.selected_id != selected_before
-            || self.viewport_top_id != viewport_before
     }
 
     fn accept_batch_generation(&self, generation: u64) -> bool {
@@ -537,19 +513,719 @@ impl AppState {
         map
     }
 
-    fn finish_batch(&mut self, generation: u64, was_initialized: bool) {
-        self.last_applied_generation = generation;
+    /// Apply one `EggPool` result if it belongs to the current request and period.
+    pub fn apply_eggpool_result(&mut self, result: &EggpoolResult) {
+        let _ = self.apply_eggpool_result_changed(result);
+    }
 
-        let order = self.display_order();
+    /// `EggPool` result application reporting fleet-visible change.
+    ///
+    /// The summary and health planes are applied independently, so a
+    /// partial result is the normal case: a failed health refresh never
+    /// erases a successful summary, and a failed summary never erases valid
+    /// service health. Returns `false` for stale generations/periods and for
+    /// cancelled outcomes that leave visible state untouched (already idle).
+    pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
+        let Some(eggpool) = self.eggpool.as_mut() else {
+            return false;
+        };
+        if result.generation != eggpool.request_generation || result.period != eggpool.period {
+            return false;
+        }
+        if matches!(result.summary, EggpoolFetchOutcome::Cancelled) {
+            // A cancelled worker leaves `Refreshing` forever unless
+            // resolved. Return to `Idle` without touching `last_attempt_at`,
+            // `last_error`, or any health state.
+            if eggpool.worker_state != EggpoolWorkerState::Idle {
+                eggpool.worker_state = EggpoolWorkerState::Idle;
+                return true;
+            }
+            return false;
+        }
+        let mut changed = false;
+        if eggpool.worker_state != EggpoolWorkerState::Idle {
+            eggpool.worker_state = EggpoolWorkerState::Idle;
+            changed = true;
+        }
+        // Summary plane: the selected period only.
+        if eggpool.last_attempt_at != Some(result.completed_at) {
+            changed = true;
+        }
+        eggpool.last_attempt_at = Some(result.completed_at);
+        match &result.summary {
+            EggpoolFetchOutcome::Online(summary) => {
+                if eggpool.summary.as_ref() != Some(summary) {
+                    changed = true;
+                }
+                eggpool.summary = Some(summary.clone());
+                eggpool.last_success_at = Some(result.completed_at);
+                if eggpool.last_error.is_some() {
+                    changed = true;
+                }
+                eggpool.last_error = None;
+            }
+            error => {
+                if eggpool.last_error.as_ref() != Some(error) {
+                    changed = true;
+                }
+                eggpool.last_error = Some(error.clone());
+            }
+        }
+        // Health plane: current service health, with no period.
+        if eggpool.last_health_attempt_at != Some(result.completed_at) {
+            changed = true;
+        }
+        eggpool.last_health_attempt_at = Some(result.completed_at);
+        match &result.health {
+            EggpoolHealthFetchOutcome::Online(snapshot) => {
+                if eggpool.health.as_ref() != Some(snapshot) {
+                    changed = true;
+                }
+                eggpool.health = Some(snapshot.clone());
+                eggpool.last_health_success_at = Some(result.completed_at);
+                if eggpool.last_health_error.is_some() {
+                    changed = true;
+                }
+                eggpool.last_health_error = None;
+            }
+            error => {
+                if eggpool.last_health_error.as_ref() != Some(error) {
+                    changed = true;
+                }
+                // A previous snapshot stays visible, but the renderer marks
+                // it as no longer current rather than claiming freshness.
+                eggpool.last_health_error = Some(error.clone());
+            }
+        }
+        changed
+    }
 
-        // The first accepted poll batch establishes the
-        // reachability-sorted display order for a fresh TUI. Pinning
-        // selection and viewport top to that order prevents an offline
-        // first-configured system from dragging the viewport below any
-        // online entries that came back first. Later batches must
-        // preserve ordinary selection/scroll semantics.
-        if was_initialized {
-            if let Some(&first_index) = order.first() {
+    /// Adopt a reconfigured `EggPool` endpoint, preserving observed state.
+    ///
+    /// A reload that changes only the `EggPool` address must not discard the
+    /// summary already on screen; the next fetch will replace it. Losing the
+    /// entry entirely does discard state, because the pane no longer has a
+    /// source to describe.
+    pub fn adopt_eggpool_endpoint(&mut self, entry: crate::config::EggpoolEntry) {
+        match self.eggpool.as_mut() {
+            Some(state) => state.endpoint = entry,
+            None => {
+                self.eggpool = Some(EggpoolState {
+                    endpoint: entry,
+                    period: EggpoolPeriod::Hour,
+                    request_generation: 0,
+                    worker_state: EggpoolWorkerState::Idle,
+                    summary: None,
+                    last_success_at: None,
+                    last_attempt_at: None,
+                    last_error: None,
+                    health: None,
+                    last_health_success_at: None,
+                    last_health_attempt_at: None,
+                    last_health_error: None,
+                });
+            }
+        }
+    }
+
+    /// Drop the `EggPool` entry when a reload removes it.
+    pub fn clear_eggpool(&mut self) {
+        self.eggpool = None;
+    }
+
+    /// Switch the `EggPool` summary period, invalidating the old window.
+    ///
+    /// A period applies to the summary plane only; service health has no
+    /// period and stays visible, so switching windows never blanks the health
+    /// block.
+    pub fn set_eggpool_period(&mut self, period: EggpoolPeriod) -> bool {
+        let Some(state) = self.eggpool.as_mut() else {
+            return false;
+        };
+        if state.period == period {
+            return false;
+        }
+        state.period = period;
+        state.summary = None;
+        state.last_error = None;
+        true
+    }
+
+    /// Mark an `EggPool` activation or manual refresh as a new request.
+    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
+        let eggpool = self.eggpool.as_mut()?;
+        eggpool.request_generation = eggpool.request_generation.saturating_add(1);
+        eggpool.worker_state = EggpoolWorkerState::Refreshing;
+        Some((eggpool.period, eggpool.request_generation))
+    }
+
+    /// Mark the local worker as unavailable without exposing a channel error.
+    pub fn mark_eggpool_worker_unavailable(&mut self) {
+        if let Some(eggpool) = self.eggpool.as_mut() {
+            eggpool.worker_state = EggpoolWorkerState::WorkerUnavailable;
+        }
+    }
+
+    /// Return the current `EggPool` request identity without changing state.
+    #[must_use]
+    pub fn eggpool_request(&self) -> Option<(EggpoolPeriod, u64)> {
+        self.eggpool
+            .as_ref()
+            .map(|eggpool| (eggpool.period, eggpool.request_generation))
+    }
+
+    /// The converged `EggPool` worker state the daemon should hold.
+    ///
+    /// `active` follows whether any attached frontend has the pane open, and
+    /// `period` is the shortest window any of them asked for. Both are
+    /// order-independent reductions over the subscriber set, so two frontends
+    /// cannot race the worker into two different activations.
+    #[must_use]
+    pub fn eggpool_desired_state(&self, intents: &EggpoolIntents) -> Option<EggpoolDesiredState> {
+        let eggpool = self.eggpool.as_ref()?;
+        Some(EggpoolDesiredState {
+            active: intents.any_active(),
+            period: intents.converged_period(eggpool.period),
+            generation: eggpool.request_generation,
+        })
+    }
+
+    /// Project the fleet into the local IPC document at wall-clock `now`.
+    ///
+    /// `Instant` values are converted to Unix milliseconds here and only
+    /// here, so no process-local clock ever reaches the wire.
+    #[must_use]
+    pub fn to_dto(&self, now: Instant, now_unix_ms: u64, generation: u64) -> FrontendSnapshot {
+        FrontendSnapshot {
+            generation,
+            produced_at_unix_ms: now_unix_ms,
+            refresh_status: self.refresh_status.clone(),
+            poll_initialized: self.last_applied_generation != 0,
+            systems: self
+                .systems
+                .iter()
+                .map(|system| system_to_dto(system, now, now_unix_ms))
+                .collect(),
+            eggpool: self.eggpool.as_ref().map(|eggpool| EggpoolSnapshotDto {
+                endpoint: eggpool.endpoint.clone(),
+                period: eggpool.period,
+                request_generation: eggpool.request_generation,
+                worker_state: eggpool.worker_state,
+                summary: eggpool.summary.clone(),
+                last_success_at_unix_ms: elapsed_to_unix_ms(
+                    eggpool.last_success_at,
+                    now,
+                    now_unix_ms,
+                ),
+                last_attempt_at_unix_ms: elapsed_to_unix_ms(
+                    eggpool.last_attempt_at,
+                    now,
+                    now_unix_ms,
+                ),
+                last_error: eggpool.last_error.clone(),
+                health: eggpool.health.clone(),
+                last_health_success_at_unix_ms: elapsed_to_unix_ms(
+                    eggpool.last_health_success_at,
+                    now,
+                    now_unix_ms,
+                ),
+                last_health_attempt_at_unix_ms: elapsed_to_unix_ms(
+                    eggpool.last_health_attempt_at,
+                    now,
+                    now_unix_ms,
+                ),
+                last_health_error: eggpool.last_health_error.clone(),
+            }),
+            config_reload_error: self.config_reload_error.clone(),
+        }
+    }
+}
+
+/// One frontend's current `EggPool` intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EggpoolIntent {
+    /// Whether this frontend has the `EggPool` pane open.
+    pub active: bool,
+    /// The rolling window this frontend is displaying.
+    pub period: EggpoolPeriod,
+}
+
+/// Reduce the `EggPool` worker state across every attached frontend.
+///
+/// Two rules, both order-independent, so two TUI windows can never race the
+/// worker into two different activations:
+///
+/// - `active` is true when **any** frontend has the pane open. Losing the last
+///   pane always converges the worker to inactive, and gaining one always
+///   activates it.
+/// - `period` is the **shortest** window any active frontend asked for, so the
+///   pane never shows a coarser window than the operator is looking at.
+///
+/// Entries are keyed by the stable subscriber id the accept loop assigns, so
+/// a frontend that refreshes its intent replaces its own entry instead of
+/// leaving a stale one that would keep the worker activated forever.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EggpoolIntents {
+    entries: std::collections::HashMap<u64, EggpoolIntent>,
+}
+
+impl EggpoolIntents {
+    /// Record a subscriber's current intent, returning the previous one.
+    pub fn set(&mut self, id: u64, active: bool, period: EggpoolPeriod) -> Option<EggpoolIntent> {
+        self.entries.insert(id, EggpoolIntent { active, period })
+    }
+
+    /// Drop a disconnected frontend.
+    pub fn remove(&mut self, id: u64) -> Option<EggpoolIntent> {
+        self.entries.remove(&id)
+    }
+
+    /// Whether any frontend currently has the `EggPool` pane open.
+    #[must_use]
+    pub fn any_active(&self) -> bool {
+        self.entries.values().any(|intent| intent.active)
+    }
+
+    /// The period the daemon should actually fetch.
+    #[must_use]
+    pub fn converged_period(&self, fallback: EggpoolPeriod) -> EggpoolPeriod {
+        self.entries
+            .values()
+            .filter(|intent| intent.active)
+            .map(|intent| intent.period)
+            .min()
+            .unwrap_or(fallback)
+    }
+
+    /// Number of attached frontends.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no frontend is attached.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Current wall-clock reading in Unix milliseconds.
+///
+/// Every local IPC timestamp goes through this one function so the daemon and
+/// its frontends cannot disagree about which clock produced a stamp.
+#[must_use]
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Convert a process-local `Instant` into Unix milliseconds relative to the
+/// daemon's own wall clock.
+///
+/// `None` stays `None`: a never-polled system must stay distinguishable from a
+/// polled one, and a zero timestamp would read as "1970".
+#[must_use]
+fn elapsed_to_unix_ms(value: Option<Instant>, now: Instant, now_unix_ms: u64) -> Option<u64> {
+    let value = value?;
+    // `saturating_sub` keeps a clock that stepped backwards between the event
+    // and publication from wrapping into the far future.
+    let elapsed_ms = now.saturating_duration_since(value).as_millis();
+    Some(
+        u64::try_from(elapsed_ms)
+            .unwrap_or(u64::MAX)
+            .saturating_add(now_unix_ms),
+    )
+}
+
+/// Rebuild a local `Instant` from Unix milliseconds published by the daemon.
+///
+/// The daemon and the TUI run on the same machine, so the difference between
+/// the document's wall-clock stamp and the frontend's own reading of the clock
+/// is the age the operator should see. A stamp in the future (clock stepped,
+/// or a stale document) is treated as *now* rather than as negative age.
+#[must_use]
+fn instant_from_unix_ms(value: Option<u64>, now: Instant, now_unix_ms: u64) -> Option<Instant> {
+    let value = value?;
+    let age_ms = now_unix_ms.saturating_sub(value);
+    Some(
+        now.checked_sub(Duration::from_millis(age_ms))
+            .unwrap_or(now),
+    )
+}
+
+/// Whether two system lists differ in anything a rendered row shows.
+///
+/// A row shows the endpoint, the configured name, reachability, the normalized
+/// snapshot, and the offline reason. It also shows *that* a system exists, so
+/// a length change is a visible change. Timestamps and latency are excluded on
+/// purpose: they only feed the "updated Ns ago" age, and treating a new age as
+/// a new row would force a frame on every poll.
+#[must_use]
+fn systems_visibly_differ(old: &[SystemState], new: &[SystemSnapshotDto]) -> bool {
+    old.len() != new.len()
+        || old.iter().zip(new).any(|(old, new)| {
+            old.id != new.id
+                || old.endpoint != new.endpoint
+                || old.configured_name != new.configured_name
+                || old.reachability != new.reachability
+                || old.latest != new.latest
+                || old.offline_reason != new.offline_reason
+        })
+}
+
+/// Whether the `EggPool` pane would render differently.
+///
+/// The endpoint, window, worker availability, both data planes, and both error
+/// classifications count. The last-attempt ages do not, for the same reason
+/// system timestamps do not: an age that advanced is not a changed row.
+#[must_use]
+fn eggpool_visibly_differ(old: Option<&EggpoolState>, new: Option<&EggpoolSnapshotDto>) -> bool {
+    match (old, new) {
+        (None, None) => false,
+        (Some(_), None) | (None, Some(_)) => true,
+        (Some(old), Some(new)) => {
+            old.endpoint != new.endpoint
+                || old.period != new.period
+                || old.worker_state != new.worker_state
+                || old.summary != new.summary
+                || old.health != new.health
+                || old.last_error != new.last_error
+                || old.last_health_error != new.last_health_error
+        }
+    }
+}
+
+fn system_to_dto(system: &SystemState, now: Instant, now_unix_ms: u64) -> SystemSnapshotDto {
+    SystemSnapshotDto {
+        id: system.id.clone(),
+        endpoint: system.endpoint.clone(),
+        configured_name: system.configured_name.clone(),
+        reachability: system.reachability,
+        latest: system.latest.clone(),
+        last_success_at_unix_ms: elapsed_to_unix_ms(system.last_success_at, now, now_unix_ms),
+        last_attempt_at_unix_ms: elapsed_to_unix_ms(system.last_attempt_at, now, now_unix_ms),
+        latency_ms: system
+            .latency
+            .map(|latency| u64::try_from(latency.as_millis()).unwrap_or(u64::MAX)),
+        offline_reason: system.offline_reason.clone(),
+    }
+}
+
+/// The top-level application state.
+///
+/// Plan 164 groups this as the frontend's *render model*: published fleet data
+/// on one side, per-frontend presentation on the other. The grouping is
+/// documented rather than encoded as nested structs because the renderer reads
+/// both together on every frame; what matters for ownership is that only
+/// [`Self::adopt_snapshot`] writes the fleet group and only
+/// [`Self::apply_action_changed`] writes the presentation group.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug)]
+pub struct AppState {
+    // ===== published fleet data =====
+    //
+    // Written by exactly one function, `adopt_snapshot`, from a document the
+    // client daemon published. Nothing in a TUI may mutate these directly.
+    /// Ordered list of all monitored systems, in configured order.
+    pub systems: Vec<SystemState>,
+    /// Current refresh status as last published by the daemon.
+    pub refresh_status: RefreshStatus,
+    /// Diagnostic from the most recent rejected config reload.
+    pub config_reload_error: Option<String>,
+    /// Optional `EggPool` pane state.
+    pub eggpool: Option<EggpoolState>,
+    /// Local IPC generation of the last document this frontend applied.
+    ///
+    /// Used to drop superseded documents. This is *not* the poll generation:
+    /// it counts publications, so a slow frontend can skip straight to the
+    /// newest state without losing an ordered poll result.
+    pub last_snapshot_generation: u64,
+
+    // ===== presentation state =====
+    //
+    // Written only by `apply_action_changed` and `adopt_snapshot`'s
+    // selection repair. These are per frontend: two TUI windows on one
+    // daemon genuinely have different selections.
+    /// Currently selected system, by stable ID.
+    pub selected_id: Option<SystemId>,
+    /// The first visible system in the viewport, by stable ID.
+    pub viewport_top_id: Option<SystemId>,
+    /// Terminal dimensions (width, height), if known.
+    pub terminal_size: Option<(u16, u16)>,
+    /// Currently active top-level pane.
+    pub active_pane: Pane,
+    /// Current Systems presentation mode.
+    pub system_view_mode: SystemViewMode,
+    /// Whether the selected online system's drives are expanded.
+    pub drives_expanded: bool,
+    /// Whether the selected online system's network details are expanded.
+    /// This is independent of drive expansion so both telemetry families
+    /// can be inspected at once.
+    pub network_expanded: bool,
+    /// Plan 087: whether the logical selection is currently being
+    /// visually highlighted with `Modifier::REVERSED`. Independent of
+    /// `selected_id`; cleared by the event-loop timer (about ten
+    /// seconds of inactivity) and on pane changes away from Systems.
+    /// Logical selection itself remains available for keyboard actions
+    /// (`d` and friends) when this flag is `false`.
+    pub selection_highlight_active: bool,
+    /// A period the operator asked for that the daemon has not confirmed yet.
+    ///
+    /// The `EggPool` period is daemon-owned, because only the daemon knows
+    /// which period it actually fetched. `j`/`k` on the pane records a
+    /// *request* here and the event loop forwards it over IPC; the field is
+    /// cleared as soon as a document carrying the daemon's converged period
+    /// arrives. Keeping the request separate from `eggpool.period` is what
+    /// stops the pane from claiming a window whose numbers were fetched for
+    /// a different one.
+    pub eggpool_period_request: Option<EggpoolPeriod>,
+
+    /// Test-only shadow of the daemon's [`FleetState`].
+    ///
+    /// Renderer and reducer tests need to put data on the screen, and before
+    /// Plan 164 they did it by calling the reducer that lived in the same
+    /// struct. That reducer is now the daemon's, so these tests drive the
+    /// *real* path instead: apply a batch to a fleet, project it into a
+    /// document, and adopt that document. A test that constructs
+    /// `SystemState` values by hand would pass while the actual
+    /// daemon-to-frontend pipeline was broken, which is precisely the code
+    /// this field exists to keep honest.
+    ///
+    /// The field does not exist in a production build, so no production path
+    /// can reach a fleet mutation through a frontend.
+    #[cfg(test)]
+    test_fleet: FleetState,
+    /// Test-only local IPC generation counter for [`Self::republish`].
+    #[cfg(test)]
+    test_generation: u64,
+    /// Whether any published document has carried polled reachability.
+    ///
+    /// Frontend-local, and deliberately *not* derived from
+    /// `last_snapshot_generation`: a frontend that attaches after the daemon
+    /// has been polling still needs the one-time placement, and a frontend
+    /// that was served the pre-poll document must still get it when the first
+    /// batch arrives.
+    saw_reachability: bool,
+}
+
+impl AppState {
+    /// Build a frontend render model from the first published document.
+    #[must_use]
+    pub fn from_snapshot(snapshot: &FrontendSnapshot) -> Self {
+        let mut state = Self::blank();
+        state.adopt_snapshot_inner(snapshot, Instant::now(), now_unix_ms());
+        state
+    }
+
+    /// Build a render model from a configuration, for tests and tooling.
+    ///
+    /// This routes through the *same* publication path a real document takes:
+    /// a [`FleetState`] is projected into a DTO and then adopted. That is
+    /// deliberate — a test helper that built `SystemState` values by hand
+    /// could drift from what the daemon actually publishes, and would then
+    /// pass while the real pipeline was broken.
+    ///
+    /// No production frontend calls this. A real TUI receives its first state
+    /// from the daemon over local IPC and never reads the configuration file,
+    /// because reading it would make the TUI a second owner of fleet data.
+    #[cfg(test)]
+    #[must_use]
+    pub fn synthetic(config: &Config) -> Self {
+        let mut state = Self::blank();
+        state.test_fleet = FleetState::from_config(config);
+        state.republish();
+        state
+    }
+
+    /// Project the shadow fleet and adopt the resulting document.
+    #[cfg(test)]
+    fn republish(&mut self) -> bool {
+        self.test_generation = self.test_generation.saturating_add(1);
+        let snapshot = self.test_fleet.to_dto(
+            std::time::Instant::now(),
+            now_unix_ms(),
+            self.test_generation,
+        );
+        // The generation is *not* reset: only the very first document may snap
+        // selection to display-order position zero. Zeroing it here would make
+        // every publish look like a fresh TUI and re-introduce the
+        // reset-on-every-batch behaviour the reducer had already fixed.
+        self.adopt_snapshot(&snapshot)
+    }
+
+    /// A render model with no data at all, used before the first document.
+    #[must_use]
+    pub fn blank() -> Self {
+        Self {
+            systems: Vec::new(),
+            refresh_status: RefreshStatus::Idle,
+            config_reload_error: None,
+            eggpool: None,
+            last_snapshot_generation: 0,
+            selected_id: None,
+            viewport_top_id: None,
+            terminal_size: None,
+            active_pane: Pane::Systems,
+            system_view_mode: SystemViewMode::Normal,
+            drives_expanded: false,
+            network_expanded: false,
+            selection_highlight_active: false,
+            eggpool_period_request: None,
+            #[cfg(test)]
+            test_fleet: FleetState {
+                systems: Vec::new(),
+                last_applied_generation: 0,
+                refresh_status: RefreshStatus::Idle,
+                config_reload_error: None,
+                eggpool: None,
+            },
+            #[cfg(test)]
+            test_generation: 0,
+            saw_reachability: false,
+        }
+    }
+
+    /// The only writer of fleet data in a frontend.
+    ///
+    /// Returns `true` when anything a renderer can see changed, so the event
+    /// loop's draw gate stays as cheap as it was when the TUI owned the
+    /// reducer itself. A document that is not newer than the last applied one
+    /// is dropped without touching anything, which is what lets a slow
+    /// frontend skip revisions.
+    pub fn adopt_snapshot(&mut self, snapshot: &FrontendSnapshot) -> bool {
+        if !snapshot.is_newer_than(self.last_snapshot_generation) {
+            return false;
+        }
+        let now = Instant::now();
+        let now_unix_ms = now_unix_ms();
+        self.adopt_snapshot_inner(snapshot, now, now_unix_ms)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn adopt_snapshot_inner(
+        &mut self,
+        snapshot: &FrontendSnapshot,
+        now: Instant,
+        now_unix_ms: u64,
+    ) -> bool {
+        let first_document = self.last_snapshot_generation == 0;
+        // The one-time placement is tied to the *fleet* reaching polled
+        // reachability, not to this frontend hearing anything at all.
+        let first_reachability = !self.saw_reachability && snapshot.poll_initialized;
+        self.saw_reachability |= snapshot.poll_initialized;
+        let selected_before = self.selected_id.clone();
+        let viewport_before = self.viewport_top_id.clone();
+        let pane_before = self.active_pane;
+        let refresh_before = self.refresh_status.clone();
+        let reload_error_before = self.config_reload_error.clone();
+
+        self.refresh_status = snapshot.refresh_status.clone();
+        self.config_reload_error
+            .clone_from(&snapshot.config_reload_error);
+        // Compare before overwriting: the incoming document is borrowed from
+        // the caller, so this needs no clone of the state it replaces.
+        let eggpool_changed =
+            eggpool_visibly_differ(self.eggpool.as_ref(), snapshot.eggpool.as_ref());
+        self.eggpool = snapshot.eggpool.as_ref().map(|dto| EggpoolState {
+            endpoint: dto.endpoint.clone(),
+            period: dto.period,
+            request_generation: dto.request_generation,
+            worker_state: dto.worker_state,
+            summary: dto.summary.clone(),
+            last_success_at: instant_from_unix_ms(dto.last_success_at_unix_ms, now, now_unix_ms),
+            last_attempt_at: instant_from_unix_ms(dto.last_attempt_at_unix_ms, now, now_unix_ms),
+            last_error: dto.last_error.clone(),
+            health: dto.health.clone(),
+            last_health_success_at: instant_from_unix_ms(
+                dto.last_health_success_at_unix_ms,
+                now,
+                now_unix_ms,
+            ),
+            last_health_attempt_at: instant_from_unix_ms(
+                dto.last_health_attempt_at_unix_ms,
+                now,
+                now_unix_ms,
+            ),
+            last_health_error: dto.last_health_error.clone(),
+        });
+        let new_systems: Vec<SystemState> = snapshot
+            .systems
+            .iter()
+            .map(|dto| SystemState {
+                id: dto.id.clone(),
+                endpoint: dto.endpoint.clone(),
+                configured_name: dto.configured_name.clone(),
+                reachability: dto.reachability,
+                latest: dto.latest.clone(),
+                last_success_at: instant_from_unix_ms(
+                    dto.last_success_at_unix_ms,
+                    now,
+                    now_unix_ms,
+                ),
+                last_attempt_at: instant_from_unix_ms(
+                    dto.last_attempt_at_unix_ms,
+                    now,
+                    now_unix_ms,
+                ),
+                latency: dto.latency_ms.map(Duration::from_millis),
+                offline_reason: dto.offline_reason.clone(),
+            })
+            .collect();
+        self.eggpool_period_request = None;
+        self.last_snapshot_generation = snapshot.generation;
+
+        // Whether a redraw is warranted is a question about what the operator
+        // can *see*, so it is decided here, before the old values are dropped.
+        // Timestamps and latency alone never count: a row that already says
+        // the same thing at a slightly different age does not need a frame, and
+        // treating it as changed would redraw on every single poll.
+        let systems_changed = systems_visibly_differ(&self.systems, &snapshot.systems);
+        self.systems = new_systems;
+        let visible_changed = self.refresh_status != refresh_before
+            || self.config_reload_error != reload_error_before
+            || eggpool_changed
+            || systems_changed;
+
+        // An `EggPool`-only config has nothing to select in Systems, so the
+        // pane starts where the content is.
+        if first_document {
+            self.active_pane = if self.systems.is_empty() && self.eggpool.is_some() {
+                Pane::Eggpool
+            } else {
+                Pane::Systems
+            };
+            self.selected_id = self.systems.first().map(|system| system.id.clone());
+            self.viewport_top_id = self.selected_id.clone();
+        } else {
+            // A reload may add or remove systems, so repair the logical IDs
+            // against the new list before anything reads them.
+            self.selected_id = self
+                .selected_id
+                .take()
+                .filter(|id| self.systems.iter().any(|system| &system.id == id))
+                .or_else(|| self.systems.first().map(|system| system.id.clone()));
+            self.viewport_top_id = self
+                .viewport_top_id
+                .take()
+                .filter(|id| self.systems.iter().any(|system| &system.id == id))
+                .or_else(|| self.selected_id.clone());
+            if self.systems.is_empty() {
+                self.selected_id = None;
+                self.viewport_top_id = None;
+            }
+        }
+
+        // The first document that carries polled reachability establishes the
+        // reachability-sorted display order. Pinning selection and viewport top
+        // to that order stops an offline first-configured system from dragging
+        // the viewport below the online entries that came back first. Later
+        // documents preserve ordinary selection and scroll semantics.
+        if first_reachability {
+            if let Some(&first_index) = self.display_order().first() {
                 if let Some(first_system) = self.systems.get(first_index) {
                     let id = first_system.id.clone();
                     self.selected_id = Some(id.clone());
@@ -557,8 +1233,37 @@ impl AppState {
                 }
             }
         }
+        ensure_selected_visible(self);
 
-        ensure_selected_visible_with_order(self, &order);
+        visible_changed
+            || selected_before != self.selected_id
+            || viewport_before != self.viewport_top_id
+            || pane_before != self.active_pane
+    }
+
+    /// Record the `EggPool` period the operator asked for.
+    ///
+    /// Returns the request when it differs from what is already pending, so
+    /// the event loop forwards a changed request exactly once.
+    pub fn request_eggpool_period(&mut self, longer: bool) -> Option<EggpoolPeriod> {
+        let current = self.eggpool.as_ref()?.period;
+        let next = if longer {
+            current.longer()
+        } else {
+            current.shorter()
+        };
+        if next == current || self.eggpool_period_request == Some(next) {
+            return None;
+        }
+        self.eggpool_period_request = Some(next);
+        Some(next)
+    }
+
+    /// Return the display order: online systems first (in configured
+    /// order), then offline/pending systems (in configured order).
+    #[must_use]
+    pub fn display_order(&self) -> Vec<usize> {
+        display_order_of(&self.systems)
     }
 
     /// Apply a user action.
@@ -604,7 +1309,11 @@ impl AppState {
         match action {
             Action::MoveDown => {
                 if self.active_pane == Pane::Eggpool {
-                    self.move_eggpool_period(true);
+                    // Plan 164: the period is daemon-owned, so this records a
+                    // request instead of mutating local state. The event loop
+                    // forwards it and the pane updates when the daemon's
+                    // converged period comes back.
+                    self.request_eggpool_period(true);
                 } else {
                     let order = self.display_order();
                     self.move_selection(&order, 1);
@@ -615,7 +1324,7 @@ impl AppState {
             }
             Action::MoveUp => {
                 if self.active_pane == Pane::Eggpool {
-                    self.move_eggpool_period(false);
+                    self.request_eggpool_period(false);
                 } else {
                     let order = self.display_order();
                     self.move_selection(&order, -1_isize);
@@ -717,176 +1426,6 @@ impl AppState {
         ensure_selected_visible(self);
     }
 
-    /// Return the display order: online systems first (in configured
-    /// order), then offline/pending systems (in configured order).
-    #[must_use]
-    pub fn display_order(&self) -> Vec<usize> {
-        // One allocation: online indices are appended first, then a second
-        // pass appends the offline/pending indices, preserving configured
-        // order within each group.
-        let mut order = Vec::with_capacity(self.systems.len());
-        for (i, system) in self.systems.iter().enumerate() {
-            if matches!(system.reachability, Reachability::Online) {
-                order.push(i);
-            }
-        }
-        for (i, system) in self.systems.iter().enumerate() {
-            if matches!(
-                system.reachability,
-                Reachability::Offline | Reachability::Pending
-            ) {
-                order.push(i);
-            }
-        }
-        order
-    }
-
-    /// Apply one `EggPool` result if it belongs to the current request and period.
-    pub fn apply_eggpool_result(&mut self, result: &EggpoolResult) {
-        let _ = self.apply_eggpool_result_changed(result);
-    }
-
-    /// Plan 143: `EggPool` result application reporting render-visible change.
-    ///
-    /// The summary and health planes are applied independently, so a
-    /// partial result is the normal case: a failed health refresh never
-    /// erases a successful summary, and a failed summary never erases valid
-    /// service health. Returns `false` for stale generations/periods and for
-    /// cancelled outcomes that leave visible state untouched (already idle).
-    pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
-        let Some(eggpool) = self.eggpool.as_mut() else {
-            return false;
-        };
-        if result.generation != eggpool.request_generation || result.period != eggpool.period {
-            return false;
-        }
-        if matches!(result.summary, EggpoolFetchOutcome::Cancelled) {
-            // A cancelled worker leaves `Refreshing` forever unless
-            // resolved. Return to `Idle` without touching `last_attempt_at`,
-            // `last_error`, or any health state.
-            if eggpool.worker_state != EggpoolWorkerState::Idle {
-                eggpool.worker_state = EggpoolWorkerState::Idle;
-                return true;
-            }
-            return false;
-        }
-        let mut changed = false;
-        if eggpool.worker_state != EggpoolWorkerState::Idle {
-            eggpool.worker_state = EggpoolWorkerState::Idle;
-            changed = true;
-        }
-        // Summary plane: the selected period only.
-        if eggpool.last_attempt_at != Some(result.completed_at) {
-            changed = true;
-        }
-        eggpool.last_attempt_at = Some(result.completed_at);
-        match &result.summary {
-            EggpoolFetchOutcome::Online(summary) => {
-                if eggpool.summary.as_ref() != Some(summary) {
-                    changed = true;
-                }
-                eggpool.summary = Some(summary.clone());
-                eggpool.last_success_at = Some(result.completed_at);
-                if eggpool.last_error.is_some() {
-                    changed = true;
-                }
-                eggpool.last_error = None;
-            }
-            error => {
-                if eggpool.last_error.as_ref() != Some(error) {
-                    changed = true;
-                }
-                eggpool.last_error = Some(error.clone());
-            }
-        }
-        // Health plane: current service health, with no period.
-        if eggpool.last_health_attempt_at != Some(result.completed_at) {
-            changed = true;
-        }
-        eggpool.last_health_attempt_at = Some(result.completed_at);
-        match &result.health {
-            EggpoolHealthFetchOutcome::Online(snapshot) => {
-                if eggpool.health.as_ref() != Some(snapshot) {
-                    changed = true;
-                }
-                eggpool.health = Some(snapshot.clone());
-                eggpool.last_health_success_at = Some(result.completed_at);
-                if eggpool.last_health_error.is_some() {
-                    changed = true;
-                }
-                eggpool.last_health_error = None;
-            }
-            error => {
-                if eggpool.last_health_error.as_ref() != Some(error) {
-                    changed = true;
-                }
-                // A previous snapshot stays visible, but the renderer marks
-                // it as no longer current rather than claiming freshness.
-                eggpool.last_health_error = Some(error.clone());
-            }
-        }
-        changed
-    }
-
-    /// Mark an `EggPool` activation or manual refresh as a new request.
-    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
-        let eggpool = self.eggpool.as_mut()?;
-        eggpool.request_generation = eggpool.request_generation.saturating_add(1);
-        eggpool.worker_state = EggpoolWorkerState::Refreshing;
-        Some((eggpool.period, eggpool.request_generation))
-    }
-
-    /// Mark the local worker as unavailable without exposing a channel error.
-    pub fn mark_eggpool_worker_unavailable(&mut self) {
-        if let Some(eggpool) = self.eggpool.as_mut() {
-            eggpool.worker_state = EggpoolWorkerState::WorkerUnavailable;
-        }
-    }
-
-    /// Plan 151: return the single latest desired worker state.
-    ///
-    /// The worker converges onto this value; there is no command queue, so
-    /// activation, period changes, manual refreshes, and deactivation can
-    /// never be dropped. `active` follows the visible pane, so leaving the
-    /// pane always converges the worker to inactive.
-    #[must_use]
-    pub fn eggpool_desired_state(&self) -> Option<EggpoolDesiredState> {
-        self.eggpool.as_ref().map(|eggpool| EggpoolDesiredState {
-            active: self.active_pane == Pane::Eggpool,
-            period: eggpool.period,
-            generation: eggpool.request_generation,
-        })
-    }
-
-    /// Return the current `EggPool` request identity without changing state.
-    #[must_use]
-    pub fn eggpool_request(&self) -> Option<(EggpoolPeriod, u64)> {
-        self.eggpool
-            .as_ref()
-            .map(|eggpool| (eggpool.period, eggpool.request_generation))
-    }
-
-    fn move_eggpool_period(&mut self, longer: bool) {
-        let Some(eggpool) = self.eggpool.as_mut() else {
-            return;
-        };
-        let next = if longer {
-            eggpool.period.longer()
-        } else {
-            eggpool.period.shorter()
-        };
-        if next == eggpool.period {
-            return;
-        }
-        eggpool.period = next;
-        eggpool.request_generation = eggpool.request_generation.saturating_add(1);
-        eggpool.worker_state = EggpoolWorkerState::Refreshing;
-        // A period applies to the summary plane only; service health has no
-        // period and stays visible.
-        eggpool.summary = None;
-        eggpool.last_error = None;
-    }
-
     fn cycle_pane(&mut self, next: bool) {
         let before = self.active_pane;
         match (
@@ -972,6 +1511,146 @@ impl AppState {
 
         count.max(1)
     }
+}
+
+#[cfg(test)]
+impl AppState {
+    /// Apply a poll batch through the real daemon path and adopt the result.
+    pub fn apply_batch(&mut self, batch: &PollBatch) {
+        let _ = self.apply_batch_changed(batch);
+    }
+
+    /// Plan 143: batch application reporting render-visible change.
+    pub fn apply_batch_changed(&mut self, batch: &PollBatch) -> bool {
+        let was_initialized = self.test_fleet.last_applied_generation != 0;
+        let visible = self.test_fleet.apply_batch_changed(batch);
+        // Mirrors the daemon: the one-time "never polled" -> "polled"
+        // transition is published even when it changed nothing visible, so a
+        // frontend's one-time selection placement cannot be deferred onto an
+        // unrelated later change.
+        if visible || was_initialized != (self.test_fleet.last_applied_generation != 0) {
+            self.republish()
+        } else {
+            false
+        }
+    }
+
+    /// Apply an owned poll batch through the real daemon path.
+    pub fn apply_batch_owned(&mut self, batch: PollBatch) {
+        let _ = self.apply_batch_owned_changed(batch);
+    }
+
+    /// Owned batch application reporting render-visible change.
+    pub fn apply_batch_owned_changed(&mut self, batch: PollBatch) -> bool {
+        if self.test_fleet.apply_batch_owned_changed(batch) {
+            self.republish()
+        } else {
+            false
+        }
+    }
+
+    /// The poll generation the daemon's fleet has accepted.
+    #[must_use]
+    pub fn last_applied_generation(&self) -> u64 {
+        self.test_fleet.last_applied_generation
+    }
+
+    /// Force the shadow fleet's accepted poll generation.
+    ///
+    /// Only reachable from tests, and only to reach the single
+    /// `u64::MAX`-to-`1` wrap the reducer has to tolerate.
+    pub fn set_last_applied_generation(&mut self, generation: u64) {
+        self.test_fleet.last_applied_generation = generation;
+    }
+
+    /// Reconcile the configured systems and adopt the result.
+    pub fn reconcile_systems(&mut self, config: &Config) {
+        self.test_fleet.reconcile_systems(config);
+        self.republish();
+    }
+
+    /// Record a rejected config reload and adopt the result.
+    pub fn set_config_reload_error(&mut self, error: String) {
+        self.test_fleet.set_config_reload_error(error);
+        self.republish();
+    }
+
+    /// Clear the rejected config reload diagnostic and adopt the result.
+    pub fn clear_config_reload_error(&mut self) {
+        self.test_fleet.clear_config_reload_error();
+        self.republish();
+    }
+
+    /// Apply an `EggPool` result through the real daemon path.
+    pub fn apply_eggpool_result(&mut self, result: &EggpoolResult) {
+        let _ = self.apply_eggpool_result_changed(result);
+    }
+
+    /// `EggPool` result application reporting render-visible change.
+    pub fn apply_eggpool_result_changed(&mut self, result: &EggpoolResult) -> bool {
+        if self.test_fleet.apply_eggpool_result_changed(result) {
+            self.republish()
+        } else {
+            false
+        }
+    }
+
+    /// Perform the daemon half of an `EggPool` intent request.
+    ///
+    /// A frontend's `j`/`k` on the pane only records a request. The window
+    /// actually changes when the daemon's converged document comes back, and
+    /// that document is what a test must see — asserting that `j`/`k` mutates
+    /// the local period would lock in the ownership this plan removed.
+    pub fn daemon_apply_eggpool_request(&mut self) {
+        if let Some(period) = self.eggpool_period_request {
+            if self.test_fleet.set_eggpool_period(period) {
+                self.test_fleet.begin_eggpool_request();
+            }
+        }
+        self.republish();
+    }
+
+    /// Mark an `EggPool` activation or manual refresh as a new request.
+    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
+        let minted = self.test_fleet.begin_eggpool_request();
+        if minted.is_some() {
+            self.republish();
+        }
+        minted
+    }
+
+    /// Mark the local worker as unavailable and adopt the result.
+    pub fn mark_eggpool_worker_unavailable(&mut self) {
+        self.test_fleet.mark_eggpool_worker_unavailable();
+        self.republish();
+    }
+
+    /// Return the current `EggPool` request identity.
+    #[must_use]
+    pub fn eggpool_request(&self) -> Option<(EggpoolPeriod, u64)> {
+        self.test_fleet.eggpool_request()
+    }
+
+    /// The desired worker state a single frontend implies.
+    ///
+    /// With one attached frontend the daemon's reduction over all subscriber
+    /// intents *is* this value, so a test can assert the same thing the
+    /// daemon would publish without standing up a connection.
+    #[must_use]
+    pub fn eggpool_desired_state(&self) -> Option<EggpoolDesiredState> {
+        self.test_fleet
+            .eggpool_desired_state(&single_frontend_intents(self))
+    }
+}
+
+/// The intent set a lone frontend implies: its own pane and period.
+#[cfg(test)]
+fn single_frontend_intents(state: &AppState) -> EggpoolIntents {
+    let mut intents = EggpoolIntents::default();
+    if let Some(eggpool) = state.eggpool.as_ref() {
+        intents.set(1, state.active_pane == Pane::Eggpool, eggpool.period);
+    }
+    intents
 }
 
 fn system_from_entry(entry: &crate::config::SystemEntry) -> SystemState {
@@ -1333,14 +2012,14 @@ mod tests {
         let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
 
         let config = test_config_with_ids(&id_refs);
-        let mut ordered = AppState::from_config(&config);
+        let mut ordered = AppState::synthetic(&config);
         ordered.apply_batch_owned(batch_for_indices(&ordered, 0..ordered.systems.len()));
         assert!(ordered
             .systems
             .iter()
             .all(|system| system.reachability == Reachability::Online));
 
-        let mut reordered = AppState::from_config(&config);
+        let mut reordered = AppState::synthetic(&config);
         reordered.apply_batch_owned(batch_for_indices(
             &reordered,
             (0..reordered.systems.len()).rev(),
@@ -1354,12 +2033,12 @@ mod tests {
     #[test]
     fn from_config_creates_correct_initial_state() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
 
         assert_eq!(state.systems.len(), 3);
         assert_eq!(state.selected_id.as_deref(), Some("a"));
         assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
-        assert_eq!(state.last_applied_generation, 0);
+        assert_eq!(state.last_applied_generation(), 0);
         assert_eq!(state.refresh_status, RefreshStatus::Idle);
         assert!(state.terminal_size.is_none());
 
@@ -1379,7 +2058,7 @@ mod tests {
             name: None,
         });
 
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         assert_eq!(state.systems[0].endpoint.host, "192.168.183.143");
     }
 
@@ -1408,7 +2087,7 @@ mod tests {
             ],
             ..Config::default()
         };
-        let mut state = AppState::from_config(&old_config);
+        let mut state = AppState::synthetic(&old_config);
         state.selected_id = Some("removed".into());
 
         let first_batch = PollBatch {
@@ -1473,7 +2152,21 @@ mod tests {
         assert_eq!(state.systems[1].configured_name.as_deref(), Some("Renamed"));
         assert_eq!(state.systems[1].reachability, Reachability::Online);
         assert_eq!(state.systems[1].latest, retained_snapshot);
-        assert_eq!(state.systems[1].last_success_at, retained_success);
+        // Timestamps cross the process boundary as Unix milliseconds, so a
+        // round trip is accurate to the millisecond and no finer. The retained
+        // age is preserved; only the sub-millisecond part is transport loss,
+        // which is why the comparison is a tolerance and not equality.
+        let retained_age = retained_success
+            .map(|then| then.elapsed())
+            .expect("the retained system had a success timestamp");
+        let observed_age = state.systems[1]
+            .last_success_at
+            .map(|then| then.elapsed())
+            .expect("the retained system kept its success timestamp");
+        assert!(
+            retained_age.abs_diff(observed_age) <= Duration::from_millis(1),
+            "retained success age moved from {retained_age:?} to {observed_age:?}",
+        );
         assert_eq!(state.selected_id.as_deref(), Some("changed"));
         assert_eq!(state.viewport_top_id.as_deref(), Some("changed"));
         assert_eq!(state.systems[2].id, "added");
@@ -1491,7 +2184,7 @@ mod tests {
             }],
             ..Config::default()
         };
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.apply_batch(&PollBatch {
             generation: 1,
             started_at: Instant::now(),
@@ -1529,7 +2222,7 @@ mod tests {
             }],
             ..Config::default()
         };
-        let mut state = AppState::from_config(&old_config);
+        let mut state = AppState::synthetic(&old_config);
         state.apply_batch(&PollBatch {
             generation: 1,
             started_at: Instant::now(),
@@ -1567,7 +2260,7 @@ mod tests {
             }],
             ..Config::default()
         };
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.apply_batch(&PollBatch {
             generation: 1,
             started_at: Instant::now(),
@@ -1588,7 +2281,7 @@ mod tests {
     fn apply_batch_rejects_result_from_superseded_endpoint() {
         let mut config = test_config_with_ids(&["a"]);
         config.systems[0].host = "new.local".into();
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let old_endpoint = Endpoint::new("old.local".into(), 11310, None);
         state.systems[0].endpoint = old_endpoint.clone();
         state.reconcile_systems(&config);
@@ -1613,35 +2306,35 @@ mod tests {
     #[test]
     fn apply_batch_accepts_the_single_generation_wrap_after_max() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
-        state.last_applied_generation = u64::MAX;
+        let mut state = AppState::synthetic(&config);
+        state.set_last_applied_generation(u64::MAX);
         state.apply_batch(&PollBatch {
             generation: 1,
             started_at: Instant::now(),
             completed_at: Instant::now(),
             results: Vec::new(),
         });
-        assert_eq!(state.last_applied_generation, 1);
+        assert_eq!(state.last_applied_generation(), 1);
     }
 
     #[test]
     fn apply_batch_rejects_a_skipped_generation_wrap() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
-        state.last_applied_generation = u64::MAX - 1;
+        let mut state = AppState::synthetic(&config);
+        state.set_last_applied_generation(u64::MAX - 1);
         state.apply_batch(&PollBatch {
             generation: 1,
             started_at: Instant::now(),
             completed_at: Instant::now(),
             results: Vec::new(),
         });
-        assert_eq!(state.last_applied_generation, u64::MAX - 1);
+        assert_eq!(state.last_applied_generation(), u64::MAX - 1);
     }
 
     #[test]
     fn from_config_empty_systems() {
         let config = Config::default();
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
 
         assert!(state.systems.is_empty());
         assert!(state.selected_id.is_none());
@@ -1650,13 +2343,13 @@ mod tests {
 
     #[test]
     fn pane_initialization_and_cycling_follow_configured_sources() {
-        let systems = AppState::from_config(&test_config_with_ids(&["a"]));
+        let systems = AppState::synthetic(&test_config_with_ids(&["a"]));
         assert_eq!(systems.active_pane, Pane::Systems);
-        let eggpool = AppState::from_config(&eggpool_config(false));
+        let eggpool = AppState::synthetic(&eggpool_config(false));
         assert_eq!(eggpool.active_pane, Pane::Eggpool);
         assert!(eggpool.eggpool.is_some());
 
-        let mut both = AppState::from_config(&eggpool_config(true));
+        let mut both = AppState::synthetic(&eggpool_config(true));
         both.apply_action(Action::NextPane);
         assert_eq!(both.active_pane, Pane::Eggpool);
         both.apply_action(Action::PreviousPane);
@@ -1665,14 +2358,31 @@ mod tests {
 
     #[test]
     fn eggpool_period_movement_is_bounded_and_invalidates_old_summary() {
-        let mut state = AppState::from_config(&eggpool_config(false));
+        let mut state = AppState::synthetic(&eggpool_config(false));
         assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Hour);
+
+        // The shortest window cannot move, so there is nothing to ask for.
         state.apply_action(Action::MoveUp);
+        assert_eq!(state.eggpool_period_request, None);
+        state.daemon_apply_eggpool_request();
         assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Hour);
+
+        // A longer window is a *request*. The displayed window only changes
+        // when the daemon's converged document arrives, so a TUI can never
+        // claim a period whose numbers were fetched for a different one.
         state.apply_action(Action::MoveDown);
-        state.apply_action(Action::MoveDown);
-        state.apply_action(Action::MoveDown);
-        state.apply_action(Action::MoveDown);
+        assert_eq!(state.eggpool_period_request, Some(EggpoolPeriod::Day));
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Hour);
+        state.daemon_apply_eggpool_request();
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
+        // The confirmed request is cleared, so an unrelated adopt does not
+        // replay it.
+        assert_eq!(state.eggpool_period_request, None);
+
+        for _ in 0..3 {
+            state.apply_action(Action::MoveDown);
+            state.daemon_apply_eggpool_request();
+        }
         let eggpool = state.eggpool.as_ref().unwrap();
         assert_eq!(eggpool.period, EggpoolPeriod::Month);
         assert_eq!(eggpool.request_generation, 3);
@@ -1681,9 +2391,14 @@ mod tests {
 
     #[test]
     fn eggpool_results_reject_stale_or_mismatched_requests_and_retain_same_period_failures() {
-        let mut state = AppState::from_config(&eggpool_config(false));
+        let mut state = AppState::synthetic(&eggpool_config(false));
+        // Move to the day window and let the daemon converge on it, so the
+        // mismatched-period rejection below is about a *stale* period rather
+        // than about a request that was never answered.
         state.apply_action(Action::MoveDown);
-        let generation = state.begin_eggpool_request().unwrap().1;
+        state.daemon_apply_eggpool_request();
+        let generation = state.eggpool_request().unwrap().1;
+        assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
         let now = Instant::now();
         let summary = EggpoolSummary {
             accounted_tokens: 42,
@@ -1772,7 +2487,7 @@ mod tests {
 
     #[test]
     fn eggpool_summary_and_health_planes_are_applied_independently() {
-        let mut state = AppState::from_config(&eggpool_config(false));
+        let mut state = AppState::synthetic(&eggpool_config(false));
         let generation = state.begin_eggpool_request().unwrap().1;
         let now = Instant::now();
         let result = |summary, health| EggpoolResult {
@@ -1852,7 +2567,7 @@ mod tests {
 
     #[test]
     fn eggpool_period_change_keeps_health_and_rejects_another_periods_summary() {
-        let mut state = AppState::from_config(&eggpool_config(false));
+        let mut state = AppState::synthetic(&eggpool_config(false));
         let now = Instant::now();
         let generation = state.eggpool.as_ref().unwrap().request_generation;
         let result = |period, summary| EggpoolResult {
@@ -1879,6 +2594,7 @@ mod tests {
 
         // A period move is a summary-plane change only.
         state.apply_action(crate::action::Action::MoveDown);
+        state.daemon_apply_eggpool_request();
         assert_eq!(state.eggpool.as_ref().unwrap().period, EggpoolPeriod::Day);
         assert!(
             state.eggpool.as_ref().unwrap().health.is_some(),
@@ -1901,7 +2617,7 @@ mod tests {
     #[test]
     fn apply_batch_online_result() {
         let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let snap = make_snapshot();
 
         let batch = PollBatch {
@@ -1923,7 +2639,7 @@ mod tests {
         assert!(state.systems[0].last_success_at.is_some());
         assert!(state.systems[0].latency.is_some());
         assert!(state.systems[0].offline_reason.is_none());
-        assert_eq!(state.last_applied_generation, 1);
+        assert_eq!(state.last_applied_generation(), 1);
         // System b is still pending.
         assert_eq!(state.systems[1].reachability, Reachability::Pending);
     }
@@ -1931,7 +2647,7 @@ mod tests {
     #[test]
     fn apply_batch_offline_result() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         let batch = PollBatch {
             generation: 1,
@@ -1962,7 +2678,7 @@ mod tests {
     #[test]
     fn apply_batch_rejects_old_generation() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         let batch = PollBatch {
             generation: 2,
@@ -1977,7 +2693,7 @@ mod tests {
         };
 
         state.apply_batch(&batch);
-        assert_eq!(state.last_applied_generation, 2);
+        assert_eq!(state.last_applied_generation(), 2);
 
         // Older batch should be rejected.
         let old_batch = PollBatch {
@@ -1994,7 +2710,7 @@ mod tests {
 
         state.apply_batch(&old_batch);
         // Generation should not have changed back.
-        assert_eq!(state.last_applied_generation, 2);
+        assert_eq!(state.last_applied_generation(), 2);
         // Reachability should still be Online.
         assert_eq!(state.systems[0].reachability, Reachability::Online);
         // A stale failure must not plant provenance over newer online state.
@@ -2005,7 +2721,7 @@ mod tests {
     fn apply_batch_success_clears_offline_reason() {
         use crate::poller::{OfflineKind, OfflineReason};
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[0].reachability = Reachability::Offline;
         state.systems[0].offline_reason = Some(OfflineReason::new(OfflineKind::Timeout));
 
@@ -2031,7 +2747,7 @@ mod tests {
     fn apply_batch_newer_failure_replaces_reason() {
         use crate::poller::OfflineKind;
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         for (generation, outcome, kind) in [
             (1, PollOutcome::Timeout, OfflineKind::Timeout),
@@ -2069,7 +2785,7 @@ mod tests {
     fn apply_batch_cancelled_no_state_change() {
         use crate::poller::OfflineKind;
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         let batch = PollBatch {
             generation: 1,
@@ -2098,7 +2814,7 @@ mod tests {
     #[test]
     fn display_order_online_first() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         // Make b online.
         let batch = PollBatch {
@@ -2129,7 +2845,7 @@ mod tests {
     #[test]
     fn display_order_preserves_configured_order() {
         let config = test_config_with_ids(&["a", "b", "c", "d"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         // Make c and a online.
         let batch = PollBatch {
@@ -2165,7 +2881,7 @@ mod tests {
     #[test]
     fn select_next_moves_forward() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         assert_eq!(state.selected_id.as_deref(), Some("a"));
 
@@ -2183,7 +2899,7 @@ mod tests {
     #[test]
     fn select_previous_moves_backward() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         state.apply_action(Action::MoveDown);
         state.apply_action(Action::MoveDown);
@@ -2203,7 +2919,7 @@ mod tests {
     #[test]
     fn select_first_and_last() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         state.apply_action(Action::SelectLast);
         assert_eq!(state.selected_id.as_deref(), Some("c"));
@@ -2215,7 +2931,7 @@ mod tests {
     #[test]
     fn page_down_and_up() {
         let config = test_config_with_ids(&["a", "b", "c", "d", "e", "f", "g", "h"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 20));
 
         state.apply_action(Action::PageDown);
@@ -2232,7 +2948,7 @@ mod tests {
     #[test]
     fn page_movement_is_noop_when_no_entry_fits() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 0));
 
         state.apply_action(Action::PageDown);
@@ -2245,7 +2961,7 @@ mod tests {
     #[test]
     fn move_selection_tolerates_isize_min_offset() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let order = state.display_order();
 
         // Negating `isize::MIN` would overflow; the helper must clamp
@@ -2260,7 +2976,7 @@ mod tests {
     #[test]
     fn selection_preserved_across_reorder() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         // Move past the launch-initialization phase so later batches
         // observe ordinary selection/scroll semantics, matching the
@@ -2272,7 +2988,7 @@ mod tests {
             completed_at: Instant::now(),
             results: vec![],
         });
-        assert_eq!(state.last_applied_generation, 1);
+        assert_eq!(state.last_applied_generation(), 1);
 
         // Select b.
         state.apply_action(Action::MoveDown);
@@ -2302,7 +3018,7 @@ mod tests {
         // batch — an offline first-configured system must not pull the
         // viewport below later online systems.
         let config = test_config_with_ids(&["offline0", "online2", "offline1"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // Operator already scrolled before the first poll arrives.
         state.apply_action(Action::SelectLast);
         assert_eq!(state.selected_id.as_deref(), Some("offline1"));
@@ -2347,7 +3063,7 @@ mod tests {
     #[test]
     fn subsequent_batches_do_not_reset_selection_to_top() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         // First batch initializes the session.
         state.apply_batch(&PollBatch {
             generation: 1,
@@ -2394,7 +3110,8 @@ mod tests {
             }],
             selected_id: Some("test".into()),
             viewport_top_id: Some("test".into()),
-            last_applied_generation: 0,
+            last_snapshot_generation: 0,
+            saw_reachability: false,
             refresh_status: RefreshStatus::Idle,
             config_reload_error: None,
             terminal_size: None,
@@ -2404,6 +3121,15 @@ mod tests {
             network_expanded: false,
             selection_highlight_active: false,
             eggpool: None,
+            eggpool_period_request: None,
+            test_fleet: FleetState {
+                systems: Vec::new(),
+                last_applied_generation: 0,
+                refresh_status: RefreshStatus::Idle,
+                config_reload_error: None,
+                eggpool: None,
+            },
+            test_generation: 0,
         };
         assert_eq!(entry_height(&state, 0), 5);
 
@@ -2430,7 +3156,7 @@ mod tests {
     #[test]
     fn visible_range_handles_mixed_heights() {
         let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
-        let state = AppState::from_config(&config);
+        let state = AppState::synthetic(&config);
         let order = state.display_order();
         let range = visible_range(&order, &state, 0, 20);
         // Should include some entries.
@@ -2440,7 +3166,7 @@ mod tests {
     #[test]
     fn visible_range_small_terminal() {
         let config = test_config_with_ids(&["a", "b", "c"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[0].reachability = Reachability::Online;
         let order = state.display_order();
         let range = visible_range(&order, &state, 0, 3);
@@ -2451,7 +3177,7 @@ mod tests {
     #[test]
     fn visible_range_online_boundary_is_five_rows() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[0].reachability = Reachability::Online;
         let order = state.display_order();
 
@@ -2462,7 +3188,7 @@ mod tests {
     #[test]
     fn visible_range_first_offline_entry_does_not_reserve_online_height() {
         let config = test_config_with_ids(&["offline", "online"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[1].reachability = Reachability::Online;
         let order = vec![0, 1];
 
@@ -2472,7 +3198,7 @@ mod tests {
     #[test]
     fn visible_range_expanded_online_entry_clips_only_drive_rows() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[0].reachability = Reachability::Online;
         state.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
         state.systems[0].latest.as_mut().unwrap().drives = Some(
@@ -2510,7 +3236,7 @@ mod tests {
     #[test]
     fn mixed_network_availability_uses_non_overlapping_per_system_heights() {
         let config = test_config_with_ids(&["network-a", "legacy", "network-b", "offline"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         for index in [0, 1, 2] {
             state.systems[index].reachability = Reachability::Online;
         }
@@ -2553,7 +3279,7 @@ mod tests {
     #[test]
     fn expansion_offsets_follow_selected_system_base_height() {
         let config = test_config_with_ids(&["legacy", "network"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         for system in &mut state.systems {
             system.reachability = Reachability::Online;
         }
@@ -2607,7 +3333,7 @@ mod tests {
     #[test]
     fn ensure_selected_visible_adjusts_viewport() {
         let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 6)); // Very small: 4 usable rows
 
         // Select the last system.
@@ -2634,7 +3360,7 @@ mod tests {
     #[test]
     fn selection_stays_visible_across_dynamic_online_entries() {
         let config = test_config_with_ids(&["a", "b", "c", "d"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 10));
         for system in &mut state.systems {
             system.reachability = Reachability::Online;
@@ -2661,7 +3387,7 @@ mod tests {
     #[test]
     fn expansion_changes_only_selected_entry_height() {
         let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         for system in &mut state.systems {
             system.reachability = Reachability::Online;
             system.latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
@@ -2687,7 +3413,7 @@ mod tests {
         // plus the aggregate I/O total for that, so the normal view must
         // reserve the same two rows.
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         for system in &mut state.systems {
             system.reachability = Reachability::Online;
             system.latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
@@ -2718,7 +3444,7 @@ mod tests {
     #[test]
     fn resize_updates_terminal_size() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         state.apply_action(Action::Resize {
             width: 120,
@@ -2731,7 +3457,7 @@ mod tests {
     #[test]
     fn empty_config_no_selection() {
         let config = Config::default();
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         state.apply_action(Action::MoveDown);
         assert!(state.selected_id.is_none());
@@ -2749,7 +3475,7 @@ mod tests {
     #[test]
     fn multiple_systems_online_offline_mixed_display_order() {
         let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
 
         // Make a, c, e online.
         let batch = PollBatch {
@@ -2793,7 +3519,7 @@ mod tests {
     #[test]
     fn view_controls_wrap_and_preserve_selection_and_expansion() {
         let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 8));
         state.systems[0].reachability = Reachability::Online;
         state.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
@@ -2812,7 +3538,7 @@ mod tests {
     #[test]
     fn network_expansion_is_independent_and_legacy_is_a_noop() {
         let config = test_config_with_ids(&["live"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.systems[0].reachability = Reachability::Online;
         state.systems[0].latest = Some(NormalizedSnapshot::from_v2_payload(
             &gregg_protocol::test_support::LinuxSnapshotV2Builder::default()
@@ -2831,7 +3557,7 @@ mod tests {
         assert!(state.network_expanded);
         assert_eq!(entry_height(&state, 0), 7);
 
-        let mut legacy = AppState::from_config(&config);
+        let mut legacy = AppState::synthetic(&config);
         legacy.systems[0].reachability = Reachability::Online;
         legacy.systems[0].latest = Some(NormalizedSnapshot::from_v1(&make_snapshot()));
         legacy.apply_action(Action::ToggleNetwork);
@@ -2842,7 +3568,7 @@ mod tests {
     #[test]
     fn condensed_expansion_counts_only_valid_drive_rows() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.system_view_mode = SystemViewMode::Condensed;
         state.drives_expanded = true;
         state.systems[0].reachability = Reachability::Online;
@@ -2889,7 +3615,7 @@ mod tests {
     #[test]
     fn plan143_stale_generation_reports_unchanged_without_draw() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let first = plan143_online_batch(&state, 1);
         assert!(state.apply_batch_changed(&first));
         let mut draws = 0;
@@ -2905,7 +3631,7 @@ mod tests {
     #[test]
     fn plan143_stale_endpoint_target_ignored_without_draw() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let first = plan143_online_batch(&state, 1);
         assert!(state.apply_batch_changed(&first));
         let now = Instant::now();
@@ -2928,7 +3654,7 @@ mod tests {
     #[test]
     fn plan143_boundary_navigation_reports_unchanged() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.selection_highlight_active = true;
         // Single system: moving down cannot change selection; highlight is
         // already active, so no visible change.
@@ -2946,7 +3672,7 @@ mod tests {
     #[test]
     fn plan143_real_selection_change_redraws_and_arms_highlight() {
         let config = test_config_with_ids(&["a", "b"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.selection_highlight_active = false;
         assert!(state.apply_action_changed(Action::MoveDown));
         assert!(state.selection_highlight_active);
@@ -2956,7 +3682,7 @@ mod tests {
     #[test]
     fn plan143_resize_always_reports_changed() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         state.terminal_size = Some((80, 24));
         assert!(state.apply_action_changed(Action::Resize {
             width: 80,
@@ -2967,7 +3693,7 @@ mod tests {
     #[test]
     fn plan143_repeated_identical_online_batch_reports_unchanged() {
         let config = test_config_with_ids(&["a"]);
-        let mut state = AppState::from_config(&config);
+        let mut state = AppState::synthetic(&config);
         let first = plan143_online_batch(&state, 1);
         assert!(state.apply_batch_changed(&first));
         // Same snapshot values again (latency/timestamps differ but are not

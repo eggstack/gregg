@@ -1,8 +1,8 @@
 # Plan 164: Gregg client-daemon core and local IPC
 
-Status: **in progress** — foundation landed at `c887094`; behavioral scope
-outstanding. Do not close until the daemon entry point, engine, fan-out,
-reload boundary, and presentation-only TUI exist and are tested.
+Status: **complete** — implemented in `c887094` (transport foundation) and
+`46e1dc0` (daemon, engine, fan-out, reload boundary, presentation-only TUI).
+See the closure record at the end of this document.
 
 Depends on: Plan 161 and the settled current Gregg client architecture through
 Plan 160. It may proceed in parallel with Plans 162-163. Independent of Plan
@@ -307,22 +307,22 @@ Do not yet claim automatic startup or cron TUI support; those belong to Plans
 
 ## Acceptance criteria
 
-- [ ] One config-specific client-daemon process owns production Systems polling.
-- [ ] EggPool polling is daemon-owned and not duplicated per TUI.
-- [ ] Same-binary foreground daemon mode exists.
-- [ ] Local IPC is Unix socket / Windows named pipe, not TCP.
-- [ ] IPC access is same-user/restrictive on supported platforms.
-- [ ] Handshake is versioned and config-specific.
-- [ ] Complete current state is sent immediately to a new frontend.
-- [ ] Fan-out uses bounded latest-state semantics.
-- [ ] Slow/disconnected TUI cannot stall daemon polling.
-- [ ] TUI presentation state is no longer owner of remote polling state.
-- [ ] Ctrl-R and CLI mutation reconciliation cross the daemon boundary.
-- [ ] No filesystem watcher is added.
-- [ ] No silent direct-polling production fallback remains.
-- [ ] Existing Systems and EggPool regressions remain green.
-- [ ] Default local checks and required existing native CI jobs pass.
-- [ ] Active architecture/skill docs match the new ownership.
+- [x] One config-specific client-daemon process owns production Systems polling.
+- [x] EggPool polling is daemon-owned and not duplicated per TUI.
+- [x] Same-binary foreground daemon mode exists.
+- [x] Local IPC is Unix socket / Windows named pipe, not TCP.
+- [x] IPC access is same-user/restrictive on supported platforms.
+- [x] Handshake is versioned and config-specific.
+- [x] Complete current state is sent immediately to a new frontend.
+- [x] Fan-out uses bounded latest-state semantics.
+- [x] Slow/disconnected TUI cannot stall daemon polling.
+- [x] TUI presentation state is no longer owner of remote polling state.
+- [x] Ctrl-R and CLI mutation reconciliation cross the daemon boundary.
+- [x] No filesystem watcher is added.
+- [x] No silent direct-polling production fallback remains.
+- [x] Existing Systems and EggPool regressions remain green.
+- [x] Default local checks and required existing native CI jobs pass.
+- [x] Active architecture/skill docs match the new ownership.
 
 ## Stop conditions
 
@@ -339,3 +339,84 @@ Open a corrective plan or revise 161 if:
 
 Plan 165 adds lazy activation and durable startup lifecycle on this boundary.
 Plan 166 extends the daemon state model with remote scheduler observability.
+
+## Closure record
+
+Landed in two commits: `c887094` (local IPC transport, identity, protocol,
+snapshot DTOs — behavior-neutral) and `46e1dc0` (the daemon, its engine, the
+fan-out, the reload boundary, and the presentation-only TUI).
+
+### What exists
+
+| Piece | Location |
+|-------|----------|
+| Per-config daemon entry point | `gregg daemon run`, `src/cli.rs::dispatch_daemon` |
+| Bounded local status/stop | `gregg daemon status`, `gregg daemon stop`, `src/clientd/daemon.rs::{status, stop}` |
+| Daemon engine | `src/clientd/daemon.rs::Engine::run` |
+| Fleet reducer (daemon-owned) | `src/state.rs::FleetState` |
+| Frontend render model | `src/state.rs::AppState` + `AppState::adopt_snapshot` |
+| Local transport | `src/clientd/ipc.rs` |
+| Endpoint identity | `src/clientd/identity.rs` |
+| Wire contract | `src/clientd/protocol.rs` (`PROTOCOL_VERSION = 1`) |
+| TUI event loop | `src/main.rs::run_event_loop` (3 select arms) |
+| TUI control seam | `src/clientd/frontend.rs::ControlSink` |
+
+### Decisions that were not free choices
+
+- **The fan-out is a `watch` slot, not a queue, and each document is encoded
+  once.** A slow frontend therefore observes a newer generation and skips the
+  ones it missed, which is safe because documents are complete. This is also
+  what makes the cost independent of how many windows are open. It mirrors the
+  discipline Plan 163 established in `greggd`.
+- **The ownership boundary is a type, not a convention.** `FleetState` holds
+  every reducer that consumes a network result. `AppState` has no
+  batch/EggPool/reload entry point at all, and its only fleet writer is
+  `adopt_snapshot`. The existing renderer tests were re-pointed at a
+  `#[cfg(test)] test_fleet` shadow that runs the *real* project→adopt path, so
+  they keep asserting the shipped pipeline rather than a test-only shortcut —
+  and the shadow does not exist in a production build.
+- **Selection placement keys on first *polled reachability*, not the first
+  document.** The daemon publishes once at bind, before any poll completes, with
+  every system `pending`. Keying placement on the first document would have
+  pinned selection to the first configured system and never moved it when the
+  first batch revealed that system offline. `FrontendSnapshot::poll_initialized`
+  carries the distinction, and the daemon publishes that one-time transition even
+  when it changed nothing visible, so the placement can never be deferred onto an
+  unrelated later change (which would have undone whatever the operator had
+  selected in between). Found and fixed by the existing Plan-143 tests.
+- **`WouldBlock` is its own `TransportError` case.** The descriptors are
+  non-blocking, so "no bytes yet" is the normal state of an idle connection. It
+  was initially folded into the generic `Io` case and read as end of file, which
+  killed every connection at the first idle poll.
+- **The `EggPool` period is daemon-owned.** `j`/`k` records a *request* in
+  `AppState::eggpool_period_request`; the pane only ever shows a period the
+  daemon actually fetched. Reduction across frontends is `any active` +
+  `shortest requested period`, both order-independent, keyed by the accept
+  loop's stable subscriber id and retired on disconnect. `refresh: true` on
+  `SetEggpoolIntent` is the manual-refresh escape hatch; without it a re-sent
+  identical intent could not mint a new worker generation.
+- **Config identity crosses the handshake.** Parsing the handshake frame and
+  checking the claim are separate steps because only the daemon knows which
+  config *it* serves. `daemon status`/`stop` identify their target this way, so
+  they cannot act on something that merely looks similar.
+- **The Windows arm is a real named pipe** — owner-only SDDL (`D:P(A;;GA;;;OW)`,
+  protected DACL) plus `PIPE_REJECT_REMOTE_CLIENTS`, which narrows the default
+  token DACL's `SYSTEM`/`Administrators` access to the object owner. This widened
+  `windows-sys` features (`Win32_System_Pipes`, `Win32_Security`); the plan
+  permits that measurement, and no new crate was added.
+
+### Measured
+
+- `cargo test --workspace --all-targets --all-features`: all suites green
+  (669 `gregg` lib including 8 new clientd boundary tests, 480 `greggd` lib,
+  118 + 44 `gregg-protocol`, 62 + 43 `gregg-update`).
+- `cargo clippy --workspace --all-targets --all-features`: 0 warnings.
+- `./scripts/check-local.sh`: pass.
+
+### Not claimed here
+
+- Lazy activation, durable user startup, version rotation, and the
+  install/update/uninstall reconciliation are Plan 165.
+- The Windows named-pipe transport is compile-verified and covered by the
+  Windows CI job, but was not exercised on a Windows host as part of this
+  closure; the Unix path is the one with local evidence.

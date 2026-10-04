@@ -67,6 +67,9 @@ pub enum FrontendFrame {
     Hello(Box<HelloPayload>),
     /// The daemon's protocol version differs from the frontend's. The frontend
     /// must exit rather than render frames it cannot interpret.
+    ///
+    /// The payload also carries the daemon's identity so a frontend can report
+    /// *which* daemon it collided with.
     VersionMismatch(VersionMismatchPayload),
     /// The request was refused; no state changed.
     ProtocolError(String),
@@ -104,6 +107,8 @@ pub struct VersionMismatchPayload {
     pub frontend: u16,
     /// Version the daemon speaks.
     pub daemon: u16,
+    /// Config identity the daemon is actually serving.
+    pub daemon_id: String,
 }
 
 /// Commands a frontend may send.
@@ -111,11 +116,17 @@ pub struct VersionMismatchPayload {
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum DaemonRequest {
     /// Versioned handshake. Must be the first frame on a connection.
+    ///
+    /// Carries the config identity the frontend believes it is talking to, so
+    /// a daemon serving a *different* config refuses the attach instead of
+    /// feeding this TUI another config's fleet.
     Handshake {
         /// Protocol version the frontend speaks.
         protocol_version: u16,
         /// Workspace version of the frontend binary.
         version: String,
+        /// Config identity digest the frontend expects.
+        daemon_id: String,
     },
     /// Re-read the configuration file. This is the only reload boundary.
     ReloadConfig {
@@ -127,6 +138,27 @@ pub enum DaemonRequest {
         /// Monotonic generation chosen by the caller, echoed in the ack.
         generation: u64,
     },
+    /// Report what this frontend currently wants from the `EggPool` worker.
+    ///
+    /// The worker is a single daemon-owned instance, so a frontend cannot
+    /// drive it directly. It publishes the whole `(active, period)` intent and
+    /// the daemon reduces every attached frontend's intent into one converged
+    /// desired state. This is a replacement, not a delta: a stale intent can
+    /// never be composed on top of a newer one.
+    SetEggpoolIntent {
+        /// Whether this frontend has the `EggPool` pane open.
+        active: bool,
+        /// The rolling window this frontend is displaying.
+        period: crate::eggpool::EggpoolPeriod,
+        /// Force a new worker request even if the intent is unchanged.
+        ///
+        /// This is the manual refresh on the `EggPool` pane. Without it, a
+        /// re-sent identical intent would be indistinguishable from a
+        /// duplicate and the operator's key press would do nothing.
+        refresh: bool,
+        /// Monotonic generation chosen by the caller, echoed in the ack.
+        generation: u64,
+    },
 }
 
 impl DaemonRequest {
@@ -134,7 +166,9 @@ impl DaemonRequest {
     #[must_use]
     pub fn generation(&self) -> Option<u64> {
         match self {
-            Self::ReloadConfig { generation } | Self::Shutdown { generation } => Some(*generation),
+            Self::ReloadConfig { generation }
+            | Self::Shutdown { generation }
+            | Self::SetEggpoolIntent { generation, .. } => Some(*generation),
             Self::Handshake { .. } => None,
         }
     }
@@ -382,6 +416,7 @@ mod tests {
             classify(&FrontendFrame::VersionMismatch(VersionMismatchPayload {
                 frontend: 1,
                 daemon: 2,
+                daemon_id: "0123456789abcdef".to_owned(),
             })),
             FrameDisposition::ExitIncompatible
         );
@@ -404,7 +439,8 @@ mod tests {
         assert_eq!(
             DaemonRequest::Handshake {
                 protocol_version: PROTOCOL_VERSION,
-                version: "1.0.0".to_owned()
+                version: "1.0.0".to_owned(),
+                daemon_id: "0123456789abcdef".to_owned(),
             }
             .generation(),
             None

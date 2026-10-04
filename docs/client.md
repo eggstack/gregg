@@ -102,14 +102,52 @@ metrics and reports health as unsupported.
 - `v`: toggle normal/condensed layout
 - `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
-- `Ctrl-R`: reload the current Systems config, reliably deliver its endpoint
-  replacement, and poll it immediately; on EggPool, refresh that pane
+- `Ctrl-R`: ask the client daemon to re-read the config and poll immediately;
+  on the EggPool pane, refresh that pane
 
-If a Systems config reload is missing, malformed, or invalid, the
-last-known-good configuration remains active and the error is shown in the
-diagnostic line until a later reload succeeds. When the bounded scheduler
-command channel is full, replacement delivery waits in the event loop's
-pending-command branch so input and poll results remain responsive.
+`Ctrl-R` is still the only config-reload boundary, and there is still no
+filesystem watcher. The difference is *where* the reload happens: the client
+daemon re-reads the file, reconciles, and republishes, and the TUI renders
+whatever arrives. If the file is missing, malformed, or invalid, the
+last-known-good fleet stays active and the diagnostic line shows the rejection
+until a later reload succeeds.
+
+### The client daemon
+
+`gregg` is a frontend. All remote polling for a configuration happens in a
+separate, same-user process — the *client daemon* — which the TUI attaches to
+over a local endpoint:
+
+```text
+gregg daemon run     # run the client daemon in the foreground
+gregg daemon status   # is one running for this config?
+gregg daemon stop     # stop it
+gregg                  # the TUI; attaches to the running daemon
+```
+
+Each configuration gets its own daemon, identified by a digest of the
+normalized config path, reachable on a `0600` Unix socket beside that config
+(a Windows named pipe with an owner-only DACL where relevant). Two different
+configurations never share a daemon, and one daemon never serves another
+config's fleet.
+
+This exists so that opening a second window costs a socket instead of a second
+copy of the fleet's polling, and so that closing the last window does not stop
+observation. It is also why the TUI **fails** rather than falling back to
+polling directly: a silent fallback would double the request budget exactly
+when the daemon is unhealthy, and would hide that from you. If you see
+"no client daemon is listening for this config", start one with
+`gregg daemon run`.
+
+`gregg daemon run` never forks or self-daemonizes — its lifetime is its
+supervisor's. To have it always available, start it from your own user
+session. `gregg add`, `gregg remove`, and `gregg refresh` nudge a running
+daemon to reload, best-effort and silently: "no daemon is running" is the
+common case and never turns a successful mutation into an error.
+
+The daemon also keeps polling with no TUI attached at all. That is deliberate:
+continuous background observation is the point of the design, and a TUI is a
+viewer.
 
 The selected system keeps its logical selection (`d` still toggles its drive
 details and `n` toggles network details independently), but the reverse-video highlight is transient — it appears when you

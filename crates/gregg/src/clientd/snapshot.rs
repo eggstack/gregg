@@ -24,6 +24,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::eggpool::EggpoolPeriod;
+use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
 use crate::poller::OfflineReason;
 use crate::state::{EggpoolWorkerState, Pane, Reachability, RefreshStatus, SystemViewMode};
@@ -39,8 +40,10 @@ pub type ReachabilityDto = Reachability;
 pub struct SystemSnapshotDto {
     /// Stable identifier. Selection and viewport are keyed on this.
     pub id: String,
-    /// Display form of the endpoint, e.g. `name@host:port` or `host:port`.
-    pub endpoint_label: String,
+    /// The endpoint being polled, carried whole rather than as a display
+    /// string: a frontend lays out `host:port` from the real fields, so it
+    /// cannot invent a spelling the daemon does not use.
+    pub endpoint: Endpoint,
     /// Configured display name, if any.
     pub configured_name: Option<String>,
     /// Current reachability.
@@ -69,7 +72,12 @@ impl SystemSnapshotDto {
     pub fn placeholder(index: usize, reachability: Reachability) -> Self {
         Self {
             id: format!("system-{index}"),
-            endpoint_label: format!("host-{index}:11310"),
+            endpoint: Endpoint {
+                id: format!("system-{index}"),
+                host: format!("host-{index}"),
+                port: 11310,
+                name: None,
+            },
             configured_name: None,
             reachability,
             latest: None,
@@ -93,8 +101,9 @@ pub type EggpoolWorkerStateDto = EggpoolWorkerState;
 /// The `EggPool` pane's state, as published to frontends.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EggpoolSnapshotDto {
-    /// The configured source the pane displays.
-    pub endpoint_label: String,
+    /// The configured source the pane displays, carried whole so a frontend
+    /// never has to re-parse a display string back into an address.
+    pub endpoint: crate::config::EggpoolEntry,
     /// Currently selected rolling window.
     pub period: EggpoolPeriod,
     /// Latest desired request identity.
@@ -107,8 +116,9 @@ pub struct EggpoolSnapshotDto {
     pub last_success_at_unix_ms: Option<u64>,
     /// Unix milliseconds of the last attempt.
     pub last_attempt_at_unix_ms: Option<u64>,
-    /// Most recent non-cancelled summary failure.
-    pub last_error: Option<String>,
+    /// Most recent non-cancelled summary failure, as a structured
+    /// classification rather than display text.
+    pub last_error: Option<crate::eggpool::EggpoolFetchOutcome>,
     /// Latest valid service-health snapshot, independent of the summary period.
     pub health: Option<crate::eggpool::EggpoolHealthSnapshot>,
     /// Unix milliseconds of the last successful health read.
@@ -116,7 +126,7 @@ pub struct EggpoolSnapshotDto {
     /// Unix milliseconds of the last health read attempt.
     pub last_health_attempt_at_unix_ms: Option<u64>,
     /// Most recent health failure, meaning any retained snapshot is not current.
-    pub last_health_error: Option<String>,
+    pub last_health_error: Option<crate::eggpool::EggpoolHealthFetchOutcome>,
 }
 
 /// Complete, self-contained client state for one frontend to render from.
@@ -134,6 +144,16 @@ pub struct FrontendSnapshot {
     pub produced_at_unix_ms: u64,
     /// Poll progress.
     pub refresh_status: RefreshStatusDto,
+    /// Whether the daemon has accepted at least one poll generation.
+    ///
+    /// This is what a frontend needs in order to place its first selection.
+    /// The daemon publishes a document the moment it binds, before any poll has
+    /// completed, and every system in it is `pending` in configured order. A
+    /// frontend that treated *that* document as "the fleet is established"
+    /// would pin its selection to the first configured system and never move
+    /// it when the first batch reveals that system is offline. This flag is
+    /// therefore about the fleet's history, not about the frontend's.
+    pub poll_initialized: bool,
     /// Fleet data, in display order.
     pub systems: Vec<SystemSnapshotDto>,
     /// `EggPool` pane state, when the config has an `EggPool` entry.
@@ -150,6 +170,7 @@ impl FrontendSnapshot {
             generation: 0,
             produced_at_unix_ms: 0,
             refresh_status: RefreshStatusDto::Idle,
+            poll_initialized: false,
             systems,
             eggpool: None,
             config_reload_error: None,

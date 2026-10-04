@@ -183,7 +183,7 @@ async fn mixed_fleet_sustained_workload() {
             .collect(),
         ..Config::default()
     };
-    let mut state = AppState::from_config(&config);
+    let mut state = AppState::synthetic(&config);
     let cancel = CancellationToken::new();
     let (_refresh_tx, refresh_rx) = mpsc::channel(2);
 

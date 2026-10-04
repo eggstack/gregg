@@ -7,6 +7,42 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **`gregg` is now a frontend (Plan 164):** all remote polling for a
+  configuration file moved out of the TUI and into a new per-config
+  **client daemon**, `gregg daemon run`. Each config gets its own daemon,
+  identified by a digest of the normalized config path, reachable on a `0600`
+  Unix socket beside that config (a Windows named pipe with an owner-only DACL
+  and remote clients rejected). Two configurations never share a daemon, and one
+  daemon never serves another config's fleet.
+
+  Opening a second TUI window now costs a socket instead of a second copy of the
+  fleet's polling, and closing the last window no longer stops observation: the
+  daemon keeps polling with no frontend attached. If the daemon is not running,
+  the TUI **reports that and exits** rather than falling back to polling
+  directly — a silent fallback would double the request budget exactly when the
+  daemon is unhealthy and would hide the failure from you.
+
+  `Ctrl-R` is unchanged as the only config-reload boundary, and there is still
+  no filesystem watcher. The reload itself is now performed by the daemon, which
+  republishes; an invalid file leaves the last-known-good fleet active and
+  surfaces a diagnostic. `gregg add`, `gregg remove`, and `gregg refresh` nudge
+  a running daemon to reload, best-effort and silently. The EggPool pane's
+  window and activation are now a request the daemon reduces across all
+  attached frontends, so two windows converge on one worker state instead of
+  racing it.
+
+  New commands: `gregg daemon run`, `gregg daemon status`, `gregg daemon stop`.
+  `status` and `stop` are read-only and bounded, and identify the daemon by
+  completing the local protocol handshake rather than by looking for a process
+  name or a PID file, so they cannot act on something that merely looks
+  similar. `run` never forks or self-daemonizes.
+
+  This is a breaking change for anyone who ran the TUI expecting it to start
+  polling on its own: start `gregg daemon run` first (in another terminal, or
+  under your own supervision).
+
 ### Added
 
 - **Scheduler observability API (Plans 162/163):** `greggd` now exposes its

@@ -197,6 +197,59 @@ pub enum Command {
         #[command(subcommand)]
         command: EggpoolCommand,
     },
+    /// Manage the per-configuration Gregg client daemon.
+    ///
+    /// The client daemon owns all remote polling for one configuration file
+    /// and serves TUI windows over a same-user local endpoint. Bare `gregg`
+    /// attaches to it; these commands are for running and inspecting it
+    /// directly.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+}
+
+/// `gregg daemon` subcommands.
+#[derive(Subcommand)]
+pub enum DaemonCommand {
+    /// Run the client daemon in the foreground.
+    ///
+    /// This is the supervisor-facing entry point: it never forks or
+    /// self-daemonizes, so its lifetime is exactly its parent's. Both the
+    /// default configuration and an explicit `--config` are supported, and two
+    /// different configurations never share a daemon.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon run
+    /// gregg --config /tmp/team.toml daemon run
+    /// ```
+    Run,
+    /// Report whether a matching client daemon is running.
+    ///
+    /// Read-only and bounded. Identity is established by completing the local
+    /// protocol handshake, not by looking for a process name or a PID file, so
+    /// the answer cannot be a guess about some unrelated process.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon status
+    /// gregg --config /tmp/team.toml daemon status
+    /// ```
+    Status,
+    /// Stop the matching client daemon.
+    ///
+    /// Only a positively identified daemon for this same configuration is
+    /// stopped. Two configurations can never stop each other.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon stop
+    /// ```
+    Stop,
 }
 
 /// `EggPool` configuration commands.
@@ -290,6 +343,36 @@ pub fn resolve_config_path(explicit: Option<&PathBuf>) -> PathBuf {
 ///
 /// Returns a boxed error if the command fails.
 pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    let result = dispatch_inner(command, store);
+    // A successful mutation nudges a running daemon. Doing it here rather
+    // than at each command's success return means a new mutating command
+    // cannot forget, and a failing command never notifies.
+    if result.is_ok() && mutates_config(command) {
+        notify_running_daemon(store);
+    }
+    result
+}
+
+/// Whether this command can change the configuration file.
+fn mutates_config(command: &Command) -> bool {
+    match command {
+        Command::Add { .. }
+        | Command::Remove { .. }
+        | Command::Refresh { .. }
+        | Command::Edit
+        | Command::Eggpool { .. } => true,
+        Command::Version
+        | Command::List { .. }
+        | Command::Update
+        | Command::Uninstall { .. }
+        | Command::Daemon { .. } => false,
+    }
+}
+
+fn dispatch_inner(
+    command: &Command,
+    store: &ConfigStore,
+) -> Result<(), Box<dyn std::error::Error>> {
     match command {
         Command::Version => {
             println!("{}", version_string());
@@ -307,6 +390,107 @@ pub fn dispatch(command: &Command, store: &ConfigStore) -> Result<(), Box<dyn st
         Command::Update => cmd_update(),
         Command::Uninstall { dry_run, purge } => cmd_uninstall(store, *dry_run, *purge),
         Command::Eggpool { command } => dispatch_eggpool(command, store),
+        Command::Daemon { command } => dispatch_daemon(command, store),
+    }
+}
+
+/// Best-effort: ask a running client daemon to re-read the config file.
+///
+/// Called after a successful config mutation so a long-running daemon picks up
+/// the change without the operator having to press `Ctrl-R`.
+///
+/// Every failure is silent, and that is the point. "No daemon is running" is
+/// the overwhelmingly common case — a mutation from a script, a fresh install,
+/// a config nobody has opened yet — and it must not turn a successful
+/// `gregg add` into an error. A daemon that is running but wedged must not
+/// block the mutation either, because the config file on disk is already
+/// correct and the next explicit reload or restart will read it.
+///
+/// The notification is deliberately *not* a watcher: nothing observes the
+/// config file, and nothing runs in the background waiting to. The daemon's
+/// own reload boundary stays `Ctrl-R` plus these explicit nudges.
+fn notify_running_daemon(store: &ConfigStore) {
+    let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
+    let Ok(mut link) = crate::clientd::frontend::FrontendLink::connect(&identity.candidates())
+    else {
+        return;
+    };
+    if link.handshake(&identity, &version_string()).is_err() {
+        return;
+    }
+    let _ = link.send(&crate::clientd::protocol::DaemonRequest::ReloadConfig { generation: 0 });
+}
+
+/// The client daemon subcommands all need a runtime: they speak local IPC, and
+/// [`ipc`] is synchronous socket code that must run outside the async poll
+/// paths the daemon itself drives.
+fn dispatch_daemon(
+    command: &DaemonCommand,
+    store: &ConfigStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| -> Box<dyn std::error::Error> {
+            format!("error: failed to start runtime: {error}").into()
+        })?;
+    match command {
+        DaemonCommand::Run => {
+            // A stop request and a supervisor signal are the same thing to this
+            // process: unwind the engine loop, unlink the endpoint, exit.
+            let cancel = tokio_util::sync::CancellationToken::new();
+            runtime
+                .block_on(async {
+                    tokio::select! {
+                        result = crate::clientd::run_daemon(
+                            ConfigStore::new(store.path().to_path_buf()),
+                            identity,
+                            cancel.clone(),
+                        ) => result,
+                        () = shutdown_signal() => {
+                            cancel.cancel();
+                            Ok(())
+                        }
+                    }
+                })
+                .map_err(|error| -> Box<dyn std::error::Error> { Box::new(error) })
+        }
+        DaemonCommand::Status => {
+            let status = runtime.block_on(crate::clientd::daemon::status(&identity))?;
+            println!("{}", status.render());
+            Ok(())
+        }
+        DaemonCommand::Stop => {
+            runtime.block_on(crate::clientd::daemon::stop(&identity, &version_string()))?;
+            Ok(())
+        }
+    }
+}
+
+/// Wait for the signals that mean "stop cleanly".
+///
+/// `Ctrl-C` and `SIGTERM` are the ordinary ways a supervisor or a user ends a
+/// foreground daemon. There is deliberately no self-daemonization: the process
+/// lifetime is the supervisor's decision, not this process's.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut term) = signal(SignalKind::terminate()) else {
+            // Without a SIGTERM stream the process can still be ended with
+            // Ctrl-C, which is enough to unwind cleanly.
+            let _ = tokio::signal::ctrl_c().await;
+            return;
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }
 
