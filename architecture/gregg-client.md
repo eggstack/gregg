@@ -254,8 +254,16 @@ functions. The renderer reads `AppState` projections without performing I/O.
 ### Polling pipeline
 
 ```
-Config → Endpoint list → PollScheduler → PollBatch channel → AppState reducer
+Config → Endpoint list → PollScheduler → PollBatch channel → FleetState reducer
+                                                                    │ JSON
+                                                                    ▼
+                                                        AppState::adopt_snapshot
 ```
+
+`FleetState` lives in the client daemon and is the only reducer that consumes a
+network result. `AppState` lives in a TUI window and is the frontend render
+model; its only fleet writer is `adopt_snapshot`. `CronWorker` runs a second,
+slower plane over the Plan-162 scheduler routes and feeds `FleetState.cron`.
 
 **Scheduler** (`scheduler.rs`):
 - Produces `PollBatch`es on a configurable interval

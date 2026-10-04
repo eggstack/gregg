@@ -160,17 +160,38 @@ differences).
 
 ### gregg — the client
 
-Watches many daemons from one terminal: endpoint CLI, concurrent polling,
-pure state reducer, Ratatui TUI, plus an isolated optional EggPool pane.
+Watches many daemons from one terminal: endpoint CLI, a per-config **client
+daemon** that owns all remote polling, a presentation-only Ratatui TUI, plus an
+isolated optional EggPool pane. The crate is a lib+bin because the daemon and
+the frontend are the same binary.
 
 - Polling: `scheduler.rs` (generations, semaphore bound, panic→`Cancelled`,
   offline retried every cadence, never pruned) + `poller.rs` (v2-first,
   64 KiB cap, no redirects, `PollOutcome` incl. stable `OfflineReason`) +
   `normalized.rs` (one UI type for v1/v2, checked drive aggregation).
-- State/UI: `state.rs`/`action.rs` (reducer, online-first order, first-batch
-  selection snap, transient 10s highlight), `ui/system_block.rs`
-  (authoritative fleet-wide `[`/`]` layout), `ui/condensed.rs`, `ui/bar.rs`,
+- Client daemon: `clientd/daemon.rs` (engine, `watch` fan-out, one document
+  serialized once for all windows), `clientd/ipc.rs` (Unix `0600` socket /
+  Windows owner-only named pipe, `0600`-style identity handshake),
+  `clientd/frontend.rs`, `clientd/protocol.rs`, `clientd/snapshot.rs`,
+  `clientd/identity.rs`, `clientd/launch.rs` (lazy activation under a
+  config-specific advisory lock — no PID file), `clientd/startup.rs` +
+  `startup_support.rs` (always user-scoped: `systemctl --user`, LaunchAgent,
+  Startup folder, or user crontab — never a system unit, `LocalService`, or
+  `sudo`).
+- Cron observability: `clientd/cron.rs` (the only code that fetches the Plan-162
+  routes; summary on a 30s cadence, history on discovery/revision change),
+  `cron.rs` (`(epoch, sequence)`-deduplicated, memory-only cache bounded by
+  per-job depth plus a **global constant** record ceiling), `sanitize.rs`
+  (remote text as inert cells), `ui/cron.rs` (the `c` block).
+- State/UI: `state.rs`/`action.rs` (`FleetState` is the daemon-owned reducer;
+  `AppState` is the frontend render model whose only fleet writer is
+  `adopt_snapshot`; online-first order, first-*polled-reachability* selection
+  snap, transient 10s highlight), `ui/system_block.rs` (authoritative
+  fleet-wide `[`/`]` layout), `ui/condensed.rs`, `ui/cron.rs`, `ui/bar.rs`,
   `ui/text.rs`, `event.rs`/`input.rs`/`terminal.rs` (keys, thread, lifecycle).
+- Qualification: `qualification.rs` derives the memory, payload, and body-size
+  bounds from the same constants the implementation uses, so a changed bound
+  fails a test rather than invalidating a recorded figure.
 - Config/CLI: `config/{model,store,validation,lock}` (atomic writes,
   `flock`/`LockFileEx`), `endpoint.rs` (explicit port required for `add`;
   HTTPS never accepted), `cli.rs` (`add/list/remove/refresh/edit/version/update`,
@@ -191,7 +212,31 @@ Primary (polling):
 collector (native) → sampler (clock) → cached v1+v2 → HTTP server (EggServe H1)
                                                           │ JSON
                                                           ▼
-scheduler (timer) → PollBatch (generation) → AppState (reducer) → TUI (read-only)
+client daemon: scheduler (timer) → PollBatch (generation) → FleetState (reducer)
+                                                              │ JSON document
+                                                              ▼
+                                              TUI AppState::adopt_snapshot → render
+```
+
+The middle two boxes are **separate processes**. Since Plan 164 the client
+daemon owns all remote polling for a configuration file; the TUI is a frontend
+that opens a local socket, opens no network connection, and reads no config
+file. There is no direct-polling fallback: a frontend that cannot reach a
+compatible daemon reports the reason and exits, because a silent fallback would
+double the fleet's request budget exactly when the daemon is unhealthy.
+
+```
+greggd (remote)                    gregg client daemon                    gregg TUI
+/  /v2/status   ──────────────▶    PollScheduler → FleetState
+   /v2/scheduler  ──────────────▶  CronWorker (30s) ──┐
+   /v2/scheduler/history ──────▶   (discovery/revision)┤
+                                   EggPool worker ─────┴→ one JSON document
+                                                          │ 0600 socket /
+                                                          │ named pipe
+                                                          ▼
+                                                  AppState::adopt_snapshot
+                                                          ▼
+                                                       render
 ```
 
 1. Collector reads kernel interfaces; sampler stamps `observed_at`, converts
@@ -202,10 +247,22 @@ scheduler (timer) → PollBatch (generation) → AppState (reducer) → TUI (rea
    revalidates the published state and memo cell after its awaited init, so a
    concurrent failure transition cannot produce a transient `200` that later
    readers would contradict.
-2. The client scheduler polls each endpoint per cadence; owned batches carry a
-   generation so stale results are rejected; the reducer uses positional
-   matching with stable-ID fallback and moves normalized payload data; the TUI
-   renders projections without I/O and redraws only after visible changes.
+2. The client daemon's scheduler polls each endpoint per cadence; owned batches
+   carry a generation so stale results are rejected; `FleetState` is the only
+   reducer that consumes a network result, using positional matching with
+   stable-ID fallback and moving normalized payload data. A separate
+   `CronWorker` observes the Plan-162 scheduler routes on a slower cadence and
+   keeps a bounded memory-only history, gated on `(epoch, revision)` and
+   deduplicating by `(epoch, sequence)`. The daemon serializes the whole fleet
+   into one document, once, for every attached window.
+3. The TUI's `AppState::adopt_snapshot` is its only fleet writer. It renders
+   projections without I/O and redraws only after a visible change, comparing
+   what is on screen rather than what changed in the document — a document that
+   merely advanced an age does not force a frame.
+4. A window publishes small *intents* (EggPool window/period, cron system/job)
+   that the daemon reduces order-independently. An intent governs what is
+   published and never what is fetched, which is why N windows cost the fleet
+   what one window costs.
 
 Optional EggPool path (`eggpool.rs` worker → `AppState.eggpool` pane) has its
 own client, auth, cadence, and rendering — see

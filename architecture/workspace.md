@@ -186,9 +186,13 @@ plus normalization (`normalized.rs` for the v1/v2 UI type; `event.rs` maps keys)
 - `scheduler.rs` — `PollScheduler` produces `PollBatch`es on a configurable
   interval. Concurrency is bounded by a semaphore. Generation numbers increase
   monotonically; the state reducer rejects stale batches.
-- `state.rs` — `AppState` owns the system list, selection (by stable `SystemId`),
-  viewport position, independent top-level pane and Systems view mode,
-  transient expansion/period state, and generation tracking.
+- `state.rs` — two types with two owners. `FleetState` lives in the client
+  daemon and is the only reducer that consumes a network result; `AppState`
+  lives in a TUI window and is the frontend render model, whose only fleet
+  writer is `adopt_snapshot`. `AppState` owns the system list, selection (by
+  stable `SystemId`), viewport position, independent top-level pane and Systems
+  view mode, independent `d`/`n`/`c` expansion state, transient highlight, and
+  generation tracking.
   Display order is online-first/offline-last while preserving configured
   relative order. Viewport helpers compute visible ranges for normal
   five-row-base entries and condensed one-row entries, with bounded selected

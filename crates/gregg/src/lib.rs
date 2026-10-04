@@ -22,6 +22,7 @@ pub mod event;
 pub mod input;
 pub mod normalized;
 pub mod poller;
+pub mod qualification;
 pub mod sanitize;
 pub mod scheduler;
 pub mod state;

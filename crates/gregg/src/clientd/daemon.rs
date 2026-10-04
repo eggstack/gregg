@@ -1612,6 +1612,328 @@ mod tests {
         running.shutdown().await;
     }
 
+    /// A fully-counting remote: serves metrics *and* both scheduler routes and
+    /// records how many times each was asked.
+    ///
+    /// Plan 167's primary architectural proof needs request counts, not
+    /// publication counts. Two subscribers receiving the same generation only
+    /// shows the fan-out is shared; it does not show the *remote* was not
+    /// polled twice.
+    struct CountingGreggd {
+        port: u16,
+        status: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        summary: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        history: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingGreggd {
+        fn status_hits(&self) -> usize {
+            self.status.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn summary_hits(&self) -> usize {
+            self.summary.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn history_hits(&self) -> usize {
+            self.history.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    async fn spawn_counting_greggd() -> CountingGreggd {
+        use gregg_protocol::test_support::LinuxSnapshotV2Builder;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let status_body = serde_json::to_vec(
+            &LinuxSnapshotV2Builder::default()
+                .sample_interval_ms(1_000)
+                .build_payload(),
+        )
+        .expect("status serializes");
+        let (summary_body, history_body) = scheduler_documents();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let status = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let summary = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let history = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (t_status, t_summary, t_history) = (
+            std::sync::Arc::clone(&status),
+            std::sync::Arc::clone(&summary),
+            std::sync::Arc::clone(&history),
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let (status_body, summary_body, history_body) = (
+                    status_body.clone(),
+                    summary_body.clone(),
+                    history_body.clone(),
+                );
+                let (t_status, t_summary, t_history) = (
+                    std::sync::Arc::clone(&t_status),
+                    std::sync::Arc::clone(&t_summary),
+                    std::sync::Arc::clone(&t_history),
+                );
+                tokio::spawn(async move {
+                    let mut request = String::new();
+                    let mut chunk = [0_u8; 1024];
+                    loop {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(count) => {
+                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
+                                if request.contains("\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // This remote serves every route, so there is no 404 arm:
+                    // any request that is not a scheduler route is a metrics
+                    // request, which is exactly what the counts are asserting.
+                    let body = if request.contains("/v2/scheduler/history") {
+                        t_history.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        history_body
+                    } else if request.contains("/v2/scheduler") {
+                        t_summary.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        summary_body
+                    } else {
+                        t_status.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        status_body
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        String::from_utf8_lossy(&body)
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+        CountingGreggd {
+            port,
+            status,
+            summary,
+            history,
+        }
+    }
+
+    /// The scheduler documents the counting remote serves.
+    #[allow(clippy::type_complexity)]
+    fn scheduler_documents() -> (Vec<u8>, Vec<u8>) {
+        use gregg_protocol::{
+            SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
+            SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
+            SchedulerRunSummaryV2, SchedulerSummaryV2,
+        };
+        let epoch = SchedulerEpochV2 {
+            started_at_unix_ms: 1_700_000_000_000,
+            nonce: 11,
+        };
+        let summary = serde_json::to_vec(&SchedulerSummaryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![SchedulerJobV2 {
+                name: "backup".to_owned(),
+                schedule: "0 3 * * *".to_owned(),
+                next_due_unix_ms: 1_700_100_000_000,
+                state: SchedulerJobStateV2::Idle,
+                load: None,
+                pending_since_unix_ms: None,
+                next_retry_unix_ms: None,
+                running_since_unix_ms: None,
+                last: Some(SchedulerRunSummaryV2 {
+                    sequence: 1,
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    finished_unix_ms: 1_700_000_001_000,
+                    outcome: SchedulerOutcomeV2::Success,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(1_000),
+                    delay_ms: 0,
+                    coalesced: false,
+                }),
+            }],
+        })
+        .expect("summary serializes");
+        let history = serde_json::to_vec(&SchedulerHistoryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![SchedulerJobHistoryV2 {
+                name: "backup".to_owned(),
+                records: vec![SchedulerRunRecordV2 {
+                    sequence: 1,
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    started_unix_ms: Some(1_700_000_000_100),
+                    finished_unix_ms: 1_700_000_001_000,
+                    outcome: SchedulerOutcomeV2::Success,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(900),
+                    delay_ms: 0,
+                    coalesced: false,
+                    stdout: SchedulerOutputV2::new("ok\n".to_owned(), false),
+                    stderr: SchedulerOutputV2::new(String::new(), false),
+                }],
+            }],
+        })
+        .expect("history serializes");
+        (summary, history)
+    }
+
+    #[tokio::test]
+    async fn several_windows_cost_the_fleet_exactly_one_polling_plane() {
+        // Plan 167's primary architectural proof. The remote is counted, not the
+        // publication, because a shared generation is necessary but not
+        // sufficient: two frontends polling in parallel would still share
+        // generations while doubling the fleet's requests.
+        let remote = spawn_counting_greggd().await;
+        let dir = TempDir::new("one-plane");
+        // A one-second cadence so several generations elapse inside the test.
+        let running = Running::start(&dir, write_single_system_config(&dir, remote.port));
+        running.ready().await;
+
+        let mut first = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        // Let the first frontend settle on the metrics and scheduler planes.
+        await_documents(&mut first.frames, Duration::from_secs(20), |document| {
+            document.systems[0].reachability == crate::state::Reachability::Online
+                && document
+                    .cron_for("sys-a")
+                    .is_some_and(|cron| cron.capability == crate::cron::CronCapability::Supported)
+        })
+        .await;
+        let baseline_status = remote.status_hits();
+        assert_eq!(remote.history_hits(), 1, "discovery fetches history once");
+        let baseline_summary = remote.summary_hits();
+
+        // Attach a second window, with the cron pane open, and let both run for
+        // several metrics generations.
+        let second = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        second
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+            .expect("queues the intent");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+        // Two windows, one fleet. Both planes are shared, and the history body
+        // is still fetched only on discovery.
+        assert!(
+            remote.status_hits() >= baseline_status,
+            "metrics must keep flowing for both windows"
+        );
+        assert!(
+            remote.status_hits() < baseline_status * 2 + 4,
+            "a second window must not double the metrics cadence: {} -> {}",
+            baseline_status,
+            remote.status_hits()
+        );
+        assert_eq!(
+            remote.summary_hits(),
+            baseline_summary,
+            "a second window must not double the scheduler cadence"
+        );
+        assert_eq!(
+            remote.history_hits(),
+            1,
+            "a second window, and an open cron pane, must not refetch history"
+        );
+
+        // Closing one window changes nothing about the remote.
+        let after_second = remote.status_hits();
+        drop(second);
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        assert!(
+            remote.status_hits() > after_second,
+            "the fleet keeps polling after one window closes"
+        );
+        assert_eq!(remote.history_hits(), 1);
+
+        // Closing the final window must not stop the daemon. This is the whole
+        // reason observation lives in a separate process.
+        drop(first);
+        let after_all = remote.status_hits();
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        assert!(
+            remote.status_hits() > after_all,
+            "the daemon must keep polling with no window attached"
+        );
+        assert_eq!(remote.history_hits(), 1, "and still not refetch history");
+
+        // The daemon is still the same one: `stop` is the only way down.
+        running.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_tui_restart_keeps_the_daemons_cron_history() {
+        // Restarting a window loses only presentation state. The daemon's
+        // retained history is the reason "close the TUI and reopen it" does not
+        // reset what Gregg has observed.
+        let remote = spawn_counting_greggd().await;
+        let dir = TempDir::new("tui-restart");
+        let running = Running::start(&dir, write_single_system_config(&dir, remote.port));
+        running.ready().await;
+
+        let mut first = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        first
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+            .expect("queues the intent");
+        await_documents(&mut first.frames, Duration::from_secs(20), |document| {
+            document
+                .cron_for("sys-a")
+                .is_some_and(|entry| !entry.history.is_empty())
+        })
+        .await;
+        assert_eq!(remote.history_hits(), 1);
+
+        // The window goes away entirely.
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // A brand-new window, which knows nothing about the old one, must
+        // immediately see the history the daemon still holds.
+        let mut second = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        let documents = await_documents(&mut second.frames, Duration::from_secs(20), |document| {
+            document
+                .cron_for("sys-a")
+                .is_some_and(|entry| !entry.history.is_empty())
+        })
+        .await;
+        let entry = documents
+            .last()
+            .and_then(|document| document.cron_for("sys-a"))
+            .expect("a cron entry");
+        assert_eq!(
+            entry.history[0].records.len(),
+            1,
+            "the restarted window sees the daemon's retained history"
+        );
+        assert_eq!(
+            remote.history_hits(),
+            1,
+            "and the daemon did not refetch it from the remote"
+        );
+
+        running.shutdown().await;
+    }
+
     #[tokio::test]
     async fn a_disconnected_subscriber_does_not_stop_the_daemon() {
         let dir = TempDir::new("disconnect");
