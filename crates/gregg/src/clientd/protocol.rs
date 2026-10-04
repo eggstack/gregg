@@ -167,6 +167,35 @@ pub enum DaemonRequest {
         /// Monotonic generation chosen by the caller, echoed in the ack.
         generation: u64,
     },
+    /// Report what this frontend currently has open in the cron detail view.
+    ///
+    /// The scheduler **fetch** plane is not shaped by this request: the daemon
+    /// always polls the summary on its own cadence and downloads the history
+    /// body on revision change, with or without a TUI attached. This only
+    /// governs which records are *published*, because history is the largest
+    /// document in the system and retransmitting it on every metrics
+    /// publication would put the cron plane on the hot path to draw five job
+    /// rows.
+    ///
+    /// A replacement, like the `EggPool` intent: a stale intent must never be
+    /// composed on top of a newer one, or closing the pane would leave the
+    /// daemon transmitting records nobody is looking at.
+    SetCronIntent {
+        /// The system whose cron detail this frontend has open.
+        ///
+        /// `None` means the pane is closed, and the daemon publishes no
+        /// history records at all.
+        system_id: Option<String>,
+        /// Which job's history this frontend is displaying.
+        job: Option<String>,
+        /// How many records this frontend wants published.
+        ///
+        /// The daemon clamps this to its own maximum, so a frontend cannot make
+        /// the published document larger than the local cache bound allows.
+        display_history: usize,
+        /// Monotonic generation chosen by the caller, echoed in the ack.
+        generation: u64,
+    },
 }
 
 impl DaemonRequest {
@@ -176,7 +205,8 @@ impl DaemonRequest {
         match self {
             Self::ReloadConfig { generation }
             | Self::Shutdown { generation }
-            | Self::SetEggpoolIntent { generation, .. } => Some(*generation),
+            | Self::SetEggpoolIntent { generation, .. }
+            | Self::SetCronIntent { generation, .. } => Some(*generation),
             Self::Handshake { .. } => None,
         }
     }

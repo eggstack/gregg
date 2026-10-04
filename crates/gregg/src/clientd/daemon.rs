@@ -46,7 +46,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 use crate::clientd::identity::ClientDaemonIdentity;
@@ -58,7 +58,7 @@ use crate::clientd::snapshot::FrontendSnapshot;
 use crate::config::{ConfigError, ConfigStore};
 use crate::eggpool::{self, EggpoolDesiredState, EggpoolPeriod};
 use crate::scheduler::SchedulerCommand;
-use crate::state::{now_unix_ms, EggpoolIntent, EggpoolIntents, FleetState};
+use crate::state::{now_unix_ms, CronIntent, CronIntents, EggpoolIntent, EggpoolIntents, FleetState};
 
 /// How often a connection looks for inbound bytes.
 ///
@@ -94,6 +94,13 @@ const REQUEST_CHANNEL_CAPACITY: usize = 64;
 /// Read buffer for one connection.
 const READ_BUFFER_BYTES: usize = 8192;
 
+/// Capacity of the scheduler observation channel.
+///
+/// Bounded: a full channel means the engine is not draining, and an unbounded
+/// one would let a fleet of endpoints accumulate observations faster than they
+/// can be applied.
+const CRON_CHANNEL_CAPACITY: usize = 64;
+
 /// One publication: the encoded frame plus the generation it carries.
 struct Document {
     /// Local IPC generation, mirrored from the encoded document so a
@@ -114,6 +121,21 @@ struct Hub {
     requests: mpsc::Sender<Inbound>,
     /// Per-frontend `EggPool` intents, reduced into one converged worker state.
     intents: Arc<Mutex<EggpoolIntents>>,
+    /// Per-frontend cron-detail intents, reduced into the set of history
+    /// records the published document carries.
+    ///
+    /// Separate from the polling plane on purpose: this decides what is
+    /// *transmitted*, never what is *fetched*.
+    cron_intents: Arc<Mutex<CronIntents>>,
+    /// The endpoint list the scheduler worker polls, shared with it.
+    ///
+    /// A config reload pushes the reconciled list here so the scheduler plane
+    /// follows the same single reload boundary as the metrics plane, rather than
+    /// discovering endpoints independently.
+    cron_endpoints: Arc<Mutex<Vec<crate::endpoint::Endpoint>>>,
+    /// Wakes the scheduler worker when the endpoint list changes, so a newly
+    /// added system is observed without waiting out the whole interval.
+    cron_reload: Arc<Notify>,
     /// Config identity this daemon serves.
     daemon_id: String,
     /// Fires when a frontend asks the daemon to stop.
@@ -210,7 +232,7 @@ pub async fn run_daemon(
             refresh,
             max_concurrent,
         )
-        .run(endpoints, tasks.clone(), scheduler_rx),
+        .run(endpoints.clone(), tasks.clone(), scheduler_rx),
     );
 
     let eggpool_worker = config.eggpool.clone().map(|entry| {
@@ -225,12 +247,22 @@ pub async fn run_daemon(
     let listener = ipc::bind(&candidates).map_err(DaemonError::Bind)?;
     let endpoint: BoundEndpoint = listener.endpoint().clone();
 
-    let (snapshots, _) = watch::channel(encode_document(&fleet, 1)?);
+    let (snapshots, _) = watch::channel(encode_document(&fleet, 1, &CronIntents::default())?);
     let (requests, mut request_rx) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
+    // Capacity of the scheduler observation channel. Bounded because a full
+    // channel means the engine is not draining, and an unbounded one would let
+    // a slow engine accumulate observations faster than they can be applied.
+    let (cron_tx, mut cron_rx) = mpsc::channel(CRON_CHANNEL_CAPACITY);
+    let cron_endpoints = Arc::new(Mutex::new(endpoints));
+    let cron_reload = Arc::new(Notify::new());
+
     let hub = Arc::new(Hub {
         snapshots,
         requests,
         intents: Arc::new(Mutex::new(EggpoolIntents::default())),
+        cron_intents: Arc::new(Mutex::new(CronIntents::default())),
+        cron_endpoints: Arc::clone(&cron_endpoints),
+        cron_reload: Arc::clone(&cron_reload),
         daemon_id: identity.id().to_owned(),
         shutdown: tasks.clone(),
     });
@@ -241,12 +273,24 @@ pub async fn run_daemon(
         async move { accept_loop(listener, hub, cancel).await }
     });
 
+    // The scheduler plane runs whether or not a TUI is attached, because
+    // continuous background observation is the point of the architecture.
+    let cron_task = tokio::spawn(
+        crate::clientd::cron::CronWorker::new(timeout).run(
+            cron_endpoints,
+            cron_reload,
+            cron_tx,
+            tasks.clone(),
+        ),
+    );
+
     let mut engine = Engine {
         // The initial document was already published at generation 1 below, so
         // the counter starts there rather than producing a duplicate 1 on the
         // first real change.
         generation: 1,
         converged: fleet.eggpool_desired_state(&EggpoolIntents::default()),
+        cron_dirty: false,
         store: ConfigStore::new(config_path),
     };
 
@@ -259,12 +303,14 @@ pub async fn run_daemon(
             eggpool_control.as_ref(),
             &scheduler_tx,
             &mut request_rx,
+            &mut cron_rx,
             &cancel,
         )
         .await;
 
     tasks.cancel();
     accept_task.abort();
+    cron_task.abort();
     drop(eggpool_control);
     ipc::cleanup(&endpoint.path);
     result
@@ -278,6 +324,22 @@ impl Hub {
     /// single push or retain. Failing closed on a panic would stop the
     /// `EggPool` worker from ever converging again, which is strictly worse
     /// than converging from a possibly-stale set.
+    fn with_cron_intents<T>(&self, edit: impl FnOnce(&mut CronIntents) -> T) -> T {
+        let mut guard = self
+            .cron_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        edit(&mut guard)
+    }
+
+    /// The reduced cron-detail intents the next document will honour.
+    fn cron_intents(&self) -> CronIntents {
+        self.cron_intents
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     fn with_intents<T>(&self, edit: impl FnOnce(&mut EggpoolIntents) -> T) -> T {
         let mut guard = self
             .intents
@@ -293,6 +355,11 @@ struct Engine {
     generation: u64,
     /// The `EggPool` desired state the worker currently holds.
     converged: Option<EggpoolDesiredState>,
+    /// Whether a cron-detail intent changed since the last publication.
+    ///
+    /// Tracked separately from the cache because an intent change alters what
+    /// the *document* carries without altering the cache at all.
+    cron_dirty: bool,
     /// The config file this daemon reloads.
     ///
     /// Resolved from the daemon's own startup path, never from a
@@ -313,6 +380,7 @@ impl Engine {
         eggpool_control: Option<&eggpool::EggpoolControl>,
         scheduler_tx: &mpsc::Sender<SchedulerCommand>,
         request_rx: &mut mpsc::Receiver<Inbound>,
+        cron_rx: &mut mpsc::Receiver<crate::clientd::cron::CronObservation>,
         cancel: &CancellationToken,
     ) -> Result<(), DaemonError> {
         let mut stop = Control::Continue;
@@ -335,7 +403,7 @@ impl Engine {
                 // receiver is retired rather than left pending forever.
                 maybe = recv_opt(batch_rx), if batch_rx.is_some() => {
                     let was_initialized = fleet.last_applied_generation != 0;
-                    match maybe {
+                            match maybe {
                         Some(batch) => dirty |= fleet.apply_batch_owned_changed(batch),
                         None => *batch_rx = None,
                     }
@@ -361,6 +429,14 @@ impl Engine {
                     }
                 }
 
+                // A finished scheduler observation. It is applied to the cron
+                // cache only, and it can never turn a system offline: the
+                // metrics plane owns reachability, and a cron route failure on
+                // an otherwise healthy system must not say otherwise.
+                Some(observation) = cron_rx.recv() => {
+                    dirty |= observation.apply(&mut fleet.cron);
+                }
+
                 Some(inbound) = request_rx.recv() => {
                     stop = self
                         .handle_request(fleet, hub, scheduler_tx, inbound)
@@ -373,12 +449,21 @@ impl Engine {
                 }
             }
 
+            // An intent change alters the document without touching the cache,
+            // so it is a publication reason in its own right.
+            dirty |= std::mem::take(&mut self.cron_dirty);
             if dirty && stop == Control::Continue {
                 self.generation = self.generation.saturating_add(1);
-                let document = encode_document(fleet, self.generation)?;
-                // A send with no receivers is not an error: a daemon with no
-                // frontend attached still advances its own state.
-                let _ = hub.snapshots.send(document);
+                let document = encode_document(fleet, self.generation, &hub.cron_intents())?;
+                // `send_replace`, not `send`: `send` fails when the channel has
+                // no receivers and **discards the value** when it does. A
+                // document published while no TUI is attached would therefore
+                // be dropped, and a frontend attaching later would be handed
+                // the stale document from bind time and then never told again,
+                // because a quiet fleet produces no further publications. The
+                // value is stored unconditionally here, so "attach later" and
+                // "attach now" see the same state.
+                hub.snapshots.send_replace(document);
             }
         }
         Ok(())
@@ -437,7 +522,7 @@ impl Engine {
             // Handled by the connection before it ever reaches the engine.
             DaemonRequest::Handshake { .. } => return stop,
             DaemonRequest::ReloadConfig { generation } => {
-                let (accepted, detail) = self.reload_config(fleet, scheduler_tx).await;
+                let (accepted, detail) = self.reload_config(fleet, hub, scheduler_tx).await;
                 (generation, accepted, detail)
             }
             DaemonRequest::SetEggpoolIntent {
@@ -456,6 +541,26 @@ impl Engine {
                 let changed = previous != Some(EggpoolIntent { active, period });
                 if fleet.set_eggpool_period(period) || changed || refresh {
                     fleet.begin_eggpool_request();
+                }
+                (generation, true, None)
+            }
+            DaemonRequest::SetCronIntent {
+                system_id,
+                job,
+                display_history,
+                generation,
+            } => {
+                // A replacement, never a delta: a stale intent composed on top
+                // of a newer one would keep the daemon transmitting records for
+                // a pane the operator has already closed.
+                let intent = CronIntent {
+                    system_id,
+                    job,
+                    display_history,
+                };
+                let previous = hub.with_cron_intents(|intents| intents.set(subscriber, intent.clone()));
+                if previous.as_ref() != Some(&intent) {
+                    self.cron_dirty = true;
                 }
                 (generation, true, None)
             }
@@ -481,6 +586,7 @@ impl Engine {
     async fn reload_config(
         &mut self,
         fleet: &mut FleetState,
+        hub: &Arc<Hub>,
         scheduler_tx: &mpsc::Sender<SchedulerCommand>,
     ) -> (bool, Option<String>) {
         match self.store.load_existing() {
@@ -496,6 +602,26 @@ impl Engine {
                     None => fleet.clear_eggpool(),
                 }
                 fleet.clear_config_reload_error();
+                // A system that left the fleet must not keep its cron history
+                // alive for the daemon's whole life, and the global bound is
+                // better spent on live systems.
+                let live: Vec<String> = fleet
+                    .systems
+                    .iter()
+                    .map(|system| system.id.clone())
+                    .collect();
+                fleet.cron.retain_systems(&live);
+                // The scheduler plane follows the same reload boundary as the
+                // metrics plane, so it never discovers endpoints independently.
+                // The list is needed by both the scheduler plane and the
+                // metrics plane, so one copy is genuinely required rather than
+                // incidental.
+                let for_cron = endpoints.clone();
+                *hub
+                    .cron_endpoints
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = for_cron;
+                hub.cron_reload.notify_one();
                 // Accepted config that changes endpoints polls immediately
                 // rather than waiting out the remaining cadence.
                 let _ = scheduler_tx
@@ -515,8 +641,17 @@ impl Engine {
     }
 }
 
-fn encode_document(fleet: &FleetState, generation: u64) -> Result<Arc<Document>, DaemonError> {
-    let dto = fleet.to_dto(std::time::Instant::now(), now_unix_ms(), generation);
+fn encode_document(
+    fleet: &FleetState,
+    generation: u64,
+    cron_intents: &CronIntents,
+) -> Result<Arc<Document>, DaemonError> {
+    let dto = fleet.to_dto_for(
+        std::time::Instant::now(),
+        now_unix_ms(),
+        generation,
+        cron_intents,
+    );
     let frame = FrontendFrame::Snapshot(Box::new(dto));
     let encoded = encode_frame(&frame).map_err(|error| DaemonError::Encode(error.to_string()))?;
     Ok(Arc::new(Document {
@@ -570,6 +705,10 @@ async fn serve(mut connection: Connection, hub: Arc<Hub>, subscriber: u64) {
     // A departed frontend must stop shaping the `EggPool` worker, or the
     // worker would stay activated for a window nobody is watching.
     hub.with_intents(|intents| intents.remove(subscriber));
+    // Same for cron: a departed window that left its intent behind would keep
+    // the daemon transmitting history records nobody is reading, for the rest
+    // of the process's life.
+    hub.with_cron_intents(|intents| intents.remove(subscriber));
 }
 
 async fn serve_inner(
@@ -606,6 +745,19 @@ async fn serve_inner(
                         connection.write_encoded(&current.encoded)?;
                         hub.with_intents(|intents| {
                             intents.set(subscriber, false, EggpoolPeriod::Hour);
+                        });
+                        // A new window starts with the cron pane closed. A
+                        // reconnected frontend must not inherit the pane state
+                        // of the connection it replaced.
+                        hub.with_cron_intents(|intents| {
+                            intents.set(
+                                subscriber,
+                                CronIntent {
+                                    system_id: None,
+                                    job: None,
+                                    display_history: 0,
+                                },
+                            );
                         });
                     }
                     other => {
@@ -983,7 +1135,12 @@ mod tests {
         }
     }
 
-    /// The next state document, bounded.
+    /// The next state document.
+    ///
+    /// Note that the bound is a *count of frames*, not a deadline:
+    /// [`FrameStream::next`] waits indefinitely for a frame, so a daemon that
+    /// stops publishing hangs this helper rather than failing it. Tests that
+    /// wait for state which may never arrive must use [`await_documents`].
     async fn next_snapshot(frames: &mut crate::clientd::frontend::FrameStream) -> FrontendSnapshot {
         for _ in 0..200 {
             if let FrontendFrame::Snapshot(document) = frames.next().await.expect("reads") {
@@ -991,6 +1148,290 @@ mod tests {
             }
         }
         panic!("no state document arrived");
+    }
+
+    /// Read documents until `wanted` is satisfied, or fail after `budget`.
+    ///
+    /// Deadline-bounded because "the daemon published nothing" is exactly the
+    /// regression these tests exist to catch, and it must fail the test rather
+    /// than hang the suite.
+    ///
+    /// Documents are *accumulated* rather than discarded: a fact the daemon
+    /// published in an earlier document is just as true as one in the latest,
+    /// and a test that only inspected the final read would report a failure for
+    /// state that arrived perfectly correctly one read earlier.
+    async fn await_documents(
+        frames: &mut crate::clientd::frontend::FrameStream,
+        budget: Duration,
+        mut wanted: impl FnMut(&FrontendSnapshot) -> bool,
+    ) -> Vec<FrontendSnapshot> {
+        let deadline = tokio::time::Instant::now() + budget;
+        let mut seen = Vec::new();
+        while tokio::time::Instant::now() < deadline {
+            let Ok(document) =
+                tokio::time::timeout_at(deadline, next_snapshot(frames)).await
+            else {
+                break;
+            };
+            let satisfied = wanted(&document);
+            seen.push(document);
+            if satisfied {
+                return seen;
+            }
+        }
+        panic!("the expected state did not arrive within {budget:?}");
+    }
+
+    /// A loopback remote that serves **only** the two scheduler routes.
+    ///
+    // Long because the wire documents are spelled out inline: a shared builder
+    // would hide exactly the shape these tests are asserting against.
+    #[allow(clippy::too_many_lines)]
+    ///
+    /// `/v2/status` is deliberately not served, so the metrics plane reports
+    /// the system offline while the cron plane is fully healthy. That is the
+    /// exact independence the plan requires, and it is far easier to assert
+    /// from a real end-to-end run than from a unit test on a reducer.
+    async fn spawn_scheduler_only_remote() -> u16 {
+        use gregg_protocol::{
+            SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
+            SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
+            SchedulerRunSummaryV2, SchedulerSummaryV2,
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let epoch = SchedulerEpochV2 {
+            started_at_unix_ms: 1_700_000_000_000,
+            nonce: 11,
+        };
+        let job = SchedulerJobV2 {
+            name: "backup".to_owned(),
+            schedule: "0 3 * * *".to_owned(),
+            next_due_unix_ms: 1_700_100_000_000,
+            state: SchedulerJobStateV2::Idle,
+            load: None,
+            pending_since_unix_ms: None,
+            next_retry_unix_ms: None,
+            running_since_unix_ms: None,
+            last: Some(SchedulerRunSummaryV2 {
+                sequence: 1,
+                scheduled_unix_ms: 1_700_000_000_000,
+                finished_unix_ms: 1_700_000_001_000,
+                outcome: SchedulerOutcomeV2::Success,
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: Some(1_000),
+                delay_ms: 0,
+                coalesced: false,
+            }),
+        };
+        let summary = serde_json::to_vec(&SchedulerSummaryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![job],
+        })
+        .expect("summary serializes");
+        let history = serde_json::to_vec(&SchedulerHistoryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![SchedulerJobHistoryV2 {
+                name: "backup".to_owned(),
+                records: vec![SchedulerRunRecordV2 {
+                    sequence: 1,
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    started_unix_ms: Some(1_700_000_000_100),
+                    finished_unix_ms: 1_700_000_001_000,
+                    outcome: SchedulerOutcomeV2::Success,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(900),
+                    delay_ms: 0,
+                    coalesced: false,
+                    stdout: SchedulerOutputV2::new("ok\n".to_owned(), false),
+                    stderr: SchedulerOutputV2::new(String::new(), false),
+                }],
+            }],
+        })
+        .expect("history serializes");
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let summary = summary.clone();
+                let history = history.clone();
+                tokio::spawn(async move {
+                    let mut request = String::new();
+                    let mut chunk = [0_u8; 1024];
+                    loop {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(count) => {
+                                request.push_str(
+                                    String::from_utf8_lossy(&chunk[..count]).as_ref(),
+                                );
+                                if request.contains("\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let body = if request.contains("/v2/scheduler/history") {
+                        Some(history)
+                    } else if request.contains("/v2/scheduler") {
+                        Some(summary)
+                    } else {
+                        None
+                    };
+                    let response = match body {
+                        Some(body) => format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            String::from_utf8_lossy(&body)
+                        ),
+                        None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_owned(),
+                    };
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+        port
+    }
+
+    /// A config pointing at one loopback port, with a one-second cadence.
+    fn write_single_system_config(dir: &TempDir, port: u16) -> ConfigStore {
+        let config = Config {
+            refresh_seconds: 1,
+            systems: vec![SystemEntry {
+                id: "sys-a".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port,
+                name: Some("remote".to_owned()),
+            }],
+            ..Config::default()
+        };
+        let store = ConfigStore::new(dir.config_path());
+        store.write(&config).expect("writes config");
+        store
+    }
+
+    #[tokio::test]
+    async fn cron_observability_survives_a_system_whose_metrics_route_is_absent() {
+        let port = spawn_scheduler_only_remote().await;
+        let dir = TempDir::new("cron-offline-metrics");
+        let running = Running::start(&dir, write_single_system_config(&dir, port));
+        running.ready().await;
+
+        let mut attachment =
+            attach(&running.identity, env!("CARGO_PKG_VERSION")).await.expect("attaches");
+
+        // The daemon stores every publication unconditionally, so a frontend
+        // attaching after the fleet has already settled is handed the current
+        // state rather than the document from bind time, and a frontend that
+        // attaches early is brought up to date by the next publication.
+        let documents = await_documents(
+            &mut attachment.frames,
+            Duration::from_secs(20),
+            |document| {
+                document.systems[0].reachability != crate::state::Reachability::Pending
+                    && document
+                        .cron_for("sys-a")
+                        .is_some_and(|cron| cron.capability == crate::cron::CronCapability::Supported)
+            },
+        )
+        .await;
+
+        // The metrics plane owns reachability, and its verdict is independent
+        // of whether the scheduler routes exist.
+        assert_ne!(
+            documents
+                .last()
+                .expect("at least one document")
+                .systems[0]
+                .reachability,
+            crate::state::Reachability::Pending,
+            "an attach after a settled poll must see the current verdict"
+        );
+
+        // The scheduler plane is nonetheless fully healthy, and that fact is
+        // published separately rather than being folded into reachability.
+        let cron = documents
+            .iter()
+            .rev()
+            .find_map(|document| document.cron_for("sys-a").cloned())
+            .expect("every system has a cron entry");
+        assert_eq!(cron.capability, crate::cron::CronCapability::Supported);
+        assert!(cron.summary.is_some(), "the job list arrived");
+        assert!(cron.last_error.is_none());
+        assert!(
+            cron.history.is_empty(),
+            "nobody has the pane open, so no records are published"
+        );
+
+        running.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_open_cron_pane_publishes_only_the_selected_job() {
+        let port = spawn_scheduler_only_remote().await;
+        let dir = TempDir::new("cron-intent");
+        let running = Running::start(&dir, write_single_system_config(&dir, port));
+        running.ready().await;
+
+        let mut attachment =
+            attach(&running.identity, env!("CARGO_PKG_VERSION")).await.expect("attaches");
+
+        // The frontend asks for one job on one system.
+        attachment
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+            .expect("queues the intent");
+
+        let opened = await_documents(
+            &mut attachment.frames,
+            Duration::from_secs(20),
+            |document| {
+                document
+                    .cron_for("sys-a")
+                    .is_some_and(|entry| !entry.history.is_empty())
+            },
+        )
+        .await;
+        let entry = opened
+            .last()
+            .and_then(|document| document.cron_for("sys-a"))
+            .expect("a cron entry");
+        assert_eq!(entry.history.len(), 1, "only the selected job");
+        assert_eq!(entry.history[0].job, "backup");
+        assert_eq!(entry.history[0].records.len(), 1);
+
+        // Closing the pane stops the transmission. A departed view must not
+        // keep the daemon publishing records nobody is reading.
+        attachment
+            .frontend
+            .request_cron_intent(None, None, 0, 2)
+            .expect("queues the close");
+        await_documents(
+            &mut attachment.frames,
+            Duration::from_secs(20),
+            |document| {
+                document
+                    .cron_for("sys-a")
+                    .is_some_and(|entry| entry.history.is_empty())
+            },
+        )
+        .await;
+
+        running.shutdown().await;
     }
 
     #[tokio::test]

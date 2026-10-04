@@ -20,8 +20,11 @@ use std::ops::Range;
 use std::time::{Duration, Instant};
 
 use crate::action::Action;
-use crate::clientd::snapshot::{EggpoolSnapshotDto, FrontendSnapshot, SystemSnapshotDto};
+use crate::clientd::snapshot::{
+    CronJobHistoryDto, EggpoolSnapshotDto, FrontendSnapshot, SystemCronDto, SystemSnapshotDto,
+};
 use crate::config::Config;
+use crate::cron::CronCapability;
 use crate::eggpool::{
     EggpoolDesiredState, EggpoolFetchOutcome, EggpoolHealthFetchOutcome, EggpoolHealthSnapshot,
     EggpoolPeriod, EggpoolResult, EggpoolSummary,
@@ -191,6 +194,15 @@ pub struct FleetState {
     pub config_reload_error: Option<String>,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
+    /// Plan 166: remote scheduler observability, including the memory-only
+    /// history cache.
+    ///
+    /// Owned here rather than in the polling task because it is fleet data the
+    /// document projects, and because a single owner means a single place where
+    /// the dedup epoch, the applied revision, and the bounds live. The task
+    /// that performs the fetches hands finished observations over; it never
+    /// touches the cache directly.
+    pub cron: crate::cron::CronCache,
 }
 
 impl FleetState {
@@ -217,6 +229,10 @@ impl FleetState {
                 last_health_attempt_at: None,
                 last_health_error: None,
             }),
+            cron: crate::cron::CronCache::new(
+                config.cron.cache_history(),
+                crate::cron::MAX_TOTAL_CRON_RECORDS,
+            ),
         }
     }
 
@@ -696,6 +712,23 @@ impl FleetState {
     /// here, so no process-local clock ever reaches the wire.
     #[must_use]
     pub fn to_dto(&self, now: Instant, now_unix_ms: u64, generation: u64) -> FrontendSnapshot {
+        self.to_dto_for(now, now_unix_ms, generation, &CronIntents::default())
+    }
+
+    /// Project the fleet, publishing cron history only for the jobs the
+    /// reduced frontend intents asked for.
+    ///
+    /// The summary needs no request to display, so it always rides along. The
+    /// history records are the largest thing in the document, so they are
+    /// included per open frontend request and omitted otherwise.
+    #[must_use]
+    pub fn to_dto_for(
+        &self,
+        now: Instant,
+        now_unix_ms: u64,
+        generation: u64,
+        intents: &CronIntents,
+    ) -> FrontendSnapshot {
         FrontendSnapshot {
             generation,
             produced_at_unix_ms: now_unix_ms,
@@ -736,6 +769,38 @@ impl FleetState {
                 ),
                 last_health_error: eggpool.last_health_error.clone(),
             }),
+            cron: self
+                .systems
+                .iter()
+                .map(|system| {
+                    let state = self.cron.system(&system.id);
+                    SystemCronDto {
+                        system_id: system.id.clone(),
+                        capability: state.map_or(CronCapability::Unknown, |s| s.capability),
+                        summary: state.and_then(|s| s.summary.clone()),
+                        epoch: state.and_then(|s| s.epoch),
+                        history_revision: state.and_then(|s| s.history_revision),
+                        last_attempt_at_unix_ms: state
+                            .and_then(|s| s.last_attempt_at_unix_ms),
+                        last_success_at_unix_ms: state
+                            .and_then(|s| s.last_success_at_unix_ms),
+                        last_error: state.and_then(|s| s.last_error.clone()),
+                        history: state
+                            .map(|s| {
+                                intents
+                                    .requests_for(&system.id)
+                                    .into_iter()
+                                    .map(|(job, depth)| CronJobHistoryDto {
+                                        job: job.clone(),
+                                        records: s.recent(&job, depth),
+                                    })
+                                    .filter(|entry| !entry.records.is_empty())
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    }
+                })
+                .collect(),
             config_reload_error: self.config_reload_error.clone(),
         }
     }
@@ -807,6 +872,365 @@ impl EggpoolIntents {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+}
+
+/// One frontend's cron-detail intent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CronIntent {
+    /// The system whose cron detail this frontend has open.
+    pub system_id: Option<String>,
+    /// Which job's history this frontend is displaying.
+    pub job: Option<String>,
+    /// How many records this frontend wants published.
+    pub display_history: usize,
+}
+
+/// Reduce cron-detail intents across every attached frontend.
+///
+/// Unlike [`EggpoolIntents`], this one does **not** shape any remote request.
+/// The scheduler summary is polled on the daemon's own cadence and the history
+/// body on revision change whether or not any TUI is attached, so opening a cron
+/// pane can never add a remote request. What the intent governs is only which
+/// records are *published*.
+///
+/// Reduction is a union with a per-pair maximum depth, which is order
+/// independent: two windows on the same job at different depths must not make
+/// the publication depend on which one spoke last, and a window asking for
+/// fewer records must never be silently served the smaller set because a
+/// neighbour wanted less.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CronIntents {
+    entries: std::collections::HashMap<u64, CronIntent>,
+}
+
+/// The `(job, depth)` pairs the published document must carry for one system.
+pub type CronRequests = std::collections::BTreeMap<String, usize>;
+
+impl CronIntents {
+    /// Record a subscriber's current intent, returning the previous one.
+    pub fn set(&mut self, id: u64, intent: CronIntent) -> Option<CronIntent> {
+        self.entries.insert(id, intent)
+    }
+
+    /// Drop a disconnected frontend.
+    ///
+    /// Necessary, not tidy: a departed window that left its intent behind would
+    /// keep the daemon publishing records nobody is reading for the rest of the
+    /// process's life.
+    pub fn remove(&mut self, id: u64) -> Option<CronIntent> {
+        self.entries.remove(&id)
+    }
+
+    /// Whether any frontend currently has a cron detail open.
+    #[must_use]
+    pub fn any_active(&self) -> bool {
+        self.entries
+            .values()
+            .any(|intent| intent.system_id.is_some() && intent.job.is_some())
+    }
+
+    /// The reduced `(system, job) -> depth` set to publish.
+    #[must_use]
+    pub fn requests(&self) -> std::collections::BTreeMap<String, CronRequests> {
+        let mut reduced: std::collections::BTreeMap<String, CronRequests> =
+            std::collections::BTreeMap::new();
+        for intent in self.entries.values() {
+            let (Some(system_id), Some(job)) = (&intent.system_id, &intent.job) else {
+                continue;
+            };
+            if job.is_empty() {
+                continue;
+            }
+            let depth = intent.display_history.clamp(1, crate::cron::MAX_DISPLAY_HISTORY);
+            let per_system = reduced.entry(system_id.clone()).or_default();
+            let slot = per_system.entry(job.clone()).or_insert(0);
+            *slot = (*slot).max(depth);
+        }
+        reduced
+    }
+
+    /// The reduced requests for one system, or an empty set.
+    #[must_use]
+    pub fn requests_for(&self, system_id: &str) -> Vec<(String, usize)> {
+        self.requests()
+            .get(system_id)
+            .map(|per_system| {
+                per_system
+                    .iter()
+                    .map(|(job, depth)| (job.clone(), *depth))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Number of attached frontends.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no frontend has published an intent yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod cron_intent_tests {
+    use super::*;
+
+    fn closed() -> CronIntent {
+        CronIntent {
+            system_id: None,
+            job: None,
+            display_history: 0,
+        }
+    }
+
+    fn open(system: &str, job: &str, depth: usize) -> CronIntent {
+        CronIntent {
+            system_id: Some(system.to_owned()),
+            job: Some(job.to_owned()),
+            display_history: depth,
+        }
+    }
+
+    #[test]
+    fn a_closed_pane_asks_for_nothing() {
+        let mut intents = CronIntents::default();
+        intents.set(1, closed());
+        assert!(!intents.any_active());
+        assert!(intents.requests().is_empty());
+    }
+
+    #[test]
+    fn an_open_pane_asks_for_its_own_job_only() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        assert!(intents.any_active());
+        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 5)]);
+        assert_eq!(intents.requests_for("sys-b"), Vec::new());
+    }
+
+    #[test]
+    fn two_frontends_on_the_same_job_reduce_to_the_deeper_window() {
+        // Order independence: which window spoke last must not decide what the
+        // other one is served.
+        for order in [[1_u64, 2], [2, 1]] {
+            let mut intents = CronIntents::default();
+            for subscriber in order {
+                let depth = if subscriber == 1 { 3 } else { 12 };
+                intents.set(subscriber, open("sys-a", "backup", depth));
+            }
+            assert_eq!(
+                intents.requests_for("sys-a"),
+                vec![("backup".to_owned(), 12)],
+                "a window asking for fewer records must not shrink the publication"
+            );
+        }
+    }
+
+    #[test]
+    fn two_frontends_on_different_systems_both_get_their_own_records() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        intents.set(2, open("sys-b", "rotate", 7));
+        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 5)]);
+        assert_eq!(intents.requests_for("sys-b"), vec![("rotate".to_owned(), 7)]);
+    }
+
+    #[test]
+    fn two_frontends_on_the_same_system_both_get_their_own_job() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        intents.set(2, open("sys-a", "rotate", 5));
+        let requests = intents.requests_for("sys-a");
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests.contains(&("backup".to_owned(), 5)));
+        assert!(requests.contains(&("rotate".to_owned(), 5)));
+    }
+
+    #[test]
+    fn a_disconnected_frontend_stops_asking() {
+        // Not tidiness: a departed window that left its intent behind would keep
+        // the daemon transmitting records nobody is reading, for the rest of the
+        // process's life.
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        assert!(intents.any_active());
+        intents.remove(1);
+        assert!(!intents.any_active());
+        assert!(intents.requests().is_empty());
+    }
+
+    #[test]
+    fn the_last_frontend_to_close_leaves_nothing_requested() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        intents.set(2, open("sys-b", "rotate", 5));
+        intents.remove(1);
+        assert_eq!(intents.requests_for("sys-a"), Vec::new());
+        assert_eq!(intents.requests_for("sys-b").len(), 1);
+        intents.remove(2);
+        assert!(intents.requests().is_empty());
+    }
+
+    #[test]
+    fn a_frontend_cannot_widen_the_publication_past_the_hard_maximum() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", usize::MAX));
+        assert_eq!(
+            intents.requests_for("sys-a"),
+            vec![(
+                "backup".to_owned(),
+                crate::cron::MAX_DISPLAY_HISTORY
+            )],
+            "the daemon clamps what a frontend asks for"
+        );
+    }
+
+    #[test]
+    fn a_zero_depth_is_clamped_rather_than_producing_an_empty_slice() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 0));
+        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn an_empty_job_name_is_ignored() {
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "", 5));
+        assert!(intents.requests().is_empty());
+    }
+
+    // --- Document projection ---
+
+    /// A fleet with one system whose cron cache holds `count` records for
+    /// `job`, so the projection can be exercised end to end.
+    fn fleet_with_cron(job: &str, count: u64) -> FleetState {
+        use gregg_protocol::{
+            SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerRunRecordV2,
+        };
+        let config = Config {
+            systems: vec![crate::config::SystemEntry {
+                id: "sys-a".to_owned(),
+                host: "box".to_owned(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        };
+        let mut fleet = FleetState::from_config(&config);
+        let epoch = SchedulerEpochV2 {
+            started_at_unix_ms: 1_000,
+            nonce: 1,
+        };
+        let records: Vec<SchedulerRunRecordV2> = (0..count)
+            .map(|sequence| SchedulerRunRecordV2 {
+                sequence,
+                scheduled_unix_ms: 1_700_000_000_000 + sequence,
+                started_unix_ms: Some(1_700_000_000_100 + sequence),
+                finished_unix_ms: 1_700_000_001_000 + sequence,
+                outcome: gregg_protocol::SchedulerOutcomeV2::Success,
+                exit_code: Some(0),
+                signal: None,
+                duration_ms: Some(900),
+                delay_ms: 0,
+                coalesced: false,
+                stdout: gregg_protocol::SchedulerOutputV2::new(String::new(), false),
+                stderr: gregg_protocol::SchedulerOutputV2::new(String::new(), false),
+            })
+            .collect();
+        fleet.cron.apply_history(
+            "sys-a",
+            &SchedulerHistoryV2 {
+                schema_version: 2,
+                generated_at_unix_ms: 1_700_000_000_000,
+                epoch,
+                history_revision: 1,
+                jobs: vec![SchedulerJobHistoryV2 {
+                    name: job.to_owned(),
+                    records,
+                }],
+            },
+        );
+        fleet
+    }
+
+    #[test]
+    fn a_document_with_nobody_asking_carries_no_history() {
+        // This is the whole point of the two-tier model: with no cron pane open
+        // anywhere, the largest document in the system is not retransmitted on
+        // every five-second metrics publication.
+        let fleet = fleet_with_cron("backup", 20);
+        let document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        let cron = document.cron_for("sys-a").expect("an entry per system");
+        assert_eq!(
+            cron.history,
+            Vec::new(),
+            "history must not be published unsolicited"
+        );
+    }
+
+    #[test]
+    fn an_open_pane_publishes_only_its_own_job_at_its_own_depth() {
+        let fleet = fleet_with_cron("backup", 20);
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
+
+        let cron = document.cron_for("sys-a").expect("an entry per system");
+        assert_eq!(cron.history.len(), 1, "only the requested job");
+        let records = &cron.history[0].records;
+        assert_eq!(records.len(), 5, "the requested depth");
+        assert_eq!(
+            records.last().map(|r| r.record.sequence),
+            Some(19),
+            "the newest window, not the oldest"
+        );
+    }
+
+    #[test]
+    fn a_job_with_no_records_is_omitted_rather_than_published_empty() {
+        let fleet = fleet_with_cron("backup", 3);
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "never-ran", 5));
+        let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
+        let cron = document.cron_for("sys-a").expect("an entry per system");
+        assert_eq!(cron.history, Vec::new());
+    }
+
+    #[test]
+    fn every_system_gets_a_cron_entry_even_before_it_is_polled() {
+        // A frontend must never have to infer "no entry" from a missing key, or
+        // "not asked yet" and "asked and got nothing" become indistinguishable.
+        let config = Config {
+            systems: vec![
+                crate::config::SystemEntry {
+                    id: "a".to_owned(),
+                    host: "a".to_owned(),
+                    port: 11310,
+                    name: None,
+                },
+                crate::config::SystemEntry {
+                    id: "b".to_owned(),
+                    host: "b".to_owned(),
+                    port: 11310,
+                    name: None,
+                },
+            ],
+            ..Config::default()
+        };
+        let fleet = FleetState::from_config(&config);
+        let document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        assert_eq!(document.cron.len(), 2);
+        for entry in &document.cron {
+            assert_eq!(entry.capability, crate::cron::CronCapability::Unknown);
+            assert!(entry.summary.is_none());
+            assert!(entry.last_error.is_none());
+        }
     }
 }
 
@@ -1077,6 +1501,7 @@ impl AppState {
             eggpool_period_request: None,
             #[cfg(test)]
             test_fleet: FleetState {
+                cron: crate::cron::CronCache::default(),
                 systems: Vec::new(),
                 last_applied_generation: 0,
                 refresh_status: RefreshStatus::Idle,
@@ -3123,6 +3548,7 @@ mod tests {
             eggpool: None,
             eggpool_period_request: None,
             test_fleet: FleetState {
+                cron: crate::cron::CronCache::default(),
                 systems: Vec::new(),
                 last_applied_generation: 0,
                 refresh_status: RefreshStatus::Idle,

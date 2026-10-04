@@ -33,9 +33,14 @@
 use std::time::Duration;
 
 use gregg_protocol::{SchedulerHistoryV2, SchedulerSummaryV2};
+use std::sync::Arc;
+
+use tokio::sync::{mpsc, Notify};
+use tokio_util::sync::CancellationToken;
 
 use crate::cron::{CronCache, CronFetchError};
 use crate::endpoint::{Endpoint, EndpointError};
+use crate::state::now_unix_ms;
 
 /// Map a transport failure onto a scheduler error.
 ///
@@ -235,106 +240,270 @@ impl CronClient {
     }
 }
 
-/// One round of scheduler observation for a single endpoint.
+/// One finished round of scheduler observation for a single endpoint.
 ///
-/// The two-plane discipline lives here rather than in the caller: the history
-/// fetch is gated on `needs_history`, so it is structurally impossible for a
-/// steady-state metrics cadence to download the history body.
+/// The worker decides *whether* to fetch history and the engine decides *what to
+/// do* with what came back. Splitting it this way keeps the cache single-owner
+/// (the engine, which also projects it into the published document) without the
+/// worker needing a lock, and without either side duplicating the other's
+/// bookkeeping.
 #[derive(Debug)]
 pub struct CronObservation {
     /// Stable system id the observation belongs to.
     pub system_id: String,
     /// What the summary read produced.
     pub summary: SummaryOutcome,
-    /// Records added by this round, if a history fetch happened.
-    pub records_added: usize,
+    /// The history body, fetched only when the gate said it was needed.
+    ///
+    /// `None` alongside a `Supported` summary means the gate suppressed the
+    /// fetch, which is the steady state and is not a failure.
+    pub history: Option<SchedulerHistoryV2>,
+    /// A problem with the *history* route while the summary was fine.
+    ///
+    /// Kept separate from the summary outcome on purpose. A remote that serves
+    /// `/v2/scheduler` but not `/v2/scheduler/history` has still told us
+    /// everything the at-a-glance job rows need; folding that into a failed
+    /// summary would throw the job list away and leave the pane empty, which
+    /// is strictly worse than showing the summary with a stale marker.
+    pub history_error: Option<CronFetchError>,
+    /// Unix milliseconds the round completed.
+    pub now_unix_ms: u64,
 }
 
-/// Run one bounded observation for one endpoint against the shared cache.
+impl CronObservation {
+    /// Apply this observation to the shared cache.
+    ///
+    /// Returns whether the cache changed, so the caller publishes only on a real
+    /// change. A scheduler failure is recorded but never erases retained data,
+    /// and nothing here can reach system reachability.
+    pub fn apply(self, cache: &mut CronCache) -> bool {
+        let CronObservation {
+            system_id,
+            summary,
+            history,
+            history_error,
+            now_unix_ms,
+        } = self;
+
+        match summary {
+            SummaryOutcome::Supported(summary) => {
+                let revision = summary.history_revision;
+                let epoch = summary.epoch;
+                // Compare against the pre-write state: "did this change anything
+                // the operator can see" has to be judged before it is overwritten.
+                let unchanged = cache.system(&system_id).is_some_and(|state| {
+                    state.history_revision == Some(revision)
+                        && state.epoch == Some(epoch)
+                        && state.capability == crate::cron::CronCapability::Supported
+                });
+                // The summary is applied first and unconditionally: it is valid,
+                // and `apply_summary` clears any previous error. A history
+                // problem is then recorded on top of it rather than instead of
+                // it, so the job list survives a broken history route.
+                cache.apply_summary(&system_id, *summary, now_unix_ms);
+                let mut changed = !unchanged;
+                if let Some(history) = history {
+                    changed |= cache.apply_history(&system_id, &history);
+                }
+                if let Some(error) = history_error {
+                    cache
+                        .system_mut(&system_id)
+                        .mark_failed(error, now_unix_ms);
+                    changed = true;
+                }
+                changed
+            }
+            SummaryOutcome::Unsupported => {
+                let state = cache.system_mut(&system_id);
+                let was = state.capability != crate::cron::CronCapability::Unsupported;
+                state.mark_unsupported();
+                // `last_attempt_at` still moves, so the renderer can say the
+                // answer is current rather than implying it was never asked.
+                state.last_attempt_at_unix_ms = Some(now_unix_ms);
+                was
+            }
+            SummaryOutcome::Failed(error) => {
+                let state = cache.system_mut(&system_id);
+                let was = state.last_error.as_ref() != Some(&error);
+                state.mark_failed(error, now_unix_ms);
+                was
+            }
+        }
+    }
+}
+
+/// Read the shared endpoint list without holding the lock across an await.
+fn lock_endpoints(endpoints: &Arc<std::sync::Mutex<Vec<Endpoint>>>) -> Vec<Endpoint> {
+    endpoints
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+/// The history-fetch gate the worker keeps for each system.
 ///
-/// Returns whether the cache changed, so the caller publishes only on a real
-/// change. A scheduler failure is recorded but never erases retained data, and
-/// never touches system reachability.
-pub async fn observe(
-    client: &CronClient,
-    cache: &mut CronCache,
-    endpoint: &Endpoint,
-    now_unix_ms: u64,
-) -> bool {
-    let system_id = endpoint.id.clone();
-    let outcome = client.summary(endpoint).await;
+/// Deliberately worker-private. It answers one question — "have I already
+/// downloaded the history for this remote epoch and revision?" — which is about
+/// the worker's own requests rather than about fleet state, so the engine never
+/// reads it and the two cannot drift into a disagreement that matters.
+///
+/// The gate advances only on a *valid* fetch. A failed or invalid round leaves
+/// it where it was so the next cadence retries, which is the same
+/// "never back off, never prune" rule the metrics scheduler follows.
+#[derive(Debug, Default)]
+struct HistoryGate {
+    entries: std::collections::BTreeMap<String, (gregg_protocol::SchedulerEpochV2, u64)>,
+}
 
-    let wants_history = match &outcome {
-        SummaryOutcome::Supported(summary) => cache
-            .system(&system_id)
-            .is_none_or(|state| state.needs_history(summary)),
-        // Nothing to fetch history for: the remote has no scheduler, or the
-        // summary failed and the last known revision still governs.
-        SummaryOutcome::Unsupported | SummaryOutcome::Failed(_) => false,
-    };
+impl HistoryGate {
+    /// Whether a history fetch is needed for this system and summary.
+    ///
+    /// The epoch comparison is the load-bearing part: a restarted `greggd`
+    /// resets `history_revision` and can reset it to the same small value it
+    /// used before, so a revision-only gate would conclude "nothing changed" and
+    /// never fetch the new epoch at all.
+    fn needs(&self, system_id: &str, summary: &SchedulerSummaryV2) -> bool {
+        match self.entries.get(system_id) {
+            None => true,
+            Some((epoch, revision)) => {
+                *epoch != summary.epoch || *revision != summary.history_revision
+            }
+        }
+    }
 
-    let mut changed = false;
-    match outcome {
-        SummaryOutcome::Supported(summary) => {
-            let revision = summary.history_revision;
-            let epoch = summary.epoch;
-            // Compare before overwrite: the fetch decision above was made
-            // against the pre-write state.
-            let before = cache
-                .system(&system_id)
-                .and_then(|state| state.history_revision)
-                .is_some_and(|previous| previous == revision)
-                && cache
-                    .system(&system_id)
-                    .and_then(|state| state.epoch)
-                    .is_some_and(|previous| previous == epoch);
-            cache.apply_summary(&system_id, *summary, now_unix_ms);
-            changed |= !before;
+    /// Record a successfully fetched history document.
+    fn record(&mut self, system_id: &str, history: &SchedulerHistoryV2) {
+        self.entries
+            .insert(system_id.to_owned(), (history.epoch, history.history_revision));
+    }
 
-            if wants_history {
-                match client.history(endpoint).await {
+    /// Forget systems that left the fleet.
+    fn forget_absent(&mut self, live: &[String]) {
+        self.entries.retain(|id, _| live.iter().any(|kept| kept == id));
+    }
+}
+
+/// The client daemon's scheduler-polling task.
+///
+/// Owns the HTTP client and the history gate; hands finished observations to the
+/// engine. It polls whether or not any TUI is attached, because continuous
+/// background observation is the point of the architecture, and opening a cron
+/// pane must not change the fleet's remote request budget.
+pub struct CronWorker {
+    client: CronClient,
+    gate: HistoryGate,
+}
+
+impl CronWorker {
+    /// Create a worker with the given request deadline.
+    #[must_use]
+    pub fn new(timeout: Duration) -> Self {
+        Self {
+            client: CronClient::new(timeout),
+            gate: HistoryGate::default(),
+        }
+    }
+
+    /// Run until cancelled, sending one observation per endpoint per tick.
+    ///
+    /// Endpoints are walked sequentially rather than concurrently on purpose:
+    /// the summary is small, the cadence is deliberately slow, and a bounded
+    /// sequential walk cannot produce a burst that competes with the metrics
+    /// scheduler for the daemon's budget.
+    ///
+    /// The endpoint list is shared rather than owned because a config reload can
+    /// change it while this loop is mid-round. It is read under a short lock and
+    /// the lock is never held across an await, so a reload cannot stall the
+    /// scheduler or the engine.
+    pub async fn run(
+        mut self,
+        endpoints: Arc<std::sync::Mutex<Vec<Endpoint>>>,
+        reload: Arc<Notify>,
+        updates: mpsc::Sender<CronObservation>,
+        cancel: CancellationToken,
+    ) {
+        let mut tick = tokio::time::interval(CRON_SUMMARY_INTERVAL);
+        // A round happens before the first wait, so a fresh daemon answers cron
+        // questions on startup rather than after one full interval. `Delay`
+        // keeps a slow round from being followed by a burst of catch-up rounds.
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            let current = lock_endpoints(&endpoints);
+            let live: Vec<String> = current
+                .iter()
+                .map(|endpoint| endpoint.id.clone())
+                .collect();
+            self.gate.forget_absent(&live);
+            for endpoint in &current {
+                let observation = self.observe(endpoint).await;
+                // A closed receiver means the engine is gone, which is the only
+                // reason to stop.
+                if updates.send(observation).await.is_err() {
+                    return;
+                }
+            }
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                _ = tick.tick() => {}
+                // A reload wakes the worker immediately rather than making the
+                // operator wait out the remainder of the interval to see a
+                // newly added system. `notify_one` stores a permit, so a reload
+                // that lands mid-round is still observed on the next wait.
+                () = reload.notified() => {}
+            }
+        }
+    }
+
+    /// One bounded observation for one endpoint.
+    pub async fn observe(&mut self, endpoint: &Endpoint) -> CronObservation {
+        let system_id = endpoint.id.clone();
+        let now_unix_ms = now_unix_ms();
+        let summary = self.client.summary(endpoint).await;
+        let history = match &summary {
+            SummaryOutcome::Supported(document) if self.gate.needs(&system_id, document) => {
+                match self.client.history(endpoint).await {
                     Ok(Some(history)) => {
-                        changed |= cache.apply_history(&system_id, &history);
+                        self.gate.record(&system_id, &history);
+                        Some(history)
                     }
+                    // A 404 here means the remote serves a summary but not its
+                    // history: a real inconsistency, reported rather than passed
+                    // off as "nothing to fetch". The summary itself is kept.
                     Ok(None) => {
-                        // The summary said supported and the history route is
-                        // absent. That is a real inconsistency in the remote, so
-                        // it is reported rather than silently ignored.
-                        let state = cache.system_mut(&system_id);
-                        state.mark_failed(
-                            CronFetchError::Transport(
+                        return CronObservation {
+                            system_id,
+                            summary,
+                            history: None,
+                            history_error: Some(CronFetchError::Transport(
                                 "the scheduler summary is served but the history route is not"
                                     .to_owned(),
-                            ),
+                            )),
                             now_unix_ms,
-                        );
-                        changed = true;
+                        };
                     }
+                    // Leave the gate where it was so the next cadence retries,
+                    // and report the reason without discarding the summary.
                     Err(error) => {
-                        let state = cache.system_mut(&system_id);
-                        state.mark_failed(error, now_unix_ms);
-                        changed = true;
+                        return CronObservation {
+                            system_id,
+                            summary,
+                            history: None,
+                            history_error: Some(error),
+                            now_unix_ms,
+                        };
                     }
                 }
             }
-        }
-        SummaryOutcome::Unsupported => {
-            let state = cache.system_mut(&system_id);
-            let was = state.capability != crate::cron::CronCapability::Unsupported;
-            state.mark_unsupported();
-            changed |= was;
-            // `last_attempt_at` still moves so the renderer can say the answer
-            // is current rather than implying it was never asked.
-            state.last_attempt_at_unix_ms = Some(now_unix_ms);
-        }
-        SummaryOutcome::Failed(error) => {
-            let state = cache.system_mut(&system_id);
-            let was = state.last_error.as_ref() != Some(&error);
-            state.mark_failed(error, now_unix_ms);
-            changed |= was;
+            _ => None,
+        };
+        CronObservation {
+            system_id,
+            summary,
+            history,
+            history_error: None,
+            now_unix_ms,
         }
     }
-    changed
 }
 
 #[cfg(test)]
@@ -532,20 +701,20 @@ mod tests {
                 ..Routes::default()
             };
             let port = serve(routes.clone()).await;
-            let client = CronClient::new(Duration::from_secs(2));
+            let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
             let target = endpoint(port);
 
             // Discovery: one summary, one history.
-            observe(&client, &mut cache, &target, 1_700_000_000_000).await;
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(routes.summary_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert_eq!(routes.history_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
             assert_eq!(cache.system("sys").unwrap().job_records("backup").len(), 2);
 
             // Steady state: the summary is re-read every cadence, the history
             // body never is.
-            observe(&client, &mut cache, &target, 1_700_000_030_000).await;
-            observe(&client, &mut cache, &target, 1_700_000_060_000).await;
+            worker.observe(&target).await.apply(&mut cache);
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(routes.summary_hits.load(std::sync::atomic::Ordering::SeqCst), 3);
             assert_eq!(
                 routes.history_hits.load(std::sync::atomic::Ordering::SeqCst),
@@ -559,29 +728,29 @@ mod tests {
     fn a_revision_change_fetches_history_exactly_once() {
         runtime().block_on(async {
             let server = spawn_counting_server(4).await;
-            let client = CronClient::new(Duration::from_secs(2));
+            let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
             let target = endpoint(server.port);
 
-            observe(&client, &mut cache, &target, 1).await;
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(server.history_hits(), 1);
             assert_eq!(server.summary_hits(), 1);
 
             // Same revision twice more: the summary is still read on every
             // cadence, the history body never is.
-            observe(&client, &mut cache, &target, 2).await;
-            observe(&client, &mut cache, &target, 3).await;
+            worker.observe(&target).await.apply(&mut cache);
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(server.history_hits(), 1);
             assert_eq!(server.summary_hits(), 3);
 
             server.set_revision(5);
-            observe(&client, &mut cache, &target, 4).await;
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(
                 server.history_hits(),
                 2,
                 "a revision change must trigger exactly one fetch"
             );
-            observe(&client, &mut cache, &target, 5).await;
+            worker.observe(&target).await.apply(&mut cache);
             assert_eq!(server.history_hits(), 2);
         });
     }
@@ -676,16 +845,16 @@ mod tests {
         runtime().block_on(async {
             // First a good read so there is something to retain.
             let server = spawn_counting_server(1).await;
-            let client = CronClient::new(Duration::from_secs(2));
+            let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
-            observe(&client, &mut cache, &endpoint(server.port), 1).await;
+            worker.observe(&endpoint(server.port)).await.apply(&mut cache);
             assert_eq!(cache.system("sys").unwrap().job_records("backup").len(), 2);
 
             // Now the remote stops answering the scheduler route. Nothing
             // listens on this port, so the summary read fails.
             let unreachable = endpoint(1);
             let before_hits = server.history_hits();
-            let changed = observe(&client, &mut cache, &unreachable, 2).await;
+            let changed = worker.observe(&unreachable).await.apply(&mut cache);
 
             let state = cache.system_mut("sys");
             assert!(changed, "the failure itself is a visible change");
@@ -760,9 +929,9 @@ mod tests {
                 ..Routes::default()
             };
             let port = serve(routes).await;
-            let client = CronClient::new(Duration::from_secs(2));
+            let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
-            observe(&client, &mut cache, &endpoint(port), 1).await;
+            worker.observe(&endpoint(port)).await.apply(&mut cache);
 
             let state = cache.system("sys").expect("state");
             assert_eq!(state.capability, crate::cron::CronCapability::Supported);
@@ -774,14 +943,116 @@ mod tests {
     }
 
     #[test]
+    fn a_daemon_restart_reseeds_from_the_remote_ring() {
+        runtime().block_on(async {
+            // The remote holds two records. A first client daemon caches them.
+            let server = spawn_counting_server(3).await;
+            let mut worker = CronWorker::new(Duration::from_secs(2));
+            let mut first = CronCache::default();
+            worker.observe(&endpoint(server.port)).await.apply(&mut first);
+            assert_eq!(first.system("sys").unwrap().job_records("backup").len(), 2);
+
+            // The client daemon restarts: the in-memory cache is gone, and the
+            // new process knows nothing about the epoch or revision, so its
+            // gate is empty and it fetches again. That is the reseed.
+            let mut second_worker = CronWorker::new(Duration::from_secs(2));
+            let mut second = CronCache::default();
+            second_worker
+                .observe(&endpoint(server.port))
+                .await
+                .apply(&mut second);
+            assert_eq!(
+                second.system("sys").unwrap().job_records("backup").len(),
+                2,
+                "a restarted client daemon must recover the remote ring"
+            );
+            assert_eq!(server.history_hits(), 2);
+        });
+    }
+
+    #[test]
+    fn many_frontends_cannot_add_a_single_remote_request() {
+        runtime().block_on(async {
+            // The reduced cron intents decide what is *published*. The worker
+            // never sees them, so a window that opens the cron pane, ten
+            // windows that open it, and no windows at all must produce exactly
+            // the same remote request counts.
+            let server = spawn_counting_server(6).await;
+            let mut worker = CronWorker::new(Duration::from_secs(2));
+            let mut cache = CronCache::default();
+            for _ in 0..3 {
+                worker.observe(&endpoint(server.port)).await.apply(&mut cache);
+            }
+            assert_eq!(server.summary_hits(), 3);
+            assert_eq!(
+                server.history_hits(),
+                1,
+                "history is fetched on discovery and then only on revision change"
+            );
+        });
+    }
+
+    #[test]
+    fn a_summary_served_without_its_history_route_is_reported() {
+        runtime().block_on(async {
+            // A remote that serves the summary but not the history route is a
+            // real inconsistency. Passing it off as "nothing to fetch" would
+            // leave the pane silently empty forever.
+            let routes = Routes {
+                summary: Some((200, summary_body(2))),
+                history: None,
+                ..Routes::default()
+            };
+            let port = serve(routes).await;
+            let mut worker = CronWorker::new(Duration::from_secs(2));
+            let mut cache = CronCache::default();
+            worker.observe(&endpoint(port)).await.apply(&mut cache);
+
+            let state = cache.system("sys").expect("state");
+            assert!(
+                matches!(state.last_error, Some(CronFetchError::Transport(_))),
+                "{:?}",
+                state.last_error
+            );
+            assert!(
+                state.summary.is_some(),
+                "the summary that did arrive is still retained"
+            );
+        });
+    }
+
+    #[test]
+    fn a_failed_history_fetch_does_not_advance_the_gate() {
+        runtime().block_on(async {
+            // A revision that changed, whose history body is unreachable, must be
+            // retried on the next cadence rather than being suppressed forever.
+            let routes = Routes {
+                summary: Some((200, summary_body(1))),
+                history: None,
+                ..Routes::default()
+            };
+            let port = serve(routes).await;
+            let mut worker = CronWorker::new(Duration::from_secs(2));
+            let mut cache = CronCache::default();
+            for _ in 0..3 {
+                worker.observe(&endpoint(port)).await.apply(&mut cache);
+            }
+            assert!(
+                cache.system("sys").unwrap().history_revision.is_none(),
+                "a history body that never arrived must not be recorded as applied"
+            );
+        });
+    }
+
+    #[test]
     fn a_repeated_observation_does_not_grow_the_cache() {
         runtime().block_on(async {
             let server = spawn_counting_server(9).await;
-            let client = CronClient::new(Duration::from_secs(2));
+            let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
             let target = endpoint(server.port);
-            for tick in 1..=5 {
-                observe(&client, &mut cache, &target, tick).await;
+            for _ in 1..=5 {
+                worker.observe(&target).await.apply(&mut cache);
             }
             assert_eq!(cache.total_records(), 2);
             assert_eq!(server.history_hits(), 1);

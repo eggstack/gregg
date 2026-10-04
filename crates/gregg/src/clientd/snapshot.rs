@@ -23,6 +23,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::cron::{CronCapability, CronFetchError, CronRecord, CronSystemState};
 use crate::eggpool::EggpoolPeriod;
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
@@ -129,6 +130,93 @@ pub struct EggpoolSnapshotDto {
     pub last_health_error: Option<crate::eggpool::EggpoolHealthFetchOutcome>,
 }
 
+/// One job's bounded history, as published to frontends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CronJobHistoryDto {
+    /// Job name, matching a job in the published summary.
+    pub job: String,
+    /// Retained records, oldest first.
+    pub records: Vec<CronRecord>,
+}
+
+/// One system's scheduler observability, as published to frontends.
+///
+/// Published as a vector parallel to `systems` rather than as a field on
+/// [`SystemSnapshotDto`], so the scheduler plane stays visibly separate from the
+/// normalized metrics payload. They are fetched on different cadences, sized
+/// differently, and fail independently, and folding them together would make
+/// "the metrics are fine but the cron route failed" hard to express.
+///
+/// `history` carries records **only for jobs a frontend currently has open**.
+/// The summary needs no request to display, and the history body is the largest
+/// document in the system, so retransmitting it on every five-second metrics
+/// publication would put the cron plane on the hot path to draw five job rows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SystemCronDto {
+    /// Stable system id this belongs to.
+    pub system_id: String,
+    /// Whether the remote serves the scheduler routes.
+    pub capability: CronCapability,
+    /// Latest valid summary. `None` until one has been read.
+    pub summary: Option<gregg_protocol::SchedulerSummaryV2>,
+    /// Remote lifetime the retained records belong to.
+    pub epoch: Option<gregg_protocol::SchedulerEpochV2>,
+    /// `history_revision` of the most recently applied history document.
+    pub history_revision: Option<u64>,
+    /// Unix milliseconds of the last scheduler attempt.
+    pub last_attempt_at_unix_ms: Option<u64>,
+    /// Unix milliseconds of the last successful scheduler read.
+    pub last_success_at_unix_ms: Option<u64>,
+    /// Most recent scheduler-route failure, meaning retained data is not
+    /// known to be current. Distinct from system reachability.
+    pub last_error: Option<CronFetchError>,
+    /// Bounded history for the jobs a frontend has open; empty otherwise.
+    pub history: Vec<CronJobHistoryDto>,
+}
+
+impl SystemCronDto {
+    /// Project one system's scheduler state for publication.
+    ///
+    /// `requested` is the `(job, depth)` set the reduced frontend intents asked
+    /// for. Passing an empty set is normal and produces a document with a
+    /// summary and no records, which is everything the at-a-glance rows need.
+    #[must_use]
+    pub fn from_state(
+        system_id: &str,
+        state: &CronSystemState,
+        requested: &[(String, usize)],
+    ) -> Self {
+        let history = requested
+            .iter()
+            .map(|(job, depth)| CronJobHistoryDto {
+                job: job.clone(),
+                records: state.recent(job, *depth),
+            })
+            .filter(|entry| !entry.records.is_empty())
+            .collect();
+        Self {
+            system_id: system_id.to_owned(),
+            capability: state.capability,
+            summary: state.summary.clone(),
+            epoch: state.epoch,
+            history_revision: state.history_revision,
+            last_attempt_at_unix_ms: state.last_attempt_at_unix_ms,
+            last_success_at_unix_ms: state.last_success_at_unix_ms,
+            last_error: state.last_error.clone(),
+            history,
+        }
+    }
+
+    /// Records retained for one job in this document.
+    #[must_use]
+    pub fn job_records(&self, job: &str) -> &[CronRecord] {
+        self.history
+            .iter()
+            .find(|entry| entry.job == job)
+            .map_or(&[], |entry| entry.records.as_slice())
+    }
+}
+
 /// Complete, self-contained client state for one frontend to render from.
 ///
 /// A frontend can always draw from this alone; there is no incremental patch
@@ -156,6 +244,12 @@ pub struct FrontendSnapshot {
     pub poll_initialized: bool,
     /// Fleet data, in display order.
     pub systems: Vec<SystemSnapshotDto>,
+    /// Scheduler observability, in the same order as `systems`.
+    ///
+    /// One entry per system, always present so a frontend never has to infer
+    /// "no entry" from a missing key. `history` inside each entry is populated
+    /// only for jobs a frontend currently has open.
+    pub cron: Vec<SystemCronDto>,
     /// `EggPool` pane state, when the config has an `EggPool` entry.
     pub eggpool: Option<EggpoolSnapshotDto>,
     /// Diagnostic from the most recent rejected config reload.
@@ -171,6 +265,20 @@ impl FrontendSnapshot {
             produced_at_unix_ms: 0,
             refresh_status: RefreshStatusDto::Idle,
             poll_initialized: false,
+            cron: systems
+                .iter()
+                .map(|system| SystemCronDto {
+                    system_id: system.id.clone(),
+                    capability: CronCapability::Unknown,
+                    summary: None,
+                    epoch: None,
+                    history_revision: None,
+                    last_attempt_at_unix_ms: None,
+                    last_success_at_unix_ms: None,
+                    last_error: None,
+                    history: Vec::new(),
+                })
+                .collect(),
             systems,
             eggpool: None,
             config_reload_error: None,
@@ -181,6 +289,12 @@ impl FrontendSnapshot {
     #[must_use]
     pub fn system(&self, id: &str) -> Option<&SystemSnapshotDto> {
         self.systems.iter().find(|system| system.id == id)
+    }
+
+    /// Look up one system's scheduler state by stable ID.
+    #[must_use]
+    pub fn cron_for(&self, id: &str) -> Option<&SystemCronDto> {
+        self.cron.iter().find(|entry| entry.system_id == id)
     }
 
     /// Whether a new frontend that has no state yet should paint this.
@@ -199,6 +313,12 @@ impl FrontendSnapshot {
 /// active pane, expansion, view mode, and the transient highlight are all
 /// *per frontend*, because two TUI windows on the same daemon have genuinely
 /// different selections.
+///
+/// The bool count is inherent to the model rather than a design smell: three
+/// independent expansions (drives, network, cron) plus one transient highlight
+/// is exactly the state the plan requires, and collapsing them into an enum
+/// would make drive and network mutually exclusive, which they are not.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationState {
     /// Currently selected system, by stable ID.
@@ -213,6 +333,19 @@ pub struct PresentationState {
     pub drives_expanded: bool,
     /// Whether the selected system's network details are expanded.
     pub network_expanded: bool,
+    /// Whether the selected system's cron details are expanded.
+    ///
+    /// Independent of drive and network expansion: all three can be open at
+    /// once, and a system with many jobs stays inside a bounded vertical
+    /// budget rather than growing without limit.
+    pub cron_expanded: bool,
+    /// Which cron job's history is expanded, by name.
+    ///
+    /// Exactly one job's multiline history is shown at a time, because a
+    /// cron-expanded system may have dozens of jobs. Held by name rather than
+    /// by index so moving between systems can repair the selection against a
+    /// different job list.
+    pub cron_job: Option<String>,
     /// Whether the logical selection is currently highlighted.
     pub selection_highlight_active: bool,
 }
@@ -226,6 +359,8 @@ impl Default for PresentationState {
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
             network_expanded: false,
+            cron_expanded: false,
+            cron_job: None,
             selection_highlight_active: false,
         }
     }

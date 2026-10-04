@@ -183,6 +183,35 @@ impl FrontendSender {
             })
             .map_err(|_| FrontError::ChannelFull)
     }
+
+    /// Report what this frontend currently has open in the cron detail view.
+    ///
+    /// Replaces the previous intent wholesale, so closing the pane cannot leave
+    /// the daemon transmitting records for a view nobody is looking at.
+    ///
+    /// This does not add a remote request. The scheduler plane is polled by the
+    /// daemon on its own cadence; the intent only decides which retained records
+    /// are published.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontError::ChannelFull`] when the reader is not draining.
+    pub fn request_cron_intent(
+        &self,
+        system_id: Option<&str>,
+        job: Option<&str>,
+        display_history: usize,
+        generation: u64,
+    ) -> Result<(), FrontError> {
+        self.requests
+            .try_send(DaemonRequest::SetCronIntent {
+                system_id: system_id.map(str::to_owned),
+                job: job.map(str::to_owned),
+                display_history,
+                generation,
+            })
+            .map_err(|_| FrontError::ChannelFull)
+    }
 }
 
 /// One frontend's declared wish for the `EggPool` worker.
@@ -202,7 +231,7 @@ pub struct EggpoolIntentRequest {
 /// named pipe, and it must not care: a `Ctrl-R` and a pane change are the same
 /// action whichever transport carries them. This trait is the seam that keeps
 /// the event loop testable without a live socket, and it is deliberately
-/// narrow — three requests, no general RPC.
+/// narrow — four requests, no general RPC.
 pub trait ControlSink {
     /// `Ctrl-R`: re-read the configuration file.
     ///
@@ -224,6 +253,20 @@ pub trait ControlSink {
         intent: &EggpoolIntentRequest,
         generation: u64,
     ) -> Result<(), FrontError>;
+
+    /// Report what this frontend currently has open in the cron detail view.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FrontError::ChannelFull`] when the request could not be
+    /// queued.
+    fn request_cron_intent(
+        &self,
+        system_id: Option<&str>,
+        job: Option<&str>,
+        display_history: usize,
+        generation: u64,
+    ) -> Result<(), FrontError>;
 }
 
 impl ControlSink for FrontendSender {
@@ -237,6 +280,16 @@ impl ControlSink for FrontendSender {
         generation: u64,
     ) -> Result<(), FrontError> {
         self.request_eggpool_intent(intent.active, intent.period, intent.refresh, generation)
+    }
+
+    fn request_cron_intent(
+        &self,
+        system_id: Option<&str>,
+        job: Option<&str>,
+        display_history: usize,
+        generation: u64,
+    ) -> Result<(), FrontError> {
+        self.request_cron_intent(system_id, job, display_history, generation)
     }
 }
 
