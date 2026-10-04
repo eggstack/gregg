@@ -47,8 +47,12 @@ service lifecycle. For platform metric collection itself, use the
 - Configured maintenance jobs add one scheduler subsystem only when the job
   list is non-empty. It reads cached sampler load from a watch channel without
   waking on each sample; it executes direct argv as the existing OS principal,
-  retains one pending occurrence per job and one global child, and terminates
-  only its direct child during shutdown. Never add an implicit shell, secret
+   retains one pending occurrence per job and one global child, and terminates
+  only its direct child during shutdown. Cron eligibility reads local civil
+  time while retry/max-wait/child bounds stay monotonic; the sleep is capped
+  at `min(semantic deadline, now + 60s)` so wall-clock jumps reconcile within
+  about a minute (forward jumps coalesce, backward jumps never launch early).
+  Never add an implicit shell, secret
   environment map, missed-job replay, remote execution route, or sandbox
   weakening. Unix root requires the explicit `allow_privileged_jobs` opt-in;
   Windows rejects load-gated jobs. Configuration validation rejects a schedule

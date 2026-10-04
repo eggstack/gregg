@@ -9,6 +9,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Scheduler wall-clock reconciliation (Plan 160):** the maintenance
+  scheduler no longer trusts a long civil-time deadline as a single monotonic
+  sleep. The event loop now wakes at `min(semantic deadline, now + 60s)` and
+  re-reads civil time, so a large forward system-clock adjustment is observed
+  within about a minute and skipped occurrences coalesce into at most one
+  pending occurrence per job instead of sleeping past them; a backward jump
+  cannot launch before the stored civil occurrence is due and never recreates
+  an already-consumed occurrence. Load retry, max-wait expiry, and child
+  lifecycle stay purely monotonic. Reconciliation wakes are silent and
+  perform no telemetry, HTTP, filesystem, or process work; a daemon with no
+  configured jobs still spawns no scheduler task.
+
 - **Calendar-impossible maintenance schedules (Plan 158):** a syntactically
   valid cron expression that no Gregorian date can satisfy — for example
   `0 0 31 2 *` — is now rejected as an `InvalidJobs` configuration violation

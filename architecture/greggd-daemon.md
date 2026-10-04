@@ -204,6 +204,16 @@ The engine owns one parsed schedule and at most one pending occurrence per
 configured job, and borrows operator configuration instead of copying it. It
 scans at most 64 jobs for the next cron/retry/expiry deadline, sleeps until
 that deadline, child completion, or shutdown, and has one global child slot.
+Cron semantics read local civil time while load-retry/max-wait/child
+lifecycle use monotonic time, and the event loop never trusts a semantic
+deadline for more than a 60-second civil-clock reconciliation bound without
+re-reading wall time: the actual sleep is `min(semantic deadline, now + 60s)`.
+A forward wall-clock jump is therefore observed within about a minute and
+skipped occurrences coalesce rather than replay; a backward jump cannot
+launch before the stored civil occurrence is due. Reconciliation wakes run
+the existing bounded scan silently and perform no telemetry, HTTP,
+filesystem, or process work. A daemon with no configured jobs spawns no
+scheduler task and pays zero cost.
 Pending selection is an allocation-free bounded scan over job state: the
 oldest pending time wins with config order as the stable tie breaker, and
 no candidate vector is built merely to choose a job. Every load-gated launch

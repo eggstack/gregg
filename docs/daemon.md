@@ -59,7 +59,13 @@ an impossible expression never reaches runtime. Schedules use local civil
 time. A spring-forward time that does not exist is skipped; both real instants
 in a fall-back repeated minute run in chronological order. Startup chooses the
 first occurrence strictly after its reference time. Missed work is not
-replayed after daemon downtime.
+replayed after daemon downtime. Large wall-clock adjustments are reconciled
+within approximately one minute: the scheduler re-reads civil time at least
+once per minute, so a forward jump's skipped occurrences coalesce into at
+most one pending occurrence per job rather than replaying, and a backward
+jump never launches before the stored occurrence is actually due. Load retry
+and maximum wait stay on monotonic time and are unaffected by wall-clock
+movement.
 
 Commands are argv arrays and execute directly. Gregg does not parse a command
 string or add a shell; shell syntax requires an explicit shell argv such as

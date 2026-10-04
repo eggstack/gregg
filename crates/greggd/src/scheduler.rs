@@ -16,6 +16,25 @@ use schedule::LocalSchedule;
 
 const CHILD_SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
 
+/// Scheduler-internal civil-clock reconciliation bound.
+///
+/// Long civil-time sleeps are never trusted for longer than one
+/// cron-resolution minute without re-reading wall time. The semantic
+/// cron/retry/max-wait deadline stays truthful inside [`Engine::next_deadline`];
+/// this cap applies only to the actual `sleep_until` wake in [`run`], so a
+/// large forward wall-clock jump is observed promptly (and coalesced) while
+/// monotonic retry/max-wait/child semantics are unchanged.
+const MAX_CIVIL_RECHECK: Duration = Duration::from_secs(60);
+
+/// Cap a semantic monotonic deadline at one reconciliation interval.
+///
+/// Pure monotonic calculation: no allocation, no async work, no telemetry,
+/// filesystem, or process effects. Unit-testable independently of the event
+/// loop.
+fn bounded_wake_deadline(semantic_deadline: Instant, now: Instant) -> Instant {
+    semantic_deadline.min(now + MAX_CIVIL_RECHECK)
+}
+
 fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
@@ -334,7 +353,13 @@ pub(crate) async fn run(
             continue;
         }
 
-        let deadline = engine.next_deadline(wall_now, Instant::now(), active.is_none());
+        let semantic_deadline = engine.next_deadline(wall_now, Instant::now(), active.is_none());
+        // Re-reading civil time at least once per minute bounds how long a
+        // forward wall-clock jump can hide behind a stale monotonic sleep.
+        // The wake itself performs the existing bounded scan only: no host
+        // telemetry, HTTP request, filesystem scan, or child spawn, and it
+        // stays silent (the `Deadline` branch below logs nothing).
+        let wake_at = bounded_wake_deadline(semantic_deadline, Instant::now());
         let wake = {
             let child_wait = async {
                 match active.as_mut() {
@@ -344,7 +369,7 @@ pub(crate) async fn run(
             };
             tokio::select! {
                 result = child_wait => SchedulerWake::Child(result),
-                () = tokio::time::sleep_until(deadline) => SchedulerWake::Deadline,
+                () = tokio::time::sleep_until(wake_at) => SchedulerWake::Deadline,
                 _ = shutdown.recv() => SchedulerWake::Shutdown,
             }
         };
@@ -717,6 +742,280 @@ mod tests {
     }
 
     #[cfg(unix)]
+    fn daily_job(name: &str) -> ScheduledJobConfig {
+        ScheduledJobConfig {
+            name: name.to_owned(),
+            schedule: "0 3 * * *".to_owned(),
+            command: vec!["/bin/true".to_owned()],
+            working_dir: None,
+            max_load: None,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        }
+    }
+
+    #[test]
+    fn civil_recheck_cap_is_one_minute_and_pure() {
+        assert_eq!(MAX_CIVIL_RECHECK, Duration::from_secs(60));
+        let now = Instant::now();
+        // A ten-hour semantic deadline wakes within one reconciliation bound.
+        assert_eq!(
+            bounded_wake_deadline(now + Duration::from_secs(10 * 3600), now),
+            now + MAX_CIVIL_RECHECK
+        );
+        // Near semantic deadlines are never delayed by the recheck.
+        assert_eq!(
+            bounded_wake_deadline(now + Duration::from_secs(15), now),
+            now + Duration::from_secs(15)
+        );
+        assert_eq!(
+            bounded_wake_deadline(now + Duration::from_secs(10), now),
+            now + Duration::from_secs(10)
+        );
+        assert_eq!(
+            bounded_wake_deadline(now + Duration::from_secs(20), now),
+            now + Duration::from_secs(20)
+        );
+        assert_eq!(bounded_wake_deadline(now, now), now);
+    }
+
+    #[test]
+    fn semantic_deadline_stays_truthful_while_the_wake_is_capped() {
+        let wall = wall_time();
+        let config = daily_job("daily");
+        let engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mono = Instant::now();
+        let semantic = engine.next_deadline(wall, mono, true);
+        assert!(semantic > mono, "a daily job is not due immediately");
+        let wake = bounded_wake_deadline(semantic, mono);
+        assert!(wake <= mono + MAX_CIVIL_RECHECK);
+        // The engine itself still reports the true civil deadline; only the
+        // event-loop sleep is capped.
+        assert_eq!(engine.next_deadline(wall, mono, true), semantic);
+    }
+
+    #[test]
+    fn empty_job_list_builds_no_engine_state() {
+        // Production `run_with_shutdown` never spawns the scheduler task when
+        // `config.jobs` is empty (`run.rs` keeps the `is_empty` branch), so a
+        // jobless daemon pays zero reconciliation cost. At the engine layer
+        // this means an empty configuration carries no deadlines at all.
+        let wall = wall_time();
+        let configs: &[ScheduledJobConfig] = &[];
+        let engine = Engine::new(configs, wall).unwrap();
+        assert_eq!(engine.pending_count(), 0);
+        assert!(engine.states.is_empty());
+    }
+
+    #[test]
+    fn forward_wall_jump_coalesces_to_one_pending_and_advances_next_due() {
+        let wall = wall_time();
+        let config = daily_job("daily");
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let stored = engine.states[0].next_due;
+        assert!(stored > wall);
+        let mono = Instant::now();
+        let semantic = engine.next_deadline(wall, mono, true);
+        // The long monotonic sleep is capped at one reconciliation interval.
+        assert_eq!(
+            bounded_wake_deadline(semantic, mono),
+            mono + MAX_CIVIL_RECHECK
+        );
+        // Only the capped interval passes monotonically while wall time jumps
+        // beyond the stored occurrence.
+        let jumped_wall = stored + chrono::Duration::minutes(65);
+        let launch = engine
+            .tick(
+                jumped_wall,
+                mono + MAX_CIVIL_RECHECK,
+                LoadGateState::UNAVAILABLE,
+                true,
+            )
+            .unwrap()
+            .expect("a jumped-over occurrence becomes exactly one launch");
+        assert_eq!(launch.index, 0);
+        assert_eq!(engine.pending_count(), 0);
+        assert!(
+            engine.states[0].next_due > jumped_wall,
+            "next_due advances strictly after the jumped wall time"
+        );
+    }
+
+    #[test]
+    fn forward_jump_of_every_minute_job_does_not_build_a_backlog() {
+        let wall = wall_time();
+        let config = job("minutely", None);
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mono = Instant::now();
+        let jumped_wall = engine.states[0].next_due + chrono::Duration::hours(3);
+        let launch = engine
+            .tick(jumped_wall, mono, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
+            .expect("several skipped minutes coalesce to one launch");
+        assert_eq!(launch.index, 0);
+        assert_eq!(engine.pending_count(), 0);
+        assert!(engine.states[0].next_due > jumped_wall);
+    }
+
+    #[test]
+    fn backward_wall_jump_does_not_launch_before_the_stored_occurrence() {
+        let wall = wall_time();
+        let config = job("minutely", None);
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        // Shortly before the occurrence the bounded wake retains the near
+        // semantic deadline instead of rounding out to the cap.
+        let before = due - chrono::Duration::seconds(30);
+        let semantic = engine.next_deadline(before, mono, true);
+        assert_eq!(semantic, mono + Duration::from_secs(30));
+        assert_eq!(bounded_wake_deadline(semantic, mono), semantic);
+        // The old monotonic estimate fires while wall time has moved backward:
+        // the stored occurrence is not due, so nothing launches and nothing
+        // is consumed.
+        let moved_back = before - chrono::Duration::minutes(5);
+        let fired = mono + Duration::from_secs(30);
+        assert!(engine
+            .tick(moved_back, fired, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 0);
+        assert_eq!(engine.states[0].next_due, due);
+        // Subsequent wakes from the moved-back wall stay capped at the
+        // reconciliation bound even though the semantic deadline is minutes
+        // away.
+        let semantic_after = engine.next_deadline(moved_back, fired, true);
+        assert!(semantic_after > fired + MAX_CIVIL_RECHECK);
+        assert_eq!(
+            bounded_wake_deadline(semantic_after, fired),
+            fired + MAX_CIVIL_RECHECK
+        );
+        // Reaching the actual civil occurrence launches exactly once.
+        let launch = engine
+            .tick(due, fired, LoadGateState::UNAVAILABLE, true)
+            .unwrap()
+            .expect("the real civil occurrence still launches");
+        assert_eq!(launch.index, 0);
+        assert_eq!(engine.pending_count(), 0);
+        // Moving wall time back over the consumed occurrence does not
+        // recreate it.
+        let recheck = due - chrono::Duration::minutes(1);
+        assert!(engine
+            .tick(
+                recheck,
+                fired + Duration::from_secs(5),
+                LoadGateState::UNAVAILABLE,
+                true
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 0);
+    }
+
+    #[test]
+    fn load_retry_stays_monotonic_across_wall_jumps() {
+        let wall = wall_time();
+        let mut heavy = job("heavy", Some(0.0));
+        heavy.retry_interval_ms = Some(10_000);
+        heavy.max_wait_ms = Some(300_000);
+        let configs = [heavy, job("time-only", None)];
+        let mut engine = Engine::new(&configs, wall).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        // The heavy job blocks on load while the time-only job wins the free
+        // slot, deferring the heavy retry ten monotonic seconds out.
+        let first = engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .expect("the time-only job takes the free slot");
+        assert_eq!(configs[first.index].name, "time-only");
+        assert_eq!(
+            engine.states[0].pending.as_ref().unwrap().retry_at,
+            mono + Duration::from_millis(10_000)
+        );
+        // Same wall, monotonic retry not yet crossed: nothing is eligible.
+        assert!(engine
+            .tick(
+                due,
+                mono + Duration::from_secs(5),
+                ready(0.0, 0.0, 0.0),
+                true
+            )
+            .unwrap()
+            .is_none());
+        // Wall time jumps hours forward while monotonic time stays short of
+        // the retry: the heavy retry is still not due. Only the time-only
+        // job's fresh occurrence may launch.
+        let far_forward = due + chrono::Duration::hours(3);
+        let launch = engine
+            .tick(
+                far_forward,
+                mono + Duration::from_secs(5),
+                ready(0.0, 0.0, 0.0),
+                true,
+            )
+            .unwrap()
+            .expect("the fresh time-only occurrence launches");
+        assert_eq!(configs[launch.index].name, "time-only");
+        assert!(engine.states[0].pending.is_some(), "heavy stays pending");
+        // Wall time moves backward while monotonic time crosses the retry:
+        // the heavy job becomes due on its monotonic schedule.
+        let moved_back = due - chrono::Duration::hours(1);
+        let launch = engine
+            .tick(
+                moved_back,
+                mono + Duration::from_secs(10),
+                ready(0.0, 0.0, 0.0),
+                true,
+            )
+            .unwrap()
+            .expect("crossing the monotonic retry launches the heavy job");
+        assert_eq!(configs[launch.index].name, "heavy");
+    }
+
+    #[test]
+    fn max_wait_expiry_stays_monotonic_across_wall_jumps() {
+        let wall = wall_time();
+        let mut config = job("heavy", Some(0.0));
+        config.retry_interval_ms = Some(10_000);
+        config.max_wait_ms = Some(120_000);
+        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        assert!(engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 1);
+        // A forward wall jump cannot shorten the monotonic max-wait: sixty
+        // monotonic seconds into a 120-second bound the occurrence survives.
+        let far_forward = due + chrono::Duration::hours(3);
+        assert!(engine
+            .tick(
+                far_forward,
+                mono + Duration::from_secs(60),
+                ready(9.0, 9.0, 9.0),
+                true
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 1);
+        // A backward wall jump cannot extend it either: at 120 monotonic
+        // seconds the pending occurrence expires once.
+        let moved_back = due - chrono::Duration::hours(1);
+        assert!(engine
+            .tick(
+                moved_back,
+                mono + Duration::from_secs(120),
+                ready(9.0, 9.0, 9.0),
+                true
+            )
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 0);
+    }
+
     #[tokio::test]
     async fn active_direct_child_is_terminated_and_reaped_on_shutdown() {
         let job = ScheduledJobConfig {
