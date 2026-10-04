@@ -115,9 +115,11 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 entry.is_visually_selected,
                 entry.drive_rows_visible,
                 entry.network_rows_visible,
+                entry.cron_rows_visible,
                 condensed_values
                     .get(entry.index)
                     .and_then(|slot| slot.as_deref()),
+                Some(state),
             );
             continue;
         }

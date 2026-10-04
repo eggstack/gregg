@@ -214,3 +214,83 @@ reverse-video does not survive a quiet screen. Leaving the Systems pane or
 returning to it does not extend or re-trigger the highlight.
 
 See [display](display.md) for what each view renders.
+
+## Cron observability
+
+The client daemon owns a second, deliberately slower polling plane for the
+scheduler routes a `greggd` may serve:
+
+- `GET /v2/scheduler` is read on a **30-second cadence** for every configured
+  system. It carries only scalar per-job state and no command output, so it is
+  cheap and is what the at-a-glance job rows need.
+- `GET /v2/scheduler/history` is fetched **only on first support discovery and
+  when the summary's `history_revision` changes**. It is the largest document in
+  the system, and downloading it on every metrics poll would put it on the hot
+  path to draw five job rows.
+
+The gate compares the epoch as well as the revision. A restarted `greggd` resets
+`history_revision` and can reset it to the same small value it used before, so a
+revision-only check would conclude "nothing changed" and never fetch the new
+epoch at all. Deduplication identity is therefore `(epoch, sequence)`, never
+`sequence` alone — a remote legitimately reissues sequences from zero, and a
+sequence-only identity would drop the new epoch's records as duplicates.
+
+### What the daemon keeps, and why it is bounded
+
+The remote ring is the authority. The client daemon additionally keeps a
+**memory-only** cache that is deeper than the remote retains, because it is
+always running and observes successive rings. It is bounded three ways:
+
+1. a per-job depth (`[cron] cache_history`, hard maximum 50),
+2. a **global record ceiling** across every system, job, and epoch, and
+3. the remote contract's own per-stream output cap, which bounds a single
+   record's size and therefore makes a record *count* a real memory bound.
+
+Bound 2 is the one that matters at scale: per-job depth alone does not survive
+`endpoints × jobs × depth`. Eviction is oldest-first across the whole fleet and
+tie-broken by `(system, job)`, so identical inputs evict the same record and the
+cache's contents are reproducible. Nothing is written to disk; a daemon restart
+reseeds from whatever the remote still holds.
+
+A job the remote no longer serves, and a system that left the fleet, are
+dropped. A record that was genuinely observed is not retroactively erased by a
+remote restart, but neither does the bound grow forever.
+
+### Capabilities, not errors
+
+Scheduler outcomes are three-valued, and the distinction is the point:
+
+| Outcome | Meaning |
+|---|---|
+| Supported | The routes exist and a valid summary arrived. |
+| Unsupported | A 404: an older `greggd`. Expected, not a failure. |
+| Failed | Transport, 5xx, an oversized body, or a document that failed its own wire validation. |
+
+A pre-scheduler `greggd` is a *healthy* daemon, so it is never reported as
+errored — doing so would put a permanent badge on every old system in a mixed
+fleet. Nothing in the cron plane can reach system reachability: a cron route
+failure on an otherwise healthy system must not say the system is down. A
+transient failure retains the last known data and is labelled stale.
+
+A remote that serves the summary but not its history is a real inconsistency
+and is reported as such, while the job list that did arrive is still shown.
+
+### What crosses the local channel
+
+Only the **existing** state document carries cron state; there is no second
+socket and no separate request path.
+
+The summary needs no request to display, so it always rides along. The history
+records are the largest thing in the document, so they are included only for
+systems a frontend currently has open. A frontend publishes a cron intent —
+system, job, and requested depth — and the daemon reduces every frontend's
+intent into a `(system, job) -> depth` set, taking the maximum depth per pair.
+The reduction is a union and is order-independent, so a window asking for fewer
+records is never shrunk by a neighbour that wants more, and a departed window's
+intent is retired on disconnect so the daemon stops transmitting records nobody
+is reading.
+
+**The intent governs transmission and never fetching.** The daemon polls whether
+or not a TUI is attached, which is why ten windows with the pane open cost the
+fleet exactly what zero windows cost. An intent change alters the document
+without touching the cache, and is therefore its own publication reason.

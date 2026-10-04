@@ -47,3 +47,26 @@ port = 11310
 # scheme = "http"
 # name = "Main EggPool"
 # api_key_env = "EGGPOOL_GREGG_API_KEY"
+
+# Optional cron observability settings. Omit this table to use the defaults.
+#
+# These are two independent numbers with two independent hard maxima, because
+# they answer different questions:
+#
+#   display_history  how many terminal records the cron pane shows for the
+#                    selected job. A viewport, defaulting to the remote
+#                    greggd's own retention so the common case is exactly
+#                    what the remote still holds. Range 1..=20.
+#   cache_history    how many terminal records the client daemon keeps in
+#                    memory per job. Retention, and deliberately deeper than
+#                    the display window because the daemon is always running
+#                    and observes rings the remote has already dropped.
+#                    Range 1..=50, and must be at least display_history.
+#
+# A global record ceiling across every system and job applies regardless of
+# these values, so raising cache_history cannot turn a bounded cache into an
+# unbounded one. Nothing is written to disk: a client-daemon restart reseeds
+# from whatever the remote still holds.
+# [cron]
+# display_history = 5
+# cache_history = 25

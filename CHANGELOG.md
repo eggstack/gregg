@@ -7,6 +7,54 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Cron observability in the TUI (Plan 166):** `c` expands a read-only cron
+  block inside the selected system, and `Shift-J` / `Shift-K` move between jobs.
+  The block lists every job a `greggd` schedules with its state, schedule, and
+  last result, plus the run history of the selected job including its output.
+
+  The client daemon reads a compact summary on a 30-second cadence and
+  downloads the larger history document only on first support discovery and
+  when `history_revision` changes, so the largest response in the system is
+  never on the hot path to draw five job rows. Opening the pane in ten windows
+  costs the fleet exactly what zero windows cost: the cron intent governs what is
+  **published** and never what is **fetched**.
+
+  The daemon keeps a deeper memory-only cache than the remote retains, so
+  closing and reopening the TUI does not reset what has been observed. It is
+  bounded by per-job depth, a global record ceiling across every system and job,
+  and the remote's own output cap, so a pathological fleet cannot turn a bounded
+  cache into an unbounded one. Nothing is written to disk; a daemon restart
+  reseeds from the remote.
+
+  New `[cron]` settings: `display_history` (default 5, max 20) is a viewport,
+  `cache_history` (default 25, max 50) is retention. The table is optional, so
+  existing configurations keep working unchanged.
+
+  A `greggd` that does not serve the scheduler routes is reported as
+  *unsupported* — the normal state for an older daemon in a mixed fleet — and is
+  never reported as a system failure. A transient scheduler read failure keeps
+  the last known data and is labelled stale.
+
+  **Remote command output and remote job names are now escaped, not stripped.**
+  Control sequences are rendered in `cat -v` caret notation, so a hostile build
+  script printing `ESC [ 2 J` displays as `^[[2J` instead of clearing your
+  screen, and an OSC title or hyperlink sequence cannot retitle your terminal.
+  Printable Unicode, including wide CJK, is left intact.
+
+### Fixed
+
+- **`Ctrl-R` did nothing without an `EggPool` entry.** The config-reload request
+  sat behind an `EggPool`-configured early return, so for every configuration
+  without an `EggPool` table the one reload boundary the client-daemon
+  architecture is built on was silently dead.
+- **A TUI attaching to an already-settled daemon was shown stale state.** State
+  documents published while no window was attached were discarded by the local
+  watch channel, so a window opening later was handed the document from startup
+  and then never told anything again, because a quiet fleet publishes no further
+  documents. Publications are now stored unconditionally.
+
 ### Changed
 
 - **`gregg` is now a frontend (Plan 164):** all remote polling for a

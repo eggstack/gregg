@@ -764,3 +764,102 @@ Every module has inline `#[cfg(test)]` tests:
 
 - `FakeClock` — manually advancing clock for deterministic testing
 - cross-process lock contention is covered by the test-only `lock_helper` target, gated behind the private `test-helper` feature
+
+## Cron observability (Plan 166)
+
+A third plane, owned by the client daemon like the other two and for the same
+reason: a per-TUI poller would multiply the fleet's request budget by the number
+of open windows, and closing one window would silently stop a fraction of what
+the operator is watching.
+
+### Two unequal fetch planes
+
+`/v2/scheduler` is read on a 30-second cadence for every configured system. It
+carries only scalar per-job state and no command output, so it is cheap.
+`/v2/scheduler/history` is the largest document in the system and is fetched only
+on first support discovery and when the summary's `history_revision` changes. A
+cadence slower than the metrics interval is deliberate: a load-delayed transition
+is visible on the order of a minute, which is fast enough for an operator
+watching Gregg and slow enough that scheduler observability does not double a
+five-second fleet's request count.
+
+### Epoch is part of every identity
+
+The gate compares `(epoch, revision)`, not revision alone, and records are
+deduplicated by `(epoch, sequence)`. A restarted `greggd` resets
+`history_revision` and can reset it to the same small value it used before, so a
+revision-only gate concludes "nothing changed" and never fetches the new epoch.
+A remote also legitimately reissues sequences from zero, so a sequence-only
+identity would drop the new epoch's records as duplicates. **Never key scheduler
+state on `sequence` alone.**
+
+A new epoch does not rewrite the previous one: previously observed records are
+retained, tagged with the epoch they were observed under, and a job's *state*
+comes only from the current epoch's summary. Claiming an old pending job is
+still pending across a daemon restart is fabrication.
+
+### Bounded, memory-only, and reproducible
+
+Three bounds, because per-job depth alone does not survive
+`endpoints × jobs × depth`:
+
+1. per-job depth (`[cron] cache_history`, max 50),
+2. a global record ceiling across every system, job, and epoch, and
+3. the remote contract's per-stream output cap, which bounds a record's size and
+   so makes a record *count* a real memory bound.
+
+The global ceiling is a **constant, not a setting**: a user who raises the
+per-job depth must not be able to turn a bounded cache into an unbounded one.
+Eviction is oldest-first fleet-wide, tie-broken by `(system, job)`, so identical
+inputs evict the same record. Nothing is written to disk; a client-daemon restart
+reseeds from the remote. `display_history` is a *viewport* and is clamped by the
+daemon when it publishes, so a frontend cannot make the document larger than the
+local bound.
+
+### Two-tier local publication
+
+There is no second socket. The summary always rides along in the existing
+document; history records are included only for systems a frontend has open. The
+reduction is a union with a per-pair maximum depth, which is order-independent
+and retires on disconnect.
+
+**The intent governs transmission and never fetching.** This is the load-bearing
+distinction: the daemon polls with no TUI attached, so opening the pane in ten
+windows costs the fleet exactly what zero windows cost.
+
+### Capability is not reachability
+
+`Unknown` / `Unsupported` / `Supported` / per-route `CronFetchError`, published in
+a vector parallel to `systems` so the scheduler plane stays visibly separate from
+the normalized metrics payload. The two are fetched on different cadences, sized
+differently, and fail independently, and folding them together would make
+"metrics are fine but the cron route failed" hard to express. **Nothing in the
+cron plane may reach `Reachability`.** A pre-scheduler `greggd` is a healthy
+daemon; marking it errored would badge every old system in a mixed fleet.
+
+### Rendering is bounded and inert
+
+`ui/cron.rs` takes whatever vertical budget `d` and `n` did not claim, and
+truncates rows from the end in display *cells* — not bytes and not `char` counts,
+which a CJK or emoji job name silently overflows. Every string that becomes a
+cell is passed through `sanitize` immediately before construction, so the
+guarantee is local to the renderer rather than dependent on a distant chokepoint
+staying correct.
+
+The renderer enforces truthfulness rules that are easy to get wrong:
+
+- a missing load observation is `—`, never `0.00` — a gate that fired because
+  telemetry was unavailable must not read as a gate that saw a low load;
+- a non-child outcome is a real terminal record, named, with `ran —` rather than a
+  fabricated `0ms`;
+- remote truncation (`stdout+`) and the pane's own row budget are reported
+  separately;
+- a failed scheduler read is labelled stale and never rendered as a system
+  failure;
+- a pane with a zero row budget draws nothing rather than indexing outside the
+  buffer, and one that cannot be shown still gets a row that says so.
+
+`c` / `Shift-J` / `Shift-K` are the whole key surface. Unshifted `j`/`k` stay
+bound to the system list, so a cron-expanded system does not change what the
+ordinary keys mean. Cron sub-selection is repaired by stable job name whenever
+the selection, the fleet, or the remote's job list changes.

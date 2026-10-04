@@ -77,6 +77,31 @@ the maximum valid direction, so simultaneous full-duplex traffic does not
 exceed 100% merely by combining Rx and Tx. Loopback is detail-only for
 aggregate capacity.
 
+Press `c` to independently expand cron details for the selected system. The
+block lists every job the remote `greggd` schedules, with each job's state,
+schedule, last result, and — for the job selected with `Shift-J` / `Shift-K` —
+its recent run history with output. The three expansions are independent and
+share one vertical budget, so cron takes whatever `d` and `n` did not claim.
+
+Load-gated jobs are shown honestly. A load-delayed job states how long it has
+been waiting, the load window, the observed load, the configured threshold, and
+the retry time where the width allows. A **missing** load observation renders
+`—`, never `0.00`: a gate that fired because telemetry was unavailable must not
+read as a gate that observed a low load. A run that never started a child is
+still listed as a terminal record, with no fabricated duration.
+
+Scheduler failure is never rendered as system failure. A remote that does not
+serve the scheduler routes is reported as *unsupported* — the normal state for
+an older `greggd` — and a transient read failure keeps the last known data with
+a stale marker. The metrics plane alone decides online/offline.
+
+Remote command output is escaped, not stripped, using `cat -v` caret notation:
+`ESC` becomes the two printable characters `^[`, so `ESC [ 2 J` displays as
+`^[[2J` rather than clearing your screen, and an OSC title or hyperlink sequence
+cannot retitle your terminal or plant a link in a monitoring display. Remote
+truncation is marked separately from this pane's own row budget, because "the
+remote kept five records" and "this pane can show two" are different facts.
+
 Condensed view shows one comparison row per system with CPU, memory, disk, and
 NET utilization, then LOAD/IOWAIT where the width tier allows. At narrow
 widths the existing HOST truncation and tier fallback preserve numeric

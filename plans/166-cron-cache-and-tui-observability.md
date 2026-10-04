@@ -1,6 +1,6 @@
 # Plan 166: Cron cache and TUI observability
 
-Status: planned.
+Status: complete.
 
 Depends on: completed Plan 163 and Plan 164. Plan 165 should be complete before
 this plan is declared closed so the background cache has the intended durable
@@ -337,25 +337,25 @@ also memory-only in this line.
 
 ## Acceptance criteria
 
-- [ ] Client daemon polls scheduler summary without duplicating per-TUI work.
-- [ ] History body is fetched only on support discovery/revision change.
-- [ ] Old daemons remain online with cron marked unsupported.
-- [ ] Scheduler-route failures do not change Systems reachability.
-- [ ] Remote record deduplication handles repeated polls and daemon restart.
-- [ ] Local cache is longer than remote default but strictly bounded globally.
-- [ ] No cron history is persisted to disk.
-- [ ] Display history defaults to exactly five and is configurable.
-- [ ] Plain c toggles selected-system cron detail.
-- [ ] Ctrl-C, d, n, system navigation, and pane controls retain existing
+- [x] Client daemon polls scheduler summary without duplicating per-TUI work.
+- [x] History body is fetched only on support discovery/revision change.
+- [x] Old daemons remain online with cron marked unsupported.
+- [x] Scheduler-route failures do not change Systems reachability.
+- [x] Remote record deduplication handles repeated polls and daemon restart.
+- [x] Local cache is longer than remote default but strictly bounded globally.
+- [x] No cron history is persisted to disk.
+- [x] Display history defaults to exactly five and is configurable.
+- [x] Plain c toggles selected-system cron detail.
+- [x] Ctrl-C, d, n, system navigation, and pane controls retain existing
       semantics.
-- [ ] Current load delay/unavailable state is obvious and truthful.
-- [ ] Selected job shows the configured number of recent terminal records.
-- [ ] stdout/stderr truncation is visible.
-- [ ] Terminal control sequences cannot escape into the user's terminal.
-- [ ] Cron rendering has a bounded height and works in normal/condensed modes.
-- [ ] Multiple TUIs do not increase remote scheduler poll cadence.
-- [ ] Default local checks and relevant existing CI jobs pass.
-- [ ] User/client architecture docs match behavior.
+- [x] Current load delay/unavailable state is obvious and truthful.
+- [x] Selected job shows the configured number of recent terminal records.
+- [x] stdout/stderr truncation is visible.
+- [x] Terminal control sequences cannot escape into the user's terminal.
+- [x] Cron rendering has a bounded height and works in normal/condensed modes.
+- [x] Multiple TUIs do not increase remote scheduler poll cadence.
+- [x] Default local checks and relevant existing CI jobs pass.
+- [x] User/client architecture docs match behavior.
 
 ## Stop conditions
 
@@ -372,3 +372,82 @@ Open a corrective plan if:
 
 Plan 167 performs measured end-to-end closure across greggd, the client daemon,
 multiple TUIs, platform lifecycle, memory/body limits, and binary footprint.
+
+## Closure record
+
+Complete at `5624b48`, in three commits: the sanitizer and bounded cron cache, the
+`[cron]` configuration and the client-daemon scheduler poller, the two-tier local
+publication, and the `c` detail block with its renderer and docs.
+
+**How the objectives are met**
+
+- The client daemon, not any TUI, polls. `/v2/scheduler` on a 30s cadence;
+  `/v2/scheduler/history` only on first support discovery and on a
+  `history_revision` change. A loopback test asserts three summary reads produce
+  exactly one history read, and a revision change produces exactly one more.
+- The daemon keeps a memory-only cache deeper than the remote retains, bounded
+  three ways: per-job depth (`cache_history`, max 50), a **global constant**
+  record ceiling of 4096 across every system/job/epoch, and the remote's own
+  per-stream output cap. Nothing is written to disk; a restart reseeds from the
+  remote, which a test covers.
+- `display_history` defaults to exactly five, is configurable to 20, and is
+  published in the document because a TUI never opens the config file.
+- Plain `c` toggles the selected system's cron block. `Shift-J`/`Shift-K` move
+  the job selection. Unshifted `j`/`k` keep their meaning. `Ctrl-C`, `d`, `n`,
+  navigation, and pane controls are unchanged; the three expansions are
+  independent and share one vertical budget.
+
+**Three design decisions worth recording**
+
+1. *Two-tier local publication, not one.* The summary always rides along in the
+   existing document; history records are included only for systems a frontend
+   has open. The intent governs **transmission and never fetching**, which is why
+   ten windows with the pane open cost the fleet what zero windows cost —
+   asserted end to end against a counting loopback remote.
+2. *`send_replace`, not `send`.* See below; this was a Plan 164 defect.
+3. *A global ceiling that is a constant, not a setting.* A user who raises
+   `cache_history` must not be able to turn a bounded cache into an unbounded
+   one.
+
+**Defects found and fixed while implementing this plan**
+
+- **`Ctrl-R` was dead without an `EggPool` entry.** The reload request sat behind
+  an `EggPool`-configured early return, so the one reload boundary the whole
+  architecture is built on did nothing for those configurations. Now handled
+  before any pane-specific work.
+- **A TUI attaching to a settled daemon was shown stale state.**
+  `watch::Sender::send` fails when there is no receiver and *discards the value*
+  when it does, so every document published while no window was attached was
+  dropped; a window opening later got the startup document and then never
+  another, because a quiet fleet publishes nothing more. It would have shown
+  `pending` forever against an already-polled system. Now `send_replace`.
+- **A remote serving the summary but not its history was reported as a failed
+  summary**, discarding the job list that had arrived. The two failure axes are
+  now separate: the summary is applied first and unconditionally, and a history
+  problem is recorded on top of it.
+- **`compose` budgeted rows by `chars().count()`**, so a CJK or emoji job name
+  overflowed the terminal by exactly the amount the plan asks to be guarded. Now
+  display cells.
+- **`civil_from_days` derived the month from `day_of_era`** instead of the
+  day-of-year, producing `(4405, 307)`.
+- **`format!("{hour:0>2}")` does not zero-pad a `&str`**; a daily schedule
+  rendered as the visibly wrong `3:0`.
+- **Condensed mode reserved cron rows it never drew**, because it has its own row
+  renderer. Fixed and covered by a test.
+- **The cache pruned against a summary that had not arrived yet**, so a history
+  document that arrived first read as "the remote serves no jobs" and discarded
+  everything.
+- **The global record counter was never incremented**, so the ceiling bounded
+  nothing.
+
+**Verification**
+
+- `cargo test --workspace --all-targets --all-features`: 1,573 tests, all green
+  (824 `gregg` lib, including 28 `ui::cron` renderer tests, 23 sanitizer tests,
+  18 cron-cache tests, 13 poller tests, 23 cron-intent/state tests, 11
+  client-daemon boundary tests).
+- `cargo clippy --workspace --all-targets --all-features`: zero warnings.
+- `./scripts/check-local.sh`: `=== all checks passed (mode: default) ===`.
+- `cargo fmt --all -- --check`: clean.
+
+**Not claimed here.** Binary footprint and memory measurement belong to Plan 167.

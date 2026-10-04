@@ -217,3 +217,42 @@ endpoints rather than generic network failures.
 ## License
 
 MIT
+
+## Cron observability
+
+When a monitored `greggd` serves the Plan-162 scheduler routes, the TUI's cron
+block shows each configured job, its state, its last result, and the history of
+recent runs for one selected job.
+
+Press `c` to expand the block for the selected system; press it again to
+collapse. `Shift-J` and `Shift-K` move between jobs. The block is independent of
+the `d` drive and `n` network expansions — opening one does not close another —
+and all three share one vertical budget, so cron takes whatever the other two
+did not claim.
+
+Everything here is a read-only projection of remote scheduler state:
+
+- The **summary** (`/v2/scheduler`) carries no command output and is read on a
+  30-second cadence. It is what the at-a-glance job rows need.
+- The **history** (`/v2/scheduler/history`) carries bounded stdout/stderr tails
+  and is fetched only on first support discovery and when the remote's
+  `history_revision` changes, so it is never on the hot path to draw five job
+  rows.
+
+A `greggd` that does not serve the routes is reported as *unsupported*, which
+is the normal state for an older daemon and never marks the system offline: the
+metrics plane owns reachability, and a healthy daemon with no cron jobs must not
+read as down. A failed scheduler read keeps the last known data and is labelled
+stale rather than presented as current.
+
+Remote command output is treated as hostile terminal text. Control sequences are
+made visible in `cat -v` caret notation (`ESC` renders as `^[`) rather than
+stripped, so `ESC [ 2 J` displays as `^[[2J` instead of clearing your screen and
+an OSC title sequence cannot retitle your terminal.
+
+There is no local log or configuration fallback. Parsing a remote's scheduler
+logs would be a second, undocumented contract with no version negotiation and no
+way to tell a stale file from a live one.
+
+See `docs/client.md` and `architecture/gregg-client.md` for the client-daemon
+side of this plane.

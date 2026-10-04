@@ -479,3 +479,34 @@ generation.
 ## Deep dive
 
 See `architecture/gregg-client.md` for the full client architecture document.
+
+## Cron observability (Plan 166)
+
+`c` expands a cron detail block inside the selected system; `Shift-J` and
+`Shift-K` move between jobs. The three expansions (`d`, `n`, `c`) are
+independent and share one vertical budget.
+
+Three rules govern this plane and are easy to break:
+
+1. **The intent governs transmission, never fetching.** The client daemon polls
+   `/v2/scheduler` on its own cadence whether or not a TUI is attached, and
+   fetches `/v2/scheduler/history` only on first support discovery and when
+   `history_revision` changes. A frontend's `SetCronIntent` decides which
+   retained records ride along in the document and nothing else. A per-TUI
+   poller, or making the gate depend on the intent, would multiply the fleet's
+   request budget by the number of open windows.
+2. **Key scheduler state on `(epoch, sequence)`, never `sequence`.** A restarted
+   `greggd` reissues sequences from zero and resets `history_revision` to a small
+   value, so a sequence-only identity drops the new epoch's records as duplicates
+   and a revision-only gate concludes "nothing changed" and never fetches the new
+   epoch at all.
+3. **Nothing in the cron plane may reach `Reachability`.** A 404 is a healthy
+   older daemon (`Unsupported`), not an error; a transport or 5xx failure is
+   `Failed` and retains the last known data; a document that fails its own wire
+   validation is `Invalid`, because a daemon producing a document that breaks its
+   own contract is a different problem from a flaky network.
+
+Remote text is inert before it reaches a cell: controls render in `cat -v` caret
+notation rather than being stripped, escaping happens at the `adopt_snapshot`
+chokepoint *and* locally in the renderer, and the line bound in `sanitize` is
+never used to shorten stored data — only the viewport may truncate.

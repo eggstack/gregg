@@ -579,13 +579,14 @@ fn inert(text: &str) -> String {
 mod tests {
     use super::*;
     use gregg_protocol::{
-        SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerOutputV2,
+        SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
+        SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2,
     };
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     use crate::clientd::snapshot::{CronJobHistoryDto, SystemCronDto};
-    use crate::cron::{CronFetchError, CronRecord};
+    use crate::cron::{CronCapability, CronFetchError, CronRecord};
     use crate::endpoint::Endpoint;
     use crate::state::{Reachability, SystemState};
 
@@ -1137,5 +1138,58 @@ mod tests {
             }],
         };
         assert_eq!(document.jobs[0].records, Vec::new());
+    }
+
+    /// The condensed view reserves cron rows in `entry_height`, so it must
+    /// actually draw them: otherwise a cron-expanded system in condensed mode
+    /// shows a reserved gap instead of the block.
+    #[test]
+    fn the_condensed_view_draws_the_cron_block_rather_than_reserving_a_gap() {
+        use crate::ui::condensed;
+
+        let state = state_with_cron(
+            &[("backup", SchedulerJobStateV2::Idle)],
+            "backup",
+            vec![record(1, "some output", "")],
+        );
+        let system = &state.systems[0];
+        // Built through the real entry point so the test cannot drift from how
+        // the view actually lays its columns out.
+        let layout = condensed::compute_condensed_table_layout(&state.systems, 120);
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                condensed::render_entry(
+                    frame,
+                    area,
+                    system,
+                    &layout,
+                    true,
+                    0,
+                    0,
+                    6,
+                    None,
+                    Some(&state),
+                );
+            })
+            .expect("draws");
+        let buffer = terminal.backend().buffer().clone();
+        let rendered: String = (0..10u16)
+            .map(|y| {
+                (0..120u16)
+                    .map(|x| buffer[(x, y)].symbol().to_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("CRON"),
+            "condensed view drew no cron block"
+        );
+        assert!(
+            rendered.contains("some output"),
+            "condensed view drew the header but not the history"
+        );
     }
 }

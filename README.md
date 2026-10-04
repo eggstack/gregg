@@ -130,7 +130,27 @@ See [Daemon](docs/daemon.md) and [Client](docs/client.md).
 - `v`: toggle normal/condensed layout
 - `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
+- `c`: expand/collapse cron details for the selected system
+- `Shift-J` / `Shift-K`: move between cron jobs in that block
 - `Ctrl-R`: ask the client daemon to re-read the config and poll immediately
+
+## Cron observability
+
+When a monitored `greggd` serves the scheduler routes, `c` expands a read-only
+cron block for the selected system: every scheduled job, its state, its last
+result, and the run history of one job selected with `Shift-J` / `Shift-K`.
+
+The client daemon reads a compact summary on a 30-second cadence and downloads
+the larger history document only when it changes, so opening the pane in ten
+windows costs the fleet exactly what zero windows cost. The daemon keeps a
+deeper, memory-only cache than the remote retains, so closing and reopening the
+TUI does not reset what has been observed; nothing is written to disk.
+
+An older `greggd` that does not serve the routes is reported as *unsupported*,
+which is the normal case in a mixed fleet and never marks the system offline.
+Remote command output is escaped rather than stripped, so a hostile build script
+cannot clear your screen or retitle your terminal. See
+[Display](docs/display.md) and [Client](docs/client.md).
 
 ## The client daemon
 

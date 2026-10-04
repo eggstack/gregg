@@ -498,7 +498,9 @@ pub(crate) fn render_entry(
     is_visually_selected: bool,
     drive_rows_visible: usize,
     network_rows_visible: usize,
+    cron_rows_visible: usize,
     preformatted: Option<&PreformattedValues>,
+    cron_state: Option<&crate::state::AppState>,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -578,6 +580,21 @@ pub(crate) fn render_entry(
                 );
             }
         }
+    }
+
+    // The cron block goes last, exactly as in the normal view: it is the most
+    // expensive detail, so it takes whatever drives and network did not claim.
+    // `entry_height` already reserves these rows for condensed mode, so
+    // omitting this would leave a reserved gap rather than a smaller card.
+    if let (Some(cron_state), true) = (cron_state, system.reachability == Reachability::Online) {
+        let drive_offset = u16::try_from(drive_rows_visible).unwrap_or(u16::MAX);
+        let network_offset =
+            drive_offset.saturating_add(u16::try_from(network_rows_visible).unwrap_or(u16::MAX));
+        let offset_area = Rect {
+            y: area.y.saturating_add(1 + network_offset),
+            ..area
+        };
+        crate::ui::cron::render(f, offset_area, cron_state, cron_rows_visible);
     }
 }
 
