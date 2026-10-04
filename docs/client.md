@@ -139,15 +139,73 @@ when the daemon is unhealthy, and would hide that from you. If you see
 "no client daemon is listening for this config", start one with
 `gregg daemon run`.
 
-`gregg daemon run` never forks or self-daemonizes — its lifetime is its
-supervisor's. To have it always available, start it from your own user
-session. `gregg add`, `gregg remove`, and `gregg refresh` nudge a running
-daemon to reload, best-effort and silently: "no daemon is running" is the
-common case and never turns a successful mutation into an error.
+You do not normally start it by hand. Bare `gregg` probes the endpoint, and
+only if it is *genuinely* empty does it take a per-config launch lock, re-probe
+under that lock, and spawn one daemon with the exact executable you just ran. Two
+`gregg` commands started at the same moment still produce one daemon. If
+something else is on the endpoint — a refusal, a silent peer, a malformed frame
+— Gregg reports it and starts nothing, because spawning over a peer you cannot
+identify is how you end up with two daemons and no idea which one you are
+looking at.
+
+If the daemon is an older `gregg` than you are running, `gregg` stops it and
+relaunches it on the current binary. If it is *newer*, `gregg` tells you to
+upgrade instead: it may be serving a newer window elsewhere, and killing it
+would downgrade that session because this one is old.
+
+`gregg add`, `gregg remove`, and `gregg refresh` nudge a running daemon to
+reload, best-effort and silently — "no daemon is running" is the common case and
+never turns a successful mutation into an error.
 
 The daemon also keeps polling with no TUI attached at all. That is deliberate:
 continuous background observation is the point of the design, and a TUI is a
-viewer.
+viewer. There is no idle timeout.
+
+### Keeping it running
+
+```text
+gregg daemon startup install
+gregg daemon startup instructions
+gregg daemon startup status
+gregg daemon startup remove
+```
+
+| Platform | What `install` writes |
+|----------|------------------------|
+| Linux | A `systemctl --user` unit. Without user systemd, a managed **user** crontab `@reboot` watchdog |
+| macOS | A `~/Library/LaunchAgents` agent — never `/Library/LaunchDaemons` |
+| Windows | A current-user Startup-folder entry — never a `LocalService` SCM registration |
+
+Every artifact is named for the config's identity, so two configs never collide,
+and Gregg keeps no global registry of active configs. Ownership is proven by
+parsing the entry back: a unit, plist, or Startup entry that names a different
+executable or config is left alone, and so is one that cannot be read at all.
+`uninstall` and `startup remove` use the same check, so they cannot disagree
+about what is yours.
+
+A root or Administrator install registers **nothing** — there is no honest way
+to pick which human a shared binary should watch for. Each user gets lazy
+activation on their first `gregg` and can run their own `daemon startup
+install`.
+
+### Updating and uninstalling
+
+`gregg update` identifies whether a daemon is running, prepares and verifies the
+replacement, and only then stops the daemon, replaces the executable, and
+relaunches. If the relaunch fails it says so with the exact command, because a
+replaced binary with no daemon is a state you want to know about. Other configs'
+daemons sharing the replaced executable are left alone; they reconcile on their
+own next attach through the same version handshake.
+
+`gregg uninstall` plans first and shows everything in `--dry-run`, including the
+client daemon's startup entry and whether a daemon is running. Execution stops
+an identified daemon, removes only an owned startup entry, and preserves
+foreign and unparseable ones. If it cannot confidently stop a running daemon it
+refuses to delete the executable and tells you what to run.
+
+Installing as the current unprivileged user also registers the default-config
+startup entry, and a failure to do so is a warning plus the exact command, never
+a failed install: bare `gregg` works either way.
 
 The selected system keeps its logical selection (`d` still toggles its drive
 details and `n` toggles network details independently), but the reverse-video highlight is transient — it appears when you

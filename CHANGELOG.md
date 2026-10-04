@@ -39,9 +39,45 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   name or a PID file, so they cannot act on something that merely looks
   similar. `run` never forks or self-daemonizes.
 
-  This is a breaking change for anyone who ran the TUI expecting it to start
-  polling on its own: start `gregg daemon run` first (in another terminal, or
-  under your own supervision).
+  Bare `gregg` now starts the daemon itself when the endpoint is genuinely
+  empty, under a per-config launch lock, so a second simultaneous launch still
+  produces one daemon. It refuses to spawn over a peer it cannot positively
+  identify. An owned daemon older than this `gregg` is rotated to the current
+  binary on attach; a daemon *newer* than this one is reported with upgrade
+  guidance rather than stopped, because it may be serving a newer window
+  elsewhere.
+
+### Added
+
+- **User-scoped client-daemon startup (Plan 165):** `gregg daemon startup
+  install|instructions|status|remove`, plus `gregg daemon restart`. `install`
+  writes one artifact inside the calling user's own home — a `systemctl --user`
+  unit, a `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or
+  a managed user crontab watchdog when user systemd is unavailable. It never
+  creates a system service, a `LocalService` SCM entry, or a `sudo` call, and a
+  root/Administrator install registers nothing on anyone's behalf.
+
+  Every artifact is named for the config's identity so two configs never
+  collide, and Gregg keeps no global registry of active configs. Ownership is
+  proven by parsing the entry back — a foreign entry, or one that cannot be
+  read at all, is preserved.
+
+- **Client-daemon-aware update and uninstall (Plan 165):** `gregg update`
+  identifies a running daemon, prepares and verifies the replacement, and only
+  then stops, replaces, and relaunches — reporting partial success with the exact
+  retry command rather than hiding it. `gregg uninstall --dry-run` now names the
+  startup entry and whether a daemon is running; execution stops only an
+  identified owned daemon, removes only a provably owned startup entry, and
+  refuses to delete the executable if it cannot confidently stop a running
+  daemon.
+
+- **Installer startup registration:** a user-local `gregg` install registers the
+  default-config startup entry after the binary is fully acquired and verified,
+  and a same-scope replacement transitions a running client daemon the way it
+  already transitions `greggd`. A registration failure leaves the binary
+  installed and prints `gregg daemon startup instructions`; it is never fatal,
+  because bare `gregg` works either way. A system-wide install registers
+  nothing.
 
 ### Added
 

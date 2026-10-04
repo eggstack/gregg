@@ -46,6 +46,14 @@ use crate::clientd::snapshot;
 /// Local IPC protocol version. Bump on any breaking frame change.
 pub const PROTOCOL_VERSION: u16 = 1;
 
+/// This build's workspace version, for the handshake.
+///
+/// Carried as a string because the handshake reports what the *binary* is, not
+/// what it can parse. The protocol version is the compatibility contract; the
+/// version string is diagnostic, and is what makes an operator's
+/// "which gregg is running?" answerable without a PID file.
+pub const PROTOCOL_VERSION_STR: &str = env!("CARGO_PKG_VERSION");
+
 /// Hard cap on one encoded frame, in bytes.
 ///
 /// Sized above the largest realistic snapshot (64 systems plus a bounded cron

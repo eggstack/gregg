@@ -470,7 +470,7 @@ fn dispatch_inner(
         Command::Remove { endpoint } => cmd_remove(store, endpoint),
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
-        Command::Update => cmd_update(),
+        Command::Update => cmd_update(store),
         Command::Uninstall { dry_run, purge } => cmd_uninstall(store, *dry_run, *purge),
         Command::Eggpool { command } => dispatch_eggpool(command, store),
         Command::Daemon { command } => dispatch_daemon(command, store),
@@ -1082,8 +1082,12 @@ fn cmd_edit(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cmd_update() -> Result<(), Box<dyn std::error::Error>> {
-    match crate::update::run_update() {
+fn cmd_update(store: &ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
+    // Plan 165: the client daemon is quiesced only if one is actually running
+    // for this config, and only *after* the replacement candidate is fully
+    // prepared and verified. Acquisition first, then stop, then relaunch --
+    // never stop-then-discover-nothing-to-install.
+    match crate::update::run_update_lifecycle(store) {
         Ok(outcome) => {
             println!("{outcome}");
             Ok(())
@@ -1097,7 +1101,20 @@ fn cmd_uninstall(
     dry_run: bool,
     purge: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let plan = crate::uninstall::plan_uninstall(store.path(), purge)?;
+    // Probe the client daemon before planning: the plan has to say whether an
+    // identified daemon is running, and it is the only place that decides the
+    // order in which the daemon is stopped and the executable removed.
+    let plan = crate::uninstall::plan_uninstall_probed(store.path(), purge, |config, _version| {
+        let identity = crate::clientd::ClientDaemonIdentity::for_path(config);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| -> Box<dyn std::error::Error> {
+                format!("failed to start runtime: {error}").into()
+            })?;
+        let status = runtime.block_on(crate::clientd::daemon::status(&identity))?;
+        Ok(status.running)
+    })?;
     if dry_run {
         println!("{}", plan.render());
         return Ok(());

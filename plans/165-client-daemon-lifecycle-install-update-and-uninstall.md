@@ -1,6 +1,8 @@
 # Plan 165: Gregg client-daemon lifecycle, install, update, and uninstall
 
-Status: planned.
+Status: **complete** — implemented in `c8f2542` (lazy activation, launch lock,
+version rotation, user-scoped startup) and `acde7f6` (update/uninstall/
+installer reconciliation). See the closure record at the end of this document.
 
 Depends on: completed Plan 164 and the settled updater/installer ownership work
 from Plans 099-116 and 130-131. Independent of Plan 091.
@@ -280,23 +282,23 @@ Update:
 
 ## Acceptance criteria
 
-- [ ] Bare gregg ensures one compatible config-specific client daemon.
-- [ ] Concurrent bare launches cannot create duplicate daemons.
-- [ ] Daemon identity is verified by local protocol, not PID/process name.
-- [ ] The daemon remains running after all TUIs exit.
-- [ ] User-scoped startup install/instructions are available on supported OSes.
-- [ ] Linux/macOS client startup is not a privileged system service.
-- [ ] Windows client startup is user-scoped, not greggd's LocalService SCM.
-- [ ] User-local installer can register default client startup safely.
-- [ ] System-wide binary install does not guess a user daemon owner.
-- [ ] Update prepares/verifies before quiescing the owned daemon.
-- [ ] Update restores selected running intent and handles partial success.
-- [ ] Protocol-incompatible owned daemon is reconciled on attach.
-- [ ] Uninstall stops/removes only owned matching daemon/startup artifacts.
-- [ ] Config preservation and --purge semantics remain bounded.
-- [ ] No internal sudo or global daemon registry is added.
-- [ ] Existing update/install/uninstall regressions remain green.
-- [ ] Default local checks and relevant existing native CI jobs pass.
+- [x] Bare gregg ensures one compatible config-specific client daemon.
+- [x] Concurrent bare launches cannot create duplicate daemons.
+- [x] Daemon identity is verified by local protocol, not PID/process name.
+- [x] The daemon remains running after all TUIs exit.
+- [x] User-scoped startup install/instructions are available on supported OSes.
+- [x] Linux/macOS client startup is not a privileged system service.
+- [x] Windows client startup is user-scoped, not greggd's LocalService SCM.
+- [x] User-local installer can register default client startup safely.
+- [x] System-wide binary install does not guess a user daemon owner.
+- [x] Update prepares/verifies before quiescing the owned daemon.
+- [x] Update restores selected running intent and handles partial success.
+- [x] Protocol-incompatible owned daemon is reconciled on attach.
+- [x] Uninstall stops/removes only owned matching daemon/startup artifacts.
+- [x] Config preservation and --purge semantics remain bounded.
+- [x] No internal sudo or global daemon registry is added.
+- [x] Existing update/install/uninstall regressions remain green.
+- [x] Default local checks and relevant existing native CI jobs pass.
 
 ## Stop conditions
 
@@ -314,3 +316,97 @@ Open a corrective plan rather than weaken ownership if:
 Plan 166 can now assume the client daemon survives outside a TUI session and can
 retain a longer in-memory scheduler history. Plan 167 owns measured
 multi-client/lifecycle closure.
+
+## Closure record
+
+Landed in two commits: `c8f2542` (lazy activation, the launch lock, version
+rotation, user-scoped startup) and `acde7f6` (update/uninstall/installer
+reconciliation plus documentation).
+
+### What exists
+
+| Piece | Location |
+|-------|----------|
+| Lazy activation | `src/clientd/launch.rs::ensure_running` |
+| Single-launch lock | `src/clientd/launch.rs::acquire_launch_lock`, `src/config/lock.rs::FileLockGuard::acquire` |
+| Endpoint classification | `src/clientd/launch.rs::classify` |
+| Version rotation | `src/clientd/launch.rs::rotate` |
+| Restart | `src/clientd/launch.rs::restart`, `gregg daemon restart` |
+| User-scoped startup | `src/clientd/startup.rs`, `gregg daemon startup install\|instructions\|status\|remove` |
+| Manager execution | `src/startup_support.rs` (allowlist, no shell, bounded) |
+| Update transaction | `src/update.rs::run_update_lifecycle` |
+| Uninstall transaction | `src/uninstall.rs::{plan_uninstall_probed, execute_plan}` |
+| Installer | `packaging/install.sh`, `packaging/install.ps1` |
+
+### Decisions worth recording
+
+- **An OS lock, not a PID file.** Two simultaneous `gregg` commands both probe,
+  both find nothing, and both spawn. A PID file does not fix that and is exactly
+  the lossy, forgeable, never-cleaned-up registry the architecture refuses. An
+  advisory lock on a config-specific path does: the loser blocks, re-probes
+  after the winner, and finds a ready daemon. The lock file is never unlinked and
+  never read as a signal, so a crashed launcher cannot wedge the next one — which
+  is asserted directly by a test that leaves a bare lock file behind and shows
+  `daemon status` still reports nothing running.
+- **The lock wait is `spawn_blocking`.** It is a blocking sleep loop, and the TUI
+  runs on a current-thread runtime. Waiting inline starved every other task,
+  including the ones that make the winner's daemon reach readiness. The race test
+  deadlocked until this was fixed, which is exactly the failure a test that only
+  checks the *decision* would have missed.
+- **Classification is redone under the lock, not just the probe.** Someone else
+  can bind a foreign service while a launcher waits. The first version re-probed
+  and then spawned unconditionally, so a foreign peer arriving during the wait
+  still got a spawn attempt and then a 15-second `NotReady`. Caught by the
+  foreign-peer test, which now also asserts the failure is *fast*.
+- **Rotation is directional.** An owned daemon older than this frontend is
+  replaced. One *newer* than this frontend is reported with upgrade guidance and
+  left running: it may be serving a newer window elsewhere, and killing it would
+  downgrade that whole session because this one window is old.
+- **Ownership is proven by parsing, then re-read as a self-check.** Rendering and
+  parsing are pure so ownership is testable on any host, and the freshly written
+  artifact is re-read and re-classified so a truncated write or a racing writer
+  becomes a loud failure rather than a registration that silently does nothing.
+- **`Unknown` is preserved exactly like `Foreign`.** "I could not read it" is not
+  a licence to delete it. An entry that cannot be parsed blocks nothing and is
+  removed by nothing.
+- **The Startup folder over Task Scheduler.** No extra Windows API surface, no
+  admin, no service account, and ownership is provable by parsing a file we
+  wrote. Task Scheduler would need registry or COM bindings and has a weaker
+  ownership story for a `cmd.exe` line.
+- **One allowlist, no shell, bounded wait.** `systemctl`, `launchctl`, `crontab`,
+  `schtasks`, `id` — and nothing else. Arguments are passed as a vector, so a
+  config path containing a space, a quote, or a `;` is a path and not a command.
+  `sudo` is absent and a test asserts it cannot be spawned even when asked.
+  `getuid` was deliberately read via `id -u` rather than an `unsafe` call,
+  because the client's unsafe allowlist does not cover it and a wrong number
+  makes `launchctl bootstrap` fail loudly rather than register in the wrong
+  domain.
+- **The Windows named-pipe ACL is owner-only, and the client inherits that
+  discipline:** the Startup-folder entry is a file, not a service, and an
+  Administrator install registers nothing for `gregg` at all.
+- **Update is prepare-then-quiesce, and the ordering is asserted from source.**
+  The test that checks `probe < replace < stop < relaunch` in `update.rs` is a
+  deliberate guard: the transaction's safety property is an order, and an order
+  is invisible to a test that only checks the end state.
+- **Uninstall blocks on an uncertain stop.** A daemon pointing at a removed
+  binary is worse than a refusal: the next `gregg` would find a stale endpoint
+  and, correctly, decline to touch a peer it cannot identify.
+
+### Measured
+
+- `cargo test --workspace --all-targets --all-features`: all suites green (710
+  `gregg` lib, up from 669 — 8 launch, 21 startup, 12 lifecycle tests; 480
+  `greggd` lib; 118 + 44 `gregg-protocol`; 62 + 43 `gregg-update`).
+- `cargo clippy --workspace --all-targets --all-features`: 0 warnings.
+- `./scripts/check-local.sh`: pass.
+- `bash -n packaging/install.sh` and a PowerShell AST parse of
+  `packaging/install.ps1`: both clean.
+
+### Not claimed here
+
+- No unit test reads or mutates real systemd, launchd, crontab, or Task Scheduler
+  state. Ownership and the ownership-to-action decision are pure and tested
+  directly; the manager calls are the thin, unexercised layer on this host.
+- The macOS and Windows startup paths are compile-verified and structurally
+  tested, but only the Linux `Cron` and `SystemdUser` shapes have been run
+  against a real manager as part of this closure.

@@ -140,15 +140,39 @@ local endpoint, so a second window costs a socket instead of a second copy of
 the fleet's polling, and closing the last window does not stop observation.
 
 ```text
-gregg daemon run     # run it in the foreground (it never self-daemonizes)
-gregg daemon status   # is one running for this config?
-gregg daemon stop     # stop it
+gregg                    # the TUI; starts the daemon if it is not already up
+gregg daemon run         # run it in the foreground (it never self-daemonizes)
+gregg daemon status      # is one running for this config?
+gregg daemon stop        # stop it
+gregg daemon restart     # stop and start it again
 ```
 
 Each configuration gets its own daemon on its own `0600` endpoint. The TUI
 attaches to it, reads no config file, and opens no network connection; if the
-daemon is not there it says so instead of quietly polling behind its back. See
-[Client](docs/client.md).
+daemon is not there it says so instead of quietly polling behind its back.
+
+You do not normally have to start the daemon yourself — bare `gregg` does it, and
+only when the endpoint is genuinely empty, under a lock so two simultaneous
+launches still produce one daemon. To keep it running when no TUI is open:
+
+```text
+gregg daemon startup install        # user-scoped: systemd --user, LaunchAgent, or Startup folder
+gregg daemon startup instructions   # print it without changing anything
+gregg daemon startup status         # what is registered
+gregg daemon startup remove         # remove only Gregg's own entry
+```
+
+That is always a **user** registration. Gregg never installs a system service or
+a `LocalService` SCM entry for the client daemon, never runs `sudo` internally,
+and a root install registers nothing on anyone's behalf — each user registers
+their own, or relies on lazy activation.
+
+`gregg update` prepares and verifies the replacement before it touches a running
+daemon, then relaunches it on the new binary and says so if that relaunch
+fails. `gregg uninstall` stops an identified daemon and removes only a startup
+entry that is provably Gregg's, leaving foreign ones alone; a daemon it cannot
+confidently stop blocks the deletion rather than leaving a stale endpoint
+behind. See [Client](docs/client.md).
 
 ## Live metrics and compatibility
 

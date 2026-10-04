@@ -528,6 +528,8 @@ run_path_integration_once() {
 # intent only; manager ownership remains the daemon's responsibility.
 USER_LOCAL_REACTIVATE=false
 USER_LOCAL_DAEMON=""
+# Plan 165: whether a user-local client daemon was running before replacement.
+USER_LOCAL_CLIENTD_RUNNING=false
 
 capture_user_local_running() {
   local dest="$1"
@@ -542,6 +544,72 @@ capture_user_local_running() {
   # process discovery or a port-only probe here.
   if "$dest" status >/dev/null 2>&1; then
     USER_LOCAL_REACTIVATE=true
+  fi
+}
+
+# Plan 165: register the client daemon's user-scoped startup entry, or tell the
+# operator exactly how to.
+#
+# This runs only for a *user-local* `gregg` install. A root/system-wide install
+# deliberately does nothing here: choosing which human's config a shared binary
+# should watch on their behalf would be guessing, and each user gets lazy
+# activation on their first `gregg` plus their own `gregg daemon startup
+# install`. Registering root's client daemon into a user's session is the
+# inversion this avoids.
+#
+# A registration failure is never fatal. The binary is installed and verified at
+# this point, and bare `gregg` lazily starts the daemon whether or not a
+# manager entry exists, so the only honest response is a warning plus the exact
+# command.
+register_user_local_clientd_startup() {
+  local dest="$1"
+  if [[ $EUID -eq 0 ]]; then
+    # System-wide install: no user is guessed, and root never gets a client
+    # daemon of its own.
+    return 0
+  fi
+  if ! "$dest" daemon startup install; then
+    echo "" >&2
+    echo "gregg was installed, but its client-daemon startup entry was not registered." >&2
+    echo "Nothing is broken: \`gregg\` starts the daemon on demand. To keep it" >&2
+    echo "running without a TUI open, run:" >&2
+    echo "  $dest daemon startup instructions" >&2
+  fi
+}
+
+# Plan 165: the client daemon runs from the executable being replaced, so a
+# user-local `gregg` replacement must transition it the way greggd is
+# transitioned -- stop the *identified* daemon and start the new binary's. Local
+# IPC identity replaces HTTP health as the ownership proof.
+capture_user_local_clientd() {
+  local dest="$1"
+  local program="$2"
+  local scope="$3"
+  USER_LOCAL_CLIENTD_RUNNING=false
+  if [[ "$program" != "gregg" || "$scope" != "replace" || $EUID -eq 0 ]]; then
+    return 0
+  fi
+  # `daemon status` establishes identity by completing the local protocol
+  # handshake, not by finding a process with a similar name.
+  if "$dest" daemon status >/dev/null 2>&1; then
+    USER_LOCAL_CLIENTD_RUNNING=true
+  fi
+}
+
+transition_user_local_clientd() {
+  local dest="$1"
+  if [[ "$USER_LOCAL_CLIENTD_RUNNING" != "true" ]]; then
+    return 0
+  fi
+  if ! "$dest" daemon stop; then
+    echo "binary updated; client-daemon transition failed: stop was not confirmed" >&2
+    echo "Retry: ${dest} daemon stop && ${dest} daemon restart" >&2
+    return 1
+  fi
+  if ! "$dest" daemon restart; then
+    echo "binary updated; client-daemon transition failed: restart did not complete" >&2
+    echo "Retry: ${dest} daemon restart" >&2
+    return 1
   fi
 }
 
@@ -758,6 +826,27 @@ finalize_greggd_install() {
   activate_user_local_greggd
 }
 
+# Plan 165: finish a user-local `gregg` install. Both steps are non-fatal by
+# design: the binary is already installed and verified, and bare `gregg` lazily
+# starts the daemon whether or not a manager entry exists.
+finalize_gregg_install() {
+  local dest="$1"
+  local program="$2"
+  local scope="$3"
+  if [[ "$program" != "gregg" || $EUID -eq 0 ]]; then
+    # A system-wide install registers nothing: there is no honest way to pick
+    # which user a shared binary should watch on their behalf.
+    return 0
+  fi
+  if [[ "$scope" == "replace" ]]; then
+    # Replace before registering: a manager entry that still points at the old
+    # image is worse than no entry, because the new binary would never be used.
+    transition_user_local_clientd "$dest" || return 1
+  fi
+  register_user_local_clientd_startup "$dest"
+  return 0
+}
+
 install_program() {
   local program="$1"
   local asset url sha_url
@@ -790,12 +879,16 @@ install_program() {
     echo "Found existing ${existing_version} at ${dest}; this rerun will replace it in place (same scope)." >&2
   fi
   capture_user_local_running "$dest" "$program" "$scope"
+  # Plan 165: the client daemon runs from this very executable, so its state is
+  # captured before replacement and transitioned afterwards.
+  capture_user_local_clientd "$dest" "$program" "$scope"
 
   # Source-only hosts go directly to Cargo fallback
   if [[ -z "$TARGET" || "$SUPPORTED_BINARY" != "true" ]]; then
     echo "Host ${OS}/${ARCH} (${TARGET:-unknown}) has no prebuilt $program asset; trying Cargo fallback..." >&2
     cargo_fallback "$program" "$scope" "$existing_version"
     finalize_greggd_install "$program"
+    finalize_gregg_install "$DEST_DIR/$program" "$program" "$scope"
     return 0
   fi
 
@@ -886,6 +979,7 @@ install_program() {
   trap - EXIT
 
   finalize_greggd_install "$program"
+  finalize_gregg_install "$dest" "$program" "$scope"
 }
 
 # --- main ------------------------------------------------------------------

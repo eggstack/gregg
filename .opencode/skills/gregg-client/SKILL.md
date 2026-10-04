@@ -85,6 +85,37 @@ reads no config file and opens no network connection.
 - **No fallback.** A frontend that cannot reach a compatible daemon reports the
   reason and exits. Never add a direct-polling fallback.
 
+### Lifecycle (Plan 165)
+
+Bare `gregg` ensures the daemon exists, so nobody has to start a background
+process first.
+
+1. Bounded handshake probe.
+2. **Absent only** -> take the config-specific launch lock (an advisory OS lock
+   via `spawn_blocking`, held only across probe/spawn/readiness), **re-probe and
+   re-classify** under it, detached-spawn the exact current executable with
+   `--config <path> daemon run`, wait boundedly for readiness, attach.
+3. Anything else — refusal, silence, malformed frame, foreign peer — is reported
+   and starts nothing. A newer owned daemon is reported with upgrade guidance
+   rather than killed; an older one is rotated.
+
+Never add a PID file or a global daemon registry. The lock file is never unlinked
+and never read as a signal.
+
+**User-scoped startup only** (`clientd::startup`): `systemctl --user`, a
+`~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a managed
+user crontab watchdog. Never a system unit, never `LocalService` SCM, never
+`sudo`; a root install registers nothing. Render/parse/ownership are pure and
+tested; only the manager calls touch the OS, through `startup_support`'s fixed
+allowlist with no shell and a bounded wait. `Unknown` ownership is preserved
+exactly like `Foreign`.
+
+**Update** identifies, prepares, verifies, then stops/replaces/relaunches, and
+reports a failed relaunch as partial success. **Uninstall** plans first (the
+plan names the startup entry and the running daemon), stops only an identified
+owned daemon, removes only a provably owned entry, and blocks executable
+deletion when it cannot confidently stop a running daemon.
+
 ### Event loop
 
 The main event loop uses `tokio::select!` biased to process:

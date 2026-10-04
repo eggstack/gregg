@@ -305,12 +305,50 @@ function Invoke-CargoFallback {
         $DestDir = Get-DestDir -Program $Program -IsAdmin $IsAdmin
         $DestPath = Join-Path $DestDir "$Program.exe"
         Install-VerifiedCandidate -Program $Program -Candidate $Staged -DestPath $DestPath -DestDir $DestDir -Scope $Scope -ExistingVersion $ExistingVersion
+        if ($Program -eq "gregg") {
+            Register-UserLocalClientdStartup -DestPath $DestPath -IsAdmin $IsAdmin
+        }
     } finally {
         if (Test-Path -LiteralPath $StageRoot) {
             Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
+}
+
+<#
+.SYNOPSIS
+Plan 165: register the client daemon's current-user startup entry.
+
+.DESCRIPTION
+Runs only for a non-Administrator `gregg` install. An Administrator install
+registers nothing: choosing which human a shared binary should watch on their
+behalf would be guessing, and root must never end up owning a client daemon
+that reads one user's config. Each user gets lazy activation on their first
+`gregg` plus their own `gregg daemon startup install`.
+
+A registration failure is never fatal. The binary is already installed and
+verified, and bare `gregg` starts the daemon on demand whether or not a
+manager entry exists, so the only honest response is a warning plus the exact
+command to run.
+#>
+function Register-UserLocalClientdStartup {
+    param([string]$DestPath, [bool]$IsAdmin)
+
+    if ($IsAdmin) { return }
+    if (-not $DestPath) { return }
+    try {
+        & $DestPath daemon startup install
+        if ($LASTEXITCODE -ne 0) {
+            throw "client-daemon startup registration exited $LASTEXITCODE"
+        }
+    } catch {
+        Write-Host ""
+        Write-Warning "gregg was installed, but its client-daemon startup entry was not registered."
+        Write-Warning "Nothing is broken: 'gregg' starts the daemon on demand. To keep it running"
+        Write-Warning "without a TUI open, run:"
+        Write-Warning "  $DestPath daemon startup instructions"
+    }
 }
 
 function Install-Program {
@@ -440,6 +478,26 @@ function Install-Program {
         # Prebuilt and staged-Cargo candidates share the same replacement and
         # daemon post-install finalization path.
         Install-VerifiedCandidate -Program $Program -Candidate $Candidate -DestPath $DestPath -DestDir $DestDir -Scope $Scope -ExistingVersion $ExistingVersion
+        # Plan 165: the client daemon runs from this very executable, so a
+        # same-scope replacement transitions the identified daemon before a
+        # startup entry is registered that would otherwise still point at the
+        # old image.
+        if ($Program -eq "gregg" -and $Scope -eq "replace" -and -not $IsAdmin) {
+            & $DestPath daemon status *> $null
+            if ($LASTEXITCODE -eq 0) {
+                & $DestPath daemon stop
+                if ($LASTEXITCODE -ne 0) {
+                    throw "binary updated; client-daemon transition failed: stop was not confirmed. Retry: `"$DestPath`" daemon stop && `"$DestPath`" daemon restart"
+                }
+                & $DestPath daemon restart
+                if ($LASTEXITCODE -ne 0) {
+                    throw "binary updated; client-daemon transition failed: restart did not complete. Retry: `"$DestPath`" daemon restart"
+                }
+            }
+        }
+        if ($Program -eq "gregg") {
+            Register-UserLocalClientdStartup -DestPath $DestPath -IsAdmin $IsAdmin
+        }
     } finally {
         if (Test-Path $Tmp) { Remove-Item -LiteralPath $Tmp -Recurse -Force -ErrorAction SilentlyContinue }
     }

@@ -67,6 +67,138 @@ pub fn update_spec() -> gregg_update::UpdateSpec {
 /// Run the full `gregg update` flow synchronously. Must not be called from
 /// an async runtime. Prints progress to stderr and returns an outcome or
 /// error.
+/// What an update did to the client daemon for this config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DaemonLifecycle {
+    /// No daemon was running for this config, so none was touched.
+    NoneWasRunning,
+    /// A daemon was running, was stopped, and came back on the new binary.
+    Relaunched {
+        /// The config identity it serves.
+        id: String,
+    },
+    /// The replacement succeeded but the daemon did not come back.
+    ///
+    /// This is reported rather than hidden. A removed-then-failed daemon is
+    /// still recoverable -- bare `gregg` lazily starts one -- but the operator
+    /// should know their continuous background polling stopped.
+    RelaunchFailed {
+        /// The config identity it serves.
+        id: String,
+        /// Why the relaunch did not take.
+        reason: String,
+    },
+}
+
+impl fmt::Display for DaemonLifecycle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoneWasRunning => write!(f, "no client daemon was running for this config"),
+            Self::Relaunched { id } => {
+                write!(f, "relaunched the client daemon for {id} on the new binary")
+            }
+            Self::RelaunchFailed { id, reason } => write!(
+                f,
+                "the client daemon for {id} did not come back after the update ({reason}). \
+                 Bare `gregg` will start it again, or run `gregg daemon restart`"
+            ),
+        }
+    }
+}
+
+/// An update plus what it did to the client daemon.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateReport {
+    /// What the binary replacement did.
+    pub outcome: UpdateOutcome,
+    /// What happened to the daemon for the selected config.
+    pub daemon: DaemonLifecycle,
+}
+
+impl fmt::Display for UpdateReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.outcome)?;
+        if !matches!(self.daemon, DaemonLifecycle::NoneWasRunning) {
+            write!(f, "\n{}", self.daemon)?;
+        }
+        Ok(())
+    }
+}
+
+/// Update the client, reconciling the client daemon for `store`'s config.
+///
+/// The order is the whole point:
+///
+/// 1. Identify whether an owned daemon is running for this config. Nothing is
+///    stopped before this, so a failed *download* never costs the operator
+///    their background polling.
+/// 2. Prepare and verify the replacement candidate, exactly as before.
+/// 3. Only now stop the identified daemon, and only if the replacement is
+///    actually going to happen.
+/// 4. Replace the exact executable.
+/// 5. Relaunch, and report partial success rather than pretending.
+///
+/// Other explicit-config daemons sharing the replaced executable are left alone.
+/// On platforms that allow replacing a running image they keep serving the old
+/// one and are reconciled on their next attach by the version handshake, which
+/// is why no global daemon registry is needed.
+pub fn run_update_lifecycle(
+    store: &crate::config::ConfigStore,
+) -> Result<UpdateReport, UpdateError> {
+    let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
+    let version = crate::clientd::protocol::PROTOCOL_VERSION_STR;
+
+    let was_running = runtime()?
+        .block_on(crate::clientd::daemon::status(&identity))
+        .is_ok_and(|status| status.running);
+
+    // Acquisition and verification happen first, untouched by the daemon.
+    let outcome = run_update()?;
+
+    // Nothing was replaced, so there is nothing to reconcile.
+    if matches!(outcome, UpdateOutcome::AlreadyCurrent { .. }) {
+        return Ok(UpdateReport {
+            outcome,
+            daemon: DaemonLifecycle::NoneWasRunning,
+        });
+    }
+
+    if !was_running {
+        return Ok(UpdateReport {
+            outcome,
+            daemon: DaemonLifecycle::NoneWasRunning,
+        });
+    }
+
+    let id = identity.id().to_owned();
+    // This process is the *old* binary and the executable it just replaced is
+    // the new one, so the relaunch must go through the exact new path rather
+    // than through `current_exe`, which still resolves to the running image on
+    // some platforms.
+    let relaunch = runtime()?.block_on(async {
+        crate::clientd::daemon::stop(&identity, version).await?;
+        crate::clientd::launch::restart(store).await
+    });
+
+    Ok(UpdateReport {
+        outcome,
+        daemon: match relaunch {
+            Ok(()) => DaemonLifecycle::Relaunched { id },
+            Err(error) => DaemonLifecycle::RelaunchFailed {
+                id,
+                reason: error.to_string(),
+            },
+        },
+    })
+}
+
+fn runtime() -> Result<tokio::runtime::Runtime, UpdateError> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| UpdateError::Io(error.to_string()))
+}
+
 pub fn run_update() -> Result<UpdateOutcome, UpdateError> {
     match gregg_update::run_simple_update(&update_spec())? {
         gregg_update::UpdateOutcome::AlreadyCurrent { version } => {

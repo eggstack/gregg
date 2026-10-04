@@ -27,6 +27,9 @@ renders a Ratatui-based terminal UI.
 | `clientd/snapshot` | `src/clientd/snapshot.rs` | `FrontendSnapshot` and per-system / EggPool DTOs. Timestamps cross as Unix ms because `Instant` cannot be transported |
 | `clientd/daemon` | `src/clientd/daemon.rs` | The client daemon: owns `FleetState`, the poll scheduler, the EggPool worker, and the `Ctrl-R` reload boundary; `watch`-channel fan-out; `attach` / `status` / `stop` |
 | `clientd/frontend` | `src/clientd/frontend.rs` | The TUI's side: dial, handshake, request sender (`ControlSink`), and the single socket-owning frame reader |
+| `clientd/launch` | `src/clientd/launch.rs` | Lazy activation, the config-specific launch lock, endpoint classification, version rotation, `restart` |
+| `clientd/startup` | `src/clientd/startup.rs` | User-scoped startup render/parse/ownership plus the thin install/uninstall execution |
+| `startup_support` | `src/startup_support.rs` | The only place a startup manager is executed: a fixed allowlist, no shell, bounded wait |
 | `cli` | `src/cli.rs` | Clap CLI: `add`, `list`, `remove`, `refresh`, `edit`, `version`, `update` (thin adapter over `gregg-update`), `uninstall` (exact-exe removal, dry-run/purge), `eggpool` |
 | `update` | `src/update.rs` | Thin `run_simple_update` adapter binding the client identity |
 | `uninstall` | `src/uninstall.rs` | Exact-exe client removal plan/execution (`purge_empty_dir_for` only the standard parent) |
@@ -165,6 +168,59 @@ Frontend B ─┴─────────────────────
   budget exactly when the daemon is unhealthy and would make the failure
   invisible. Plan 165 turns an *absent* endpoint into a bounded lazy launch; it
   does not relax this.
+
+### Lifecycle (Plan 165)
+
+`gregg` ensures its own daemon, so the client is usable by default without
+anyone having to start a background process first.
+
+```
+gregg
+  ├─ bounded handshake probe
+  │    ├─ attached            → run the TUI
+  │    ├─ absent              → launch (below)
+  │    └─ refused/foreign/newer → report, start nothing
+  └─ launch
+       ├─ acquire the config-specific launch lock   (spawn_blocking)
+       ├─ re-probe *and re-classify* under the lock
+       ├─ detached spawn of the exact current executable
+       └─ bounded readiness wait, then attach
+```
+
+- **The lock is an advisory OS lock**, held only across
+  probe/spawn/readiness and never for the daemon's lifetime. Its file is never
+  unlinked and is never read as a signal, so a crashed launcher cannot leave
+  behind something that makes the next launch believe a daemon is starting.
+  There is no PID file and no registry.
+- **The lock wait runs on `spawn_blocking`.** It is a blocking sleep loop, and
+  the TUI runs on a current-thread runtime, so waiting inline would starve the
+  tasks that make the winner's daemon reach readiness.
+- **Only plain absence authorizes a spawn**, and the classification is redone
+  under the lock: someone else can bind a foreign service while this process
+  waits, and re-probing alone would have spawned over it.
+- **Rotation is directional.** A daemon *older* than this frontend is stopped and
+  relaunched on the current binary. A daemon *newer* than this frontend is
+  reported with upgrade guidance and left running — it may be serving a newer
+  window elsewhere, and downgrading that session because one window is old would
+  be a worse failure than an error message.
+- **User-scoped startup only.** A `systemctl --user` unit, a
+  `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a
+  managed user crontab watchdog. Never a system unit, never `LocalService` SCM,
+  never `sudo`; all manager execution goes through one allowlist with no shell
+  and a bounded wait. A root install registers nothing, because there is no
+  honest way to choose which human a shared binary should watch for.
+- **Ownership is proven by parsing what would be written**, then re-read after
+  writing as a self-check. `Unknown` (unreadable) is treated exactly like
+  `Foreign`: "I could not read it" is not a licence to delete it.
+- **Update is prepare-then-quiesce.** The daemon is identified first, the
+  candidate is fully prepared and verified, and only then is the daemon stopped,
+  the executable replaced, and the daemon relaunched. A failed relaunch is
+  reported as partial success with the retry command.
+- **Uninstall is ownership-first.** `--dry-run` names the startup entry and the
+  running daemon; execution stops only an identified owned daemon, removes only
+  a provably owned entry, and blocks the executable deletion when it cannot
+  confidently stop a running daemon. There is still no idle shutdown: losing the
+  last TUI is not a reason to stop.
 
 The highlight deadline is the only transient timer the loop owns.
 Selection-changing Systems actions (`j`/`k`, page movement, `g`/`G`)
