@@ -695,7 +695,12 @@ fn classify_eggfetch_failure(failure: &RequestFailure) -> PollOutcome {
     }
 }
 
-fn bracketed_host(host: &str) -> Result<String, EndpointError> {
+/// Normalize a host and bracket it when it is an IPv6 literal.
+///
+/// Shared with the scheduler route builders so `/v2/status`,
+/// `/v2/scheduler`, and their history siblings cannot disagree about how a
+/// host is spelled in a URL.
+pub(crate) fn bracketed_host(host: &str) -> Result<String, EndpointError> {
     let host = crate::endpoint::bracketed_host(host)?;
     if host.contains(':') {
         Ok(format!("[{host}]"))

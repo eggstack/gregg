@@ -48,6 +48,21 @@ pub enum ConfigViolation {
     EggpoolAlreadyConfigured,
     /// `EggPool` API-key environment-variable name is invalid.
     InvalidEggpoolApiKeyEnv { value: String, reason: String },
+    /// `cron.display_history` is outside the valid range.
+    InvalidCronDisplayHistory(usize),
+    /// `cron.cache_history` is outside the valid range.
+    InvalidCronCacheHistory(usize),
+    /// `cron.cache_history` is shallower than the display window.
+    ///
+    /// Reported rather than silently repaired: a display window deeper than the
+    /// cache can only ever show empty rows, which looks like a scheduler bug
+    /// rather than a configuration one.
+    CronCacheShallowerThanDisplay {
+        /// Configured cache depth.
+        cache: usize,
+        /// Configured display window.
+        display: usize,
+    },
 }
 impl fmt::Display for ConfigViolation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -123,6 +138,26 @@ impl fmt::Display for ConfigViolation {
                 write!(
                     f,
                     "invalid EggPool API-key environment variable {value:?}: {reason}"
+                )
+            }
+            Self::InvalidCronDisplayHistory(n) => {
+                write!(
+                    f,
+                    "cron.display_history {n} is outside valid range 1..={}",
+                    crate::cron::MAX_DISPLAY_HISTORY
+                )
+            }
+            Self::InvalidCronCacheHistory(n) => {
+                write!(
+                    f,
+                    "cron.cache_history {n} is outside valid range 1..={}",
+                    crate::cron::MAX_CACHE_HISTORY
+                )
+            }
+            Self::CronCacheShallowerThanDisplay { cache, display } => {
+                write!(
+                    f,
+                    "cron.cache_history {cache} is shallower than cron.display_history {display}, so the deepest requested records could never be shown"
                 )
             }
         }
@@ -572,6 +607,10 @@ unknown_field = "oops"
             default_port: 0,
             systems: Vec::new(),
             eggpool: None,
+            cron: super::super::model::CronConfig {
+                display_history: 0,
+                cache_history: 0,
+            },
         };
         let violations = config.validate();
         assert!(violations.len() >= 5);
@@ -616,4 +655,118 @@ unknown_field = "oops"
     }
 
     // --- Default path ---
+
+    // --- Plan 166: cron observability depths ---
+    #[test]
+    fn cron_defaults_to_five_displayed_and_a_deeper_cache() {
+        // The display window matches the remote's own retention so the common
+        // case is "exactly what greggd still holds"; the cache is deeper
+        // because the client daemon is always running and observes rings the
+        // remote has already dropped.
+        let config = Config::default();
+        assert_eq!(config.cron.display_history, 5);
+        assert_eq!(config.cron.cache_history, 25);
+        assert!(config.is_valid());
+    }
+
+    #[test]
+    fn a_configuration_without_a_cron_table_still_loads() {
+        // `#[serde(default)]` is what keeps every existing file working; a
+        // Plan 166 addition must not require operators to edit their config.
+        let parsed: Config = toml::from_str(
+            "config_version = 1\nrefresh_seconds = 5\nrequest_timeout_ms = 1500\nmax_concurrent_requests = 16\ndefault_port = 11310\n",
+        )
+        .expect("a config with no [cron] table must parse");
+        assert_eq!(parsed.cron, super::super::model::CronConfig::default());
+        assert_eq!(parsed.validate(), Vec::new());
+    }
+
+    #[test]
+    fn zero_and_oversized_cron_depths_are_rejected() {
+        for display in [0, crate::cron::MAX_DISPLAY_HISTORY + 1] {
+            let config = Config {
+                cron: super::super::model::CronConfig {
+                    display_history: display,
+                    cache_history: 25,
+                },
+                ..Config::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .contains(&ConfigViolation::InvalidCronDisplayHistory(display)),
+                "display {display} was accepted"
+            );
+        }
+        for cache in [0, crate::cron::MAX_CACHE_HISTORY + 1] {
+            let config = Config {
+                cron: super::super::model::CronConfig {
+                    display_history: 5,
+                    cache_history: cache,
+                },
+                ..Config::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .contains(&ConfigViolation::InvalidCronCacheHistory(cache)),
+                "cache {cache} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cache_shallower_than_the_display_window_is_reported() {
+        // Reporting beats repairing: a window deeper than the cache can only
+        // ever show empty rows, which reads as a scheduler bug.
+        let config = Config {
+            cron: super::super::model::CronConfig {
+                display_history: 10,
+                cache_history: 4,
+            },
+            ..Config::default()
+        };
+        assert!(config.validate().contains(
+            &ConfigViolation::CronCacheShallowerThanDisplay {
+                cache: 4,
+                display: 10
+            }
+        ));
+    }
+
+    #[test]
+    fn an_out_of_range_depth_does_not_also_report_a_relationship_problem() {
+        // One mistake, one diagnostic. Reporting both would send the operator
+        // looking for a second problem that does not exist.
+        let config = Config {
+            cron: super::super::model::CronConfig {
+                display_history: crate::cron::MAX_DISPLAY_HISTORY + 100,
+                cache_history: 1,
+            },
+            ..Config::default()
+        };
+        let violations = config.validate();
+        assert!(violations.contains(&ConfigViolation::InvalidCronDisplayHistory(
+            crate::cron::MAX_DISPLAY_HISTORY + 100
+        )));
+        assert!(
+            !violations
+                .iter()
+                .any(|v| matches!(v, ConfigViolation::CronCacheShallowerThanDisplay { .. })),
+            "{violations:?}"
+        );
+    }
+
+    #[test]
+    fn accessors_clamp_rather_than_panic() {
+        // A config that validated cannot reach here out of range, and one that
+        // somehow does must degrade to a smaller window, never to a slice
+        // outside the cache.
+        let cron = super::super::model::CronConfig {
+            display_history: 0,
+            cache_history: usize::MAX,
+        };
+        assert_eq!(cron.display_history(), 1);
+        assert_eq!(cron.cache_history(), crate::cron::MAX_CACHE_HISTORY);
+    }
 }

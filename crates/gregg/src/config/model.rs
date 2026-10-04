@@ -36,6 +36,70 @@ pub const MAX_PORT: u16 = 65535;
 /// Supported configuration version.
 pub const SUPPORTED_CONFIG_VERSION: u32 = 1;
 
+/// Client-side cron observability settings.
+///
+/// The two depths are deliberately separate numbers with separate hard maxima,
+/// because they answer different questions:
+///
+/// - `display_history` is a **viewport**: how many records the cron pane shows
+///   for the selected job. It defaults to the remote's own retention, so the
+///   common case is "exactly what the remote still holds".
+/// - `cache_history` is **retention**: how many records the client daemon keeps
+///   in memory. It is deeper than the display window because the client is
+///   always running and observes successive remote rings, so it can remember
+///   records the remote has already dropped.
+///
+/// A global record ceiling ([`crate::cron::MAX_TOTAL_CRON_RECORDS`]) bounds the
+/// product of endpoints, jobs, and depth regardless of these values. It is a
+/// constant rather than a setting on purpose: a user who raises the per-job
+/// depth should not be able to turn a bounded cache into an unbounded one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)]
+pub struct CronConfig {
+    /// Terminal records shown for the selected job.
+    #[serde(default = "default_cron_display_history")]
+    pub display_history: usize,
+    /// Terminal records retained per job in the client daemon's memory.
+    #[serde(default = "default_cron_cache_history")]
+    pub cache_history: usize,
+}
+
+const fn default_cron_display_history() -> usize {
+    crate::cron::DEFAULT_DISPLAY_HISTORY
+}
+
+const fn default_cron_cache_history() -> usize {
+    crate::cron::DEFAULT_CACHE_HISTORY
+}
+
+impl Default for CronConfig {
+    fn default() -> Self {
+        Self {
+            display_history: default_cron_display_history(),
+            cache_history: default_cron_cache_history(),
+        }
+    }
+}
+
+impl CronConfig {
+    /// The validated display depth, clamped to the hard maximum.
+    ///
+    /// A clamped accessor rather than a panic: a config that was already
+    /// validated cannot reach here out of range, and a value that somehow does
+    /// should degrade to a smaller window, never to an out-of-bounds slice.
+    #[must_use]
+    pub fn display_history(&self) -> usize {
+        self.display_history.clamp(1, crate::cron::MAX_DISPLAY_HISTORY)
+    }
+
+    /// The validated per-job cache depth, clamped to the hard maximum.
+    #[must_use]
+    pub fn cache_history(&self) -> usize {
+        self.cache_history.clamp(1, crate::cron::MAX_CACHE_HISTORY)
+    }
+}
+
 /// Default port for the optional `EggPool` endpoint.
 pub const DEFAULT_EGGPOOL_PORT: u16 = 11300;
 
@@ -149,6 +213,13 @@ pub struct Config {
     /// Optional `EggPool` statistics endpoint.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eggpool: Option<EggpoolEntry>,
+    /// Client-side cron observability settings.
+    ///
+    /// `#[serde(default)]` so an existing configuration without a `[cron]`
+    /// table keeps working and gets the documented defaults. Plan 166 adds no
+    /// persistence, so this table only ever describes in-memory behaviour.
+    #[serde(default)]
+    pub cron: CronConfig,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -160,6 +231,7 @@ impl Default for Config {
             default_port: DEFAULT_PORT,
             systems: Vec::new(),
             eggpool: None,
+            cron: CronConfig::default(),
         }
     }
 }
@@ -247,6 +319,36 @@ impl Config {
 
         if let Some(eggpool) = &self.eggpool {
             validate_eggpool(&mut violations, eggpool);
+        }
+
+        // Cron display and cache depths. Each is checked against its own hard
+        // maximum, because they are separate bounds with separate reasons: the
+        // display window is a viewport, the cache depth is a retention policy.
+        if self.cron.display_history == 0
+            || self.cron.display_history > crate::cron::MAX_DISPLAY_HISTORY
+        {
+            violations.push(ConfigViolation::InvalidCronDisplayHistory(
+                self.cron.display_history,
+            ));
+        }
+        if self.cron.cache_history == 0
+            || self.cron.cache_history > crate::cron::MAX_CACHE_HISTORY
+        {
+            violations.push(ConfigViolation::InvalidCronCacheHistory(
+                self.cron.cache_history,
+            ));
+        }
+        // Only meaningful when both depths are individually in range; an
+        // out-of-range value is already reported above and comparing it here
+        // would produce a second, misleading diagnostic.
+        if self.cron.display_history <= crate::cron::MAX_DISPLAY_HISTORY
+            && self.cron.cache_history <= crate::cron::MAX_CACHE_HISTORY
+            && self.cron.cache_history < self.cron.display_history
+        {
+            violations.push(ConfigViolation::CronCacheShallowerThanDisplay {
+                cache: self.cron.cache_history,
+                display: self.cron.display_history,
+            });
         }
 
         violations

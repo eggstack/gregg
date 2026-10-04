@@ -22,7 +22,7 @@ pub mod validation;
 
 pub use lock::FileLockGuard;
 pub use model::{
-    Config, EggpoolEntry, EggpoolScheme, SystemEntry, DEFAULT_EGGPOOL_PORT,
+    Config, CronConfig, EggpoolEntry, EggpoolScheme, SystemEntry, DEFAULT_EGGPOOL_PORT,
     MAX_CONCURRENT_REQUESTS, MAX_EGGPOOL_NAME_LEN, MAX_ENV_NAME_LEN, MAX_PORT, MAX_REFRESH_SECONDS,
     MAX_REQUEST_TIMEOUT_MS, MIN_PORT, MIN_REFRESH_SECONDS, MIN_REQUEST_TIMEOUT_MS,
     SUPPORTED_CONFIG_VERSION,

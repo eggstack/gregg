@@ -24,6 +24,7 @@
 //! shared with a whole fleet, while this is a same-binary, same-host channel
 //! whose version is verified by handshake rather than by forward compatibility.
 
+pub mod cron;
 pub mod daemon;
 pub mod frontend;
 pub mod identity;
