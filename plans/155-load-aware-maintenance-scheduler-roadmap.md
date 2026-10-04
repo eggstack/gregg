@@ -216,6 +216,19 @@ Implement:
 - binary/dependency remeasurement;
 - existing cross-platform CI qualification.
 
+### Plan 158 — scheduler footprint and schedule-validation corrective pass
+
+The first integrated Plan-157 implementation is functionally strong and all-platform CI is green, but its stripped release binary remains 44,184 bytes above the Plan-156 128 KiB cap. Source review also found that syntactically valid but calendar-impossible cron expressions can pass config validation and fail only when the scheduler initializes.
+
+Plan 158 therefore owns the remaining closure work:
+
+- attribute and remove at least 44,184 bytes of scheduler-linked/code surface without weakening local-time/DST/process semantics;
+- eliminate avoidable per-decision allocation/cloning before considering a time-backend change;
+- reject calendar-impossible schedules during pure config validation;
+- remove the fabricated +366-day runtime schedule fallback;
+- rerun scheduler smoke, release-size qualification, Rust 1.89, and the existing six-job CI matrix;
+- reconcile and close Plan 157 and this roadmap only after the footprint and correctness gates are satisfied.
+
 ## Performance budget
 
 Idle cost should be approximately zero beyond existing greggd sampling:
@@ -231,7 +244,7 @@ The scheduler should hold only parsed schedule/config state, one pending record 
 
 ## Acceptance criteria for the line
 
-The roadmap is complete only when Plans 156-157 demonstrate:
+The roadmap is complete only when Plans 156-158 demonstrate:
 
 - five-field cron-like scheduling with deterministic semantics;
 - optional 1m/5m/15m cached-load gating;
@@ -273,4 +286,4 @@ Do not include:
 
 ## Handoff
 
-Begin with Plan 156. Do not implement the scheduler by weakening the systemd unit, adding sudo, or simply dropping a large scheduling framework into greggd. The critical design goals are bounded state, cached-load reuse, explicit execution authority, and a measured binary footprint.
+Plan 156 is complete and Plan 157's implementation has landed, but the line remains open through corrective Plan 158. Continue with Plan 158; do not weaken the systemd unit, add sudo, relax the footprint gate, or replace correct DST/local-time behavior with unsafe platform code. The critical remaining goals are closing the measured binary deficit and moving impossible-calendar rejection into configuration validation.
