@@ -1,6 +1,6 @@
 # Plan 160: Scheduler civil-clock reconciliation hardening
 
-Status: planned.
+Status: complete.
 
 Depends on: completed scheduler line through Plan 159 and current main at
 `e08538373fd9343efce77ec6a25c072ad719a196`. Independent of the remaining
@@ -458,3 +458,96 @@ The key proof is separation of clock domains: civil wall time decides cron
 eligibility; monotonic time decides retry/expiry/lifecycle; the scheduler never
 trusts a long monotonic sleep for more than roughly one cron-resolution minute
 without re-reading civil time.
+
+## Closure record
+
+Implemented at `6bb5dcf` with a Windows-only test-attribute correction at
+`d650c59`. Existing CI run `37177061388` is green across all six jobs
+(Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV 1.89,
+FreeBSD `gregg-host` native) at `d650c59`. An earlier run `37176534146`
+at `6bb5dcf` failed only its Windows job with `E0425: cannot find function
+daily_job`: the test insertion had landed after the shutdown test's
+`#[cfg(unix)]` attribute, cfg-ing out the helper on Windows. The correction
+moves the attribute back onto
+`active_direct_child_is_terminated_and_reaped_on_shutdown` with no
+production change, verified locally by
+`cargo check -p greggd --all-targets --all-features --target
+x86_64-pc-windows-msvc`, and the rerun is fully green. The failed run is
+preserved as history, not rewritten.
+
+Production change (`crates/greggd/src/scheduler.rs`, +19 lines):
+
+- `MAX_CIVIL_RECHECK = Duration::from_secs(60)`;
+- pure monotonic `bounded_wake_deadline(semantic_deadline, now)` helper
+  (no allocation, no async, independently unit-tested);
+- one call in `run()` immediately before `sleep_until`;
+  `Engine::next_deadline` stays truthful and uncapped.
+
+Deterministic coverage (nine new tests, no real clock changes, no sleeps):
+
+- `civil_recheck_cap_is_one_minute_and_pure`: 10 h wakes within 60 s;
+  15 s cron, 10 s retry, and 20 s max-wait deadlines are retained exactly;
+- `semantic_deadline_stays_truthful_while_the_wake_is_capped`: the engine
+  still reports the true civil deadline while only the sleep is capped;
+- `empty_job_list_builds_no_engine_state`: the `run.rs` `jobs.is_empty`
+  branch (unchanged) still spawns no scheduler task;
+- `forward_wall_jump_coalesces_to_one_pending_and_advances_next_due`
+  (daily job) and `forward_jump_of_every_minute_job_does_not_build_a_backlog`
+  (every-minute job jumped three hours): exactly one launch, `next_due`
+  strictly after the jumped wall time;
+- `backward_wall_jump_does_not_launch_before_the_stored_occurrence`:
+  the old monotonic estimate launches nothing, later wakes stay capped,
+  the real occurrence launches exactly once, and moving back over the
+  consumed occurrence recreates nothing;
+- `load_retry_stays_monotonic_across_wall_jumps` and
+  `max_wait_expiry_stays_monotonic_across_wall_jumps`: forward wall jumps
+  cannot shorten retry/max-wait, backward jumps cannot extend them.
+
+Footprint review (same release profile and `stat -c %s
+target/release/greggd` method as Plans 156/158/159, `x86_64-unknown-linux-gnu`):
+
+```text
+Plan-159 scheduler baseline     3,261,664 bytes
+Plan-160 final                  3,261,664 bytes
+delta                                 0 bytes (byte-neutral)
+```
+
+No dependency, feature, profile, or toolchain change (`git status` shows
+only `scheduler.rs` plus docs). The existing DST spring-gap and
+fall-overlap tests in `schedule.rs` are unchanged and green, so no
+scheduler-level DST duplication was added. Reconciliation wakes log
+nothing (the `Deadline` branch is untouched) and perform no telemetry,
+HTTP, filesystem, or process work by construction. Same-principal
+execution, load gating, coalescing, one-child policy, shutdown, Windows
+time-only behavior, and the remote/security boundaries are unchanged.
+
+Verification at `d650c59`:
+
+- `cargo test -p greggd --all-targets --all-features -- scheduler`:
+  26 passed;
+- `cargo test -p greggd --all-targets --all-features -- schedule`:
+  28 passed (includes the unchanged DST tests);
+- `cargo test -p greggd --all-targets --all-features -- run`: 48 passed;
+- `cargo test --workspace --all-targets --all-features`: 1326 passed,
+  2 ignored;
+- `cargo +1.89 test -p greggd --all-targets --all-features`: 448 passed,
+  0 failed;
+- `cargo fmt --all -- --check` and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`:
+  clean;
+- `./scripts/check-local.sh` (default): all checks passed;
+- `./scripts/check-local.sh --release`: all product gates passed,
+  including the clean-tree check after the implementation commits. One
+  transient failure of the network-dependent
+  `gregg-update::exec::download_classifies_code_in_a_single_request`
+  (live curl to `example.invalid`) appeared mid-pass and passed on
+  immediate retry in isolation and in the full rerun; `gregg-update` is
+  untouched by this plan (`git status` confirms), so it is recorded as
+  environmental flake, not plan evidence.
+
+All acceptance criteria are met. Plans 155-159 remain historically closed
+and are not rewritten; their records are only referenced. Plan 091 keeps
+its existing status, gated solely on its own extended soak record, and is
+unaffected by this closure. No future plan depends on Plan 160, so this
+closure unblocks nothing and changes no other plan's status. No real
+system-clock smoke was performed, per the plan's own prohibition.

@@ -67,14 +67,19 @@ than rewritten. The line is independent of Plan
 same-principal execution, service sandboxing, one pending occurrence per job,
 and one global child slot.
 
-Plan 160 is a separate post-closure correctness hardening pass for the scheduler
-timing layer. It addresses a discovered wall-clock discontinuity edge: a long
-civil-time deadline is currently converted once into a monotonic Tokio sleep,
-so a large forward system-clock adjustment can leave an already-due cron
-occurrence asleep until the old monotonic deadline. Plan 160 caps that trust
-window at roughly one cron-resolution minute and re-reads civil time, while
-keeping retry/max-wait/child lifecycle monotonic. It does not reopen Plans
-155-159, their footprint decision, or Plan 091.
+Plan 160 is complete at implementation `d650c59` (with CI run `37177061388`
+green across all six jobs) as the separate post-closure correctness hardening
+pass for the scheduler timing layer. It addressed the discovered wall-clock
+discontinuity edge: a long civil-time deadline was converted once into a
+monotonic Tokio sleep, so a large forward system-clock adjustment could leave
+an already-due cron occurrence asleep until the old monotonic deadline. The
+event loop now sleeps at `min(semantic deadline, now + 60s)` and re-reads
+civil time, while retry/max-wait/child lifecycle stay monotonic and
+`Engine::next_deadline` stays truthful. Forward jumps coalesce, backward
+jumps never launch early, nine deterministic clock-domain tests prove the
+matrix, and stripped `greggd` is byte-neutral at 3,261,664 bytes (delta 0).
+It did not reopen Plans 155-159, their footprint decision, or Plan 091, and
+being terminal it unblocks no remaining plan.
 
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
@@ -601,7 +606,7 @@ excluded.
 | [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | complete at the Plan-159 decision; functional criteria demonstrated at `7a466f8` / CI `37172425056`, footprint criterion met under the re-baselined 3,261,664-byte budget; independent of 091 |
 | [`158-scheduler-footprint-and-schedule-validation-corrective-pass.md`](158-scheduler-footprint-and-schedule-validation-corrective-pass.md) | Close the remaining Plan-157 footprint gate and reject calendar-impossible cron expressions before daemon startup, while preserving scheduler semantics/security/lifecycle | complete at the Plan-159 decision; implemented at `7a466f8`, CI `37172425056` green across all six jobs, and its stop-condition escalation resolved by the 159 re-baseline; independent of 091 |
 | [`159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md`](159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md) | Decide explicitly whether the scheduler line ships on a re-baselined measured footprint budget, on one named approved architectural reduction, or not at all | complete (outcome 1): scheduler line re-baselined to the measured 3,261,664 bytes for this line only, general stance unchanged, growth beyond it re-opens review; qualifying CI `37172425056`, focused/default/release checks green; closes 155/157/158; independent of 091 |
-| [`160-scheduler-civil-clock-reconciliation-hardening.md`](160-scheduler-civil-clock-reconciliation-hardening.md) | Bound the scheduler's trust in long monotonic sleeps so forward/backward wall-clock discontinuities are reconciled at minute-scale without changing cron/load/lifecycle semantics | planned; depends on completed 159/current main; post-closure scheduler hardening; target one-minute civil recheck, deterministic clock-domain tests, no dependency/feature change, explicit footprint remeasurement; independent of 091 |
+| [`160-scheduler-civil-clock-reconciliation-hardening.md`](160-scheduler-civil-clock-reconciliation-hardening.md) | Bound the scheduler's trust in long monotonic sleeps so forward/backward wall-clock discontinuities are reconciled at minute-scale without changing cron/load/lifecycle semantics | complete at `d650c59` (implementation `6bb5dcf` + Windows-only `#[cfg(unix)]` test-attribute correction); CI `37177061388` green across all six jobs; one-minute `MAX_CIVIL_RECHECK` wake cap with truthful semantic deadlines, nine deterministic clock-domain tests, stripped `greggd` byte-neutral at 3,261,664 bytes (delta 0 vs Plan-159 baseline); independent of 091; terminal, unblocks no remaining plan |
 
 Dependency order:
 
