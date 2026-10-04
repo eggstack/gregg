@@ -1,12 +1,14 @@
 # Plan 157: Load-aware maintenance scheduler implementation
 
-Status: in implementation; Plan 156 qualification is complete.
+Status: implementation landed; closure blocked on corrective Plan 158.
 
-Current implementation passes local functional coverage and Unix smoke, but
-the stripped release binary is 3,272,456 bytes: +175,256 bytes over Plan 156's
-3,097,200-byte baseline and 44,184 bytes over its 128 KiB cap. The footprint
-gate remains open; this plan is not ready for closure until the implementation
-is reduced below the cap or the design is revised under a new qualification.
+Current implementation passes local functional coverage, Unix smoke, and the
+existing six-job CI matrix, but the stripped release binary is 3,272,456 bytes:
++175,256 bytes over Plan 156's 3,097,200-byte baseline and 44,184 bytes over
+its 128 KiB cap. Source review also found that a syntactically valid but
+calendar-impossible cron expression can pass config validation and fail only
+when the scheduler initializes. Plan 158 owns both remaining defects and the
+final closure/reconciliation evidence.
 
 Depends on: completed Plan 156. Independent of the remaining Plan 091 soak record except that implementation must not alter Plan-091 croncheck/control semantics.
 
@@ -465,4 +467,6 @@ Stop and write a corrective follow-up instead of broadening this plan if impleme
 
 ## Handoff
 
-Implement the scheduler as a small third daemon subsystem fed by existing sampler state. The highest-risk regressions are privilege expansion, accidental cron semantic drift, unbounded occurrence queues, blocking the current-thread runtime, and child/herd behavior. Preserve the single-slot/coalescing model even if a scheduling library offers a richer job engine.
+The primary implementation has landed. Do not continue broad scheduler feature work in this plan. Corrective Plan 158 owns the remaining footprint deficit, impossible-calendar config validation, removal of the fabricated runtime schedule fallback, and final qualification/reconciliation.
+
+Preserve this plan's original acceptance list until Plan 158 supplies the missing release-size and corrective evidence. At that point, reconcile each item against actual tests/smoke/CI and close Plan 157 through Plan 158 rather than rewriting the over-budget implementation history.
