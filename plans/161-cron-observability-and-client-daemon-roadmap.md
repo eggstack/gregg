@@ -422,8 +422,10 @@ made a healthy daemon look incompatible and made a real TUI exit.
 **Carried forward, honestly.** The macOS, Windows, and MSRV CI jobs were not run
 by this closure — there is no remote-runner access here, so no CI run ID exists.
 They must be confirmed on the final implementation SHA before release. One
-unrelated pre-existing flake in `gregg-update` was observed once and never
-reproduced; it is recorded in Plan 167's closure rather than ignored.
+unrelated pre-existing flake in `gregg-update` recurred under full-workspace
+load; it was root-caused to a transient `ETXTBSY` on the test's own
+write-then-`exec` stub, the product code handled it correctly, and the
+diagnosis plus the minimal test-only repair are in Plan 167's closure.
 
 Independent of Plan 091 throughout: no part of this line depended on the
 remaining sustained-soak record, and no part of it satisfies or substitutes for

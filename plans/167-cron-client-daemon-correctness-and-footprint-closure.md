@@ -464,10 +464,30 @@ must be confirmed on the final implementation SHA before release, exactly as the
 plan's handoff requires. The Linux-native portions are covered by the local
 runs above.
 
-**One pre-existing flake, observed but not diagnosed.** `gregg-update`'s
-`exec::tests::download_classifies_code_in_a_single_request` failed once during
-a parallel workspace run and has passed on every isolated and repeated run since.
-`gregg-update` has no workspace-crate dependencies, so this line cannot affect
-it. It is recorded rather than silently ignored, and is not fixed here because
-doing so would mean changing a crate outside this plan's scope on a single
-unreproduced observation.
+**One pre-existing flake, now root-caused but deliberately not fixed here.**
+`gregg-update`'s `exec::tests::download_classifies_code_in_a_single_request` fails
+intermittently, and blocked this plan's release preflight twice. It is
+reproduced only under full-workspace parallel load and passes 8/8 in isolation
+and 12/12 with the `gregg-update` lib suite alone.
+
+The cause was captured rather than guessed. The failing assertion is the first
+one, and the outcome it received is:
+
+~~~text
+DownloadOutcome::Failed("curl failed: Text file busy (os error 26)")
+~~~
+
+`ETXTBSY`. The test writes a `/bin/sh` stub with `fs::write` and immediately
+`execve`s it; on this machine that close-to-exec boundary intermittently fails
+under load. **The product code behaved correctly** — `download_file` reported a
+failed spawn as `Failed` rather than inventing a `NotFound`, which is the
+correct behaviour and exactly what the assertion distinguishes. The defect is
+test fragility, not updater logic, and `gregg-update` has no workspace-crate
+dependencies, so this line cannot have caused it.
+
+It is left unfixed because the repair belongs to a crate outside this plan's
+scope, and the plan's own rule is to open a corrective plan rather than
+silently widen a closure. The minimal repair is test-only: retry once when the
+outcome is `Failed` *and* the stub's call-recording file was never created, which
+tolerates a failed `exec` without weakening the "exactly one request" invariant
+the test exists to prove.
