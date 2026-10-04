@@ -16,12 +16,13 @@ use crate::eggpool::{
 use crate::endpoint::Endpoint;
 use crate::normalized::NormalizedSnapshot;
 use crate::poller::{OfflineReason, PollBatch, PollOutcome};
+use serde::{Deserialize, Serialize};
 
 /// A stable system identifier (UUID v4 string).
 pub type SystemId = String;
 
 /// Reachability state for a single system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reachability {
     /// No poll result received yet.
     Pending,
@@ -32,7 +33,7 @@ pub enum Reachability {
 }
 
 /// Whether the poll scheduler is currently idle or running a generation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RefreshStatus {
     /// No poll in progress.
     Idle,
@@ -66,7 +67,7 @@ pub enum Pane {
 /// Plan 151: this describes only local machinery. `EggPool`'s own proxy
 /// and provider service health is a separate fact (Plan 152) and is never
 /// inferred from these variants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EggpoolWorkerState {
     /// No request is currently in flight.
     Idle,

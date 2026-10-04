@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use eggfetch_core::{Error as EggfetchError, NetworkFailureKind, RequestFailure};
 use gregg_protocol::v2::{StatusPayloadV2, SCHEMA_VERSION_V2};
 use gregg_protocol::{StatusSnapshot, SCHEMA_VERSION_V1};
+use serde::{Deserialize, Serialize};
 
 use crate::clock::Clock;
 use crate::endpoint::{Endpoint, EndpointError};
@@ -136,7 +137,7 @@ pub enum PollOutcome {
 /// Transport-specific details stay at the poller boundary: the renderer
 /// consumes only this category plus a short bounded detail string, never
 /// transport error types or platform DNS error types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OfflineKind {
     /// The request timed out.
     Timeout,
@@ -181,7 +182,7 @@ impl std::fmt::Display for OfflineKind {
 /// next accepted success) rather than being recomputed by the renderer.
 /// `detail` is a bounded single-line sanitized string; the stable
 /// [`OfflineKind`] is primary.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfflineReason {
     /// Stable failure category.
     pub kind: OfflineKind,

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eggfetch_core::{AuthScheme, Error as EggfetchError, NetworkFailureKind, RequestFailure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::clock::{Clock, RealClock};
@@ -34,7 +34,7 @@ const STATUS_SCHEMA_VERSION: u64 = 1;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The four fixed rolling windows supported by `EggPool`'s summary API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EggpoolPeriod {
     /// The most recent hour.
     Hour,
@@ -101,7 +101,7 @@ struct EggpoolSummaryWire {
 }
 
 /// Validated, display-ready summary values.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EggpoolSummary {
     /// Tokens accounted for by `EggPool`'s summary semantics.
     pub accounted_tokens: u64,
@@ -153,7 +153,7 @@ pub enum EggpoolFetchOutcome {
 
 /// `EggPool`'s server-reported proxy health, independent of Gregg's local
 /// worker lifecycle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EggpoolProxyHealth {
     /// The proxy reports itself ready to serve requests.
     Ready,
@@ -176,7 +176,7 @@ impl EggpoolProxyHealth {
 }
 
 /// `EggPool`'s server-reported provider health.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EggpoolProviderHealth {
     /// The provider is usable.
     Ready,
@@ -216,7 +216,7 @@ impl EggpoolProviderHealth {
 }
 
 /// `EggPool`'s most recent observation of one provider.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EggpoolProviderObservation {
     /// The most recent probe verified the provider.
     Verified,
@@ -241,7 +241,7 @@ impl EggpoolProviderObservation {
 }
 
 /// One decoded provider row of bounded health context.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EggpoolProviderRow {
     /// Bounded provider identity reported by `EggPool`.
     pub id: String,
@@ -255,7 +255,7 @@ pub struct EggpoolProviderRow {
 ///
 /// This is `EggPool`'s own operational health. It never describes Gregg's
 /// worker, and Gregg never infers it from a transport failure.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EggpoolHealthSnapshot {
     /// The decoded schema version, always `1`.
     pub schema_version: u64,

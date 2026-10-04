@@ -5,9 +5,10 @@
 //! into a single internal type that the state reducer and UI consume.
 
 use gregg_protocol::{LoadAverage, MemoryMetrics, SystemIdentity};
+use serde::{Deserialize, Serialize};
 
 /// Client-owned drive record independent of wire schema version.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedDrive {
     pub name: String,
     pub used_bytes: u64,
@@ -16,7 +17,7 @@ pub struct NormalizedDrive {
 }
 
 /// Client-owned disk-I/O device record independent of the wire schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedDiskIoDevice {
     pub id: String,
     pub name: String,
@@ -29,7 +30,7 @@ pub struct NormalizedDiskIoDevice {
 pub type NormalizedDiskIoMetrics = NormalizedDiskIoDevice;
 
 /// Normalized aggregate and per-device disk throughput.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedDiskIo {
     pub aggregate_read_bytes_per_sec: u64,
     pub aggregate_write_bytes_per_sec: u64,
@@ -37,7 +38,7 @@ pub struct NormalizedDiskIo {
 }
 
 /// Client-owned network interface record independent of the wire schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedNetworkInterface {
     pub id: String,
     pub name: String,
@@ -53,7 +54,7 @@ pub struct NormalizedNetworkInterface {
 pub type NormalizedNetworkInterfaceMetrics = NormalizedNetworkInterface;
 
 /// Normalized aggregate and per-interface network telemetry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NormalizedNetwork {
     pub aggregate_rx_bytes_per_sec: u64,
     pub aggregate_tx_bytes_per_sec: u64,
@@ -82,7 +83,7 @@ impl NormalizedNetwork {
 }
 
 /// Derived aggregate capacity for a normalized drive list.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DriveAggregate {
     pub used_bytes: u64,
     pub total_bytes: u64,
@@ -94,7 +95,7 @@ pub struct DriveAggregate {
 ///
 /// Derived from either a v1 or v2 wire snapshot. Optional fields follow
 /// v2 semantics: `None` means the metric is unsupported on the platform.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct NormalizedSnapshot {
     /// Schema version of the original wire snapshot.
@@ -138,7 +139,7 @@ pub struct NormalizedSnapshot {
 }
 
 /// Swap utilization (normalized from v1 or v2).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SwapMetrics {
     pub used_bytes: u64,
     pub total_bytes: u64,
@@ -146,7 +147,7 @@ pub struct SwapMetrics {
 }
 
 /// Commit charge metrics (normalized from v2 only).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CommitMetrics {
     pub used_bytes: u64,
     pub limit_bytes: u64,

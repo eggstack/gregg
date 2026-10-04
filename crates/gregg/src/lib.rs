@@ -11,6 +11,7 @@
 
 pub mod action;
 pub mod cli;
+pub mod clientd;
 pub mod clock;
 pub mod config;
 pub mod eggpool;
