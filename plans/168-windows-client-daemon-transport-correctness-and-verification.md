@@ -170,6 +170,32 @@ error, so the gap is closed rather than only the symptom:
 - **`clientd::ipc` now has a Windows test module.** The Unix suite could never
   have found any of this, because none of the code was reachable on Linux.
 
+## Footprint effect
+
+Plan 167 closed with measured byte figures, so this plan reports its effect on
+them rather than leaving two records in tension. Stripped release binaries at
+`376e365`:
+
+| Binary | Plan 167 recorded | Now | Delta |
+| --- | --- | --- | --- |
+| `greggd` | 3,316,568 B | 3,316,568 B | **0** |
+| `gregg` | 5,339,488 B | 5,345,864 B | +6,376 B (+0.12%) |
+
+`greggd` is byte-identical, which is the expected result: nothing in this plan
+touches the daemon, the collectors, the host crate, or the protocol.
+
+The whole Windows transport is behind `#[cfg(windows)]` and is therefore absent
+from a Linux binary, so the `gregg` increase is **not** the cost of the pipe
+code. It is the shared-code cost: the `endpoint_is_live` wrapper and its Unix
+implementation, `identity.rs` routing `primary_socket_path` through
+`candidates()`, the `#[cfg(unix)]` split on the `Read` import, and the extra
+error paths. Against the `ae56926` baseline the total moves from the +989,752 B
+(+22.76%) Plan 167 recorded to +996,128 B (+22.90%).
+
+No footprint budget is breached. `greggd` remains inside Plan 162's 3,400,000 B
+rule, and `gregg`'s growth is two orders of magnitude below the step that
+produced the line's original +22%.
+
 ## Not claimed here
 
 - **No claim about Windows behaviour outside what CI executed.** The four new
