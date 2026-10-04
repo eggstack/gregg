@@ -81,6 +81,19 @@ matrix, and stripped `greggd` is byte-neutral at 3,261,664 bytes (delta 0).
 It did not reopen Plans 155-159, their footprint decision, or Plan 091, and
 being terminal it unblocks no remaining plan.
 
+Plan 161 is the active coordination roadmap for cron observability and the
+Gregg client-daemon split. It keeps greggd scheduler execution local and
+read-only over HTTP while adding bounded in-memory recent-history/output
+observability, and moves Systems/EggPool polling out of each TUI into one
+config-specific per-user Gregg background daemon. Plans 162-163 own the remote
+scheduler contract and greggd implementation; Plans 164-165 own the local
+client-daemon/IPC and user lifecycle; Plan 166 owns the bounded local cron cache
+and plain c TUI; Plan 167 owns multi-client, restart, memory, payload, security,
+native-lifecycle, and footprint closure. The line is independent of the
+remaining Plan 091 soak record. It adds no remote scheduler mutation, persistent
+cron database, generalized RPC/workflow system, or separately distributed
+client-daemon binary.
+
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
 the protocol/client normalization boundary first: optional schema-v2 CPU
@@ -607,6 +620,13 @@ excluded.
 | [`158-scheduler-footprint-and-schedule-validation-corrective-pass.md`](158-scheduler-footprint-and-schedule-validation-corrective-pass.md) | Close the remaining Plan-157 footprint gate and reject calendar-impossible cron expressions before daemon startup, while preserving scheduler semantics/security/lifecycle | complete at the Plan-159 decision; implemented at `7a466f8`, CI `37172425056` green across all six jobs, and its stop-condition escalation resolved by the 159 re-baseline; independent of 091 |
 | [`159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md`](159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md) | Decide explicitly whether the scheduler line ships on a re-baselined measured footprint budget, on one named approved architectural reduction, or not at all | complete (outcome 1): scheduler line re-baselined to the measured 3,261,664 bytes for this line only, general stance unchanged, growth beyond it re-opens review; qualifying CI `37172425056`, focused/default/release checks green; closes 155/157/158; independent of 091 |
 | [`160-scheduler-civil-clock-reconciliation-hardening.md`](160-scheduler-civil-clock-reconciliation-hardening.md) | Bound the scheduler's trust in long monotonic sleeps so forward/backward wall-clock discontinuities are reconciled at minute-scale without changing cron/load/lifecycle semantics | complete at `d650c59` (implementation `6bb5dcf` + Windows-only `#[cfg(unix)]` test-attribute correction); CI `37177061388` green across all six jobs; one-minute `MAX_CIVIL_RECHECK` wake cap with truthful semantic deadlines, nine deterministic clock-domain tests, stripped `greggd` byte-neutral at 3,261,664 bytes (delta 0 vs Plan-159 baseline); independent of 091; terminal, unblocks no remaining plan |
+| [`161-cron-observability-and-client-daemon-roadmap.md`](161-cron-observability-and-client-daemon-roadmap.md) | Coordinate bounded greggd scheduler history/output observability plus a config-specific per-user Gregg client daemon so multiple TUIs share one polling plane and plain c can inspect cron health | planned; active roadmap; depends on completed 160/current main; independent of 091 |
+| [`162-scheduler-observability-contract-and-resource-qualification.md`](162-scheduler-observability-contract-and-resource-qualification.md) | Freeze scheduler summary/history wire types, live/outcome vocabulary, dedupe identity, default-5 history bounds, stdout/stderr caps, body/memory limits, security policy, and a numeric greggd footprint rule before integration | planned; depends on 161; blocks 163; may proceed in parallel with 164 |
+| [`163-greggd-scheduler-history-and-read-only-api.md`](163-greggd-scheduler-history-and-read-only-api.md) | Implement memory-only per-job terminal history, bounded concurrent output draining, live load/pending/running publication, and read-only scheduler summary/history routes without changing execution semantics | planned; depends on completed 162; blocks cron consumption in 166; independent of 091 |
+| [`164-gregg-client-daemon-core-and-local-ipc.md`](164-gregg-client-daemon-core-and-local-ipc.md) | Move Systems/EggPool polling and normalized fleet state behind one same-binary config-specific client daemon with same-user Unix-socket/Windows-pipe IPC, versioned handshake, latest-state fan-out, and daemon-owned config reconciliation | planned; depends on 161; may proceed in parallel with 162-163; blocks 165 and contributes to 166 |
+| [`165-client-daemon-lifecycle-install-update-and-uninstall.md`](165-client-daemon-lifecycle-install-update-and-uninstall.md) | Add lazy bare-gregg activation, single-launch coordination, per-user startup ownership, protocol-version reconciliation, and client-daemon-aware install/update/uninstall without creating a privileged client service | planned; depends on 164; blocks final lifecycle closure and should complete before 166 closes |
+| [`166-cron-cache-and-tui-observability.md`](166-cron-cache-and-tui-observability.md) | Poll scheduler summary/history once in clientd, retain a longer globally bounded memory-only local history, add plain c cron detail with default-five job history/output, load-delay state, and terminal-control sanitization | planned; depends on 163+164 and closes after 165; blocks 167 |
+| [`167-cron-client-daemon-correctness-and-footprint-closure.md`](167-cron-client-daemon-correctness-and-footprint-closure.md) | Prove one polling plane across multiple TUIs, lazy-start/restart behavior, bounded output/history memory and payloads, old/new daemon compatibility, IPC security/native lifecycle, and measured greggd/gregg footprint | planned; depends on 163+165+166; closes 161 line |
 
 Dependency order:
 
@@ -630,7 +650,13 @@ current post-154 main -> 155
 157 -> 158
 158 -> 159
 159 -> 160
+160 -> 161
+161 -> 162 -> 163
+161 -> 164 -> 165
+163 + 164 -> 166
+163 + 165 + 166 -> 167
 155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
+Plan 161 coordinates the next cron-observability/client-daemon line. Plan 162 must settle the remote scheduler wire/output/memory/footprint contract before 163 changes greggd. Plan 164 may proceed in parallel because the local client-daemon split is independently justified by duplicate TUI polling. Plan 165 adds per-user lifecycle on the Plan-164 boundary. Plan 166 requires the remote scheduler implementation plus clientd core, and should not close before 165 makes the cache a durable background process. Plan 167 closes only after 163, 165, and 166 are complete. Plans 161-167 remain independent of Plan 091 and use the existing CI/native jobs unless a concrete platform truth cannot be demonstrated otherwise.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -720,6 +746,19 @@ indefinitely, so the decision is made an explicit, narrow plan with exactly
 three recorded outcomes instead of being absorbed by silently checking boxes.
 Plan 159 is now complete with outcome 1, and Plans 155, 157, and 158 are
 closed against it.
+
+Plan 161 is separately justified by two product-level gaps that the completed
+scheduler line intentionally left out: scheduler execution state/output is not
+remotely observable, and every Gregg TUI currently owns duplicate Systems and
+EggPool polling. The new line keeps remote scheduler control out of scope while
+making status/history read-only and bounded, and makes the client daemon a mode
+of the existing gregg binary rather than a new distributed component. Plan 162
+is a real qualification gate because Plan 159 requires renewed measurement for
+any scheduler-line growth beyond 3,261,664 stripped bytes and because bounded
+child output introduces concrete pipe/memory/body/security decisions. Plans
+163-167 then separate daemon execution/publication, local IPC/state ownership,
+user lifecycle, TUI/cache behavior, and measured closure so implementation can
+proceed without one cross-cutting mega-plan.
 
 Plan 148 is separately justified by the published EggServe 0.4.0 server line:
 Gregg's direct `eggserve-server = "0.2"` requirement prevents Cargo from
