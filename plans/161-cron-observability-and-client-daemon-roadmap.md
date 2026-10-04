@@ -430,3 +430,34 @@ diagnosis plus the minimal test-only repair are in Plan 167's closure.
 Independent of Plan 091 throughout: no part of this line depended on the
 remaining sustained-soak record, and no part of it satisfies or substitutes for
 that record.
+
+## Post-closure correction (added after `4fc70a5`)
+
+The "Carried forward, honestly" paragraph above recorded that the Windows job had
+not been run and therefore had to be confirmed before release. Plan 168 ran it,
+and the result was worse than an unconfirmed job: **the Windows client daemon
+had never been compiled.** The Windows half of the Plan-164 transport was
+written but never type-checked, so the Windows job had been red continuously
+since this roadmap's fourth child plan landed.
+
+The gap was stated accurately but read too gently. The accurate reading is that
+this roadmap closed a cross-platform feature with one of its three platforms
+unbuilt, and that the local verification loop — which is Linux-only by design —
+could not have caught it. The absence of a CI run ID was a tooling limit; the
+absence of a working Windows build was a fact about the product.
+
+Two roadmap-level invariants survive unchanged and are unaffected: one polling
+plane, and memory-only history with no remote control plane. The Windows fix
+changed no scheduling, publication, caching, or history behaviour, and
+`greggd` was not touched at all. What changed is that the transport those
+invariants ride on now exists on all three platforms, and that the endpoint name
+on Windows is a `\\.\pipe\` name rather than a Unix socket path.
+
+Plan 168 also found a second defect with no platform connection:
+`FrontendFrame::ProtocolError(String)` cannot be serialized under an internally
+tagged enum, so every refusal reason this architecture tried to send was
+silently discarded. That is a consequence of the handshake/refusal contract
+this roadmap established, so it is recorded here rather than only in 168.
+
+The `gregg-update` `ETXTBSY` flake noted above is still unfixed and still out of
+scope; Plan 168 does not touch `gregg-update`.

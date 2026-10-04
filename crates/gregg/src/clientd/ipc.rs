@@ -402,9 +402,9 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
 
     /// Every "the other end is gone" code, as a comparison value.
     const fn closed(code: i32) -> bool {
-        code == ERROR_BROKEN_PIPE as i32
-            || code == ERROR_NO_DATA as i32
-            || code == ERROR_PIPE_NOT_CONNECTED as i32
+        code == ERROR_BROKEN_PIPE.cast_signed()
+            || code == ERROR_NO_DATA.cast_signed()
+            || code == ERROR_PIPE_NOT_CONNECTED.cast_signed()
     }
 
     if buf.is_empty() {
@@ -421,13 +421,13 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
             std::ptr::null_mut(),
             0,
             std::ptr::null_mut(),
-            &mut available,
+            &raw mut available,
             std::ptr::null_mut(),
         )
     };
     if peeked == 0 {
         let error = io::Error::last_os_error();
-        return if error.raw_os_error().is_some_and(|code| closed(code)) {
+        return if error.raw_os_error().is_some_and(closed) {
             Ok(0)
         } else {
             Err(error)
@@ -440,7 +440,7 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
     // Ask for no more than is queued *and* no more than fits. Asking for less
     // than the queued count is deliberate: it keeps `ERROR_MORE_DATA` out of
     // the picture, and the leftover bytes are simply read on the next poll.
-    let want = available.min(buf.len() as u32);
+    let want = available.min(u32::try_from(buf.len()).unwrap_or(u32::MAX));
     let mut read: u32 = 0;
     // SAFETY: `buf` is a live, exclusively borrowed slice of `want` writable
     // bytes, `read` is a live `u32` out-parameter, and a null `OVERLAPPED` is
@@ -451,13 +451,13 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
             pipe.as_raw_handle(),
             buf.as_mut_ptr(),
             want,
-            &mut read,
+            &raw mut read,
             std::ptr::null_mut(),
         )
     };
     if ok == 0 {
         let error = io::Error::last_os_error();
-        return if error.raw_os_error().is_some_and(|code| closed(code)) {
+        return if error.raw_os_error().is_some_and(closed) {
             Ok(0)
         } else {
             Err(error)
@@ -780,7 +780,7 @@ mod imp {
             let ok = unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) };
             if ok == 0 {
                 let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED as i32) {
+                if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED.cast_signed()) {
                     return Err(TransportError::Io(error));
                 }
             }
@@ -819,14 +819,15 @@ mod imp {
             let ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 wide_sddl().as_ptr(),
                 SDDL_REVISION_1,
-                &mut descriptor,
+                &raw mut descriptor,
                 std::ptr::null_mut(),
             );
             if ok == 0 {
                 return Err(TransportError::Io(io::Error::last_os_error()));
             }
             let attributes = SECURITY_ATTRIBUTES {
-                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                    .unwrap_or(u32::MAX),
                 lpSecurityDescriptor: descriptor,
                 bInheritHandle: 0,
             };
@@ -844,7 +845,7 @@ mod imp {
                 PIPE_BUFFER_BYTES,
                 PIPE_BUFFER_BYTES,
                 0,
-                &attributes,
+                std::ptr::from_ref(&attributes),
             );
             LocalFree(descriptor as HLOCAL);
             if handle == INVALID_HANDLE_VALUE {
@@ -1350,11 +1351,12 @@ mod windows_tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut buffer = [0_u8; 64];
         loop {
+            // Data and "nothing yet" are both fine here; only a real fault or
+            // a closed pipe ends the wait.
             match server.read_available(&mut buffer) {
                 Err(TransportError::Disconnected) => break,
-                Err(TransportError::WouldBlock) => {}
+                Err(TransportError::WouldBlock) | Ok(_) => {}
                 Err(other) => panic!("expected a disconnect, got {other}"),
-                Ok(_) => {}
             }
             assert!(
                 Instant::now() < deadline,

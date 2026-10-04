@@ -150,7 +150,7 @@ impl FileLockGuard {
                         0,
                         u32::MAX,
                         u32::MAX,
-                        &mut overlapped,
+                        &raw mut overlapped,
                     )
                 };
                 if result != 0 {
@@ -196,7 +196,7 @@ impl Drop for FileLockGuard {
                 use windows_sys::Win32::System::IO::OVERLAPPED;
                 let mut overlapped: OVERLAPPED = std::mem::zeroed();
                 #[allow(clippy::ptr_as_ptr)]
-                UnlockFileEx(handle as *mut _, 0, 1, 0, &mut overlapped);
+                UnlockFileEx(handle as *mut _, 0, 1, 0, &raw mut overlapped);
             }
         }
         // We do not delete the lock file — it may be reused by the next

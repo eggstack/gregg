@@ -491,3 +491,54 @@ silently widen a closure. The minimal repair is test-only: retry once when the
 outcome is `Failed` *and* the stub's call-recording file was never created, which
 tolerates a failed `exec` without weakening the "exactly one request" invariant
 the test exists to prove.
+
+## Post-closure correction (added after `4fc70a5`)
+
+This record's "Not claimed here" section said the macOS, Windows, and MSRV jobs
+were not run by this closure and had to be confirmed before release. That gap
+was closed by Plan 168, and closing it found something this closure could not
+have found.
+
+**The Windows client daemon had never been compiled.** The Windows half of the
+Plan-164 local IPC transport, and the Windows branch of the config lock, were
+written but never type-checked. The `gregg` client crate did not build for
+`x86_64-pc-windows-msvc`, so the Windows CI job had been red continuously since
+Plan 164 landed — including on two of this line's own pushes.
+
+So the statement above was, in hindsight, too generous: the problem was not that
+a passing job had not been observed, it was that the job could not have been
+passing. The "No CI run ID is available" note was accurate about the tooling and
+wrong about the implication.
+
+The defects are listed in full in Plan 168. The three that matter most are not
+compile errors at all:
+
+- the endpoint name was a Unix socket path, which `CreateNamedPipeW` rejects;
+- the accept loop required a non-blocking accept that cannot exist for a
+  synchronous pipe on a current-thread runtime, so the daemon would have frozen;
+- endpoint liveness was `path.exists()`, which is always false for a pipe, so
+  the `stop` confirmation would have reported success without observing anything.
+
+The four Windows tests added by Plan 168 then found a second, pre-existing
+defect that has nothing to do with Windows: `FrontendFrame` is internally
+tagged, so `ProtocolError(String)` can never be serialized, and both senders
+discarded the encode error. Every "here is why you were refused" frame this
+architecture ever tried to send was silently dropped.
+
+**What this record's evidence does and does not cover.** The footprint, CPU, and
+memory figures below remain valid: `greggd` is untouched by Plan 168, and the
+`gregg` delta measured against `ae56926` already included the client daemon, so
+the Windows fix changes no measured quantity's method. The multi-client,
+restart, and boundedness proofs remain valid too, because they exercise code
+paths that are shared across platforms and are unchanged. What was missing was
+any evidence at all that the Windows build worked, and that is now supplied at
+`eb2bc62`.
+
+**Process correction.** The reason four plans missed this is structural: the
+local verification loop is Linux-only, and the Windows truth lives in a remote
+job nobody was watching. Plan 168 closes that loop with a local
+`x86_64-pc-windows-gnu` type-check of the whole workspace, which is a
+developer aid rather than a change to CI's authority.
+
+The `gregg-update` `ETXTBSY` flake recorded above is still unfixed and still
+out of scope here; Plan 168 does not touch `gregg-update`.
