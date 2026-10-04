@@ -741,7 +741,6 @@ mod tests {
         drop(shutdown_tx);
     }
 
-    #[cfg(unix)]
     fn daily_job(name: &str) -> ScheduledJobConfig {
         ScheduledJobConfig {
             name: name.to_owned(),
@@ -1016,6 +1015,7 @@ mod tests {
         assert_eq!(engine.pending_count(), 0);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn active_direct_child_is_terminated_and_reaped_on_shutdown() {
         let job = ScheduledJobConfig {
