@@ -1451,6 +1451,11 @@ mod observation_tests {
 
     /// Spawn a child, drain both streams concurrently, and return the terminal
     /// record the scheduler would record.
+    ///
+    /// Only the Unix tests below drive a real child, so this helper is Unix
+    /// only: on Windows it would otherwise be dead code, and CI builds with
+    /// `-D warnings`.
+    #[cfg(unix)]
     async fn run_child_to_completion(
         job: &ScheduledJobConfig,
         launched: Launch,
@@ -1490,6 +1495,8 @@ mod observation_tests {
         )
     }
 
+    /// Unix only, for the same reason as [`run_child_to_completion`].
+    #[cfg(unix)]
     fn launch_for(engine: &Engine<'_>, index: usize, pending_age: Duration) -> Launch {
         let _ = engine;
         Launch {

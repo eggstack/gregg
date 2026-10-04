@@ -126,20 +126,27 @@ impl FileLockGuard {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
-            use windows_sys::Win32::Storage::FileSystem::LockFileEx;
-            use windows_sys::Win32::System::IO::{LOCKFILE_EXCLUSIVE_LOCK, OVERLAPPED};
+            // `LockFileEx` and both of its flags live in
+            // `Win32_Storage_FileSystem` in windows-sys 0.59; only the
+            // `OVERLAPPED` it fills in comes from `Win32_System_IO`.
+            use windows_sys::Win32::Storage::FileSystem::{
+                LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+            };
+            use windows_sys::Win32::System::IO::OVERLAPPED;
             let handle = file.as_raw_handle();
             let deadline = std::time::Instant::now() + timeout;
             loop {
-                let mut overlapped: OVERLAPPED = std::mem::zeroed();
+                // SAFETY: `OVERLAPPED` is a plain `repr(C)` aggregate of
+                // integers, a raw pointer, and a handle, for which an all-zero
+                // bit pattern is the documented "nothing in flight" value.
+                let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
                 // SAFETY: `handle` is a valid file handle owned by `file`, and
                 // `overlapped` is a live, zeroed stack allocation that the API
                 // only reads offsets from.
                 let result = unsafe {
                     LockFileEx(
                         handle,
-                        LOCKFILE_EXCLUSIVE_LOCK
-                            | windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY,
+                        LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
                         0,
                         u32::MAX,
                         u32::MAX,

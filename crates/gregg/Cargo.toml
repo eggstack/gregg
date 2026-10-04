@@ -52,7 +52,20 @@ unicode-width = "0.2"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_System_IO"] }
+# `Win32_Security` is not optional for the pipe transport: windows-sys gates
+# `CreateNamedPipeW` and `CreateFileW` behind it, and `SECURITY_ATTRIBUTES` lives
+# there. `Win32_Security_Authorization` carries the owner-only SDDL conversion,
+# `Win32_System_Pipes` the named-pipe calls, and `Win32_Foundation` the shared
+# handle/`BOOL`/error-constant surface. `LockFileEx` and its flags are in
+# `Win32_Storage_FileSystem`, not `Win32_System_IO`.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+] }
 
 [dev-dependencies]
 gregg-protocol = { version = "1.0.15", path = "../gregg-protocol", features = ["test_support"] }

@@ -45,6 +45,38 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The `gregg` client daemon did not build or run on Windows at all.** The
+  Windows half of the local IPC transport (Plan 164) and the Windows branch of
+  the config lock had been written but never compiled: the `gregg` client crate
+  did not build for `x86_64-pc-windows-msvc`, so the Windows CI job had been red
+  since the client daemon landed. The defects were not cosmetic. The pipe stream
+  type did not exist, `ConnectNamedPipe` was called with five arguments instead
+  of two, the owner-only SDDL out-parameter was confused with a caller-supplied
+  string buffer so the pipe would have been created with a garbage security
+  descriptor, the handle was closed and then reused, and
+  `PIPE_REJECT_REMOTE_CLIENTS` was OR-ed into the open-mode argument instead of
+  the pipe-mode argument, which would have left the pipe reachable off-box
+  instead of restricting it. Three `windows-sys` feature gates the code depends
+  on were not enabled, and `LOCKFILE_EXCLUSIVE_LOCK` was imported from a module
+  that does not contain it.
+
+  Two further faults would have kept the daemon from working even once compiled.
+  The endpoint name was a Unix socket path, which `CreateNamedPipeW` rejects: a
+  named pipe requires a `\\.\pipe\` name, and that namespace is flat, so there is
+  no config-adjacent location and no temp-directory fallback on Windows. And the
+  accept loop required a non-blocking accept that cannot exist for a synchronous
+  pipe on a current-thread runtime, where a blocking wait would freeze polling
+  and every attached window at once.
+
+  The transport now names the pipe `\\.\pipe\gregg-client-<id>`, creates each
+  instance with the owner-only DACL and a correct descriptor lifetime, parks the
+  blocking `ConnectNamedPipe` on the blocking pool, and reads with
+  `PeekNamedPipe` so a poll costs no context switch. Endpoint liveness is a
+  `WaitNamedPipeW` probe rather than a file-existence check, which would have
+  answered "not running" for a daemon that was running. Four Windows tests
+  exercise the pipe end to end on CI, including a client that connects *after*
+  the accept is already parked and a closed pipe that must report a disconnect.
+
 - **A TUI could fail to attach to a healthy client daemon.** The daemon's
   publication loop wrote a state document as soon as the shared slot changed,
   including before it had answered a newly accepted connection's handshake. A

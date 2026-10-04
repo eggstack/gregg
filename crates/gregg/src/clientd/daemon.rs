@@ -674,7 +674,7 @@ async fn accept_loop(mut listener: ipc::Listener, hub: Arc<Hub>, cancel: Cancell
         if cancel.is_cancelled() {
             return;
         }
-        match listener.accept() {
+        match listener.accept().await {
             Ok(connection) => {
                 let subscriber = next_subscriber;
                 next_subscriber = next_subscriber.wrapping_add(1).max(1);
@@ -1029,7 +1029,11 @@ pub async fn stop(identity: &ClientDaemonIdentity, version: &str) -> Result<(), 
     // would report success for a daemon that is still unwinding, and the very
     // next command would find it still listening.
     for _ in 0..200 {
-        if identity.candidates().iter().all(|path| !path.exists()) {
+        if identity
+            .candidates()
+            .iter()
+            .all(|path| !ipc::endpoint_is_live(path))
+        {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
@@ -1129,7 +1133,12 @@ mod tests {
         /// Wait for the endpoint to appear, bounded.
         async fn ready(&self) {
             for _ in 0..200 {
-                if self.identity.candidates().iter().any(|path| path.exists()) {
+                if self
+                    .identity
+                    .candidates()
+                    .iter()
+                    .any(|path| ipc::endpoint_is_live(path))
+                {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(10)).await;

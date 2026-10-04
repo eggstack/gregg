@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 /// Unix `sockaddr_un.sun_path` is 108 bytes including the NUL terminator, so a
 /// socket path must leave room for the whole name. Anything longer is reported
 /// as unbindable and the caller falls back to the system temp directory.
+///
+/// Windows has no equivalent constraint: the name is a pipe name, not a socket
+/// path, and is bounded only by the fixed digest length below.
+#[cfg(unix)]
 const UNIX_PATH_MAX: usize = 100;
 
 /// Normalized identity for exactly one config path.
@@ -66,12 +70,14 @@ impl ClientDaemonIdentity {
 
     /// Socket file name, shared by the primary and fallback locations so the
     /// two always agree on identity.
+    #[cfg(unix)]
     fn socket_file_name(&self) -> String {
         format!("gregg-client-{}.sock", self.id)
     }
 
     /// Preferred location: beside the config file, so an operator can see which
     /// config a socket belongs to.
+    #[cfg(unix)]
     pub(crate) fn primary(&self) -> Option<PathBuf> {
         self.join(self.normalized.parent())
     }
@@ -79,10 +85,12 @@ impl ClientDaemonIdentity {
     /// Deterministic fallback under the system temp directory, used when the
     /// config's directory is not writable by the current principal (a shared
     /// or read-only config location).
+    #[cfg(unix)]
     pub(crate) fn fallback(&self) -> Option<PathBuf> {
         self.join(Some(std::env::temp_dir().as_path()))
     }
 
+    #[cfg(unix)]
     fn join(&self, directory: Option<&Path>) -> Option<PathBuf> {
         let path = directory?.join(self.socket_file_name());
         if path.as_os_str().len() > UNIX_PATH_MAX {
@@ -95,6 +103,7 @@ impl ClientDaemonIdentity {
     ///
     /// The client always probes both, because it cannot know whether the daemon
     /// found its primary location writable.
+    #[cfg(unix)]
     pub(crate) fn candidates(&self) -> Vec<PathBuf> {
         let mut out = Vec::with_capacity(2);
         if let Some(primary) = self.primary() {
@@ -106,6 +115,18 @@ impl ClientDaemonIdentity {
             }
         }
         out
+    }
+
+    /// The single name a Windows client daemon binds.
+    ///
+    /// A named pipe is not a filesystem entry: `CreateNamedPipeW` requires the
+    /// `\\.\pipe\` prefix and rejects anything else, and the whole `\\.\pipe\`
+    /// namespace is flat. So there is no "beside the config" location to prefer
+    /// and no unwritable-directory fallback to reach for — the identity digest
+    /// alone names the pipe, and the config path stays the only input.
+    #[cfg(windows)]
+    pub(crate) fn candidates(&self) -> Vec<PathBuf> {
+        vec![PathBuf::from(format!(r"\\.\pipe\gregg-client-{}", self.id))]
     }
 }
 
@@ -149,16 +170,33 @@ pub fn client_daemon_id(config_path: &Path) -> String {
     ClientDaemonIdentity::for_path(config_path).id
 }
 
-/// Preferred socket path for a config, beside the config file.
+/// Preferred endpoint path for a config, beside the config file.
+///
+/// On Windows a named pipe has no filesystem location to prefer, so this is
+/// simply the one name the daemon binds.
 #[must_use]
 pub fn primary_socket_path(config_path: &Path) -> Option<PathBuf> {
-    ClientDaemonIdentity::for_path(config_path).primary()
+    ClientDaemonIdentity::for_path(config_path)
+        .candidates()
+        .into_iter()
+        .next()
 }
 
-/// Deterministic fallback socket path under the system temp directory.
+/// Deterministic fallback endpoint path under the system temp directory.
+///
+/// Windows named pipes have no directory to fall back to — the `\\.\pipe\`
+/// namespace is flat and never unwritable — so this is always `None` there.
 #[must_use]
 pub fn fallback_socket_path(config_path: &Path) -> Option<PathBuf> {
-    ClientDaemonIdentity::for_path(config_path).fallback()
+    #[cfg(unix)]
+    {
+        ClientDaemonIdentity::for_path(config_path).fallback()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = config_path;
+        None
+    }
 }
 
 /// Every socket path a client daemon for this config may have bound.
@@ -224,6 +262,7 @@ mod tests {
         assert_eq!(before, after);
     }
 
+    #[cfg(unix)]
     #[test]
     fn primary_sits_beside_the_config_and_shares_the_digest() {
         let config = Path::new("/tmp/gregg-adjacent/gregg.toml");
@@ -237,6 +276,7 @@ mod tests {
         assert!(name.contains(identity.id()), "{name} must contain the id");
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_fallback_lives_under_the_temp_directory() {
         let identity = ClientDaemonIdentity::for_path(Path::new("/tmp/gregg-adjacent/gregg.toml"));
@@ -244,6 +284,7 @@ mod tests {
         assert_eq!(fallback.parent(), Some(std::env::temp_dir().as_path()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_very_long_path_reports_no_unix_socket_location() {
         // A path that cannot fit in `sun_path` must be reported as unbindable
@@ -256,6 +297,7 @@ mod tests {
         assert_ne!(identity.candidates().len(), 0);
     }
 
+    #[cfg(unix)]
     #[test]
     fn candidates_start_with_the_primary_and_are_deduplicated() {
         let identity = ClientDaemonIdentity::for_path(Path::new("/tmp/gregg-adjacent/gregg.toml"));
@@ -265,5 +307,34 @@ mod tests {
         sorted.sort();
         sorted.dedup();
         assert_eq!(sorted.len(), candidates.len());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_windows_candidate_is_one_pipe_name_in_the_flat_namespace() {
+        let identity = ClientDaemonIdentity::for_path(Path::new(r"C:\Users\op\gregg.toml"));
+        let candidates = identity.candidates();
+        // `CreateNamedPipeW` rejects any name without the `\\.\pipe\` prefix,
+        // and there is no directory to prefer or fall back to, so there is
+        // exactly one name and it is derived from the digest alone.
+        assert_eq!(candidates.len(), 1);
+        let name = candidates[0].to_str().expect("utf-8 pipe name");
+        assert!(
+            name.starts_with(r"\\.\pipe\gregg-client-"),
+            "not a pipe name: {name}"
+        );
+        assert!(name.ends_with(identity.id()), "{name} must end in the id");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_very_long_config_path_still_yields_one_usable_pipe_name() {
+        // The `sun_path` limit is a Unix constraint. A pipe name is a fixed
+        // digest, so a long config path must not cost this platform its
+        // endpoint.
+        let long = PathBuf::from(format!(r"C:\Users\{}\gregg.toml", "d".repeat(200)));
+        let identity = ClientDaemonIdentity::for_path(&long);
+        assert_eq!(identity.candidates().len(), 1);
+        assert!(fallback_socket_path(&long).is_none());
     }
 }

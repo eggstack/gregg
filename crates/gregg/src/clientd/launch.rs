@@ -684,7 +684,11 @@ mod tests {
             ));
             {
                 for _ in 0..200 {
-                    if identity_a.candidates().iter().any(|p| p.exists()) {
+                    if identity_a
+                        .candidates()
+                        .iter()
+                        .any(|p| crate::clientd::ipc::endpoint_is_live(p))
+                    {
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(10)).await;
@@ -729,7 +733,7 @@ mod tests {
             // occupying the name would.
             let mut squatter = ipc::bind(std::slice::from_ref(&endpoint)).expect("squatter binds");
             let squatter_task = tokio::spawn(async move {
-                let Ok(mut connection) = squatter.accept() else {
+                let Ok(mut connection) = squatter.accept().await else {
                     return;
                 };
                 let mut buffer = [0_u8; 4096];

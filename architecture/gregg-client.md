@@ -23,7 +23,7 @@ renders a Ratatui-based terminal UI.
 | `main` | `src/main.rs` | Entry point and the TUI event loop (3 `select!` biased arms in source order: shutdown, input events, daemon frames — input before frames so a flood of state documents cannot starve `Quit`). Reads no config file and opens no network connection; `update` is synchronous, before Tokio |
 | `clientd/identity` | `src/clientd/identity.rs` | Per-config FNV-1a identity of the normalized config path; endpoint candidate paths (config-adjacent primary, temp-dir fallback) |
 | `clientd/protocol` | `src/clientd/protocol.rs` | Local IPC wire contract: `PROTOCOL_VERSION`, 8-hex length prefix, `FrontendFrame` / `DaemonRequest`, encode/decode caps. Deliberately **not** in `gregg-protocol` — same binary, same host, version handshake instead of forward compatibility |
-| `clientd/ipc` | `src/clientd/ipc.rs` | Endpoint transport. Unix: `0600` socket, non-blocking discipline, stale reclamation (must be a socket **and** unconnectable). Windows: named pipe with an owner-only SDDL and `PIPE_REJECT_REMOTE_CLIENTS` |
+| `clientd/ipc` | `src/clientd/ipc.rs` | Endpoint transport. Unix: `0600` socket, non-blocking discipline, stale reclamation (must be a socket **and** unconnectable). Windows: named pipe `\\.\pipe\gregg-client-<id>` with an owner-only SDDL and `PIPE_REJECT_REMOTE_CLIENTS`; liveness is a `WaitNamedPipeW` probe, never a file check |
 | `clientd/snapshot` | `src/clientd/snapshot.rs` | `FrontendSnapshot` and per-system / EggPool DTOs. Timestamps cross as Unix ms because `Instant` cannot be transported |
 | `clientd/daemon` | `src/clientd/daemon.rs` | The client daemon: owns `FleetState`, the poll scheduler, the EggPool worker, and the `Ctrl-R` reload boundary; `watch`-channel fan-out; `attach` / `status` / `stop` |
 | `clientd/frontend` | `src/clientd/frontend.rs` | The TUI's side: dial, handshake, request sender (`ControlSink`), and the single socket-owning frame reader |
@@ -135,6 +135,7 @@ Frontend B ─┴─────────────────────
 - **Identity.** One daemon per config, keyed by an FNV-1a digest of the
   normalized config path, on a `0600` socket beside that config. Two configs
   never share a daemon; one daemon never serves another config's fleet.
+
 - **Handshake.** Carries the protocol version *and* the expected config
   identity. A TUI is refused rather than fed another config's systems, and
   `gregg daemon status`/`stop` identify their target through the handshake
@@ -179,6 +180,45 @@ Frontend B ─┴─────────────────────
   budget exactly when the daemon is unhealthy and would make the failure
   invisible. Plan 165 turns an *absent* endpoint into a bounded lazy launch; it
   does not relax this.
+
+### The Windows transport is not the Unix transport
+
+`clientd/ipc` presents one `bind`/`connect`/`accept`/`cleanup` surface so neither
+the daemon nor the frontend carries a `#[cfg]`. That uniformity is worth less
+than the two facts below, which are Windows-only and load-bearing.
+
+**The endpoint name is a pipe name, not a path.** `CreateNamedPipeW` requires the
+`\\.\pipe\` prefix and rejects anything else, and the `\\.\pipe\` namespace is
+flat. So Windows has one endpoint per config, `\\.\pipe\gregg-client-<id>`,
+derived from the identity digest alone: no config-adjacent location to prefer
+and no unwritable temp-directory fallback to reach for. The `sun_path` length
+limit is a Unix constraint and must not suppress a Windows endpoint. Because a
+pipe is not a filesystem entry, "is a daemon still holding this?" is
+`WaitNamedPipeW(name, 0)`, not `path.exists()` — the latter answers "no" for a
+daemon that is running, which would make the `stop` confirmation and every
+startup readiness wait return immediately.
+
+**Nothing may block the runtime.** `gregg daemon run` uses a *current-thread*
+runtime, so a single blocking call freezes polling, cron, and every attached
+window at once. A synchronous named pipe has no non-blocking read, so the two
+places that would block are handled differently:
+
+- *Accept.* `ConnectNamedPipe` is parked on the blocking pool with the pipe
+  instance moved into the closure, so the handle keeps one owner for the whole
+  wait. The accept loop therefore never busy-polls on Windows, where a Unix
+  accept returns `WouldBlock` every 10 ms.
+- *Read.* `PeekNamedPipe` reports the queued byte count without blocking, and
+  `ReadFile` then asks for at most that many bytes and at most what the caller's
+  buffer holds, so it has nothing to wait for. Asking for less than the queued
+  count is deliberate: it keeps `ERROR_MORE_DATA` out of the picture, and the
+  remainder is read on the next poll.
+
+Each instance is created with the owner-only DACL `D:P(A;;GA;;;OW)`,
+`PIPE_REJECT_REMOTE_CLIENTS` in the **pipe-mode** argument (folding it into
+open-mode would OR incompatible access rights and leave the pipe reachable
+off-box), and no `FILE_FLAG_OVERLAPPED`. The descriptor the SDDL conversion
+allocates is self-relative and is released with `LocalFree` in the same block
+that created the pipe.
 
 ### Lifecycle (Plan 165)
 
