@@ -287,3 +287,23 @@ Do not include:
 ## Handoff
 
 Plan 156 is complete and Plan 157's implementation has landed, but the line remains open through corrective Plan 158. Continue with Plan 158; do not weaken the systemd unit, add sudo, relax the footprint gate, or replace correct DST/local-time behavior with unsafe platform code. The critical remaining goals are closing the measured binary deficit and moving impossible-calendar rejection into configuration validation.
+
+## Plan-158 status note (roadmap still open)
+
+The product line this roadmap coordinates is functionally complete: Plans 156
+and 157 built and qualified it, and Plan 158 landed the corrective scope
+(implementation `7a466f8`, CI run `37172425056`) including the two defects
+Plan 157 left open — calendar-impossible schedules are now rejected during
+configuration loading before the listener binds, and the fabricated 366-day
+runtime schedule fallback is gone.
+
+This roadmap is **not** closed. Its original objective names "small binary" as
+an invariant, and the measured scheduler line costs +164,464 bytes (+5.309%)
+over the 3,097,200-byte pre-scheduler baseline, against a 3,228,272-byte
+128 KiB and 3,252,060-byte 5% ceiling. Plan 158 recovered 10,792 of the
+44,184 required bytes and showed by ablation that the remaining 33,392 bytes
+cannot come from any lever this line is allowed to pull
+(`plans/158-scheduler-footprint-and-schedule-validation-corrective-pass.md`).
+Plan 159 therefore owns the explicit budget decision, and this roadmap closes
+only when that decision is recorded and Plans 157 and 158 are reconciled
+against it. Plan 091's independent soak record remains separate.

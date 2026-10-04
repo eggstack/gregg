@@ -470,3 +470,61 @@ Stop and write a corrective follow-up instead of broadening this plan if impleme
 The primary implementation has landed. Do not continue broad scheduler feature work in this plan. Corrective Plan 158 owns the remaining footprint deficit, impossible-calendar config validation, removal of the fabricated runtime schedule fallback, and final qualification/reconciliation.
 
 Preserve this plan's original acceptance list until Plan 158 supplies the missing release-size and corrective evidence. At that point, reconcile each item against actual tests/smoke/CI and close Plan 157 through Plan 158 rather than rewriting the over-budget implementation history.
+
+## Plan-158 reconciliation note (Plan 157 remains open)
+
+Plan 158 implemented the corrective scope and reconciled this plan's criteria
+against real evidence at implementation `7a466f8` and CI run `37172425056`.
+This plan's original over-budget implementation record is preserved above and
+is not rewritten.
+
+Reconciled as demonstrated by Plan 158's tests, smoke, and CI:
+
+- existing configs deserialize with `jobs` empty/default and unchanged
+  monitoring behavior (`old_config_defaults_jobs_and_privileged_opt_in`);
+- the five-field contract, aliases, and the absence of seconds/year/name/
+  `@reboot` extensions (`five_field_contract_and_aliases`);
+- direct argv with optional `working_dir`, no shell, no environment map, no
+  sudo, and the Unix euid-0 opt-in
+  (`startup_is_strictly_after_reference_and_argv_is_preserved`,
+  `unix_root_jobs_need_explicit_opt_in_but_empty_config_is_allowed`,
+  `windows_rejects_load_gate_and_unix_accepts_time_only`);
+- cached-load-only gating, no self-poll, correct 1m/5m/15m scalar, and
+  fail-closed missing load
+  (`load_threshold_is_inclusive_and_selected_window_is_exact`,
+  `load_is_rechecked_after_a_previous_child_releases_the_slot`);
+- one pending occurrence per job, O(jobs) pending cardinality, one global
+  child, and no herding
+  (`deferral_is_bounded_coalesced_and_expires_once`,
+  `global_slot_and_oldest_stable_selection_prevent_herding`,
+  `five_deferred_jobs_still_produce_one_global_launch_each`);
+- nonzero exit logged and not retried, and bounded max-wait expiry that does
+  not extend on coalesced occurrences (same deferral test, plus the smoke's
+  `scheduled job expired waiting for load` with no execution);
+- the child lifecycle and shutdown contract (smoke: `greggd stop` during an
+  active child logs `scheduler shutting down with active command`, exits 0,
+  leaves no child, and stays far inside the two-second child bound);
+- load-gate deferral logging is emitted once per pending occurrence
+  (`only_candidates_older_than_the_winner_are_deferred`);
+- default/release local checks, Rust 1.89, and the existing six-job CI run;
+- the manual harmless scheduler smoke;
+- unchanged HTTP, protocol, croncheck, control, startup, update, and
+  uninstall behavior.
+
+Two criteria remain open, and this plan therefore stays open:
+
+- **Final stripped-binary/dependency delta inside the Plan-156 budget.** Not
+  met and not reachable: 3,261,664 bytes at `7a466f8`, +164,464 (+5.309%)
+  against the 3,097,200-byte baseline, versus the 3,228,272-byte 128 KiB and
+  3,252,060-byte 5% ceilings. Plan 158's measurement record attributes the
+  cost and shows the 131,072-byte budget is 129,104 bytes of irreducible
+  dependency and configuration-schema cost before any scheduler code at all.
+- **The "no binary-footprint gate waiver" stop condition** is a separate
+  reason this plan cannot self-close, which is why the decision is owned by
+  Plan 159.
+
+Plan 158 additionally closed two defects this plan left open: a
+calendar-impossible schedule such as `0 0 31 2 *` is now an `InvalidJobs`
+configuration violation before the listener binds, and the fabricated
+`wall_now + 366 days` runtime fallback is gone, with a schedule-arithmetic
+failure propagating to the existing fatal task boundary.

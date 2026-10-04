@@ -51,15 +51,26 @@ health endpoint before deciding whether to spawn. Deterministic regressions and
 local lifecycle evidence are required before closure; the extended soak remains
 manual evidence rather than CI infrastructure.
 
-Plans 155-158 define the load-aware maintenance scheduler line for `greggd`.
-Plan 156 is complete and the primary Plan-157 implementation has landed with
-all six existing CI jobs green, but Plan 157 is not closed: its final stripped
-binary remains 44,184 bytes above the Plan-156 128 KiB cap and source review
-found a calendar-impossible cron expression can fail after config validation.
-Plan 158 owns that narrow footprint/schedule-validation corrective and final
-closure evidence. The line is independent of Plan 091 and preserves the
-read-only HTTP boundary, cached sampler load, same-principal execution, service
-sandboxing, one pending occurrence per job, and one global child slot.
+Plans 155-159 define the load-aware maintenance scheduler line for `greggd`.
+Plan 156 is complete. The primary Plan-157 implementation landed with all six
+existing CI jobs green, and Plan 158 then implemented its corrective scope at
+`7a466f8` (CI run `37172425056`): candidate selection is allocation-free, job
+configuration is borrowed instead of cloned, the fabricated 366-day schedule
+fallback is gone, and a calendar-impossible cron expression such as
+`0 0 31 2 *` is now rejected during configuration loading before the listener
+binds. The line is functionally complete but still not closed: Plan 158
+recovered 10,792 of the 44,184 required bytes and measured that the remaining
+33,392 bytes cannot come from any lever this line may pull, because the
+131,072-byte budget is 129,104 bytes of irreducible dependency and
+configuration-schema cost (`jobs` serde/toml 40,696, `chrono::Local` 41,072,
+Tokio's async child lifecycle 20,448) before any scheduler code. Plan 156's
+recorded 38,424 bytes of headroom never existed because its candidate did not
+include the `jobs` field Plan 157 added; that correction is noted in Plan 156
+rather than rewriting it. Plan 159 therefore owns the explicit footprint budget
+decision and the eventual 155/157/158 closure. The line is independent of Plan
+091 and preserves the read-only HTTP boundary, cached sampler load,
+same-principal execution, service sandboxing, one pending occurrence per job,
+and one global child slot.
 
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
@@ -581,10 +592,11 @@ excluded.
 | [`152-eggpool-service-health-status-plane-integration.md`](152-eggpool-service-health-status-plane-integration.md) | Add EggPool schema-v1 /api/status proxy/provider health alongside the existing four-metric summary without conflating worker lifecycle or endpoint failures | complete at `7b88e43`; CI `37034974349` green across all six jobs, current `main` `9d2fcff` green in `37035252848`; typed health model, per-route 1 MiB status ceiling, concurrent dual-plane worker read, separate health freshness in AppState, compact `Health:` token and provider counts, full compatibility matrix, local checks green; depends on completed 151; post-closure wire-contract defect corrected by completed Plan 153; independent of 091 and 147 |
 | [`153-eggpool-schema-v1-wire-contract-corrective-pass.md`](153-eggpool-schema-v1-wire-contract-corrective-pass.md) | Correct Plan-152 status JSON field names/placement and producer bounds against EggPool's canonical schema-v1 `ProxyStatusSnapshot`, with upstream-provenance regression fixture | complete at `195724c`; `proxy`-nested account counts, `provider_id`/`last_observation`, producer-aligned 256/96/64 bounds with exact/one-over tests, one canonical provenance-recorded fixture replacing the synthetic matrix, negative regression locking out the never-upstream `id`/`observation`/root-count shape; CI `37046499078` green across all six jobs, local checks green; functional correction complete; fixture-evidence cleanup owned by Plan 154; independent of 091 |
 | [`154-eggpool-canonical-status-fixture-evidence-cleanup.md`](154-eggpool-canonical-status-fixture-evidence-cleanup.md) | Make Plan-153's canonical status fixture structurally identical to EggPool schema-v1 for ignored runtime/provider fields, without changing production decoding or behavior | complete at `fd24918`; CI `37053403192` green across all six jobs; focused/local checks green; independent of 091; unblocks no remaining plan |
-| [`155-load-aware-maintenance-scheduler-roadmap.md`](155-load-aware-maintenance-scheduler-roadmap.md) | Coordinate an optional bounded local cron-like maintenance scheduler for greggd with cached-load deferral, coalescing, anti-herd serialization, and no remote execution surface | in implementation; Plan 156 complete, Plan-157 implementation landed, final closure delegated to corrective Plan 158; independent of 091 |
-| [`156-scheduler-execution-boundary-and-footprint-qualification.md`](156-scheduler-execution-boundary-and-footprint-qualification.md) | Qualify same-principal execution, privileged-Unix opt-in, five-field local cron semantics, parser/time footprint, process supervision, stdio bounds, and shutdown behavior before scheduler code lands | complete at `f35e1369c36cc38de5bd5e9e42f4a27d338db1e1`; the cron-parser + chrono + Tokio-process linked candidate passed its prototype gate and unblocked 157; Plan 157's integrated binary exceeded the cap, so its correction record replaces cron-parser with the bounded internal parser and keeps 157 open; independent of 091 |
-| [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | implementation landed on tested PR head `4f820b97` / merged as `308383cc`; CI `37167983603` green across all six jobs; closure blocked by 44,184-byte footprint deficit plus impossible-calendar validation defect now owned by Plan 158; independent of 091 |
-| [`158-scheduler-footprint-and-schedule-validation-corrective-pass.md`](158-scheduler-footprint-and-schedule-validation-corrective-pass.md) | Close the remaining Plan-157 footprint gate and reject calendar-impossible cron expressions before daemon startup, while preserving scheduler semantics/security/lifecycle | planned; depends on current Plan-157 implementation; must recover >=44,184 stripped bytes or otherwise reach <=3,228,272 bytes, remove fabricated +366-day fallback, rerun smoke and six-job CI, then reconcile/close 155/157 if evidence is complete; independent of 091 |
+| [`155-load-aware-maintenance-scheduler-roadmap.md`](155-load-aware-maintenance-scheduler-roadmap.md) | Coordinate an optional bounded local cron-like maintenance scheduler for greggd with cached-load deferral, coalescing, anti-herd serialization, and no remote execution surface | functionally complete (156/157/158 landed) but still open on the footprint budget decision owned by Plan 159; independent of 091 |
+| [`156-scheduler-execution-boundary-and-footprint-qualification.md`](156-scheduler-execution-boundary-and-footprint-qualification.md) | Qualify same-principal execution, privileged-Unix opt-in, five-field local cron semantics, parser/time footprint, process supervision, stdio bounds, and shutdown behavior before scheduler code lands | complete at `f35e1369c36cc38de5bd5e9e42f4a27d338db1e1`; the cron-parser + chrono + Tokio-process linked candidate passed its prototype gate and unblocked 157; Plan 158 appended a correction note recording that its 38,424-byte headroom omitted the 67,584-byte `jobs` field Plan 157 added; independent of 091 |
+| [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | implementation landed on tested PR head `4f820b97` / merged as `308383cc`, CI `37167983603` green across all six jobs; Plan 158's reconciliation note records every functional criterion as demonstrated at `7a466f8` / CI `37172425056`, but the footprint criterion and this plan's own no-gate-waiver stop condition keep it open pending Plan 159; independent of 091 |
+| [`158-scheduler-footprint-and-schedule-validation-corrective-pass.md`](158-scheduler-footprint-and-schedule-validation-corrective-pass.md) | Close the remaining Plan-157 footprint gate and reject calendar-impossible cron expressions before daemon startup, while preserving scheduler semantics/security/lifecycle | implemented at `7a466f8`, CI `37172425056` green across all six jobs; schedule validation, allocation-free selection, config borrowing, and the 366-day fallback removal are complete, but 3,261,664 bytes is 33,392 over the 128 KiB cap and the plan's stop condition forbids the remaining reducers, so it hands the budget decision to Plan 159 instead of closing; independent of 091 |
+| [`159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md`](159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md) | Decide explicitly whether the scheduler line ships on a re-baselined measured footprint budget, on one named approved architectural reduction, or not at all | planned; depends on Plan 158's measurement record; owns the only remaining open question on the 155-158 line and the eventual 155/157/158 closure; independent of 091 |
 
 Dependency order:
 
@@ -606,7 +618,8 @@ current post-154 main -> 155
 155 -> 156
 156 -> 157
 157 -> 158
-155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157's primary implementation has landed but remains open; 158 owns the remaining production footprint deficit, calendar-impossible schedule validation, removal of the fabricated runtime fallback, and final scheduler smoke/CI/planning closure.
+158 -> 159
+155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157's primary implementation has landed and Plan 158 has reconciled its functional criteria but both remain open on footprint; 158 implemented the corrective scope and recorded the measured attribution showing the budget is consumed by irreducible dependency and configuration-schema cost; 159 owns that budget decision and the eventual 155/157/158 closure. None of 155-159 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -673,6 +686,27 @@ feature graph, green transport regressions, and a byte-identical stripped
 `gregg` binary.
 
 Plan 151 is separately justified by the 2026-10-02 review of the `d31d72f` design: `try_send` plus `Busy` guarantees the input path never waits on a slow worker but can drop a state-changing command, so a visible pane/period/generation can advance while the worker never sees the transition, and a dropped `Deactivate` can leave passive EggPool polling armed after returning to Systems. Plan 152 is separately justified because Gregg consumes only `/api/stats/summary` and therefore cannot distinguish its own local worker lifecycle from whether the configured EggPool proxy and its providers are ready, degraded, or unready.
+
+Plan 155 is separately justified as a coordination roadmap for an operator
+need that no existing Gregg surface covers: bounded, local, same-principal
+maintenance commands with cron-like schedules and cheap load deferral, without
+any remote execution plane. Plans 156-157 are separately justified by the
+same-principal/argv/no-shell execution boundary, the five-field local-civil
+cron language with DST gap/overlap semantics, the qualified direct-child
+lifecycle, and the fixed 5%/128 KiB footprint gate the roadmap set. Plan 158 is
+separately justified by two concrete post-implementation defects, not by
+ceremony: a per-tick candidate `Vec`+sort and a per-launch job-config clone
+that were removable, a fabricated `wall_now + 366 days` schedule fallback that
+fabricated semantics for a broken schedule, and a source-review finding that a
+syntactically valid expression such as `0 0 31 2 *` can never occur and
+therefore failed only after configuration validation had already accepted the
+config. Plan 159 is separately justified by the result: Plan 158 measured that
+the 131,072-byte gate is 129,104 bytes of irreducible dependency and
+configuration-schema cost before any scheduler code, and by Plan 156's own
+recorded correction that its 38,424 bytes of headroom omitted the 67,584-byte
+`jobs` field. Leaving that undecided would keep a finished feature line open
+indefinitely, so the decision is made an explicit, narrow plan with exactly
+three recorded outcomes instead of being absorbed by silently checking boxes.
 
 Plan 148 is separately justified by the published EggServe 0.4.0 server line:
 Gregg's direct `eggserve-server = "0.2"` requirement prevents Cargo from

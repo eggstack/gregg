@@ -353,3 +353,23 @@ candidate measurements above remain valid linked-only measurements; they do
 not qualify the integrated implementation. Plan 157 remains open until its
 production footprint passes the gate or a separately qualified design
 replaces this implementation.
+
+### Post-Plan-158 correction note (history preserved)
+
+Plan 158 reproduced this plan's reference numbers exactly (baseline
+`e708e54` = 3,097,200 bytes; Plan 157's integrated `308383c` = 3,272,456
+bytes) and then measured why the recorded headroom never existed. The
+"38,424 bytes of headroom for the state machine/integration" above was
+computed from a dependency-only candidate that did not include the `jobs`
+configuration field Plan 157 introduced. Measured on the Plan-158 tree, that
+field costs **67,584 bytes** on its own (40,696 of `serde`/`toml`
+array-of-tables codegen plus 5,808 of validation and 21,080 of surrounding
+configuration/runtime growth), while `chrono::Local` costs 41,072 and the
+Tokio async child lifecycle 20,448. The 131,072-byte budget is therefore
+129,104 bytes of irreducible dependency/schema cost plus 1,968 bytes for the
+entire scheduler implementation.
+
+Nothing in this plan's qualification is retracted: the process lifecycle,
+shutdown contract, cron/DST semantics, and configuration bounds all stand and
+are unchanged. The correction is only to the arithmetic conclusion, which is
+now recorded in Plan 158 and owned as a decision by Plan 159.
