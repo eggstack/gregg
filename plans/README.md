@@ -67,6 +67,15 @@ than rewritten. The line is independent of Plan
 same-principal execution, service sandboxing, one pending occurrence per job,
 and one global child slot.
 
+Plan 160 is a separate post-closure correctness hardening pass for the scheduler
+timing layer. It addresses a discovered wall-clock discontinuity edge: a long
+civil-time deadline is currently converted once into a monotonic Tokio sleep,
+so a large forward system-clock adjustment can leave an already-due cron
+occurrence asleep until the old monotonic deadline. Plan 160 caps that trust
+window at roughly one cron-resolution minute and re-reads civil time, while
+keeping retry/max-wait/child lifecycle monotonic. It does not reopen Plans
+155-159, their footprint decision, or Plan 091.
+
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
 the protocol/client normalization boundary first: optional schema-v2 CPU
@@ -592,6 +601,7 @@ excluded.
 | [`157-load-aware-maintenance-scheduler-implementation.md`](157-load-aware-maintenance-scheduler-implementation.md) | Implement bounded cron scheduling, cached 1m/5m/15m load gates, fixed retry/max-wait deferral, one pending occurrence per job, one global child slot, transition logging, and deterministic qualification | complete at the Plan-159 decision; functional criteria demonstrated at `7a466f8` / CI `37172425056`, footprint criterion met under the re-baselined 3,261,664-byte budget; independent of 091 |
 | [`158-scheduler-footprint-and-schedule-validation-corrective-pass.md`](158-scheduler-footprint-and-schedule-validation-corrective-pass.md) | Close the remaining Plan-157 footprint gate and reject calendar-impossible cron expressions before daemon startup, while preserving scheduler semantics/security/lifecycle | complete at the Plan-159 decision; implemented at `7a466f8`, CI `37172425056` green across all six jobs, and its stop-condition escalation resolved by the 159 re-baseline; independent of 091 |
 | [`159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md`](159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md) | Decide explicitly whether the scheduler line ships on a re-baselined measured footprint budget, on one named approved architectural reduction, or not at all | complete (outcome 1): scheduler line re-baselined to the measured 3,261,664 bytes for this line only, general stance unchanged, growth beyond it re-opens review; qualifying CI `37172425056`, focused/default/release checks green; closes 155/157/158; independent of 091 |
+| [`160-scheduler-civil-clock-reconciliation-hardening.md`](160-scheduler-civil-clock-reconciliation-hardening.md) | Bound the scheduler's trust in long monotonic sleeps so forward/backward wall-clock discontinuities are reconciled at minute-scale without changing cron/load/lifecycle semantics | planned; depends on completed 159/current main; post-closure scheduler hardening; target one-minute civil recheck, deterministic clock-domain tests, no dependency/feature change, explicit footprint remeasurement; independent of 091 |
 
 Dependency order:
 
@@ -614,7 +624,8 @@ current post-154 main -> 155
 156 -> 157
 157 -> 158
 158 -> 159
-155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the line with the explicit re-baseline decision, so 155-159 are complete. None of 155-159 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
+159 -> 160
+155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
