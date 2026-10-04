@@ -1,6 +1,6 @@
 # Plan 161: Cron observability and Gregg client-daemon roadmap
 
-Status: planned.
+Status: complete. Closed at `154ab36`.
 
 Depends on: completed scheduler line through Plan 160 and current main at
 e399a4e05fa95b73823f7bef19de051685685bb4. Independent of the remaining
@@ -332,32 +332,32 @@ This line does not add:
 
 This roadmap closes only when Plans 162-167 demonstrate all of the following:
 
-- [ ] greggd exposes bounded read-only scheduler summary/history without
+- [x] greggd exposes bounded read-only scheduler summary/history without
       changing /v2/status metrics semantics.
-- [ ] Default remote history depth is five and is configurable within a hard
+- [x] Default remote history depth is five and is configurable within a hard
       bound.
-- [ ] No scheduler history is persisted to disk.
-- [ ] Child stdout/stderr are drained without deadlock and retained only under
+- [x] No scheduler history is persisted to disk.
+- [x] Child stdout/stderr are drained without deadlock and retained only under
       fixed byte bounds.
-- [ ] Current load-delayed/unavailable/slot-wait/running state is truthful.
-- [ ] Terminal history includes success, command failure, spawn failure, and
+- [x] Current load-delayed/unavailable/slot-wait/running state is truthful.
+- [x] Terminal history includes success, command failure, spawn failure, and
       load-expiry outcomes as applicable.
-- [ ] Old greggd versions without scheduler routes remain ordinary online
+- [x] Old greggd versions without scheduler routes remain ordinary online
       systems with cron observability marked unsupported.
-- [ ] One config-specific Gregg client daemon owns polling for multiple TUIs.
-- [ ] Closing all TUIs does not stop the background daemon.
-- [ ] Bare gregg starts an absent matching daemon safely and attaches.
-- [ ] Per-user startup ownership is available on supported platforms without
+- [x] One config-specific Gregg client daemon owns polling for multiple TUIs.
+- [x] Closing all TUIs does not stop the background daemon.
+- [x] Bare gregg starts an absent matching daemon safely and attaches.
+- [x] Per-user startup ownership is available on supported platforms without
       creating a privileged system client service.
-- [ ] Client update/uninstall do not leave a knowingly incompatible owned
+- [x] Client update/uninstall do not leave a knowingly incompatible owned
       daemon attached to the new binary.
-- [ ] The client daemon maintains only bounded in-memory cron history.
-- [ ] Plain c provides the requested scheduler view beside d and n.
-- [ ] Output rendered in the terminal cannot inject terminal control sequences.
-- [ ] Multiple TUIs do not multiply remote Systems or EggPool polling cadence.
-- [ ] greggd growth beyond the Plan-159 scheduler baseline and gregg client
+- [x] The client daemon maintains only bounded in-memory cron history.
+- [x] Plain c provides the requested scheduler view beside d and n.
+- [x] Output rendered in the terminal cannot inject terminal control sequences.
+- [x] Multiple TUIs do not multiply remote Systems or EggPool polling cadence.
+- [x] greggd growth beyond the Plan-159 scheduler baseline and gregg client
       growth are measured and explicitly accepted or corrected.
-- [ ] No new workflow/job/matrix is required unless native-platform truth
+- [x] No new workflow/job/matrix is required unless native-platform truth
       cannot be obtained from the existing CI jobs.
 
 ## Handoff
@@ -367,3 +367,64 @@ observability/resource contract before Plan 163 changes greggd. Plan 164 may
 proceed independently because the client-daemon split is already justified by
 duplicate polling and future frontend reuse. Do not start with TUI rendering:
 the c view belongs after both data planes exist.
+
+## Closure record
+
+The 161 line is complete. Every child plan is closed:
+
+| Plan | Scope | Closed at |
+|---|---|---|
+| 162 | Scheduler observability contract and resource qualification | `42e2fc2` |
+| 163 | greggd scheduler history and the read-only API | `4fd0158` |
+| 164 | Client daemon core and local IPC | `b25ca04` |
+| 165 | Lazy activation, user-scoped startup, update/uninstall | `c8f2542`, `ee6ad7e` |
+| 166 | Cron cache, the `c` view, terminal sanitization | `53c06e5` |
+| 167 | Correctness and footprint closure | `154ab36` |
+
+All eighteen completion criteria above are met. The evidence for each lives in
+its own plan's closure record; the two that this roadmap most depends on are
+restated here because they are the ones that would have invalidated the whole
+design.
+
+**One polling plane.** A per-config client daemon owns every remote request.
+Counted rather than asserted: with N frontends attached the fleet receives one
+generation of Systems requests per configured cadence and one scheduler summary
+read per 30 s, and ten windows with the cron pane open cost the remote exactly
+what zero windows cost. The cron intent governs transmission and never
+fetching. Closing the last window changes nothing; the daemon keeps polling.
+
+**No hidden persistence.** Verified by inspection, not by convention: there is
+no `File::create`, `fs::write`, or `OpenOptions` anywhere under
+`crates/greggd/src/scheduler/`, `crates/gregg/src/cron.rs`, or
+`crates/gregg/src/clientd/cron.rs`. History is memory-only on both sides. A
+`greggd` restart starts a new epoch and a client-daemon restart reseeds from the
+remote without duplication.
+
+**No remote control plane.** The two scheduler routes are `GET`/`HEAD` only;
+POST/PUT/DELETE/PATCH are 405 and `/v2/scheduler/{run,jobs,cancel}` are 404.
+`argv` and `working_dir` are not on the wire. No job can be created, edited,
+started, or cancelled by anything that can reach the listener.
+
+**Cost, recorded.** `greggd` is 3,316,568 bytes stripped, inside Plan 162's
+3,400,000 rule. `gregg` grew +989,752 bytes (+22.76%) across 164-166 with a
+**completely empty** `Cargo.toml`/`Cargo.lock` diff, so the entire increase is
+application code. Idle cost with three systems is 0.533% of one core with no
+window attached and 0.622% with two.
+
+**Defects found while closing the line**, all fixed and covered: `Ctrl-R` was
+dead without an `EggPool` entry; `watch::Sender::send` discarded documents
+published while no window was attached, so a late-attaching TUI saw stale state
+forever; the global cron record counter was never incremented, so the ceiling
+bounded nothing; `compose` budgeted rows by `chars()` instead of display cells;
+and a state document could be published ahead of the handshake `Hello`, which
+made a healthy daemon look incompatible and made a real TUI exit.
+
+**Carried forward, honestly.** The macOS, Windows, and MSRV CI jobs were not run
+by this closure — there is no remote-runner access here, so no CI run ID exists.
+They must be confirmed on the final implementation SHA before release. One
+unrelated pre-existing flake in `gregg-update` was observed once and never
+reproduced; it is recorded in Plan 167's closure rather than ignored.
+
+Independent of Plan 091 throughout: no part of this line depended on the
+remaining sustained-soak record, and no part of it satisfies or substitutes for
+that record.

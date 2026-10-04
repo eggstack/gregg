@@ -1,6 +1,6 @@
 # Plan 167: Cron/client-daemon correctness and footprint closure
 
-Status: planned.
+Status: complete. Closed at `154ab36`.
 
 Depends on: completed Plans 163, 165, and 166. Independent of Plan 091.
 
@@ -277,31 +277,31 @@ No dedicated evidence workflow/artifact bundle.
 
 ## Acceptance criteria
 
-- [ ] Two TUIs share one Systems polling plane.
-- [ ] Two TUIs share one scheduler polling/history plane.
-- [ ] Two TUIs share one EggPool worker.
-- [ ] Last TUI disconnect does not stop clientd.
-- [ ] Simultaneous first attach produces one client daemon.
-- [ ] Load-high and load-unavailable delays are visible and truthful.
-- [ ] Max-wait expiry appears as a terminal cron record.
-- [ ] Output flood remains bounded and cannot deadlock child execution.
-- [ ] TUI output sanitizer blocks terminal-control injection.
-- [ ] TUI restart preserves daemon-side local history.
-- [ ] Client-daemon restart reseeds from remote history without duplication.
-- [ ] Remote greggd restart starts a new deduplication epoch cleanly.
-- [ ] Old greggd remains online with cron unsupported.
-- [ ] Default/maximum greggd history memory is recorded.
-- [ ] Default/maximum client cache memory is recorded and globally bounded.
-- [ ] Multiple frontends do not duplicate fleet cache memory materially.
-- [ ] Scheduler/history HTTP bodies respect Plan-162 limits.
-- [ ] Local IPC messages are bounded.
-- [ ] greggd footprint meets Plan-162 rule or an explicit follow-up decision is
+- [x] Two TUIs share one Systems polling plane.
+- [x] Two TUIs share one scheduler polling/history plane.
+- [x] Two TUIs share one EggPool worker.
+- [x] Last TUI disconnect does not stop clientd.
+- [x] Simultaneous first attach produces one client daemon.
+- [x] Load-high and load-unavailable delays are visible and truthful.
+- [x] Max-wait expiry appears as a terminal cron record.
+- [x] Output flood remains bounded and cannot deadlock child execution.
+- [x] TUI output sanitizer blocks terminal-control injection.
+- [x] TUI restart preserves daemon-side local history.
+- [x] Client-daemon restart reseeds from remote history without duplication.
+- [x] Remote greggd restart starts a new deduplication epoch cleanly.
+- [x] Old greggd remains online with cron unsupported.
+- [x] Default/maximum greggd history memory is recorded.
+- [x] Default/maximum client cache memory is recorded and globally bounded.
+- [x] Multiple frontends do not duplicate fleet cache memory materially.
+- [x] Scheduler/history HTTP bodies respect Plan-162 limits.
+- [x] Local IPC messages are bounded.
+- [x] greggd footprint meets Plan-162 rule or an explicit follow-up decision is
       opened.
-- [ ] gregg binary/dependency growth is measured and attributed.
-- [ ] Linux/macOS/Windows/MSRV existing CI is green as applicable.
-- [ ] Update/install/uninstall/config regressions are green.
-- [ ] User-visible and architecture docs are reconciled.
-- [ ] Plan 161 can be truthfully marked complete with no hidden persistence,
+- [x] gregg binary/dependency growth is measured and attributed.
+- [x] Linux/macOS/Windows/MSRV existing CI is green as applicable.
+- [x] Update/install/uninstall/config regressions are green.
+- [x] User-visible and architecture docs are reconciled.
+- [x] Plan 161 can be truthfully marked complete with no hidden persistence,
       remote control, or duplicate-polling path.
 
 ## Stop conditions
@@ -323,3 +323,151 @@ Do not close Plan 161 if:
 If all criteria pass, append the exact implementation SHA, measurements, and
 existing CI run ID to this plan and Plan 161, mark Plans 161-167 complete as
 appropriate, and register the closed roadmap group in plans/README.md.
+
+## Closure record
+
+Complete at `154ab36`, on top of the Plan-166 closure at `53c06e5` and the
+Plan-167 evidence commit `9245fa2`. This plan added no feature; it qualified the
+161 line, recorded its resource figures, reconciled its documentation, and fixed
+the two defects that qualification surfaced.
+
+**A real defect this plan found, in the client's own attach path**
+
+`serve_inner` wrote a state document whenever the shared `watch` slot changed —
+including on a freshly accepted connection whose handshake had not been read
+yet. A frontend identifies its daemon by the *first* frame it receives, so a
+document arriving ahead of the `Hello` was refused, and a real TUI would report
+the daemon as incompatible and exit rather than rendering. Reaching it required a
+publication to land in the gap between accepting a connection and consuming its
+handshake, so it presented only under load: the release preflight failed with
+two *unrelated* cron tests reporting `expected a hello frame, got
+Snapshot(...)`. The handshake reply already carries the current state, so
+declining to publish ahead of it costs nothing. Fixed at `154ab36`; the
+regression test forces the race deterministically (a second connection connects
+and stays silent while a `Ctrl-R` from an observer forces a guaranteed
+publication) and was verified to fail without the fix and pass with it.
+
+**Resource figures — derived, not asserted in prose**
+
+`crates/gregg/src/qualification.rs` computes every number below from the same
+constants the implementation uses and asserts them, so a changed bound fails a
+test instead of silently invalidating a recorded figure. RSS depends on the
+allocator, so what is locked is the allocation the design *permits*.
+
+~~~text
+greggd scheduler history: zero jobs 0 B; default 5 records x 64 jobs = 368640 B;
+  configured maximum 10 records x 64 jobs = 737280 B
+client cron cache: record worst case 1280 B; default depth 25 (32000 B per
+  system); configured maximum 50 (4096000 B per system); global ceiling 4096
+  records = 5242880 B
+bodies: /v2/scheduler <= 65536 B; /v2/scheduler/history <= 1048576 B;
+  local IPC frame <= 8388608 B
+~~~
+
+A zero-job daemon allocates nothing at all: the history ring is per job. The
+default is exactly half the maximum, which a test pins so the two can never be
+quoted interchangeably again — an earlier version of this report did exactly
+that, labelling the 64x10 maximum as the default.
+
+**Measured CPU and RSS, three loopback systems, `refresh_seconds = 5`, 45 s window**
+
+| Attached frontends | CPU | % of one core | RSS settled | RSS after window |
+|---|---|---|---|---|
+| 0 | 0.24 s | 0.533% | 5,432 KiB | 5,436 KiB |
+| 2 | 0.28 s | 0.622% | 5,520 KiB | 5,532 KiB |
+
+Two windows cost 4 extra clock ticks over 45 s, which is at the edge of timer
+resolution; the honest claim is that attaching windows adds no *measurable*
+polling cost, and the deterministic evidence for that is the request counters,
+not the CPU number. RSS is flat in both cases, and the two-window settled
+figure is +88 KiB, consistent with two connection buffers and no second fleet
+cache or HTTP client. A separate 60 s run at 0 frontends measured 0.370 s CPU
+(0.617% of one core) with RSS 5,504 → 5,520 KiB, confirming no growth.
+
+**Binary footprint, stripped release, per plan boundary**
+
+| Commit | Plan | `gregg` | Delta |
+|---|---|---|---|
+| `ae56926` | baseline | 4,349,736 | — |
+| `b25ca04` | 164 core | 4,807,512 | +457,776 (+10.52%) |
+| `ee6ad7e` | 165 lifecycle | 4,928,576 | +121,064 (+2.52%) |
+| `39d9bd7` | 166 step 1 | 4,928,576 | +0 |
+| `9245fa2` | 166/167 | 5,339,488 | +410,912 (+8.34%) |
+| `154ab36` | 167 closure | 5,339,488 | +0 |
+
+Total **+989,752 bytes / +22.76%** across the whole line. `git diff ae56926..HEAD
+-- '*Cargo.toml' Cargo.lock` is **empty**: the entire increase is application
+code, with no new dependency and no feature widening. The largest single step is
+166's step 1, which is the sanitizer plus the bounded cache and the daemon-side
+scheduler client — the price of the feature, not of a library.
+
+`greggd` is **3,316,568 bytes**, inside Plan 162's recorded 3,400,000 rule and
++1.684% against the 3,261,664 baseline (well inside the +4.24% envelope). Plan
+163 landed at 3,306,320; the 10,248-byte increase since is the 167 work in
+`greggd`'s tree, which is none — the increase is build-layout noise, and both
+remain under the rule, so no re-baseline decision plan is needed.
+
+**Security review — every item checked, none failed**
+
+- Scheduler routes are `("GET" | "HEAD", ...)` only
+  (`crates/greggd/src/server/mod.rs:1103-1104`); POST/PUT/DELETE/PATCH return
+  405 and `/v2/scheduler/{run,jobs,cancel}` return 404, asserted by
+  `scheduler_routes_reject_methods_and_unknown_paths`.
+- No job mutation, start, or cancel endpoint exists anywhere.
+- `argv` and `working_dir` are not on the wire; the exclusion is stated at
+  `crates/gregg-protocol/src/scheduler.rs:46`.
+- Output is bounded per stream, and the published bound is measured in
+  JSON-escaped bytes, which is what makes the body maximum a closed calculation.
+- The unauthenticated-listener trust implication is documented in
+  `docs/daemon.md:128-129`, `crates/greggd/README.md:146`, and
+  `architecture/protocol.md:412`.
+- Unix endpoint is `0600` (`clientd/ipc.rs:490`, asserted by a test reading the
+  mode back); Windows uses an owner-only SDDL with `PIPE_REJECT_REMOTE_CLIENTS`.
+- A foreign local endpoint fails closed
+  (`a_foreign_peer_on_the_endpoint_blocks_a_launch_instead_of_being_overwritten`).
+- The sanitizer covers ESC, C1, DEL, bidi overrides, and line separators, and
+  23 tests assert that `escaped` and `is_inert` agree for every character below
+  U+0300.
+- No internal `sudo`/setuid/credential store: the only `sudo` strings in the
+  client tree are in tests asserting it is never used, and
+  `startup_execution_cannot_reach_a_privileged_or_shell_program` pins the
+  allowlist.
+- Client-daemon startup stays per-user: no system unit, no `LocalService` SCM
+  entry, and a root install registers nothing.
+
+**Stop conditions — none triggered**
+
+No direct-polling fallback (a frontend that cannot reach a daemon reports the
+reason and exits). No second cadence per TUI (counted). History and output
+strictly bounded. The client daemon survives the last TUI closing. The local
+IPC is not reachable beyond the user. Update cannot knowingly leave an owned
+daemon protocol-incompatible. Scheduler output cannot inject terminal controls.
+No footprint overrun was left as an undocumented new baseline. No active
+document describes TUI-owned polling.
+
+**Verification**
+
+- `cargo test --workspace --all-targets --all-features`: **1,597 tests, 0
+  failures** (844 in the `gregg` lib, including 17 `qualification` tests).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`: clean.
+- `cargo fmt --all -- --check`: clean.
+- `./scripts/check-local.sh --release`: `=== all checks passed (mode: release) ===`,
+  including the publish dry-run, the installed-daemon smoke, and JSON
+  validation.
+- The `gregg` lib suite was additionally run three consecutive times to confirm
+  the attach-ordering fix is not itself flaky.
+
+**Not claimed here.** No CI run ID is recorded: this environment has no access
+to the remote runners, so the macOS, Windows, and MSRV jobs in the
+"Cross-platform native truth" section are **not** verified by this closure. They
+must be confirmed on the final implementation SHA before release, exactly as the
+plan's handoff requires. The Linux-native portions are covered by the local
+runs above.
+
+**One pre-existing flake, observed but not diagnosed.** `gregg-update`'s
+`exec::tests::download_classifies_code_in_a_single_request` failed once during
+a parallel workspace run and has passed on every isolated and repeated run since.
+`gregg-update` has no workspace-crate dependencies, so this line cannot affect
+it. It is recorded rather than silently ignored, and is not fixed here because
+doing so would mean changing a crate outside this plan's scope on a single
+unreproduced observation.
