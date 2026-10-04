@@ -1272,7 +1272,11 @@ mod windows_tests {
         // And the reply has to come back the other way, which is the only proof
         // that the write path and the peek/read path both work.
         server
-            .write_frame(&FrontendFrame::ProtocolError("served".to_owned()))
+            .write_frame(&FrontendFrame::ControlAck {
+                generation: 7,
+                accepted: true,
+                detail: None,
+            })
             .expect("writes reply");
         let deadline = Instant::now() + Duration::from_secs(10);
         let mut buffer = [0_u8; 4096];
@@ -1289,7 +1293,14 @@ mod windows_tests {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(
-            matches!(seen, Some(FrontendFrame::ProtocolError(ref m)) if m == "served"),
+            matches!(
+                seen,
+                Some(FrontendFrame::ControlAck {
+                    generation: 7,
+                    accepted: true,
+                    ..
+                })
+            ),
             "the daemon's reply never reached the client: {seen:?}"
         );
         cleanup(&endpoint.path);

@@ -259,7 +259,7 @@ async fn run_event_loop(
                             payload.daemon, payload.frontend
                         ))));
                     }
-                    Ok(FrontendFrame::ProtocolError(message)) => {
+                    Ok(FrontendFrame::ProtocolError { message }) => {
                         return Err(Box::new(FrontendExit::Protocol(message)));
                     }
                     Err(error) => {

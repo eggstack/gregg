@@ -700,7 +700,13 @@ async fn serve(mut connection: Connection, hub: Arc<Hub>, subscriber: u64) {
     if let Err(error) = serve_inner(&mut connection, &hub, subscriber).await {
         // One frontend's protocol failure is that frontend's problem. The
         // daemon keeps polling and other frontends keep their state.
-        let _ = connection.write_frame(&FrontendFrame::ProtocolError(error.to_string()));
+        //
+        // The write is best-effort: a frontend that has already gone away
+        // cannot be told anything, and that is not a second failure worth
+        // reporting over the first.
+        let _ = connection.write_frame(&FrontendFrame::ProtocolError {
+            message: error.to_string(),
+        });
     }
     // A departed frontend must stop shaping the `EggPool` worker, or the
     // worker would stay activated for a window nobody is watching.
@@ -914,7 +920,7 @@ pub async fn attach(
             daemon: payload.daemon,
             frontend: payload.frontend,
         }),
-        FrontendFrame::ProtocolError(message) => Err(AttachError::Refused(message)),
+        FrontendFrame::ProtocolError { message } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Refused(format!(
             "expected a hello frame, got {other:?}"
         ))),
@@ -2139,7 +2145,7 @@ mod tests {
                 }
                 // A refusal, a close, or any other non-snapshot frame ends
                 // the wait: the assertion is only that no state was served.
-                Ok(FrontendFrame::ProtocolError(_)) | Err(_) => break,
+                Ok(FrontendFrame::ProtocolError { .. }) | Err(_) => break,
                 // Neither frame is a snapshot; keep reading.
                 Ok(_) => {}
             }

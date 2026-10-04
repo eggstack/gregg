@@ -749,9 +749,9 @@ mod tests {
                     }
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
-                let _ = connection.write_frame(&FrontendFrame::ProtocolError(
-                    "this endpoint is not a Gregg client daemon".to_owned(),
-                ));
+                let _ = connection.write_frame(&FrontendFrame::ProtocolError {
+                    message: "this endpoint is not a Gregg client daemon".to_owned(),
+                });
                 // Hold the endpoint open so the refusal cannot be mistaken for
                 // "nothing is there".
                 tokio::time::sleep(Duration::from_secs(20)).await;

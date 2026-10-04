@@ -45,6 +45,18 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A TUI that was refused could not be told why.** `FrontendFrame` is
+  internally tagged, and serde cannot represent an internally tagged newtype
+  whose payload is a bare string. The refusal frame was written as
+  `ProtocolError(String)`: it compiled, and the receiving side matched it
+  correctly, but it could never be *serialized*. Both places that tried to send
+  it — the daemon's one attempt to explain a protocol failure before closing a
+  connection, and the endpoint-classification squatter's refusal — discarded the
+  encode error with a `let _ =`, so the frontend saw a bare disconnect instead
+  of the reason. The variant is now a struct variant, and a test enumerates
+  every `FrontendFrame` variant and asserts each one encodes and decodes, which
+  is the guard that was missing.
+
 - **The `gregg` client daemon did not build or run on Windows at all.** The
   Windows half of the local IPC transport (Plan 164) and the Windows branch of
   the config lock had been written but never compiled: the `gregg` client crate

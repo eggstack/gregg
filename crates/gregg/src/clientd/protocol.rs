@@ -80,7 +80,15 @@ pub enum FrontendFrame {
     /// *which* daemon it collided with.
     VersionMismatch(VersionMismatchPayload),
     /// The request was refused; no state changed.
-    ProtocolError(String),
+    ///
+    /// A **struct** variant, not a newtype over `String`: `FrontendFrame` is
+    /// internally tagged (`#[serde(tag = "t")]`), and serde cannot represent an
+    /// internally tagged newtype whose payload is a bare string. Written as
+    /// `ProtocolError(String)` this variant compiled, was matched correctly on
+    /// the receiving side, and still failed to serialize — so every attempt to
+    /// tell a frontend *why* it was being disconnected was silently discarded
+    /// and the frontend saw a bare disconnect.
+    ProtocolError { message: String },
     /// Acknowledgement of a control request, matched by generation.
     ControlAck {
         /// Generation of the request being acknowledged.
@@ -351,7 +359,7 @@ pub fn classify(frame: &FrontendFrame) -> FrameDisposition {
     match frame {
         FrontendFrame::VersionMismatch(_) => FrameDisposition::ExitIncompatible,
         FrontendFrame::ShuttingDown => FrameDisposition::ExitDaemonStopped,
-        FrontendFrame::ProtocolError(_) => FrameDisposition::ExitProtocolError,
+        FrontendFrame::ProtocolError { .. } => FrameDisposition::ExitProtocolError,
         FrontendFrame::Snapshot(_) | FrontendFrame::Hello(_) | FrontendFrame::ControlAck { .. } => {
             FrameDisposition::Continue
         }
@@ -385,6 +393,45 @@ mod tests {
             daemon_id: "0123456789abcdef".to_owned(),
             current_generation: 1,
         }))
+    }
+
+    #[test]
+    fn every_frame_variant_survives_an_encode() {
+        // `FrontendFrame` is internally tagged, and serde cannot represent an
+        // internally tagged newtype whose payload is a bare string. A variant
+        // written that way compiles, matches correctly on the receiving side,
+        // and still cannot be serialized — which is exactly how
+        // `ProtocolError(String)` shipped: the daemon's only way to tell a
+        // frontend *why* it was disconnecting failed at runtime and was
+        // discarded by a `let _ =`. Enumerating the variants here is the guard.
+        let variants = [
+            FrontendFrame::Snapshot(Box::new(FrontendSnapshot::empty(Vec::new()))),
+            hello(),
+            FrontendFrame::VersionMismatch(VersionMismatchPayload {
+                daemon: PROTOCOL_VERSION,
+                frontend: PROTOCOL_VERSION + 1,
+                daemon_id: "0123456789abcdef".to_owned(),
+            }),
+            FrontendFrame::ProtocolError {
+                message: "refused".to_owned(),
+            },
+            FrontendFrame::ControlAck {
+                generation: 3,
+                accepted: false,
+                detail: Some("no".to_owned()),
+            },
+            FrontendFrame::ShuttingDown,
+        ];
+        for frame in &variants {
+            let encoded = encode_frame(frame)
+                .unwrap_or_else(|error| panic!("{frame:?} must encode: {error}"));
+            let prefix = take_exact(&encoded, LEN_PREFIX_BYTES).expect("prefix present");
+            let len = parse_length(prefix).expect("valid prefix");
+            let body = take_exact(&encoded[LEN_PREFIX_BYTES..], len).expect("body present");
+            let decoded: FrontendFrame = serde_json::from_slice(body)
+                .unwrap_or_else(|error| panic!("{frame:?} must decode: {error}"));
+            assert_eq!(&decoded, frame, "{frame:?} did not survive the round trip");
+        }
     }
 
     #[test]
