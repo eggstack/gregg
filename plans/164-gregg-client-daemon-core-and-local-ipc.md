@@ -1,6 +1,8 @@
 # Plan 164: Gregg client-daemon core and local IPC
 
-Status: planned.
+Status: **in progress** — foundation landed at `c887094`; behavioral scope
+outstanding. Do not close until the daemon entry point, engine, fan-out,
+reload boundary, and presentation-only TUI exist and are tested.
 
 Depends on: Plan 161 and the settled current Gregg client architecture through
 Plan 160. It may proceed in parallel with Plans 162-163. Independent of Plan
