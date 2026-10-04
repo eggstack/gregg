@@ -1,7 +1,7 @@
 # Plan 165: Gregg client-daemon lifecycle, install, update, and uninstall
 
 Status: **complete** — implemented in `c8f2542` (lazy activation, launch lock,
-version rotation, user-scoped startup) and `acde7f6` (update/uninstall/
+version rotation, user-scoped startup) and `ee6ad7e` (update/uninstall/
 installer reconciliation). See the closure record at the end of this document.
 
 Depends on: completed Plan 164 and the settled updater/installer ownership work
@@ -320,7 +320,7 @@ multi-client/lifecycle closure.
 ## Closure record
 
 Landed in two commits: `c8f2542` (lazy activation, the launch lock, version
-rotation, user-scoped startup) and `acde7f6` (update/uninstall/installer
+rotation, user-scoped startup) and `ee6ad7e` (update/uninstall/installer
 reconciliation plus documentation).
 
 ### What exists
