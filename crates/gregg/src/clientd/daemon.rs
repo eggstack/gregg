@@ -795,7 +795,15 @@ async fn serve_inner(
                     let _ = connection.write_frame(&FrontendFrame::ShuttingDown);
                     return Ok(());
                 }
-                write_state = true;
+                // Do not publish before the handshake has been answered. The
+                // handshake reply already carries the current state, and a
+                // frontend identifies its daemon by the *first* frame, so a
+                // document overtaking the `Hello` would make a healthy daemon
+                // look like a refusing one. Dropping the notification is safe
+                // rather than lossy: the handshake reads the latest value
+                // itself, and `borrow` does not mark it seen, so the next real
+                // publication still wakes this branch.
+                write_state = handshake_done;
             }
             Some(frame) = ack_rx.recv() => {
                 // A failed ack write means the peer is gone; there is no
@@ -1181,6 +1189,28 @@ mod tests {
         panic!("the expected state did not arrive within {budget:?}");
     }
 
+    /// Read one length-prefixed frame straight off a raw socket.
+    ///
+    /// Hand-rolled on purpose: the ordering test below is about the *first
+    /// bytes on the wire*, so it must not go through the client-side frame
+    /// reader, which is exactly the thing that would hide a violated ordering.
+    async fn read_raw_frame(stream: &mut tokio::net::UnixStream) -> FrontendFrame {
+        use tokio::io::AsyncReadExt;
+
+        let mut prefix = [0_u8; 9];
+        stream.read_exact(&mut prefix).await.expect("reads prefix");
+        let length = usize::from_str_radix(
+            std::str::from_utf8(&prefix[..8])
+                .expect("prefix is ascii")
+                .trim(),
+            16,
+        )
+        .expect("hex length");
+        let mut body = vec![0_u8; length];
+        stream.read_exact(&mut body).await.expect("reads body");
+        serde_json::from_slice(&body).expect("decodes")
+    }
+
     /// A loopback remote that serves **only** the two scheduler routes.
     ///
     // Long because the wire documents are spelled out inline: a shared builder
@@ -1354,6 +1384,94 @@ mod tests {
         let store = ConfigStore::new(dir.config_path());
         store.write(&config).expect("writes config");
         store
+    }
+
+    #[tokio::test]
+    async fn a_document_never_overtakes_the_hello_a_frontend_identifies_its_daemon_by() {
+        use tokio::io::AsyncWriteExt;
+
+        let dir = TempDir::new("hello-order");
+        // A dead loopback port: the metrics plane is refused immediately, so the
+        // config boundary below can force a publication without a reachable
+        // host standing in for one.
+        let running = Running::start(&dir, write_single_system_config(&dir, 9));
+        running.ready().await;
+
+        // A normal frontend, used only to *force and observe* a publication.
+        let mut observer = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("observer attaches");
+        let baseline = next_snapshot(&mut observer.frames).await.generation;
+
+        // A second connection that connects and then stays deliberately silent,
+        // so it is subscribed to the publication slot without ever having sent
+        // a handshake. `serve_inner` is parked in its `select!` for this
+        // connection with `handshake_done` still false; the only question is
+        // whether the `changed()` arm is allowed to write there.
+        let mut stream = tokio::net::UnixStream::connect(
+            running
+                .identity
+                .candidates()
+                .into_iter()
+                .find(|path| path.exists())
+                .expect("the daemon bound an endpoint"),
+        )
+        .await
+        .expect("connects");
+
+        // `Ctrl-R` is the one guaranteed publication boundary: a reload
+        // reconciles the fleet and polls immediately, so a newer generation
+        // exists without waiting on the cadence. Once the observer has seen it,
+        // the daemon has definitely published, and the silent connection's
+        // `changed()` is therefore armed. This is what makes the ordering
+        // below deterministic rather than a race that mostly goes the right way.
+        observer
+            .frontend
+            .request_reload(baseline + 1)
+            .expect("reload is accepted");
+        await_documents(&mut observer.frames, Duration::from_secs(20), |document| {
+            document.generation > baseline
+        })
+        .await;
+
+        stream
+            .write_all(
+                &encode_frame(&DaemonRequest::Handshake {
+                    protocol_version: PROTOCOL_VERSION,
+                    version: "test".to_owned(),
+                    daemon_id: running.identity.id().to_owned(),
+                })
+                .expect("encodes"),
+            )
+            .await
+            .expect("sends handshake");
+
+        // A frontend identifies its daemon by the first frame it receives, so
+        // a document arriving ahead of the `Hello` makes a healthy daemon
+        // indistinguishable from a refusing one. `attach` rejects exactly this,
+        // which is how the ordering bug presented as two unrelated cron tests
+        // failing under load.
+        match read_raw_frame(&mut stream).await {
+            FrontendFrame::Hello(hello) => assert_eq!(
+                hello.daemon_id,
+                running.identity.id().to_owned(),
+                "the hello must name the config it serves"
+            ),
+            other => panic!("the first frame must be a hello, got {other:?}"),
+        }
+
+        // Withholding the premature write must not cost the frontend its first
+        // document: the handshake reply carries the current state, so nothing
+        // is lost by refusing to publish ahead of the `Hello`.
+        assert!(
+            matches!(
+                read_raw_frame(&mut stream).await,
+                FrontendFrame::Snapshot(_)
+            ),
+            "the hello must be followed by the current document"
+        );
+
+        running.shutdown().await;
     }
 
     #[tokio::test]

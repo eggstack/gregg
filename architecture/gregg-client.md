@@ -147,6 +147,12 @@ Frontend B ─┴─────────────────────
   acknowledgements are the one non-latest-state message and ride a small
   per-connection channel, so one frontend's request cannot displace another's
   state.
+- **`Hello` is always the first frame.** A frontend identifies its daemon by the
+  first frame it receives, so a document may never be written before the
+  handshake is answered — doing so makes a healthy daemon indistinguishable
+  from a refusing one, and the connection is dropped. The handshake reply
+  already carries the current state, so withholding the premature write costs
+  the frontend nothing.
 - **Ownership boundary in code.** `FleetState` holds the reducer that consumes
   poll batches, EggPool results, and reloads. `AppState` in a frontend has no
   such entry point; its only fleet writer is `adopt_snapshot`. The

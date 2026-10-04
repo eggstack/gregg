@@ -45,6 +45,17 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A TUI could fail to attach to a healthy client daemon.** The daemon's
+  publication loop wrote a state document as soon as the shared slot changed,
+  including before it had answered a newly accepted connection's handshake. A
+  frontend identifies its daemon by the *first* frame it receives, so a
+  document arriving ahead of the `Hello` was rejected as a refusing daemon and
+  the window exited instead of rendering. It needed a publication to land in
+  the gap between accepting a connection and reading its handshake, so it
+  appeared only under load — as two unrelated cron tests failing in a release
+  preflight. The handshake reply already carries the current state, so nothing
+  is lost by declining to publish ahead of it.
+
 - **`Ctrl-R` did nothing without an `EggPool` entry.** The config-reload request
   sat behind an `EggPool`-configured early return, so for every configuration
   without an `EggPool` table the one reload boundary the client-daemon

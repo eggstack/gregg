@@ -83,6 +83,9 @@ reads no config file and opens no network connection.
 - **Fan-out:** `watch` slot, serialized **once** per publication. A slow
   frontend skips to the newest generation (documents are complete). Control
   acks ride a small per-connection channel.
+- **Ordering:** the `Hello` is always the first frame. Never write a document
+  before the handshake is answered — a frontend identifies its daemon by its
+  first frame, and the handshake reply already carries the current state.
 - **Ownership boundary:** `FleetState` holds the reducers. `AppState` in a TUI
   has no batch/EggPool/reload entry point; `AppState::adopt_snapshot` is its
   only fleet writer. `#[cfg(test)] test_fleet` lets renderer tests drive the
