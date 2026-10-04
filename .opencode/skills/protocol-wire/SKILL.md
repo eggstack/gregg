@@ -122,6 +122,38 @@ association dangling, and only `drives: None` skips the check. A drive with
 `total_bytes == 0` is a valid empty/placeholder volume unless it also claims
 non-zero `used_bytes`/`available_bytes`.
 
+## Scheduler observability routes
+
+Additive and read-only, deliberately separate from `/v2/status` so metrics
+polls never carry command output:
+
+~~~text
+GET/HEAD /v2/scheduler          -> SchedulerSummaryV2
+GET/HEAD /v2/scheduler/history  -> SchedulerHistoryV2
+~~~
+
+`GET`/`HEAD` only (else 405); every other scheduler path is 404; no job
+create/edit/start/cancel route exists. No configured jobs returns `200` with an
+empty document; a pre-feature daemon returns `404`, which the client reads as
+*observability unsupported*, not host offline.
+
+- Live state is an enum: `idle` | `waiting_for_slot` | `load_high` |
+  `load_unavailable` | `running`. `load_unavailable` must carry no `observed`
+  reading, and `waiting_for_slot` must never render as load-delayed.
+- Terminal outcome is an enum: `success` | `failed` | `spawn_failed` |
+  `wait_failed` | `load_expired` | `cancelled` (reserved). No exit code,
+  signal, start time, or duration on an outcome that never ran a child.
+- Deduplication identity is `(SchedulerEpochV2, sequence)`. The epoch is a
+  start timestamp plus an FNV-1a nonce; it is a dedup aid, never an auth token.
+- `history_revision` changes only when retained history changes, so a live
+  transition does not force a history refetch.
+- Published output is bounded in **JSON-escaped** bytes
+  (`MAX_SCHEDULER_OUTPUT_TEXT_BYTES = 512`), not raw bytes, because
+  `serde_json` renders a C0 byte as six. That makes the maximum history body a
+  closed calculation (832,022 bytes measured worst case vs a 1 MiB client cap).
+- No `argv`/`working_dir` is published, but the listener is unauthenticated:
+  document that job output is readable by anything that can reach it.
+
 ## Health envelopes
 
 The state/category pairing is a total allowlist enforced on deserialize:

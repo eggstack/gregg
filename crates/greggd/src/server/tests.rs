@@ -189,7 +189,15 @@ async fn raw_wire_contract_preserved_by_eggserve_transport() {
     let addr = listener.local_addr().unwrap();
     let (control, mut completion) = start(listener, state).await.unwrap();
 
-    let routes = ["/", "/v1/status", "/v2/status", "/healthz", "/v2/healthz"];
+    let routes = [
+        "/",
+        "/v1/status",
+        "/v2/status",
+        "/healthz",
+        "/v2/healthz",
+        "/v2/scheduler",
+        "/v2/scheduler/history",
+    ];
     let mut get_lengths = std::collections::HashMap::new();
     for route in routes {
         let mut stream = TcpStream::connect(addr).await.unwrap();
@@ -246,6 +254,17 @@ async fn raw_wire_contract_preserved_by_eggserve_transport() {
 
     for (method, route, expected_status, expected_body) in [
         ("POST", "/v1/status", "405", ""),
+        // The scheduler routes are read-only: a mutating verb is rejected
+        // exactly like every other known route.
+        ("POST", "/v2/scheduler", "405", ""),
+        ("DELETE", "/v2/scheduler/history", "405", ""),
+        // Nothing under the scheduler prefix is a control plane.
+        (
+            "GET",
+            "/v2/scheduler/run",
+            "404",
+            "GET /v2/scheduler/run not found",
+        ),
         ("GET", "/unknown", "404", "GET /unknown not found"),
         ("BREW", "/unknown", "404", "BREW /unknown not found"),
     ] {
@@ -2407,4 +2426,302 @@ async fn plan144_no_lock_held_across_init_for_concurrent_burst() {
             .load(std::sync::atomic::Ordering::Relaxed)
             >= 1
     );
+}
+
+// ===== Plan 163: scheduler observability routes =====
+
+/// Build a scheduler publication handle serving a representative live state
+/// plus two bounded terminal records, without a real child process.
+///
+/// Covers the shapes the routes must distinguish: a successful run with output
+/// tails, a load-expired occurrence that never ran a child, a running job, and
+/// a load-high delayed job with its published load decision.
+async fn scheduler_publisher_with_state() -> crate::scheduler::observation::SchedulerPublisher {
+    use crate::scheduler::observation::{OutputTail, SchedulerObserver, TerminalRecord};
+    use gregg_protocol::{
+        SchedulerJobStateV2, SchedulerJobV2, SchedulerLoadGateV2, SchedulerOutcomeV2,
+    };
+
+    let publisher = crate::scheduler::observation::SchedulerPublisher::empty();
+    let names = vec!["backup".to_owned(), "rotate".to_owned()];
+    let mut observer = SchedulerObserver::new(&names, 5, 1_700_000_000_000, publisher.clone());
+
+    let mut stdout = OutputTail::new();
+    stdout.push(b"wrote 3 archives");
+    let mut stderr = OutputTail::new();
+    stderr.push(b"warning: disk 91% full");
+    observer.record_terminal(
+        0,
+        TerminalRecord {
+            scheduled_unix_ms: 1_700_000_000_000,
+            started_unix_ms: Some(1_700_000_001_000),
+            finished_unix_ms: 1_700_000_002_000,
+            delay_ms: 1_000,
+            coalesced: false,
+            exit_code: Some(0),
+            signal: None,
+            duration_ms: Some(1_000),
+            stdout,
+            stderr,
+        },
+        SchedulerOutcomeV2::Success,
+    );
+    observer.record_terminal(
+        1,
+        TerminalRecord::without_child(
+            1_700_000_000_000,
+            1_700_000_060_000,
+            60_000,
+            false,
+            SchedulerOutcomeV2::LoadExpired,
+        ),
+        SchedulerOutcomeV2::LoadExpired,
+    );
+
+    let job = |name: &str, state: SchedulerJobStateV2| SchedulerJobV2 {
+        name: name.to_owned(),
+        schedule: "0 3 * * *".to_owned(),
+        next_due_unix_ms: 1_700_000_100_000,
+        state,
+        load: None,
+        pending_since_unix_ms: None,
+        next_retry_unix_ms: None,
+        running_since_unix_ms: None,
+        last: None,
+    };
+
+    let mut running = job("backup", SchedulerJobStateV2::Running);
+    running.running_since_unix_ms = Some(1_700_000_001_000);
+    running.last = observer.last_summary(0);
+    observer
+        .publish(
+            vec![running, job("rotate", SchedulerJobStateV2::Idle)],
+            1_700_000_002_000,
+        )
+        .await;
+
+    // Move `rotate` to its final load-delayed shape, which is what the routes
+    // serve for the rest of these tests.
+    let mut delayed = job("rotate", SchedulerJobStateV2::LoadHigh);
+    delayed.load = Some(SchedulerLoadGateV2 {
+        window: "15m".to_owned(),
+        threshold: 8.0,
+        observed: Some(9.24),
+    });
+    delayed.pending_since_unix_ms = Some(1_700_000_000_000);
+    delayed.next_retry_unix_ms = Some(1_700_000_060_000);
+    delayed.last = observer.last_summary(1);
+    let mut idle = job("backup", SchedulerJobStateV2::Idle);
+    idle.last = observer.last_summary(0);
+    observer
+        .publish(vec![idle, delayed], 1_700_000_003_000)
+        .await;
+
+    publisher
+}
+
+#[tokio::test]
+async fn scheduler_routes_serve_valid_documents() {
+    let publisher = scheduler_publisher_with_state().await;
+    let state = ServerState::with_stale_policy_and_scheduler(0, Duration::ZERO, publisher);
+
+    let summary = call(&state, get("/v2/scheduler")).await;
+    assert_eq!(summary.status(), StatusCode::OK);
+    assert_eq!(
+        summary.headers().get("content-type").map(String::as_str),
+        Some("application/json")
+    );
+    let document: gregg_protocol::SchedulerSummaryV2 =
+        serde_json::from_slice(&summary.body).expect("valid summary JSON");
+    document.validate().expect("summary validates");
+    assert_eq!(document.jobs.len(), 2);
+    assert_eq!(
+        document.jobs[1].state,
+        gregg_protocol::SchedulerJobStateV2::LoadHigh
+    );
+    assert_eq!(document.jobs[1].next_retry_unix_ms, Some(1_700_000_060_000));
+    assert_eq!(
+        document.jobs[1]
+            .load
+            .as_ref()
+            .and_then(|gate| gate.observed),
+        Some(9.24)
+    );
+
+    let history = call(&state, get("/v2/scheduler/history")).await;
+    assert_eq!(history.status(), StatusCode::OK);
+    let document: gregg_protocol::SchedulerHistoryV2 =
+        serde_json::from_slice(&history.body).expect("valid history JSON");
+    document.validate().expect("history validates");
+    assert_eq!(document.jobs.len(), 2);
+    assert_eq!(document.history_revision, summary_revision(&summary.body));
+}
+
+fn summary_revision(body: &[u8]) -> u64 {
+    let value: serde_json::Value = serde_json::from_slice(body).expect("summary JSON");
+    value["history_revision"]
+        .as_u64()
+        .expect("numeric revision")
+}
+
+#[tokio::test]
+async fn scheduler_history_carries_bounded_output_and_non_child_outcomes() {
+    let publisher = scheduler_publisher_with_state().await;
+    let state = ServerState::with_stale_policy_and_scheduler(0, Duration::ZERO, publisher);
+    let response = call(&state, get("/v2/scheduler/history")).await;
+    let document: gregg_protocol::SchedulerHistoryV2 =
+        serde_json::from_slice(&response.body).expect("valid history JSON");
+
+    let mut saw_success = false;
+    let mut saw_expired = false;
+    for job in &document.jobs {
+        for record in &job.records {
+            if record.outcome == gregg_protocol::SchedulerOutcomeV2::Success {
+                saw_success = true;
+                assert_eq!(record.exit_code, Some(0));
+                assert_eq!(record.stdout.text, "wrote 3 archives");
+                assert!(!record.stdout.truncated);
+                assert_eq!(record.stderr.text, "warning: disk 91% full");
+            }
+            if record.outcome == gregg_protocol::SchedulerOutcomeV2::LoadExpired {
+                saw_expired = true;
+                // A load-expired occurrence never ran a child; fabricating an
+                // exit code or duration would be a lie.
+                assert_eq!(record.started_unix_ms, None);
+                assert_eq!(record.duration_ms, None);
+                assert_eq!(record.exit_code, None);
+                assert!(!record.coalesced);
+            }
+        }
+    }
+    assert!(saw_success, "a successful run must be visible");
+    assert!(
+        saw_expired,
+        "a load-expired occurrence must be visible even without a child"
+    );
+}
+
+/// GET/HEAD header parity. The "HEAD carries no body" proof lives in
+/// `raw_wire_contract_preserved_by_eggserve_transport`, because an in-process
+/// service call returns the body that the transport then strips.
+#[tokio::test]
+async fn scheduler_routes_match_get_and_head_headers() {
+    let publisher = scheduler_publisher_with_state().await;
+    let state = ServerState::with_stale_policy_and_scheduler(0, Duration::ZERO, publisher);
+    for route in ["/v2/scheduler", "/v2/scheduler/history"] {
+        let get_response = call(&state, get(route)).await;
+        let head_response = call(&state, request("HEAD", route)).await;
+        assert_eq!(get_response.status(), head_response.status(), "{route}");
+        assert_eq!(
+            get_response.headers().get("content-type"),
+            head_response.headers().get("content-type"),
+            "{route}"
+        );
+        assert_eq!(
+            get_response.headers().get("content-length"),
+            head_response.headers().get("content-length"),
+            "{route} HEAD must advertise the same length"
+        );
+        assert_ne!(get_response.body.len(), 0);
+    }
+}
+
+#[tokio::test]
+async fn scheduler_routes_reject_methods_and_unknown_paths() {
+    let state = ServerState::new();
+    for route in ["/v2/scheduler", "/v2/scheduler/history"] {
+        for method in ["POST", "PUT", "DELETE", "PATCH"] {
+            let response = call(&state, request(method, route)).await;
+            assert_eq!(
+                response.status(),
+                StatusCode::METHOD_NOT_ALLOWED,
+                "{method} {route}"
+            );
+        }
+    }
+    // No scheduler control plane exists: nothing under a scheduler path may
+    // accept a mutating verb or a plausible job-control sub-path.
+    for path in [
+        "/v2/scheduler/run",
+        "/v2/scheduler/jobs",
+        "/v2/scheduler/cancel",
+    ] {
+        assert_eq!(
+            call(&state, get(path)).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+        assert_eq!(
+            call(&state, post(path)).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_daemon_with_no_jobs_serves_a_valid_empty_scheduler_document() {
+    // A pre-existing server state (no scheduler task at all) must still
+    // answer 200 with a valid empty document, never 404.
+    let state = ServerState::new();
+    for route in ["/v2/scheduler", "/v2/scheduler/history"] {
+        let response = call(&state, get(route)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{route}");
+    }
+    let response = call(&state, get("/v2/scheduler")).await;
+    let document: gregg_protocol::SchedulerSummaryV2 =
+        serde_json::from_slice(&response.body).expect("valid empty summary");
+    assert_eq!(document.jobs.len(), 0);
+    assert!(document.validate().is_ok());
+}
+
+#[tokio::test]
+async fn scheduler_documents_stay_separate_from_the_metrics_payload() {
+    // The whole point of additive scheduler routes: an ordinary metrics poll
+    // must never carry command output.
+    let publisher = scheduler_publisher_with_state().await;
+    let state = ServerState::with_stale_policy_and_scheduler(0, Duration::ZERO, publisher);
+    update_both(&state, LinuxSnapshotBuilder::default().build()).await;
+
+    let status = call(&state, get("/v2/status")).await;
+    let body = String::from_utf8_lossy(&status.body);
+    assert!(!body.contains("scheduler"));
+    assert!(!body.contains("wrote 3 archives"));
+
+    let health = call(&state, get("/v2/healthz")).await;
+    let health_body = String::from_utf8_lossy(&health.body);
+    assert!(!health_body.contains("wrote 3 archives"));
+}
+
+#[tokio::test]
+async fn scheduler_history_body_respects_the_frozen_client_cap() {
+    let publisher = scheduler_publisher_with_state().await;
+    let state = ServerState::with_stale_policy_and_scheduler(0, Duration::ZERO, publisher);
+    let response = call(&state, get("/v2/scheduler/history")).await;
+    assert!(
+        response.body.len() < gregg_protocol::MAX_SCHEDULER_HISTORY_BODY_BYTES,
+        "history body {} exceeds the client cap",
+        response.body.len()
+    );
+    let summary = call(&state, get("/v2/scheduler")).await;
+    assert!(
+        summary.body.len() < gregg_protocol::MAX_SCHEDULER_SUMMARY_BODY_BYTES,
+        "summary body {} exceeds the client cap",
+        summary.body.len()
+    );
+}
+
+#[tokio::test]
+async fn the_summary_revision_matches_the_history_document() {
+    // The client refetches history only when the summary's revision changes,
+    // so the two documents must always agree for the same publication.
+    let publisher = scheduler_publisher_with_state().await;
+    let publication = publisher.current().await;
+    let summary: gregg_protocol::SchedulerSummaryV2 =
+        serde_json::from_slice(&publication.summary_bytes).expect("summary JSON");
+    let history: gregg_protocol::SchedulerHistoryV2 =
+        serde_json::from_slice(&publication.history_bytes).expect("history JSON");
+    assert_eq!(summary.epoch, history.epoch, "epoch must match");
+    assert_eq!(summary.history_revision, history.history_revision);
+    assert_eq!(summary.jobs.len(), history.jobs.len());
 }

@@ -5,6 +5,9 @@
 //! - `GET /` and `GET /v1/status` — latest v1 status snapshot as compact JSON.
 //! - `GET /v2/status` — latest flat v2 status payload, including optional drives.
 //! - `GET /healthz` — readiness and health information.
+//! - `GET /v2/scheduler` — bounded read-only maintenance-scheduler state.
+//! - `GET /v2/scheduler/history` — bounded read-only terminal history and
+//!   captured output tails.
 //!
 //! Unsupported methods on a known path return `405`; unknown paths return
 //! `404`. No TLS, cookies, sessions,
@@ -28,6 +31,8 @@ use eggserve_server::{
 use gregg_protocol::v2::SCHEMA_VERSION_V2;
 use gregg_protocol::v2::{HealthResponseV2, StatusPayloadV2, StatusSnapshotV2};
 use gregg_protocol::{HealthResponse, ReadinessState, StatusSnapshot, SCHEMA_VERSION_V1};
+
+use crate::scheduler::observation::SchedulerPublisher;
 use tokio::net::TcpListener;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -152,6 +157,15 @@ impl Config {
 #[derive(Debug, Clone)]
 pub struct ServerState {
     published: Arc<RwLock<PublishedState>>,
+    /// Plan 163: the scheduler's own read-only publication.
+    ///
+    /// Deliberately separate from [`Self::published`]: metrics are republished
+    /// every sample while scheduler state changes only at transitions, so one
+    /// lock would couple a low-frequency document to a high-frequency write
+    /// path for no benefit. Handlers clone the `Arc` and serve bytes that were
+    /// already serialized at publish time; they never serialize, never await
+    /// scheduler mutation, and never hold a scheduler lock.
+    scheduler: SchedulerPublisher,
     /// Maximum consecutive failures before snapshot is considered stale.
     max_consecutive_failures: u32,
     /// Maximum snapshot age before it is considered stale.
@@ -426,7 +440,23 @@ impl ServerState {
     /// Create a new instance with the given stale-snapshot policy.
     #[must_use]
     pub fn with_stale_policy(max_consecutive_failures: u32, max_snapshot_age: Duration) -> Self {
+        Self::with_stale_policy_and_scheduler(
+            max_consecutive_failures,
+            max_snapshot_age,
+            SchedulerPublisher::empty(),
+        )
+    }
+
+    /// Create a new instance with a stale-snapshot policy and the scheduler's
+    /// read-only publication handle.
+    #[must_use]
+    pub(crate) fn with_stale_policy_and_scheduler(
+        max_consecutive_failures: u32,
+        max_snapshot_age: Duration,
+        scheduler: SchedulerPublisher,
+    ) -> Self {
         Self {
+            scheduler,
             published: Arc::new(RwLock::new(PublishedState {
                 snapshot: None,
                 snapshot_v2: None,
@@ -458,6 +488,20 @@ impl ServerState {
             #[cfg(test)]
             test_gate: Arc::new(TestSerializeGate::new()),
         }
+    }
+
+    /// Read the latest scheduler publication for `/v2/scheduler`.
+    ///
+    /// The read guard is released before the `Arc` is returned, so the handler
+    /// never holds a lock across an await.
+    pub(crate) async fn scheduler_summary(&self) -> Bytes {
+        self.scheduler.current().await.summary_bytes.clone()
+    }
+
+    /// Read the latest scheduler history publication for
+    /// `/v2/scheduler/history`.
+    pub(crate) async fn scheduler_history(&self) -> Bytes {
+        self.scheduler.current().await.history_bytes.clone()
     }
 
     #[allow(clippy::unused_self)]
@@ -1039,7 +1083,12 @@ async fn dispatch_request(state: &ServerState, request: Request) -> Result<Respo
     let path = head.target().path();
     let known_route = matches!(
         path,
-        "/" | "/v1/status" | "/v2/status" | "/healthz" | "/v2/healthz"
+        "/" | "/v1/status"
+            | "/v2/status"
+            | "/healthz"
+            | "/v2/healthz"
+            | "/v2/scheduler"
+            | "/v2/scheduler/history"
     );
 
     if known_route && !matches!(method, "GET" | "HEAD") {
@@ -1051,6 +1100,8 @@ async fn dispatch_request(state: &ServerState, request: Request) -> Result<Respo
         ("GET" | "HEAD", "/v2/status") => v2_status_response(state).await,
         ("GET" | "HEAD", "/healthz") => health_response(state).await,
         ("GET" | "HEAD", "/v2/healthz") => health_response_v2(state).await,
+        ("GET" | "HEAD", "/v2/scheduler") => scheduler_summary_response(state).await,
+        ("GET" | "HEAD", "/v2/scheduler/history") => scheduler_history_response(state).await,
         _ => {
             let method_owned = method.to_owned();
             let raw_owned = head.target().raw().to_owned();
@@ -1098,6 +1149,17 @@ async fn health_response(state: &ServerState) -> Result<Response, ServiceError> 
 async fn health_response_v2(state: &ServerState) -> Result<Response, ServiceError> {
     let (body, status) = state.v2_health_cached(now_unix_ms()).await?;
     json_response(status, body)
+}
+
+async fn scheduler_summary_response(state: &ServerState) -> Result<Response, ServiceError> {
+    // Both scheduler documents are read-only GET/HEAD surfaces. They are
+    // never merged into `/v2/status`, so an ordinary metrics poll never
+    // carries command output.
+    json_response(StatusCode::OK, state.scheduler_summary().await)
+}
+
+async fn scheduler_history_response(state: &ServerState) -> Result<Response, ServiceError> {
+    json_response(StatusCode::OK, state.scheduler_history().await)
 }
 
 fn json_response(status: StatusCode, body: Bytes) -> Result<Response, ServiceError> {

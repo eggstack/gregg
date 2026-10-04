@@ -321,10 +321,105 @@ daemon-provided and remain separate from their detail lists; the client does
 not sum overlapping records or rediscover network topology. Formatting
 (`GHz`, `MiB/s`, and percentage text) remains in the renderer layer.
 
+## Scheduler observability routes
+
+Two additive, read-only routes expose the maintenance scheduler. They are
+deliberately **not** merged into `/v2/status`: metrics are polled at a high
+cadence while history carries bounded command output, so merging them would
+make every ordinary metrics poll materially larger.
+
+~~~text
+GET/HEAD /v2/scheduler            -> SchedulerSummaryV2
+GET/HEAD /v2/scheduler/history    -> SchedulerHistoryV2
+~~~
+
+| Property | Value |
+| --- | --- |
+| Methods | `GET` and `HEAD` only; any other method is `405` |
+| Unknown paths (including `/v2/scheduler/run`, `/v2/scheduler/jobs`) | `404` |
+| Daemon with no configured jobs | `200` with a valid empty document |
+| Pre-feature daemon | `404`, which a client reads as *scheduler observability unsupported* |
+| Mutation | none: no create/edit/delete/start/cancel route exists |
+
+**Summary** carries per job: operator-facing name, configured schedule, next
+civil occurrence, an explicit live `state`, the optional load gate with its
+window/threshold/observed reading, pending-since while pending, next retry
+while load-deferred, running-since while running, and the most recent terminal
+result summary. The `last` summary is what lets a frontend show a job's last
+result without fetching history.
+
+**History** carries the retained terminal records, each with the scheduler-
+lifetime `sequence`, the scheduled occurrence, the start time when a child
+ran, the terminal time, delay, duration, coalesced indicator, exit code and
+Unix signal when meaningful, and independent bounded stdout/stderr tails with
+their own `truncated` flags.
+
+### Live-state vocabulary
+
+`idle` | `waiting_for_slot` | `load_high` | `load_unavailable` | `running`
+
+`load_unavailable` is validated to carry no `observed` reading, so a warming,
+failed, or missing load source can never be rendered as a zero or a low load.
+`waiting_for_slot` is distinct from both load-deferred states so a job waiting
+for the single global child slot is never mislabelled as load-delayed.
+
+### Terminal-outcome vocabulary
+
+`success` | `failed` | `spawn_failed` | `wait_failed` | `load_expired` |
+`cancelled`
+
+Validation rejects an `exit_code`, `signal`, `started_unix_ms`, or
+`duration_ms` on any outcome that never ran a child, so an expired or
+failed-to-start occurrence cannot masquerade as an executed one. `cancelled` is
+reserved: greggd clears memory-only history at exit, so a remote client may
+never observe the final occurrence of a scheduler lifetime.
+
+### Identity and deduplication
+
+A record's dedup identity is the pair `(SchedulerEpochV2, sequence)`. The epoch
+is a `started_at_unix_ms` plus an FNV-1a `nonce` over the process id, start
+time, and a process-lifetime counter — dependency-free, and distinct for two
+restarts in the same millisecond. It is a deduplication aid, never an
+authentication token. The summary's `history_revision` changes **only** when
+retained terminal history changes, so a live transition such as a job moving to
+load-delayed does not force a client history refetch.
+
+### Bounded resources
+
+~~~text
+MAX_SCHEDULER_JOBS               64      (mirrors the daemon's MAX_JOBS)
+DEFAULT_SCHEDULER_HISTORY_LIMIT   5      per-job retained records
+MAX_SCHEDULER_HISTORY_LIMIT      10      hard per-job maximum
+MAX_SCHEDULER_OUTPUT_BYTES      1024      raw captured tail, per stream
+MAX_SCHEDULER_OUTPUT_TEXT_BYTES  512      published text, per stream,
+                                            measured in JSON-ESCAPED bytes
+MAX_SCHEDULER_HISTORY_BODY_BYTES  1 MiB   client cap
+MAX_SCHEDULER_SUMMARY_BODY_BYTES 64 KiB   client cap
+~~~
+
+The text cap is measured in JSON-escaped bytes on purpose: `serde_json` renders
+a C0 control byte as six bytes, so a naive text cap could still emit three times
+that to the wire. `json_escaped_len` and `truncate_to_escaped_budget` make the
+published length an exact function of the character sequence, so the maximum
+history body is bounded *by construction*. The measured worst case — 64 jobs at
+depth 10 with every stream filled to the escaped budget — is 832,022 bytes,
+about 21% below the 1 MiB client cap, and a test pins that figure.
+
+### Security boundary
+
+Scheduler output is more sensitive than CPU or memory telemetry. The configured
+`greggd` HTTP listener is unauthenticated, so **any principal that can reach it
+can read job output** through `/v2/scheduler/history`. Command `argv` and
+working directory are never published — the job name and schedule are enough to
+identify a job — and output is bounded before serialization, but the trust
+model is the existing private-LAN model. This line adds no authentication, TLS,
+tokens, or per-client ACL.
+
 ## Platform-specific endpoint behavior
 
-The daemon always exposes all five routes (`/`, `/v1/status`,
-`/v2/status`, `/healthz`, `/v2/healthz`). On platforms where a
+The daemon always exposes all five metrics routes (`/`, `/v1/status`,
+`/v2/status`, `/healthz`, `/v2/healthz`) plus the two additive scheduler
+routes below. On platforms where a
 truthful v1 snapshot cannot be produced, the v1 endpoint returns
 `503 Service Unavailable` with a v1 health response:
 

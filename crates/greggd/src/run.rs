@@ -25,6 +25,7 @@ use tracing::{info, warn};
 use crate::collector::SystemCollector;
 use crate::config::Config;
 use crate::sampler::{RealClock, Sampler};
+use crate::scheduler::observation::SchedulerPublisher;
 use crate::scheduler::{self, LoadGateState};
 use crate::server::error::ServerError;
 use crate::server::{Config as ServerConfig, ServerState};
@@ -261,9 +262,15 @@ where
     // A small count-based threshold keeps status/health coherent: without
     // it a `Failed` sampler would keep serving its last snapshot as 200
     // while healthz reports 503 until the age policy expires.
-    let server_state = ServerState::with_stale_policy(
+    // Plan 163: the scheduler publication handle exists even when no job is
+    // configured, so `/v2/scheduler` answers a valid empty document instead of
+    // `404`. The scheduler task replaces it with the live handle when it starts.
+    let history_limit = config.scheduler_history_limit();
+    let scheduler_publisher = SchedulerPublisher::empty();
+    let server_state = ServerState::with_stale_policy_and_scheduler(
         DEFAULT_MAX_CONSECUTIVE_FAILURES,
         Duration::from_millis(config.stale_after_ms()),
+        scheduler_publisher.clone(),
     );
 
     // Bind the TCP listener before spawning tasks so bind failures
@@ -294,9 +301,17 @@ where
         let scheduler_jobs = std::mem::take(&mut config.jobs);
         let shutdown_rx = shutdown_tx.subscribe();
         let handle = tokio::spawn(async move {
-            scheduler::run(scheduler_jobs, load_rx, shutdown_rx)
-                .await
-                .unwrap_or_else(|error| panic!("maintenance scheduler failed: {error}"));
+            // A scheduler failure stays a supervised daemon failure: it must
+            // not be reported as a fabricated empty scheduler document.
+            scheduler::run(
+                scheduler_jobs,
+                history_limit,
+                scheduler_publisher,
+                load_rx,
+                shutdown_rx,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("maintenance scheduler failed: {error}"));
         });
         (Some(load_tx), Some(handle))
     };

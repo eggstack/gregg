@@ -29,6 +29,10 @@ monitoring behavior. A load-gated weekly job can be configured as:
 ```toml
 allow_privileged_jobs = false
 
+# Retained terminal records per job, in memory. Omit for the default of 5.
+# The hard maximum is 10; 0 keeps live state but retains no records.
+scheduler_history_limit = 5
+
 [[jobs]]
 name = "cargo-cleanme-deep"
 schedule = "0 3 * * 0"
@@ -71,7 +75,9 @@ Commands are argv arrays and execute directly. Gregg does not parse a command
 string or add a shell; shell syntax requires an explicit shell argv such as
 `["/bin/sh", "-c", "..."]`. There is no per-job environment or secret map.
 The config is readable by diagnostic commands, so command arguments must not
-contain credentials or tokens. stdin, stdout, and stderr are discarded.
+contain credentials or tokens. stdin is always discarded. stdout and stderr
+are captured into a bounded in-memory tail while scheduler history is enabled
+(see below) and are never written to disk.
 
 Jobs always run as greggd's current OS principal. The Linux system service runs
 as `greggd` with `ProtectHome=true` and strict filesystem sandboxing, so it
@@ -82,6 +88,49 @@ the process identity or weaken service sandboxing. In particular, jobs under
 the privileged macOS system LaunchDaemon need that explicit opt-in. Windows
 supports time-only jobs and rejects `max_load` while load averages are
 unsupported.
+
+#### Observing the scheduler
+
+The scheduler's live state and recent results are readable on two additive,
+read-only routes:
+
+```text
+GET/HEAD /v2/scheduler
+GET/HEAD /v2/scheduler/history
+```
+
+A new daemon with no configured jobs returns a valid empty document with
+`200`, not `404`. A daemon old enough to predate these routes returns `404`,
+which a Gregg client reads as *scheduler observability unsupported* — the system
+stays online.
+
+`scheduler_history_limit` is the only related setting. It defaults to `5`,
+accepts `0..=10`, and is validated before the listener binds. `0` disables
+record retention while leaving the live summary available, which is the way to
+stop retaining command output without removing the setting. It is a top-level
+key, not a per-job one, and there is deliberately no path, database, or log-file
+option: history is memory-only and a daemon restart clears it.
+
+Live state is one of `idle`, `waiting_for_slot`, `load_high`, `load_unavailable`,
+or `running`. `load_unavailable` is a distinct state, not a zero load, so a
+warming or failed sampler is never shown as an idle machine. Terminal outcomes
+are `success`, `failed`, `spawn_failed`, `wait_failed`, `load_expired`, and the
+reserved `cancelled`. A `spawn_failed` or `load_expired` record carries no exit
+code, start time, or duration, because no child ever existed.
+
+Each retained record carries a fixed-size stdout tail and stderr tail,
+truncated independently, with a per-stream `truncated` flag. The raw bound is
+1024 bytes per stream and the published text is at most 512 JSON-escaped bytes,
+so a single noisy stream cannot displace the other's diagnostic. Invalid UTF-8
+is replaced lossily after the byte bound is applied.
+
+> **Scheduler output is readable by anyone who can reach the listener.** The
+> configured `greggd` HTTP listener is unauthenticated, so a remote scheduler
+> history request returns job output to any principal that can open a TCP
+> connection. Command `argv` and working directory are never published — only
+> the job name and schedule — but treat the output as sensitive and keep the
+> listener on a trusted network. Gregg adds no authentication, TLS, or access
+> control for this surface.
 
 Load windows are `1m`, `5m`, or `15m` (default `15m`). Thresholds are inclusive.
 Missing, warming, failed, or high load defers the occurrence; retry defaults

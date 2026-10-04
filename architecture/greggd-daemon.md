@@ -120,6 +120,8 @@ does not panic inside reusable daemon code.
 | `GET`/`HEAD /v2/status` | `status_handler_v2` | v2 payload (200) or v2 health (503) |
 | `GET`/`HEAD /healthz` | `health_handler` | v1 health (200 if ready, 503 otherwise) |
 | `GET`/`HEAD /v2/healthz` | `health_handler_v2` | v2 health (200 if ready, 503 otherwise) |
+| `GET`/`HEAD /v2/scheduler` | `scheduler_summary_response` | `SchedulerSummaryV2` (200, always) |
+| `GET`/`HEAD /v2/scheduler/history` | `scheduler_history_response` | `SchedulerHistoryV2` (200, always) |
 | Known route, other method | — | 405 + `Allow: GET,HEAD` |
 | Other | `fallback_handler` | 404 `text/plain; charset=utf-8` |
 
@@ -192,6 +194,74 @@ The sampler owns the clock and cadence. Key behaviors:
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.
 
+### Scheduler observability (Plan 162/163)
+
+The scheduler publishes a **separate** read-only snapshot. It is deliberately
+not part of the metrics `PublishedState`: metrics are republished every sample
+while scheduler state changes only at transitions, so one lock would couple a
+low-frequency document to a high-frequency write path for no benefit.
+
+Ownership and shape:
+
+~~~text
+execution Engine
+  +-- authoritative per-job scheduling state (incl. the load decision read)
+  +-- active child
+  +-- bounded per-job terminal history
+        |
+        +-- publish one coherent SchedulerPublication
+              (serialized summary Bytes + serialized history Bytes)
+~~~
+
+The handle is created once in `run.rs` and shared by the scheduler and the
+server state, so the live job set replaces the initial empty document without
+re-wiring anything. Handlers clone one `Arc` and stream already-serialized
+known-length bytes: they never serialize, never await scheduler mutation, never
+hold a scheduler lock, and never touch config files, telemetry, or processes. A
+serialization failure keeps the previous publication rather than degrading into
+a fabricated empty scheduler, and a scheduler task failure stays a supervised
+daemon failure (a panic at the existing fatal boundary), not an empty document.
+
+**Publication happens only on externally visible state change.** The observer
+compares the derived `(epoch, history_revision, jobs)` against the last
+publication and skips the swap when they match, so the Plan-160 one-minute
+civil-clock reconciliation wake publishes nothing when nothing changed. The
+`generated_at_unix_ms` stamp is deliberately excluded from that comparison.
+
+**Bounded terminal history** is one `VecDeque` per configured job at the
+configured depth (`scheduler_history_limit`, default 5, hard maximum 10, `0`
+meaning no retention). Oldest is evicted first, `sequence` is monotonic within
+the scheduler lifetime, `history_revision` advances on every retained-history
+mutation, and there is no filesystem I/O anywhere in the path — a restart
+clears history and starts a new `SchedulerEpochV2` with no replay.
+
+**Non-child outcomes are first-class records.** A `spawn_failed` occurrence
+(missing executable, permission) and a `load_expired` occurrence (`max_wait`
+elapsed with no child) both become terminal records. Omitting them would leave
+the recent-runs display quietly dishonest: an operator would see an empty list
+for a job that never ran.
+
+**Output capture** replaces `Stdio::null()` only when history is enabled. Both
+pipe handles are taken immediately after the spawn, and both streams drain
+concurrently with the child wait in a single `tokio::join!` — neither stream
+can block the other, and neither can fill the child's pipe, so the classic
+deadlock cannot occur. The drain futures **borrow** the streams instead of
+spawning tasks: a cancelled select (deadline or shutdown) simply stops draining
+and leaves the handles in place for the next wake, so no drain task can outlive
+the scheduler or delay shutdown, and the existing two-second direct-child
+shutdown bound is unchanged. Tails are fixed-capacity (1024 raw bytes per
+stream) and fold each read chunk in with a single bounded drain, so retention is
+independent of how much a child writes. A read error ends that one stream and
+keeps what was already captured rather than failing the scheduler.
+
+Wire conversion happens after the byte bound: lossy UTF-8, then the frozen
+JSON-escaped length budget (512 escaped bytes per stream), with independent
+`truncated` flags. greggd never interprets ANSI escapes; terminal sanitization
+is a client-side responsibility.
+
+The published resource constants and the client body caps are frozen in
+`architecture/protocol.md` and `plans/162-scheduler-observability-contract-and-resource-qualification.md`.
+
 ### Scheduled maintenance
 
 The scheduler is spawned only when the validated config has jobs. It receives
@@ -219,8 +289,10 @@ oldest pending time wins with config order as the stable tie breaker, and
 no candidate vector is built merely to choose a job. Every load-gated launch
 rechecks the latest cached load. No occurrence history is persisted or
 replayed after restart. The process adapter uses direct Tokio argv execution
-with all standard streams null and `kill_on_drop`; active-child termination
-and wait stay inside the shared shutdown deadline.
+with stdin null and `kill_on_drop`; stdout/stderr are null unless history
+capture is enabled, in which case they are piped and concurrently drained (see
+Scheduler observability above). Active-child termination and wait stay inside
+the shared shutdown deadline.
 
 Configuration loading already proves that a parsed schedule can be satisfied by
 at least one Gregorian date, using a fixed calendar epoch and the same
@@ -233,6 +305,10 @@ of substituting a fabricated retry date.
 ### Configuration
 
 ```toml
+# Optional: retained terminal scheduler records per job, in memory.
+# Omit for the default of 5; hard maximum 10; 0 disables record retention.
+scheduler_history_limit = 5
+
 name = "greggd"           # display name, max 128 characters
 host = "0.0.0.0"          # bind address
 port = 11310              # TCP port (1-65535)

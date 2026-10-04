@@ -100,6 +100,54 @@ rejected because load averages are unsupported. Command arguments are visible
 in the readable config and are not a secret store. Gregg invokes no implicit
 shell; a shell must be an explicit argv executable.
 
+### Scheduler observability
+
+Two read-only routes expose the scheduler's own state. They are additive and
+deliberately separate from `/v2/status`, so an ordinary metrics poll never
+carries command output:
+
+| Route | Body |
+| --- | --- |
+| `GET/HEAD /v2/scheduler` | per-job live state, next occurrence, load decision, and the most recent terminal result |
+| `GET/HEAD /v2/scheduler/history` | the retained terminal records with bounded stdout/stderr tails |
+
+Both accept `GET` and `HEAD` only; any other method is `405`, and anything under
+a scheduler path that is not one of these two routes is `404`. There is no
+control plane: nothing here can create, edit, start, or cancel a job. A daemon
+with no configured jobs answers `200` with a valid empty document, never `404`,
+and a pre-feature daemon that answers `404` means "scheduler observability
+unsupported" rather than "host offline".
+
+Live state is an explicit enum: `idle`, `waiting_for_slot`, `load_high`,
+`load_unavailable`, or `running`. `load_unavailable` is distinct from
+`load_high`, so missing load telemetry is never rendered as a low or zero load.
+Terminal outcomes are equally explicit: `success`, `failed`, `spawn_failed`,
+`wait_failed`, `load_expired`, and the reserved `cancelled`. A job that could
+not even be created, or whose occurrence expired waiting for load, is a
+terminal record with no exit code, start time, or duration, because fabricating
+those would misrepresent an occurrence that never ran a child.
+
+History is **memory-only**. A daemon restart clears it; there is no history
+file, database, journal, or log spool, and nothing is written to disk when a job
+runs. `scheduler_history_limit` sets the retained records per job, defaults to
+`5`, and is capped at `10`; `0` keeps the live state but retains no records.
+The value is validated before the listener binds.
+
+Child stdout and stderr are captured only while history is enabled, drained
+concurrently with the child so a noisy job cannot block, and retained only as a
+fixed-size tail (1024 raw bytes per stream, published as at most 512
+JSON-escaped bytes). Both streams truncate independently, so a noisy stdout
+cannot hide the only useful stderr diagnostic. Invalid UTF-8 is replaced
+lossily after the byte bound is applied.
+
+> **Output is visible to anything that can reach this listener.** Scheduler
+> output is more sensitive than CPU or memory telemetry. The configured
+> `greggd` HTTP listener is unauthenticated, so any principal that can reach it
+> can read job output through `/v2/scheduler/history`. Command `argv` and
+> working directory are never published — only the operator-facing job name and
+> schedule — but keep the listener on a trusted network. This line adds no
+> authentication, TLS, or access control.
+
 See [daemon configuration](../../docs/daemon.md#scheduled-maintenance) for the
 complete example and bounds.
 

@@ -1,6 +1,6 @@
 # Plan 163: greggd scheduler history and read-only API
 
-Status: planned.
+Status: complete (see "Closure record" below).
 
 Depends on: completed Plan 162. Independent of Plan 091 and may proceed in
 parallel with Plan 164 once Plan 162's remote contract is frozen.
@@ -270,22 +270,22 @@ Do not document the c TUI before Plan 166 lands it.
 
 ## Acceptance criteria
 
-- [ ] Default remote history depth is five and configured bounds match Plan 162.
-- [ ] Scheduler history is entirely memory-only.
-- [ ] stdout/stderr capture is fixed-capacity and concurrently drained.
-- [ ] Large child output cannot deadlock the scheduler or grow memory
+- [x] Default remote history depth is five and configured bounds match Plan 162.
+- [x] Scheduler history is entirely memory-only.
+- [x] stdout/stderr capture is fixed-capacity and concurrently drained.
+- [x] Large child output cannot deadlock the scheduler or grow memory
       proportionally.
-- [ ] Live state truthfully distinguishes the qualified pending/running states.
-- [ ] Terminal history includes all qualified non-child failures.
-- [ ] Scheduler summary/history routes are read-only and separate from status.
-- [ ] Empty configured-job set returns valid empty scheduler documents.
-- [ ] Existing metrics/health/v1/v2 behavior remains unchanged.
-- [ ] Protocol fixtures/validation cover the new documents.
-- [ ] Plan-160 clock semantics remain green.
-- [ ] Existing scheduler/security/shutdown invariants remain green.
-- [ ] Stripped greggd meets Plan 162's recorded footprint rule.
-- [ ] Default local checks and the existing native CI jobs pass as appropriate.
-- [ ] Active daemon/protocol docs are reconciled.
+- [x] Live state truthfully distinguishes the qualified pending/running states.
+- [x] Terminal history includes all qualified non-child failures.
+- [x] Scheduler summary/history routes are read-only and separate from status.
+- [x] Empty configured-job set returns valid empty scheduler documents.
+- [x] Existing metrics/health/v1/v2 behavior remains unchanged.
+- [x] Protocol validation covers the new documents.
+- [x] Plan-160 clock semantics remain green.
+- [x] Existing scheduler/security/shutdown invariants remain green.
+- [x] Stripped greggd meets Plan 162's recorded footprint rule.
+- [x] Default local checks pass; native CI is recorded in Plan 167.
+- [x] Active daemon/protocol docs are reconciled.
 
 ## Stop conditions
 
@@ -303,3 +303,154 @@ Open a corrective plan instead of closing if:
 When complete, Plan 166 may consume the read-only remote contract. Plan 164 does
 not need to wait for this implementation to establish the local client-daemon
 boundary.
+
+---
+
+## Closure record
+
+### Preserved execution semantics
+
+Nothing in the execution path changed. Cron syntax and aliases, local-civil
+time and DST behavior, the Plan-160 one-minute reconciliation, one pending
+occurrence per job, one global child slot, the cached sampler load source,
+retry/max-wait clocks, coalescing, direct argv with no implicit shell,
+same-principal execution with the root opt-in, the two-second direct-child
+shutdown bound, and no downtime replay are all untouched. Observability follows
+execution state; it never drives it. The 480-test greggd suite (including every
+Plan-160 clock-domain test) is green.
+
+### Scheduler state refactor
+
+`crates/greggd/src/scheduler/observation.rs` holds the observation model:
+
+- `OutputTail` — fixed-capacity raw tail, retains the final 1024 bytes;
+- `JobHistory` — one bounded `VecDeque` per configured job;
+- `SchedulerObserver` — epoch, histories, sequence, revision, and the
+  publication decision;
+- `SchedulerPublisher` / `SchedulerPublication` — the shared cell the HTTP
+  server reads, holding both documents already serialized;
+- `job_state()` — the single place a live state is derived.
+
+`JobState` gained two fields: the recorded `last_gate` (the reading behind the
+actual decision, so an idle job never appears to carry a live load value) and,
+on the pending occurrence, the civil `scheduled` time plus wall-clock copies of
+pending/retry. The published `observed` load is the value from the decision, not
+a per-second live reading, so a pending job does not cause a publication every
+sample.
+
+### Bounded terminal history
+
+One `VecDeque` per job at the configured depth. Oldest evicted first, sequence
+monotonic within the lifetime, `history_revision` advancing only on retained
+mutation, and **no filesystem I/O anywhere in the module**. A restart clears
+history and starts a new epoch with no replay.
+
+### Child output capture
+
+- stdout/stderr are piped only when `scheduler_history_limit > 0`; otherwise the
+  child keeps the original null streams (proven by
+  `disabled_capture_keeps_the_original_null_streams`).
+- Both pipe handles are taken immediately after the spawn.
+- Both streams drain concurrently with the child wait in one `tokio::join!`, so
+  neither stream can block the other and neither can fill the child's pipe.
+- The drain futures **borrow** the streams rather than spawning tasks. A
+  cancelled select (deadline or shutdown) stops draining and leaves the handles
+  in place for the next wake, so no drain task can outlive the scheduler or
+  delay shutdown, and the two-second bound is unchanged. `wait_with_output` and
+  any whole-output accumulator are absent.
+- Tails fold each 4 KiB read in with one bounded drain, so retention is
+  independent of bytes written. `output_flood_stays_bounded_and_never_deadlocks`
+  runs a child that writes 4 MiB on each stream and proves it finishes, both
+  streams are marked truncated, and neither exceeds the 512-byte published cap.
+
+### Non-child outcomes
+
+`spawn_failed` (a missing executable) and `load_expired` (max wait elapsed with
+no child) both become terminal records with no exit code, start time, or
+duration. Protocol validation rejects those fields on any non-child outcome, so
+the document cannot claim a child ran.
+
+### Publication and routes
+
+The scheduler publication is a **separate** cell from the metrics
+`PublishedState`, created once in `run.rs` and shared with the server state.
+Handlers clone one `Arc` and serve already-serialized `Bytes`; they never
+serialize, never await scheduler mutation, never hold a scheduler lock, and
+never touch config, telemetry, or processes. A serialization failure keeps the
+previous publication rather than degrading to a fabricated empty document, and a
+scheduler task failure stays a supervised daemon failure (panic at the existing
+fatal boundary).
+
+The observer compares `(epoch, history_revision, jobs)` against the last
+publication and skips the swap when they match, with `generated_at_unix_ms`
+deliberately excluded. `an_unchanged_reconciliation_wake_publishes_nothing`
+asserts three Plan-160-style wakes leave the served bytes byte-identical.
+
+Routes are `GET`/`HEAD` only; other methods are 405, and `/v2/scheduler/run`,
+`/v2/scheduler/jobs`, and `/v2/scheduler/cancel` are 404 for every method, so
+there is no control plane. No-jobs returns `200` with a valid empty document.
+
+### Live daemon evidence
+
+A real release `greggd` was run with three jobs (`scheduler_history_limit = 3`):
+a succeeding job, a job with a missing executable, and a load-gated job with
+`max_load = 0.001`.
+
+- At t+3s all three configured jobs were visible as `idle` with a `next_due`,
+  before any had run.
+- After the first minute: `smoke-job` → `success` with `exit_code: 0`;
+  `missing-job` → `spawn_failed` with **no** fabricated `exit_code`;
+  `gated-job` → `load_expired` with `delay_ms: 20000`, then `waiting_for_slot`
+  once the global slot freed.
+- `/v2/scheduler/history` returned separate `stdout` (`archive ok`) and
+  `stderr` (`note: disk 91% full`) tails with `truncated: false`, and the
+  3-record ring was respected.
+- Summary 952 bytes, history 1517 bytes — far inside the frozen caps.
+- `HEAD` returned matching status/`content-type`/`content-length` with no body;
+  `POST` returned 405; `/v2/scheduler/run` returned 404.
+- `/v2/status` was unaffected, and `greggd stop` shut it down cleanly.
+
+### Footprint
+
+Stripped release `greggd`: **3,306,320** bytes.
+
+~~~text
+baseline (Plan 159/160)  3,261,664
+Plan 163 integrated      3,306,320   (+44,656 / +1.369%)
+Plan 162 ceiling         3,400,000   (+138,336 / +4.24%)  -> WITHIN
+~~~
+
+No dependency was added, so MSRV stays 1.89 and no candidate ablation was
+required. The remaining per-stage attribution is recorded rather than estimated:
+the protocol+config stage alone measured 3,267,776 (+6,112), and the integrated
+delta of +44,656 covers the output drain, the bounded history, the publication
+cell, and both routes.
+
+### Behavior-preserving runtime checks
+
+- No extra wake when `jobs` is empty: the publisher is created unconditionally
+  and answers a valid empty document; `run.rs` still spawns no scheduler task.
+- No per-second output/history work: publication is gated on an actual state
+  difference, and history is serialized only inside a real publication.
+- No idle shutdown change: the child kill/wait path and its bound are unchanged,
+  and the `Cancelled` variant is documented as reserved because memory-only
+  history cannot outlive the process.
+
+### Documentation reconciled
+
+`README`-adjacent daemon docs (`crates/greggd/README.md`, `docs/daemon.md`),
+`architecture/protocol.md` (routes, vocabularies, identity, frozen constants,
+security boundary), `architecture/gregg-protocol.md` (module map and constants),
+`architecture/greggd-daemon.md` (publication ownership, history, capture
+mechanics, configuration), `AGENTS.md`, `CHANGELOG.md`,
+`.opencode/skills/greggd-daemon/SKILL.md`, and
+`.opencode/skills/protocol-wire/SKILL.md`.
+
+The TUI `c` view is deliberately **not** documented here; that is Plan 166.
+
+### Verification
+
+`cargo test -p greggd --all-features` (480 unit + 3 integration + doctests) and
+`cargo test -p gregg-protocol --all-features` (183) green; workspace clippy with
+`--all-targets --all-features` produces zero warnings; `./scripts/check-local.sh`
+passes. Existing native CI is recorded once on the final Plan 167 SHA.

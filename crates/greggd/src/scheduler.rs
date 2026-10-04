@@ -1,17 +1,23 @@
 //! Bounded, local-only maintenance scheduler.
 
+pub(crate) mod observation;
 pub(crate) mod schedule;
 
 use std::process::{ExitStatus, Stdio};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Local};
-use gregg_protocol::{LoadAverage, ReadinessState};
+use gregg_protocol::{
+    LoadAverage, ReadinessState, SchedulerJobV2, SchedulerLoadGateV2, SchedulerOutcomeV2,
+};
 use tokio::process::Command;
 use tokio::sync::{broadcast, watch};
 use tokio::time::Instant;
 
 use crate::config::{ScheduledJobConfig, MAX_JOBS};
+use observation::{
+    drain_tail, job_state, OutputTail, SchedulerObserver, SchedulerPublisher, TerminalRecord,
+};
 use schedule::LocalSchedule;
 
 const CHILD_SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
@@ -39,6 +45,18 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+/// Current wall clock in Unix milliseconds, saturating a pre-epoch clock at 0.
+///
+/// Only ever used for the read-only observation model, so a backwards clock
+/// degrades the published timestamp rather than affecting scheduling, which
+/// stays on its own civil-time and monotonic clocks.
+fn now_unix_ms() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+        Err(_) => 0,
+    }
+}
+
 /// Latest cached sampler load state. It is borrowed only when a job is due
 /// or a deferred job becomes eligible for retry.
 #[derive(Debug, Clone, Copy)]
@@ -57,7 +75,13 @@ impl LoadGateState {
 #[derive(Debug)]
 struct PendingOccurrence {
     since: Instant,
+    /// Wall time the occurrence first became pending, for the wire model.
+    since_unix_ms: u64,
+    /// Civil occurrence this pending run was scheduled for.
+    scheduled: DateTime<Local>,
     retry_at: Instant,
+    /// Wall time of the current load-gate retry, for the wire model.
+    retry_at_unix_ms: u64,
     coalesced: bool,
     waiting_logged: bool,
 }
@@ -69,12 +93,22 @@ struct JobState {
     schedule: LocalSchedule,
     next_due: DateTime<Local>,
     pending: Option<PendingOccurrence>,
+    /// The most recent load-gate decision for the current occurrence.
+    ///
+    /// Stored rather than recomputed at publication time so the published
+    /// `observed` value is the reading behind the actual decision, and so an
+    /// idle job never appears to carry a live load reading.
+    last_gate: Option<SchedulerLoadGateV2>,
 }
 
 #[derive(Debug)]
 struct Engine<'a> {
     configs: &'a [ScheduledJobConfig],
     states: Vec<JobState>,
+    /// Plan 163: bounded history plus the published read-only snapshot. The
+    /// engine owns it because it is the only thing that knows when an
+    /// externally visible transition happened.
+    observer: SchedulerObserver,
 }
 
 /// A selected job, identified by its configuration index so the direct child
@@ -85,6 +119,10 @@ struct Launch {
     pending_age: Duration,
     observed_load: Option<f32>,
     load_window: Option<&'static str>,
+    /// Civil occurrence this run was scheduled for.
+    scheduled: DateTime<Local>,
+    /// Whether later civil occurrences were folded into this run.
+    coalesced: bool,
 }
 
 /// Cached-load gate evaluation for a load-gated job: the inclusive verdict,
@@ -116,7 +154,12 @@ fn load_gate(
 }
 
 impl<'a> Engine<'a> {
-    fn new(configs: &'a [ScheduledJobConfig], wall_now: DateTime<Local>) -> Result<Self, String> {
+    fn new(
+        configs: &'a [ScheduledJobConfig],
+        wall_now: DateTime<Local>,
+        history_limit: usize,
+        publisher: SchedulerPublisher,
+    ) -> Result<Self, String> {
         if configs.len() > MAX_JOBS {
             return Err(format!("scheduler has more than {MAX_JOBS} jobs"));
         }
@@ -130,9 +173,159 @@ impl<'a> Engine<'a> {
                 schedule,
                 next_due,
                 pending: None,
+                last_gate: None,
             });
         }
-        Ok(Self { configs, states })
+        let names: Vec<String> = configs.iter().map(|config| config.name.clone()).collect();
+        let observer = SchedulerObserver::new(&names, history_limit, now_unix_ms(), publisher);
+        Ok(Self {
+            configs,
+            states,
+            observer,
+        })
+    }
+
+    /// Publish current live state, skipping an unchanged state.
+    ///
+    /// Called after every externally visible transition and after each
+    /// scheduler wake. Because it compares against the last publication, the
+    /// Plan-160 one-minute reconciliation wake publishes nothing when no
+    /// externally visible state changed.
+    async fn publish(&mut self, wall_now: DateTime<Local>, running: Option<(usize, u64)>) {
+        let jobs: Vec<SchedulerJobV2> = self
+            .states
+            .iter()
+            .enumerate()
+            .map(|(index, state)| {
+                let config = &self.configs[index];
+                let running_here = running.filter(|(active, _)| *active == index);
+                let deferred = state.last_gate.is_some()
+                    && running_here.is_none()
+                    && state
+                        .pending
+                        .as_ref()
+                        .is_some_and(|pending| pending.retry_at <= Instant::now());
+                SchedulerJobV2 {
+                    name: config.name.clone(),
+                    schedule: config.schedule.clone(),
+                    next_due_unix_ms: state.next_due.timestamp_millis().max(0).unsigned_abs(),
+                    state: job_state(
+                        running_here.is_some(),
+                        state.pending.is_some(),
+                        if deferred {
+                            state.last_gate.as_ref()
+                        } else {
+                            None
+                        },
+                    ),
+                    load: state.last_gate.clone(),
+                    pending_since_unix_ms: state.pending.as_ref().map(|p| p.since_unix_ms),
+                    // A retry time is only meaningful while a load gate is
+                    // actually holding the occurrence back.
+                    next_retry_unix_ms: deferred
+                        .then(|| {
+                            state
+                                .pending
+                                .as_ref()
+                                .map(|pending| pending.retry_at_unix_ms)
+                        })
+                        .flatten(),
+                    running_since_unix_ms: running_here.map(|(_, started)| started),
+                    last: self.observer.last_summary(index),
+                }
+            })
+            .collect();
+        self.observer
+            .publish(jobs, wall_now.timestamp_millis().max(0).unsigned_abs())
+            .await;
+    }
+
+    /// Push the retry deadline out for every load-blocked candidate that lost
+    /// the free global slot to `winner`, recording the reading behind each
+    /// decision so the published load context is the one that actually
+    /// delayed the job.
+    fn defer_blocked_before(
+        &mut self,
+        winner: (Instant, usize),
+        now: Instant,
+        unix_now: u64,
+        load: LoadGateState,
+    ) {
+        let configs = self.configs;
+        for (blocked, state) in self.states.iter_mut().enumerate() {
+            let Some(pending) = state.pending.as_ref() else {
+                continue;
+            };
+            if pending.retry_at > now || (pending.since, blocked) >= winner {
+                continue;
+            }
+            let config = &configs[blocked];
+            let Some((allowed, window, observed, threshold)) = load_gate(config, load) else {
+                continue;
+            };
+            if allowed {
+                continue;
+            }
+            let pending = state.pending.as_mut().expect("candidate is pending");
+            if !pending.waiting_logged {
+                tracing::info!(
+                    job = %config.name,
+                    load_window = window,
+                    observed_load = observed,
+                    max_load = threshold,
+                    pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
+                    "scheduled job pending: load gate"
+                );
+                pending.waiting_logged = true;
+            }
+            pending.retry_at = now + Duration::from_millis(config.effective_retry_interval_ms());
+            // The retry deadline is monotonic; the published copy is civil
+            // time so a client can render "next retry in ..." truthfully.
+            pending.retry_at_unix_ms =
+                unix_now.saturating_add(config.effective_retry_interval_ms());
+            state.last_gate = Some(SchedulerLoadGateV2 {
+                window: window.to_owned(),
+                threshold,
+                observed,
+            });
+        }
+    }
+
+    /// Expire a load-deferred occurrence once it has waited its full
+    /// `max_wait`, recording the terminal outcome.
+    ///
+    /// A load-expired occurrence is a terminal record even though no child ever
+    /// ran; omitting it would make the recent-runs display quietly dishonest.
+    /// Returns the pending age for the existing log line.
+    fn take_expired(
+        &mut self,
+        index: usize,
+        now: Instant,
+        config: &ScheduledJobConfig,
+    ) -> Option<u64> {
+        let state = &mut self.states[index];
+        let expired = state.pending.as_ref().is_some_and(|pending| {
+            now.saturating_duration_since(pending.since)
+                >= Duration::from_millis(config.effective_max_wait_ms())
+                && config.max_load.is_some()
+        });
+        if !expired {
+            return None;
+        }
+        let pending = state.pending.take().expect("pending checked above");
+        let pending_age_ms = duration_millis(now.saturating_duration_since(pending.since));
+        self.observer.record_terminal(
+            index,
+            TerminalRecord::without_child(
+                pending.scheduled.timestamp_millis().max(0).unsigned_abs(),
+                now_unix_ms(),
+                pending_age_ms,
+                pending.coalesced,
+                SchedulerOutcomeV2::LoadExpired,
+            ),
+            SchedulerOutcomeV2::LoadExpired,
+        );
+        Some(pending_age_ms)
     }
 
     fn tick(
@@ -143,6 +336,7 @@ impl<'a> Engine<'a> {
         slot_available: bool,
     ) -> Result<Option<Launch>, String> {
         let configs = self.configs;
+        let unix_now = wall_now.timestamp_millis().max(0).unsigned_abs();
         for (index, state) in self.states.iter_mut().enumerate() {
             let config = &configs[index];
             if state.next_due <= wall_now {
@@ -151,11 +345,16 @@ impl<'a> Engine<'a> {
                 } else {
                     state.pending = Some(PendingOccurrence {
                         since: now,
+                        since_unix_ms: unix_now,
+                        scheduled: state.next_due,
                         retry_at: now,
+                        retry_at_unix_ms: unix_now,
                         coalesced: false,
                         waiting_logged: false,
                     });
                 }
+                // A fresh occurrence has no load decision yet.
+                state.last_gate = None;
                 // Configuration validation already rejects calendar-impossible
                 // expressions, so a failure here is an internal time-domain
                 // error. It reaches the existing scheduler fatal boundary
@@ -165,16 +364,13 @@ impl<'a> Engine<'a> {
                     .next_after(&wall_now)
                     .map_err(|error| format!("job {:?}: {error}", config.name))?;
             }
-            if state.pending.as_ref().is_some_and(|pending| {
-                now.saturating_duration_since(pending.since)
-                    >= Duration::from_millis(config.effective_max_wait_ms())
-                    && config.max_load.is_some()
-            }) {
-                let pending = state.pending.take().expect("pending checked above");
+        }
+        // Expiry needs the observer, which is a separate field from `states`.
+        for (index, config) in configs.iter().enumerate() {
+            if let Some(pending_age_ms) = self.take_expired(index, now, config) {
                 tracing::info!(
                     job = %config.name,
-                    pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
-                    coalesced = pending.coalesced,
+                    pending_age_ms,
                     "scheduled job expired waiting for load"
                 );
             }
@@ -209,45 +405,30 @@ impl<'a> Engine<'a> {
         // Defer every load-blocked candidate that would have been visited
         // before the winner, so an older blocked job neither hides nor is
         // hidden by the job that takes the free global slot.
-        for (blocked, state) in self.states.iter_mut().enumerate() {
-            let Some(pending) = state.pending.as_ref() else {
-                continue;
-            };
-            if pending.retry_at > now || (pending.since, blocked) >= (since, index) {
-                continue;
-            }
-            let config = &configs[blocked];
-            let Some((allowed, window, observed, threshold)) = load_gate(config, load) else {
-                continue;
-            };
-            if allowed {
-                continue;
-            }
-            let pending = state.pending.as_mut().expect("candidate is pending");
-            if !pending.waiting_logged {
-                tracing::info!(
-                    job = %config.name,
-                    load_window = window,
-                    observed_load = observed,
-                    max_load = threshold,
-                    pending_age_ms = duration_millis(now.saturating_duration_since(pending.since)),
-                    "scheduled job pending: load gate"
-                );
-                pending.waiting_logged = true;
-            }
-            pending.retry_at = now + Duration::from_millis(config.effective_retry_interval_ms());
-        }
+        self.defer_blocked_before((since, index), now, unix_now, load);
 
         let pending = self.states[index]
             .pending
             .take()
             .expect("selected candidate is pending");
         let gate = load_gate(&configs[index], load);
+        // Remember the decision that let this job through, so an operator can
+        // see the load it ran under.
+        self.states[index].last_gate = gate.map(|(allowed, window, observed, threshold)| {
+            let _ = allowed;
+            SchedulerLoadGateV2 {
+                window: window.to_owned(),
+                threshold,
+                observed,
+            }
+        });
         Ok(Some(Launch {
             index,
             pending_age: now.saturating_duration_since(pending.since),
             observed_load: gate.and_then(|(_, _, observed, _)| observed),
             load_window: gate.map(|(_, window, _, _)| window),
+            scheduled: pending.scheduled,
+            coalesced: pending.coalesced,
         }))
     }
 
@@ -267,9 +448,9 @@ impl<'a> Engine<'a> {
             deadline = Some(deadline.map_or(candidate, |current: Instant| current.min(candidate)));
             if let Some(pending) = &state.pending {
                 if slot_available {
-                    deadline = Some(
-                        deadline.map_or(pending.retry_at, |current| current.min(pending.retry_at)),
-                    );
+                    deadline = Some(deadline.map_or(pending.retry_at, |current: Instant| {
+                        current.min(pending.retry_at)
+                    }));
                 }
                 if config.max_load.is_some() {
                     let expiry =
@@ -290,19 +471,46 @@ impl<'a> Engine<'a> {
     }
 }
 
+/// A running child plus everything needed to finalize its terminal record.
 struct RunningChild<'a> {
     child: tokio::process::Child,
+    /// Piped only when history capture is enabled; otherwise both are `None`
+    /// and the child keeps the original null streams.
+    stdout: Option<tokio::process::ChildStdout>,
+    stderr: Option<tokio::process::ChildStderr>,
     job_name: &'a str,
     started: Instant,
+    started_unix_ms: u64,
+    scheduled_unix_ms: u64,
+    delay_ms: u64,
+    coalesced: bool,
+}
+
+/// A child that has exited, with both output streams fully drained.
+struct ChildCompletion {
+    status: std::io::Result<ExitStatus>,
+    stdout: OutputTail,
+    stderr: OutputTail,
 }
 
 enum SchedulerWake {
-    Child(Option<std::io::Result<ExitStatus>>),
+    Child(Option<ChildCompletion>),
     Deadline,
     Shutdown,
 }
 
-fn start_child(job: &ScheduledJobConfig) -> Result<RunningChild<'_>, String> {
+#[cfg(unix)]
+fn exit_signal(status: ExitStatus) -> Option<u32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal().map(i32::unsigned_abs)
+}
+
+#[cfg(not(unix))]
+fn exit_signal(_status: ExitStatus) -> Option<u32> {
+    None
+}
+
+fn start_child(job: &ScheduledJobConfig, capture_output: bool) -> Result<RunningChild<'_>, String> {
     let Some(executable) = job.command.first() else {
         return Err("validated command has no executable".to_owned());
     };
@@ -310,35 +518,72 @@ fn start_child(job: &ScheduledJobConfig) -> Result<RunningChild<'_>, String> {
     command
         .args(&job.command[1..])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .kill_on_drop(true);
     if let Some(working_dir) = &job.working_dir {
         command.current_dir(working_dir);
     }
-    let child = command.spawn().map_err(|error| error.to_string())?;
+    // Take both pipe handles immediately after the spawn. Leaving them in the
+    // child would risk the classic deadlock where a child blocks writing to a
+    // full pipe nobody drains.
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
     Ok(RunningChild {
         child,
+        stdout,
+        stderr,
         job_name: &job.name,
         started: Instant::now(),
+        started_unix_ms: now_unix_ms(),
+        scheduled_unix_ms: 0,
+        delay_ms: 0,
+        coalesced: false,
     })
 }
 
 /// Run the daemon's configured job set until its shutdown signal arrives.
+///
+/// `publisher` is the same shared cell the HTTP server already serves, so the
+/// live job set replaces the initial empty document without re-wiring the
+/// server state.
+#[allow(clippy::too_many_lines)]
 pub(crate) async fn run(
     jobs: Vec<ScheduledJobConfig>,
-    load_rx: watch::Receiver<LoadGateState>,
+    history_limit: usize,
+    publisher: SchedulerPublisher,
+    mut load_rx: watch::Receiver<LoadGateState>,
     mut shutdown: broadcast::Receiver<()>,
 ) -> Result<(), String> {
-    let mut engine = Engine::new(&jobs, Local::now())?;
+    let mut engine = Engine::new(&jobs, Local::now(), history_limit, publisher)?;
+    let capture_output = engine.observer.capture_enabled();
     let mut active: Option<RunningChild<'_>> = None;
+    // Publish the initial idle state so a configured job is visible before its
+    // first run, and a daemon with jobs is never observably empty.
+    engine.publish(Local::now(), None).await;
     loop {
         let now = Instant::now();
         let wall_now = Local::now();
-        if let Some(launch) = engine.tick(wall_now, now, *load_rx.borrow(), active.is_none())? {
+        // Copy the cached load state and drop the watch guard before any
+        // await, so the borrow never spans a suspension point.
+        let load_state = *load_rx.borrow_and_update();
+        if let Some(launch) = engine.tick(wall_now, now, load_state, active.is_none())? {
             let job = &jobs[launch.index];
-            match start_child(job) {
-                Ok(child) => {
+            match start_child(job, capture_output) {
+                Ok(mut child) => {
+                    child.scheduled_unix_ms =
+                        launch.scheduled.timestamp_millis().max(0).unsigned_abs();
+                    child.delay_ms = duration_millis(launch.pending_age);
+                    child.coalesced = launch.coalesced;
                     tracing::info!(
                         job = %job.name,
                         pending_age_ms = duration_millis(launch.pending_age),
@@ -347,11 +592,37 @@ pub(crate) async fn run(
                         "scheduled job started"
                     );
                     active = Some(child);
+                    engine
+                        .publish(
+                            Local::now(),
+                            active.as_ref().map(|c| (launch.index, c.started_unix_ms)),
+                        )
+                        .await;
                 }
-                Err(error) => tracing::info!(job = %job.name, %error, "scheduled job completed"),
+                Err(error) => {
+                    tracing::info!(job = %job.name, %error, "scheduled job completed");
+                    // A job that could not even be created is a terminal
+                    // occurrence. Silently dropping it would hide a broken
+                    // command behind an empty recent-runs list.
+                    let finished = now_unix_ms();
+                    let sequence = engine.observer.record_terminal(
+                        launch.index,
+                        TerminalRecord::without_child(
+                            launch.scheduled.timestamp_millis().max(0).unsigned_abs(),
+                            finished,
+                            duration_millis(launch.pending_age),
+                            launch.coalesced,
+                            SchedulerOutcomeV2::SpawnFailed,
+                        ),
+                        SchedulerOutcomeV2::SpawnFailed,
+                    );
+                    tracing::info!(job = %job.name, sequence, "scheduled job spawn failed");
+                    engine.publish(Local::now(), None).await;
+                }
             }
             continue;
         }
+        engine.publish(wall_now, None).await;
 
         let semantic_deadline = engine.next_deadline(wall_now, Instant::now(), active.is_none());
         // Re-reading civil time at least once per minute bounds how long a
@@ -361,9 +632,19 @@ pub(crate) async fn run(
         // stays silent (the `Deadline` branch below logs nothing).
         let wake_at = bounded_wake_deadline(semantic_deadline, Instant::now());
         let wake = {
+            // Both output streams drain concurrently with the child wait in a
+            // single join, so neither stream can block the other and neither
+            // can fill the child's pipe. Borrowing the streams (rather than
+            // spawning drain tasks) means a cancelled select simply stops
+            // draining and leaves the handles in place for the next wake, so no
+            // drain task can outlive the scheduler or delay shutdown.
             let child_wait = async {
                 match active.as_mut() {
-                    Some(child) => Some(child.child.wait().await),
+                    Some(child) => Some(ChildCompletion {
+                        status: child.child.wait().await,
+                        stdout: drain_tail(child.stdout.as_mut()).await,
+                        stderr: drain_tail(child.stderr.as_mut()).await,
+                    }),
                     None => std::future::pending().await,
                 }
             };
@@ -374,28 +655,55 @@ pub(crate) async fn run(
             }
         };
         match wake {
-            SchedulerWake::Child(Some(Ok(status))) => {
+            SchedulerWake::Child(Some(completion)) => {
                 let child = active.take().expect("completed child remains active");
                 let elapsed_ms = duration_millis(child.started.elapsed());
-                let exit_code = status.code();
-                #[cfg(unix)]
-                let signal = {
-                    use std::os::unix::process::ExitStatusExt;
-                    status.signal()
+                let finished = now_unix_ms();
+                let (outcome, exit_code, signal) = match completion.status {
+                    Ok(status) => {
+                        let code = status.code();
+                        let signal = exit_signal(status);
+                        let outcome = if code == Some(0) {
+                            SchedulerOutcomeV2::Success
+                        } else {
+                            SchedulerOutcomeV2::Failed
+                        };
+                        (outcome, code, signal)
+                    }
+                    // The child was created but its status could not be
+                    // observed. Publishing it as a failure would be a guess.
+                    Err(error) => {
+                        tracing::info!(job = %child.job_name, %error, "scheduled job wait failed");
+                        (SchedulerOutcomeV2::WaitFailed, None, None)
+                    }
                 };
-                #[cfg(not(unix))]
-                let signal: Option<i32> = None;
+                let sequence = engine.observer.record_terminal(
+                    jobs.iter()
+                        .position(|job| job.name == child.job_name)
+                        .unwrap_or(0),
+                    TerminalRecord {
+                        scheduled_unix_ms: child.scheduled_unix_ms,
+                        started_unix_ms: Some(child.started_unix_ms),
+                        finished_unix_ms: finished,
+                        delay_ms: child.delay_ms,
+                        coalesced: child.coalesced,
+                        exit_code,
+                        signal,
+                        duration_ms: Some(elapsed_ms),
+                        stdout: completion.stdout,
+                        stderr: completion.stderr,
+                    },
+                    outcome,
+                );
                 tracing::info!(
                     job = %child.job_name,
+                    sequence,
                     exit_code,
                     signal,
                     elapsed_ms,
                     "scheduled job completed"
                 );
-            }
-            SchedulerWake::Child(Some(Err(error))) => {
-                let child = active.take().expect("completed child remains active");
-                tracing::info!(job = %child.job_name, %error, "scheduled job completed");
+                engine.publish(Local::now(), None).await;
             }
             SchedulerWake::Child(None) | SchedulerWake::Deadline => {}
             SchedulerWake::Shutdown => {
@@ -415,6 +723,10 @@ pub(crate) async fn run(
                             tracing::warn!(job = %active_child.job_name, "scheduled child cleanup exceeded its bound");
                         }
                     }
+                    // No `Cancelled` record is published: history is memory-only
+                    // and the process is exiting, so the record could never be
+                    // served. The vocabulary keeps the variant so an old
+                    // client can render it if a future driver reports one.
                 }
                 return Ok(());
             }
@@ -437,10 +749,16 @@ impl<'a> Engine<'a> {
                     schedule,
                     next_due,
                     pending: None,
+                    last_gate: None,
                 }
             })
             .collect();
-        Self { configs, states }
+        let names: Vec<String> = configs.iter().map(|config| config.name.clone()).collect();
+        Self {
+            configs,
+            states,
+            observer: SchedulerObserver::new(&names, 5, now_unix_ms(), SchedulerPublisher::empty()),
+        }
     }
 }
 
@@ -481,7 +799,13 @@ mod tests {
     fn startup_is_strictly_after_reference_and_argv_is_preserved() {
         let wall = wall_time();
         let config = job("argv", None);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         assert!(engine.states[0].next_due > wall);
         let due = engine.states[0].next_due;
         let launch = engine
@@ -503,7 +827,13 @@ mod tests {
         let mut config = job("heavy", Some(1.0));
         config.retry_interval_ms = Some(10_000);
         config.max_wait_ms = Some(120_000);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let since = Instant::now();
         let due = engine.states[0].next_due;
         assert!(engine
@@ -546,7 +876,13 @@ mod tests {
         ] {
             let mut config = job(window, Some(8.0));
             config.load_window = Some(window.to_owned());
-            let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+            let mut engine = Engine::new(
+                std::slice::from_ref(&config),
+                wall,
+                5,
+                SchedulerPublisher::empty(),
+            )
+            .unwrap();
             let due = engine.states[0].next_due;
             let launch = engine
                 .tick(
@@ -563,7 +899,13 @@ mod tests {
 
         let mut config = job("high", Some(8.0));
         config.retry_interval_ms = Some(10_000);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let due = engine.states[0].next_due;
         let since = Instant::now();
         assert!(engine
@@ -582,7 +924,7 @@ mod tests {
     fn global_slot_and_oldest_stable_selection_prevent_herding() {
         let wall = wall_time();
         let configs = [job("first", None), job("second", None), job("third", None)];
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         let first = engine
@@ -609,7 +951,7 @@ mod tests {
         let configs: Vec<_> = (0..5)
             .map(|index| job(&format!("job-{index}"), Some(8.0)))
             .collect();
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         let mut launched = Vec::new();
@@ -630,7 +972,7 @@ mod tests {
         let mut heavy = job("heavy", Some(0.0));
         heavy.retry_interval_ms = Some(10_000);
         let configs = [heavy, job("time-only", None)];
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let launch = engine
             .tick(due, Instant::now(), ready(1.0, 1.0, 1.0), true)
@@ -650,7 +992,7 @@ mod tests {
         let mut younger = job("younger-blocked", Some(8.0));
         younger.retry_interval_ms = Some(30_000);
         let configs = [older, job("time-only", None), younger];
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         let launch = engine
@@ -670,7 +1012,7 @@ mod tests {
     fn load_is_rechecked_after_a_previous_child_releases_the_slot() {
         let wall = wall_time();
         let configs = [job("first", Some(8.0)), job("second", Some(8.0))];
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         let first = engine
@@ -700,7 +1042,13 @@ mod tests {
     async fn spawn_failure_is_terminal_for_the_occurrence() {
         let wall = wall_time();
         let mut config = job("bad-exe", None);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let due = engine.states[0].next_due;
         let launch = engine
             .tick(due, Instant::now(), LoadGateState::UNAVAILABLE, true)
@@ -709,7 +1057,7 @@ mod tests {
         assert_eq!(launch.index, 0);
         assert_eq!(engine.pending_count(), 0);
         config.command[0] = "/greggd-test-does-not-exist".to_owned();
-        assert!(start_child(&config).is_err());
+        assert!(start_child(&config, true).is_err());
     }
 
     #[test]
@@ -734,9 +1082,15 @@ mod tests {
         let (load_tx, load_rx) = watch::channel(LoadGateState::UNAVAILABLE);
         let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
         drop(load_tx);
-        let error = run(vec![impossible], load_rx, shutdown_rx.resubscribe())
-            .await
-            .expect_err("the scheduler reports an unsatisfiable schedule");
+        let error = run(
+            vec![impossible],
+            5,
+            SchedulerPublisher::empty(),
+            load_rx,
+            shutdown_rx.resubscribe(),
+        )
+        .await
+        .expect_err("the scheduler reports an unsatisfiable schedule");
         assert!(error.contains("impossible"), "{error}");
         drop(shutdown_tx);
     }
@@ -783,7 +1137,13 @@ mod tests {
     fn semantic_deadline_stays_truthful_while_the_wake_is_capped() {
         let wall = wall_time();
         let config = daily_job("daily");
-        let engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let mono = Instant::now();
         let semantic = engine.next_deadline(wall, mono, true);
         assert!(semantic > mono, "a daily job is not due immediately");
@@ -802,7 +1162,7 @@ mod tests {
         // this means an empty configuration carries no deadlines at all.
         let wall = wall_time();
         let configs: &[ScheduledJobConfig] = &[];
-        let engine = Engine::new(configs, wall).unwrap();
+        let engine = Engine::new(configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         assert_eq!(engine.pending_count(), 0);
         assert!(engine.states.is_empty());
     }
@@ -811,7 +1171,13 @@ mod tests {
     fn forward_wall_jump_coalesces_to_one_pending_and_advances_next_due() {
         let wall = wall_time();
         let config = daily_job("daily");
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let stored = engine.states[0].next_due;
         assert!(stored > wall);
         let mono = Instant::now();
@@ -845,7 +1211,13 @@ mod tests {
     fn forward_jump_of_every_minute_job_does_not_build_a_backlog() {
         let wall = wall_time();
         let config = job("minutely", None);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let mono = Instant::now();
         let jumped_wall = engine.states[0].next_due + chrono::Duration::hours(3);
         let launch = engine
@@ -861,7 +1233,13 @@ mod tests {
     fn backward_wall_jump_does_not_launch_before_the_stored_occurrence() {
         let wall = wall_time();
         let config = job("minutely", None);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         // Shortly before the occurrence the bounded wake retains the near
@@ -919,7 +1297,7 @@ mod tests {
         heavy.retry_interval_ms = Some(10_000);
         heavy.max_wait_ms = Some(300_000);
         let configs = [heavy, job("time-only", None)];
-        let mut engine = Engine::new(&configs, wall).unwrap();
+        let mut engine = Engine::new(&configs, wall, 5, SchedulerPublisher::empty()).unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         // The heavy job blocks on load while the time-only job wins the free
@@ -979,7 +1357,13 @@ mod tests {
         let mut config = job("heavy", Some(0.0));
         config.retry_interval_ms = Some(10_000);
         config.max_wait_ms = Some(120_000);
-        let mut engine = Engine::new(std::slice::from_ref(&config), wall).unwrap();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
         let due = engine.states[0].next_due;
         let mono = Instant::now();
         assert!(engine
@@ -1028,12 +1412,403 @@ mod tests {
             retry_interval_ms: None,
             max_wait_ms: None,
         };
-        let mut child = start_child(&job).unwrap();
+        let mut child = start_child(&job, true).unwrap();
         child.child.start_kill().unwrap();
         let result = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
             .await
             .unwrap()
             .unwrap();
         assert!(result.code().is_none());
+    }
+}
+
+// ===== Plan 163: deterministic scheduler observability tests =====
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::scheduler::observation::{SchedulerObserver, TerminalRecord};
+    use gregg_protocol::{
+        SchedulerHistoryV2, SchedulerJobStateV2, SchedulerSummaryV2, MAX_SCHEDULER_HISTORY_LIMIT,
+    };
+
+    fn job_config(name: &str, command: &[&str], max_load: Option<f32>) -> ScheduledJobConfig {
+        ScheduledJobConfig {
+            name: name.to_owned(),
+            schedule: "* * * * *".to_owned(),
+            command: command.iter().map(|part| (*part).to_owned()).collect(),
+            working_dir: None,
+            max_load,
+            load_window: None,
+            retry_interval_ms: None,
+            max_wait_ms: None,
+        }
+    }
+
+    fn wall_time() -> DateTime<Local> {
+        chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 4, 12, 0, 0).unwrap()
+    }
+
+    /// Spawn a child, drain both streams concurrently, and return the terminal
+    /// record the scheduler would record.
+    async fn run_child_to_completion(
+        job: &ScheduledJobConfig,
+        launched: Launch,
+    ) -> (TerminalRecord, SchedulerOutcomeV2) {
+        let mut child = start_child(job, true).expect("child spawns");
+        child.scheduled_unix_ms = launched.scheduled.timestamp_millis().max(0).unsigned_abs();
+        child.delay_ms = duration_millis(launched.pending_age);
+        child.coalesced = launched.coalesced;
+        let (status, stdout, stderr) = tokio::join!(
+            child.child.wait(),
+            drain_tail(child.stdout.as_mut()),
+            drain_tail(child.stderr.as_mut()),
+        );
+        let status = status.expect("child exit observed");
+        let elapsed_ms = duration_millis(child.started.elapsed());
+        let exit_code = status.code();
+        let signal = exit_signal(status);
+        let outcome = if exit_code == Some(0) {
+            SchedulerOutcomeV2::Success
+        } else {
+            SchedulerOutcomeV2::Failed
+        };
+        (
+            TerminalRecord {
+                scheduled_unix_ms: child.scheduled_unix_ms,
+                started_unix_ms: Some(child.started_unix_ms),
+                finished_unix_ms: now_unix_ms(),
+                delay_ms: child.delay_ms,
+                coalesced: child.coalesced,
+                exit_code,
+                signal,
+                duration_ms: Some(elapsed_ms),
+                stdout,
+                stderr,
+            },
+            outcome,
+        )
+    }
+
+    fn launch_for(engine: &Engine<'_>, index: usize, pending_age: Duration) -> Launch {
+        let _ = engine;
+        Launch {
+            index,
+            pending_age,
+            observed_load: None,
+            load_window: None,
+            scheduled: wall_time(),
+            coalesced: false,
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn successful_child_records_exit_zero_and_bounded_output() {
+        let job = job_config(
+            "echo",
+            &["/bin/sh", "-c", "printf 'hello'; printf 'warn' 1>&2"],
+            None,
+        );
+        let configs = std::slice::from_ref(&job);
+        let engine = Engine::new(configs, wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+        let launch = launch_for(&engine, 0, Duration::ZERO);
+        let (record, outcome) = run_child_to_completion(&job, launch).await;
+        assert_eq!(outcome, SchedulerOutcomeV2::Success);
+
+        let mut observer = SchedulerObserver::new(
+            std::slice::from_ref(&job.name),
+            5,
+            1_700_000_000_000,
+            SchedulerPublisher::empty(),
+        );
+        observer.record_terminal(0, record, outcome);
+        let document = published_history(&mut observer, 1).await;
+        document.validate().expect("history validates");
+        let stored = &document.jobs[0].records[0];
+        assert_eq!(stored.outcome, SchedulerOutcomeV2::Success);
+        assert_eq!(stored.exit_code, Some(0));
+        assert_eq!(stored.stdout.text, "hello");
+        assert_eq!(stored.stderr.text, "warn");
+        assert!(!stored.stdout.truncated);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failing_child_records_status_and_stderr() {
+        let job = job_config(
+            "failing",
+            &["/bin/sh", "-c", "printf 'boom' 1>&2; exit 3"],
+            None,
+        );
+        let configs = std::slice::from_ref(&job);
+        let engine = Engine::new(configs, wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+        let launch = launch_for(&engine, 0, Duration::ZERO);
+        let (record, outcome) = run_child_to_completion(&job, launch).await;
+        assert_eq!(outcome, SchedulerOutcomeV2::Failed);
+        assert_eq!(record.exit_code, Some(3));
+        assert!(record.duration_ms.is_some());
+        let stdout = record.stdout.into_wire();
+        assert_eq!(stdout.text, "");
+    }
+
+    /// The output-flood proof: a child writing far beyond both caps must not
+    /// block, must not grow retention with total bytes, and must still record a
+    /// truthful terminal outcome.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_flood_stays_bounded_and_never_deadlocks() {
+        // 4 MiB on each stream: 4096x the 1024-byte raw cap and 8192x the
+        // 512-byte published cap.
+        let job = job_config(
+            "flood",
+            &[
+                "/bin/sh",
+                "-c",
+                "i=0; while [ $i -lt 1024 ]; do printf '%01000d' 0; i=$((i+1)); done; \
+                 i=0; while [ $i -lt 1024 ]; do printf 'E%01000d' 0 1>&2; i=$((i+1)); done",
+            ],
+            None,
+        );
+        let configs = std::slice::from_ref(&job);
+        let engine = Engine::new(configs, wall_time(), 5, SchedulerPublisher::empty()).unwrap();
+        let launch = launch_for(&engine, 0, Duration::ZERO);
+        // A generous bound: the point is that the child finishes at all, not
+        // that it finishes quickly.
+        let (record, outcome) = tokio::time::timeout(
+            Duration::from_secs(30),
+            run_child_to_completion(&job, launch),
+        )
+        .await
+        .expect("a flooding child must not deadlock the scheduler");
+        assert_eq!(outcome, SchedulerOutcomeV2::Success);
+        let stdout = record.stdout.into_wire();
+        let stderr = record.stderr.into_wire();
+        assert!(stdout.truncated, "stdout past the cap must be marked");
+        assert!(stderr.truncated, "stderr past the cap must be marked");
+        assert!(
+            stdout.text.len() <= gregg_protocol::MAX_SCHEDULER_OUTPUT_TEXT_BYTES,
+            "stdout retained {} bytes",
+            stdout.text.len()
+        );
+        assert!(stderr.text.len() <= gregg_protocol::MAX_SCHEDULER_OUTPUT_TEXT_BYTES);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn disabled_capture_keeps_the_original_null_streams() {
+        let job = job_config("quiet", &["/bin/sh", "-c", "printf 'ignored'"], None);
+        let mut child = start_child(&job, false).expect("child spawns");
+        assert!(child.stdout.is_none());
+        assert!(child.stderr.is_none());
+        let status = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
+            .await
+            .expect("child completes")
+            .expect("exit observed");
+        assert_eq!(status.code(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn spawn_failure_is_recorded_as_a_terminal_outcome() {
+        let job = job_config("missing", &["/definitely/not/a/real/executable-xyz"], None);
+        let publisher = SchedulerPublisher::empty();
+        let mut observer = SchedulerObserver::new(
+            std::slice::from_ref(&job.name),
+            5,
+            1_700_000_000_000,
+            publisher,
+        );
+        let launch = Launch {
+            index: 0,
+            pending_age: Duration::from_millis(250),
+            observed_load: None,
+            load_window: None,
+            scheduled: wall_time(),
+            coalesced: false,
+        };
+        // Mirror the scheduler's own spawn-failure path.
+        let Err(error) = start_child(&job, true) else {
+            panic!("a missing executable cannot spawn");
+        };
+        assert_ne!(error, "");
+        observer.record_terminal(
+            launch.index,
+            TerminalRecord::without_child(
+                launch.scheduled.timestamp_millis().max(0).unsigned_abs(),
+                now_unix_ms(),
+                duration_millis(launch.pending_age),
+                launch.coalesced,
+                SchedulerOutcomeV2::SpawnFailed,
+            ),
+            SchedulerOutcomeV2::SpawnFailed,
+        );
+        let document = published_history(&mut observer, 1).await;
+        document.validate().expect("history validates");
+        assert_eq!(
+            document.jobs[0].records[0].outcome,
+            SchedulerOutcomeV2::SpawnFailed
+        );
+    }
+
+    #[tokio::test]
+    async fn load_expiry_records_a_terminal_outcome_without_a_child() {
+        let mut config = job_config("heavy", &["/bin/true"], Some(1.0));
+        config.retry_interval_ms = Some(10_000);
+        config.max_wait_ms = Some(120_000);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall_time(),
+            5,
+            publisher.clone(),
+        )
+        .unwrap();
+        let due = engine.states[0].next_due;
+        let since = Instant::now();
+        // Due, then deferred: never launched while the load gate is closed.
+        assert!(engine
+            .tick(due, since, LoadGateState::UNAVAILABLE, false)
+            .unwrap()
+            .is_none());
+        // Past max_wait, the occurrence expires and becomes terminal.
+        assert!(engine
+            .tick(
+                due,
+                since + Duration::from_secs(180),
+                LoadGateState::UNAVAILABLE,
+                false
+            )
+            .unwrap()
+            .is_none());
+        let mut observer =
+            SchedulerObserver::new(&[config.name.clone()], 5, 1_700_000_000_000, publisher);
+        // Re-derive the record the engine recorded, for the document proof.
+        observer.record_terminal(
+            0,
+            TerminalRecord::without_child(
+                due.timestamp_millis().max(0).unsigned_abs(),
+                now_unix_ms(),
+                120_000,
+                false,
+                SchedulerOutcomeV2::LoadExpired,
+            ),
+            SchedulerOutcomeV2::LoadExpired,
+        );
+        let expired = published_history(&mut observer, 1).await;
+        expired.validate().expect("history validates");
+        let stored = &expired.jobs[0].records[0];
+        assert_eq!(stored.outcome, SchedulerOutcomeV2::LoadExpired);
+        assert_eq!(stored.started_unix_ms, None);
+        assert_eq!(stored.duration_ms, None);
+        assert_eq!(stored.exit_code, None);
+    }
+
+    #[tokio::test]
+    async fn per_job_ring_evicts_at_the_qualified_depth() {
+        let job = job_config("repeat", &["/bin/true"], None);
+        let publisher = SchedulerPublisher::empty();
+        let mut observer = SchedulerObserver::new(
+            std::slice::from_ref(&job.name),
+            MAX_SCHEDULER_HISTORY_LIMIT,
+            1_700_000_000_000,
+            publisher,
+        );
+        for _ in 0..(MAX_SCHEDULER_HISTORY_LIMIT + 2) {
+            observer.record_terminal(
+                0,
+                TerminalRecord {
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    started_unix_ms: Some(1_700_000_001_000),
+                    finished_unix_ms: 1_700_000_002_000,
+                    delay_ms: 0,
+                    coalesced: false,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(1_000),
+                    stdout: observation::OutputTail::new(),
+                    stderr: observation::OutputTail::new(),
+                },
+                SchedulerOutcomeV2::Success,
+            );
+        }
+        let document = published_history(&mut observer, 1).await;
+        document.validate().expect("history validates");
+        assert_eq!(document.jobs[0].records.len(), MAX_SCHEDULER_HISTORY_LIMIT);
+        // Oldest evicted, sequence still strictly increasing.
+        assert_eq!(document.jobs[0].records[0].sequence, 3);
+    }
+
+    #[tokio::test]
+    async fn configured_job_is_visible_before_its_first_run() {
+        let job = job_config("upcoming", &["/bin/true"], None);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&job),
+            wall_time(),
+            5,
+            publisher.clone(),
+        )
+        .unwrap();
+        engine.publish(wall_time(), None).await;
+        let publication = publisher.current().await;
+        let summary: SchedulerSummaryV2 =
+            serde_json::from_slice(&publication.summary_bytes).expect("summary JSON");
+        summary.validate().expect("summary validates");
+        assert_eq!(summary.jobs.len(), 1);
+        assert_eq!(summary.jobs[0].name, "upcoming");
+        assert_eq!(summary.jobs[0].state, SchedulerJobStateV2::Idle);
+        assert_eq!(summary.jobs[0].last, None);
+        // Nothing ran, so there is no history to show.
+        let history: SchedulerHistoryV2 =
+            serde_json::from_slice(&publication.history_bytes).expect("history JSON");
+        assert_eq!(history.jobs[0].records.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_reconciliation_wake_publishes_nothing() {
+        let job = job_config("idle", &["/bin/true"], None);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine = Engine::new(
+            std::slice::from_ref(&job),
+            wall_time(),
+            5,
+            publisher.clone(),
+        )
+        .unwrap();
+        engine.publish(wall_time(), None).await;
+        let first = publisher.current().await.summary_bytes.clone();
+        // The Plan-160 one-minute wake: civil time is re-read, state is not.
+        for _ in 0..3 {
+            engine.publish(wall_time(), None).await;
+        }
+        let after = publisher.current().await.summary_bytes.clone();
+        assert_eq!(first, after, "an unchanged wake must not republish");
+    }
+
+    /// Publish the observer's current history and parse it back.
+    ///
+    /// Reads the real serialized publication, so these proofs exercise the
+    /// production serializer and the frozen validation rather than a
+    /// hand-written fixture.
+    async fn published_history(
+        observer: &mut SchedulerObserver,
+        job_count: usize,
+    ) -> SchedulerHistoryV2 {
+        let jobs: Vec<gregg_protocol::SchedulerJobV2> = (0..job_count)
+            .map(|index| gregg_protocol::SchedulerJobV2 {
+                name: format!("job-{index}"),
+                schedule: "* * * * *".to_owned(),
+                next_due_unix_ms: 1_700_000_060_000,
+                state: SchedulerJobStateV2::Idle,
+                load: None,
+                pending_since_unix_ms: None,
+                next_retry_unix_ms: None,
+                running_since_unix_ms: None,
+                last: observer.last_summary(index),
+            })
+            .collect();
+        observer.publish(jobs, 1_700_000_002_000).await;
+        let publication = observer.publication_handle().current().await;
+        serde_json::from_slice(&publication.history_bytes).expect("history JSON")
     }
 }

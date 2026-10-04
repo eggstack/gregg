@@ -59,6 +59,26 @@ service lifecycle. For platform metric collection itself, use the
   that no Gregorian date can satisfy (for example `0 0 31 2 *`) before the
   listener binds; a later schedule-arithmetic failure propagates to the
   scheduler's fatal task boundary instead of substituting a fallback date.
+- Scheduler observability is **additive, read-only, and never merged into
+  `/v2/status`**. `GET/HEAD /v2/scheduler` and `GET/HEAD /v2/scheduler/history`
+  are the only scheduler routes; other methods are 405 and anything else under a
+  scheduler path is 404. There is no job control plane, ever. Keep the scheduler
+  publication in its own cell rather than the high-frequency metrics
+  `PublishedState`, publish only on externally visible state change (so the
+  one-minute civil-clock reconciliation wake stays silent), and keep handlers to
+  serving already-serialized bytes — no serialization, no awaiting mutation, no
+  scheduler lock held across an await, no config/telemetry/process access.
+  History is memory-only (`scheduler_history_limit`, default 5, hard max 10,
+  `0` = no retention) with no file, database, or replay. `spawn_failed` and
+  `load_expired` are terminal records, not omissions. Pipe stdout/stderr only
+  when history is enabled, take both handles right after the spawn, and drain
+  them concurrently with the child wait by **borrowing** the streams (never
+  `wait_with_output`, never a spawned drain task, never a line reader that can
+  grow unboundedly) so a cancelled select cannot leak a task or delay the
+  two-second shutdown bound. Retain fixed-size tails only (1024 raw bytes per
+  stream, 512 JSON-escaped published bytes, independent `truncated` flags).
+  Never publish `argv` or `working_dir`; do state in documentation that the
+  listener is unauthenticated so anyone who can reach it can read job output.
 - SIGTERM/SIGINT, SCM Stop/Shutdown, and a successful `STOP\n` on the control
   socket all feed the same nonblocking one-shot shutdown signal into
   `run_with_shutdown()` (10s graceful deadline).

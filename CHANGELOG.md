@@ -7,6 +7,39 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduler observability API (Plans 162/163):** `greggd` now exposes its
+  maintenance scheduler over two additive read-only routes,
+  `GET/HEAD /v2/scheduler` and `GET/HEAD /v2/scheduler/history`, kept separate
+  from `/v2/status` so an ordinary metrics poll never carries command output.
+  The summary reports each configured job's name, schedule, next civil
+  occurrence, an explicit live state (`idle`, `waiting_for_slot`, `load_high`,
+  `load_unavailable`, `running`), its load-gate decision, pending-since, next
+  retry while load-deferred, running-since, and the most recent terminal
+  result. The history document returns retained terminal records with
+  scheduler-lifetime sequence, timing, delay, coalescing, exit status, and
+  bounded stdout/stderr tails. Occurrences that never created a child are
+  first-class records: `spawn_failed` and `load_expired` appear with no exit
+  code, start time, or duration rather than being silently omitted. A daemon
+  with no configured jobs answers `200` with a valid empty document, and a
+  pre-feature daemon's `404` means "observability unsupported", not "host
+  offline". There is no control plane: these routes are `GET`/`HEAD` only, and
+  nothing anywhere can create, edit, start, or cancel a job.
+
+- **Bounded scheduler history and output capture (Plans 162/163):** child
+  stdout and stderr are now piped and drained concurrently with the child wait
+  instead of being sent to `/dev/null`, so a failing job's diagnostic is
+  visible. Only fixed-size tails are retained — 1024 raw bytes per stream,
+  published as at most 512 JSON-escaped bytes with independent `truncated`
+  flags — so a job that floods output can neither block on a full pipe nor grow
+  daemon memory with the bytes it writes. History is entirely memory-only:
+  `scheduler_history_limit` (default 5, hard maximum 10, `0` to retain nothing)
+  is validated before the listener binds, and a daemon restart clears it with
+  no file, database, or replay. `argv` and working directory are never
+  published. The listener remains unauthenticated, so documentation now states
+  that any principal able to reach it can read scheduler output.
+
 ### Fixed
 
 - **Scheduler wall-clock reconciliation (Plan 160):** the maintenance

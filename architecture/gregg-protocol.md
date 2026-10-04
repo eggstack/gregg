@@ -22,6 +22,8 @@ depends on nothing from either.
 | `lib` | `src/lib.rs` | Root, re-exports, `SCHEMA_VERSION_V1 = 1` (`SCHEMA_VERSION_V2` lives in `v2.rs`), `MAX_IDENTITY_FIELD_BYTES = 512`, `MAX_HEALTH_MESSAGE_BYTES = 512`, `MAX_SAMPLE_INTERVAL_MS = 86_400_000`, `#![forbid(unsafe_code)]` |
 | `snapshot` | `src/snapshot.rs` | V1 wire types: `StatusSnapshot`, `CpuMetrics`, `LoadAverage`, `MemoryMetrics`, `SwapMetrics`, `SystemIdentity`, `MetricCapabilities`; public entry is `StatusSnapshot::validate()` |
 | `v2` | `src/v2.rs` | V2 wire types: `StatusSnapshotV2`, `StatusPayloadV2`, `CpuMetricsV2`, `SwapMetrics`, `CommitMetrics`, `MetricCapabilitiesV2`, `DriveMetrics`, `DiskIoMetrics`, `DiskIoPayload`, `NetworkInterfaceMetrics`, `NetworkPayload`, `HealthResponseV2`; constants `SCHEMA_VERSION_V2`, `MAX_DRIVE_ENTRIES`, `MAX_DRIVE_NAME_BYTES`, `MAX_DISK_IO_ENTRIES`, `MAX_NETWORK_INTERFACE_ENTRIES`, `MAX_LIVE_METRIC_ID_BYTES`, `MAX_LIVE_METRIC_NAME_BYTES`, `MAX_RATE_BYTES_PER_SEC`, `MAX_CAPACITY_BITS_PER_SEC`, `MAX_CPU_FREQUENCY_HZ` |
+| `scheduler` | `src/scheduler.rs` | Scheduler-observability wire types served on the additive read-only `/v2/scheduler` and `/v2/scheduler/history` routes: `SchedulerSummaryV2`, `SchedulerHistoryV2`, `SchedulerJobV2`, `SchedulerJobHistoryV2`, `SchedulerRunSummaryV2`, `SchedulerRunRecordV2`, `SchedulerJobStateV2`, `SchedulerOutcomeV2`, `SchedulerLoadGateV2`, `SchedulerOutputV2`, `SchedulerEpochV2`; frozen constants `MAX_SCHEDULER_JOBS`, `DEFAULT_SCHEDULER_HISTORY_LIMIT`, `MAX_SCHEDULER_HISTORY_LIMIT`, `MAX_SCHEDULER_OUTPUT_BYTES`, `MAX_SCHEDULER_OUTPUT_TEXT_BYTES`, `MAX_SCHEDULER_HISTORY_BODY_BYTES`, `MAX_SCHEDULER_SUMMARY_BODY_BYTES`; helpers `json_escaped_len`, `truncate_to_escaped_budget`, `output_text_from_bytes` |
+| `validate_scheduler` | `src/validate_scheduler.rs` | Scheduler document validation: violation kinds for schema version, job/record cardinality, field lengths, non-monotonic sequence, duplicate job names, implausible timestamps, unknown load windows, load-decision/state contradictions, and child status on non-child outcomes; `history_body_exceeds_budget` |
 | `validate` | `src/validate.rs` | V1 validation: 9 violation kinds (`validate()` is `pub(crate)`; callers use `StatusSnapshot::validate()`) |
 | `validate_v2` | `src/validate_v2.rs` | V2 validation: base and live-metrics violation kinds, capability/value consistency; re-exports `validate_v2()` and `validate_payload_v2()` |
 | `health` | `src/health.rs` | `HealthResponse` (V1-only) plus shared `ReadinessState` / `HealthCategory` (`Warming`, `CollectorFailure`, `NotServing`) also used by V2 |
@@ -34,6 +36,13 @@ returns `StatusSnapshot` directly. The v2 status endpoint returns
 `StatusPayloadV2` which flattens the snapshot and adds optional drive capacity,
 CPU-frequency, disk-I/O, and network telemetry fields. New telemetry is
 additive: old v2 payloads omit it and old clients ignore it.
+
+Scheduler observability is served on its own two routes rather than inside
+`StatusPayloadV2`, so an ordinary metrics poll never carries command output.
+The client polls `/v2/scheduler` at the metrics cadence and fetches
+`/v2/scheduler/history` only when the summary's `history_revision` changes. The
+full wire contract, resource constants, and security boundary are in
+`architecture/protocol.md`.
 
 ### V1 snapshot shape
 
