@@ -1,7 +1,7 @@
 # Plan 164: Gregg client-daemon core and local IPC
 
 Status: **complete** — implemented in `c887094` (transport foundation) and
-`46e1dc0` (daemon, engine, fan-out, reload boundary, presentation-only TUI).
+`b25ca04` (daemon, engine, fan-out, reload boundary, presentation-only TUI).
 See the closure record at the end of this document.
 
 Depends on: Plan 161 and the settled current Gregg client architecture through
@@ -343,7 +343,7 @@ Plan 166 extends the daemon state model with remote scheduler observability.
 ## Closure record
 
 Landed in two commits: `c887094` (local IPC transport, identity, protocol,
-snapshot DTOs — behavior-neutral) and `46e1dc0` (the daemon, its engine, the
+snapshot DTOs — behavior-neutral) and `b25ca04` (the daemon, its engine, the
 fan-out, the reload boundary, and the presentation-only TUI).
 
 ### What exists
