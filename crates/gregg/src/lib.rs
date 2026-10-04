@@ -31,5 +31,6 @@ pub mod update;
 #[cfg(test)]
 mod mixed_fleet_evidence;
 
+pub mod startup_support;
 #[cfg(test)]
 mod sustained_workload;

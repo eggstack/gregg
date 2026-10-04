@@ -281,7 +281,11 @@ impl ConfigStore {
     ///
     /// Returns [`ConfigError::LockTimeout`] if the lock cannot be acquired
     /// within `LOCK_TIMEOUT_MS`.
-    #[allow(unsafe_code)] // Uses libc::flock (unix) and LockFileEx (windows).
+    // One function holds both the Unix and the Windows locking loop, each
+    // with its own real-error classification, which puts it over the pedantic
+    // line limit. Splitting it would only hide that both halves must be
+    // reviewed together.
+    #[allow(clippy::too_many_lines, unsafe_code)] // libc::flock / LockFileEx.
     fn acquire_lock(&self) -> Result<FileLockGuard, ConfigError> {
         let lock_path = self.lock_path();
 
@@ -316,7 +320,11 @@ impl ConfigStore {
             loop {
                 let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
                 if result == 0 {
-                    return Ok(FileLockGuard { file, handle: None });
+                    return Ok(FileLockGuard {
+                        file,
+                        handle: None,
+                        path: lock_path.clone(),
+                    });
                 }
                 // Only contention (`EWOULDBLOCK` == `EAGAIN` on Linux and
                 // macOS) is worth retrying. `EBADF`, `EINVAL`, `ENOLCK`, or
@@ -374,6 +382,7 @@ impl ConfigStore {
                     return Ok(FileLockGuard {
                         file,
                         handle: Some(handle as isize),
+                        path: lock_path.clone(),
                     });
                 }
 

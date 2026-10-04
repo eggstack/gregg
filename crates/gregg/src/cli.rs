@@ -242,7 +242,8 @@ pub enum DaemonCommand {
     /// Stop the matching client daemon.
     ///
     /// Only a positively identified daemon for this same configuration is
-    /// stopped. Two configurations can never stop each other.
+    /// stopped. Two configurations can never stop each other. Returns once the
+    /// endpoint is actually gone, not merely once the request was accepted.
     ///
     /// # Examples
     ///
@@ -250,6 +251,88 @@ pub enum DaemonCommand {
     /// gregg daemon stop
     /// ```
     Stop,
+    /// Restart the matching client daemon.
+    ///
+    /// Stops the identified owned daemon and starts a fresh one with the
+    /// current executable. A daemon that was not running is simply started,
+    /// which is what a user startup manager wants to guarantee liveness.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon restart
+    /// ```
+    Restart,
+    /// User-scoped startup for the matching client daemon.
+    ///
+    /// Never creates a system service, never needs root, and never guesses
+    /// which user owns a config.
+    Startup {
+        #[command(subcommand)]
+        command: DaemonStartupCommand,
+    },
+}
+
+/// `gregg daemon startup` subcommands.
+#[derive(Subcommand)]
+pub enum DaemonStartupCommand {
+    /// Register a user-scoped startup entry for this config.
+    ///
+    /// Writes one artifact inside the calling user's own home and asks that
+    /// manager to start it:
+    ///
+    /// - Linux: a `systemctl --user` unit, falling back to a managed user
+    ///   crontab watchdog when user systemd is unavailable.
+    /// - macOS: a `~/Library/LaunchAgents` agent, not
+    ///   `/Library/LaunchDaemons`.
+    /// - Windows: a current-user Startup-folder entry, not `LocalService` SCM.
+    ///
+    /// A registration that would overwrite someone else's entry is refused. A
+    /// failure prints the exact `instructions` output rather than leaving a
+    /// half-registered daemon, and the binary itself stays usable either way:
+    /// bare `gregg` lazily starts the daemon regardless.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon startup install
+    /// gregg --config /tmp/team.toml daemon startup install
+    /// ```
+    Install,
+    /// Print what `install` would do, without changing anything.
+    ///
+    /// Read-only and always actionable. This is the exact text the installer
+    /// prints when its own registration attempt could not be completed.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon startup instructions
+    /// ```
+    Instructions,
+    /// Remove the startup registration for this config.
+    ///
+    /// Only an artifact that is provably Gregg's is removed. A foreign entry, or
+    /// one that cannot be parsed, is reported and left exactly as it was:
+    /// "I could not read it" is not a licence to delete it.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon startup remove
+    /// ```
+    Remove,
+    /// Report the current startup registration for this config.
+    ///
+    /// Read-only. Prints the method, the artifact path, and whether it is
+    /// present, and whether it is provably Gregg's.
+    ///
+    /// # Examples
+    ///
+    /// ```text
+    /// gregg daemon startup status
+    /// ```
+    Status,
 }
 
 /// `EggPool` configuration commands.
@@ -465,6 +548,99 @@ fn dispatch_daemon(
             runtime.block_on(crate::clientd::daemon::stop(&identity, &version_string()))?;
             Ok(())
         }
+        DaemonCommand::Restart => {
+            runtime.block_on(crate::clientd::restart(store))?;
+            println!("client daemon {} restarted", identity.id());
+            Ok(())
+        }
+        DaemonCommand::Startup { command } => dispatch_daemon_startup(command, store),
+    }
+}
+
+/// `gregg daemon startup` needs no async runtime at all: every step is a file
+/// write or a bounded manager call, both synchronous by design so a hung manager
+/// cannot be parked on a task nobody awaits.
+fn dispatch_daemon_startup(
+    command: &DaemonStartupCommand,
+    store: &ConfigStore,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::clientd::startup;
+
+    let identity = crate::clientd::ClientDaemonIdentity::for_path(store.path());
+    let executable = std::env::current_exe()?;
+    let target = startup::StartupTarget::new(&executable, store.path(), identity.id());
+    let method = startup::method_for(std::env::consts::OS, startup::user_systemd_available());
+
+    match command {
+        DaemonStartupCommand::Install => match startup::install_with(&target, method) {
+            Ok(installed) => {
+                println!(
+                    "registered {} startup for {} at {}",
+                    installed.method,
+                    identity.id(),
+                    installed.artifact.display()
+                );
+                if !installed.started {
+                    println!("start it now with: gregg daemon restart");
+                }
+                Ok(())
+            }
+            Err(error) => {
+                // The binary is installed and usable either way: bare `gregg`
+                // lazily starts the daemon. So this is a printed warning with
+                // the exact next command, not a failed invocation.
+                eprintln!("warning: could not register user startup: {error}");
+                eprintln!();
+                eprint!("{}", startup::render_instructions(method, &target));
+                Ok(())
+            }
+        },
+        DaemonStartupCommand::Instructions => {
+            print!("{}", startup::render_instructions(method, &target));
+            Ok(())
+        }
+        DaemonStartupCommand::Status => {
+            let step = startup::inspect_with(&target, method);
+            println!(
+                "client daemon startup: method {method}, artifact {}",
+                step.artifact.display()
+            );
+            println!("  state: {}", describe_action(step.action));
+            Ok(())
+        }
+        DaemonStartupCommand::Remove => {
+            let step = startup::uninstall_with(&target, method)?;
+            println!(
+                "{}",
+                match step.action {
+                    startup::UninstallAction::RemoveOwned => format!(
+                        "removed Gregg's {method} startup entry at {}",
+                        step.artifact.display()
+                    ),
+                    startup::UninstallAction::AlreadyAbsent =>
+                        format!("no Gregg {method} startup entry was registered"),
+                    startup::UninstallAction::PreservedForeign => format!(
+                        "{} is not a Gregg entry and was left in place",
+                        step.artifact.display()
+                    ),
+                    startup::UninstallAction::PreservedUnknown => format!(
+                        "{} could not be parsed as a Gregg entry and was left in place",
+                        step.artifact.display()
+                    ),
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+fn describe_action(action: crate::clientd::startup::UninstallAction) -> &'static str {
+    use crate::clientd::startup::UninstallAction;
+    match action {
+        UninstallAction::AlreadyAbsent => "not registered",
+        UninstallAction::RemoveOwned => "registered and owned by this executable",
+        UninstallAction::PreservedForeign => "present, but not Gregg's (preserved)",
+        UninstallAction::PreservedUnknown => "present, but ownership unprovable (preserved)",
     }
 }
 

@@ -1,6 +1,10 @@
-//! Cross-process advisory file locking for the client configuration.
+//! Cross-process advisory file locking for the client configuration and for
+//! the client daemon's single-launch decision.
 
 use std::fs;
+use std::path::PathBuf;
+
+use crate::config::ConfigError;
 
 // The cross-process configuration lock relies on platform file-locking
 // primitives (flock on unix, LockFileEx on windows). Fail the build loudly on
@@ -17,6 +21,158 @@ pub struct FileLockGuard {
     /// Stored as `isize` for cross-platform struct layout.
     #[allow(dead_code)]
     pub(crate) handle: Option<isize>,
+    /// The lock path, for diagnostics.
+    ///
+    /// Carried explicitly because `File::path` is newer than the pinned MSRV.
+    pub(crate) path: PathBuf,
+}
+
+impl FileLockGuard {
+    /// Acquire an exclusive advisory lock on `path`, waiting at most
+    /// `timeout`.
+    ///
+    /// Exposed at the path level because Plan 165 needs a *second*, unrelated
+    /// lock: the config mutation lock protects the file, while the client
+    /// daemon's launch lock protects the "exactly one spawn" decision. Sharing
+    /// one lock would make an ordinary `gregg add` contend with a TUI launch.
+    ///
+    /// The lock file is created if needed and is never deleted, because a
+    /// removed inode can be re-created by a racing opener and split the lock
+    /// in two. Its presence therefore proves nothing; the OS lock is what
+    /// counts, which is exactly why nothing in Gregg decides "is this daemon
+    /// running" by looking at a lock file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`crate::config::ConfigError`] on I/O failure, or
+    /// [`crate::config::ConfigError::LockTimeout`] if the lock cannot be taken
+    /// within `timeout`.
+    #[allow(unsafe_code)] // Uses libc::flock (unix) and LockFileEx (windows).
+    pub fn acquire(
+        path: &std::path::Path,
+        timeout: std::time::Duration,
+    ) -> Result<Self, ConfigError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        // Never truncate: a concurrent holder's inode must stay the same file.
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .map_err(|source| ConfigError::Io {
+                path: path.to_path_buf(),
+                source,
+            })?;
+        Self::lock_file(file, path, timeout)
+    }
+
+    /// The path this guard holds, for diagnostics.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    #[allow(unsafe_code)] // Uses libc::flock (unix) and LockFileEx (windows).
+    fn lock_file(
+        file: fs::File,
+        path: &std::path::Path,
+        timeout: std::time::Duration,
+    ) -> Result<Self, ConfigError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = file.as_raw_fd();
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                // SAFETY: `fd` is a valid descriptor owned by `file` for the
+                // whole call, and the flags request a non-blocking exclusive
+                // advisory lock, which `flock` fully defines.
+                let result = unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) };
+                if result == 0 {
+                    return Ok(Self {
+                        file,
+                        handle: None,
+                        path: path.to_path_buf(),
+                    });
+                }
+                // Only contention is worth retrying. `EBADF`, `EINVAL`,
+                // `ENOLCK`, or `ENOTSUP` mean this descriptor or filesystem
+                // cannot lock at all, and retrying them for the full timeout
+                // would misreport a real failure as contention.
+                let errno = std::io::Error::last_os_error()
+                    .raw_os_error()
+                    .unwrap_or(libc::EIO);
+                if errno != libc::EWOULDBLOCK && errno != libc::EAGAIN {
+                    return Err(ConfigError::Io {
+                        path: path.to_path_buf(),
+                        source: std::io::Error::from_raw_os_error(errno),
+                    });
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(ConfigError::LockTimeout {
+                        path: path.to_path_buf(),
+                        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Storage::FileSystem::LockFileEx;
+            use windows_sys::Win32::System::IO::{LOCKFILE_EXCLUSIVE_LOCK, OVERLAPPED};
+            let handle = file.as_raw_handle();
+            let deadline = std::time::Instant::now() + timeout;
+            loop {
+                let mut overlapped: OVERLAPPED = std::mem::zeroed();
+                // SAFETY: `handle` is a valid file handle owned by `file`, and
+                // `overlapped` is a live, zeroed stack allocation that the API
+                // only reads offsets from.
+                let result = unsafe {
+                    LockFileEx(
+                        handle,
+                        LOCKFILE_EXCLUSIVE_LOCK
+                            | windows_sys::Win32::Storage::FileSystem::LOCKFILE_FAIL_IMMEDIATELY,
+                        0,
+                        u32::MAX,
+                        u32::MAX,
+                        &mut overlapped,
+                    )
+                };
+                if result != 0 {
+                    return Ok(Self {
+                        file,
+                        handle: Some(handle as isize),
+                        path: path.to_path_buf(),
+                    });
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(ConfigError::LockTimeout {
+                        path: path.to_path_buf(),
+                        timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+                    });
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        // Reached only on a target the `compile_error!` at the top of this
+        // module already rejects.
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (file, path, timeout);
+            Err(ConfigError::LockTimeout {
+                path: path.to_path_buf(),
+                timeout_ms: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+            })
+        }
+    }
 }
 #[allow(unsafe_code)]
 impl Drop for FileLockGuard {

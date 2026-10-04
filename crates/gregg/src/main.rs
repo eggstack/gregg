@@ -4,7 +4,7 @@ use gregg::action;
 use gregg::cli;
 use gregg::clientd::frontend::FrameStream;
 use gregg::clientd::protocol::FrontendFrame;
-use gregg::clientd::{ClientDaemonIdentity, ControlSink, EggpoolIntentRequest};
+use gregg::clientd::{ControlSink, EggpoolIntentRequest};
 use gregg::event;
 use gregg::input;
 use gregg::state;
@@ -103,8 +103,11 @@ fn main() {
 async fn run_tui(store: &gregg::config::ConfigStore) -> Result<(), Box<dyn std::error::Error>> {
     use tokio_util::sync::CancellationToken;
 
-    let identity = ClientDaemonIdentity::for_path(store.path());
-    let attachment = gregg::clientd::attach(&identity, &cli::version_string()).await?;
+    // Plan 165: bare `gregg` ensures the daemon exists. The handshake is the
+    // identity check, and a launch only happens when the endpoint is genuinely
+    // absent, so this can never overwrite a peer it does not own or start a
+    // second daemon for the same config.
+    let attachment = gregg::clientd::ensure_running(store).await?;
 
     let cancel = CancellationToken::new();
     let ctrl_c_cancel = cancel.clone();

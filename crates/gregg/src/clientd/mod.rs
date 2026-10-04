@@ -28,8 +28,10 @@ pub mod daemon;
 pub mod frontend;
 pub mod identity;
 pub mod ipc;
+pub mod launch;
 pub mod protocol;
 pub mod snapshot;
+pub mod startup;
 
 pub use daemon::{
     attach, run_daemon, status, stop, AttachError, Attachment, DaemonError, DaemonStatus,
@@ -42,9 +44,14 @@ pub use identity::{
     ClientDaemonIdentity,
 };
 pub use ipc::{BoundEndpoint, Connection, TransportError};
+pub use launch::{ensure_running, restart, EnsureError};
 pub use protocol::{
     classify, encode_frame, parse_length, DaemonRequest, DecodeError, EncodeError,
     FrameDisposition, FrontendFrame, HelloPayload, VersionMismatchPayload, LEN_PREFIX_BYTES,
     MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
 pub use snapshot::{FrontendSnapshot, PresentationState, SystemSnapshotDto};
+pub use startup::{
+    inspect, install, render_instructions, uninstall, Installed, StartupMethod, StartupTarget,
+    UninstallStep,
+};
