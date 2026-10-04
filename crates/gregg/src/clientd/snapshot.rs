@@ -244,6 +244,13 @@ pub struct FrontendSnapshot {
     pub poll_initialized: bool,
     /// Fleet data, in display order.
     pub systems: Vec<SystemSnapshotDto>,
+    /// How many cron records the configuration asks a cron pane to display.
+    ///
+    /// Published rather than read by the TUI: a frontend never opens the
+    /// configuration file, because reading it would make it a second owner of
+    /// fleet data. The value is a presentation *request* — the daemon clamps it
+    /// to its own maximum and only publishes what it retained.
+    pub cron_display_history: usize,
     /// Scheduler observability, in the same order as `systems`.
     ///
     /// One entry per system, always present so a frontend never has to infer
@@ -265,6 +272,7 @@ impl FrontendSnapshot {
             produced_at_unix_ms: 0,
             refresh_status: RefreshStatusDto::Idle,
             poll_initialized: false,
+            cron_display_history: crate::cron::DEFAULT_DISPLAY_HISTORY,
             cron: systems
                 .iter()
                 .map(|system| SystemCronDto {

@@ -192,6 +192,11 @@ pub struct FleetState {
     pub refresh_status: RefreshStatus,
     /// Diagnostic from the most recent rejected config reload.
     pub config_reload_error: Option<String>,
+    /// How many cron records a pane should display, from the configuration.
+    ///
+    /// Held here because the daemon owns the configuration and a frontend
+    /// never opens the file.
+    pub cron_display_history: usize,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
     /// Plan 166: remote scheduler observability, including the memory-only
@@ -215,6 +220,7 @@ impl FleetState {
             last_applied_generation: 0,
             refresh_status: RefreshStatus::Idle,
             config_reload_error: None,
+            cron_display_history: config.cron.display_history(),
             eggpool: config.eggpool.clone().map(|endpoint| EggpoolState {
                 endpoint,
                 period: EggpoolPeriod::Hour,
@@ -769,6 +775,7 @@ impl FleetState {
                 ),
                 last_health_error: eggpool.last_health_error.clone(),
             }),
+            cron_display_history: self.cron_display_history,
             cron: self
                 .systems
                 .iter()
@@ -780,10 +787,8 @@ impl FleetState {
                         summary: state.and_then(|s| s.summary.clone()),
                         epoch: state.and_then(|s| s.epoch),
                         history_revision: state.and_then(|s| s.history_revision),
-                        last_attempt_at_unix_ms: state
-                            .and_then(|s| s.last_attempt_at_unix_ms),
-                        last_success_at_unix_ms: state
-                            .and_then(|s| s.last_success_at_unix_ms),
+                        last_attempt_at_unix_ms: state.and_then(|s| s.last_attempt_at_unix_ms),
+                        last_success_at_unix_ms: state.and_then(|s| s.last_success_at_unix_ms),
                         last_error: state.and_then(|s| s.last_error.clone()),
                         history: state
                             .map(|s| {
@@ -813,6 +818,100 @@ pub struct EggpoolIntent {
     pub active: bool,
     /// The rolling window this frontend is displaying.
     pub period: EggpoolPeriod,
+}
+
+/// Make a remote string inert without bounding it.
+///
+/// Applied at the single point where published fleet data enters a frontend,
+/// so every renderer path — normal, condensed, diagnostics, cron — is covered
+/// by one decision rather than by remembering to sanitize at each cell site.
+///
+/// The line bound is deliberately infinite here. This step is about *escaping*;
+/// truncating to a viewport is a render-time concern, and a stored record must
+/// not be shortened by a display decision. The cron renderer applies its own
+/// viewport bound later, and running the escaped text through the sanitizer a
+/// second time is idempotent, so the two steps compose.
+fn clean(text: &str) -> String {
+    crate::sanitize::sanitize(text, usize::MAX).text
+}
+
+/// Strip terminal controls from every remote string in a metrics snapshot.
+///
+/// Hostnames, drive names, mount points, filesystem names, and interface names
+/// all come from the machine being watched. A host whose hostname is
+/// `ESC [ 2 J evil` would otherwise clear the operator's screen, and one whose
+/// interface is named with an OSC hyperlink would plant a clickable URL in the
+/// middle of a monitoring display. Numeric telemetry is untouched.
+fn clean_snapshot(snapshot: &mut NormalizedSnapshot) {
+    let identity = &mut snapshot.system;
+    identity.name = clean(&identity.name);
+    identity.hostname = clean(&identity.hostname);
+    identity.os_name = clean(&identity.os_name);
+    identity.os_version = clean(&identity.os_version);
+    identity.kernel_name = clean(&identity.kernel_name);
+    identity.kernel_release = clean(&identity.kernel_release);
+    identity.architecture = clean(&identity.architecture);
+
+    if let Some(drives) = snapshot.drives.as_mut() {
+        for drive in drives {
+            drive.name = clean(&drive.name);
+        }
+    }
+    if let Some(disk_io) = snapshot.disk_io.as_mut() {
+        for device in &mut disk_io.devices {
+            device.id = clean(&device.id);
+            device.name = clean(&device.name);
+            device.drive_name = device.drive_name.as_deref().map(clean);
+        }
+    }
+    if let Some(network) = snapshot.network.as_mut() {
+        for interface in &mut network.interfaces {
+            interface.id = clean(&interface.id);
+            interface.name = clean(&interface.name);
+        }
+    }
+}
+
+/// Strip terminal controls from one published scheduler document.
+///
+/// Job names and schedule strings come from a remote configuration, and record
+/// output is by definition arbitrary program output, so all of it is treated as
+/// hostile. The record text keeps its line structure; only the viewport bound
+/// shortens it, and that happens in the renderer.
+fn clean_cron(entry: &mut SystemCronDto) {
+    if let Some(summary) = entry.summary.as_mut() {
+        for job in &mut summary.jobs {
+            job.name = clean(&job.name);
+            job.schedule = clean(&job.schedule);
+        }
+    }
+    for job in &mut entry.history {
+        job.job = clean(&job.job);
+        for record in &mut job.records {
+            record.record.stdout.text = clean(&record.record.stdout.text);
+            record.record.stderr.text = clean(&record.record.stderr.text);
+        }
+    }
+}
+
+/// Whether a published scheduler document differs in a render-visible way.
+///
+/// Timestamps are excluded, exactly as they are for systems: a row that already
+/// says the same thing at a slightly different age does not need a frame, and
+/// treating it as changed would redraw on every poll.
+fn cron_visibly_differ(before: &[SystemCronDto], after: &[SystemCronDto]) -> bool {
+    if before.len() != after.len() {
+        return true;
+    }
+    before.iter().zip(after.iter()).any(|(a, b)| {
+        a.system_id != b.system_id
+            || a.capability != b.capability
+            || a.summary != b.summary
+            || a.epoch != b.epoch
+            || a.history_revision != b.history_revision
+            || a.last_error != b.last_error
+            || a.history != b.history
+    })
 }
 
 /// Reduce the `EggPool` worker state across every attached frontend.
@@ -942,7 +1041,9 @@ impl CronIntents {
             if job.is_empty() {
                 continue;
             }
-            let depth = intent.display_history.clamp(1, crate::cron::MAX_DISPLAY_HISTORY);
+            let depth = intent
+                .display_history
+                .clamp(1, crate::cron::MAX_DISPLAY_HISTORY);
             let per_system = reduced.entry(system_id.clone()).or_default();
             let slot = per_system.entry(job.clone()).or_insert(0);
             *slot = (*slot).max(depth);
@@ -1010,7 +1111,10 @@ mod cron_intent_tests {
         let mut intents = CronIntents::default();
         intents.set(1, open("sys-a", "backup", 5));
         assert!(intents.any_active());
-        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 5)]);
+        assert_eq!(
+            intents.requests_for("sys-a"),
+            vec![("backup".to_owned(), 5)]
+        );
         assert_eq!(intents.requests_for("sys-b"), Vec::new());
     }
 
@@ -1037,8 +1141,14 @@ mod cron_intent_tests {
         let mut intents = CronIntents::default();
         intents.set(1, open("sys-a", "backup", 5));
         intents.set(2, open("sys-b", "rotate", 7));
-        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 5)]);
-        assert_eq!(intents.requests_for("sys-b"), vec![("rotate".to_owned(), 7)]);
+        assert_eq!(
+            intents.requests_for("sys-a"),
+            vec![("backup".to_owned(), 5)]
+        );
+        assert_eq!(
+            intents.requests_for("sys-b"),
+            vec![("rotate".to_owned(), 7)]
+        );
     }
 
     #[test]
@@ -1083,10 +1193,7 @@ mod cron_intent_tests {
         intents.set(1, open("sys-a", "backup", usize::MAX));
         assert_eq!(
             intents.requests_for("sys-a"),
-            vec![(
-                "backup".to_owned(),
-                crate::cron::MAX_DISPLAY_HISTORY
-            )],
+            vec![("backup".to_owned(), crate::cron::MAX_DISPLAY_HISTORY)],
             "the daemon clamps what a frontend asks for"
         );
     }
@@ -1095,7 +1202,10 @@ mod cron_intent_tests {
     fn a_zero_depth_is_clamped_rather_than_producing_an_empty_slice() {
         let mut intents = CronIntents::default();
         intents.set(1, open("sys-a", "backup", 0));
-        assert_eq!(intents.requests_for("sys-a"), vec![("backup".to_owned(), 1)]);
+        assert_eq!(
+            intents.requests_for("sys-a"),
+            vec![("backup".to_owned(), 1)]
+        );
     }
 
     #[test]
@@ -1143,6 +1253,29 @@ mod cron_intent_tests {
                 stderr: gregg_protocol::SchedulerOutputV2::new(String::new(), false),
             })
             .collect();
+        // A summary too: the job list is what `c` and `Shift-J`/`Shift-K` read,
+        // and a history document on its own names no jobs.
+        fleet.cron.apply_summary(
+            "sys-a",
+            gregg_protocol::SchedulerSummaryV2 {
+                schema_version: 2,
+                generated_at_unix_ms: 1_700_000_000_000,
+                epoch,
+                history_revision: 1,
+                jobs: vec![gregg_protocol::SchedulerJobV2 {
+                    name: job.to_owned(),
+                    schedule: "0 3 * * *".to_owned(),
+                    next_due_unix_ms: 1_700_000_100_000,
+                    state: gregg_protocol::SchedulerJobStateV2::Idle,
+                    load: None,
+                    pending_since_unix_ms: None,
+                    next_retry_unix_ms: None,
+                    running_since_unix_ms: None,
+                    last: None,
+                }],
+            },
+            1_700_000_000_000,
+        );
         fleet.cron.apply_history(
             "sys-a",
             &SchedulerHistoryV2 {
@@ -1200,6 +1333,271 @@ mod cron_intent_tests {
         let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
         let cron = document.cron_for("sys-a").expect("an entry per system");
         assert_eq!(cron.history, Vec::new());
+    }
+
+    // --- Actions ---
+
+    #[test]
+    fn opening_the_cron_pane_lands_on_a_defined_job_deterministically() {
+        let fleet = fleet_with_cron("backup", 3);
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
+        let mut app = AppState::from_snapshot(&document);
+        app.cron_job = None;
+
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert!(app.cron_expanded);
+        assert_eq!(
+            app.cron_job.as_deref(),
+            Some("backup"),
+            "a pane that opened with no job named would render an empty history block"
+        );
+
+        // Opening twice lands on the same job: the default is not order-of-keys
+        // dependent.
+        app.cron_job = None;
+        app.apply_action(crate::action::Action::ToggleCron);
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert_eq!(app.cron_job.as_deref(), Some("backup"));
+    }
+
+    #[test]
+    fn a_cron_pane_on_a_system_with_no_scheduler_asks_for_nothing() {
+        let mut app = AppState::blank();
+        app.systems = vec![SystemState {
+            id: "sys-a".to_owned(),
+            endpoint: Endpoint::new("box".to_owned(), 11310, None),
+            configured_name: None,
+            reachability: Reachability::Online,
+            latest: None,
+            last_success_at: None,
+            last_attempt_at: None,
+            latency: None,
+            offline_reason: None,
+        }];
+        app.selected_id = Some("sys-a".to_owned());
+        app.cron_expanded = true;
+        // The pane is open but the daemon has said nothing yet, so there is no
+        // job to ask for. Inventing one would be a request the daemon cannot
+        // answer, and the block would show a header for a job that does not
+        // exist.
+        assert_eq!(app.selected_cron_job(), None);
+        assert_eq!(app.cron_job_names(), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn the_expansions_are_independent_of_one_another() {
+        // `n` is deliberately excluded here: unlike `d` and `c` it is gated on
+        // the system actually having network telemetry, so on a system with no
+        // snapshot it is a no-op. That gate is covered by its own tests.
+        let mut app = AppState::blank();
+        app.systems = vec![SystemState {
+            id: "sys-a".to_owned(),
+            endpoint: Endpoint::new("box".to_owned(), 11310, None),
+            configured_name: None,
+            reachability: Reachability::Online,
+            latest: None,
+            last_success_at: None,
+            last_attempt_at: None,
+            latency: None,
+            offline_reason: None,
+        }];
+        app.selected_id = Some("sys-a".to_owned());
+        app.apply_action(crate::action::Action::ToggleDrives);
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert!(
+            app.drives_expanded && app.cron_expanded,
+            "opening cron must not close drives"
+        );
+
+        // Closing one must not close the other.
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert!(!app.cron_expanded);
+        assert!(app.drives_expanded, "closing cron must not close drives");
+        app.apply_action(crate::action::Action::ToggleDrives);
+        assert!(!app.drives_expanded);
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert!(app.cron_expanded, "reopening cron must not reopen drives");
+    }
+
+    #[test]
+    fn a_closing_cron_pane_forgets_its_job() {
+        // Retained state for a closed pane would be re-expanded into a job the
+        // operator had moved away from.
+        let fleet = fleet_with_cron("backup", 3);
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
+        let mut app = AppState::from_snapshot(&document);
+        app.cron_expanded = true;
+        assert_eq!(app.cron_job.as_deref(), Some("backup"));
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert!(!app.cron_expanded);
+        app.apply_action(crate::action::Action::ToggleCron);
+        assert_eq!(app.cron_job.as_deref(), Some("backup"));
+    }
+
+    #[test]
+    fn moving_the_cron_sub_selection_is_clamped_and_never_wraps() {
+        // A `K` on the first job must be obviously a no-op, not a silent jump
+        // to the last one.
+        let fleet = fleet_with_cron("backup", 3);
+        let mut intents = CronIntents::default();
+        intents.set(1, open("sys-a", "backup", 5));
+        let document = fleet.to_dto_for(std::time::Instant::now(), 1, 1, &intents);
+        let mut app = AppState::from_snapshot(&document);
+        app.cron_expanded = true;
+        app.cron_job = Some("backup".to_owned());
+
+        app.apply_action(crate::action::Action::CronJobPrevious);
+        assert_eq!(
+            app.cron_job.as_deref(),
+            Some("backup"),
+            "clamped, not wrapped"
+        );
+        // Only one job exists, so next is also clamped.
+        app.apply_action(crate::action::Action::CronJobNext);
+        assert_eq!(app.cron_job.as_deref(), Some("backup"));
+    }
+
+    #[test]
+    fn moving_between_systems_repairs_a_stale_cron_job_name() {
+        // The name is retained so an unchanged selection survives a system
+        // switch, but a name the new system does not have must not be rendered.
+        let mut config = Config {
+            systems: vec![
+                crate::config::SystemEntry {
+                    id: "a".to_owned(),
+                    host: "a".to_owned(),
+                    port: 11310,
+                    name: None,
+                },
+                crate::config::SystemEntry {
+                    id: "b".to_owned(),
+                    host: "b".to_owned(),
+                    port: 11310,
+                    name: None,
+                },
+            ],
+            ..Config::default()
+        };
+        let mut first = crate::clientd::snapshot::FrontendSnapshot::empty(Vec::new());
+        first.systems = (0..2)
+            .map(|index| crate::clientd::snapshot::SystemSnapshotDto {
+                id: if index == 0 { "a" } else { "b" }.to_owned(),
+                endpoint: Endpoint::new("x".to_owned(), 11310, None),
+                configured_name: None,
+                reachability: Reachability::Pending,
+                latest: None,
+                last_success_at_unix_ms: None,
+                last_attempt_at_unix_ms: None,
+                latency_ms: None,
+                offline_reason: None,
+            })
+            .collect();
+        first.cron = (0..2)
+            .map(|index| SystemCronDto {
+                system_id: if index == 0 { "a" } else { "b" }.to_owned(),
+                capability: crate::cron::CronCapability::Supported,
+                summary: Some(gregg_protocol::SchedulerSummaryV2 {
+                    schema_version: 2,
+                    generated_at_unix_ms: 1_700_000_000_000,
+                    epoch: gregg_protocol::SchedulerEpochV2 {
+                        started_at_unix_ms: 1,
+                        nonce: 1,
+                    },
+                    history_revision: 0,
+                    jobs: vec![gregg_protocol::SchedulerJobV2 {
+                        name: if index == 0 { "only-on-a" } else { "only-on-b" }.to_owned(),
+                        schedule: "0 3 * * *".to_owned(),
+                        next_due_unix_ms: 0,
+                        state: gregg_protocol::SchedulerJobStateV2::Idle,
+                        load: None,
+                        pending_since_unix_ms: None,
+                        next_retry_unix_ms: None,
+                        running_since_unix_ms: None,
+                        last: None,
+                    }],
+                }),
+                epoch: None,
+                history_revision: None,
+                last_attempt_at_unix_ms: None,
+                last_success_at_unix_ms: None,
+                last_error: None,
+                history: Vec::new(),
+            })
+            .collect();
+        let mut app = AppState::from_snapshot(&first);
+        app.cron_expanded = true;
+        app.cron_job = Some("only-on-a".to_owned());
+        assert_eq!(app.selected_id.as_deref(), Some("a"));
+        assert_eq!(app.selected_cron_job(), Some("only-on-a"));
+
+        config.systems.truncate(1);
+        let _ = config;
+        app.apply_action(crate::action::Action::MoveDown);
+        assert_eq!(app.selected_id.as_deref(), Some("b"));
+        assert_eq!(
+            app.selected_cron_job(),
+            Some("only-on-b"),
+            "the retained name belongs to a different system and must be repaired"
+        );
+    }
+
+    #[test]
+    fn a_stale_scheduler_read_is_a_render_visible_change() {
+        // If this were false, a failing cron read would never repaint and the
+        // operator would keep looking at numbers they think are current.
+        let fleet = fleet_with_cron("backup", 3);
+        let mut document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        let mut app = AppState::from_snapshot(&document);
+        document.generation = 2;
+        document.cron[0].last_error =
+            Some(crate::cron::CronFetchError::Transport("boom".to_owned()));
+        assert!(app.adopt_snapshot(&document));
+    }
+
+    #[test]
+    fn an_unchanged_scheduler_read_is_not_a_render_visible_change() {
+        // Timestamps move on every publication; treating that as a change would
+        // redraw on every poll.
+        let fleet = fleet_with_cron("backup", 3);
+        let document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        let mut app = AppState::from_snapshot(&document);
+        let mut later = document.clone();
+        later.generation = 2;
+        later.produced_at_unix_ms = document.produced_at_unix_ms + 5_000;
+        assert!(
+            !app.adopt_snapshot(&later),
+            "an identical scheduler read must not force a frame"
+        );
+    }
+
+    #[test]
+    fn the_configured_display_depth_travels_with_the_document() {
+        let mut config = Config {
+            cron: crate::config::CronConfig {
+                display_history: 7,
+                cache_history: 25,
+            },
+            systems: vec![crate::config::SystemEntry {
+                id: "sys-a".to_owned(),
+                host: "box".to_owned(),
+                port: 11310,
+                name: None,
+            }],
+            ..Config::default()
+        };
+        let fleet = FleetState::from_config(&config);
+        let document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        assert_eq!(document.cron_display_history, 7);
+        let app = AppState::from_snapshot(&document);
+        assert_eq!(
+            app.cron_display_history, 7,
+            "the TUI must not read the config file to learn its own depth"
+        );
+        config.cron.display_history = 5;
     }
 
     #[test]
@@ -1362,6 +1760,17 @@ pub struct AppState {
     pub config_reload_error: Option<String>,
     /// Optional `EggPool` pane state.
     pub eggpool: Option<EggpoolState>,
+    /// Plan 166: scheduler observability for every system, in the document's
+    /// order.
+    ///
+    /// Published fleet data, so it is written only by [`Self::adopt_snapshot`]
+    /// and lives in its own vector rather than inside [`SystemState`]: the two
+    /// planes are fetched on different cadences, sized differently, and fail
+    /// independently, and merging them would make "metrics are fine but the
+    /// cron route failed" hard to express.
+    pub cron: Vec<SystemCronDto>,
+    /// How many cron records the configured pane should display.
+    pub cron_display_history: usize,
     /// Local IPC generation of the last document this frontend applied.
     ///
     /// Used to drop superseded documents. This is *not* the poll generation:
@@ -1390,6 +1799,19 @@ pub struct AppState {
     /// This is independent of drive expansion so both telemetry families
     /// can be inspected at once.
     pub network_expanded: bool,
+    /// Whether the selected system's cron details are expanded.
+    ///
+    /// Independent of drive and network expansion: opening cron details must
+    /// not silently close the other two.
+    pub cron_expanded: bool,
+    /// Which cron job's history is expanded, by name.
+    ///
+    /// Only one job's multiline history is shown at a time, because a
+    /// cron-expanded system may have dozens of jobs. Held by name so moving
+    /// between systems can repair it against a different job list, and so a
+    /// reordering of the remote's job list does not silently change which job
+    /// is being read.
+    pub cron_job: Option<String>,
     /// Plan 087: whether the logical selection is currently being
     /// visually highlighted with `Modifier::REVERSED`. Independent of
     /// `selected_id`; cleared by the event-loop timer (about ten
@@ -1489,6 +1911,8 @@ impl AppState {
             refresh_status: RefreshStatus::Idle,
             config_reload_error: None,
             eggpool: None,
+            cron: Vec::new(),
+            cron_display_history: crate::cron::DEFAULT_DISPLAY_HISTORY,
             last_snapshot_generation: 0,
             selected_id: None,
             viewport_top_id: None,
@@ -1497,11 +1921,14 @@ impl AppState {
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
             network_expanded: false,
+            cron_expanded: false,
+            cron_job: None,
             selection_highlight_active: false,
             eggpool_period_request: None,
             #[cfg(test)]
             test_fleet: FleetState {
                 cron: crate::cron::CronCache::default(),
+                cron_display_history: crate::cron::DEFAULT_DISPLAY_HISTORY,
                 systems: Vec::new(),
                 last_applied_generation: 0,
                 refresh_status: RefreshStatus::Idle,
@@ -1580,28 +2007,47 @@ impl AppState {
         let new_systems: Vec<SystemState> = snapshot
             .systems
             .iter()
-            .map(|dto| SystemState {
-                id: dto.id.clone(),
-                endpoint: dto.endpoint.clone(),
-                configured_name: dto.configured_name.clone(),
-                reachability: dto.reachability,
-                latest: dto.latest.clone(),
-                last_success_at: instant_from_unix_ms(
-                    dto.last_success_at_unix_ms,
-                    now,
-                    now_unix_ms,
-                ),
-                last_attempt_at: instant_from_unix_ms(
-                    dto.last_attempt_at_unix_ms,
-                    now,
-                    now_unix_ms,
-                ),
-                latency: dto.latency_ms.map(Duration::from_millis),
-                offline_reason: dto.offline_reason.clone(),
+            .map(|dto| {
+                let mut endpoint = dto.endpoint.clone();
+                endpoint.host = clean(&endpoint.host);
+                endpoint.name = endpoint.name.as_deref().map(clean);
+                let mut latest = dto.latest.clone();
+                if let Some(latest) = latest.as_mut() {
+                    clean_snapshot(latest);
+                }
+                SystemState {
+                    id: dto.id.clone(),
+                    endpoint,
+                    configured_name: dto.configured_name.as_deref().map(clean),
+                    reachability: dto.reachability,
+                    latest,
+                    last_success_at: instant_from_unix_ms(
+                        dto.last_success_at_unix_ms,
+                        now,
+                        now_unix_ms,
+                    ),
+                    last_attempt_at: instant_from_unix_ms(
+                        dto.last_attempt_at_unix_ms,
+                        now,
+                        now_unix_ms,
+                    ),
+                    latency: dto.latency_ms.map(Duration::from_millis),
+                    offline_reason: dto.offline_reason.clone(),
+                }
             })
             .collect();
         self.eggpool_period_request = None;
         self.last_snapshot_generation = snapshot.generation;
+
+        // Cron arrives through the same document, sanitized at the same single
+        // boundary as the metrics it sits beside.
+        let mut new_cron = snapshot.cron.clone();
+        for entry in &mut new_cron {
+            clean_cron(entry);
+        }
+        let cron_changed = cron_visibly_differ(&self.cron, &new_cron);
+        self.cron = new_cron;
+        self.cron_display_history = snapshot.cron_display_history;
 
         // Whether a redraw is warranted is a question about what the operator
         // can *see*, so it is decided here, before the old values are dropped.
@@ -1613,7 +2059,9 @@ impl AppState {
         let visible_changed = self.refresh_status != refresh_before
             || self.config_reload_error != reload_error_before
             || eggpool_changed
-            || systems_changed;
+            || systems_changed
+            || cron_changed
+            || self.cron_display_history != snapshot.cron_display_history;
 
         // An `EggPool`-only config has nothing to select in Systems, so the
         // pane starts where the content is.
@@ -1643,6 +2091,10 @@ impl AppState {
                 self.viewport_top_id = None;
             }
         }
+        // A selection change, a reload, or a remote that dropped a job can all
+        // leave the retained cron job name naming something the selected system
+        // no longer has.
+        self.repair_cron_selection();
 
         // The first document that carries polled reachability establishes the
         // reachability-sorted display order. Pinning selection and viewport top
@@ -1664,6 +2116,84 @@ impl AppState {
             || selected_before != self.selected_id
             || viewport_before != self.viewport_top_id
             || pane_before != self.active_pane
+    }
+
+    /// The published scheduler state for one system.
+    #[must_use]
+    pub fn cron_for(&self, system_id: &str) -> Option<&SystemCronDto> {
+        self.cron.iter().find(|entry| entry.system_id == system_id)
+    }
+
+    /// The published scheduler state for the selected system.
+    #[must_use]
+    pub fn selected_cron(&self) -> Option<&SystemCronDto> {
+        self.selected_id.as_deref().and_then(|id| self.cron_for(id))
+    }
+
+    /// Job names the selected system's scheduler currently reports, in the
+    /// remote's own order.
+    ///
+    /// Empty for a system with no scheduler, an old daemon, or no summary yet.
+    #[must_use]
+    pub fn cron_job_names(&self) -> Vec<&str> {
+        self.selected_cron()
+            .and_then(|cron| cron.summary.as_ref())
+            .map(|summary| summary.jobs.iter().map(|job| job.name.as_str()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The job whose history the cron block expands, defaulting to the first.
+    ///
+    /// A `None` job list yields `None` rather than an invented name, so an
+    /// unsupported daemon cannot show a fabricated job header.
+    #[must_use]
+    pub fn selected_cron_job(&self) -> Option<&str> {
+        let names = self.cron_job_names();
+        if names.is_empty() {
+            return None;
+        }
+        match self.cron_job.as_deref() {
+            Some(current) if names.contains(&current) => Some(current),
+            // The retained name is gone (a system switch, or the remote dropped
+            // the job). Falling back to the first job keeps the block truthful
+            // rather than showing a header for a job that no longer exists.
+            _ => names.first().copied(),
+        }
+    }
+
+    /// Move the cron sub-selection by `delta`, clamped to the job list.
+    ///
+    /// Clamped rather than wrapping so repeated `K` on the first job is
+    /// obviously a no-op instead of silently landing on the last one.
+    fn step_cron_job(&mut self, delta: isize) {
+        let names = self.cron_job_names();
+        if names.is_empty() {
+            self.cron_job = None;
+            return;
+        }
+        let current = self
+            .selected_cron_job()
+            .and_then(|name| names.iter().position(|candidate| *candidate == name))
+            .unwrap_or(0);
+        let last = names.len() - 1;
+        let next = isize::try_from(current)
+            .unwrap_or(0)
+            .saturating_add(delta)
+            .clamp(0, isize::try_from(last).unwrap_or(0));
+        self.cron_job = names
+            .get(usize::try_from(next).unwrap_or(0))
+            .map(|name| (*name).to_owned());
+    }
+
+    /// Repair the cron sub-selection against the selected system's job list.
+    ///
+    /// Called after every selection change and after every document, so moving
+    /// between systems, or a remote that dropped a job, cannot leave the block
+    /// naming a job that does not exist. The retained name is *adopted*, not
+    /// merely validated, so `cron_job` always agrees with what the pane shows
+    /// and there is no second, subtly different answer to "which job is this".
+    pub fn repair_cron_selection(&mut self) {
+        self.cron_job = self.selected_cron_job().map(str::to_owned);
     }
 
     /// Record the `EggPool` period the operator asked for.
@@ -1714,6 +2244,7 @@ impl AppState {
         let before_view = self.system_view_mode;
         let before_drives = self.drives_expanded;
         let before_network = self.network_expanded;
+        let before_cron = (self.cron_expanded, self.cron_job.clone());
         let before_highlight = self.selection_highlight_active;
         let before_terminal = self.terminal_size;
         let before_eggpool_period = self.eggpool.as_ref().map(|eggpool| eggpool.period);
@@ -1724,6 +2255,7 @@ impl AppState {
             || before_view != self.system_view_mode
             || before_drives != self.drives_expanded
             || before_network != self.network_expanded
+            || before_cron != (self.cron_expanded, self.cron_job.clone())
             || before_highlight != self.selection_highlight_active
             || before_terminal != self.terminal_size
             || before_eggpool_period != self.eggpool.as_ref().map(|eggpool| eggpool.period)
@@ -1815,11 +2347,26 @@ impl AppState {
             | Action::Quit => return,
             // Note: `ToggleSystemView` on the Systems pane deliberately
             // falls through because view mode changes entry heights.
-            Action::ToggleSystemView | Action::ToggleDrives | Action::ToggleNetwork
+            Action::ToggleSystemView
+            | Action::ToggleDrives
+            | Action::ToggleNetwork
+            | Action::ToggleCron
+            | Action::CronJobNext
+            | Action::CronJobPrevious
                 if self.active_pane == Pane::Eggpool =>
             {
                 return
             }
+            Action::ToggleCron => {
+                self.cron_expanded = !self.cron_expanded;
+                // Opening the pane always lands on a defined job, so the
+                // history block never renders with "selected job: (none)".
+                if self.cron_expanded {
+                    self.repair_cron_selection();
+                }
+            }
+            Action::CronJobNext => self.step_cron_job(1),
+            Action::CronJobPrevious => self.step_cron_job(-1_isize),
             Action::ToggleSystemView => return,
             Action::ToggleDrives => {
                 // Unlike `ToggleNetwork`, drive expansion is intentionally
@@ -2110,7 +2657,7 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
     };
     match (state.system_view_mode, system.reachability) {
         (SystemViewMode::Condensed, _) => {
-            if (state.drives_expanded || state.network_expanded)
+            if (state.drives_expanded || state.network_expanded || state.cron_expanded)
                 && state.selected_id.as_deref() == Some(system.id.as_str())
                 && system.reachability == Reachability::Online
             {
@@ -2125,34 +2672,40 @@ pub fn entry_height(state: &AppState, system_index: usize) -> u16 {
                     } else {
                         0
                     })
+                    .saturating_add(cron_detail_count(state, system_index))
             } else {
                 1
             }
         }
         (SystemViewMode::Normal, Reachability::Pending | Reachability::Offline) => 1,
         (SystemViewMode::Normal, Reachability::Online) => {
-            let details = if (state.drives_expanded || state.network_expanded)
-                && state.selected_id.as_deref() == Some(system.id.as_str())
-            {
-                let drives = if state.drives_expanded {
-                    // Same helper as the condensed view: a legal
-                    // `drives = None` with `disk_io = Some(..)` still renders
-                    // the table heading plus the aggregate I/O total, so
-                    // gating on `drives.is_some()` here made the two views
-                    // disagree.
-                    valid_drive_detail_count(system)
+            let details =
+                if (state.drives_expanded || state.network_expanded || state.cron_expanded)
+                    && state.selected_id.as_deref() == Some(system.id.as_str())
+                {
+                    let drives = if state.drives_expanded {
+                        // Same helper as the condensed view: a legal
+                        // `drives = None` with `disk_io = Some(..)` still renders
+                        // the table heading plus the aggregate I/O total, so
+                        // gating on `drives.is_some()` here made the two views
+                        // disagree.
+                        valid_drive_detail_count(system)
+                    } else {
+                        0
+                    };
+                    let network = if state.network_expanded {
+                        valid_network_detail_count(system)
+                    } else {
+                        0
+                    };
+                    // Cron is additive like the other two: opening it never closes
+                    // drive or network details, and vice versa.
+                    drives
+                        .saturating_add(network)
+                        .saturating_add(cron_detail_count(state, system_index))
                 } else {
                     0
                 };
-                let network = if state.network_expanded {
-                    valid_network_detail_count(system)
-                } else {
-                    0
-                };
-                drives.saturating_add(network)
-            } else {
-                0
-            };
             normal_base_height_for(system).saturating_add(details)
         }
     }
@@ -2322,6 +2875,31 @@ pub fn entry_detail_network_count(state: &AppState, system_index: usize) -> usiz
         .systems
         .get(system_index)
         .map_or(0, |system| usize::from(valid_network_detail_count(system)))
+}
+
+/// Number of rendered cron rows for the selected system.
+///
+/// Zero when the cron block is closed, so the height accounting only grows for
+/// a pane the operator actually opened. Bounded by the caller's remaining
+/// budget in [`crate::ui::layout`], exactly like the drive and network counts.
+#[must_use]
+pub fn entry_detail_cron_count(state: &AppState, system_index: usize) -> usize {
+    if !state.cron_expanded
+        || state.selected_id.as_deref().is_none_or(|selected| {
+            state
+                .systems
+                .get(system_index)
+                .is_none_or(|system| system.id != selected)
+        })
+    {
+        return 0;
+    }
+    crate::ui::cron::desired_rows(state)
+}
+
+/// Rows the cron block contributes, as a `u16` for the height arithmetic.
+fn cron_detail_count(state: &AppState, system_index: usize) -> u16 {
+    u16::try_from(entry_detail_cron_count(state, system_index)).unwrap_or(u16::MAX)
 }
 
 fn valid_drive_count_from_slice(drives: &[crate::normalized::NormalizedDrive]) -> u16 {
@@ -3539,16 +4117,21 @@ mod tests {
             saw_reachability: false,
             refresh_status: RefreshStatus::Idle,
             config_reload_error: None,
+            cron: Vec::new(),
+            cron_display_history: crate::cron::DEFAULT_DISPLAY_HISTORY,
             terminal_size: None,
             active_pane: Pane::Systems,
             system_view_mode: SystemViewMode::Normal,
             drives_expanded: false,
             network_expanded: false,
+            cron_expanded: false,
+            cron_job: None,
             selection_highlight_active: false,
             eggpool: None,
             eggpool_period_request: None,
             test_fleet: FleetState {
                 cron: crate::cron::CronCache::default(),
+                cron_display_history: crate::cron::DEFAULT_DISPLAY_HISTORY,
                 systems: Vec::new(),
                 last_applied_generation: 0,
                 refresh_status: RefreshStatus::Idle,

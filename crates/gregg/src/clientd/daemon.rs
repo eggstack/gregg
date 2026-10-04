@@ -58,7 +58,9 @@ use crate::clientd::snapshot::FrontendSnapshot;
 use crate::config::{ConfigError, ConfigStore};
 use crate::eggpool::{self, EggpoolDesiredState, EggpoolPeriod};
 use crate::scheduler::SchedulerCommand;
-use crate::state::{now_unix_ms, CronIntent, CronIntents, EggpoolIntent, EggpoolIntents, FleetState};
+use crate::state::{
+    now_unix_ms, CronIntent, CronIntents, EggpoolIntent, EggpoolIntents, FleetState,
+};
 
 /// How often a connection looks for inbound bytes.
 ///
@@ -275,14 +277,12 @@ pub async fn run_daemon(
 
     // The scheduler plane runs whether or not a TUI is attached, because
     // continuous background observation is the point of the architecture.
-    let cron_task = tokio::spawn(
-        crate::clientd::cron::CronWorker::new(timeout).run(
-            cron_endpoints,
-            cron_reload,
-            cron_tx,
-            tasks.clone(),
-        ),
-    );
+    let cron_task = tokio::spawn(crate::clientd::cron::CronWorker::new(timeout).run(
+        cron_endpoints,
+        cron_reload,
+        cron_tx,
+        tasks.clone(),
+    ));
 
     let mut engine = Engine {
         // The initial document was already published at generation 1 below, so
@@ -558,7 +558,8 @@ impl Engine {
                     job,
                     display_history,
                 };
-                let previous = hub.with_cron_intents(|intents| intents.set(subscriber, intent.clone()));
+                let previous =
+                    hub.with_cron_intents(|intents| intents.set(subscriber, intent.clone()));
                 if previous.as_ref() != Some(&intent) {
                     self.cron_dirty = true;
                 }
@@ -617,8 +618,7 @@ impl Engine {
                 // metrics plane, so one copy is genuinely required rather than
                 // incidental.
                 let for_cron = endpoints.clone();
-                *hub
-                    .cron_endpoints
+                *hub.cron_endpoints
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = for_cron;
                 hub.cron_reload.notify_one();
@@ -1168,8 +1168,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + budget;
         let mut seen = Vec::new();
         while tokio::time::Instant::now() < deadline {
-            let Ok(document) =
-                tokio::time::timeout_at(deadline, next_snapshot(frames)).await
+            let Ok(document) = tokio::time::timeout_at(deadline, next_snapshot(frames)).await
             else {
                 break;
             };
@@ -1192,7 +1191,30 @@ mod tests {
     /// the system offline while the cron plane is fully healthy. That is the
     /// exact independence the plan requires, and it is far easier to assert
     /// from a real end-to-end run than from a unit test on a reducer.
+    struct CountingRemote {
+        port: u16,
+        summary_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        history_hits: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingRemote {
+        fn summary_hits(&self) -> usize {
+            self.summary_hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn history_hits(&self) -> usize {
+            self.history_hits.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
     async fn spawn_scheduler_only_remote() -> u16 {
+        spawn_counting_remote().await.port
+    }
+
+    // Long because the wire documents are spelled out inline: a shared builder
+    // would hide exactly the shape these tests are asserting against.
+    #[allow(clippy::too_many_lines)]
+    async fn spawn_counting_remote() -> CountingRemote {
         use gregg_protocol::{
             SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
             SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
@@ -1261,6 +1283,10 @@ mod tests {
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let port = listener.local_addr().expect("addr").port();
+        let summary_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let history_hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_summary_hits = std::sync::Arc::clone(&summary_hits);
+        let task_history_hits = std::sync::Arc::clone(&history_hits);
         tokio::spawn(async move {
             loop {
                 let Ok((mut stream, _)) = listener.accept().await else {
@@ -1268,6 +1294,8 @@ mod tests {
                 };
                 let summary = summary.clone();
                 let history = history.clone();
+                let summary_hits = std::sync::Arc::clone(&task_summary_hits);
+                let history_hits = std::sync::Arc::clone(&task_history_hits);
                 tokio::spawn(async move {
                     let mut request = String::new();
                     let mut chunk = [0_u8; 1024];
@@ -1275,9 +1303,7 @@ mod tests {
                         match stream.read(&mut chunk).await {
                             Ok(0) | Err(_) => break,
                             Ok(count) => {
-                                request.push_str(
-                                    String::from_utf8_lossy(&chunk[..count]).as_ref(),
-                                );
+                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
                                 if request.contains("\r\n\r\n") {
                                     break;
                                 }
@@ -1285,8 +1311,10 @@ mod tests {
                         }
                     }
                     let body = if request.contains("/v2/scheduler/history") {
+                        history_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         Some(history)
                     } else if request.contains("/v2/scheduler") {
+                        summary_hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         Some(summary)
                     } else {
                         None
@@ -1304,7 +1332,11 @@ mod tests {
                 });
             }
         });
-        port
+        CountingRemote {
+            port,
+            summary_hits,
+            history_hits,
+        }
     }
 
     /// A config pointing at one loopback port, with a one-second cadence.
@@ -1331,8 +1363,9 @@ mod tests {
         let running = Running::start(&dir, write_single_system_config(&dir, port));
         running.ready().await;
 
-        let mut attachment =
-            attach(&running.identity, env!("CARGO_PKG_VERSION")).await.expect("attaches");
+        let mut attachment = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
 
         // The daemon stores every publication unconditionally, so a frontend
         // attaching after the fleet has already settled is handed the current
@@ -1343,9 +1376,9 @@ mod tests {
             Duration::from_secs(20),
             |document| {
                 document.systems[0].reachability != crate::state::Reachability::Pending
-                    && document
-                        .cron_for("sys-a")
-                        .is_some_and(|cron| cron.capability == crate::cron::CronCapability::Supported)
+                    && document.cron_for("sys-a").is_some_and(|cron| {
+                        cron.capability == crate::cron::CronCapability::Supported
+                    })
             },
         )
         .await;
@@ -1353,11 +1386,7 @@ mod tests {
         // The metrics plane owns reachability, and its verdict is independent
         // of whether the scheduler routes exist.
         assert_ne!(
-            documents
-                .last()
-                .expect("at least one document")
-                .systems[0]
-                .reachability,
+            documents.last().expect("at least one document").systems[0].reachability,
             crate::state::Reachability::Pending,
             "an attach after a settled poll must see the current verdict"
         );
@@ -1387,8 +1416,9 @@ mod tests {
         let running = Running::start(&dir, write_single_system_config(&dir, port));
         running.ready().await;
 
-        let mut attachment =
-            attach(&running.identity, env!("CARGO_PKG_VERSION")).await.expect("attaches");
+        let mut attachment = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
 
         // The frontend asks for one job on one system.
         attachment
@@ -1430,6 +1460,79 @@ mod tests {
             },
         )
         .await;
+
+        running.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn several_windows_asking_for_cron_add_no_remote_requests() {
+        // The scheduler plane is the daemon's, not the window's. Ten windows
+        // with the cron pane open must cost the fleet exactly what one closed
+        // window costs, because the intent governs *publication* and never
+        // fetching. A per-TUI poller would fail this by a factor of ten.
+        let remote = spawn_counting_remote().await;
+        let dir = TempDir::new("cron-multiclient");
+        let running = Running::start(&dir, write_single_system_config(&dir, remote.port));
+        running.ready().await;
+
+        // One window, pane closed. This is the baseline.
+        let mut first = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("first attaches");
+        await_documents(&mut first.frames, Duration::from_secs(20), |document| {
+            document
+                .cron_for("sys-a")
+                .is_some_and(|cron| cron.capability == crate::cron::CronCapability::Supported)
+        })
+        .await;
+        let baseline_summary = remote.summary_hits();
+        let baseline_history = remote.history_hits();
+        assert_eq!(
+            baseline_history, 1,
+            "discovery fetches history exactly once"
+        );
+
+        // More windows, all with the cron pane open.
+        let mut others = Vec::new();
+        for _ in 0..3 {
+            let attachment = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+                .await
+                .expect("attaches");
+            attachment
+                .frontend
+                .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+                .expect("queues the intent");
+            others.push(attachment);
+        }
+
+        // Let the intents land and the publications settle. The remote must not
+        // be touched: nothing about attaching or opening a pane is a reason to
+        // read it again.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(
+            remote.summary_hits(),
+            baseline_summary,
+            "a window opening the cron pane must not add a scheduler read"
+        );
+        assert_eq!(
+            remote.history_hits(),
+            baseline_history,
+            "a window opening the cron pane must not add a history read"
+        );
+
+        // The intents still take effect: the pane's records are published.
+        for attachment in &mut others {
+            await_documents(
+                &mut attachment.frames,
+                Duration::from_secs(20),
+                |document| {
+                    document
+                        .cron_for("sys-a")
+                        .is_some_and(|entry| !entry.history.is_empty())
+                },
+            )
+            .await;
+        }
 
         running.shutdown().await;
     }

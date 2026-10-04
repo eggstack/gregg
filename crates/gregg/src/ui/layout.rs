@@ -18,6 +18,11 @@ pub struct ViewportEntry {
     pub drive_rows_visible: usize,
     /// Visible network detail lines after any drive-detail lines.
     pub network_rows_visible: usize,
+    /// Visible cron detail lines, after drive and network details.
+    ///
+    /// Allocated from whatever vertical budget is left, so the three
+    /// expansions share one accounting instead of each claiming the card.
+    pub cron_rows_visible: usize,
 }
 
 /// Compute which systems are visible and their rect positions.
@@ -101,6 +106,24 @@ pub fn compute_viewport(
         } else {
             0
         };
+        // Cron takes what is left. A selected system with cron open always
+        // gets at least one row, so a too-small card says so instead of
+        // rendering an empty block for a pane the operator believes is open.
+        let cron_rows_visible = if is_selected && state.cron_expanded {
+            let remaining = h
+                .saturating_sub(base_height)
+                .saturating_sub(u16::try_from(drive_rows_visible).unwrap_or(u16::MAX))
+                .saturating_sub(u16::try_from(network_rows_visible).unwrap_or(u16::MAX));
+            if remaining == 0 {
+                0
+            } else {
+                crate::state::entry_detail_cron_count(state, sys_idx)
+                    .max(1)
+                    .min(usize::from(remaining))
+            }
+        } else {
+            0
+        };
 
         entries.push(ViewportEntry {
             index: sys_idx,
@@ -109,6 +132,7 @@ pub fn compute_viewport(
             is_visually_selected,
             drive_rows_visible,
             network_rows_visible,
+            cron_rows_visible,
         });
 
         y = y.saturating_add(h);

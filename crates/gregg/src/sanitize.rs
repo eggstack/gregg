@@ -206,10 +206,7 @@ fn escape(character: char) -> Option<String> {
 
 /// Caret notation for a byte in the printable ASCII range.
 fn caret(character: u32) -> String {
-    char::from_u32(character).map_or_else(
-        || format!("^{character}"),
-        |c| format!("^{c}"),
-    )
+    char::from_u32(character).map_or_else(|| format!("^{character}"), |c| format!("^{c}"))
 }
 
 /// Whether a character is emitted to terminal cells unchanged.
@@ -262,12 +259,12 @@ mod tests {
     #[test]
     fn cursor_movement_and_clear_screen_never_reach_the_terminal() {
         for hostile in [
-            "\x1b[2J\x1b[H",     // clear screen + home
-            "\x1b[10;20H",       // cursor position
+            "\x1b[2J\x1b[H",    // clear screen + home
+            "\x1b[10;20H",      // cursor position
             "\x1b[1A\x1b[2B",   // cursor up/down
-            "\x1b[?25l",         // hide cursor
-            "\x1b7\x1b8",        // save/restore cursor
-            "\x1bP1$r0m\x1b\\",  // DCS, terminated by ST
+            "\x1b[?25l",        // hide cursor
+            "\x1b7\x1b8",       // save/restore cursor
+            "\x1bP1$r0m\x1b\\", // DCS, terminated by ST
         ] {
             let out = sanitized(hostile);
             assert!(
@@ -373,7 +370,10 @@ mod tests {
         let out = sanitized("ビルド成功 ✓ 🎉 done");
         assert_eq!(out.text, "ビルド成功 ✓ 🎉 done");
         assert!(!out.escaped);
-        assert_eq!(cells(&out.text), UnicodeWidthStr::width("ビルド成功 ✓ 🎉 done"));
+        assert_eq!(
+            cells(&out.text),
+            UnicodeWidthStr::width("ビルド成功 ✓ 🎉 done")
+        );
     }
 
     #[test]

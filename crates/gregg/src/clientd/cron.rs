@@ -49,10 +49,7 @@ use crate::state::now_unix_ms;
 /// is a real daemon problem, and hiding it behind "connection error" would send
 /// the operator looking in the wrong place.
 fn classify_failure(failure: &eggfetch_core::RequestFailure) -> CronFetchError {
-    if matches!(
-        failure.error(),
-        eggfetch_core::Error::DecodedBodyTooLarge
-    ) {
+    if matches!(failure.error(), eggfetch_core::Error::DecodedBodyTooLarge) {
         return CronFetchError::BodyTooLarge;
     }
     let message = if failure.is_timeout() {
@@ -306,9 +303,7 @@ impl CronObservation {
                     changed |= cache.apply_history(&system_id, &history);
                 }
                 if let Some(error) = history_error {
-                    cache
-                        .system_mut(&system_id)
-                        .mark_failed(error, now_unix_ms);
+                    cache.system_mut(&system_id).mark_failed(error, now_unix_ms);
                     changed = true;
                 }
                 changed
@@ -373,13 +368,16 @@ impl HistoryGate {
 
     /// Record a successfully fetched history document.
     fn record(&mut self, system_id: &str, history: &SchedulerHistoryV2) {
-        self.entries
-            .insert(system_id.to_owned(), (history.epoch, history.history_revision));
+        self.entries.insert(
+            system_id.to_owned(),
+            (history.epoch, history.history_revision),
+        );
     }
 
     /// Forget systems that left the fleet.
     fn forget_absent(&mut self, live: &[String]) {
-        self.entries.retain(|id, _| live.iter().any(|kept| kept == id));
+        self.entries
+            .retain(|id, _| live.iter().any(|kept| kept == id));
     }
 }
 
@@ -429,10 +427,7 @@ impl CronWorker {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let current = lock_endpoints(&endpoints);
-            let live: Vec<String> = current
-                .iter()
-                .map(|endpoint| endpoint.id.clone())
-                .collect();
+            let live: Vec<String> = current.iter().map(|endpoint| endpoint.id.clone()).collect();
             self.gate.forget_absent(&live);
             for endpoint in &current {
                 let observation = self.observe(endpoint).await;
@@ -623,9 +618,7 @@ mod tests {
                         match stream.read(&mut chunk).await {
                             Ok(0) | Err(_) => break,
                             Ok(count) => {
-                                request.push_str(
-                                    String::from_utf8_lossy(&chunk[..count]).as_ref(),
-                                );
+                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
                                 if request.contains("\r\n\r\n") {
                                     break;
                                 }
@@ -634,7 +627,11 @@ mod tests {
                     }
                     let is_history = request.contains("/v2/scheduler/history");
                     let route = if is_history { history } else { summary };
-                    let hits = if is_history { history_hits } else { summary_hits };
+                    let hits = if is_history {
+                        history_hits
+                    } else {
+                        summary_hits
+                    };
                     hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     let response = match route {
                         Some((status, body)) => {
@@ -707,17 +704,34 @@ mod tests {
 
             // Discovery: one summary, one history.
             worker.observe(&target).await.apply(&mut cache);
-            assert_eq!(routes.summary_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-            assert_eq!(routes.history_hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                routes
+                    .summary_hits
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
+            assert_eq!(
+                routes
+                    .history_hits
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                1
+            );
             assert_eq!(cache.system("sys").unwrap().job_records("backup").len(), 2);
 
             // Steady state: the summary is re-read every cadence, the history
             // body never is.
             worker.observe(&target).await.apply(&mut cache);
             worker.observe(&target).await.apply(&mut cache);
-            assert_eq!(routes.summary_hits.load(std::sync::atomic::Ordering::SeqCst), 3);
             assert_eq!(
-                routes.history_hits.load(std::sync::atomic::Ordering::SeqCst),
+                routes
+                    .summary_hits
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                3
+            );
+            assert_eq!(
+                routes
+                    .history_hits
+                    .load(std::sync::atomic::Ordering::SeqCst),
                 1,
                 "the history body must not be downloaded on an unchanged revision"
             );
@@ -806,8 +820,7 @@ mod tests {
                         match stream.read(&mut chunk).await {
                             Ok(0) | Err(_) => break,
                             Ok(count) => {
-                                request
-                                    .push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
+                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
                                 if request.contains("\r\n\r\n") {
                                     break;
                                 }
@@ -847,7 +860,10 @@ mod tests {
             let server = spawn_counting_server(1).await;
             let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
-            worker.observe(&endpoint(server.port)).await.apply(&mut cache);
+            worker
+                .observe(&endpoint(server.port))
+                .await
+                .apply(&mut cache);
             assert_eq!(cache.system("sys").unwrap().job_records("backup").len(), 2);
 
             // Now the remote stops answering the scheduler route. Nothing
@@ -949,7 +965,10 @@ mod tests {
             let server = spawn_counting_server(3).await;
             let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut first = CronCache::default();
-            worker.observe(&endpoint(server.port)).await.apply(&mut first);
+            worker
+                .observe(&endpoint(server.port))
+                .await
+                .apply(&mut first);
             assert_eq!(first.system("sys").unwrap().job_records("backup").len(), 2);
 
             // The client daemon restarts: the in-memory cache is gone, and the
@@ -981,7 +1000,10 @@ mod tests {
             let mut worker = CronWorker::new(Duration::from_secs(2));
             let mut cache = CronCache::default();
             for _ in 0..3 {
-                worker.observe(&endpoint(server.port)).await.apply(&mut cache);
+                worker
+                    .observe(&endpoint(server.port))
+                    .await
+                    .apply(&mut cache);
             }
             assert_eq!(server.summary_hits(), 3);
             assert_eq!(

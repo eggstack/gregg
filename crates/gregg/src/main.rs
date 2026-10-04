@@ -172,6 +172,7 @@ async fn run_event_loop(
         Box::pin(tokio::time::sleep(HIGHLIGHT_DORMANT_DEADLINE));
     let mut request_generation = 0_u64;
     let mut last_intent: Option<EggpoolIntentRequest> = None;
+    let mut last_cron_intent: Option<CronIntentRequest> = None;
 
     // Initial render.
     terminal.draw(|f| ui::render(f, app_state))?;
@@ -206,6 +207,7 @@ async fn run_event_loop(
                                 sink,
                                 &mut request_generation,
                                 &mut last_intent,
+                                &mut last_cron_intent,
                             );
                             // Plan 087: a successful Systems selection-
                             // changing action always arms/reset the
@@ -297,13 +299,33 @@ fn dispatch_action(
     sink: &dyn ControlSink,
     request_generation: &mut u64,
     last_intent: &mut Option<EggpoolIntentRequest>,
+    last_cron_intent: &mut Option<CronIntentRequest>,
 ) -> bool {
     let before_pane = app_state.active_pane;
     let before_period = app_state.eggpool.as_ref().map(|eggpool| eggpool.period);
     let is_refresh = matches!(action, action::Action::RefreshNow);
     let changed = app_state.apply_action_changed(action);
-    let has_eggpool = app_state.eggpool.is_some();
-    if !has_eggpool {
+
+    // `Ctrl-R` is the config-reload boundary and is handled *before* any
+    // pane-specific work. It used to sit behind an `EggPool`-configured check,
+    // which meant `Ctrl-R` silently did nothing for every config without an
+    // `EggPool` entry — the one boundary the whole architecture is built on.
+    if is_refresh && app_state.active_pane != state::Pane::Eggpool {
+        // The daemon re-reads, reconciles, and republishes; there is no watcher
+        // and no local fallback, so an invalid file surfaces as the diagnostic
+        // the daemon publishes rather than as a local guess.
+        *request_generation = request_generation.saturating_add(1);
+        let _ = sink.request_reload(*request_generation);
+        return changed
+            | forward_cron_intent(app_state, sink, request_generation, last_cron_intent);
+    }
+
+    // The cron intent is forwarded whatever the active pane is, because a cron
+    // detail block lives inside a *system card* on the Systems pane.
+    let changed =
+        changed | forward_cron_intent(app_state, sink, request_generation, last_cron_intent);
+
+    if app_state.eggpool.is_none() {
         return changed;
     }
 
@@ -312,17 +334,6 @@ fn dispatch_action(
         .eggpool_period_request
         .or_else(|| app_state.eggpool.as_ref().map(|eggpool| eggpool.period))
         .expect("eggpool presence was just checked");
-
-    if is_refresh && !active {
-        // `Ctrl-R` on the Systems pane is the config-reload boundary. The
-        // daemon re-reads, reconciles, and republishes; there is no watcher
-        // and no local fallback, so an invalid file surfaces as the
-        // diagnostic the daemon publishes rather than as a local guess.
-        *request_generation = request_generation.saturating_add(1);
-        let _ = sink.request_reload(*request_generation);
-        return changed;
-    }
-
     let period_moved = before_period != Some(period);
     let pane_moved = before_pane != app_state.active_pane;
     let intent = EggpoolIntentRequest {
@@ -341,4 +352,66 @@ fn dispatch_action(
     let _ = sink.request_eggpool_intent(&intent, *request_generation);
     *last_intent = Some(intent);
     changed
+}
+
+/// What this frontend currently has open in a cron detail block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CronIntentRequest {
+    system_id: Option<String>,
+    job: Option<String>,
+    display_history: usize,
+}
+
+/// Forward the current cron-detail intent when it has changed.
+///
+/// Only a *change* is sent. An identical re-send would be indistinguishable
+/// from a duplicate, and the daemon replaces intents wholesale, so the operator
+/// pressing a key that changes nothing would churn the published document for
+/// no reason.
+fn forward_cron_intent(
+    app_state: &state::AppState,
+    sink: &dyn ControlSink,
+    request_generation: &mut u64,
+    last_sent: &mut Option<CronIntentRequest>,
+) -> bool {
+    // A closed pane, or a system with no scheduler to show, asks for nothing.
+    // The daemon initializes a closed intent on handshake, so a frontend that
+    // never opens the pane never sends anything at all.
+    let intent = if app_state.cron_expanded {
+        match (app_state.selected_id.clone(), app_state.selected_cron_job()) {
+            (Some(system_id), Some(job)) => CronIntentRequest {
+                system_id: Some(system_id),
+                job: Some(job.to_owned()),
+                display_history: app_state.cron_display_history,
+            },
+            // Expanded but nothing to show yet: the summary has not arrived, or
+            // the daemon does not serve the scheduler routes. Asking for a job
+            // that does not exist would be a request the daemon cannot answer.
+            _ => CronIntentRequest {
+                system_id: None,
+                job: None,
+                display_history: 0,
+            },
+        }
+    } else {
+        CronIntentRequest {
+            system_id: None,
+            job: None,
+            display_history: 0,
+        }
+    };
+
+    if *last_sent == Some(intent.clone()) {
+        return false;
+    }
+    *request_generation = request_generation.saturating_add(1);
+    let _ = sink.request_cron_intent(
+        intent.system_id.as_deref(),
+        intent.job.as_deref(),
+        intent.display_history,
+        *request_generation,
+    );
+    *last_sent = Some(intent);
+    // A request that has been sent but not answered changes nothing on screen.
+    false
 }

@@ -2,6 +2,7 @@
 
 pub mod bar;
 pub mod condensed;
+pub mod cron;
 pub mod diagnostics;
 pub mod eggpool;
 pub mod layout;
@@ -126,12 +127,14 @@ pub fn render(f: &mut Frame, state: &AppState) {
                 system_block::render_online(
                     f,
                     entry.rect,
+                    state,
                     system,
                     rows,
                     &fleet_layout,
                     entry.is_visually_selected,
                     entry.drive_rows_visible,
                     entry.network_rows_visible,
+                    entry.cron_rows_visible,
                 );
             }
             Reachability::Offline | Reachability::Pending => {

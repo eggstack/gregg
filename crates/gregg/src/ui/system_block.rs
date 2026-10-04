@@ -30,7 +30,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::normalized::{aggregate_drives, NormalizedSnapshot};
-use crate::state::SystemState;
+use crate::state::{AppState, SystemState};
 
 use super::bar;
 use super::text;
@@ -74,12 +74,14 @@ fn metric_compact_prefix_width(label_width: u16) -> u16 {
 pub(crate) fn render_online(
     f: &mut Frame,
     area: Rect,
+    state: &AppState,
     system: &SystemState,
     rows: Option<&MetricRows>,
     fleet_layout: &MetricFleetLayout,
     is_visually_selected: bool,
     drive_rows_visible: usize,
     network_rows_visible: usize,
+    cron_rows_visible: usize,
 ) {
     if area.width == 0 {
         return;
@@ -143,13 +145,13 @@ pub(crate) fn render_online(
     // Drive-detail visibility is governed by the precomputed viewport entry,
     // whose visibility is based on logical selection.
     render_drive_details(f, area, snap, drive_rows_visible, base_height);
-    render_network_details(
-        f,
-        area,
-        snap,
-        network_rows_visible,
-        base_height.saturating_add(u16::try_from(drive_rows_visible).unwrap_or(u16::MAX)),
-    );
+    let after_drives =
+        base_height.saturating_add(u16::try_from(drive_rows_visible).unwrap_or(u16::MAX));
+    render_network_details(f, area, snap, network_rows_visible, after_drives);
+    // Cron goes last: it is the most expensive detail, so it takes whatever
+    // the drive and network details did not claim. The `d`, `n`, and `c`
+    // expansions are independent, and none of them closes another.
+    crate::ui::cron::render(f, area, state, cron_rows_visible);
 }
 
 fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_visually_selected: bool) {

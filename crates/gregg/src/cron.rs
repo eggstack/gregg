@@ -40,9 +40,7 @@
 
 use std::collections::BTreeMap;
 
-use gregg_protocol::{
-    SchedulerEpochV2, SchedulerHistoryV2, SchedulerSummaryV2,
-};
+use gregg_protocol::{SchedulerEpochV2, SchedulerHistoryV2, SchedulerSummaryV2};
 use serde::{Deserialize, Serialize};
 
 /// Number of terminal records the cron view shows for the selected job when
@@ -177,9 +175,7 @@ pub struct CronJobCache {
 impl CronJobCache {
     /// Whether a record with this identity is already retained.
     fn contains(&self, id: RecordId) -> bool {
-        self.records
-            .iter()
-            .any(|record| record.identity() == id)
+        self.records.iter().any(|record| record.identity() == id)
     }
 }
 
@@ -293,11 +289,7 @@ impl CronSystemState {
     /// A record whose `(epoch, sequence)` is already retained is skipped, which
     /// is what makes a repeated response — or a repeated poll that happens to
     /// observe the same ring — a no-op rather than a doubling.
-    pub fn apply_history(
-        &mut self,
-        history: &SchedulerHistoryV2,
-        per_job: usize,
-    ) -> bool {
+    pub fn apply_history(&mut self, history: &SchedulerHistoryV2, per_job: usize) -> bool {
         let epoch = history.epoch;
         self.epoch = Some(epoch);
         self.history_revision = Some(history.history_revision);
@@ -306,7 +298,8 @@ impl CronSystemState {
         for job in &history.jobs {
             // A job name arrives from a remote configuration, so it is
             // untrusted input even though it is not printed verbatim.
-            if job.name.is_empty() || job.name.len() > gregg_protocol::MAX_SCHEDULER_JOB_NAME_BYTES {
+            if job.name.is_empty() || job.name.len() > gregg_protocol::MAX_SCHEDULER_JOB_NAME_BYTES
+            {
                 continue;
             }
             let entry = self.jobs.entry(job.name.clone()).or_default();
@@ -469,7 +462,8 @@ impl CronCache {
         summary: SchedulerSummaryV2,
         now_unix_ms: u64,
     ) {
-        self.system_mut(system_id).apply_summary(summary, now_unix_ms);
+        self.system_mut(system_id)
+            .apply_summary(summary, now_unix_ms);
     }
 
     /// Apply a history document for one system, then enforce the global bound.
@@ -686,7 +680,12 @@ mod tests {
         cache.apply_summary("sys", summary, 1_700_000_000_000);
         cache.apply_history(
             "sys",
-            &history_document(epoch(1_000, 1), 3, "backup", vec![record(1, 1_700_000_001_000)]),
+            &history_document(
+                epoch(1_000, 1),
+                3,
+                "backup",
+                vec![record(1, 1_700_000_001_000)],
+            ),
         );
 
         let state = cache.system_mut("sys");
@@ -729,7 +728,10 @@ mod tests {
         assert!(state.needs_history(&first), "first support discovery");
 
         let mut cache = CronCache::default();
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 0, "backup", vec![]));
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 0, "backup", vec![]),
+        );
         cache.apply_summary("sys", first.clone(), 1);
         assert!(!cache.system("sys").unwrap().needs_history(&first));
 
@@ -749,7 +751,12 @@ mod tests {
         let mut cache = CronCache::default();
         cache.apply_history(
             "sys",
-            &history_document(epoch(1_000, 1), 4, "backup", vec![record(9, 1_700_000_009_000)]),
+            &history_document(
+                epoch(1_000, 1),
+                4,
+                "backup",
+                vec![record(9, 1_700_000_009_000)],
+            ),
         );
         let before = summary_document(epoch(1_000, 1), 4, &["backup"]);
         cache.apply_summary("sys", before.clone(), 1);
@@ -768,13 +775,23 @@ mod tests {
         cache.apply_summary("sys", summary_document(epoch(1_000, 1), 1, &["backup"]), 1);
         cache.apply_history(
             "sys",
-            &history_document(epoch(1_000, 1), 1, "backup", vec![record(1, 1_700_000_001_000)]),
+            &history_document(
+                epoch(1_000, 1),
+                1,
+                "backup",
+                vec![record(1, 1_700_000_001_000)],
+            ),
         );
         // The remote restarts and legitimately reissues sequence 1.
         cache.apply_summary("sys", summary_document(epoch(2_000, 2), 1, &["backup"]), 2);
         cache.apply_history(
             "sys",
-            &history_document(epoch(2_000, 2), 1, "backup", vec![record(1, 1_700_000_005_000)]),
+            &history_document(
+                epoch(2_000, 2),
+                1,
+                "backup",
+                vec![record(1, 1_700_000_005_000)],
+            ),
         );
 
         let retained = cache.system("sys").unwrap().job_records("backup");
@@ -820,12 +837,18 @@ mod tests {
         let records: Vec<SchedulerRunRecordV2> = (1..=6)
             .map(|sequence| record(sequence, 1_700_000_000_000 + sequence * 1_000))
             .collect();
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 1, "backup", records));
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 1, "backup", records),
+        );
 
         let retained = cache.system("sys").unwrap().job_records("backup");
         assert_eq!(retained.len(), 3);
         assert_eq!(
-            retained.iter().map(|r| r.record.sequence).collect::<Vec<_>>(),
+            retained
+                .iter()
+                .map(|r| r.record.sequence)
+                .collect::<Vec<_>>(),
             vec![4, 5, 6],
             "the newest window survives, the oldest is dropped"
         );
@@ -851,7 +874,11 @@ mod tests {
                 ),
             );
         }
-        assert!(cache.total_records() <= 4, "{} retained", cache.total_records());
+        assert!(
+            cache.total_records() <= 4,
+            "{} retained",
+            cache.total_records()
+        );
     }
 
     #[test]
@@ -917,13 +944,28 @@ mod tests {
     #[test]
     fn a_job_the_remote_no_longer_serves_is_dropped() {
         let mut cache = CronCache::default();
-        cache.apply_summary("sys", summary_document(epoch(1_000, 1), 1, &["backup", "old"]), 1);
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 1, "old", vec![record(1, 1_700_000_001_000)]));
+        cache.apply_summary(
+            "sys",
+            summary_document(epoch(1_000, 1), 1, &["backup", "old"]),
+            1,
+        );
+        cache.apply_history(
+            "sys",
+            &history_document(
+                epoch(1_000, 1),
+                1,
+                "old",
+                vec![record(1, 1_700_000_001_000)],
+            ),
+        );
         assert_eq!(cache.system("sys").unwrap().job_records("old").len(), 1);
 
         // The remote's configuration drops the job.
         cache.apply_summary("sys", summary_document(epoch(1_000, 1), 2, &["backup"]), 2);
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 2, "backup", vec![]));
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 2, "backup", vec![]),
+        );
         assert!(
             cache.system("sys").unwrap().job_records("old").is_empty(),
             "a removed job must not keep its records alive forever"
@@ -933,7 +975,10 @@ mod tests {
     #[test]
     fn a_removed_endpoint_keeps_nothing() {
         let mut cache = CronCache::default();
-        cache.apply_history("gone", &history_document(epoch(1_000, 1), 1, "backup", vec![record(1, 1)]));
+        cache.apply_history(
+            "gone",
+            &history_document(epoch(1_000, 1), 1, "backup", vec![record(1, 1)]),
+        );
         assert_eq!(cache.total_records(), 1);
         cache.retain_systems(&["kept".to_owned()]);
         assert_eq!(cache.total_records(), 0);
@@ -946,7 +991,10 @@ mod tests {
         let records: Vec<SchedulerRunRecordV2> = (1..=5)
             .map(|sequence| record(sequence, 1_700_000_000_000 + sequence * 1_000))
             .collect();
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 1, "backup", records));
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 1, "backup", records),
+        );
         let recent = cache.system("sys").unwrap().recent("backup", 2);
         assert_eq!(
             recent.iter().map(|r| r.record.sequence).collect::<Vec<_>>(),
@@ -958,8 +1006,14 @@ mod tests {
     fn an_empty_or_oversized_job_name_is_refused() {
         let mut cache = CronCache::default();
         let long = "n".repeat(gregg_protocol::MAX_SCHEDULER_JOB_NAME_BYTES + 1);
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 1, "", vec![record(1, 1)]));
-        cache.apply_history("sys", &history_document(epoch(1_000, 1), 1, &long, vec![record(1, 1)]));
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 1, "", vec![record(1, 1)]),
+        );
+        cache.apply_history(
+            "sys",
+            &history_document(epoch(1_000, 1), 1, &long, vec![record(1, 1)]),
+        );
         assert!(cache.system("sys").unwrap().jobs.is_empty());
     }
 
@@ -967,7 +1021,10 @@ mod tests {
     fn configured_depths_are_clamped_to_their_hard_maxima() {
         assert_eq!(CronCache::new(0, 0).per_job(), 1);
         assert_eq!(CronCache::new(9_999, 0).per_job(), MAX_CACHE_HISTORY);
-        assert_eq!(CronCache::new(1, 9_999_999).total_cap(), MAX_TOTAL_CRON_RECORDS);
+        assert_eq!(
+            CronCache::new(1, 9_999_999).total_cap(),
+            MAX_TOTAL_CRON_RECORDS
+        );
     }
 
     #[test]

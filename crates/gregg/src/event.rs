@@ -127,8 +127,14 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         Key::Char('v') if !event.shift => Some(Action::ToggleSystemView),
         Key::Char('d') if !event.shift => Some(Action::ToggleDrives),
         Key::Char('n') if !event.shift => Some(Action::ToggleNetwork),
+        Key::Char('c') if !event.shift => Some(Action::ToggleCron),
         Key::Char('g') if !event.shift => Some(Action::SelectFirst),
         Key::Char('G') => Some(Action::SelectLast),
+        // Cron job navigation is deliberately shifted: unshifted `j`/`k` stay
+        // bound to the system list, so a cron-expanded system does not change
+        // what the ordinary keys mean.
+        Key::Char('J') => Some(Action::CronJobNext),
+        Key::Char('K') => Some(Action::CronJobPrevious),
         Key::PageDown | Key::Char('f') if !event.ctrl => Some(Action::PageDown),
         Key::PageUp | Key::Char('b') if !event.ctrl => Some(Action::PageUp),
         Key::Char('q') | Key::Esc => Some(Action::Quit),

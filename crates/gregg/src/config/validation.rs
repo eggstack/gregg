@@ -726,12 +726,12 @@ unknown_field = "oops"
             },
             ..Config::default()
         };
-        assert!(config.validate().contains(
-            &ConfigViolation::CronCacheShallowerThanDisplay {
+        assert!(config
+            .validate()
+            .contains(&ConfigViolation::CronCacheShallowerThanDisplay {
                 cache: 4,
                 display: 10
-            }
-        ));
+            }));
     }
 
     #[test]
@@ -746,9 +746,11 @@ unknown_field = "oops"
             ..Config::default()
         };
         let violations = config.validate();
-        assert!(violations.contains(&ConfigViolation::InvalidCronDisplayHistory(
-            crate::cron::MAX_DISPLAY_HISTORY + 100
-        )));
+        assert!(
+            violations.contains(&ConfigViolation::InvalidCronDisplayHistory(
+                crate::cron::MAX_DISPLAY_HISTORY + 100
+            ))
+        );
         assert!(
             !violations
                 .iter()

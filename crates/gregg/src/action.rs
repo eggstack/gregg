@@ -34,6 +34,15 @@ pub enum Action {
     ToggleDrives,
     /// Toggle network details for the selected system.
     ToggleNetwork,
+    /// Toggle cron details for the selected system.
+    ///
+    /// Independent of drive and network expansion: all three can be open at
+    /// once, and none of them closes another.
+    ToggleCron,
+    /// Select the next cron job in the expanded cron block.
+    CronJobNext,
+    /// Select the previous cron job in the expanded cron block.
+    CronJobPrevious,
     /// Trigger an immediate poll cycle (handled by the scheduler).
     RefreshNow,
     /// Plan 087: drop the visual selection highlight (the reversed
@@ -70,6 +79,9 @@ mod tests {
             Action::ToggleSystemView,
             Action::ToggleDrives,
             Action::ToggleNetwork,
+            Action::ToggleCron,
+            Action::CronJobNext,
+            Action::CronJobPrevious,
             Action::RefreshNow,
             Action::ClearSelectionHighlight,
             Action::Resize {
@@ -90,16 +102,19 @@ mod tests {
         assert!(matches!(actions[8], Action::ToggleSystemView));
         assert!(matches!(actions[9], Action::ToggleDrives));
         assert!(matches!(actions[10], Action::ToggleNetwork));
-        assert!(matches!(actions[11], Action::RefreshNow));
-        assert!(matches!(actions[12], Action::ClearSelectionHighlight));
+        assert!(matches!(actions[11], Action::ToggleCron));
+        assert!(matches!(actions[12], Action::CronJobNext));
+        assert!(matches!(actions[13], Action::CronJobPrevious));
+        assert!(matches!(actions[14], Action::RefreshNow));
+        assert!(matches!(actions[15], Action::ClearSelectionHighlight));
         assert!(matches!(
-            actions[13],
+            actions[16],
             Action::Resize {
                 width: 80,
                 height: 24
             }
         ));
-        assert!(matches!(actions[14], Action::Quit));
+        assert!(matches!(actions[17], Action::Quit));
     }
 
     #[test]

@@ -90,7 +90,8 @@ impl CronConfig {
     /// should degrade to a smaller window, never to an out-of-bounds slice.
     #[must_use]
     pub fn display_history(&self) -> usize {
-        self.display_history.clamp(1, crate::cron::MAX_DISPLAY_HISTORY)
+        self.display_history
+            .clamp(1, crate::cron::MAX_DISPLAY_HISTORY)
     }
 
     /// The validated per-job cache depth, clamped to the hard maximum.
@@ -331,8 +332,7 @@ impl Config {
                 self.cron.display_history,
             ));
         }
-        if self.cron.cache_history == 0
-            || self.cron.cache_history > crate::cron::MAX_CACHE_HISTORY
+        if self.cron.cache_history == 0 || self.cron.cache_history > crate::cron::MAX_CACHE_HISTORY
         {
             violations.push(ConfigViolation::InvalidCronCacheHistory(
                 self.cron.cache_history,
