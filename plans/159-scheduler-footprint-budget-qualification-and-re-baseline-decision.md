@@ -1,6 +1,7 @@
 # Plan 159: Scheduler footprint budget qualification and re-baseline decision
 
-Status: planned.
+Status: complete — outcome 1 (re-baseline to the measured cost), recorded below.
+Plans 155, 157, and 158 are closed against this decision.
 
 Depends on: the Plan-158 implementation on main and its recorded measurement
 package. Independent of the remaining Plan 091 soak record.
@@ -144,18 +145,28 @@ artifact requirement.
 
 ## Acceptance criteria
 
-- [ ] One of the three outcomes is chosen explicitly and recorded with the
-      measured attribution table.
-- [ ] The decision states whether the general footprint stance changes or only
-      the scheduler line's budget.
-- [ ] Plans 155, 157, and 158 are reconciled against the decision and closed
-      only if the scheduler line is actually finished.
-- [ ] Plan 091's independent soak status is untouched.
-- [ ] Focused, default, and release checks pass.
-- [ ] One existing six-job CI run is green and recorded by exact run ID.
-- [ ] The final stripped `greggd` byte count is recorded.
-- [ ] No scheduler architecture, cron language, dependency, config schema, CI,
+- [x] One of the three outcomes is chosen explicitly and recorded with the
+      measured attribution table. Outcome 1; see the decision record.
+- [x] The decision states whether the general footprint stance changes or only
+      the scheduler line's budget. Scheduler line only; general stance
+      unchanged.
+- [x] Plans 155, 157, and 158 are reconciled against the decision and closed
+      only if the scheduler line is actually finished. All three are closed
+      by their appended closure notes; the line is finished at 3,261,664
+      bytes under the re-baselined budget.
+- [x] Plan 091's independent soak status is untouched. Verified: zero
+      scheduler references in Plan 091, no 091 file modified.
+- [x] Focused, default, and release checks pass. Focused scheduler suites
+      20 passed; default `./scripts/check-local.sh` all green; `--release`
+      green after the decision commit (clean tree).
+- [x] One existing six-job CI run is green and recorded by exact run ID.
+      Run `37172425056`, all six jobs green, covering byte-identical product
+      code (see the decision record).
+- [x] The final stripped `greggd` byte count is recorded. 3,261,664 bytes,
+      re-measured at the decision HEAD.
+- [x] No scheduler architecture, cron language, dependency, config schema, CI,
       or release behavior changes unless the chosen outcome requires it.
+      Outcome 1 requires none; this plan is plans-record-only.
 
 ## Stop conditions
 
@@ -175,3 +186,66 @@ Stop and escalate to a fresh roadmap plan if the decision requires any of:
 Start by re-reading Plan 158's measurement record; do not re-run the
 qualification from scratch. The only decision left is whether the roadmap
 accepts a measured, attributed budget for this feature line.
+
+## Decision record
+
+**Outcome 1 is chosen: the scheduler line's budget is re-baselined to the
+measured cost.** Outcomes 2 and 3 are explicitly rejected, for the reasons
+already measured in Plan 158:
+
+- Outcome 2 (named architectural reduction) has no eligible mechanism. The
+  three candidates and their measured costs are: Tokio async child lifecycle
+  20,448 bytes (replacing it weakens the event-driven direct-child shutdown
+  contract Plan 156 qualified and trips Plan 158's stop conditions);
+  `chrono::Local` 41,072 bytes (a Gregg-owned platform timezone layer needs
+  unsafe FFI the workspace forbids, and the Jiff 0.2 candidate measured
+  280,712 bytes *worse* at 3,543,848); `jobs` serde/toml codegen 40,696 bytes
+  (reducible only by changing the user-visible configuration schema or the
+  public `greggd` Rust API, both outside this line). No fourth lever exists
+  that the line's invariants permit.
+- Outcome 3 (revert) would discard a functionally complete, fully qualified
+  feature — six-job CI green, schedule-validation defects closed, shutdown
+  and sandboxing contracts demonstrated — to recover bytes the roadmap never
+  actually had to spend elsewhere. Nothing in the workspace needs those bytes
+  back.
+
+The re-baselined budget is therefore:
+
+```text
+scheduler-line stripped greggd budget   3,261,664 bytes
+pre-scheduler baseline (Plan 156)       3,097,200 bytes
+scheduler-line delta                       +164,464 bytes  (+5.309%)
+```
+
+Consequences, stated explicitly:
+
+- The Plan-156 5%/128 KiB gate is superseded **for the scheduler line only**.
+  It is not deleted from history: Plans 156 and 158 keep their records, and
+  the correction notes already appended there stand.
+- The general footprint stance is **unchanged** for everything else. The
+  review thresholds recorded in Plans 126, 127, and 148 keep their own
+  contexts, and no other feature line gains headroom from this decision.
+- Any future scheduler-line growth beyond 3,261,664 stripped bytes re-opens
+  footprint review under a new, separately justified plan. This decision
+  spends the measured cost once; it is not a license for unbounded growth.
+
+Evidence re-verified at this decision (product tree byte-identical to the
+CI-covered tree; only `plans/` changed since):
+
+- stripped release `greggd` rebuilt at the decision HEAD: **3,261,664
+  bytes**, matching Plan 158's `7a466f8` measurement exactly;
+- focused scheduler/schedule suites: 20 passed;
+- `./scripts/check-local.sh` (default): all checks passed;
+- `./scripts/check-local.sh --release`: passed after the decision commit
+  (clean tree), see the release-preflight note in the closure commit;
+- qualifying CI: existing run `37172425056` green across all six jobs
+  (Linux, macOS arm64, macOS Intel, Windows incl. SCM smoke, MSRV 1.89,
+  FreeBSD `gregg-host` native). It ran at `7a466f8`; the decision HEAD's
+  product code (all `*.rs`, `Cargo.toml`, `Cargo.lock`) is byte-identical
+  to that tree — verified by an empty
+  `git diff 7a466f8..HEAD -- . ':!plans'` — so the run covers exactly the
+  shipped bytes.
+
+No scheduler architecture, cron language, dependency, config schema, CI, or
+release behavior changed in this plan. Plan 091's independent soak record is
+untouched; Plan 091 contains no scheduler reference.

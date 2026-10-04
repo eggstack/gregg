@@ -1,6 +1,8 @@
 # Plan 157: Load-aware maintenance scheduler implementation
 
-Status: implementation landed; closure blocked on corrective Plan 158.
+Status: complete at the Plan-159 decision. Function was demonstrated under
+Plan 158's reconciliation; the footprint criterion is now met under the
+re-baselined budget — see the closure note appended below.
 
 Current implementation passes local functional coverage, Unix smoke, and the
 existing six-job CI matrix, but the stripped release binary is 3,272,456 bytes:
@@ -528,3 +530,21 @@ calendar-impossible schedule such as `0 0 31 2 *` is now an `InvalidJobs`
 configuration violation before the listener binds, and the fabricated
 `wall_now + 366 days` runtime fallback is gone, with a schedule-arithmetic
 failure propagating to the existing fatal task boundary.
+
+## Closure note (Plan 159 outcome 1)
+
+This plan is closed by Plan 159's decision. Every functional criterion stood
+reconciled under Plan 158 at `7a466f8` / CI `37172425056`, and the two
+remaining open items from the reconciliation note resolve as follows:
+
+- **Final stripped-binary/dependency delta.** Now met under the re-baselined
+  budget: 3,261,664 bytes at the decision HEAD (re-measured, identical to
+  `7a466f8`), which is exactly the Plan-159 scheduler-line budget. The
+  original Plan-156 5%/128 KiB gate is superseded for this line only.
+- **The "no binary-footprint gate waiver" stop condition.** Satisfied by
+  construction: no waiver was taken inside this plan. The gate change is a
+  separately approved roadmap decision owned by Plan 159, which is what the
+  stop condition required.
+
+No product code changed to close this plan; closure is a budget decision
+recorded in Plan 159, not a silent box-check.

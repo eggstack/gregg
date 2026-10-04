@@ -1,7 +1,9 @@
 # Plan 158: Scheduler footprint and schedule-validation corrective pass
 
-Status: implemented at `7a466f8`; the schedule-validation half is complete, the
-footprint gate is not met and is handed to Plan 159. This plan is not closed.
+Status: complete at the Plan-159 decision. Implemented at `7a466f8`
+(schedule validation, allocation-free selection, borrowed config, 366-day
+fallback removal); the footprint gate it could not meet was superseded for
+this line by Plan 159's re-baseline — see the closure note appended below.
 
 Depends on: the current Plan-157 implementation on main (`308383cc5084683a326c481e89e83f4a2414b7db`) and completed Plan 156. Independent of the remaining Plan 091 soak record.
 
@@ -607,3 +609,11 @@ handed to Plan 159, which exists solely to make that decision explicitly.
   closure.
 - Plan 091 is untouched.
 
+
+## Closure note (Plan 159 outcome 1)
+
+This plan is closed by Plan 159's decision. Its implemented scope is unchanged
+from the record above; the footprint gate it was stopped by is superseded for
+the scheduler line by the Plan-159 re-baseline (3,261,664-byte budget). The
+stop condition fired correctly — the remaining bytes were not taken from any
+forbidden lever — and the roadmap decision it escalated to is now recorded.

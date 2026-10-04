@@ -1,6 +1,8 @@
 # Plan 155: Load-aware maintenance scheduler roadmap
 
-Status: planned.
+Status: complete at the Plan-159 decision. The scheduler line ships at the
+re-baselined measured budget of 3,261,664 stripped bytes; see the closure
+note appended below.
 
 Depends on: current post-Plan-154 main. Independent of the remaining Plan 091 soak record.
 
@@ -307,3 +309,22 @@ cannot come from any lever this line is allowed to pull
 Plan 159 therefore owns the explicit budget decision, and this roadmap closes
 only when that decision is recorded and Plans 157 and 158 are reconciled
 against it. Plan 091's independent soak record remains separate.
+
+## Closure note (Plan 159 outcome 1)
+
+This roadmap is closed by Plan 159's decision
+(`plans/159-scheduler-footprint-budget-qualification-and-re-baseline-decision.md`).
+The scheduler line — Plans 156 (boundary qualification), 157 (implementation),
+158 (validation + allocation/borrowing corrections) — is functionally complete
+and qualified: six-job CI green, impossible-calendar rejection before bind, no
+fabricated schedule fallback, same-principal direct-child execution with the
+two-second shutdown bound, and unchanged HTTP/protocol/service/update surface.
+
+The only open item was the footprint budget. Plan 159 re-baselined it to the
+measured 3,261,664 stripped bytes (+164,464 / +5.309% over the 3,097,200-byte
+pre-scheduler baseline) for this line only, with the general no-regression
+stance unchanged and future scheduler-line growth beyond 3,261,664 bytes
+re-opening review under a new plan. The "small binary" invariant therefore
+reads, for this shipped line: the scheduler costs what it was measured to
+cost, and the measurement is on the record. Plan 091's independent soak
+record remains separate and untouched.
