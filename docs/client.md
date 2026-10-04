@@ -1,7 +1,9 @@
 # Client (`gregg`)
 
-The client polls configured daemons and renders a live TUI. Install it on
-your workstation (see [installation](installation.md)).
+A per-user client daemon polls your configured daemons; the TUI renders what it
+serves, so a second window costs a socket rather than a second copy of the
+fleet's polling. Install it on your workstation (see
+[installation](installation.md)).
 
 ## Endpoints
 

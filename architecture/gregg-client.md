@@ -40,6 +40,9 @@ renders a Ratatui-based terminal UI.
 | `config/lock` | `src/config/lock.rs` | Cross-process advisory file locking (`FileLockGuard`) |
 | `state` | `src/state.rs` | AppState reducer, viewport logic; per-system `offline_reason` provenance set from accepted failures, cleared by accepted successes |
 | `action` | `src/action.rs` | Action enum (15 variants including `Resize` and Plan 087's `ClearSelectionHighlight`) |
+| `sanitize` | `src/sanitize.rs` | Pure terminal-control sanitizer; remote text is inert before it reaches a cell |
+| `cron` | `src/cron.rs` | Local cron retention: `(epoch, sequence)` dedup, per-job depth, global record ceiling, union intent reduction |
+| `qualification` | `src/qualification.rs` | Derives the Plan-161/167 memory and payload bounds from the real constants and asserts them |
 
 ### Polling
 
@@ -50,6 +53,7 @@ renders a Ratatui-based terminal UI.
 | `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing (`parse_add_input`); HTTP-URL/nickname adaptation lives in `cli.rs::parse_add_target` |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s summary cadence, revision-gated history fetch, `CronWorker` task |
 
 ### Input
 
@@ -71,6 +75,7 @@ renders a Ratatui-based terminal UI.
 | `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages) |
 | `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config, too-small messages |
 | `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering |
+| `ui/cron` | `src/ui/cron.rs` | Cron detail block: job rows, selected-job history, staleness labelling, local escaping and a viewport row bound |
 
 ### EggPool
 

@@ -9,8 +9,8 @@ A compact terminal monitor for CPU, memory, swap, load, disk, and optional
 live throughput across multiple machines over LAN.
 
 A lightweight daemon (`greggd`) runs on each monitored machine and serves a
-read-only JSON API on port `11310`. The `gregg` client polls your fleet and
-renders a live TUI.
+read-only JSON API on port `11310`. A per-user `gregg` client daemon polls your
+fleet once per configuration and feeds the TUI, which only renders.
 
 ## Quickstart
 

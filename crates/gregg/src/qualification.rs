@@ -17,8 +17,9 @@
 //! measured RSS only "if practical".
 
 use gregg_protocol::{
-    MAX_SCHEDULER_HISTORY_BODY_BYTES, MAX_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_JOBS,
-    MAX_SCHEDULER_OUTPUT_BYTES, MAX_SCHEDULER_OUTPUT_TEXT_BYTES, MAX_SCHEDULER_SUMMARY_BODY_BYTES,
+    DEFAULT_SCHEDULER_HISTORY_LIMIT, MAX_SCHEDULER_HISTORY_BODY_BYTES, MAX_SCHEDULER_HISTORY_LIMIT,
+    MAX_SCHEDULER_JOBS, MAX_SCHEDULER_OUTPUT_BYTES, MAX_SCHEDULER_OUTPUT_TEXT_BYTES,
+    MAX_SCHEDULER_SUMMARY_BODY_BYTES,
 };
 
 use crate::clientd::protocol::MAX_FRAME_BYTES;
@@ -64,21 +65,32 @@ pub const fn daemon_history_max_bytes() -> usize {
     MAX_SCHEDULER_JOBS * MAX_SCHEDULER_HISTORY_LIMIT * (MAX_SCHEDULER_OUTPUT_BYTES + 128)
 }
 
+/// Retained bytes for `jobs` jobs at `depth` records each.
+const fn daemon_history_bytes_for(jobs: usize, depth: usize) -> usize {
+    jobs * depth * (MAX_SCHEDULER_OUTPUT_BYTES + 128)
+}
+
+/// Worst-case retained allocation for the remote daemon's scheduler history at
+/// the default depth.
+#[must_use]
+pub const fn daemon_history_default_bytes() -> usize {
+    daemon_history_bytes_for(MAX_SCHEDULER_JOBS, DEFAULT_SCHEDULER_HISTORY_LIMIT)
+}
+
 /// A short human-readable table, for the closure record.
 #[must_use]
 pub fn report() -> String {
     format!(
-        "greggd scheduler history: zero jobs 0 B; default {jobs} jobs x {depth} records = \
-         {default_bytes} B; configured maximum {max_jobs} jobs x {max_depth} records = \
+        "greggd scheduler history: zero jobs 0 B; default {default_depth} records x {max_jobs} \
+         jobs = {default_bytes} B; configured maximum {max_depth} records x {max_jobs} jobs = \
          {max_bytes} B\n\
          client cron cache: record worst case {record} B; default depth {cache_depth} \
          ({cache_default} B per system); configured maximum {max_cache_depth} \
          ({cache_max} B per system); global ceiling {ceiling} records = {ceiling_bytes} B\n\
          bodies: /v2/scheduler <= {summary} B; /v2/scheduler/history <= {history} B; \
          local IPC frame <= {frame} B",
-        jobs = MAX_SCHEDULER_JOBS.min(1),
-        depth = MAX_SCHEDULER_HISTORY_LIMIT,
-        default_bytes = daemon_history_max_bytes(),
+        default_depth = DEFAULT_SCHEDULER_HISTORY_LIMIT,
+        default_bytes = daemon_history_default_bytes(),
         max_jobs = MAX_SCHEDULER_JOBS,
         max_depth = MAX_SCHEDULER_HISTORY_LIMIT,
         max_bytes = daemon_history_max_bytes(),
@@ -113,6 +125,8 @@ mod tests {
         let rendered = report();
         for expected in [
             "zero jobs 0 B",
+            "default 5 records x 64 jobs = 368640 B",
+            "configured maximum 10 records x 64 jobs = 737280 B",
             "global ceiling 4096 records",
             "/v2/scheduler <= 65536 B",
             "local IPC frame",
@@ -137,15 +151,28 @@ mod tests {
         assert_eq!(daemon_history_bytes_for(0, MAX_SCHEDULER_HISTORY_LIMIT), 0);
     }
 
-    /// Retained bytes for `jobs` jobs at `depth` records each.
-    const fn daemon_history_bytes_for(jobs: usize, depth: usize) -> usize {
-        jobs * depth * (MAX_SCHEDULER_OUTPUT_BYTES + 128)
-    }
-
     #[test]
     fn the_daemon_history_maximum_is_the_planned_scale() {
         // 64 jobs x 10 records x (1024 B output + 128 B metadata) = 737,280 B.
         assert_eq!(daemon_history_max_bytes(), 737_280);
+    }
+
+    #[test]
+    fn the_daemon_history_default_is_half_its_maximum() {
+        // The default depth is 5 against a hard maximum of 10, so the default
+        // retained-output allocation must be exactly half the maximum. Recorded
+        // separately because the plan asks for both figures and they are not
+        // interchangeable: quoting the maximum as the default would overstate
+        // what an unconfigured daemon holds.
+        assert_eq!(
+            DEFAULT_SCHEDULER_HISTORY_LIMIT * 2,
+            MAX_SCHEDULER_HISTORY_LIMIT
+        );
+        assert_eq!(daemon_history_default_bytes(), 368_640);
+        assert_eq!(
+            daemon_history_default_bytes() * 2,
+            daemon_history_max_bytes()
+        );
     }
 
     #[test]

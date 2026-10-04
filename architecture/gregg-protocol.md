@@ -39,10 +39,12 @@ additive: old v2 payloads omit it and old clients ignore it.
 
 Scheduler observability is served on its own two routes rather than inside
 `StatusPayloadV2`, so an ordinary metrics poll never carries command output.
-The client polls `/v2/scheduler` at the metrics cadence and fetches
-`/v2/scheduler/history` only when the summary's `history_revision` changes. The
-full wire contract, resource constants, and security boundary are in
-`architecture/protocol.md`.
+The client daemon polls `/v2/scheduler` on its own 30-second cadence, per
+configured system and whether or not a TUI is attached, and fetches
+`/v2/scheduler/history` only on first support discovery and when the summary's
+`history_revision` changes. A `404` means an older daemon without scheduler
+observability, not an unreachable one. The full wire contract, resource
+constants, and security boundary are in `architecture/protocol.md`.
 
 ### V1 snapshot shape
 

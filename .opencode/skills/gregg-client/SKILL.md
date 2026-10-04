@@ -24,6 +24,9 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `config/*` | `src/config/*.rs` | Config ownership split (façade `src/config.rs` re-exports `crate::config::X`): model entries/limits/primitives, store coordination + atomic persistence + errors, violation kinds, cross-process locking |
 | `state` | `src/state.rs` | `AppState` reducer, fleet-aware mixed-height viewport logic, display order, independent drive/network expansions, transient selection highlight, and offline provenance |
 | `action` | `src/action.rs` | `Action` enum including `ToggleDrives`, `ToggleNetwork`, and Plan 087's `ClearSelectionHighlight` |
+| `sanitize` | `src/sanitize.rs` | Pure terminal-control sanitizer (caret notation); the only function allowed to turn remote bytes into renderable cells |
+| `cron` | `src/cron.rs` | `CronCache`/`CronSystemState` local retention: `(epoch, sequence)` dedup, per-job depth, global 4096-record ceiling, union intent reduction |
+| `qualification` | `src/qualification.rs` | Derives every Plan-161/167 memory and payload bound from the real constants and asserts them, so the documented numbers cannot drift from the code |
 
 ### Polling
 
@@ -33,6 +36,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, `SchedulerCommand` enum, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS; HTTP URL convenience adapter |
 | `clock` | `src/clock.rs` | Clock trait; `RealClock` and `FakeClock` for testing |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s summary cadence, revision-gated history, `CronWorker` task; the only code that fetches cron |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI; `aggregate_drives()` |
 
 ### Input
@@ -55,6 +59,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages, load averages) |
 | `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config and terminal-too-small messages |
 | `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering |
+| `ui/cron` | `src/ui/cron.rs` | Cron detail block: job rows, selected-job history, load-delay and staleness labelling, locally escaped text and a viewport row bound |
 
 ## Architecture
 
