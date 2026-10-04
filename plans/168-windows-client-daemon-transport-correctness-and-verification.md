@@ -205,8 +205,14 @@ produced the line's original +22%.
   argued from the shared code path rather than demonstrated on Windows.
 - **No macOS or FreeBSD re-verification was needed.** Those jobs were already
   green and their platform-gated code was not touched.
-- **The pre-existing `gregg-update` `ETXTBSY` preflight flake is untouched.** It
-  is root-caused in Plan 167's closure and remains out of scope here.
+- **The pre-existing `gregg-update` `ETXTBSY` preflight flake is untouched**, and
+  the CI access this plan gained shows it is not a release risk. Plan 167
+  root-caused it to a transient `ETXTBSY` on the test's own write-then-`exec`
+  stub and could not say whether CI was exposed. Searching the logs of the four
+  CI runs covered here returns zero occurrences of `Text file busy` or
+  `ETXTBSY`. The failure is a property of this development host's close-to-exec
+  boundary on its filesystem, not of the code or of the runners, and the repair
+  recorded in Plan 167 is still the right one if it is ever wanted.
 - **Eleven pre-existing clippy warnings remain on the Windows target.** CI runs
   clippy on Linux only, so Windows-only code has never been linted. Running
   `cargo clippy --workspace --target x86_64-pc-windows-gnu --all-targets
