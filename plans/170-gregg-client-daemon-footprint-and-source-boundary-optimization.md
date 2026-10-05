@@ -352,7 +352,9 @@ work should not repeatedly reopen it without a new concrete regression.
 
 ## Closure record — RETAIN CURRENT
 
-Status: complete (RETAIN CURRENT). No code change was made by this plan.
+Status: complete (RETAIN CURRENT). No code change was made by this plan, so the
+SHA it closed on is the same code SHA Plan 169 closed on, `cc4ea9f`; this
+closure record landed at `fe4993d`.
 
 The +996 KiB the Plan-161 client-daemon line added to `gregg` is, measurement
 says, the irreducible cost of one binary containing both a TUI and a background

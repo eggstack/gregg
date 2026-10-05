@@ -1,6 +1,6 @@
 # Plan 169: Windows target lint and native multi-client verification
 
-Status: planned.
+Status: complete. Code at `cc4ea9f`; this closure record at `fe4993d`.
 
 Depends on: completed Plan 168 and current main at
 `06bd9f5e6340c58bdfe187e682abeb625a8c97a4`. Independent of the remaining
@@ -226,9 +226,11 @@ cross-platform correctness baseline.
 
 ## Closure record
 
-Status: complete. Closed at the `cc4ea9f` line; CI run `37265973270` on
-`cc4ea9f`: **all six jobs green** — Linux, macOS (arm64), macOS (Intel),
-Windows, MSRV 1.89, FreeBSD (`gregg-host` native).
+Closure evidence is CI run `37265973270` on the code SHA `cc4ea9f`:
+**all six jobs green** — Linux, macOS (arm64), macOS (Intel), Windows,
+MSRV 1.89, FreeBSD (`gregg-host` native). `cc4ea9f` is the SHA the acceptance
+criteria were demonstrated on; `fe4993d` adds only this record and its
+documentation updates.
 
 ### The pre-fix inventory is twelve findings, not eleven
 
