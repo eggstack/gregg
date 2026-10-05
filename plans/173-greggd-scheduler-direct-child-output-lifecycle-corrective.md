@@ -1,6 +1,6 @@
 # Plan 173: greggd scheduler direct-child output lifecycle corrective
 
-Status: complete. Code at `d2e4a5f`; see the closure record at the end.
+Status: complete. Code at `56d43d5`; see the closure record at the end.
 
 Depends on: completed Plans 163 and 167 plus current main at
 `1aac89f1a82fcd347066379b55105e2ff6bfe770`. Independent of Plan 091 and of
