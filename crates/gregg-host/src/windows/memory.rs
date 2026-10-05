@@ -11,7 +11,7 @@
 
 use crate::model::MemoryMetrics;
 
-use crate::error::CollectError;
+use crate::error::{CollectError, CollectErrorKind};
 use crate::windows::source::RawPhysicalMemory;
 
 /// Parsed memory information normalized into the collector's wire shape.
@@ -39,14 +39,17 @@ impl MemorySample {
 /// # Edge cases
 ///
 /// - Available exceeding total: clamped to total.
-/// - Zero total: returns zero used with zero percentage.
+/// - Zero total: an error. A `GlobalMemoryStatusEx` total of zero is not a
+///   measurement, and publishing `0 / 0` would render as a confident `0.0%` used
+///   on a machine whose memory the daemon could not read. Omitting the family
+///   is the truthful answer, and that is what the error causes.
 /// - API failure: propagated as `SourceUnavailable`.
 pub fn compute_memory(raw: &RawPhysicalMemory) -> Result<MemorySample, CollectError> {
     if raw.total_bytes == 0 {
-        return Ok(MemorySample {
-            used_bytes: 0,
-            total_bytes: 0,
-        });
+        return Err(CollectError::new(
+            CollectErrorKind::Parse,
+            "Windows physical memory total is zero",
+        ));
     }
 
     let available = raw.available_bytes.min(raw.total_bytes);
@@ -111,17 +114,19 @@ mod tests {
         assert_eq!(mem.total_bytes, 1_000_000_000);
     }
 
+    /// A zero total is not a reading of "no memory": it is a reading of nothing,
+    /// and it must not become a published `0 / 0` that renders as `0.0%` used.
     #[test]
-    fn zero_total() {
+    fn zero_total_is_refused_rather_than_published() {
         let raw = RawPhysicalMemory {
             total_bytes: 0,
             available_bytes: 0,
         };
-        let mem = compute_memory(&raw).expect("zero total");
-        assert_eq!(mem.used_bytes, 0);
-        assert_eq!(mem.total_bytes, 0);
-        let metrics = mem.into_metrics();
-        assert!((metrics.usage_pct - 0.0).abs() < f32::EPSILON);
+        let error = compute_memory(&raw).expect_err("a zero total is not a measurement");
+        assert!(
+            matches!(error.kind, CollectErrorKind::Parse),
+            "expected a parse error, got {error}"
+        );
     }
 
     #[test]

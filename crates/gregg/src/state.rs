@@ -1976,10 +1976,11 @@ impl AppState {
         let reload_error_before = self.config_reload_error.clone();
 
         self.refresh_status = snapshot.refresh_status.clone();
-        self.config_reload_error
-            .clone_from(&snapshot.config_reload_error);
-        // Compare before overwriting: the incoming document is borrowed from
-        // the caller, so this needs no clone of the state it replaces.
+        // This text is the daemon's config-parser diagnostic, quoted from a
+        // local file, and it reaches a cell verbatim — a path or a quoted value
+        // carrying an escape is enough to rewrite the pane. It goes through the
+        // same chokepoint as the rest of the document.
+        self.config_reload_error = snapshot.config_reload_error.as_deref().map(clean);
         let eggpool_changed =
             eggpool_visibly_differ(self.eggpool.as_ref(), snapshot.eggpool.as_ref());
         self.eggpool = snapshot.eggpool.as_ref().map(|dto| EggpoolState {
@@ -3040,6 +3041,37 @@ mod tests {
                 "an unchanged document must not warrant another frame"
             );
         }
+    }
+
+    /// A config-reload diagnostic is parser text quoted from a local file, and
+    /// the diagnostics pane renders it verbatim. It is remote-shaped input, so
+    /// it is escaped at adoption like the rest of the document — a value like
+    /// `ESC [ 2 J` in the config would otherwise repaint the pane.
+    #[test]
+    fn a_control_byte_in_a_config_reload_diagnostic_is_inert() {
+        let config = test_config_with_ids(&["web"]);
+        let mut state = AppState::synthetic(&config);
+        let mut snapshot = FrontendSnapshot::empty(vec![SystemSnapshotDto::placeholder(
+            0,
+            Reachability::Pending,
+        )]);
+        snapshot.generation = 99;
+        snapshot.config_reload_error = Some("unclosed string \u{1b}[2J at line 1".to_owned());
+
+        state.adopt_snapshot(&snapshot);
+
+        let error = state
+            .config_reload_error
+            .as_deref()
+            .expect("the diagnostic is published");
+        assert!(
+            !error.contains('\u{1b}'),
+            "a control byte must not reach the cell: {error:?}"
+        );
+        assert!(
+            error.contains("^[[2J"),
+            "and must be shown in caret notation instead: {error:?}"
+        );
     }
 
     #[test]

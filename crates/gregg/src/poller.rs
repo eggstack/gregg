@@ -86,8 +86,17 @@ impl Drop for PollActivityGuard<'_> {
     }
 }
 
-/// Maximum allowed response body size in bytes (64 KiB).
-const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+/// Maximum allowed response body size in bytes (256 KiB).
+///
+/// This is a hostile-input guard, not a wire-contract limit. A *valid* v2
+/// payload is bounded by the protocol's collection caps — 32 drives, 32
+/// disk-io devices and 32 network interfaces, each carrying a name and a
+/// stable id of up to 512 UTF-8 bytes — which measures 111_465 bytes
+/// (`maximum_valid_v2_payload_fits_response_cap_with_margin`), so a 64 KiB cap
+/// would refuse a conforming daemon and show the system as offline for being
+/// well-formed. 256 KiB clears that bound with room to spare while staying a
+/// firm ceiling on what one endpoint can make this process allocate.
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// The result of polling a single endpoint.
 #[derive(Debug)]
@@ -737,7 +746,12 @@ mod tests {
     use crate::endpoint::Endpoint;
     use gregg_protocol::test_support::LinuxSnapshotBuilder;
     use gregg_protocol::test_support::LinuxSnapshotV2Builder;
-    use gregg_protocol::v2::{DriveMetrics, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES};
+    use gregg_protocol::v2::{
+        DiskIoMetrics, DiskIoPayload, DriveMetrics, NetworkInterfaceMetrics, NetworkPayload,
+        MAX_CAPACITY_BITS_PER_SEC, MAX_DISK_IO_ENTRIES, MAX_DRIVE_ENTRIES, MAX_DRIVE_NAME_BYTES,
+        MAX_LIVE_METRIC_ID_BYTES, MAX_LIVE_METRIC_NAME_BYTES, MAX_NETWORK_INTERFACE_ENTRIES,
+        MAX_RATE_BYTES_PER_SEC,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
@@ -1139,8 +1153,9 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_body() {
-        // 65 KiB of 'x' exceeds the 64 KiB cap.
-        let body = vec![b'x'; 65 * 1024];
+        // One KiB over the cap. Sized from the cap, not a literal, so the guard
+        // this test exists for cannot drift away from the real limit.
+        let body = vec![b'x'; MAX_RESPONSE_BYTES + 1024];
         let url = mock_server(body, "200 OK").await;
         let ep = endpoint_for(&url);
         let client = HttpClient::new(Duration::from_secs(5));
@@ -1167,11 +1182,14 @@ mod tests {
                     break;
                 }
             }
-            // First chunk: 60 KiB (under the 64 KiB cap).
-            let first = vec![b'x'; 60 * 1024];
-            // Second chunk: 10 KiB (pushes total to 70 KiB, over the cap).
-            let second = vec![b'x'; 10 * 1024];
-            let header = "HTTP/1.1 200 OK\r\nContent-Length: 71680\r\n\r\n";
+            // First chunk: under the cap on its own.
+            let first = vec![b'x'; MAX_RESPONSE_BYTES / 2];
+            // Second chunk: crosses it.
+            let second = vec![b'x'; MAX_RESPONSE_BYTES / 2 + 1024];
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n",
+                first.len() + second.len()
+            );
             stream.write_all(header.as_bytes()).await.unwrap();
             stream.write_all(&first).await.unwrap();
             stream.write_all(&second).await.unwrap();
@@ -1207,8 +1225,8 @@ mod tests {
                     break;
                 }
             }
-            let first = vec![b'x'; 60 * 1024];
-            let second = vec![b'x'; 10 * 1024];
+            let first = vec![b'x'; MAX_RESPONSE_BYTES / 2];
+            let second = vec![b'x'; MAX_RESPONSE_BYTES / 2 + 1024];
             let header =
                 "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
             stream.write_all(header.as_bytes()).await.unwrap();
@@ -1253,7 +1271,7 @@ mod tests {
                     break;
                 }
             }
-            let body = vec![b'x'; 70 * 1024];
+            let body = vec![b'x'; MAX_RESPONSE_BYTES + 1024];
             let header = "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n";
             stream.write_all(header.as_bytes()).await.unwrap();
             stream.write_all(&body).await.unwrap();
@@ -1386,8 +1404,12 @@ mod tests {
     }
 
     #[test]
-    fn max_response_bytes_is_64k() {
-        assert_eq!(MAX_RESPONSE_BYTES, 64 * 1024);
+    fn max_response_bytes_clears_the_maximum_valid_v2_payload() {
+        // The cap has to clear every capped collection, not just drives: see
+        // `maximum_valid_v2_payload_fits_response_cap_with_margin`, which is the
+        // measurement that matters. 256 KiB is a hostile-input ceiling, not a
+        // statement about wire size.
+        assert_eq!(MAX_RESPONSE_BYTES, 256 * 1024);
     }
 
     #[test]
@@ -1842,20 +1864,70 @@ mod tests {
     }
 
     #[test]
-    fn maximum_valid_v2_drive_payload_fits_response_cap_with_margin() {
-        let drives = (0..MAX_DRIVE_ENTRIES)
-            .map(|index| DriveMetrics {
-                name: format!(
+    fn maximum_valid_v2_payload_fits_response_cap_with_margin() {
+        // Every capped collection at once, with the longest names and ids the
+        // protocol allows. Measuring drives alone is not enough: `disk_io` and
+        // `network` carry the same 512-byte name *and* id per entry, so a host
+        // with all three collections full serialises to well past 64 KiB.
+        let longest = |bytes: usize, index: usize| {
+            let suffix = index.to_string();
+            let fill = bytes.saturating_sub(suffix.len() + 1);
+            format!("{index}{}", "x".repeat(fill))
+        };
+        let drive_names: Vec<String> = (0..MAX_DRIVE_ENTRIES)
+            .map(|index| {
+                format!(
                     "/{index}{}",
                     "x".repeat(MAX_DRIVE_NAME_BYTES - index.to_string().len() - 1)
-                ),
+                )
+            })
+            .collect();
+        let drives: Vec<DriveMetrics> = drive_names
+            .iter()
+            .map(|name| DriveMetrics {
+                name: name.clone(),
                 used_bytes: u64::MAX / 2,
                 total_bytes: u64::MAX,
                 available_bytes: None,
             })
             .collect();
+        let devices = (0..MAX_DISK_IO_ENTRIES)
+            .map(|index| DiskIoMetrics {
+                id: longest(MAX_LIVE_METRIC_ID_BYTES, index),
+                name: longest(MAX_LIVE_METRIC_NAME_BYTES, index),
+                read_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                write_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                // An association is only valid when it names a drive that is in
+                // the same payload, which is the larger legal shape.
+                drive_name: Some(drive_names[index % MAX_DRIVE_ENTRIES].clone()),
+            })
+            .collect();
+        let interfaces = (0..MAX_NETWORK_INTERFACE_ENTRIES)
+            .map(|index| NetworkInterfaceMetrics {
+                id: longest(MAX_LIVE_METRIC_ID_BYTES, index),
+                name: longest(MAX_LIVE_METRIC_NAME_BYTES, index),
+                rx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                tx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                rx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                tx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                is_loopback: false,
+                aggregate_member: index == 0,
+            })
+            .collect();
         let payload = LinuxSnapshotV2Builder::default()
             .drives(Some(drives))
+            .disk_io(Some(DiskIoPayload {
+                aggregate_read_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                aggregate_write_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                devices,
+            }))
+            .network(Some(NetworkPayload {
+                aggregate_rx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                aggregate_tx_bytes_per_sec: MAX_RATE_BYTES_PER_SEC,
+                aggregate_rx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                aggregate_tx_capacity_bps: Some(MAX_CAPACITY_BITS_PER_SEC),
+                interfaces,
+            }))
             .build_payload();
         let serialized = serde_json::to_vec(&payload).unwrap();
 
@@ -1865,6 +1937,11 @@ mod tests {
             serialized.len(),
             MAX_RESPONSE_BYTES
         );
+        // A payload the protocol accepts must not be one the client refuses, or
+        // a conforming daemon is reported offline for being well-formed.
+        payload
+            .validate()
+            .expect("a maximum-bound payload must satisfy the protocol");
     }
 
     #[tokio::test]

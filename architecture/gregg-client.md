@@ -212,6 +212,14 @@ places that would block are handled differently:
   buffer holds, so it has nothing to wait for. Asking for less than the queued
   count is deliberate: it keeps `ERROR_MORE_DATA` out of the picture, and the
   remainder is read on the next poll.
+- *Write.* A full peer buffer is backpressure, never a disconnect. The unsent
+  tail of the frame in flight stays in the connection's outbound buffer and is
+  pushed on the next tick, because a length-prefixed frame with a hole in it
+  desynchronises the peer's parser permanently. At most one document is queued
+  behind it and a newer document replaces it, since the publication cell is a
+  watch slot and a slow frontend skips to the newest state. A Windows pipe has
+  no non-blocking write; the repeated flush is what keeps it bounded, not the
+  single write call.
 
 Each instance is created with the owner-only DACL `D:P(A;;GA;;;OW)`,
 `PIPE_REJECT_REMOTE_CLIENTS` in the **pipe-mode** argument (folding it into
@@ -407,7 +415,9 @@ design is retained intentionally.
   standard DNS/TCP/TLS route only, redirect following not compiled so 3xx
   passes through with no second hop, four idle per host, explicit
   five-field whole-request deadline with absolute `total` through
-  response-body EOF, 64 KiB decoded-body cap, no automatic retry);
+  response-body EOF, 256 KiB decoded-body cap — a hostile-input ceiling that
+  clears the 111,465-byte maximum valid v2 payload, not a wire-format limit —
+  no automatic retry);
   typed `NetworkFailureKind` drives DNS/refused/connect mapping, never
   `Display` heuristics; body-stage typed timeouts map to `Timeout`
   while ordinary post-header body failures stay `NetworkError`
@@ -443,7 +453,7 @@ struct AppState {
     viewport_top_id: Option<SystemId>,   // scroll position (first visible)
     last_applied_generation: u64,        // stale batch rejection
     refresh_status: RefreshStatus,       // currently always `Idle`; generations tracked via `last_applied_generation`
-    config_reload_error: Option<String>, // last rejected `Ctrl-R` diagnostic
+    config_reload_error: Option<String>, // last rejected `Ctrl-R` diagnostic, sanitized at adoption
     terminal_size: Option<(u16, u16)>,   // terminal dimensions
     active_pane: Pane,                   // Systems or Eggpool
     system_view_mode: SystemViewMode,    // Normal or Condensed
@@ -858,6 +868,15 @@ frontend that asked for a longer window than the convergence sees its request
 recorded and the converged window displayed — the pane only ever shows a period
 the daemon actually fetched.
 
+Convergence has to reach the fleet on **every** path that changes the window,
+not only on the request path. A disconnect removes an intent and has no request
+of its own, so if the fleet learned about a departing window from requests alone
+it would keep the old period while the worker switched: every later result is
+rejected, the surviving panes freeze on their pre-disconnect summary, and the
+worker burns a request per interval with all of them discarded. A converged
+window that changes also mints a fresh worker generation, or the worker returns
+the previous generation's result and the reducer rejects that as stale too.
+
 **Summary fields:** accounted tokens, cache read ratio, output tok/s, avg TTFT
 
 ## Tests
@@ -967,7 +986,10 @@ truncates rows from the end in display *cells* — not bytes and not `char` coun
 which a CJK or emoji job name silently overflows. Every string that becomes a
 cell is passed through `sanitize` immediately before construction, so the
 guarantee is local to the renderer rather than dependent on a distant chokepoint
-staying correct.
+staying correct. That includes the diagnostics pane, which renders a config
+reload error verbatim: it is the daemon's config-parser output quoted from a
+local file, so it is remote-shaped text and is escaped when the document is
+adopted, not only where a metrics string is built.
 
 The budget is measured, not estimated. The requested row count and the job
 table are both derived from the renderer's own line-producing functions, and the

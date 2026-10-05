@@ -114,7 +114,7 @@ impl From<DecodeError> for TransportError {
     }
 }
 
-/// One established connection, with its read buffer.
+/// One established connection, with its read and write buffers.
 #[derive(Debug)]
 pub struct Connection {
     stream: Stream,
@@ -127,6 +127,23 @@ pub struct Connection {
     /// only the daemon knows which config *it* is serving. A mismatched claim
     /// is refused in [`Connection::verify_daemon_id`], not silently ignored.
     claimed_daemon_id: Option<String>,
+    /// The frame currently being written, minus what the peer has taken.
+    ///
+    /// Non-empty only when the peer's receive buffer is full, and never
+    /// discarded: a length-prefixed frame with a hole in it desynchronises the
+    /// peer's parser for good, so the unsent tail has to stay here until it
+    /// drains rather than being dropped with the rest of the document.
+    inflight: Vec<u8>,
+    /// The newest document waiting for `inflight` to drain.
+    ///
+    /// At most one, and a newer document replaces it: the publication channel
+    /// is a watch slot whose value is a complete state document, so a frontend
+    /// that cannot keep up skips to the newest one instead of queueing a
+    /// backlog it will never need. That replacement can also supersede a queued
+    /// control acknowledgement, which is why it is safe: a frontend treats an
+    /// ack's outcome as visible only in the next document, and the next
+    /// document is exactly what replaces it.
+    queued: Option<Vec<u8>>,
 }
 
 impl Connection {
@@ -136,6 +153,8 @@ impl Connection {
             buffer: Vec::with_capacity(8192),
             handshaken: false,
             claimed_daemon_id: None,
+            inflight: Vec::new(),
+            queued: None,
         }
     }
 
@@ -269,17 +288,19 @@ impl Connection {
 
     /// Write one frame.
     ///
+    /// A full peer buffer is not a failure: the frame is kept in the outbound
+    /// buffer and pushed on the caller's next [`Self::flush_outbound`], which
+    /// both serve loops call on every tick. Only a genuine transport failure
+    /// returns an error, and that one does make the connection unusable.
+    ///
     /// # Errors
     ///
     /// Returns a [`TransportError`] when the peer is gone or the frame exceeds
-    /// the cap. A failed write marks this connection unusable; the caller drops
-    /// it rather than retrying into a half-written frame.
+    /// the cap.
     pub fn write_frame<T: serde::Serialize>(&mut self, value: &T) -> Result<(), TransportError> {
         let encoded = crate::clientd::protocol::encode_frame(value)
             .map_err(|error| TransportError::Protocol(error.to_string()))?;
-        self.stream.write_all(&encoded)?;
-        self.stream.flush()?;
-        Ok(())
+        self.write_encoded(&encoded)
     }
 
     /// Write an already-encoded frame.
@@ -293,9 +314,57 @@ impl Connection {
     ///
     /// Returns a [`TransportError`] when the peer is gone.
     pub fn write_encoded(&mut self, encoded: &[u8]) -> Result<(), TransportError> {
-        self.stream.write_all(encoded)?;
-        self.stream.flush()?;
+        if self.inflight.is_empty() {
+            self.inflight.clear();
+            self.inflight.extend_from_slice(encoded);
+        } else {
+            // A frame is still in flight, so these bytes cannot be written
+            // yet: they would be read as the tail of that frame. Hold the
+            // newest document and drop the older one.
+            self.queued = Some(encoded.to_vec());
+        }
+        self.flush_outbound()?;
         Ok(())
+    }
+
+    /// Push as much of the outbound buffer as the peer will take right now.
+    ///
+    /// Returns `false` when bytes remain because the peer's receive buffer is
+    /// full. That is transient backpressure, not a disconnect: neither a
+    /// stalled nor a vanished peer can keep the daemon's poll loop from making
+    /// progress, which is the whole reason the write path is non-blocking.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TransportError`] when the peer is gone or the stream fails.
+    #[must_use]
+    pub fn flush_outbound(&mut self) -> Result<bool, TransportError> {
+        loop {
+            if self.inflight.is_empty() {
+                let Some(queued) = self.queued.take() else {
+                    return Ok(true);
+                };
+                self.inflight = queued;
+            }
+            match self.stream.write(&self.inflight) {
+                Ok(0) => {
+                    return Err(TransportError::Io(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "the peer accepted none of a non-empty frame",
+                    )))
+                }
+                Ok(written) => {
+                    self.inflight.drain(..written);
+                    if self.inflight.is_empty() {
+                        self.stream.flush()?;
+                    }
+                }
+                // The peer's receive buffer is full. Same condition as a short
+                // write, and equally not a disconnect.
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+                Err(error) => return Err(error.into()),
+            }
+        }
     }
 
     /// Read whatever bytes are available right now.
@@ -358,21 +427,29 @@ impl Stream {
         }
     }
 
-    /// True when this stream's peer has gone away.
+    /// Write what the socket will take right now, without waiting.
     ///
-    /// A write failure is the only reliable disconnect signal on a Unix socket;
-    /// a vanished peer cannot be polled for otherwise.
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+    /// A short write and [`io::ErrorKind::WouldBlock`] are both ordinary
+    /// backpressure on a non-blocking stream, not a disconnect, so they are
+    /// returned to the caller to retry later.
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
             #[cfg(unix)]
             Self::Unix(stream) => {
                 stream.set_nonblocking(true)?;
-                let result = stream.write_all(buf);
+                let result = stream.write(buf);
                 restore_write_blocking(stream, &result)?;
                 result
             }
+            // A synchronous named pipe has no non-blocking write and the client
+            // daemon runs on a current-thread runtime, so the single `write`
+            // writes the whole buffer (or fails); the caller's loop is what
+            // makes progress, not this call.
             #[cfg(windows)]
-            Self::Windows(pipe) => pipe.write_all(buf),
+            Self::Windows(pipe) => {
+                pipe.write_all(buf)?;
+                Ok(buf.len())
+            }
         }
     }
 }
@@ -473,12 +550,13 @@ fn read_pipe(pipe: &std::fs::File, buf: &mut [u8]) -> io::Result<usize> {
 ///
 /// A `WouldBlock` on a Unix socket is not a disconnect: it means the peer's
 /// receive buffer is momentarily full, so the descriptor is returned to
-/// blocking mode and the outer loop decides what to do next. Blocking writes
-/// are bounded because a snapshot frame is capped.
+/// blocking mode and the outer loop decides what to do next. A *short* write is
+/// the same condition arriving without an error, and the caller's outbound
+/// buffer is what makes retrying it safe — the frame stays framed either way.
 #[cfg(unix)]
 fn restore_write_blocking(
     stream: &std::os::unix::net::UnixStream,
-    result: &io::Result<()>,
+    result: &io::Result<usize>,
 ) -> io::Result<()> {
     let would_block = matches!(result, Err(error) if error.kind() == io::ErrorKind::WouldBlock);
     if would_block {
@@ -1281,6 +1359,80 @@ mod tests {
             other => panic!("expected a version mismatch, got {other}"),
         }
         cleanup(&endpoint.path);
+    }
+
+    /// A full peer buffer is backpressure, not a disconnect.
+    ///
+    /// A document larger than the socket's send and receive buffers cannot go
+    /// out in one call. `write_all` on a non-blocking socket fails on the first
+    /// short write with `WouldBlock` — *after* a prefix of the length-prefixed
+    /// frame is already on the wire — so treating that as a transport failure
+    /// tore down a healthy frontend connection, while dropping the document
+    /// would leave the peer's parser reading the next frame's bytes as this
+    /// frame's tail. The unsent tail therefore stays in the outbound buffer
+    /// until it drains, a document arriving meanwhile is queued behind it, and
+    /// a newer one supersedes that (the watch slot is a latest-state cell).
+    #[test]
+    fn a_stalled_peer_is_backpressure_and_its_frames_stay_framed() {
+        let (writer_raw, reader_raw) = RawUnixStream::pair().expect("socket pair");
+        let mut writer = Connection::new(Stream::Unix(writer_raw));
+        let mut reader = Connection::new(Stream::Unix(reader_raw));
+
+        // A 1 MiB frame cannot fit in the socket buffers, so the write is forced
+        // to stop partway through.
+        let huge = DaemonRequest::Handshake {
+            protocol_version: PROTOCOL_VERSION,
+            version: "1.0.0".to_owned(),
+            daemon_id: "x".repeat(1024 * 1024),
+        };
+        let huge_frame = crate::clientd::protocol::encode_frame(&huge).expect("encodes");
+        let superseded = DaemonRequest::ReloadConfig { generation: 7 };
+        let newest = DaemonRequest::ReloadConfig { generation: 8 };
+
+        // The peer is not reading, and this must not be an error.
+        writer.write_encoded(&huge_frame).expect("backpressure");
+        assert!(
+            !writer.flush_outbound().expect("still alive"),
+            "the frame must be too large to hand over in one flush"
+        );
+        // Two documents arrive while the first is in flight. The older queued
+        // one is superseded, never appended: a slow frontend skips to the
+        // newest state.
+        writer
+            .write_encoded(&crate::clientd::protocol::encode_frame(&superseded).expect("encodes"))
+            .expect("queued behind the in-flight frame");
+        writer
+            .write_encoded(&crate::clientd::protocol::encode_frame(&newest).expect("encodes"))
+            .expect("supersedes the queued frame");
+
+        // Now behave like a peer that woke up, and like the serve loop that
+        // flushes on every tick.
+        let mut read_buffer = [0_u8; 64 * 1024];
+        let mut received = Vec::new();
+        loop {
+            let flushed = writer
+                .flush_outbound()
+                .expect("a stalled peer is not a disconnect");
+            while let Some(frame) = reader
+                .try_read_frame::<DaemonRequest>()
+                .expect("the peer's framing survived a partial write")
+            {
+                received.push(frame);
+            }
+            match reader.read_available(&mut read_buffer) {
+                Ok(count) => reader.push_bytes(&read_buffer[..count]),
+                Err(TransportError::WouldBlock) => {
+                    if flushed && reader.buffered() == 0 {
+                        break;
+                    }
+                }
+                Err(TransportError::Disconnected) => break,
+                Err(error) => panic!("unexpected read failure: {error}"),
+            }
+        }
+        // The frame in flight arrived whole, and the surviving queued document
+        // was the newest one: no dropped prefix, no interleaved frames.
+        assert_eq!(received, vec![huge, newest]);
     }
 
     #[tokio::test]

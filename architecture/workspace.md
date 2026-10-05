@@ -177,7 +177,8 @@ plus normalization (`normalized.rs` for the v1/v2 UI type; `event.rs` maps keys)
 - `clock.rs` — `Clock` trait for time abstraction (enables deterministic testing
   with `FakeClock`).
 - `poller.rs` — `HttpClient` wrapping a long-lived `eggfetch_core::Client` with
-  explicit whole-request deadline, 64 KiB decoded-body cap, redirect
+  explicit whole-request deadline, 256 KiB decoded-body cap (must clear the
+  maximum valid v2 payload), redirect
   rejection, and bounded connection pool. `PollOutcome` classifies every
   failure mode (timeout, connection refused, DNS failure, HTTP status,
   body too large, decode error, unsupported schema, invalid snapshot,

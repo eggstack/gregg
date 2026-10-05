@@ -248,13 +248,21 @@ clears history and starts a new `SchedulerEpochV2` with no replay.
 (missing executable, permission) and a `load_expired` occurrence (`max_wait`
 elapsed with no child) both become terminal records. Omitting them would leave
 the recent-runs display quietly dishonest: an operator would see an empty list
-for a job that never ran.
+for a job that never ran. `load_expired` is only reachable while the load gate
+is actually refusing the occurrence: expiry is evaluated before the global
+child-slot check, so a job merely waiting for the slot must not be dropped with
+a record blaming load for a slot the gate never saw. A slot-delayed occurrence
+stays pending and runs when the slot frees.
 
 **Output capture** replaces `Stdio::null()` only when history is enabled. Both
 pipe handles are taken immediately after the spawn, and both streams drain
 concurrently with the child wait in a single `tokio::join!` — neither stream
 can block the other, and neither can fill the child's pipe, so the classic
-deadlock cannot occur. The drain futures **borrow** the streams instead of
+deadlock cannot occur. The *order* is load-bearing, not incidental: awaiting
+the child first would let a job that writes more than one pipe buffer block in
+`write(2)` while nothing drains it, so the wait would never resolve, the one
+global child slot would never free, and no further job could start. The drain
+futures **borrow** the streams instead of
 spawning tasks: a cancelled select (deadline or shutdown) simply stops draining
 and leaves the handles in place for the next wake, so no drain task can outlive
 the scheduler or delay shutdown, and the existing two-second direct-child

@@ -456,23 +456,56 @@ mod ffi {
     }
 
     /// `PERFORMANCE_INFORMATION` — system performance counters.
+    ///
+    /// Member types are ABI-faithful, not "all the same integer". `cb`,
+    /// `handles_count`, `process_count` and `thread_count` are `DWORD`; every
+    /// other member is `SIZE_T`. Declaring them all `usize` both misreports the
+    /// buffer size the API validates `cb` against and moves those four counters
+    /// by four bytes each, so the layout is asserted below rather than assumed.
+    /// The members are kept in the Win32 header's order, which is also the
+    /// offset order: `physical_total` precedes `physical_available`.
     #[repr(C)]
     pub struct PerformanceInformation {
-        pub cb: usize,
+        pub cb: u32,
         pub commit_total: usize,
         pub commit_limit: usize,
         pub commit_peak: usize,
-        pub physical_available: usize,
         pub physical_total: usize,
+        pub physical_available: usize,
         pub system_cache: usize,
         pub kernel_total: usize,
         pub kernel_paged: usize,
         pub kernel_nonpaged: usize,
         pub page_size: usize,
-        pub handles_count: usize,
-        pub process_count: usize,
-        pub thread_count: usize,
+        pub handles_count: u32,
+        pub process_count: u32,
+        pub thread_count: u32,
     }
+
+    /// The mirror is used as a fixed-size in/out buffer, so its size and the
+    /// offsets of the members this crate reads are pinned rather than derived:
+    /// a `DWORD` widened to `usize` would still compile, still link, and silently
+    /// report commit charge from the wrong fields.
+    const _: () = {
+        assert!(std::mem::size_of::<PerformanceInformation>() == 104);
+        assert!(std::mem::offset_of!(PerformanceInformation, cb) == 0);
+        assert!(std::mem::offset_of!(PerformanceInformation, commit_total) == 8);
+        assert!(std::mem::offset_of!(PerformanceInformation, commit_limit) == 16);
+        assert!(std::mem::offset_of!(PerformanceInformation, commit_peak) == 24);
+        assert!(std::mem::offset_of!(PerformanceInformation, physical_total) == 32);
+        assert!(
+            std::mem::offset_of!(PerformanceInformation, physical_available) == 40,
+            "PhysicalTotal precedes PhysicalAvailable"
+        );
+        assert!(std::mem::offset_of!(PerformanceInformation, system_cache) == 48);
+        assert!(std::mem::offset_of!(PerformanceInformation, kernel_total) == 56);
+        assert!(std::mem::offset_of!(PerformanceInformation, kernel_paged) == 64);
+        assert!(std::mem::offset_of!(PerformanceInformation, kernel_nonpaged) == 72);
+        assert!(std::mem::offset_of!(PerformanceInformation, page_size) == 80);
+        assert!(std::mem::offset_of!(PerformanceInformation, handles_count) == 88);
+        assert!(std::mem::offset_of!(PerformanceInformation, process_count) == 92);
+        assert!(std::mem::offset_of!(PerformanceInformation, thread_count) == 96);
+    };
 
     /// `OSVERSIONINFOW` — OS version information.
     #[repr(C)]
@@ -957,12 +990,20 @@ fn commit() -> Result<RawCommit, CollectError> {
     {
         use std::mem::MaybeUninit;
 
+        // The buffer is zeroed rather than left uninitialised: the API writes at
+        // most `cb` bytes and the layout assertions above pin that to this
+        // struct's size, so every member read below was written by the call and
+        // nothing is read as undefined memory.
+        let cb =
+            u32::try_from(std::mem::size_of::<ffi::PerformanceInformation>()).unwrap_or(u32::MAX);
+        // SAFETY: `perf_info` is a live, fully initialised, correctly aligned
+        // buffer of exactly `cb` bytes for the whole call, and `GetPerformanceInfo`
+        // writes no more than `cb` bytes into it. `cb` is the first member, as
+        // the API requires. Every field read after `assume_init` was therefore
+        // written by the call, since `success != 0` means the write happened.
         unsafe {
-            let mut perf_info = MaybeUninit::<ffi::PerformanceInformation>::uninit();
-            (*perf_info.as_mut_ptr()).cb = std::mem::size_of::<ffi::PerformanceInformation>();
-
-            #[allow(clippy::cast_possible_truncation)]
-            let cb = std::mem::size_of::<ffi::PerformanceInformation>() as u32;
+            let mut perf_info = MaybeUninit::<ffi::PerformanceInformation>::zeroed();
+            (*perf_info.as_mut_ptr()).cb = cb;
             let success = ffi::GetPerformanceInfo(perf_info.as_mut_ptr(), cb);
 
             if success == 0 {
@@ -981,9 +1022,9 @@ fn commit() -> Result<RawCommit, CollectError> {
 
             let info = perf_info.assume_init();
             Ok(RawCommit {
-                commit_total_pages: info.commit_total as u64,
-                commit_limit_pages: info.commit_limit as u64,
-                page_size_bytes: info.page_size as u64,
+                commit_total_pages: u64::try_from(info.commit_total).unwrap_or(u64::MAX),
+                commit_limit_pages: u64::try_from(info.commit_limit).unwrap_or(u64::MAX),
+                page_size_bytes: u64::try_from(info.page_size).unwrap_or(1).max(1),
             })
         }
     }

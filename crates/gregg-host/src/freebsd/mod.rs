@@ -178,11 +178,10 @@ pub fn compute_memory(
     raw: &source::RawPhysicalMemory,
 ) -> Result<crate::model::MemoryMetrics, CollectError> {
     if raw.total_bytes == 0 {
-        return Ok(crate::model::MemoryMetrics {
-            used_bytes: 0,
-            total_bytes: 0,
-            usage_pct: 0.0,
-        });
+        return Err(CollectError::new(
+            CollectErrorKind::Parse,
+            "FreeBSD physical memory total is zero",
+        ));
     }
     if raw.page_size == 0 {
         return Err(CollectError::new(

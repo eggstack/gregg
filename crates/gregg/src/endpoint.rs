@@ -170,9 +170,13 @@ impl fmt::Display for EndpointError {
                 write!(f, "port is not a valid number: {input}")
             }
             Self::MalformedBrackets { input } => {
+                // The advice is about bracketing, not about a port. Both
+                // commands produce this variant, and only one of them requires
+                // a port, so wording it as "use [ipv6]:port" told the operator
+                // to type something `gregg remove` would then reject.
                 write!(
                     f,
-                    "malformed IPv6 bracket syntax (use [ipv6]:port for an explicit port): {input}"
+                    "malformed IPv6 bracket syntax (an IPv6 host has to be bracketed): {input}"
                 )
             }
             Self::EmptyHost => write!(f, "host is empty"),

@@ -99,8 +99,11 @@ bounded to 32 entries and names to 512 UTF-8 bytes. A missing or null field
 means unavailable/legacy; an empty list means successful enumeration with no
 eligible filesystems. The daemon does not serialize aggregate totals or
 percentages; the client derives them with checked arithmetic. A maximum-bound
-valid payload is tested against the client’s existing 64 KiB response-body
-cap, which remains unchanged.
+valid payload — every collection at its cap, with full-length names and ids — is
+tested against the client's response-body cap: it measures 111_465 bytes, so the
+cap is 256 KiB. The cap is a hostile-input ceiling, not a wire-format limit, and
+it has to clear the maximum valid payload: a daemon that is entirely within
+these bounds must not be shown as offline for being well-formed.
 
 Percentages are reported in the closed interval `0.0..=100.0`. Values
 outside that interval — and `NaN` / `±∞` — are rejected by validation.

@@ -305,6 +305,12 @@ impl<'a> Engine<'a> {
     /// Expire a load-deferred occurrence once it has waited its full
     /// `max_wait`, recording the terminal outcome.
     ///
+    /// Only an occurrence the load gate is refusing *right now* can expire:
+    /// `tick` expires before the global child-slot check, so a `max_load` job
+    /// the host is comfortably under would otherwise be dropped with a
+    /// `load_expired` record blaming load for a slot the gate never saw. A
+    /// time-only job has no gate and can never expire this way.
+    ///
     /// A load-expired occurrence is a terminal record even though no child ever
     /// ran; omitting it would make the recent-runs display quietly dishonest.
     /// Returns the pending age for the existing log line.
@@ -313,13 +319,15 @@ impl<'a> Engine<'a> {
         index: usize,
         now: Instant,
         config: &ScheduledJobConfig,
+        load: LoadGateState,
     ) -> Option<u64> {
         let state = &mut self.states[index];
-        let expired = state.pending.as_ref().is_some_and(|pending| {
-            now.saturating_duration_since(pending.since)
-                >= Duration::from_millis(config.effective_max_wait_ms())
-                && config.max_load.is_some()
-        });
+        let load_blocked = load_gate(config, load).is_some_and(|(allowed, ..)| !allowed);
+        let expired = load_blocked
+            && state.pending.as_ref().is_some_and(|pending| {
+                now.saturating_duration_since(pending.since)
+                    >= Duration::from_millis(config.effective_max_wait_ms())
+            });
         if !expired {
             return None;
         }
@@ -378,7 +386,7 @@ impl<'a> Engine<'a> {
         }
         // Expiry needs the observer, which is a separate field from `states`.
         for (index, config) in configs.iter().enumerate() {
-            if let Some(pending_age_ms) = self.take_expired(index, now, config) {
+            if let Some(pending_age_ms) = self.take_expired(index, now, config, load) {
                 tracing::info!(
                     job = %config.name,
                     pending_age_ms,
@@ -512,6 +520,29 @@ struct ChildCompletion {
     status: std::io::Result<ExitStatus>,
     stdout: OutputTail,
     stderr: OutputTail,
+}
+
+/// Wait for a child to exit while both output streams drain concurrently.
+///
+/// All three futures are polled on the same task, so a child that writes more
+/// than one pipe buffer makes progress on its writes as the drains make
+/// progress. Awaiting `wait()` *before* the drains would let such a child
+/// block in `write(2)` forever: `wait()` would never resolve, the single
+/// global child slot would never free, and no further job could start. The
+/// streams are borrowed rather than handed to drain tasks, so a cancelled
+/// select simply stops draining and leaves the handles in place for the next
+/// wake — no drain task can outlive the scheduler or delay shutdown.
+async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion {
+    let (status, stdout, stderr) = tokio::join!(
+        child.child.wait(),
+        drain_tail(child.stdout.as_mut()),
+        drain_tail(child.stderr.as_mut()),
+    );
+    ChildCompletion {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 enum SchedulerWake {
@@ -666,19 +697,9 @@ pub(crate) async fn run(
         // stays silent (the `Deadline` branch below logs nothing).
         let wake_at = bounded_wake_deadline(semantic_deadline, Instant::now());
         let wake = {
-            // Both output streams drain concurrently with the child wait in a
-            // single join, so neither stream can block the other and neither
-            // can fill the child's pipe. Borrowing the streams (rather than
-            // spawning drain tasks) means a cancelled select simply stops
-            // draining and leaves the handles in place for the next wake, so no
-            // drain task can outlive the scheduler or delay shutdown.
             let child_wait = async {
                 match active.as_mut() {
-                    Some(child) => Some(ChildCompletion {
-                        status: child.child.wait().await,
-                        stdout: drain_tail(child.stdout.as_mut()).await,
-                        stderr: drain_tail(child.stderr.as_mut()).await,
-                    }),
+                    Some(child) => Some(await_child_completion(child).await),
                     None => std::future::pending().await,
                 }
             };
@@ -899,6 +920,41 @@ mod tests {
             .unwrap()
             .is_none());
         assert_eq!(engine.pending_count(), 0);
+    }
+
+    #[test]
+    fn a_slot_delayed_occurrence_is_not_blamed_on_the_load_gate() {
+        // A threshold this host is comfortably under: the gate would have
+        // allowed the job the moment the global child slot freed.
+        let mut config = job("quick", Some(50.0));
+        config.retry_interval_ms = Some(10_000);
+        config.max_wait_ms = Some(1_000);
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall_time(),
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
+        let since = Instant::now();
+        let due = engine.states[0].next_due;
+        let idle = ready(0.5, 0.5, 0.5);
+        // Due while another job holds the only child slot: the occurrence is
+        // pending, and past its whole `max_wait` it must still be pending.
+        assert!(engine.tick(due, since, idle, false).unwrap().is_none());
+        assert!(engine
+            .tick(due, since + Duration::from_secs(30), idle, false)
+            .unwrap()
+            .is_none());
+        assert_eq!(engine.pending_count(), 1);
+        // Nothing ran, so nothing can have blamed load for it.
+        assert!(engine.observer.last_summary(0).is_none());
+        // The slot frees: the occurrence is still there and launches.
+        let launch = engine
+            .tick(due, since + Duration::from_secs(30), idle, true)
+            .unwrap()
+            .expect("a slot-delayed occurrence must not be dropped");
+        assert_eq!(launch.index, 0);
     }
 
     #[test]
@@ -1584,8 +1640,13 @@ mod observation_tests {
         chrono::TimeZone::with_ymd_and_hms(&Local, 2026, 10, 4, 12, 0, 0).unwrap()
     }
 
-    /// Spawn a child, drain both streams concurrently, and return the terminal
-    /// record the scheduler would record.
+    /// Spawn a child and return the terminal record the scheduler would
+    /// record.
+    ///
+    /// The wait itself is the production [`await_child_completion`] future, not
+    /// a reimplementation of it: a helper that joined the three futures its own
+    /// way would keep passing while production awaited `wait()` first and
+    /// wedged on any child that writes more than one pipe buffer.
     ///
     /// Only the Unix tests below drive a real child, so this helper is Unix
     /// only: on Windows it would otherwise be dead code, and CI builds with
@@ -1599,12 +1660,9 @@ mod observation_tests {
         child.scheduled_unix_ms = launched.scheduled.timestamp_millis().max(0).unsigned_abs();
         child.delay_ms = duration_millis(launched.pending_age);
         child.coalesced = launched.coalesced;
-        let (status, stdout, stderr) = tokio::join!(
-            child.child.wait(),
-            drain_tail(child.stdout.as_mut()),
-            drain_tail(child.stderr.as_mut()),
-        );
-        let status = status.expect("child exit observed");
+        let completion = await_child_completion(&mut child).await;
+        let status = completion.status.expect("child exit observed");
+        let (stdout, stderr) = (completion.stdout, completion.stderr);
         let elapsed_ms = duration_millis(child.started.elapsed());
         let exit_code = status.code();
         let signal = exit_signal(status);
@@ -1824,6 +1882,16 @@ mod observation_tests {
             .is_none());
         let mut observer =
             SchedulerObserver::new(&[config.name.clone()], 5, 1_700_000_000_000, publisher);
+        // The engine's own record first: the wire proof below is built from a
+        // fresh observer, so without this the expiry could be one the engine
+        // never actually recorded.
+        let recorded = engine
+            .observer
+            .last_summary(0)
+            .expect("an expired occurrence is a terminal record");
+        assert_eq!(recorded.outcome, SchedulerOutcomeV2::LoadExpired);
+        assert_eq!(recorded.exit_code, None);
+        assert_eq!(recorded.duration_ms, None);
         // Re-derive the record the engine recorded, for the document proof.
         observer.record_terminal(
             0,

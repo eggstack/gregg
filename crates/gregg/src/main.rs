@@ -349,8 +349,16 @@ fn dispatch_action(
     }
 
     *request_generation = request_generation.saturating_add(1);
-    let _ = sink.request_eggpool_intent(&intent, *request_generation);
-    *last_intent = Some(intent);
+    if sink
+        .request_eggpool_intent(&intent, *request_generation)
+        .is_ok()
+    {
+        *last_intent = Some(intent);
+    }
+    // A dropped intent must not be remembered as sent: the daemon never heard
+    // it, so recording it would suppress every retry until the pane moved
+    // again, and the pane would sit on a window the worker is not fetching.
+    // The next drain re-offers it instead.
     changed
 }
 
@@ -405,13 +413,224 @@ fn forward_cron_intent(
         return false;
     }
     *request_generation = request_generation.saturating_add(1);
-    let _ = sink.request_cron_intent(
-        intent.system_id.as_deref(),
-        intent.job.as_deref(),
-        intent.display_history,
-        *request_generation,
-    );
-    *last_sent = Some(intent);
+    if sink
+        .request_cron_intent(
+            intent.system_id.as_deref(),
+            intent.job.as_deref(),
+            intent.display_history,
+            *request_generation,
+        )
+        .is_ok()
+    {
+        *last_sent = Some(intent);
+    }
+    // A dropped intent must not be remembered as sent: the daemon never heard
+    // it, so remembering it would suppress the retry that would otherwise
+    // happen on the next drain.
     // A request that has been sent but not answered changes nothing on screen.
     false
+}
+
+/// The event loop's forwarding of pane intent to the daemon.
+///
+/// The `last_*_intent` memories exist so an unchanged intent is not re-sent on
+/// every key press. They are only correct if they record what the daemon
+/// actually *heard*, so a refused send must not be recorded: otherwise the
+/// pane's window is never re-offered and the daemon keeps driving the worker
+/// with a window no attached frontend asked for.
+#[cfg(test)]
+mod tests {
+    use super::{dispatch_action, ControlSink, CronIntentRequest, EggpoolIntentRequest};
+    use gregg::action;
+    use gregg::clientd::frontend::FrontError;
+    use gregg::clientd::snapshot::{EggpoolSnapshotDto, FrontendSnapshot, SystemSnapshotDto};
+    use gregg::config::{EggpoolEntry, EggpoolScheme};
+    use gregg::eggpool::EggpoolPeriod;
+    use gregg::state::{AppState, EggpoolWorkerState, Reachability};
+    use std::cell::RefCell;
+
+    /// A sink that records what it was asked to send, and can refuse.
+    struct RefusingSink {
+        accept: bool,
+        eggpool_intents: RefCell<usize>,
+        cron_intents: RefCell<usize>,
+    }
+
+    impl RefusingSink {
+        fn accepting() -> Self {
+            Self {
+                accept: true,
+                eggpool_intents: RefCell::new(0),
+                cron_intents: RefCell::new(0),
+            }
+        }
+
+        fn refusing() -> Self {
+            Self {
+                accept: false,
+                eggpool_intents: RefCell::new(0),
+                cron_intents: RefCell::new(0),
+            }
+        }
+
+        fn outcome(&self) -> Result<(), FrontError> {
+            if self.accept {
+                Ok(())
+            } else {
+                Err(FrontError::ChannelFull)
+            }
+        }
+    }
+
+    impl ControlSink for RefusingSink {
+        fn request_reload(&self, _generation: u64) -> Result<(), FrontError> {
+            self.outcome()
+        }
+
+        fn request_eggpool_intent(
+            &self,
+            _intent: &EggpoolIntentRequest,
+            _generation: u64,
+        ) -> Result<(), FrontError> {
+            *self.eggpool_intents.borrow_mut() += 1;
+            self.outcome()
+        }
+
+        fn request_cron_intent(
+            &self,
+            _system_id: Option<&str>,
+            _job: Option<&str>,
+            _display_history: usize,
+            _generation: u64,
+        ) -> Result<(), FrontError> {
+            *self.cron_intents.borrow_mut() += 1;
+            self.outcome()
+        }
+    }
+
+    fn app_with_eggpool() -> AppState {
+        let mut snapshot = FrontendSnapshot::empty(vec![SystemSnapshotDto::placeholder(
+            0,
+            Reachability::Pending,
+        )]);
+        snapshot.eggpool = Some(EggpoolSnapshotDto {
+            endpoint: EggpoolEntry {
+                id: "pool".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port: 1,
+                scheme: EggpoolScheme::Http,
+                name: None,
+                api_key_env: None,
+            },
+            period: EggpoolPeriod::Day,
+            request_generation: 0,
+            worker_state: EggpoolWorkerState::Idle,
+            summary: None,
+            last_success_at_unix_ms: None,
+            last_attempt_at_unix_ms: None,
+            last_error: None,
+            health: None,
+            last_health_success_at_unix_ms: None,
+            last_health_attempt_at_unix_ms: None,
+            last_health_error: None,
+        });
+        AppState::from_snapshot(&snapshot)
+    }
+
+    /// An intent the daemon accepted is remembered, so an unchanged pane is not
+    /// re-sent on every key press.
+    #[test]
+    fn an_accepted_intent_is_not_resent_unchanged() {
+        let mut app_state = app_with_eggpool();
+        let sink = RefusingSink::accepting();
+        let mut generation = 0_u64;
+        let mut last_intent = None;
+        let mut last_cron_intent = None;
+
+        dispatch_action(
+            &mut app_state,
+            action::Action::NextPane,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        assert_eq!(*sink.eggpool_intents.borrow(), 1);
+        dispatch_action(
+            &mut app_state,
+            action::Action::ClearSelectionHighlight,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        assert_eq!(
+            *sink.eggpool_intents.borrow(),
+            1,
+            "an unchanged intent the daemon already has must not be re-sent"
+        );
+    }
+
+    /// A refused intent is not remembered, so the next drain re-offers it.
+    #[test]
+    fn a_refused_intent_is_remembered_as_unsent_and_retried() {
+        let mut app_state = app_with_eggpool();
+        let sink = RefusingSink::refusing();
+        let mut generation = 0_u64;
+        let mut last_intent: Option<EggpoolIntentRequest> = None;
+        let mut last_cron_intent: Option<CronIntentRequest> = None;
+
+        // Open the pane: the send is refused, as a full request channel would.
+        dispatch_action(
+            &mut app_state,
+            action::Action::NextPane,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        assert_eq!(*sink.eggpool_intents.borrow(), 1);
+        assert!(
+            last_intent.is_none(),
+            "a request the daemon never received must not be remembered as sent"
+        );
+        // Any later action re-offers it: the pane's window is otherwise never
+        // told to the daemon at all. `ClearSelectionHighlight` changes nothing,
+        // so the *only* reason to send again is that the first one was dropped.
+        dispatch_action(
+            &mut app_state,
+            action::Action::ClearSelectionHighlight,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        assert_eq!(
+            *sink.eggpool_intents.borrow(),
+            2,
+            "the dropped intent must be re-offered on the next drain"
+        );
+        assert!(
+            last_cron_intent.is_none(),
+            "a refused cron intent must not be remembered as sent either"
+        );
+        assert_eq!(
+            *sink.cron_intents.borrow(),
+            2,
+            "the dropped cron intent must be re-offered on the next drain"
+        );
+        dispatch_action(
+            &mut app_state,
+            action::Action::ClearSelectionHighlight,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        assert_eq!(
+            *sink.cron_intents.borrow(),
+            3,
+            "and again, for as long as the daemon has not taken one"
+        );
+    }
 }

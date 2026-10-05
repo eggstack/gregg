@@ -101,8 +101,10 @@ fn memory_formula_uses_free_inactive_cache_laundry() {
     assert_eq!(mem.total_bytes, 16_000_000_000);
 }
 
+/// A zero total is not a reading of "no memory": it is a reading of nothing, and
+/// it must not become a published `0 / 0` that renders as `0.0%` used.
 #[test]
-fn memory_zero_total_yields_zero() {
+fn memory_zero_total_is_refused_rather_than_published() {
     let raw = RawPhysicalMemory {
         total_bytes: 0,
         page_size: 4096,
@@ -111,8 +113,11 @@ fn memory_zero_total_yields_zero() {
         cache_count: 0,
         laundry_count: 0,
     };
-    let mem = compute_memory(&raw).expect("zero total");
-    assert_eq!((mem.used_bytes, mem.total_bytes), (0, 0));
+    let error = compute_memory(&raw).expect_err("a zero total is not a measurement");
+    assert!(
+        matches!(error.kind, CollectErrorKind::Parse),
+        "expected a parse error, got {error}"
+    );
 }
 
 #[test]

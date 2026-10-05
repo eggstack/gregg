@@ -439,6 +439,20 @@ enum Stream {
     Stderr,
 }
 
+impl Stream {
+    /// The name this pane labels the stream with.
+    ///
+    /// Naming the wrong stream is not cosmetic: a truncated `stderr` is a
+    /// different fact from a truncated `stdout`, so the name comes from the
+    /// stream being rendered rather than being written once for both.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
 /// The rendered lines of one record's output streams.
 fn stream_lines(record: &CronRecord, stream: Stream, depth: usize) -> Vec<String> {
     let output = match stream {
@@ -451,10 +465,11 @@ fn stream_lines(record: &CronRecord, stream: Stream, depth: usize) -> Vec<String
     // Bounded here, not in the sanitizer: this is the viewport decision, and
     // the stored record is untouched.
     let cleaned = sanitize(&output.text, depth);
+    // `+` marks the remote's own tail truncation, on this stream.
     let label = if output.truncated {
-        "stdout+"
+        format!("{}+", stream.name())
     } else {
-        "stdout"
+        stream.name().to_owned()
     };
     let mut lines: Vec<String> = cleaned
         .lines()
@@ -999,6 +1014,35 @@ mod tests {
         );
         let rendered = text(&drawn(&state, 120, 24));
         assert!(rendered.contains("stdout+"), "{rendered}");
+    }
+
+    /// Each stream is labelled with the stream it came from, in the untruncated
+    /// case and the truncated one alike. Labelling stderr as stdout is not
+    /// cosmetic: it sends the operator to the wrong place to look for the
+    /// failure, and the truncation marker claims the wrong stream was cut.
+    #[test]
+    fn each_output_stream_is_labelled_with_its_own_name() {
+        let mut record = record(1, "the backup ran", "the backup failed");
+        record.record.stderr.truncated = true;
+        let state = state_with_cron(
+            &[("backup", SchedulerJobStateV2::Idle)],
+            "backup",
+            vec![record],
+        );
+        let rendered = text(&drawn(&state, 120, 24));
+        assert!(rendered.contains("stdout: the backup ran"), "{rendered}");
+        assert!(
+            rendered.contains("stderr+: the backup failed"),
+            "a truncated stderr must say so: {rendered}"
+        );
+        assert!(
+            !rendered.contains("stdout+"),
+            "nothing truncated stdout here: {rendered}"
+        );
+        assert!(
+            !rendered.contains("stderr: the backup failed"),
+            "a truncated stream keeps its marker: {rendered}"
+        );
     }
 
     #[test]

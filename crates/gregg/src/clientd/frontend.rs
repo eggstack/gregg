@@ -329,10 +329,16 @@ impl FrameStream {
                 Err(TransportError::Disconnected) => return Err(FrontError::Disconnected),
                 Err(error) => return Err(FrontError::Transport(error)),
             }
-            // Nothing is buffered and nothing is readable yet. Yield rather
-            // than spin, so a quiet daemon costs no CPU.
+            // Yield unless more of the frame is already buffered. Reading a
+            // partial frame and then looping with no await point would spin
+            // this task at full speed: the loop condition only depends on
+            // bytes already in hand, and the socket has nothing more until the
+            // event loop is polled again — a busy loop the poll interval was
+            // meant to prevent.
             if self.connection.buffered() < LEN_PREFIX_BYTES {
                 tokio::time::sleep(Duration::from_millis(10)).await;
+            } else {
+                tokio::task::yield_now().await;
             }
         }
     }

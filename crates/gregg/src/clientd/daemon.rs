@@ -539,6 +539,19 @@ impl Engine {
             return true;
         }
         self.converged = Some(desired);
+        // The fleet must carry the window the worker is actually driven with on
+        // *every* path that changes it, not only on the request path. A
+        // disconnect has no request of its own, so this is where a departing
+        // frontend's removal actually lands: without it the converged period
+        // moves while `fleet.eggpool.period` stays on the old one, and the
+        // reducer then rejects every result the worker fetches — the pane
+        // freezes and the worker burns a request per interval, all discarded.
+        if fleet.set_eggpool_period(desired.period) {
+            // A new window needs a fresh worker generation, or the worker
+            // returns the previous generation's result and the reducer rejects
+            // it as stale.
+            fleet.begin_eggpool_request();
+        }
         false
     }
 
@@ -866,6 +879,11 @@ async fn serve_inner(
                 connection.write_frame(&frame)?;
             }
             () = tokio::time::sleep(READ_POLL_INTERVAL) => {
+                // Push whatever the peer can take. A frontend that stalled and
+                // came back then finishes the document it was mid-way through
+                // receiving, instead of waiting for the next publication — the
+                // unsent tail is the only thing that may not be dropped.
+                connection.flush_outbound()?;
                 match connection.read_available(&mut read_buffer) {
                     Ok(count) => connection.push_bytes(&read_buffer[..count]),
                     // Nothing yet. The loop retries on its next tick.
@@ -2530,6 +2548,86 @@ mod tests {
                 "the advertised window must be the converged one the worker fetches"
             );
         }
+        running.shutdown().await;
+    }
+
+    /// A departing frontend must move the fleet's window, not just the worker's.
+    ///
+    /// The disconnect path removes an intent with no request of its own, so the
+    /// converged window changes there and nowhere else. If the fleet kept the
+    /// old period, the reducer's period check would reject every result the
+    /// worker fetched from then on: the surviving pane would freeze on its
+    /// pre-disconnect summary while the worker kept burning a request per
+    /// interval, every one of them discarded.
+    #[tokio::test]
+    async fn a_disconnect_reconverges_the_fleet_window_and_keeps_results_landing() {
+        let dir = TempDir::new("reconverge");
+        let store = write_empty_config(&dir);
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        store.write(&config).expect("writes");
+
+        let running = Running::start(&dir, store);
+        running.ready().await;
+        let identity = running.identity.clone();
+
+        let mut hour_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        hour_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+        let mut day_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        day_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+        hour_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Hour,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+        day_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Day,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+
+        let (hour_sender, mut hour_frames) = hour_frontend.split();
+        let (_day_sender, mut day_frames) = day_frontend.split();
+        // Both attached: the converged window is the shorter one, and results
+        // for it are landing.
+        await_documents(&mut hour_frames, DOCUMENT_BUDGET, |document| {
+            document.eggpool.as_ref().is_some_and(|eggpool| {
+                eggpool.period == EggpoolPeriod::Hour && eggpool.last_attempt_at_unix_ms.is_some()
+            })
+        })
+        .await;
+
+        // A quits, so `Day` — the surviving pane's own request — becomes the
+        // window the worker is driven with.
+        drop(hour_sender);
+        drop(hour_frames);
+        await_documents(&mut day_frames, DOCUMENT_BUDGET, |document| {
+            document.eggpool.as_ref().is_some_and(|eggpool| {
+                eggpool.period == EggpoolPeriod::Day
+                    // A result has to be *applied*, not merely fetched: the
+                    // summary only moves when the reducer's period check
+                    // accepts what the worker returned.
+                    && eggpool.last_attempt_at_unix_ms.is_some()
+            })
+        })
+        .await;
         running.shutdown().await;
     }
 }

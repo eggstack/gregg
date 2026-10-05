@@ -124,6 +124,11 @@ target in all consumers at once, never in one place alone.
   metadata-path equivalent of the `take(MAX+1)` capture guard), so a curl that
   ignores `--max-filesize` can never feed an oversized asset to the checksum,
   `chmod`, or exec steps.
+  The download child's *pipes* are capped too, like every other child: the asset
+  body goes to a file via `-o`, so stdout carries only the `-w %{http_code}`
+  line (`MAX_DOWNLOAD_STATUS_BYTES`, 1 KiB) and stderr is bounded by
+  `MAX_STDERR_BYTES`. A mirror answering on the wrong channel fails the download
+  instead of growing this process's heap.
   `exit 4` mapping is caller-owned; the shared crate returns
   `PermissionDenied` with a platform-correct hint.
 - A test that asserts an HTTP *classification* must first prove its child ran.

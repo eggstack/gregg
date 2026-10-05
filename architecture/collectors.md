@@ -28,6 +28,14 @@ All collector byte-ratio percentages use the shared
 `collector::clamped_usage_pct` helper so v1 and v2 platform paths have the
 same zero, clamp, and non-finite behavior.
 
+A total of zero is never a measurement. Physical memory that reports a zero
+total — a `GlobalMemoryStatusEx` total, an `hw.memsize`, a `vm.stats.vm.vnsizes`
+total — is an error on every backend, so the memory family is omitted rather
+than published as `0 / 0`, which would render as a confident `0.0%` used on a
+machine the daemon could not measure. A swap total of zero is the one documented
+exception, because "no swap device" is a real reading on Linux and is rendered
+`—` rather than as a percentage.
+
 Optional live telemetry uses the shared `gregg-host/src/rate.rs` baseline helper.
 Cumulative two-direction counters are keyed by native identity and divided by
 actual monotonic elapsed time. First observations, counter decreases, zero or
@@ -191,7 +199,10 @@ do not add capacity, and loopback is detail-only for capacity.
 - `mach_host_self()` — RAII `HostPort` wrapper
 - `host_statistics()` — `HOST_CPU_LOAD_INFO` (CPU ticks)
 - `host_statistics64()` — `HOST_VM_INFO64` (VM page counts)
-- `host_page_size()` — page size
+- `host_page_size()` — page size. Its out-parameter is a `vm_size_t *`, which
+  is a 32-bit `unsigned int`, not a pointer-sized integer: declaring it wider
+  would make the kernel write four bytes past the end of the value. A reported
+  zero is treated as unavailable rather than divided by.
 - `sysctlbyname()` — kernel parameters
 - `getloadavg()` — load averages
 - `libc::getmntinfo` with `libc::statfs` — mounted filesystems (libc owns the
@@ -400,7 +411,16 @@ read: a `#[repr(C)]` mirror that omits one shifts every member after it, so a
 missing field silently renames a counter and shortens the stride used to walk the
 API's own allocation. The struct size and the offsets of the members that are
 read are asserted at compile time, so a divergence fails the build rather than
-the numbers. Failed optional queries are
+the numbers.
+
+`PERFORMANCE_INFORMATION` gets the same treatment, and the *types* matter as much
+as the member list: `cb`, `handles_count`, `process_count` and `thread_count` are
+`DWORD`, everything else is `SIZE_T`. Widening the four counters to `usize`
+misreports the size the API validates `cb` against and moves each of them by four
+bytes, and the members must stay in the header's order — `PhysicalTotal` precedes
+`PhysicalAvailable`. The mirror is seeded as a zeroed buffer rather than an
+uninitialised one, so no member is ever read as uninitialised memory even if the
+API wrote less than the whole struct. Failed optional queries are
 omitted without changing core readiness.
 
 ## FreeBSD backend (Plan 136)

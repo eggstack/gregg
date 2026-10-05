@@ -45,6 +45,94 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A `greggd` child that wrote more than one pipe buffer could wedge the
+  scheduler forever.** The wait for a running job awaited the child's exit
+  *before* draining its output, so a job that filled the 64 KiB stdout pipe
+  blocked in `write(2)` while nothing was reading: the wait never resolved, the
+  one global child slot never freed, and no further job could start on a
+  daemon that was otherwise healthy. The wait and both drains are now polled as
+  one join, which is what makes a flooding child's writes and this process's
+  reads progress together. The flood test drives that production future instead
+  of reimplementing the join, so it can no longer pass while production wedges.
+
+- **A frontend disconnect could freeze the EggPool pane of every window still
+  open.** Converging the worker's window happened on the request path only, but
+  a disconnect removes an intent with no request of its own — so the worker
+  switched windows while fleet state kept the old one. The reducer accepts a
+  result only on a window match, so from then on every fetch was discarded: the
+  surviving pane stayed on its pre-disconnect summary and the worker kept
+  burning a request per interval. The converged window now lands in the fleet on
+  every path that changes it, disconnect included.
+
+- **A stalled TUI could be disconnected for being slow.** The local protocol's
+  write path treated a full socket buffer as a dead peer, so a frontend that
+  stopped reading for a moment lost its connection. It is backpressure: the
+  unsent tail of the frame in flight is now kept and pushed as the peer drains,
+  and a document arriving meanwhile is queued behind it, with the newest
+  superseding the older queued one. The frame in flight is never dropped —
+  a length-prefixed frame with a hole in it desynchronises the peer's parser
+  permanently.
+
+- **The `PERFORMANCE_INFORMATION` mirror did not match the Windows ABI.** Its
+  members were all declared `usize`, which misreports the buffer size the API
+  validates `cb` against and moves the four `DWORD` counters by four bytes
+  each, and `PhysicalTotal` / `PhysicalAvailable` were in the wrong order. The
+  member types and order are now ABI-faithful, the struct's size and every
+  offset this crate reads are asserted at compile time, and the commit-charge
+  read seeds a zeroed buffer so nothing is read as uninitialised memory. A
+  `hw.memsize`-style total of zero is no longer published as `0 / 0` on Windows,
+  macOS, or FreeBSD: it is an error, so the memory family is omitted rather than
+  rendered as a confident `0.0%` used on a machine that could not be measured.
+
+- **A conforming daemon could be shown as offline for being well-formed.** The
+  client's 64 KiB response-body cap was verified against drives alone, but a
+  maximum-bound v2 payload — 32 drives, 32 disk-io devices and 32 network
+  interfaces, each with a name and id of up to 512 bytes — measures 111,465
+  bytes, which the cap refused as a decode failure. The cap is 256 KiB: a
+  hostile-input ceiling, not a wire-format limit, and one that clears what the
+  protocol allows. The measurement now covers every capped collection at once.
+
+- **A control byte in a config-reload diagnostic reached the terminal.** The
+  diagnostics pane renders that text verbatim, and it is the daemon's
+  config-parser output quoted from a local file. It now goes through the same
+  sanitising chokepoint as the rest of a document, so an escape is rendered in
+  caret notation instead of being able to repaint the pane.
+
+- **A job waiting for the child slot was recorded as expired by load.** Expiry
+  ran before the global child-slot check and was gated only on the job having a
+  `max_load`, so a job whose threshold the host was comfortably under was
+  dropped with a `load_expired` record blaming load for a slot the gate never
+  saw. An occurrence can only expire while the load gate is actually refusing
+  it; one that is merely waiting for the slot stays pending and runs when the
+  slot frees.
+
+- **The cron pane labelled `stderr` as `stdout`.** A failed job's error output
+  — and the `+` marking that the remote truncated it — were both reported on
+  the wrong stream, which sends an operator to the wrong place to look for the
+  failure. Each stream now carries its own name, truncated or not.
+
+- **A download could grow the updater's heap without bound.** The release-asset
+  and checksum downloads piped `curl`'s stdout and stderr into unbounded
+  buffers while every other child was capped. The asset body goes to a file, so
+  these pipes carry only the status line and diagnostics; they are capped now
+  too, and a mirror that floods them fails the download.
+
+- **A refused pane intent was remembered as sent.** The event loop's
+  last-intent memories suppressed a re-send, but they were written whether or
+  not the request reached the daemon, so one full request channel left the pane
+  silently on a window the daemon had never been told about. An intent is only
+  remembered once it is actually queued, so the next drain re-offers it.
+
+- **A frontend could spin a core on a partial frame.** After reading part of a
+  frame, the read loop had no await point, so the loop condition depended only
+  on bytes already in hand and nothing was left to wait for. The loop now
+  yields between the halves of a frame.
+
+- **`gregg remove`'s IPv6 advice told the operator to type something it
+  rejects.** The malformed-bracket message suggested `[ipv6]:port`, but the same
+  error comes from `remove`, which takes a host on its own. The advice is now
+  about the bracketing it is actually complaining about.
+
 - **`greggd` busy-looped a core while a job waited behind a load gate.** A
   job that became due and was held back by `max_load` in the same tick kept an
   already-elapsed `retry_at`: the reschedule pass that pushes such an occurrence

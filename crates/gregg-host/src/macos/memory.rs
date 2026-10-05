@@ -50,14 +50,16 @@ impl MemorySample {
 /// # Edge cases
 ///
 /// - Available bytes transiently exceeding total: clamped to total.
-/// - Zero total: returns zero used with zero percentage.
+/// - Zero total: an error. A `hw.memsize` of zero is not a measurement, and
+///   publishing `0 / 0` would render as a confident `0.0%` used on a machine
+///   whose memory the daemon could not read.
 /// - Page size or count overflow: returns a `Numeric` error.
 pub fn compute_memory(raw: &RawVmStats, total_bytes: u64) -> Result<MemorySample, CollectError> {
     if total_bytes == 0 {
-        return Ok(MemorySample {
-            used_bytes: 0,
-            total_bytes: 0,
-        });
+        return Err(CollectError::new(
+            CollectErrorKind::Parse,
+            "macOS physical memory total is zero",
+        ));
     }
 
     let available_pages = raw.free_count.saturating_add(raw.inactive_count);
@@ -104,12 +106,16 @@ mod tests {
         assert_eq!(mem.total_bytes, total);
     }
 
+    /// A zero total is not a reading of "no memory": it is a reading of nothing,
+    /// and it must not become a published `0 / 0` that renders as `0.0%` used.
     #[test]
-    fn zero_total() {
+    fn zero_total_is_refused_rather_than_published() {
         let raw = sample_vm();
-        let mem = compute_memory(&raw, 0).expect("zero total");
-        assert_eq!(mem.used_bytes, 0);
-        assert_eq!(mem.total_bytes, 0);
+        let error = compute_memory(&raw, 0).expect_err("a zero total is not a measurement");
+        assert!(
+            matches!(error.kind, CollectErrorKind::Parse),
+            "expected a parse error, got {error}"
+        );
     }
 
     #[test]

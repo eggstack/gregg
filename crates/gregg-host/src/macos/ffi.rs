@@ -461,7 +461,10 @@ extern "C" {
         info_out_cnt: *mut mach_msg_type_number_t,
     ) -> kern_return_t;
 
-    fn host_page_size(host_priv: mach_port_t, page_size: *mut usize) -> kern_return_t;
+    /// `host_page_size` takes a `vm_size_t *`, which is a 32-bit `unsigned int`
+    /// — not a pointer-sized integer. Declaring it wider would make the write
+    /// straddle four bytes of adjacent stack memory.
+    fn host_page_size(host_priv: mach_port_t, page_size: *mut u32) -> kern_return_t;
 
     fn sysctlbyname(
         name: *const std::ffi::c_char,
@@ -1686,9 +1689,10 @@ fn read_page_size() -> Result<u64, CollectError> {
 
 fn read_page_size_uncached() -> Result<u64, CollectError> {
     let host = HostPort::current()?;
-    let mut page_size: usize = 0;
-    // Safety: `host_page_size` writes a single usize value. The pointer is
-    // valid and properly aligned. The return status is validated.
+    let mut page_size: u32 = 0;
+    // Safety: `host_page_size` writes a single `vm_size_t` (`u32`) value. The
+    // pointer is valid, writable, and correctly aligned for that type. The
+    // return status is validated.
     let kr = unsafe { host_page_size(host.raw(), &mut page_size) };
     if kr != KERN_SUCCESS {
         return Err(CollectError::new(
@@ -1696,8 +1700,15 @@ fn read_page_size_uncached() -> Result<u64, CollectError> {
             format!("host_page_size failed with status {kr}"),
         ));
     }
-    #[allow(clippy::cast_possible_truncation)]
-    Ok(page_size as u64)
+    if page_size == 0 {
+        // A zero page size would turn every byte-count arithmetic below into a
+        // division by zero, and is not a value the kernel can mean.
+        return Err(CollectError::new(
+            CollectErrorKind::SourceUnavailable,
+            "host_page_size reported zero",
+        ));
+    }
+    Ok(u64::from(page_size))
 }
 
 /// Read swap usage from sysctl `vm.swapusage`.

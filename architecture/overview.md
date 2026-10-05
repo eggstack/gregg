@@ -167,7 +167,7 @@ the frontend are the same binary.
 
 - Polling: `scheduler.rs` (generations, semaphore bound, panic→`Cancelled`,
   offline retried every cadence, never pruned) + `poller.rs` (v2-first,
-  64 KiB cap, no redirects, `PollOutcome` incl. stable `OfflineReason`) +
+  256 KiB cap, no redirects, `PollOutcome` incl. stable `OfflineReason`) +
   `normalized.rs` (one UI type for v1/v2, checked drive aggregation).
 - Client daemon: `clientd/daemon.rs` (engine, `watch` fan-out, one document
   serialized once for all windows), `clientd/ipc.rs` (Unix `0600` socket /

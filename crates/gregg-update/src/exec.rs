@@ -24,6 +24,14 @@ pub const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 /// unbounded pipe buffer from a verbose child.
 pub const MAX_STDERR_BYTES: usize = 64 * 1024;
 
+/// Maximum bytes accepted on a download child's stdout pipe (1 KiB).
+///
+/// The asset body is written to a file with `-o`, so stdout carries only the
+/// `-w %{http_code}` status line — three digits. The cap exists so a mirror
+/// that answers with an unbounded body on the wrong channel fails the download
+/// rather than filling memory.
+pub const MAX_DOWNLOAD_STATUS_BYTES: usize = 1024;
+
 /// Maximum bytes accepted from a staged candidate `version` probe on each
 /// of stdout/stderr (16 KiB). A legitimate identity line is under 100
 /// bytes; anything larger is rejected without buffering it fully.
@@ -360,7 +368,16 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
         ]);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = run_child_with_timeout(cmd, DOWNLOAD_WALL_TIMEOUT);
+    // Capped like every other child: the asset body goes to `-o <dest>`, so
+    // these pipes carry only the `%{http_code}` line and curl's diagnostics,
+    // and a mirror that floods them fails the download instead of growing this
+    // process's heap.
+    let output = run_child_with_timeout_capped_both(
+        cmd,
+        DOWNLOAD_WALL_TIMEOUT,
+        MAX_DOWNLOAD_STATUS_BYTES,
+        MAX_STDERR_BYTES,
+    );
     match output {
         Ok(out) if out.status.success() => {
             // Defense in depth: callers pass `-f` (fail on non-2xx), but
@@ -753,6 +770,59 @@ mod tests {
         let _ = std::fs::write(&stub, script);
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
         stub.to_string_lossy().to_string()
+    }
+
+    /// Stub `curl` that floods the *status* pipe instead of the asset file: a
+    /// server answering on the wrong channel, with a body the caller never asked
+    /// for. The asset itself is written correctly, so only the cap on that pipe
+    /// can catch it.
+    #[cfg(unix)]
+    fn stub_curl_flooding_status_pipe(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("curl");
+        let script = format!(
+            concat!(
+                "#!/bin/sh\n",
+                "echo x >> \"{}\"\n",
+                "out=\"\"\n",
+                "while [ \"$#\" -gt 0 ]; do\n",
+                "  if [ \"$1\" = \"-o\" ]; then out=\"$2\"; fi\n",
+                "  shift\n",
+                "done\n",
+                "printf 'asset' > \"$out\"\n",
+                // No `-w` status line at all: just an unbounded stream on stdout.
+                "dd if=/dev/zero bs=1024 count=512 2>/dev/null\n",
+                "exit 0\n",
+            ),
+            dir.join("calls").display(),
+        );
+        let _ = std::fs::write(&stub, script);
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stub.to_string_lossy().to_string()
+    }
+
+    /// A child's pipes are bounded like any other child: an unbounded stdout is
+    /// a failed download, never a buffer this process grows to the server's
+    /// liking. `download_file` only ever reads a `%{http_code}` line from it.
+    #[cfg(unix)]
+    #[test]
+    fn download_fails_when_the_status_pipe_is_flooded() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-statusflood").unwrap();
+        let dir = temp.path().to_path_buf();
+        let dest = dir.join("asset");
+        let calls = dir.join("calls");
+        let curl = stub_curl_flooding_status_pipe(&dir);
+        let outcome =
+            download_file_with_started_stub(&curl, "https://example.invalid/asset", &dest, &calls);
+        let DownloadOutcome::Failed(reason) = outcome else {
+            panic!("a flooded status pipe must not be accepted: {outcome:?}");
+        };
+        assert!(
+            reason.contains(&RESPONSE_TOO_LARGE_FRAGMENT),
+            "the download must fail for exceeding the cap, \
+             not for some unrelated reason: {reason}"
+        );
+        assert!(!dest.exists(), "a failed download must not leave the asset");
     }
 
     #[cfg(unix)]
