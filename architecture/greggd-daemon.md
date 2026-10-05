@@ -256,12 +256,15 @@ stays pending and runs when the slot frees.
 
 **Output capture** replaces `Stdio::null()` only when history is enabled. Both
 pipe handles are taken immediately after the spawn, and both streams drain
-concurrently with the child wait in a single `tokio::join!` — neither stream
-can block the other, and neither can fill the child's pipe, so the classic
-deadlock cannot occur. The *order* is load-bearing, not incidental: awaiting
-the child first would let a job that writes more than one pipe buffer block in
-`write(2)` while nothing drains it, so the wait would never resolve, the one
-global child slot would never free, and no further job could start. The drain
+concurrently with the child wait on one task — neither stream can block the
+other, and neither can fill the child's pipe, so the classic deadlock cannot
+occur. The *order* is load-bearing, not incidental: awaiting the child first
+would let a job that writes more than one pipe buffer block in `write(2)` while
+nothing drains it, so the wait would never resolve, the one global child slot
+would never free, and no further job could start. Draining one stream to EOF
+before touching the second is the same deadlock wearing a different hat: a child
+blocked writing to the second pipe can never reach the EOF that ends the first.
+The drain
 futures **borrow** the streams instead of
 spawning tasks: a cancelled select (deadline or shutdown) simply stops draining
 and leaves the handles in place for the next wake, so no drain task can outlive
@@ -276,6 +279,27 @@ bytes per
 stream) and fold each read chunk in with a single bounded drain, so retention is
 independent of how much a child writes. A read error ends that one stream and
 keeps what was already captured rather than failing the scheduler.
+
+**The direct child is the execution boundary, not pipe EOF.** The direct
+child's wait result is the terminal execution event: `finished_unix_ms` and the
+recorded duration are frozen at that instant and are never inflated by draining
+bytes after it exited. A scheduled command can legitimately spawn a descendant
+that inherits fd 1 or 2 and then exit; that descendant is not greggd's child and
+must not keep the one global child slot occupied, so greggd never waits for pipe
+EOF as its completion signal. After the wait resolves, output capture continues
+for at most one fixed, non-configurable settle bound
+(`POST_EXIT_OUTPUT_SETTLE`, 250 ms), ending early the moment both streams reach
+EOF. At the bound greggd preserves every byte already folded into the
+fixed-capacity tails, closes the read handles, finalizes the terminal record,
+and frees the slot — a descendant that writes after that point is outside the
+direct-child execution/history contract, and greggd does not block the scheduler,
+spawn a process group, or kill anything it did not start to capture it. The
+frozen exit, its status, and its settle deadline all live on the `RunningChild`
+rather than in the completion future, so a completion future cancelled and
+rebuilt by a wake keeps the first instant and cannot restart the settle budget.
+Terminal attribution uses the configuration index the child was launched with;
+the running child carries it authoritatively, so there is no job-name search and
+no index-zero fallback.
 
 Wire conversion happens after the byte bound: lossy UTF-8, then the frozen
 JSON-escaped length budget (512 escaped bytes per stream), with independent

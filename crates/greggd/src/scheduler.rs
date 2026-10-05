@@ -16,11 +16,29 @@ use tokio::time::Instant;
 
 use crate::config::{ScheduledJobConfig, MAX_JOBS};
 use observation::{
-    drain_into, job_state, OutputTail, SchedulerObserver, SchedulerPublisher, TerminalRecord,
+    drain_into, drain_step, job_state, OutputTail, SchedulerObserver, SchedulerPublisher,
+    TerminalRecord,
 };
 use schedule::LocalSchedule;
 
 const CHILD_SHUTDOWN_BOUND: Duration = Duration::from_secs(2);
+
+/// Fixed, non-configurable grace period for draining output after the direct
+/// child has exited.
+///
+/// The direct child's wait result is the terminal execution event. A descendant
+/// that merely inherited stdout or stderr can hold a pipe write end open long
+/// after the scheduled child is gone, and greggd has exactly one global child
+/// slot: waiting for pipe EOF would let a process greggd never scheduled block
+/// every later maintenance job. Bytes already in flight get this long to land
+/// in the fixed-capacity tails, and then the read handles close, the record is
+/// finalized, and the slot is freed.
+///
+/// Fixed by design — not a configuration field — and it never expands into
+/// process-group ownership or descendant termination: greggd does not own
+/// anything it did not spawn, so a descendant that writes after this boundary is
+/// outside the direct-child execution/history contract.
+const POST_EXIT_OUTPUT_SETTLE: Duration = Duration::from_millis(250);
 
 /// Scheduler-internal civil-clock reconciliation bound.
 ///
@@ -516,7 +534,8 @@ struct RunningChild<'a> {
     stdout_tail: OutputTail,
     stderr_tail: OutputTail,
     /// Index into the configured job set, so every publication can name the
-    /// job that actually holds the global child slot.
+    /// job that actually holds the global child slot — and every terminal
+    /// record is attributed to the job that was actually launched.
     index: usize,
     job_name: &'a str,
     started: Instant,
@@ -524,36 +543,169 @@ struct RunningChild<'a> {
     scheduled_unix_ms: u64,
     delay_ms: u64,
     coalesced: bool,
+    /// The direct child's terminal execution event, frozen when its wait
+    /// result resolves.
+    ///
+    /// It lives here, not in the completion future, because that future is
+    /// rebuilt on every scheduler wake: an exit observed during one wake has to
+    /// keep its own instant, exit status, and settle budget when the next wake
+    /// rebuilds the future. Recording `finished_unix_ms` from the moment the
+    /// completion is *assembled* would describe the settle that followed the
+    /// exit instead of the exit itself.
+    exit: Option<ChildExit>,
+    /// When the post-exit settle bound expires, fixed at the exit instant so a
+    /// wake inside the settle window cannot restart or extend it.
+    settle_deadline: Option<Instant>,
+    /// Whether each piped stream can produce no further bytes (EOF, read error,
+    /// or never piped). Retained across wakes for the same reason as the tails.
+    stdout_done: bool,
+    stderr_done: bool,
 }
 
-/// A child that has exited, with both output streams fully drained.
+impl RunningChild<'_> {
+    /// Freeze the direct child's terminal execution event and open its
+    /// bounded post-exit output settle window.
+    ///
+    /// Idempotent: a rebuild after a cancelled wake keeps the first instant.
+    fn freeze_exit(&mut self, status: std::io::Result<ExitStatus>) {
+        if self.exit.is_some() {
+            return;
+        }
+        let finished = Instant::now();
+        self.exit = Some(ChildExit {
+            status,
+            finished,
+            finished_unix_ms: now_unix_ms(),
+        });
+        self.settle_deadline = Some(finished + POST_EXIT_OUTPUT_SETTLE);
+    }
+
+    /// Whether both piped streams are finished, so the post-exit settle has
+    /// nothing left to wait for.
+    fn output_drained(&self) -> bool {
+        self.stdout_done && self.stderr_done
+    }
+}
+
+/// The direct child's terminal execution event.
+struct ChildExit {
+    status: std::io::Result<ExitStatus>,
+    /// Monotonic instant the wait result resolved.
+    finished: Instant,
+    /// Wall clock captured at that same instant.
+    finished_unix_ms: u64,
+}
+
+/// A child that has exited, with its own terminal instant and both bounded
+/// tails.
+#[derive(Debug)]
 struct ChildCompletion {
     status: std::io::Result<ExitStatus>,
+    /// When the direct child exited — not when the post-exit drain settled.
+    finished_unix_ms: u64,
+    /// Direct-child wall duration, measured to the wait result.
+    duration_ms: u64,
     stdout: OutputTail,
     stderr: OutputTail,
 }
 
-/// Wait for a child to exit while both output streams drain concurrently.
+/// Wait for the direct child to exit, then settle its output within a fixed
+/// bound.
 ///
-/// All three futures are polled on the same task, so a child that writes more
-/// than one pipe buffer makes progress on its writes as the drains make
-/// progress. Awaiting `wait()` *before* the drains would let such a child
-/// block in `write(2)` forever: `wait()` would never resolve, the single
-/// global child slot would never free, and no further job could start. The
-/// streams are borrowed rather than handed to drain tasks, so a cancelled
-/// select simply stops draining and leaves the handles in place for the next
-/// wake — no drain task can outlive the scheduler or delay shutdown.
+/// Two phases, both cancellation-safe across a rebuilt future:
+///
+/// 1. **While the child runs**, its wait and both bounded drains are polled on
+///    the same task, so a child that writes more than one pipe buffer makes
+///    progress on its writes as the drains make progress. Awaiting the child
+///    *before* the drains would let such a child block in `write(2)` forever.
+///    The streams are borrowed rather than handed to drain tasks, so a
+///    cancelled select simply stops draining and leaves the handles in place
+///    for the next wake — no drain task can outlive the scheduler or delay
+///    shutdown — and the already-folded tails survive on the `RunningChild`.
+/// 2. **Once the direct child has exited**, its finish instant and exit status
+///    are frozen first, then both streams keep making bounded progress for at
+///    most [`POST_EXIT_OUTPUT_SETTLE`] — ending early the moment both reach
+///    EOF. This is what keeps an inherited writer from retaining the one global
+///    child slot after the scheduled child is gone, while never blocking the
+///    scheduler to capture a descendant's later output.
 async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion {
-    let status = tokio::join!(
-        child.child.wait(),
-        drain_into(child.stdout.as_mut(), &mut child.stdout_tail),
-        drain_into(child.stderr.as_mut(), &mut child.stderr_tail),
-    )
-    .0;
-    // Both drains have reached EOF (the child holds no write end), so the
-    // accumulated tails are final and move into the terminal record.
+    if child.exit.is_none() {
+        // The inner block scopes the drain borrows so the frozen exit can be
+        // installed as soon as the select resolves.
+        let status = {
+            let wait = child.child.wait();
+            tokio::pin!(wait);
+            let stdout = drain_into(
+                child.stdout.as_mut(),
+                &mut child.stdout_tail,
+                &mut child.stdout_done,
+            );
+            tokio::pin!(stdout);
+            let stderr = drain_into(
+                child.stderr.as_mut(),
+                &mut child.stderr_tail,
+                &mut child.stderr_done,
+            );
+            tokio::pin!(stderr);
+            tokio::select! {
+                status = &mut wait => Some(status),
+                // Both pipes finished first (capture disabled, or the child
+                // closed its own descriptors). The direct child's wait is still
+                // the terminal event, so keep waiting for it with no drain in
+                // flight. The two drains are joined *here* rather than run in
+                // sequence: awaiting stdout to EOF before touching stderr would
+                // let a child blocked writing to a full stderr pipe never
+                // reach the EOF that releases the first one.
+                () = async {
+                    let _ = tokio::join!(&mut stdout, &mut stderr);
+                } => None,
+            }
+        };
+        if let Some(status) = status {
+            child.freeze_exit(status);
+        } else {
+            let status = child.child.wait().await;
+            child.freeze_exit(status);
+        }
+    }
+    let settle_deadline = child
+        .settle_deadline
+        .expect("a frozen exit carries its settle bound");
+    while !child.output_drained() {
+        let progressed = tokio::select! {
+            (out, err) = async {
+                tokio::join!(
+                    drain_step(
+                        child.stdout.as_mut(),
+                        &mut child.stdout_tail,
+                        &mut child.stdout_done,
+                    ),
+                    drain_step(
+                        child.stderr.as_mut(),
+                        &mut child.stderr_tail,
+                        &mut child.stderr_done,
+                    ),
+                )
+            } => out || err,
+            () = tokio::time::sleep_until(settle_deadline) => false,
+        };
+        if !progressed {
+            break;
+        }
+    }
+    let exit = child
+        .exit
+        .take()
+        .expect("the direct child reached a terminal wait result");
+    // Dropping the read ends here is the boundary: a writer that merely
+    // inherited the descriptor now gets `EPIPE` instead of holding greggd's one
+    // global child slot. greggd does not kill it.
+    child.stdout = None;
+    child.stderr = None;
     ChildCompletion {
-        status,
+        status: exit.status,
+        finished_unix_ms: exit.finished_unix_ms,
+        duration_ms: duration_millis(exit.finished.saturating_duration_since(child.started)),
         stdout: std::mem::take(&mut child.stdout_tail),
         stderr: std::mem::take(&mut child.stderr_tail),
     }
@@ -574,6 +726,73 @@ fn exit_signal(status: ExitStatus) -> Option<u32> {
 #[cfg(not(unix))]
 fn exit_signal(_status: ExitStatus) -> Option<u32> {
     None
+}
+
+/// What one completed direct child contributed to its terminal record.
+#[derive(Debug)]
+struct FinishedChild {
+    sequence: u64,
+    outcome: SchedulerOutcomeV2,
+    exit_code: Option<i32>,
+    signal: Option<u32>,
+    /// Direct-child wall duration, frozen at the wait result.
+    duration_ms: u64,
+}
+
+/// Record one completed direct child under the configuration index it carries.
+///
+/// The running child already owns the authoritative index it was launched with,
+/// so attribution never searches the configured jobs by name: a duplicate or
+/// reordered name can never move a terminal record onto a sibling, and there is
+/// no index-zero fallback for a failed search. The published finish instant and
+/// duration come from the completion's frozen exit event, never from the moment
+/// the record is assembled.
+fn finish_child(
+    engine: &mut Engine<'_>,
+    child: &RunningChild<'_>,
+    completion: ChildCompletion,
+) -> FinishedChild {
+    let (outcome, exit_code, signal) = match completion.status {
+        Ok(status) => {
+            let code = status.code();
+            let signal = exit_signal(status);
+            let outcome = if code == Some(0) {
+                SchedulerOutcomeV2::Success
+            } else {
+                SchedulerOutcomeV2::Failed
+            };
+            (outcome, code, signal)
+        }
+        // The child was created but its status could not be observed.
+        // Publishing it as a failure would be a guess.
+        Err(error) => {
+            tracing::info!(job = %child.job_name, %error, "scheduled job wait failed");
+            (SchedulerOutcomeV2::WaitFailed, None, None)
+        }
+    };
+    let sequence = engine.observer.record_terminal(
+        child.index,
+        TerminalRecord {
+            scheduled_unix_ms: child.scheduled_unix_ms,
+            started_unix_ms: Some(child.started_unix_ms),
+            finished_unix_ms: completion.finished_unix_ms,
+            delay_ms: child.delay_ms,
+            coalesced: child.coalesced,
+            exit_code,
+            signal,
+            duration_ms: Some(completion.duration_ms),
+            stdout: completion.stdout,
+            stderr: completion.stderr,
+        },
+        outcome,
+    );
+    FinishedChild {
+        sequence,
+        outcome,
+        exit_code,
+        signal,
+        duration_ms: completion.duration_ms,
+    }
 }
 
 fn start_child(
@@ -608,6 +827,10 @@ fn start_child(
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    // A stream that was never piped has nothing to drain and nothing to wait
+    // for, so its post-exit settle is already satisfied.
+    let stdout_done = stdout.is_none();
+    let stderr_done = stderr.is_none();
     Ok(RunningChild {
         child,
         stdout,
@@ -621,6 +844,10 @@ fn start_child(
         scheduled_unix_ms: 0,
         delay_ms: 0,
         coalesced: false,
+        exit: None,
+        settle_deadline: None,
+        stdout_done,
+        stderr_done,
     })
 }
 
@@ -728,50 +955,14 @@ pub(crate) async fn run(
         match wake {
             SchedulerWake::Child(Some(completion)) => {
                 let child = active.take().expect("completed child remains active");
-                let elapsed_ms = duration_millis(child.started.elapsed());
-                let finished = now_unix_ms();
-                let (outcome, exit_code, signal) = match completion.status {
-                    Ok(status) => {
-                        let code = status.code();
-                        let signal = exit_signal(status);
-                        let outcome = if code == Some(0) {
-                            SchedulerOutcomeV2::Success
-                        } else {
-                            SchedulerOutcomeV2::Failed
-                        };
-                        (outcome, code, signal)
-                    }
-                    // The child was created but its status could not be
-                    // observed. Publishing it as a failure would be a guess.
-                    Err(error) => {
-                        tracing::info!(job = %child.job_name, %error, "scheduled job wait failed");
-                        (SchedulerOutcomeV2::WaitFailed, None, None)
-                    }
-                };
-                let sequence = engine.observer.record_terminal(
-                    jobs.iter()
-                        .position(|job| job.name == child.job_name)
-                        .unwrap_or(0),
-                    TerminalRecord {
-                        scheduled_unix_ms: child.scheduled_unix_ms,
-                        started_unix_ms: Some(child.started_unix_ms),
-                        finished_unix_ms: finished,
-                        delay_ms: child.delay_ms,
-                        coalesced: child.coalesced,
-                        exit_code,
-                        signal,
-                        duration_ms: Some(elapsed_ms),
-                        stdout: completion.stdout,
-                        stderr: completion.stderr,
-                    },
-                    outcome,
-                );
+                let finished = finish_child(&mut engine, &child, completion);
                 tracing::info!(
                     job = %child.job_name,
-                    sequence,
-                    exit_code,
-                    signal,
-                    elapsed_ms,
+                    sequence = finished.sequence,
+                    outcome = ?finished.outcome,
+                    exit_code = finished.exit_code,
+                    signal = finished.signal,
+                    elapsed_ms = finished.duration_ms,
                     "scheduled job completed"
                 );
                 engine.publish(Local::now(), None).await;
@@ -1640,10 +1831,22 @@ mod observation_tests {
     };
 
     fn job_config(name: &str, command: &[&str], max_load: Option<f32>) -> ScheduledJobConfig {
+        job_config_owned(
+            name,
+            command.iter().map(|part| (*part).to_owned()).collect(),
+            max_load,
+        )
+    }
+
+    fn job_config_owned(
+        name: &str,
+        command: Vec<String>,
+        max_load: Option<f32>,
+    ) -> ScheduledJobConfig {
         ScheduledJobConfig {
             name: name.to_owned(),
             schedule: "* * * * *".to_owned(),
-            command: command.iter().map(|part| (*part).to_owned()).collect(),
+            command,
             working_dir: None,
             max_load,
             load_window: None,
@@ -1662,7 +1865,9 @@ mod observation_tests {
     /// The wait itself is the production [`await_child_completion`] future, not
     /// a reimplementation of it: a helper that joined the three futures its own
     /// way would keep passing while production awaited `wait()` first and
-    /// wedged on any child that writes more than one pipe buffer.
+    /// wedged on any child that writes more than one pipe buffer. The record's
+    /// finish instant and duration are the completion's frozen exit event,
+    /// exactly as [`finish_child`] takes them.
     ///
     /// Only the Unix tests below drive a real child, so this helper is Unix
     /// only: on Windows it would otherwise be dead code, and CI builds with
@@ -1679,7 +1884,6 @@ mod observation_tests {
         let completion = await_child_completion(&mut child).await;
         let status = completion.status.expect("child exit observed");
         let (stdout, stderr) = (completion.stdout, completion.stderr);
-        let elapsed_ms = duration_millis(child.started.elapsed());
         let exit_code = status.code();
         let signal = exit_signal(status);
         let outcome = if exit_code == Some(0) {
@@ -1691,12 +1895,12 @@ mod observation_tests {
             TerminalRecord {
                 scheduled_unix_ms: child.scheduled_unix_ms,
                 started_unix_ms: Some(child.started_unix_ms),
-                finished_unix_ms: now_unix_ms(),
+                finished_unix_ms: completion.finished_unix_ms,
                 delay_ms: child.delay_ms,
                 coalesced: child.coalesced,
                 exit_code,
                 signal,
-                duration_ms: Some(elapsed_ms),
+                duration_ms: Some(completion.duration_ms),
                 stdout,
                 stderr,
             },
@@ -1868,6 +2072,333 @@ mod observation_tests {
             .expect("child completes")
             .expect("exit observed");
         assert_eq!(status.code(), Some(0));
+    }
+
+    /// Unix only. How long the inheriting helper descendant stays alive.
+    ///
+    /// Far longer than the settle bound asserted against, so a regression is
+    /// caught as a measured wait rather than a hang, and short enough to be
+    /// harmless if a test cannot clean the descendant up itself.
+    #[cfg(unix)]
+    const INHERITING_DESCENDANT_SECS: u64 = 30;
+
+    /// Unix only. A scheduled command that backgrounds a descendant which keeps
+    /// the inherited stdout write end open, records that descendant's pid so the
+    /// test can terminate it, and then exits successfully.
+    ///
+    /// The shell exists only to create the inherited-descriptor condition.
+    /// Production execution stays direct argv with no shell.
+    #[cfg(unix)]
+    fn inheriting_job(name: &str, pid_file: &std::path::Path) -> ScheduledJobConfig {
+        job_config_owned(
+            name,
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                format!(
+                    "sleep {INHERITING_DESCENDANT_SECS} & printf %s $! > {}; \
+                     printf 'direct-child-done'",
+                    pid_file.display()
+                ),
+            ],
+            None,
+        )
+    }
+
+    /// Unix only. Terminate the backgrounded helper descendant, best effort.
+    ///
+    /// The descendant is already bounded by
+    /// [`INHERITING_DESCENDANT_SECS`], so a missing `kill`, an already-exited
+    /// process, or an unread pid file is not a test failure — it only means the
+    /// helper cleaned itself up.
+    #[cfg(unix)]
+    fn terminate_helper_descendant(pid_file: &std::path::Path) {
+        let Ok(contents) = std::fs::read_to_string(pid_file) else {
+            return;
+        };
+        let _ = std::fs::remove_file(pid_file);
+        let Ok(pid) = contents.trim().parse::<i32>() else {
+            return;
+        };
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+
+    /// Unix only. A unique pid file for one inheriting helper descendant.
+    #[cfg(unix)]
+    fn helper_pid_file(test: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "greggd_inherited_writer_{test}_{}.pid",
+            std::process::id()
+        ))
+    }
+
+    /// The plan's core regression: a scheduled command that backgrounds a
+    /// descendant holding the inherited stdout must not keep greggd's one
+    /// global child slot after the direct child itself has exited.
+    ///
+    /// A completion that waits for pipe EOF would block for the whole
+    /// descendant lifetime here. The production boundary is the direct child's
+    /// wait result plus the fixed post-exit settle bound, so the slot is freed
+    /// after the descendant's write end has had that long to produce bytes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_inherited_output_writer_cannot_retain_the_global_child_slot() {
+        let pid_file = helper_pid_file("retain");
+        let job = inheriting_job("inherits", &pid_file);
+        let mut child = start_child(&job, 0, true).expect("child spawns");
+
+        let started = Instant::now();
+        let completion = tokio::time::timeout(
+            Duration::from_secs(INHERITING_DESCENDANT_SECS / 2),
+            await_child_completion(&mut child),
+        )
+        .await
+        .expect("the direct child's completion must not wait for the descendant");
+        let elapsed = started.elapsed();
+        terminate_helper_descendant(&pid_file);
+
+        assert_eq!(
+            completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        assert_eq!(
+            completion.stdout.into_wire().text,
+            "direct-child-done",
+            "output the direct child wrote before exiting is still captured"
+        );
+        assert!(
+            elapsed >= POST_EXIT_OUTPUT_SETTLE,
+            "the inherited writer must actually be waited out for the settle \
+             bound, or this proves nothing ({elapsed:?})"
+        );
+        assert!(
+            elapsed < Duration::from_secs(INHERITING_DESCENDANT_SECS / 2),
+            "the inherited writer retained the slot for {elapsed:?}"
+        );
+        // The direct child's own timing is the execution event; the post-exit
+        // settle must never be charged to its recorded duration.
+        assert!(
+            completion.duration_ms < duration_millis(POST_EXIT_OUTPUT_SETTLE),
+            "duration {} ms must describe the direct child, not the settle",
+            completion.duration_ms
+        );
+    }
+
+    /// The one global child slot is the whole point: once the direct child's
+    /// completion boundary is crossed, the next due job must be startable even
+    /// while a descendant still holds the previous child's output descriptors.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_following_job_starts_after_the_direct_child_completion_boundary() {
+        let pid_file = helper_pid_file("following");
+        let first = inheriting_job("first", &pid_file);
+        let second = job_config("second", &["/bin/sh", "-c", "printf 'second-job'"], None);
+        let mut child = start_child(&first, 0, true).expect("child spawns");
+        let completion = tokio::time::timeout(
+            Duration::from_secs(INHERITING_DESCENDANT_SECS / 2),
+            await_child_completion(&mut child),
+        )
+        .await
+        .expect("completion must not wait for the inherited writer");
+        terminate_helper_descendant(&pid_file);
+        assert_eq!(
+            completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        // `run` frees the global child slot by dropping the completed child and
+        // republishing, which is exactly this boundary.
+        drop(child);
+
+        let mut next = start_child(&second, 1, true).expect("the next job starts");
+        let next_completion =
+            tokio::time::timeout(Duration::from_secs(10), await_child_completion(&mut next))
+                .await
+                .expect("the following job must complete promptly");
+        assert_eq!(
+            next_completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        assert_eq!(next_completion.stdout.into_wire().text, "second-job");
+    }
+
+    /// Two configured jobs share a name on purpose. A terminal record must be
+    /// attributed through the index the child was launched with: a name search
+    /// could not tell them apart, and there is no index-zero fallback.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_terminal_record_is_attributed_through_the_carried_index() {
+        let jobs = vec![
+            job_config("duplicate", &["/bin/sh", "-c", "printf first"], None),
+            job_config("duplicate", &["/bin/sh", "-c", "printf second"], None),
+        ];
+        let mut engine = Engine::new_unchecked(&jobs, wall_time());
+        let mut child = start_child(&jobs[1], 1, true).expect("child spawns");
+        let completion = await_child_completion(&mut child).await;
+        let finished = finish_child(&mut engine, &child, completion);
+        assert_eq!(finished.outcome, SchedulerOutcomeV2::Success);
+        assert_eq!(finished.exit_code, Some(0));
+        assert!(
+            engine.observer.last_summary(0).is_none(),
+            "a same-named sibling must never receive another job's record"
+        );
+        let recorded = engine
+            .observer
+            .last_summary(1)
+            .expect("the record belongs to the launched index");
+        assert_eq!(recorded.exit_code, Some(0));
+        assert_eq!(recorded.duration_ms, Some(finished.duration_ms));
+        let wall_window = recorded
+            .finished_unix_ms
+            .saturating_sub(child.started_unix_ms);
+        assert!(
+            wall_window.abs_diff(finished.duration_ms) <= 1,
+            "the recorded window must be the direct child's own ({wall_window} ms \
+             vs {} ms)",
+            finished.duration_ms
+        );
+        assert!(
+            wall_window < duration_millis(POST_EXIT_OUTPUT_SETTLE),
+            "the recorded window must exclude the post-exit settle ({wall_window} ms)"
+        );
+    }
+
+    /// Shutdown keeps its established bound: a killed direct child is reaped
+    /// inside [`CHILD_SHUTDOWN_BOUND`] while a descendant still holds its
+    /// output descriptors, so no inherited writer can extend daemon shutdown.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_reaps_a_killed_child_despite_an_inherited_writer() {
+        let pid_file = helper_pid_file("shutdown");
+        let job = job_config(
+            "long-running",
+            &[
+                "/bin/sh",
+                "-c",
+                &format!("sleep {INHERITING_DESCENDANT_SECS} & wait"),
+            ],
+            None,
+        );
+        let mut child = start_child(&job, 0, true).expect("child spawns");
+        // Let the helper background its descendant before the kill request, so
+        // the pipes are genuinely inherited while the child is reaped.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let started = Instant::now();
+        child.child.start_kill().expect("kill request");
+        let outcome = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
+            .await
+            .expect("a killed direct child must be reaped inside the shutdown bound");
+        let elapsed = started.elapsed();
+        terminate_helper_descendant(&pid_file);
+        assert!(outcome.is_ok());
+        assert!(
+            elapsed < CHILD_SHUTDOWN_BOUND,
+            "shutdown waited {elapsed:?} on an inherited output writer"
+        );
+        // The read ends close with the child, so nothing on the descendant's
+        // side is left open on the scheduler's behalf.
+        drop(child);
+    }
+
+    /// The ordinary path still captures both streams and is not charged a
+    /// settle on top of its own work: a child that closes its own descriptors
+    /// reaches EOF, which ends the settle loop immediately. Spawning and
+    /// reaping `/bin/sh` is single-digit milliseconds, so the 250 ms settle
+    /// bound is a ~100x margin over the whole completion here.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_ordinary_exit_is_captured_without_spending_the_settle_bound() {
+        let job = job_config(
+            "ordinary",
+            &["/bin/sh", "-c", "printf out; printf err 1>&2"],
+            None,
+        );
+        let mut child = start_child(&job, 0, true).expect("child spawns");
+        let started = Instant::now();
+        let completion = await_child_completion(&mut child).await;
+        let elapsed = started.elapsed();
+        assert_eq!(
+            completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        let stdout = completion.stdout.into_wire();
+        let stderr = completion.stderr.into_wire();
+        assert_eq!(stdout.text, "out");
+        assert_eq!(stderr.text, "err");
+        assert!(!stdout.truncated);
+        assert!(!stderr.truncated);
+        assert!(
+            child.output_drained(),
+            "a child that closed its own descriptors must reach pipe EOF"
+        );
+        assert!(
+            elapsed < POST_EXIT_OUTPUT_SETTLE,
+            "an ordinary exit must not wait out the settle bound ({elapsed:?})"
+        );
+    }
+
+    /// A completion future cancelled inside the post-exit settle keeps the
+    /// frozen exit and finishes its remaining settle on the next wake: the exit
+    /// instant, exit status, and settle budget are all owned by the child.
+    ///
+    /// The cancellation is deterministic rather than a timing race. Polling the
+    /// production future under a zero timeout is exactly what a deadline wake
+    /// does — a fresh future, dropped one poll later — and it never sleeps, so
+    /// the wake lands inside the settle window by construction once the exit is
+    /// frozen.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_settle_cancelled_by_a_wake_keeps_the_frozen_exit_and_budget() {
+        let pid_file = helper_pid_file("settle");
+        let job = inheriting_job("inherits", &pid_file);
+        let mut child = start_child(&job, 0, true).expect("child spawns");
+
+        // Poll the production future until the direct child has exited.
+        let give_up = Instant::now() + Duration::from_secs(20);
+        while child.exit.is_none() {
+            assert!(Instant::now() < give_up, "the direct child never exited");
+            let _ = tokio::time::timeout(Duration::ZERO, await_child_completion(&mut child)).await;
+            tokio::task::yield_now().await;
+        }
+        let frozen = child
+            .exit
+            .as_ref()
+            .expect("the exit is frozen on the child");
+        let (finished, finished_unix_ms) = (frozen.finished, frozen.finished_unix_ms);
+        assert_eq!(
+            child.settle_deadline,
+            Some(finished + POST_EXIT_OUTPUT_SETTLE),
+            "the settle budget is fixed at the exit instant"
+        );
+
+        // Another cancelled poll: the descendant still holds the write end, so
+        // the settle is provably still in progress.
+        let cancelled =
+            tokio::time::timeout(Duration::ZERO, await_child_completion(&mut child)).await;
+        assert!(
+            cancelled.is_err(),
+            "the settle must still be waiting on the inherited writer"
+        );
+        assert_eq!(
+            child.exit.as_ref().map(|exit| exit.finished_unix_ms),
+            Some(finished_unix_ms),
+            "a cancelled future must not re-stamp or lose the frozen exit"
+        );
+
+        // The rebuilt future finishes the settle and reports the same exit.
+        let completion = await_child_completion(&mut child).await;
+        terminate_helper_descendant(&pid_file);
+        assert_eq!(
+            completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        assert_eq!(
+            completion.finished_unix_ms, finished_unix_ms,
+            "a rebuilt completion must not re-stamp the direct child's exit"
+        );
+        assert_eq!(completion.stdout.into_wire().text, "direct-child-done");
     }
 
     #[tokio::test]

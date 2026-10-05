@@ -157,42 +157,73 @@ impl Default for OutputTail {
     }
 }
 
-/// Concurrently drain one child stream into a fixed-capacity tail.
+/// Read at most one chunk from one child stream into a fixed-capacity tail.
 ///
-/// Runs alongside the other stream and the child wait in a single
-/// `tokio::join!`, so neither stream can block the other and neither can fill
-/// the child's pipe. A read error ends the drain and keeps whatever was
-/// already retained: losing the tail is better than failing the scheduler, and
-/// the terminal record still reports the child's own exit status.
+/// Returns `true` when at least one byte was folded into the tail, so a caller
+/// spending a bounded budget can tell "output is still arriving" from "this
+/// stream is finished". `done` records that the stream can produce no further
+/// bytes — EOF, a read error, or a stream that was never piped.
 ///
-/// The tail is **borrowed**, not created here, and that is the whole point:
-/// the returned future is rebuilt on every scheduler wake (a bounded
-/// civil-clock recheck can fire while the child is still running), so an
-/// accumulator owned by the future would be dropped with it and every byte
+/// `done` lives beside the tail, not inside this future, because the future is
+/// rebuilt on every scheduler wake: a rebuilt drain must never wait for a pipe
+/// EOF it has already observed.
+///
+/// A cancelled read consumes no bytes, so losing this future at a deadline
+/// loses nothing already captured. The tail is **borrowed**, not created here:
+/// an accumulator owned by the future would be dropped with it and every byte
 /// read before the last wake would vanish — while the terminal record still
-/// reported `truncated: false`. The caller owns the tail across wakes, so a
-/// cancelled drain stops *reading* without losing what it already folded in.
-///
-/// The returned future borrows the stream rather than owning it, so nothing
-/// can outlive the scheduler or delay shutdown. Nothing is spawned.
-pub(crate) async fn drain_into<R>(reader: Option<&mut R>, tail: &mut OutputTail)
+/// reported `truncated: false`. The returned future borrows the stream rather
+/// than owning it, so nothing can outlive the scheduler or delay shutdown.
+/// Nothing is spawned.
+pub(crate) async fn drain_step<R>(
+    reader: Option<&mut R>,
+    tail: &mut OutputTail,
+    done: &mut bool,
+) -> bool
 where
     R: AsyncReadExt + Unpin,
 {
+    if *done {
+        return false;
+    }
     let Some(reader) = reader else {
-        return;
+        *done = true;
+        return false;
     };
     let mut scratch = [0u8; DRAIN_CHUNK];
-    loop {
-        match reader.read(&mut scratch).await {
-            Ok(0) => break,
-            Ok(count) => tail.push(&scratch[..count]),
-            Err(error) => {
-                tracing::debug!(%error, "scheduled child output stream ended with a read error");
-                break;
-            }
+    match reader.read(&mut scratch).await {
+        Ok(0) => {
+            *done = true;
+            false
+        }
+        Ok(count) => {
+            tail.push(&scratch[..count]);
+            true
+        }
+        Err(error) => {
+            tracing::debug!(%error, "scheduled child output stream ended with a read error");
+            *done = true;
+            false
         }
     }
+}
+
+/// Concurrently drain one child stream into a fixed-capacity tail to EOF.
+///
+/// Runs alongside the other stream and the child wait in a single
+/// `tokio::join!`, so neither stream can block the other and neither can fill
+/// the child's pipe while the direct child is still running. A read error ends
+/// the drain and keeps whatever was already retained: losing the tail is better
+/// than failing the scheduler, and the terminal record still reports the
+/// child's own exit status.
+pub(crate) async fn drain_into<R>(
+    mut reader: Option<&mut R>,
+    tail: &mut OutputTail,
+    done: &mut bool,
+) where
+    R: AsyncReadExt + Unpin,
+{
+    while drain_step(reader.as_deref_mut(), tail, done).await {}
 }
 
 /// One immutable scheduler publication, shared with the HTTP server.
@@ -691,15 +722,46 @@ mod tests {
         let data: &'static [u8] = b"line one\nline two\n";
         let mut cursor = std::io::Cursor::new(data);
         let mut tail = OutputTail::new();
-        drain_into(Some(&mut cursor), &mut tail).await;
+        let mut done = false;
+        drain_into(Some(&mut cursor), &mut tail, &mut done).await;
+        assert!(done, "a stream read to EOF must be marked finished");
         assert_eq!(tail.into_wire().text, "line one\nline two\n");
     }
 
     #[tokio::test]
     async fn drain_handles_a_missing_stream() {
         let mut tail = OutputTail::new();
-        drain_into(None::<&mut std::io::Cursor<Vec<u8>>>, &mut tail).await;
+        let mut done = false;
+        drain_into(None::<&mut std::io::Cursor<Vec<u8>>>, &mut tail, &mut done).await;
+        assert!(
+            done,
+            "a stream that was never piped has nothing to wait for"
+        );
         assert_eq!(tail.into_wire().text, "");
+    }
+
+    /// A finished stream must stay finished across a rebuilt drain: the
+    /// post-exit settle phase re-enters this state, and a stream that already
+    /// reached EOF has to report that instead of waiting again.
+    #[tokio::test]
+    async fn a_drain_step_on_a_finished_stream_makes_no_progress() {
+        let data: &'static [u8] = b"one\ntwo\n";
+        let mut cursor = std::io::Cursor::new(data);
+        let mut tail = OutputTail::new();
+        let mut done = false;
+        assert!(drain_step(Some(&mut cursor), &mut tail, &mut done).await);
+        assert!(!done, "one chunk is not EOF");
+        assert!(
+            !drain_step(Some(&mut cursor), &mut tail, &mut done).await,
+            "the end of the stream is not progress"
+        );
+        assert!(done);
+        assert!(
+            !drain_step(Some(&mut cursor), &mut tail, &mut done).await,
+            "a finished stream cannot make progress again"
+        );
+        assert!(done);
+        assert_eq!(tail.into_wire().text, "one\ntwo\n");
     }
 
     /// A drain cancelled by a scheduler wake and then re-entered must keep what
@@ -710,6 +772,7 @@ mod tests {
         let data: &'static [u8] = b"first line\nsecond line\n";
         let mut cursor = std::io::Cursor::new(data);
         let mut tail = OutputTail::new();
+        let mut done = false;
         // First wake: one read reaches the scheduler, then a deadline wake
         // cancels the drain. Only bytes already folded into `tail` survive it.
         let mut chunk = [0u8; 11];
@@ -719,7 +782,7 @@ mod tests {
 
         // Second wake: the rebuilt drain continues into the *same* tail, so the
         // record carries the whole run rather than only the post-wake bytes.
-        drain_into(Some(&mut cursor), &mut tail).await;
+        drain_into(Some(&mut cursor), &mut tail, &mut done).await;
         let wire = tail.into_wire();
         assert_eq!(wire.text, "first line\nsecond line\n");
         assert!(

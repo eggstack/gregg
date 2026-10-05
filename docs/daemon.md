@@ -79,6 +79,12 @@ contain credentials or tokens. stdin is always discarded. stdout and stderr
 are captured into a bounded in-memory tail while scheduler history is enabled
 (see below) and are never written to disk.
 
+Output belongs to the scheduled direct child. A command may start a background
+descendant that inherits stdout or stderr; greggd records the direct child's exit
+as the run's outcome and captures output for a further fixed 250 ms, then closes
+the pipes so an inherited writer cannot hold up later jobs. `greggd` does not
+track, kill, or report on such a descendant.
+
 Jobs always run as greggd's current OS principal. The Linux system service runs
 as `greggd` with `ProtectHome=true` and strict filesystem sandboxing, so it
 generally cannot maintain a developer's home directory; use a user-owned,

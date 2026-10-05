@@ -70,15 +70,28 @@ service lifecycle. For platform metric collection itself, use the
   scheduler lock held across an await, no config/telemetry/process access.
   History is memory-only (`scheduler_history_limit`, default 5, hard max 10,
   `0` = no retention) with no file, database, or replay. `spawn_failed` and
-  `load_expired` are terminal records, not omissions. Pipe stdout/stderr only
-  when history is enabled, take both handles right after the spawn, and drain
-  them concurrently with the child wait by **borrowing** the streams (never
-  `wait_with_output`, never a spawned drain task, never a line reader that can
-  grow unboundedly) so a cancelled select cannot leak a task or delay the
-  two-second shutdown bound. Retain fixed-size tails only (1024 raw bytes per
-  stream, 512 JSON-escaped published bytes, independent `truncated` flags).
-  Never publish `argv` or `working_dir`; do state in documentation that the
-  listener is unauthenticated so anyone who can reach it can read job output.
+  `load_expired` are terminal records, not omissions.
+- **The direct child's wait result is the terminal execution event.** Pipe
+  stdout/stderr only when history is enabled and take both handles right after
+  the spawn, but treat output as bounded *after* the child exits: freeze
+  `finished_unix_ms`/duration at the wait result, then spend at most one fixed
+  non-configurable post-exit settle (250 ms) on bytes still in flight before
+  closing the read handles, finalizing the record, and freeing the one global
+  child slot. A descendant that merely inherited a descriptor must never retain
+  the slot, and greggd never kills it or claims its output. While the child is
+  alive, both streams drain **concurrently with the wait** by borrowing the
+  streams (never `wait_with_output`, never a spawned drain task, never a line
+  reader that can grow unboundedly, and never one stream drained to EOF before
+  the other) so neither a cancelled select nor a flooding child can deadlock the
+  slot or delay the two-second shutdown bound. The frozen exit and its settle
+  deadline live on the `RunningChild`, not in the completion future, so a
+  rebuilt future never re-stamps or restarts them. Retain fixed-size tails only
+  (1024 raw bytes per stream, 512 JSON-escaped published bytes, independent
+  `truncated` flags). Attribute every terminal record through the index the
+  child was launched with — never a job-name search, never an index-zero
+  fallback. Never publish `argv` or `working_dir`; do state in documentation
+  that the listener is unauthenticated so anyone who can reach it can read job
+  output.
 - SIGTERM/SIGINT, SCM Stop/Shutdown, and a successful `STOP\n` on the control
   socket all feed the same nonblocking one-shot shutdown signal into
   `run_with_shutdown()` (10s graceful deadline).

@@ -144,7 +144,17 @@ The tail belongs to the child, not to the drain future. A job that outlives the
 60-second civil-clock reconciliation wake has its drain cancelled and rebuilt,
 so a tail owned by the future would lose everything read before that wake — and
 report `truncated: false` while doing so. What survives a wake is the read, not
-the capture.
+the capture. The frozen exit and its settle deadline live on the child for the
+same reason.
+
+**The direct child is the boundary, not pipe EOF.** A command may spawn a
+descendant that inherits stdout or stderr and then exit; greggd did not schedule
+that descendant, so it must not be allowed to keep the one global child slot
+occupied. The child's exit is the completion event: finish time and duration are
+recorded there, then capture continues for at most a fixed 250 ms while bytes in
+flight land in the tails. After that the read handles close, the record is
+finalized, and the slot is free. `greggd` never kills a descendant to shorten
+this, and never reports output a descendant writes after the boundary.
 
 > **Output is visible to anything that can reach this listener.** Scheduler
 > output is more sensitive than CPU or memory telemetry. The configured

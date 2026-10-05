@@ -1,6 +1,6 @@
 # Plan 173: greggd scheduler direct-child output lifecycle corrective
 
-Status: planned.
+Status: complete. Code at `d2e4a5f`; see the closure record at the end.
 
 Depends on: completed Plans 163 and 167 plus current main at
 `1aac89f1a82fcd347066379b55105e2ff6bfe770`. Independent of Plan 091 and of
@@ -143,23 +143,23 @@ explicit record rather than silent re-baselining. No new dependency is expected.
 
 ## Acceptance criteria
 
-- [ ] An inherited stdout/stderr writer cannot retain greggd's global scheduler
+- [x] An inherited stdout/stderr writer cannot retain greggd's global scheduler
       slot after the scheduled direct child has exited beyond the fixed
       post-exit settle bound.
-- [ ] Output still drains concurrently while the child is alive; output-flood
+- [x] Output still drains concurrently while the child is alive; output-flood
       and truncation tests remain green.
-- [ ] Execution finish time and duration are measured at the direct-child wait
+- [x] Execution finish time and duration are measured at the direct-child wait
       result and are not inflated by post-exit output cleanup.
-- [ ] A following due job can launch after the direct-child completion boundary.
-- [ ] Terminal attribution uses the carried job index and has no index-zero
+- [x] A following due job can launch after the direct-child completion boundary.
+- [x] Terminal attribution uses the carried job index and has no index-zero
       fallback.
-- [ ] Scheduler shutdown remains bounded at two seconds and no drain task/thread
+- [x] Scheduler shutdown remains bounded at two seconds and no drain task/thread
       can outlive the scheduler.
-- [ ] No process-group killing, shell execution, persistent history, new API
+- [x] No process-group killing, shell execution, persistent history, new API
       mutation, or scheduler concurrency expansion is introduced.
-- [ ] Focused scheduler tests, workspace tests, workspace Clippy, and
+- [x] Focused scheduler tests, workspace tests, workspace Clippy, and
       `./scripts/check-local.sh` pass.
-- [ ] Relevant active architecture/skill documentation is reconciled with the
+- [x] Relevant active architecture/skill documentation is reconciled with the
       corrected direct-child/output boundary.
 
 ## Stop conditions
@@ -185,3 +185,129 @@ Open a separate follow-up rather than broadening this plan if:
 - changes to Gregg client-daemon/TUI behavior (Plans 174-175);
 - new workflows, jobs, matrices, or release automation;
 - the unrelated current Windows EggPool test failure.
+
+## Closure record
+
+Implemented as an explicit two-phase child/output state machine in
+`crates/greggd/src/scheduler.rs`, with the bounded read primitive in
+`crates/greggd/src/scheduler/observation.rs`.
+
+### Phase 1 — the direct child is running
+
+`await_child_completion` polls the direct-child wait and **both** drains
+concurrently on the same task. The join lives inside the non-waiting branch of
+the select, not as a sequence:
+
+```rust
+tokio::select! {
+    status = &mut wait => Some(status),
+    () = async {
+        let _ = tokio::join!(&mut stdout, &mut stderr);
+    } => None,
+}
+```
+
+Draining stdout to EOF *before* touching stderr is the same deadlock as awaiting
+`wait()` first — just wearing a different hat: a child blocked writing to a full
+second pipe can never reach the EOF that ends the first. The existing
+`output_flood_stays_bounded_and_never_deadlocks` regression caught that mistake
+during this pass, which is why the suite is worth keeping.
+
+### Phase 2 — the direct child has exited
+
+`RunningChild::freeze_exit` records the terminal execution event and its settle
+deadline at the instant the wait result resolves, and the existing civil-clock
+reconciliation wake rebuilds the completion future against them, so a rebuilt
+future cannot re-stamp the finish time or restart the settle budget. The settle
+loop then spends at most `POST_EXIT_OUTPUT_SETTLE` (250 ms) making one
+non-blocking read per open stream per iteration, ending the moment both streams
+reach EOF. At the bound, greggd drops the read handles, takes the tails, and
+returns.
+
+Nothing new is spawned and nothing beyond the direct child is killed: a
+descendant that still holds an inherited write end gets `EPIPE` after the
+boundary, and greggd never reports output it did not wait for. No stop condition
+was hit — no process-group ownership, no descendant termination, no detached
+output task, and no change to the one-child execution model.
+
+`drain_into` is now a loop over a new `drain_step` primitive, so the read,
+tail-fold, EOF bookkeeping, and read-error handling exist once instead of twice.
+Per-stream EOF is now state (`stdout_done`/`stderr_done` on the child) rather
+than a property of a future a wake can drop, which is what lets a rebuilt drain
+skip a pipe it has already seen.
+
+### Attribution
+
+`finish_child` takes `&RunningChild` and records through `child.index`. The
+`jobs.iter().position(|job| job.name == child.job_name).unwrap_or(0)` search and
+its index-zero fallback are gone; a duplicate name cannot move a record onto a
+sibling.
+
+### Evidence
+
+- `cargo test -p greggd --lib -- scheduler` — **76 passed, 0 failed** in 0.52s.
+  New cases:
+  - `an_inherited_output_writer_cannot_retain_the_global_child_slot` — a `/bin/sh`
+    helper backgrounds a 30-second descendant that inherits stdout, writes the
+    descendant's pid to a file, prints its own output, and exits 0. The
+    completion returns after the settle bound, far inside the 15s guard, while
+    the descendant's write end is still open; the recorded duration is asserted
+    to be *under* the settle bound so the grace cannot be charged to the child.
+    The pid file is then terminated via `/bin/kill` so the helper leaves no
+    process behind, and the descendant's own 30s bound is a backstop if that
+    fails.
+  - `a_following_job_starts_after_the_direct_child_completion_boundary` — the
+    next job's child starts and completes after the first completion, with the
+    first descendant still holding the previous pipes.
+  - `a_terminal_record_is_attributed_through_the_carried_index` — two configured
+    jobs share a name; the record lands on index 1 with a window matching the
+    direct child's own duration (±1 ms of wall/monotonic rounding), and index 0
+    stays empty.
+  - `a_settle_cancelled_by_a_wake_keeps_the_frozen_exit_and_budget` — polling the
+    production future under a zero timeout is exactly what a deadline wake does,
+    so the cancellation lands inside the settle by construction instead of by
+    timing. The settle deadline stays pinned to the frozen exit, the frozen
+    `finished_unix_ms` survives, and the rebuilt future reports the same exit.
+  - `shutdown_reaps_a_killed_child_despite_an_inherited_writer` — the killed
+    direct child is reaped inside `CHILD_SHUTDOWN_BOUND` with a descendant
+    holding its output descriptors.
+  - `an_ordinary_exit_is_captured_without_spending_the_settle_bound` — both
+    streams captured, untruncated, pipe EOF reached, and no settle charged on the
+    common path.
+- Unchanged regressions still green: `output_flood_stays_bounded_and_never_deadlocks`
+  (30s bound, completes in well under), `output_written_before_a_deadline_wake_still_reaches_the_record`,
+  `a_cancelled_drain_keeps_what_it_already_folded_in`, `disabled_capture_keeps_the_original_null_streams`.
+- `cargo test -p greggd --lib -- scheduler::observation` — drain EOF/done-flag
+  semantics including `a_drain_step_on_a_finished_stream_makes_no_progress`.
+- `cargo clippy -p greggd --all-targets --all-features -- -D warnings` — clean.
+- `./scripts/check-local.sh` — `=== all checks passed (mode: default) ===`
+  (fmt check, workspace Clippy, workspace tests across all crates).
+
+### Footprint
+
+Stripped release `greggd`, measured the same way Plans 159/162 measured, by
+stashing only this corrective's source and rebuilding both sides:
+
+- before this corrective: **3,307,360 bytes**
+- after: **3,312,464 bytes**
+- delta: **+5,104 bytes (+0.154%)**
+
+Against the Plan-159 scheduler baseline of 3,261,664 bytes, the scheduler line
+now sits at 3,312,464 (+50,800 / +1.556%), which is under Plan 162's 3,400,000
+ceiling. This is recorded rather than re-baselined.
+
+Note the local absolute figure differs from the 3,316,568 recorded in Plans
+169/171: this toolchain (`rustc 1.99.0`) produces a ~9 KB smaller binary for the
+*identical* pre-change source, which is why the delta above is measured against a
+freshly built local baseline instead of the recorded number. The recorded
+history is left untouched.
+
+### Documentation
+
+`architecture/greggd-daemon.md`, `crates/greggd/README.md`, `docs/daemon.md`,
+`.opencode/skills/greggd-daemon/SKILL.md`, and `AGENTS.md` now state that output
+belongs to the scheduled direct child, that the wait result is the terminal
+execution event, that capture is bounded after the exit by a fixed 250 ms settle,
+and that greggd does not track or kill descendants. The daemon skill also records
+the "never drain one stream to EOF before the other" half of the concurrency
+rule, which the earlier wording left implicit.
