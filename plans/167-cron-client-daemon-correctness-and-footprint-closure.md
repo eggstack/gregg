@@ -542,3 +542,27 @@ developer aid rather than a change to CI's authority.
 
 The `gregg-update` `ETXTBSY` flake recorded above is still unfixed and still
 out of scope here; Plan 168 does not touch `gregg-update`.
+
+
+## Post-closure correction note (2026-10-05)
+
+The Plan-167 qualification results remain valid for the bounds and scenarios
+they actually measured, but a later source review of current main at
+`1aac89f` identified additional correctness defects that those scenarios did
+not cover. They are recorded as new plans rather than retroactively changing
+this closure:
+
+- **Plan 173**: a descendant-held stdout/stderr writer can keep the greggd
+  scheduler's single active slot after the scheduled direct child exits;
+- **Plan 174**: the client daemon can suppress live summary/error transitions,
+  accept incoherent summary/history pairs or stale-target observations, poll
+  twice immediately at startup, and serialize the cron fleet behind one slow
+  endpoint;
+- **Plan 175**: the cron renderer has load/time/timezone truthfulness defects and
+  bounded-layout cases where stale/truncation rows or the selected job/history
+  can disappear silently.
+
+None of these findings reopens the read-only API boundary, memory-only bounded
+history, one-client-daemon polling architecture, IPC ownership model, or the
+measured footprint record in this plan. Plans 173 and 174 can proceed in
+parallel; Plan 175 follows 174 for final end-to-end verification.
