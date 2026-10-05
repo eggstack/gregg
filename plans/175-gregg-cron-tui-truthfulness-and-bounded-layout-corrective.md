@@ -1,6 +1,6 @@
 # Plan 175: Gregg cron TUI truthfulness and bounded-layout corrective
 
-Status: complete. Code at `PLAN175SHA`; see the closure record at the end.
+Status: complete. Code at `60a3b18`; see the closure record at the end.
 
 Depends on: completed Plan 166 and Plan 174's corrected client-daemon state
 publication/coherence behavior. Independent of Plan 091 and Plan 173.
