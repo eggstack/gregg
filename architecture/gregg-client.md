@@ -220,27 +220,56 @@ off-box), and no `FILE_FLAG_OVERLAPPED`. The descriptor the SDDL conversion
 allocates is self-relative and is released with `LocalFree` in the same block
 that created the pipe.
 
-**Known defect: the accept wait is not cancellable (Plan 171).** Parking the wait
-on the blocking pool is what keeps the runtime free, but it makes the wait
-immune to `accept_task.abort()`. Aborting a task cannot cancel a `spawn_blocking`
-job that is already running, and the closure owns the pipe handle, so the thread
-stays in `ConnectNamedPipe` until a client arrives. `dispatch_daemon` drops the
-`Runtime` at the end of the function and Tokio's shutdown waits for outstanding
-blocking jobs without a timeout, so on Windows `gregg daemon run` currently
-acknowledges a stop request, unwinds, unlinks the endpoint — and then hangs
-instead of exiting. A later `gregg` finds a live pipe held by a wedged process.
+**The parked accept is cancellable (Plan 171).** Parking the wait on the
+blocking pool is what keeps the runtime free, but it made the wait immune to
+`accept_task.abort()`: aborting a task cannot cancel a `spawn_blocking` job that
+is already running, and the closure owns the pipe handle, so the thread stayed in
+`ConnectNamedPipe` until a client arrived. `dispatch_daemon` drops the `Runtime`
+at the end of the function and Tokio's shutdown waits for outstanding blocking
+jobs without a timeout, so `gregg daemon run` acknowledged a stop request,
+unwound, unlinked the endpoint — and then hung instead of exiting.
 
-Two consequences for anyone working here:
+The wait is now stopped rather than abandoned. The closure duplicates a real
+`THREAD_TERMINATE` handle to itself and publishes it to an `AcceptGate`;
+`AcceptStop::request` cancels the pending `ConnectNamedPipe` with
+`CancelSynchronousIo`, the documented mechanism for interrupting synchronous I/O
+from another thread, and is *not* one of the four functions Win32 lists as
+non-cancellable. `run_daemon` requests the stop, waits for the accept loop to
+unwind, and only then releases the endpoint. `AcceptStop` is a no-op on Unix and
+is exported from both transports, so this shutdown sequence carries no `#[cfg]`.
 
-- The `Listener`'s own `pending` instance is not an escape hatch. It is a
-  different handle; the parked one is unreachable from outside the closure.
-- `clientd/daemon.rs`'s `release_parked_accept` is a **test-only** work-around
-  that opens one throwaway client to release the parked thread. It must not be
-  mistaken for the fix, and it must not be copied into production paths. Plan 171
-  removes it.
+Three things keep it race-free rather than usually-right, and all three matter if
+the code is ever edited:
+
+- The stop is **recorded before** the parked record is inspected, and `begin`
+  re-checks it under the same lock. A wait that starts after a stop declines to
+  park rather than parking uncancellably.
+- The lock is **held across** `CancelSynchronousIo` and released between
+  attempts. Holding it is what proves the recorded thread is still the parked one
+  and not some other blocking-pool job; releasing it is what lets the parked
+  thread reach the `end` that clears the record.
+- A cancel issued **before** the thread enters the kernel finds nothing pending
+  and is not remembered, so it is re-issued while the record is up (bounded at
+  `ACCEPT_CANCEL_ATTEMPTS`).
+
+`ERROR_OPERATION_ABORTED` is reported as a disconnect, not a connection: no
+client attached, and the accept loop's existing `Disconnected` arm already
+tolerates that without giving up.
+
+The handle must be a real handle, not a thread **id**: ids are recycled when a
+thread exits, so cancelling by id could interrupt an unrelated thread. That is
+also why `ipc.rs` carries the workspace's only `unsafe impl Send` — a `HANDLE` is
+a process-wide kernel object identifier, and every access to it is serialized by
+the gate's lock.
+
+The signal path in `cli.rs` needed the same treatment and had the same defect:
+returning from `select!` dropped `run_daemon`'s future, skipping the whole
+teardown. It now awaits the daemon after cancelling it, so a supervisor stop and
+Ctrl-C take exactly the path a stop request takes.
 
 Unix has no equivalent problem: `tokio::net::UnixListener::accept` is a
-cancellable async operation, so aborting the accept task is sufficient.
+cancellable async operation, and the loop reaches its own cancellation check in
+milliseconds.
 
 ### Lifecycle (Plan 165)
 

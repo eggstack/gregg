@@ -45,6 +45,35 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`gregg daemon run` never exited on Windows (Plan 171).** A stop request, a
+  supervisor stop signal, and Ctrl-C were all acknowledged — the engine loop
+  unwound and the endpoint was released — and then the process hung instead of
+  exiting. The accept wait is parked on the blocking pool, and aborting the accept
+  task cannot cancel a `spawn_blocking` job that is already running, so the
+  blocking thread stayed in `ConnectNamedPipe` waiting for a client that was
+  never coming. `gregg daemon run` then dropped its runtime, and Tokio's shutdown
+  waits for outstanding blocking jobs without a timeout. A later `gregg` found a
+  live pipe held by a wedged process and attached to a daemon that was no longer
+  polling, with nothing to explain why.
+
+  The wait is now **stopped** rather than abandoned: the parked thread publishes
+  a real `THREAD_TERMINATE` handle to itself, and the stop request cancels the
+  pending `ConnectNamedPipe` with `CancelSynchronousIo` — the documented
+  mechanism for interrupting synchronous I/O from another thread. The handle is a
+  real handle and not a thread id, because ids are recycled when a thread exits
+  and cancelling by id could interrupt an unrelated thread.
+
+  The signal path had the same defect independently: it returned from its
+  `select!`, which dropped the daemon's future and skipped the whole teardown.
+  It now awaits the daemon after cancelling it, so a supervisor stop and Ctrl-C
+  take the same path as a stop request.
+
+  The handshake, frame format, owner-only SDDL, `PIPE_REJECT_REMOTE_CLIENTS`,
+  instance rotation, and the `Hello`-first contract are unchanged, as is every
+  Unix code path. Windows-native tests now cover the interrupt in both orderings
+  — before the wait starts and while it is already parked — and assert that a
+  stopped daemon actually releases its runtime.
+
 - **A TUI that was refused could not be told why.** `FrontendFrame` is
   internally tagged, and serde cannot represent an internally tagged newtype
   whose payload is a bare string. The refusal frame was written as

@@ -90,12 +90,18 @@ reads no config file and opens no network connection.
   has no batch/EggPool/reload entry point; `AppState::adopt_snapshot` is its
   only fleet writer. `#[cfg(test)] test_fleet` lets renderer tests drive the
   real publish/adopt path and is absent from production builds.
-- **Windows accept is not cancellable (open defect, Plan 171).** The accept
-  wait is parked on the blocking pool, and `accept_task.abort()` cannot cancel a
-  `spawn_blocking` job that is already running, so on Windows `gregg daemon run`
-  acknowledges a stop and then hangs instead of exiting. `release_parked_accept`
-  in the daemon test harness is a documented test-only work-around, not the fix.
-  Never treat "aborting the accept task" as sufficient teardown on Windows.
+- **Windows accept is cancellable, not abandoned (Plan 171).** The wait is still
+  parked on the blocking pool, so `accept_task.abort()` is *not* sufficient
+  teardown on Windows — but the parked thread now publishes a `THREAD_TERMINATE`
+  handle to itself and `AcceptStop::request` cancels the wait with
+  `CancelSynchronousIo`. `run_daemon` requests the stop and waits for the accept
+  loop to unwind before releasing the endpoint. A real handle, never a thread
+  **id**: ids are recycled on thread exit, so cancelling by id could interrupt an
+  unrelated thread. `AcceptStop` is a no-op on Unix and exported from both
+  transports, so keep this shutdown sequence `#[cfg]`-free.
+- **A stop must be awaited, not dropped.** `cli.rs`'s signal path used to return
+  from `select!`, which dropped `run_daemon`'s future and skipped the entire
+  teardown. Any path that stops the daemon must `cancel` **and then await** it.
 - **No fallback.** A frontend that cannot reach a compatible daemon reports the
   reason and exits. Never add a direct-polling fallback.
 
