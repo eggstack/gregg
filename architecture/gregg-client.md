@@ -1060,21 +1060,61 @@ reload error verbatim: it is the daemon's config-parser output quoted from a
 local file, so it is remote-shaped text and is escaped when the document is
 adopted, not only where a metrics string is built.
 
-The budget is measured, not estimated. The requested row count and the job
-table are both derived from the renderer's own line-producing functions, and the
-job table is capped by the same constant the budget is built from, so a wide cron
-table cannot consume the whole block and push the selected job's history out of
-view. Both sides of the comparison use the same function the frame is built
-from: an estimate that drifts from the renderer silently drops the newest record.
+The budget is measured, not estimated. `block_rows` builds the block once, as
+ordered groups, and *both* the requested height (`desired_rows`) and the emitted
+height (`render`) read that same list — so the two cannot drift, and an estimate
+that no longer matches the renderer cannot silently drop the newest record. The
+groups are spent in a deliberate order:
+
+1. the `CRON` header and, when the last read failed, the stale-scheduler notice —
+   which is therefore *counted*, not bolted on at render time;
+2. the selected job's header and its **newest** record. This section is
+   *reserved*, not merely ordered first: it is what the operator opened the pane
+   for, so a sixty-job table must never be the part that gets cut;
+3. the bounded window of job rows;
+4. the older records.
+
+When the rows do not fit, one row is reserved for `… more cron rows not shown`,
+so the block always states what it left out, and the job window shrinks *around
+the selection* rather than being cut at a fixed boundary.
+
+The job table is a **window, not a prefix**. `job_window` follows the selected
+job and clamps at both ends, so `Shift-J` past the old 24-row slice cannot make
+the highlighted row disappear, and the hidden jobs are counted
+(`… N more jobs above` / `below`). There is still exactly one scroll model: the
+window is derived from the selection the operator already has, so no second
+persistent scroll state, mouse handling, or inner scrollbar was introduced.
 
 The renderer enforces truthfulness rules that are easy to get wrong:
 
-- a missing load observation is `—`, never `0.00` — a gate that fired because
-  telemetry was unavailable must not read as a gate that saw a low load;
+- **a load row states the relation it actually means.** `greggd` deliberately
+  retains the gate decision that admitted a job, so a running or idle row can
+  legitimately carry a reading *below* the threshold; rendering every gate as
+  `observed > threshold` printed lines like `1.20 > 8.00`, which are not merely
+  ugly but false. Only `load delayed` compares above the threshold
+  (`load15m 9.24 > 8.00`); a running row names the gate it started under
+  (`start load15m 1.20 <= 8.00`) and an idle or slot-waiting row names the
+  previous one (`last gate load15m 1.20 <= 8.00`) so an old reading is not
+  presented as current load. A job with no load gate at all renders no load token.
+- a missing load observation is `unavailable`, never `0.00`, and never a
+  comparison at all — `load15m unavailable (max 8.00)` is the whole claim. A gate
+  that fired because telemetry was missing must not read as a gate that saw a
+  low load, and there is no number to compare in that state;
+- **elapsed states use elapsed grammar.** `for 3m`, `pending 17m`, `queued 2m`,
+  and countdowns `next 11h`, `retry 20s`. The old shared `age()` helper produced
+  `running for 3m ago`, which reads as a contradiction. Clock skew degrades to a
+  saturated `0ms` in either direction rather than underflowing a `u64`;
+- **record clocks are labelled `Z`.** Those fields are UTC instants while the
+  schedule column beside them is the remote's *local* civil cron, so an
+  unlabelled `07:00` next to a `03:00` schedule read as a contradiction across a
+  timezone, with nothing to explain it. The protocol carries no remote timezone
+  history, so the honest fix is to label the clock; reconstructing
+  scheduler-local civil time is a separate protocol change, not a renderer one.
 - a non-child outcome is a real terminal record, named, with `ran —` rather than a
   fabricated `0ms`;
-- remote truncation (`stdout+`) and the pane's own row budget are reported
-  separately;
+- remote truncation (`stdout+`), remote line truncation (`more lines not shown`),
+  and the pane's own viewport truncation (`… more cron rows not shown`) are three
+  different facts with three different markers;
 - a failed scheduler read is labelled stale and never rendered as a system
   failure;
 - a pane with a zero row budget draws nothing rather than indexing outside the

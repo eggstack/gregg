@@ -133,6 +133,24 @@ settled read-only scheduler boundary, memory-only bounded history, one remote
 polling plane, and default-five display history. They are independent of Plan
 091 and do not include the unrelated current Windows EggPool test failure.
 
+Plan 175 is complete: the cron block is truthful about what it can actually
+know. Load rows state the relation they mean — only a load-delayed job prints
+`load15m 9.24 > 8.00`, a running job names the gate it started under, an idle job
+names the previous one, and a missing reading is `unavailable` with no comparison
+at all, never `0.00`. Elapsed states read `for 3m`/`pending 17m`/`queued 2m` and
+countdowns read `next 11h`/`retry 20s`, with clock skew saturating at `0ms`, and
+record clocks are labelled `Z` because they are UTC instants beside a remote-local
+schedule; reconstructing scheduler-local civil time remains a protocol change and
+was not invented here. `block_rows` now builds the block once, so the requested
+height and the emitted height cannot drift and the stale-scheduler row is counted
+by construction; the selected job's header and newest record are reserved ahead
+of the job table, the table is a window around the selection clamped at both ends
+with hidden jobs counted above and below, and anything left out is marked
+`… more cron rows not shown` — a third marker, distinct from remote `stdout+`
+truncation. 47 renderer tests (16 new) and the 894-test gregg suite pass with
+Clippy and the default local check clean. This closes the 173-175 post-closure
+cron correctness line with no protocol, execution, or retention change.
+
 Plan 174 is complete: a frontend document is now republished whenever the
 operator-visible scheduler state changes (capability, job rows,
 `(epoch, revision)`, stale marker) instead of on `history_revision` alone, so a
@@ -703,7 +721,7 @@ excluded.
 | [`172-gregg-update-download-classification-test-spawn-flake.md`](172-gregg-update-download-classification-test-spawn-flake.md) | Stop `gregg-update`'s download-classification test from reporting a transient `Command::spawn` failure as a missing `calls` file, and from failing on it at all | **complete** at `be1aee0`; **closure evidence run `37308641245` on `2dee87c` green across all six jobs**, with MSRV — the job that failed in `37270317172` — green; `download_file` and the `DownloadOutcome` contract are **byte-for-byte unchanged**, so the plan's stop condition was not triggered; "the child ran" is proven from the **child's own side effect** — every stub `curl` now appends to a `calls` log as its first act, so `download_file_with_started_stub` can separate "curl never started" from "curl started and was classified" without parsing a production error string (the `"curl failed: "`-prefix alternative was rejected as a string coupling that would silently reopen the defect on any reword); a spawn failure is retried 4× with 50 ms backoff and then fails as a **named spawn assertion** carrying the reason `download_file` reported and the attempt count; `a_stub_that_never_started_is_reported_as_a_spawn_failure` reproduces the runner's `fork` failure deterministically every run rather than waiting for one; **all four** siblings made the same mistake and were corrected — the oversize and unparseable stubs now assert their specific rejection reason (a spawn failure previously satisfied *both* of their assertions, exercising nothing), and the real-`curl` 500 baseline gained `spawn_recording_response`, which records that a client reached the fixture; **a correction to this plan's own analysis:** it predicted the assertion would check `unexpected HTTP 500`, but production always passes `-f`, so a 5xx exits non-zero and arrives via the non-success arm as `curl exit Some(22)` — both arms are now covered instead, and the new exit-0-on-5xx `stub_curl_success_with_code` closes a previously untested defense-in-depth branch; **the windows-gnu cross-check caught a real break** — the new constants are dead on Windows because the stub cluster is `#[cfg(unix)]`, which `-D warnings` in the Windows job would have failed, so both are now `#[cfg(unix)]`, and that job's green `Clippy` step is the confirmation; 44 `gregg-update` tests (was 42), 1,600 workspace tests, clippy 0, `check-local.sh` pass, **five consecutive MSRV 1.89 runs** green, and 8/8 concurrent test-binary runs as a loaded-runner proxy; independent of 091 |
 | [`173-greggd-scheduler-direct-child-output-lifecycle-corrective.md`](173-greggd-scheduler-direct-child-output-lifecycle-corrective.md) | Correct the greggd scheduler/output lifetime so direct-child exit, not inherited pipe EOF, releases the one global scheduled-child slot; keep bounded concurrent output capture and direct-child timing/attribution truthful | complete; two-phase child/output state machine with a fixed 250 ms post-exit settle, frozen direct-child timing, carried-index attribution; 76 scheduler tests + default local check green; stripped greggd +5,104 bytes; independent of 091 and 174-175 |
 | [`174-gregg-cron-client-daemon-coherence-and-polling-corrective.md`](174-gregg-cron-client-daemon-coherence-and-polling-corrective.md) | Publish live scheduler-summary/error transitions even with unchanged history revision; require coherent epoch+revision history, bind observations/gates to endpoint identity, eliminate the duplicate startup round, and use a small bounded cron request concurrency | complete; operator-visible publication predicate, coherent summary+history pair, target-bound observations/gates, one startup round, four reads in flight; 24 cron + 878 workspace tests + default local check green; **unblocks 175** |
-| [`175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md`](175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md) | Correct cron load/elapsed/timestamp wording, account for stale/truncated rows truthfully, and keep the selected job/history visible with large job sets and constrained terminal height | **planned** after 174; independent of 091/173; no protocol change |
+| [`175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md`](175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md) | Correct cron load/elapsed/timestamp wording, account for stale/truncated rows truthfully, and keep the selected job/history visible with large job sets and constrained terminal height | complete; relation-by-meaning load labels, elapsed-vs-countdown grammar, `Z`-labelled record clocks, one row builder feeding both heights, reserved selected-job section, selection-centred job window, explicit viewport truncation; 47 renderer + 894 workspace tests + default local check green; no protocol change |
 
 Dependency order:
 
@@ -751,7 +769,8 @@ repoints, startup polls twice immediately, and one slow endpoint serializes the
 whole cron fleet. Plan 175 follows 174 only so it is verified against corrected
 state delivery; it owns renderer truthfulness/layout defects and makes no
 protocol change. Plans 173 and 174 may be implemented in parallel; both are
-now complete, which unblocks Plan 175.
+now complete, and Plan 175 followed 174 and is now complete too, so the
+173-175 line is closed.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;

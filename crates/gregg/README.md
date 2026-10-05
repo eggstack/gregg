@@ -230,6 +230,14 @@ the `d` drive and `n` network expansions — opening one does not close another 
 and all three share one vertical budget, so cron takes whatever the other two
 did not claim.
 
+The block stays usable at both extremes. With more jobs than fit, the table is a
+window around the selected job rather than a fixed prefix, so the highlighted row
+never vanishes and the hidden jobs are counted above and below. On a short
+terminal the selected job's newest run is reserved before any job row is drawn,
+and anything left out is reported as `… more cron rows not shown` — which is a
+different fact from the remote's own `stdout+` truncation, and says so
+separately.
+
 Everything here is a read-only projection of remote scheduler state:
 
 - The **summary** (`/v2/scheduler`) carries no command output and is read on a
@@ -244,6 +252,16 @@ is the normal state for an older daemon and never marks the system offline: the
 metrics plane owns reachability, and a healthy daemon with no cron jobs must not
 read as down. A failed scheduler read keeps the last known data and is labelled
 stale rather than presented as current.
+
+Three columns deliberately do not share a time base. The schedule is the remote
+host's own local civil cron; each record's clock is labelled UTC (`10-05
+07:00Z`) because the daemon reports no remote timezone; and relative durations
+(`ran 1.5s`, `for 3m`) are measured from the Unix instant and so need no label.
+A load gate states the relation it actually means — `load15m 9.24 > 8.00` when
+the job is load-delayed, `start load15m 1.20 <= 8.00` for the gate a running job
+was admitted under, `last gate ...` for an idle one, and `unavailable` when there
+is no reading to compare. A missing reading is never zero, and an elapsed state
+never reads as an age (`for 3m`, not `for 3m ago`).
 
 The two documents are applied as one pair. They are separate requests, so a
 daemon restart between them yields a summary from one lifetime and history from

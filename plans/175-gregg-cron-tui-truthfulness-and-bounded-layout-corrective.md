@@ -1,6 +1,6 @@
 # Plan 175: Gregg cron TUI truthfulness and bounded-layout corrective
 
-Status: planned.
+Status: complete. Code at `PLAN175SHA`; see the closure record at the end.
 
 Depends on: completed Plan 166 and Plan 174's corrected client-daemon state
 publication/coherence behavior. Independent of Plan 091 and Plan 173.
@@ -176,27 +176,27 @@ Document:
 
 ## Acceptance criteria
 
-- [ ] No cron row renders a mathematically false load comparison.
-- [ ] Load unavailable is textual/unavailable, never zero and never
+- [x] No cron row renders a mathematically false load comparison.
+- [x] Load unavailable is textual/unavailable, never zero and never
       `unavailable > threshold`.
-- [ ] Running/pending/queued/retry durations use elapsed/countdown wording, not
+- [x] Running/pending/queued/retry durations use elapsed/countdown wording, not
       `ago` grammar.
-- [ ] Absolute recent-run timestamps are visibly UTC/Z and cannot be mistaken
+- [x] Absolute recent-run timestamps are visibly UTC/Z and cannot be mistaken
       for the remote scheduler's local-civil schedule.
-- [ ] Stale-warning rows participate in height accounting.
-- [ ] Local viewport truncation is explicitly marked and remains distinct from
+- [x] Stale-warning rows participate in height accounting.
+- [x] Local viewport truncation is explicitly marked and remains distinct from
       remote stdout/stderr truncation.
-- [ ] A selected job remains visible with more than `MAX_JOB_ROWS` configured
+- [x] A selected job remains visible with more than `MAX_JOB_ROWS` configured
       jobs.
-- [ ] On constrained height, selected-job history has priority sufficient to
+- [x] On constrained height, selected-job history has priority sufficient to
       show its header and newest record headline when one exists.
-- [ ] No second persistent scroll state, mouse interaction, or unbounded card
+- [x] No second persistent scroll state, mouse interaction, or unbounded card
       growth is introduced.
-- [ ] Sanitization, width clipping, default-five history request, and independent
+- [x] Sanitization, width clipping, default-five history request, and independent
       `d`/`n`/`c` expansions remain green.
-- [ ] Focused renderer/state tests, workspace tests, workspace Clippy, and
+- [x] Focused renderer/state tests, workspace tests, workspace Clippy, and
       `./scripts/check-local.sh` pass.
-- [ ] Active user/architecture/skill documentation matches the corrected
+- [x] Active user/architecture/skill documentation matches the corrected
       renderer semantics.
 
 ## Stop conditions
@@ -218,3 +218,120 @@ Open a separate plan rather than broadening if:
 - colors/themes/mouse support or general TUI redesign;
 - alerting or scheduler mutation controls;
 - new dependencies, workflows, jobs, matrices, or release automation.
+
+## Closure record
+
+Renderer-only, in `crates/gregg/src/ui/cron.rs`. No scheduler execution, protocol
+type, polling ownership, or retention policy changed, and no stop condition was
+hit: no protocol timezone field was added, no second scroll model was introduced,
+`greggd`'s gate publication contract is untouched, and the Systems card was not
+redesigned.
+
+### Finding 1 — the load relation, by meaning
+
+`load_gate_label` matches on `(job.state, gate.observed)` instead of formatting
+every gate as `observed > threshold`:
+
+- `LoadHigh` with a reading — the only state where it really is above — prints
+  `load15m 9.24 > 8.00`;
+- `LoadUnavailable` prints `load15m unavailable (max 8.00)`;
+- `Running` prints `start load15m 1.20 <= 8.00`, naming the gate it was admitted
+  under, which is why the retained reading can legitimately be *below* the
+  threshold;
+- `Idle` and `WaitingForSlot` print `last gate load15m 1.20 <= 8.00`, so an old
+  observation is never presented as current live load;
+- a missing reading in *any* state prints `unavailable` and no comparison. The
+  old `— > 8.00` was not a comparison at all;
+- a time-only job still has no load token.
+
+The retry context stays a separate fact about the job and is still the first
+thing dropped on a narrow terminal.
+
+### Finding 2 — elapsed grammar, split from countdown grammar
+
+`age()` is gone. `elapsed_since` and `countdown_to` both saturate at `0ms`, so a
+remote clock ahead — or a transition captured before its own start — degrades
+conservatively instead of underflowing a `u64`. Rows now read `next 11h00m`,
+`for 3m00s`, `pending 17m00s`, `queued 2m00s`, `retry 20.0s`, and never
+`running for 3m ago`.
+
+### Finding 3 — the clock is labelled UTC
+
+`clock_label` emits `10-05 07:00Z`. These fields are UTC instants and the
+schedule column beside them is the remote's local civil cron, so an unlabelled
+`07:00` next to a `03:00` schedule read as a contradiction with nothing to
+explain it. The protocol carries no remote timezone history, so the fix is the
+label; reconstructing scheduler-local civil time stays a separate protocol
+change, as the plan requires.
+
+### Finding 4 and 5 — one row builder, one reserved section, one window
+
+`block_rows` builds the block once as ordered groups — `head` (CRON header plus
+the stale notice), `reserved` (the selected job's header and its **newest**
+record), `table` (the job window), `rest` (older records) — and both
+`desired_rows` and `render` read it. That closes the accounting defect
+structurally: the stale-scheduler row is counted because it is *in* the list, not
+because a separate estimate remembered it.
+
+`render` reserves one row for `… more cron rows not shown` whenever the rows do
+not fit, and spends what is left on the job window *around the selection*:
+`job_window` centres on the selected job and clamps at both ends, so `Shift-J`
+past the old 24-row prefix can no longer make the highlighted row vanish, and
+hidden jobs are counted above and below. When the block is truncated the table
+budget also reserves the window's two marker rows — without that, a selection at
+the window's edge landed on the last visible line and was cut by the very
+truncation it should have survived. That was caught by the 60-job boundary test.
+
+On a short terminal the selected job's header and newest record are drawn before
+any job row, which is what makes pressing `c` useful at 20 rows.
+
+### What the reorder cost, and what it did not
+
+Reserving the selected section moves the job table below it, so one existing
+test's "the job row is the second line" assumption had to become "the job row is
+the first table line". Its actual claim — that the name and state survive a
+narrow cut while the gate detail is dropped — is unchanged and still asserted.
+No second scroll state, scrollbar, mouse handling, or unbounded growth was added.
+
+### Evidence
+
+- `cargo test -p gregg --all-features -- ui::cron` — **47 passed, 0 failed**
+  (31 before; 16 new), including:
+  - load: `a_load_high_row_is_the_only_one_that_compares_above_the_threshold`,
+    `a_running_row_reports_the_gate_that_admitted_it_below_the_threshold`,
+    `an_idle_row_says_last_gate_so_an_old_reading_is_not_current_load`,
+    `load_unavailable_is_never_a_numeric_comparison_in_any_state` (asserted
+    across all five states), `a_time_only_job_has_no_load_token_at_all`
+  - grammar/skew/clock: `elapsed_states_use_elapsed_wording_and_never_ago`,
+    `clock_skew_degrades_to_zero_rather_than_wrapping`,
+    `a_record_clock_is_labelled_utc_and_cannot_be_read_as_local_civil`
+  - layout: `the_stale_notice_is_part_of_the_requested_height`,
+    `a_short_budget_ends_with_an_explicit_truncation_marker`,
+    `an_exact_fit_draws_everything_and_no_marker`,
+    `the_truncation_marker_is_not_confused_with_remote_stream_truncation`,
+    `the_selected_job_stays_visible_across_the_old_first_slice_boundary` (60 jobs,
+    selection before/inside/after the old 24 boundary),
+    `omitted_jobs_are_counted_above_and_below`,
+    `navigation_moves_the_window_with_the_selection`,
+    `a_short_terminal_prioritises_the_selected_job_over_unrelated_job_rows`
+- Unchanged regressions still green, including
+  `a_narrow_terminal_drops_the_tail_rather_than_wrapping_or_overflowing`,
+  `remote_command_output_cannot_reach_the_terminal_as_control_sequences`,
+  `remote_truncation_is_reported_and_is_not_the_same_as_a_viewport_cut`,
+  `wide_glyphs_are_measured_in_cells_not_bytes`,
+  `the_job_table_is_capped_so_the_selected_history_still_has_rows`,
+  `a_zero_row_budget_draws_nothing_rather_than_indexing_outside_the_buffer`,
+  `the_condensed_view_draws_the_cron_block_rather_than_reserving_a_gap`, and the
+  `d`/`n`/`c` independence tests in `state.rs`.
+- `cargo test -p gregg --all-features` — **894 passed, 0 failed** (was 878).
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean.
+- `./scripts/check-local.sh` — `=== all checks passed (mode: default) ===`.
+
+### Documentation
+
+`architecture/gregg-client.md` states the relation-by-meaning rule, the
+elapsed/countdown split with the skew boundary, why the clock is labelled `Z`
+and why that is not a timezone feature, the three distinct truncation markers,
+and the group order with the reserved section and selection-centred window.
+`README.md`, `crates/gregg/README.md`, AGENTS.md, and the gregg-client skill
+carry the same invariants; the skill's cron rules grew from three to ten.

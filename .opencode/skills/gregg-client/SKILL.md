@@ -59,7 +59,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `ui/text` | `src/ui/text.rs` | Text formatting (bytes, percentages, load averages) |
 | `ui/diagnostics` | `src/ui/diagnostics.rs` | Empty-config and terminal-too-small messages |
 | `ui/eggpool` | `src/ui/eggpool.rs` | EggPool summary pane rendering |
-| `ui/cron` | `src/ui/cron.rs` | Cron detail block: job rows, selected-job history, load-delay and staleness labelling, locally escaped text and a viewport row bound |
+| `ui/cron` | `src/ui/cron.rs` | Cron detail block: one `block_rows` builder feeding both heights, selected-job section reserved before the job window, load relations stated by meaning, UTC-labelled record clocks, elapsed-vs-countdown grammar, explicit viewport truncation, locally escaped text |
 
 ## Architecture
 
@@ -506,7 +506,7 @@ See `architecture/gregg-client.md` for the full client architecture document.
 `Shift-K` move between jobs. The three expansions (`d`, `n`, `c`) are
 independent and share one vertical budget.
 
-Three rules govern this plane and are easy to break:
+Ten rules govern this plane and are easy to break:
 
 1. **The intent governs transmission, never fetching.** The client daemon polls
    `/v2/scheduler` on its own cadence whether or not a TUI is attached, and
@@ -552,7 +552,27 @@ Three rules govern this plane and are easy to break:
    sequential walk made the effective cadence a multiple of the nominal one behind
    any slow endpoint. The bound is a constant, never configuration, and the round
    spawns nothing, so a reload or shutdown drops at most those few reads.
-
+8. **Never render a load relation that is not true.** `greggd` retains the gate
+   decision that admitted a job, so a running or idle row can carry a reading
+   *below* the threshold. Only `load delayed` prints `load15m 9.24 > 8.00`; a
+   running row prints `start load15m 1.20 <= 8.00`; an idle or slot-waiting row
+   prints `last gate ...` so an old reading is not presented as current load; and
+   with no reading there is no comparison at all — `load15m unavailable (max
+   8.00)`, never `— > 8.00` and never `0.00`. A time-only job has no load token.
+9. **Elapsed grammar, and two time bases.** Elapsed states read `for 3m`,
+   `pending 17m`, `queued 2m`; countdowns read `next 11h`, `retry 20s`. Never
+   `… ago` on a duration, and let clock skew saturate at `0ms` rather than
+   underflow. A record's clock is labelled `Z` (`10-05 07:00Z`) because it is a
+   UTC instant while the schedule beside it is the remote's local civil cron; do
+   not "fix" that by inventing a remote timezone — that needs a protocol change.
+10. **One row builder, one reserved section, one window.** `block_rows` feeds
+    both `desired_rows` and `render`, so the requested height includes the stale
+    notice and cannot drift from what is emitted. The selected job's header and
+    newest record are reserved before any job row, the job table is a window
+    *around the selection* (clamped at both ends, hidden jobs counted), and
+    truncation is reported with `… more cron rows not shown` — a different fact
+    from remote `stdout+` truncation. Never add a second scroll model, a
+    scrollbar, or mouse handling to solve this.
 Remote text is inert before it reaches a cell: controls render in `cat -v` caret
 notation rather than being stripped, escaping happens at the `adopt_snapshot`
 chokepoint *and* locally in the renderer, and the line bound in `sanitize` is

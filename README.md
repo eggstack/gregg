@@ -149,6 +149,15 @@ windows costs the fleet exactly what zero windows cost. The daemon keeps a
 deeper, memory-only cache than the remote retains, so closing and reopening the
 TUI does not reset what has been observed; nothing is written to disk.
 
+Reading it honestly: schedules are the remote host's own local civil cron, while
+each record's clock is labelled UTC (`10-05 07:00Z`) because the daemon does not
+report the remote's timezone — so the two columns are deliberately not in the
+same time base. A load gate names the relation it actually means
+(`load15m 9.24 > 8.00`, `start load15m 1.20 <= 8.00`, `load15m unavailable`), and
+a missing reading is never rendered as zero. `Shift-J` / `Shift-K` keep the
+selected job visible however many jobs exist, and anything the terminal is too
+short to show is marked as such rather than quietly dropped.
+
 An older `greggd` that does not serve the routes is reported as *unsupported*,
 which is the normal case in a mixed fleet and never marks the system offline.
 Remote command output is escaped rather than stripped, so a hostile build script

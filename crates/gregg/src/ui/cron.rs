@@ -47,15 +47,42 @@ const HEADER_ROWS: usize = 1;
 /// Rows the selected-job section costs before any record is rendered.
 const SELECTED_JOB_ROWS: usize = 1;
 
-/// Maximum job rows the table will attempt before the budget truncates it.
+/// Maximum job rows the table will show before the budget truncates it.
 ///
 /// A cap in its own right, independent of the terminal: a sixty-job daemon
 /// would otherwise make the job table the only thing on screen, and the
 /// history — the part an operator opened the pane for — would be pushed out.
+///
+/// This is a *window* size, not a prefix. The window is chosen around the
+/// selected job, so a fleet with more jobs than the cap still shows whichever
+/// one the operator navigated to.
 const MAX_JOB_ROWS: usize = 24;
+
+/// Rows a truncated job table may spend on its above/below markers.
+const JOB_WINDOW_MARKERS: usize = 2;
 
 /// Marker for a value the remote did not report.
 const UNAVAILABLE: &str = "—";
+
+/// Marker for rows this pane did not draw.
+///
+/// Distinct from the remote's own `stdout+`/`stderr+` truncation: "the remote
+/// kept five lines" and "this viewport can show two" are different facts, and
+/// only the first one is about the data.
+const TRUNCATION_MARKER: &str = "  … more cron rows not shown";
+
+/// Width used when counting logical rows.
+///
+/// Row *counts* do not depend on width — only row *content* does — so this
+/// only has to be a plausible terminal width, not the real one.
+const NOMINAL_WIDTH: usize = 120;
+
+/// Ceiling on the height this block asks the outer layout for.
+///
+/// The block is bounded by its own job window, the daemon-clamped history depth,
+/// and the remote's output cap, so this is a backstop rather than the main
+/// control. Exceeding it is not silent: the block then reports its truncation.
+const MAX_DESIRED_ROWS: usize = MAX_JOB_ROWS + SELECTED_JOB_ROWS + JOB_WINDOW_MARKERS + 8;
 
 /// Whether the cron block has anything to show for this system.
 #[must_use]
@@ -68,121 +95,237 @@ pub fn is_visible(state: &AppState) -> bool {
 /// Drives the height accounting in [`crate::state::entry_height`] and
 /// [`crate::ui::layout`], so the outer fleet viewport keeps one selection and
 /// one scroll model instead of growing a second inner one.
+///
+/// Derived from the very same row builder the renderer emits — including the
+/// stale-scheduler notice — because a height budget that disagrees with the
+/// content reserves one row too few exactly when the warning is present.
 #[must_use]
 pub fn desired_rows(state: &AppState) -> usize {
     if !is_visible(state) {
         return 0;
     }
-    let Some(cron) = state.selected_cron() else {
-        // Expanded on a system with no scheduler entry at all. One row saying
-        // so is better than silently rendering nothing for a pane the operator
-        // believes is open.
-        return 1;
-    };
-    let jobs = job_rows(cron).len().min(MAX_JOB_ROWS);
-    let mut rows = HEADER_ROWS + jobs;
-    if let Some((job, records)) = selected_job_view(state, cron) {
-        let _ = job;
-        let depth = state.cron_display_history.max(1);
-        rows += SELECTED_JOB_ROWS
-            + records
-                .iter()
-                .map(|record| record_rows(record, depth))
-                .sum::<usize>();
+    block_rows(state, NOMINAL_WIDTH, MAX_JOB_ROWS)
+        .len()
+        .min(MAX_DESIRED_ROWS)
+}
+
+/// The block's rows, in the groups the budget is spent in.
+struct BlockRows {
+    /// The `CRON` header plus the stale-scheduler notice, when present.
+    head: Vec<String>,
+    /// The selected job's header and its newest record.
+    ///
+    /// Reserved rather than merely ordered last: this is what the operator
+    /// opened the pane for, so a job table of sixty rows must never be the part
+    /// that gets cut.
+    reserved: Vec<String>,
+    /// The visible window of job rows, with its above/below markers.
+    table: Vec<String>,
+    /// Older records, after the table.
+    rest: Vec<String>,
+}
+
+impl BlockRows {
+    fn len(&self) -> usize {
+        self.head.len() + self.reserved.len() + self.table.len() + self.rest.len()
     }
-    rows.min(MAX_JOB_ROWS + SELECTED_JOB_ROWS + 8)
+
+    /// Rows that are spent before any job row can be drawn.
+    fn fixed(&self) -> usize {
+        self.head.len() + self.reserved.len()
+    }
+
+    fn into_rows(self) -> Vec<String> {
+        let mut rows = self.head;
+        rows.extend(self.reserved);
+        rows.extend(self.table);
+        rows.extend(self.rest);
+        rows
+    }
+}
+
+/// Build the block's rows, with at most `table_max` job rows in the window.
+fn block_rows(state: &AppState, width: usize, table_max: usize) -> BlockRows {
+    let Some(cron) = state.selected_cron() else {
+        // Expanded on a system with no scheduler entry at all. One row saying so
+        // is better than silently rendering nothing for a pane the operator
+        // believes is open.
+        return BlockRows {
+            head: vec![plain("CRON", "no scheduler state for this system")],
+            reserved: Vec::new(),
+            table: Vec::new(),
+            rest: Vec::new(),
+        };
+    };
+
+    let mut head = vec![cron_header(cron)];
+    // A stale read is announced before the rows, so a row of numbers the
+    // operator is about to trust carries its own caveat — and it is counted
+    // here, not bolted on at render time.
+    if cron.last_error.is_some() {
+        head.push(stale_notice(cron));
+    }
+
+    let jobs = job_rows(cron);
+    let selected = state.selected_cron_job();
+    let window = job_window(&jobs, selected, table_max);
+    let mut table = Vec::with_capacity(window.range.len() + 2);
+    if window.above > 0 {
+        table.push(format!("  … {} more jobs above", window.above));
+    }
+    table.extend(
+        window
+            .range
+            .clone()
+            .filter_map(|index| jobs.get(index))
+            .map(|job| job_row(job, Some(job.name.as_str()) == selected, width)),
+    );
+    if window.below > 0 {
+        table.push(format!("  … {} more jobs below", window.below));
+    }
+
+    let Some((job, records)) = selected_job_view(state, cron) else {
+        return BlockRows {
+            head,
+            reserved: Vec::new(),
+            table,
+            rest: Vec::new(),
+        };
+    };
+    // Newest first: an operator opening the pane wants the last run, not the
+    // oldest thing still retained.
+    let depth = state.cron_display_history.max(1);
+    let mut records_iter = records.iter().rev();
+    let newest = records_iter.next();
+    let mut reserved = vec![selected_job_header(job, records.len())];
+    if let Some(record) = newest {
+        reserved.push(record_headline(record, width));
+        for stream in [Stream::Stdout, Stream::Stderr] {
+            reserved.extend(stream_lines(record, stream, depth));
+        }
+    }
+    let mut rest = Vec::new();
+    for record in records_iter {
+        rest.push(record_headline(record, width));
+        for stream in [Stream::Stdout, Stream::Stderr] {
+            rest.extend(stream_lines(record, stream, depth));
+        }
+    }
+    BlockRows {
+        head,
+        reserved,
+        table,
+        rest,
+    }
+}
+
+/// Which job rows the table shows, chosen around the selected job.
+struct JobWindow {
+    /// Slice of [`job_rows`] indices to draw.
+    range: std::ops::Range<usize>,
+    /// Jobs hidden above the window.
+    above: usize,
+    /// Jobs hidden below the window.
+    below: usize,
+}
+
+/// Choose a bounded job window that contains the selected job.
+///
+/// A fixed first-`N` slice hid the selection: `Shift-J` could move to a job
+/// outside it and the highlighted row simply vanished, with the operator's
+/// navigation apparently doing nothing. The window follows the selection
+/// instead, clamped at both ends of the list.
+fn job_window(jobs: &[&SchedulerJobV2], selected: Option<&str>, max: usize) -> JobWindow {
+    let len = jobs.len();
+    let max = max.min(len);
+    if max == 0 {
+        return JobWindow {
+            range: 0..0,
+            above: 0,
+            below: len,
+        };
+    }
+    let index = selected.and_then(|name| jobs.iter().position(|job| job.name == name));
+    // Centred when the list is long enough to scroll, clamped to the ends
+    // otherwise: near the top the window sits at the top, near the bottom at the
+    // bottom, and in the middle the selection stays visible.
+    let start = index
+        .map_or(0, |index| index.saturating_sub(max / 2))
+        .min(len - max);
+    JobWindow {
+        range: start..start + max,
+        above: start,
+        below: len - (start + max),
+    }
 }
 
 /// Render the cron block for the selected system.
 ///
-/// `rows_visible` is the vertical budget the layout computed; the block
-/// truncates to it and says so rather than drawing past it.
+/// `rows_visible` is the vertical budget the layout computed. When the rows do
+/// not fit, one row is reserved for the truncation marker so the block always
+/// says what it left out, and the job window shrinks around the selection rather
+/// than being cut off at a fixed boundary.
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, rows_visible: usize) {
     if rows_visible == 0 || area.width == 0 || area.height == 0 {
         return;
     }
     let width = usize::from(area.width);
-    let mut emitted = 0_usize;
-    let mut row = area.y;
-
-    let line = |text: String, f: &mut Frame, row: &mut u16, emitted: &mut usize| {
-        if *emitted >= rows_visible {
-            return false;
-        }
-        let clipped = truncate_width(&text, width);
-        render_text_line(
-            f,
-            Rect {
-                y: *row,
-                height: 1,
-                ..area
-            },
-            &clipped,
-        );
-        *row = row.saturating_add(1);
-        *emitted += 1;
-        true
+    let height = usize::from(area.height).min(rows_visible);
+    let full = block_rows(state, width, MAX_JOB_ROWS);
+    let (rows, truncated) = if full.len() > height {
+        // The block does not fit. Reserve the marker row, then spend what is
+        // left on job rows around the selection — the selected job's section is
+        // already reserved above them.
+        // Two more for the window's above/below markers: without them in the
+        // budget the selected row can land exactly on the last visible line and
+        // be cut off by the very truncation it should survive.
+        let table_max = height
+            .saturating_sub(full.fixed() + 1 + JOB_WINDOW_MARKERS)
+            .max(1);
+        let shrunk = block_rows(state, width, table_max);
+        let truncated = shrunk.len() > height;
+        (shrunk.into_rows(), truncated)
+    } else {
+        (full.into_rows(), false)
     };
 
-    let Some(cron) = state.selected_cron() else {
-        line(
-            plain("CRON", "no scheduler state for this system"),
-            f,
-            &mut row,
-            &mut emitted,
-        );
-        return;
+    let content = if truncated {
+        height.saturating_sub(1)
+    } else {
+        height
     };
-
-    line(cron_header(cron), f, &mut row, &mut emitted);
-
-    // A stale read is announced before the rows, so a row of numbers the
-    // operator is about to trust carries its own caveat.
-    if cron.last_error.is_some() && !line(stale_notice(cron), f, &mut row, &mut emitted) {
-        return;
-    }
-
-    // The job table is bounded by the same constant the vertical budget is
-    // built from, so a wide cron table cannot consume the whole block and push
-    // the selected job's own history out of view entirely.
-    for (job, selected) in job_rows(cron)
-        .into_iter()
-        .take(MAX_JOB_ROWS)
-        .zip(job_flags(state, cron))
-    {
-        if !line(job_row(job, selected, width), f, &mut row, &mut emitted) {
+    for (index, row) in rows.iter().take(content).enumerate() {
+        let Ok(offset) = u16::try_from(index) else {
             return;
-        }
+        };
+        draw_row(f, area, width, area.y.saturating_add(offset), row);
     }
+    if truncated && content < height {
+        let Ok(offset) = u16::try_from(content) else {
+            return;
+        };
+        draw_row(
+            f,
+            area,
+            width,
+            area.y.saturating_add(offset),
+            TRUNCATION_MARKER,
+        );
+    }
+}
 
-    let Some((job, records)) = selected_job_view(state, cron) else {
-        return;
-    };
-    if !line(
-        selected_job_header(job, records.len()),
+/// Draw one row, clipped to the terminal width.
+fn draw_row(f: &mut Frame, area: Rect, width: usize, y: u16, text: &str) {
+    let clipped = truncate_width(text, width);
+    render_text_line(
         f,
-        &mut row,
-        &mut emitted,
-    ) {
-        return;
-    }
-
-    for (index, record) in records.iter().rev().enumerate() {
-        let depth = state.cron_display_history.max(1);
-        // Newest first: an operator opening the pane wants the last run, not
-        // the oldest thing still retained.
-        let _ = index;
-        if !line(record_headline(record, width), f, &mut row, &mut emitted) {
-            return;
-        }
-        for stream in [Stream::Stdout, Stream::Stderr] {
-            for text in stream_lines(record, stream, depth) {
-                if !line(text, f, &mut row, &mut emitted) {
-                    return;
-                }
-            }
-        }
-    }
+        Rect {
+            y,
+            height: 1,
+            ..area
+        },
+        &clipped,
+    );
 }
 
 /// The `CRON n jobs` header, or the reason there is nothing to list.
@@ -343,37 +486,72 @@ fn state_label(state: SchedulerJobStateV2) -> String {
     }
 }
 
-/// Next run or pending duration, whichever the state implies.
+/// Next run or elapsed duration, whichever the state implies.
+///
+/// Elapsed wording, never the countdown-and-`ago` grammar: a running job is
+/// `for 3m`, not `running for 3m ago`, which read as a contradiction because
+/// `age()` returns an age for past stamps and a countdown for future ones.
 fn state_detail(job: &SchedulerJobV2) -> Option<String> {
     match job.state {
-        SchedulerJobStateV2::Idle => Some(format!("next {}", age(job.next_due_unix_ms))),
+        SchedulerJobStateV2::Idle => Some(format!("next {}", countdown_to(job.next_due_unix_ms))),
         SchedulerJobStateV2::Running => job
             .running_since_unix_ms
-            .map(|since| format!("for {}", age(since))),
+            .map(|since| format!("for {}", elapsed_since(since))),
         SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable => job
             .pending_since_unix_ms
-            .map(|since| format!("pending {}", age(since))),
+            .map(|since| format!("pending {}", elapsed_since(since))),
         SchedulerJobStateV2::WaitingForSlot => job
             .pending_since_unix_ms
-            .map(|since| format!("queued {}", age(since))),
+            .map(|since| format!("queued {}", elapsed_since(since))),
     }
 }
 
 /// The load-gate context, or `None` for a time-only job.
 ///
-/// An absent observation is rendered as [`UNAVAILABLE`], never as `0.00`: a
-/// gate that fired because telemetry was missing must not be readable as a
-/// gate that saw a low load.
+/// The relation is rendered *by meaning*, because `greggd` deliberately retains
+/// the gate decision that admitted a job: a running or idle row can legitimately
+/// carry an observation **below** the threshold. Printing every gate as
+/// `observed > threshold` therefore produced lines like `1.20 > 8.00`, which are
+/// not merely ugly but false, and `— > 8.00` for a missing reading, which is not
+/// a comparison at all.
+///
+/// So the load is only ever compared above the threshold in the one state where
+/// it *is* above it. A retained observation is labelled as the admission or last
+/// gate it was, and a missing one is always spelled unavailable — never zero, and
+/// never a numeric comparison.
 fn load_gate_label(job: &SchedulerJobV2) -> Option<String> {
     let gate: &SchedulerLoadGateV2 = job.load.as_ref()?;
-    let observed = gate
-        .observed
-        .map_or_else(|| UNAVAILABLE.to_owned(), |value| format!("{value:.2}"));
-    let mut text = format!(
-        "load{} {observed} > {:.2}",
-        inert(&gate.window),
-        gate.threshold
-    );
+    let window = inert(&gate.window);
+    let max = format!("max {:.2}", gate.threshold);
+    let unavailable = || format!("load{window} unavailable ({max})");
+    let mut text = match (job.state, gate.observed) {
+        // The only state where the reading really is above the threshold.
+        (SchedulerJobStateV2::LoadHigh, Some(observed)) => {
+            format!("load{window} {observed:.2} > {:.2}", gate.threshold)
+        }
+        // Admitted under the gate it was started with.
+        (SchedulerJobStateV2::Running, Some(observed)) => {
+            format!("start load{window} {observed:.2} <= {:.2}", gate.threshold)
+        }
+        // Idle and slot-waiting rows carry the *previous* gate's observation.
+        // "last gate" says so, rather than presenting an old reading as the
+        // machine's current load.
+        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, Some(observed)) => {
+            format!(
+                "last gate load{window} {observed:.2} <= {:.2}",
+                gate.threshold
+            )
+        }
+        (SchedulerJobStateV2::Running, None) => {
+            format!("start load{window} unavailable ({max})")
+        }
+        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, None) => {
+            format!("last gate load{window} unavailable ({max})")
+        }
+        // No reading in any state, including the one that gates on load: there
+        // is no comparison to make, and `— > 8.00` is not one.
+        (SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable, _) => unavailable(),
+    };
     // The retry context belongs to the *job*, not the gate, and is only
     // meaningful while a load delay is actually in force. It is appended last
     // so it is the first thing dropped on a narrow terminal.
@@ -383,7 +561,7 @@ fn load_gate_label(job: &SchedulerJobV2) -> Option<String> {
     ) {
         match job.next_retry_unix_ms {
             Some(retry) => {
-                let _ = write!(text, " retry {}", age(retry));
+                let _ = write!(text, " retry {}", countdown_to(retry));
             }
             None => text.push_str(" retry pending"),
         }
@@ -511,17 +689,22 @@ fn record_rows(record: &CronRecord, depth: usize) -> usize {
         + stream_lines(record, Stream::Stderr, depth).len()
 }
 
-/// Render a Unix millisecond stamp as `MM-DD HH:MM`.
+/// Render a Unix millisecond stamp as `MM-DD HH:MMZ`.
 ///
-/// Deliberately not a full date: the block is a recent-history view inside a
-/// fixed-width card, and the year is constant for anything it shows.
+/// The trailing `Z` is not decoration. These fields are UTC instants, while the
+/// job's schedule column is the remote host's *local* civil cron — so an
+/// unlabelled `07:00` next to a `03:00` schedule read as a contradiction across
+/// a timezone (and across DST) with nothing to explain it. The protocol carries
+/// no remote timezone history, so the honest fix is to label the clock rather
+/// than to invent one; reconstructing scheduler-local civil time needs its own
+/// protocol change.
 fn clock_label(unix_ms: u64) -> String {
     // Days-from-civil, so there is no date dependency and no timezone state.
     let days = i64::try_from(unix_ms / 86_400_000).unwrap_or(i64::MAX);
     let seconds_of_day = (unix_ms / 1000) % 86_400;
     let (hour, minute) = (seconds_of_day / 3600, (seconds_of_day % 3600) / 60);
     let (month, day) = civil_from_days(days);
-    format!("{month:02}-{day:02} {hour:02}:{minute:02}")
+    format!("{month:02}-{day:02} {hour:02}:{minute:02}Z")
 }
 
 /// Convert days since the Unix epoch to a `(month, day)` pair.
@@ -577,14 +760,22 @@ fn duration_label(millis: u64) -> String {
     }
 }
 
-/// A coarse age or countdown relative to now, in whole units.
-fn age(unix_ms: u64) -> String {
-    let now = crate::state::now_unix_ms();
-    if unix_ms > now {
-        duration_label(unix_ms - now)
-    } else {
-        format!("{} ago", duration_label(now - unix_ms))
-    }
+/// How long ago a state began, in whole units.
+///
+/// Clock skew degrades conservatively: a stamp in the future — a remote whose
+/// clock is ahead, or a transition mid-propagation — yields `0ms` rather than
+/// underflowing. A saturated zero is a visibly wrong duration; a wrapped
+/// `u64` would be an absurd one.
+fn elapsed_since(unix_ms: u64) -> String {
+    duration_label(crate::state::now_unix_ms().saturating_sub(unix_ms))
+}
+
+/// How long until a scheduled instant, in whole units.
+///
+/// The same conservative boundary as [`elapsed_since`]: a due instant already in
+/// the past reads `0ms` rather than wrapping.
+fn countdown_to(unix_ms: u64) -> String {
+    duration_label(unix_ms.saturating_sub(crate::state::now_unix_ms()))
 }
 
 /// One plain `label  value` line, for the "nothing here" cases.
@@ -807,7 +998,11 @@ mod tests {
         });
         let rendered = text(&drawn(&state, 120, 8));
         assert!(rendered.contains("load unavailable"), "{rendered}");
-        assert!(rendered.contains("load1m — > 8.00"), "{rendered}");
+        assert!(
+            rendered.contains("load1m unavailable (max 8.00)"),
+            "a missing reading is never a comparison, not even the one that \
+             gated the job: {rendered}"
+        );
         assert!(
             !rendered.contains("load1m 0.00"),
             "a missing observation must never read as a low one: {rendered}"
@@ -1093,7 +1288,12 @@ mod tests {
                 "line exceeds the terminal width: {line:?}"
             );
         }
-        let row = &lines[1];
+        // The selected job's section is reserved above the table, so the job row
+        // is the first table line rather than simply the second line.
+        let row = lines
+            .iter()
+            .find(|line| line.contains("backup-and-restore") && line.contains("idle"))
+            .expect("the job row is drawn");
         // The name and the state are the two facts that decide whether the
         // operator needs to look closer, so they survive the cut. The gate
         // detail is the part that goes.
@@ -1134,7 +1334,9 @@ mod tests {
         assert_eq!(civil_from_days(11_016), (2, 29)); // 2000-02-29, a leap day
         assert_eq!(civil_from_days(11_017), (3, 1));
         assert_eq!(civil_from_days(20_730), (10, 4)); // 2026-10-04
-        assert_eq!(clock_label(0), "01-01 00:00");
+                                                      // Labelled UTC: these are instants, while the schedule column beside
+                                                      // them is the remote's local civil time.
+        assert_eq!(clock_label(0), "01-01 00:00Z");
     }
 
     #[test]
@@ -1317,5 +1519,326 @@ mod tests {
             rendered.contains("some output"),
             "condensed view drew the header but not the history"
         );
+    }
+    // ---------------------------------------------------------------------
+    // Plan 175: truthful semantics and bounded layout.
+    // ---------------------------------------------------------------------
+
+    /// A job with an explicit gate, state, and timestamps, for helper-level
+    /// assertions about what a row claims.
+    fn gated_job(state: SchedulerJobStateV2, observed: Option<f32>) -> SchedulerJobV2 {
+        SchedulerJobV2 {
+            name: "backup".to_owned(),
+            schedule: "0 3 * * *".to_owned(),
+            next_due_unix_ms: crate::state::now_unix_ms() + 11 * 3_600_000,
+            state,
+            load: Some(SchedulerLoadGateV2 {
+                window: "15m".to_owned(),
+                threshold: 8.0,
+                observed,
+            }),
+            pending_since_unix_ms: None,
+            next_retry_unix_ms: None,
+            running_since_unix_ms: None,
+            last: None,
+        }
+    }
+
+    #[test]
+    fn a_load_high_row_is_the_only_one_that_compares_above_the_threshold() {
+        let label =
+            load_gate_label(&gated_job(SchedulerJobStateV2::LoadHigh, Some(9.24))).expect("gate");
+        // The trailing retry context is a separate fact about the job; the
+        // relation itself is what this test pins.
+        assert!(label.starts_with("load15m 9.24 > 8.00"), "{label}");
+    }
+
+    #[test]
+    fn a_running_row_reports_the_gate_that_admitted_it_below_the_threshold() {
+        // greggd deliberately retains the admitting observation, so a running job
+        // legitimately carries a reading under the threshold. `1.20 > 8.00` was
+        // simply false.
+        let label =
+            load_gate_label(&gated_job(SchedulerJobStateV2::Running, Some(1.20))).expect("gate");
+        assert_eq!(label, "start load15m 1.20 <= 8.00");
+    }
+
+    #[test]
+    fn an_idle_row_says_last_gate_so_an_old_reading_is_not_current_load() {
+        let label =
+            load_gate_label(&gated_job(SchedulerJobStateV2::Idle, Some(1.20))).expect("gate");
+        assert_eq!(label, "last gate load15m 1.20 <= 8.00");
+    }
+
+    #[test]
+    fn load_unavailable_is_never_a_numeric_comparison_in_any_state() {
+        for state in [
+            SchedulerJobStateV2::LoadUnavailable,
+            SchedulerJobStateV2::LoadHigh,
+            SchedulerJobStateV2::Running,
+            SchedulerJobStateV2::Idle,
+            SchedulerJobStateV2::WaitingForSlot,
+        ] {
+            let label = load_gate_label(&gated_job(state, None)).expect("gate");
+            assert!(
+                !label.contains('>'),
+                "{state:?} with no reading rendered a comparison: {label}"
+            );
+            assert!(
+                label.contains("unavailable"),
+                "{state:?} did not say unavailable: {label}"
+            );
+            assert!(
+                !label.contains(" 0.00"),
+                "{state:?} turned a missing reading into zero: {label}"
+            );
+        }
+        assert!(
+            load_gate_label(&gated_job(SchedulerJobStateV2::LoadUnavailable, None))
+                .expect("gate")
+                .starts_with("load15m unavailable (max 8.00)"),
+            "a gate that fired on missing telemetry states the limit it would have \
+             enforced, without claiming a comparison"
+        );
+    }
+
+    #[test]
+    fn a_time_only_job_has_no_load_token_at_all() {
+        let mut job = gated_job(SchedulerJobStateV2::Idle, Some(1.0));
+        job.load = None;
+        assert_eq!(load_gate_label(&job), None);
+    }
+
+    #[test]
+    fn elapsed_states_use_elapsed_wording_and_never_ago() {
+        let now = crate::state::now_unix_ms();
+
+        let mut idle = gated_job(SchedulerJobStateV2::Idle, None);
+        idle.load = None;
+        idle.next_due_unix_ms = now + 11 * 3_600_000;
+        assert_eq!(state_detail(&idle).as_deref(), Some("next 11h00m"));
+
+        let mut running = gated_job(SchedulerJobStateV2::Running, None);
+        running.running_since_unix_ms = Some(now.saturating_sub(3 * 60_000));
+        assert_eq!(state_detail(&running).as_deref(), Some("for 3m00s"));
+
+        let mut pending = gated_job(SchedulerJobStateV2::LoadHigh, None);
+        pending.pending_since_unix_ms = Some(now.saturating_sub(17 * 60_000));
+        assert_eq!(state_detail(&pending).as_deref(), Some("pending 17m00s"));
+
+        let mut queued = gated_job(SchedulerJobStateV2::WaitingForSlot, None);
+        queued.pending_since_unix_ms = Some(now.saturating_sub(2 * 60_000));
+        assert_eq!(state_detail(&queued).as_deref(), Some("queued 2m00s"));
+
+        // The retry countdown reads as a countdown, like the next-due one.
+        let mut retrying = pending.clone();
+        retrying.next_retry_unix_ms = Some(now + 20_000);
+        let label = load_gate_label(&retrying).expect("gate");
+        assert!(label.contains("retry 20.0s"), "{label}");
+
+        for state in [idle, running, pending, queued] {
+            if let Some(detail) = state_detail(&state) {
+                assert!(
+                    !detail.contains("ago"),
+                    "an elapsed state must not read as an age: {detail}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clock_skew_degrades_to_zero_rather_than_wrapping() {
+        let now = crate::state::now_unix_ms();
+        // A remote clock ahead, or a transition captured before its own start.
+        assert_eq!(elapsed_since(now + 5 * 60_000), "0ms");
+        assert_eq!(countdown_to(now.saturating_sub(5 * 60_000)), "0ms");
+        // And the ordinary cases still read correctly.
+        assert_eq!(elapsed_since(now.saturating_sub(90_000)), "1m30s");
+        assert_eq!(countdown_to(now + 90_000), "1m30s");
+    }
+
+    #[test]
+    fn a_record_clock_is_labelled_utc_and_cannot_be_read_as_local_civil() {
+        // 2026-10-05T07:00:00Z. Beside a `03:00` schedule this is unmistakably a
+        // different time base from the remote's local civil clock.
+        // 2026-10-05T07:00:00Z.
+        let utc = 1_791_183_600_000_u64;
+        let label = clock_label(utc);
+        assert!(label.ends_with('Z'), "{label}");
+        assert_eq!(label, "10-05 07:00Z");
+    }
+
+    #[test]
+    fn the_stale_notice_is_part_of_the_requested_height() {
+        // The layout budget has to include the warning, or it reserves one row
+        // too few exactly when the warning is present.
+        let mut state = state_with_cron(
+            &[
+                ("backup", SchedulerJobStateV2::Idle),
+                ("sweep", SchedulerJobStateV2::Idle),
+            ],
+            "backup",
+            vec![record(1, "line", "")],
+        );
+        let clean = desired_rows(&state);
+        state.cron[0].last_error = Some(CronFetchError::Transport("boom".to_owned()));
+        assert_eq!(
+            desired_rows(&state),
+            clean + 1,
+            "the stale row must be requested, not silently dropped"
+        );
+        // And it is drawn inside that budget.
+        let rows = desired_rows(&state);
+        let rendered = text(&drawn(&state, 120, rows));
+        assert!(rendered.contains("scheduler read failed"), "{rendered}");
+    }
+
+    #[test]
+    fn a_short_budget_ends_with_an_explicit_truncation_marker() {
+        let records: Vec<CronRecord> = (1..=5)
+            .map(|sequence| record(sequence, &format!("line-{sequence}"), ""))
+            .collect();
+        let state = state_with_cron(
+            &[
+                ("backup", SchedulerJobStateV2::Idle),
+                ("sweep", SchedulerJobStateV2::Idle),
+            ],
+            "backup",
+            records,
+        );
+        let rendered = text(&drawn(&state, 120, 4));
+        assert!(
+            rendered.contains(TRUNCATION_MARKER),
+            "a cut block must say it was cut: {rendered}"
+        );
+        // The marker is a real row inside the budget, never drawn past it.
+        assert_eq!(
+            drawn(&state, 120, 4).len(),
+            4,
+            "the marker must fit inside the budget it reports on"
+        );
+    }
+
+    #[test]
+    fn an_exact_fit_draws_everything_and_no_marker() {
+        let state = state_with_cron(
+            &[("backup", SchedulerJobStateV2::Idle)],
+            "backup",
+            vec![record(1, "only-line", "")],
+        );
+        let rows = desired_rows(&state);
+        let rendered = text(&drawn(&state, 120, rows));
+        assert!(!rendered.contains(TRUNCATION_MARKER), "{rendered}");
+        assert!(rendered.contains("only-line"), "{rendered}");
+
+        // One row short, the marker appears and the last row is the one lost.
+        let short = text(&drawn(&state, 120, rows - 1));
+        assert!(short.contains(TRUNCATION_MARKER), "{short}");
+        assert!(!short.contains("only-line"), "{short}");
+    }
+
+    #[test]
+    fn the_truncation_marker_is_not_confused_with_remote_stream_truncation() {
+        let mut truncated = record(2, "kept", "");
+        truncated.record.stdout = SchedulerOutputV2::new("kept\n".to_owned(), true);
+        // Retained oldest-first, so the truncated record is the newest and
+        // therefore the one inside the selected job's reserved section.
+        let state = state_with_cron(
+            &[
+                ("backup", SchedulerJobStateV2::Idle),
+                ("sweep", SchedulerJobStateV2::Idle),
+                ("vacuum", SchedulerJobStateV2::Idle),
+            ],
+            "backup",
+            vec![record(1, "older", ""), truncated],
+        );
+        let rendered = text(&drawn(&state, 120, 6));
+        assert!(
+            rendered.contains("stdout+"),
+            "remote tail truncation keeps its own marker: {rendered}"
+        );
+        assert!(
+            rendered.contains(TRUNCATION_MARKER),
+            "and the viewport cut keeps a different one: {rendered}"
+        );
+    }
+
+    /// A fleet with far more jobs than the window, and a selection the test
+    /// chooses.
+    fn state_with_many_jobs(count: usize, selected: &str) -> AppState {
+        let jobs: Vec<(&str, SchedulerJobStateV2)> = (0..count)
+            .map(|index| {
+                (
+                    Box::leak(format!("job-{index:02}").into_boxed_str()) as &str,
+                    SchedulerJobStateV2::Idle,
+                )
+            })
+            .collect();
+        let records: Vec<CronRecord> = (1..=2)
+            .map(|sequence| record(sequence, &format!("newest-{sequence}"), ""))
+            .collect();
+        state_with_cron(&jobs, selected, records)
+    }
+
+    #[test]
+    fn the_selected_job_stays_visible_across_the_old_first_slice_boundary() {
+        // 60 jobs against a 24-row window. Selection before, inside, and after
+        // the old fixed prefix must all keep the selected row on screen.
+        for selected in ["job-00", "job-11", "job-23", "job-24", "job-30", "job-59"] {
+            let state = state_with_many_jobs(60, selected);
+            let rendered = text(&drawn(&state, 120, MAX_JOB_ROWS + 6));
+            assert!(
+                rendered.contains(&format!("> {selected}")),
+                "selecting {selected} hid its own row: {rendered}"
+            );
+            // The window is bounded, so a sixty-job list never all fits.
+            assert!(
+                !rendered.contains("job-59 ") || selected == "job-59",
+                "the window stopped bounding the table: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_jobs_are_counted_above_and_below() {
+        let state = state_with_many_jobs(60, "job-30");
+        // The full requested height, so the whole bounded window is drawn.
+        let rendered = text(&drawn(&state, 120, desired_rows(&state)));
+        assert!(
+            rendered.contains("more jobs above"),
+            "the window hid jobs without saying so: {rendered}"
+        );
+        assert!(
+            rendered.contains("more jobs below"),
+            "the window hid jobs without saying so: {rendered}"
+        );
+    }
+
+    #[test]
+    fn navigation_moves_the_window_with_the_selection() {
+        let mut state = state_with_many_jobs(60, "job-00");
+        let first = text(&drawn(&state, 120, MAX_JOB_ROWS + 6));
+        assert!(first.contains("> job-00"), "{first}");
+        assert!(!first.contains("> job-30"), "{first}");
+
+        // `Shift-K` moves the selection the same way the renderer reads it.
+        state.cron_job = Some("job-30".to_owned());
+        let moved = text(&drawn(&state, 120, MAX_JOB_ROWS + 6));
+        assert!(moved.contains("> job-30"), "{moved}");
+        assert!(!moved.contains("> job-00"), "{moved}");
+    }
+
+    #[test]
+    fn a_short_terminal_prioritises_the_selected_job_over_unrelated_job_rows() {
+        // The point of pressing `c`: see the job that just ran. On a short block
+        // the job table must not be the only thing on screen.
+        let state = state_with_many_jobs(60, "job-50");
+        for budget in 6..=10 {
+            let rendered = text(&drawn(&state, 120, budget));
+            assert!(
+                rendered.contains("newest-"),
+                "budget {budget} hid the selected job's newest record: {rendered}"
+            );
+        }
     }
 }
