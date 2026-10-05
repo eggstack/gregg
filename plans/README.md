@@ -99,6 +99,17 @@ line is independent of the remaining Plan 091 soak record. It adds no remote
 scheduler mutation, persistent cron database, generalized RPC/workflow system,
 or separately distributed client-daemon binary.
 
+Plans 169-170 are the active post-168 follow-up line. Plan 169 is the concrete
+Windows verification corrective: establish the exact native Clippy backlog,
+make full workspace Windows Clippy a permanent step in the existing Windows
+job, and add one real named-pipe two-frontend proof without adding a job or
+matrix. Plan 170 then performs a reversible client-daemon footprint/source-
+boundary campaign from that clean baseline: attribute the current 5,345,864-byte
+stripped Gregg binary, retain only behavior-preserving reductions with a
+meaningful measured win, and close RETAIN CURRENT if the ~996 KiB Plan-161
+growth is the irreducible cost of the same-binary TUI/clientd architecture.
+Both remain independent of Plan 091.
+
 Plans 107-111 coordinated the additive live-metrics work and are now complete.
 Plan 108 owns
 the protocol/client normalization boundary first: optional schema-v2 CPU
@@ -633,6 +644,8 @@ excluded.
 | [`166-cron-cache-and-tui-observability.md`](166-cron-cache-and-tui-observability.md) | Poll scheduler summary/history once in clientd, retain a longer globally bounded memory-only local history, add plain c cron detail with default-five job history/output, load-delay state, and terminal-control sanitization | **complete** at `39d9bd7` (sanitizer + bounded `(epoch, sequence)`-deduplicated cache), `818922b` (`[cron]` config + the client-daemon scheduler poller), `dce9cc1` (two-tier local publication over the existing socket), `5624b48` (the `c` block, adoption-boundary sanitization, and docs); summary on a 30s cadence with history only on discovery/revision change; cache bounded by per-job depth, a **global constant** 4096-record ceiling, and the remote output cap; the cron intent governs **transmission and never fetching**, so N windows cost the fleet what 0 windows cost; `Unsupported` (404) is a healthy older daemon and never touches `Reachability`; remote text is escaped in `cat -v` caret notation; 1,573 workspace tests green, clippy 0, `check-local.sh` pass; **unblocks 167**; independent of 091 |
 | [`167-cron-client-daemon-correctness-and-footprint-closure.md`](167-cron-client-daemon-correctness-and-footprint-closure.md) | Prove one polling plane across multiple TUIs, lazy-start/restart behavior, bounded output/history memory and payloads, old/new daemon compatibility, IPC security/native lifecycle, and measured greggd/gregg footprint | **complete** at `154ab36`, on top of the evidence commit `9245fa2`; all 24 acceptance criteria met; `qualification.rs` derives every memory/payload bound from the real constants and asserts them (daemon history default 368,640 B / max 737,280 B, client cache ceiling 5,242,880 B, frame cap 8,388,608 B); idle 0.533% of one core with 0 frontends vs 0.622% with 2; **found and fixed a real attach bug** — a state document could be published ahead of the handshake `Hello`, so a healthy daemon looked incompatible and a TUI would exit; also corrected the report labelling the daemon maximum as the default; security checklist all clear; 1,597 workspace tests green, clippy 0, `check-local.sh --release` pass; **closes the 161 line** |
 | [`168-windows-client-daemon-transport-correctness-and-verification.md`](168-windows-client-daemon-transport-correctness-and-verification.md) | Close the 161 line's unverified-platform gap: make the Windows client-daemon transport build and run, name the endpoint in the `\\.\pipe\` namespace, keep the current-thread runtime unblocked, and execute the pipe path in CI for the first time | **complete** at `eb2bc62` (on top of the transport fix `01a1405`); CI run `37243685819` on `eb2bc62` green across all six jobs with 803 passed / 0 failed in the Windows client lib and all six added Windows tests executed on the real runner; the Windows half of Plan 164 had been written but never compiled, so the Windows job had been red since 164 landed; corrected stream handle ownership, the owner-only SDDL descriptor, `PIPE_REJECT_REMOTE_CLIENTS` placement, four missing `windows-sys` feature gates, `LOCKFILE_EXCLUSIVE_LOCK`/`SDDL_REVISION_1` module paths, and two Unix-only greggd test helpers that `-D warnings` rejected; the endpoint is now `\\.\pipe\gregg-client-<id>`, the blocking accept is parked on the blocking pool, reads use `PeekNamedPipe`, and liveness is `WaitNamedPipeW` rather than `path.exists()`; four new Windows tests execute the pipe end to end and found that `FrontendFrame::ProtocolError(String)` can never be serialized under an internally tagged enum, so every refusal reason had always been silently discarded; 1,598 workspace tests green, clippy 0, and a windows-gnu type-check of the whole workspace clean; independent of 091 |
+| [`169-windows-target-lint-and-native-multi-client-verification.md`](169-windows-target-lint-and-native-multi-client-verification.md) | Close the remaining Windows verification hygiene gap by inventorying/fixing the native Clippy backlog, adding full Windows workspace Clippy to the existing job, and proving two real named-pipe frontends can share one clientd instance | planned; depends on completed 168/current main; no new job or matrix; independent of 091 |
+| [`170-gregg-client-daemon-footprint-and-source-boundary-optimization.md`](170-gregg-client-daemon-footprint-and-source-boundary-optimization.md) | Attribute the ~996 KiB same-binary clientd/TUI growth and retain only measured behavior-preserving source-boundary/footprint reductions; close RETAIN CURRENT if no safe >=64 KiB cumulative win exists | planned; depends on completed 169 for a clean cross-platform baseline; independent of 091 |
 
 Dependency order:
 
@@ -662,9 +675,11 @@ current post-154 main -> 155
 163 + 164 -> 166
 163 + 165 + 166 -> 167
 161-167 -> 168
+168 -> 169 -> 170
 155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 Plan 161 coordinated the cron-observability/client-daemon line and is now closed with all of 162-167 complete: 162 `42e2fc2` settled the remote scheduler wire/output/memory/footprint contract before 163 changed greggd; 164 `b25ca04` built the client-daemon split, independently justified by duplicate TUI polling; 165 `c8f2542`/`ee6ad7e` added per-user lifecycle on the Plan-164 boundary; 166 `53c06e5` added the bounded local cron cache and plain `c` view on top of the remote scheduler plus clientd core; 167 `154ab36` closed the line on measured multi-client, restart, memory, payload, security, and footprint evidence. Plans 161-167 were and remain independent of Plan 091, and added no workflow, job, or matrix requirement.
 Plan 168 is the post-closure corrective pass for the one gap Plans 161 and 167 both flagged honestly: the Windows job had not been run. Running it showed the Windows half of the client daemon had been written but never compiled, so the Windows CI job had been red since Plan 164 landed. 168 corrected the transport (stream ownership, the owner-only SDDL descriptor, `PIPE_REJECT_REMOTE_CLIENTS` placement, the `windows-sys` feature gates, the `\\.\pipe\` endpoint name, a blocking-pool accept, and a `PeekNamedPipe` read), added a `WaitNamedPipeW` liveness probe so the `stop` confirmation stops answering "not running" for a running daemon, and added four Windows tests that execute the pipe path for the first time. Those tests then found a second, pre-existing defect: `FrontendFrame::ProtocolError(String)` can never be serialized because the enum is internally tagged, so every "here is why you were refused" frame had always been silently discarded. Plan 168 depends on 161-167 and remains independent of Plan 091, and adds no workflow, job, or matrix requirement.
+Plan 169 follows 168 because 168 explicitly recorded a Windows-only Clippy backlog and the existing Windows job still does not run Clippy. It also closes the one remaining native evidence gap with a two-frontend named-pipe test while preserving the shared Plan-167 one-poll-plane proof. The first step must re-enumerate the warnings because Plan 168's prose says eleven while its per-file attribution is arithmetically ambiguous; closure should correct the historical note rather than assume either count. Plan 170 then depends on 169 so its stripped-size baseline includes all correctness/lint cleanup. It is a reversible optimization pass, not a new architecture: the same-binary clientd/TUI boundary is fixed, no dependency may be added for size, and the plan closes RETAIN CURRENT if attribution finds no safe cumulative reduction of at least 64 KiB. Both are independent of Plan 091.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
@@ -767,6 +782,16 @@ child output introduces concrete pipe/memory/body/security decisions. Plans
 163-167 then separate daemon execution/publication, local IPC/state ownership,
 user lifecycle, TUI/cache behavior, and measured closure so implementation can
 proceed without one cross-cutting mega-plan.
+
+Plan 169 is separately justified by a concrete verification defect, not general
+cleanup: Windows-only code is not Clippy-gated in CI, and Plan 168 recorded a
+live backlog behind those cfg paths after native verification had already found
+serious Windows transport faults. Adding one Clippy step to the existing job is
+the smallest durable control. Plan 170 is separately justified by Plan 168's
+measured stripped Gregg size of 5,345,864 bytes, +996,128 / +22.90% over the
+pre-clientd baseline despite no new dependency graph in Plans 164-166. It is
+measurement-first and explicitly allowed to retain the current design if the
+cost is intrinsic; source-line count alone is not evidence for a refactor.
 
 Plan 148 is separately justified by the published EggServe 0.4.0 server line:
 Gregg's direct `eggserve-server = "0.2"` requirement prevents Cargo from
