@@ -308,40 +308,56 @@ and not closure evidence; the six-job matrix on the final SHA is, and only that.
 
 ### CI
 
-Run `37270317172` on the code SHA `e3f0694`:
+**Closure evidence: run `37271258556` on `d402c72`, all six jobs green.** The
+code is unchanged from `e3f0694`; `d402c72` adds only this closure record and the
+follow-up plan.
 
-- **Windows — green**, and it is the job that matters. The Windows `Test` step
-  completed in 2m07s against a 2m12s pre-change baseline, so the three new tests
-  cost nothing measurable and, more importantly, the step finished rather than
-  wedging the way Plan 169's first run did at over 21 minutes. `Clippy` was
-  green too.
-- Linux, both macOS jobs, and the FreeBSD native job — green.
-- **MSRV — red, on an unrelated test in a crate this plan never touched.**
-  `exec::tests::download_classifies_code_in_a_single_request` in `gregg-update`
-  panicked at `exec.rs:785` with `ENOENT` on a `calls` file.
+Windows is the job that matters, and the three new tests passed natively:
 
-That MSRV failure is not a Plan 171 regression, and it is recorded here rather
-than glossed over:
+~~~
+test clientd::ipc::windows_tests::a_stop_request_ends_a_parked_accept_wait ... ok
+test clientd::ipc::windows_tests::a_stop_request_interrupts_an_already_parked_accept ... ok
+test clientd::daemon::windows_tests::a_stopped_daemon_releases_its_runtime ... ok
+test clientd::daemon::windows_tests::two_frontends_share_one_daemon_and_one_publication_over_real_named_pipes ... ok
+test clientd::daemon::windows_tests::a_second_windows_frontend_does_not_add_a_second_polling_plane ... ok
+~~~
+
+alongside the four pre-existing transport tests, so the owner-only SDDL,
+`PIPE_REJECT_REMOTE_CLIENTS`, instance rotation, and the `Hello`-first contract
+are demonstrated still green on the native MSVC runner. The Windows `Test` step
+took 2m15s against a 2m12s pre-change baseline: the new tests cost nothing
+measurable, and the step finished rather than wedging the way Plan 169's first run
+did at over 21 minutes. `Clippy`, both release builds, and the SCM lifecycle smoke
+were green too.
+
+#### An unrelated intermittent, recorded rather than glossed over
+
+The first run of this SHA, `37270317172` on `e3f0694`, was green on five of six
+jobs — including Windows — and failed MSRV at
+`exec::tests::download_classifies_code_in_a_single_request` in `gregg-update`,
+panicking at `exec.rs:785` with `ENOENT` on a `calls` file. It passed on the next
+run of the identical code, so it is intermittent and **not** a Plan 171
+regression:
 
 - `gregg-update` is a separate crate; Plan 171 changed `gregg` and one
   `windows-sys` feature. Nothing in `gregg-update` depends on `clientd`.
-- It is intermittent. The same commit ran the identical test green on Linux,
-  both macOS jobs, Windows, and FreeBSD, and MSRV was green on `39017b1`.
+- The same commit ran the identical test green on Linux, both macOS jobs,
+  Windows, and FreeBSD.
 - Root cause is a test-quality defect, not product behavior: the assertion is
   `DownloadOutcome::Failed(_)`, which also matches the `Err(e)` **spawn
   failure** arm at `exec.rs:402`. A transient `EAGAIN` fork failure under
   loaded-runner parallelism therefore satisfies the HTTP-500 assertion and then
   panics `ENOENT` reading a file the stub never wrote. The two other `exec`
-  tests that spawn real children — one of which deliberately keeps a hanging
-  child alive — are in the log immediately before the failure.
+  tests that spawn real children — one deliberately keeping a hanging child
+  alive — appear in the log immediately before the failure.
 - The 100-second `DOWNLOAD_WALL_TIMEOUT` is not involved; the stub is a
   two-line `/bin/sh` script.
 
-The diagnosis and the fix are registered as **Plan 172**, which is exactly the
-narrow follow-up this plan's stop conditions call for, rather than a change to
-`download_file`'s classification smuggled in here. Plan 171's own criteria are
-demonstrated by the Windows job being green, and `./scripts/check-local.sh`
-passes locally with 1,598 tests green.
+The diagnosis and the fix are registered as **Plan 172**, exactly the narrow
+follow-up this plan's stop conditions call for, rather than a change to
+`download_file`'s classification smuggled in here. Locally, `./scripts/check-local.sh`
+passes and the full workspace suite is 1,598 tests green on both stable and the
+MSRV toolchain.
 
 ### Stop conditions
 
