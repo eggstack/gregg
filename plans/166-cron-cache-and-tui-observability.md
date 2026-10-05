@@ -451,3 +451,24 @@ publication, and the `c` detail block with its renderer and docs.
 - `cargo fmt --all -- --check`: clean.
 
 **Not claimed here.** Binary footprint and memory measurement belong to Plan 167.
+
+
+## Post-closure correction note (2026-10-05)
+
+A later review of current main at `1aac89f` found defects in two parts of this
+completed line without invalidating its architecture:
+
+- the client daemon can install a new live scheduler summary yet suppress
+  frontend publication when epoch/history revision are unchanged; it also does
+  not bind summary/history coherence or in-flight cron observations tightly
+  enough to the remote epoch/revision and configured endpoint;
+- the cron TUI can render false load inequalities, elapsed durations with
+  `ago` grammar, UTC-derived history clocks without a timezone marker, and can
+  silently lose rows/selected-job visibility under stale, tall, or >24-job
+  layouts.
+
+The polling/cache ownership, memory bounds, single remote polling plane,
+default-five display request, and sanitization decisions remain valid. Plan 174
+owns the client-daemon coherence/cadence corrections and Plan 175 owns the TUI
+truthfulness/bounded-layout corrections. This historical closure record remains
+unchanged otherwise.
