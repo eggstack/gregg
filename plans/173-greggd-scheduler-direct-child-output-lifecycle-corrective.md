@@ -311,3 +311,23 @@ execution event, that capture is bounded after the exit by a fixed 250 ms settle
 and that greggd does not track or kill descendants. The daemon skill also records
 the "never drain one stream to EOF before the other" half of the concurrency
 rule, which the earlier wording left implicit.
+
+### CI
+
+Existing workflow run `37371100771` on this line's final SHA: macOS arm64
+**success**, macOS Intel **success**, MSRV (Rust 1.89) **success**, FreeBSD
+(`gregg-host` native) **success**. Linux was **cancelled** after 15 minutes by the
+run's own fail-fast once Windows finished; it was not a test failure, and the
+same job was **success** on this line's earlier commits in runs `37367547505`
+(Plan 173) and `37370062234` (Plan 174), whose only difference from this SHA is
+the cron renderer and documentation.
+
+The Windows job is red for exactly one test,
+`eggpool::tests::worker_cancellation_wins_over_a_full_result_channel`
+("the channel must be full for this to test anything",
+`crates\gregg\src\eggpool.rs:1887`), which is the unrelated pre-existing
+failure these plans list under preserved exclusions: it is present in run
+`37350010528` on the base commit before this line, and `eggpool.rs` was last
+touched by commit `1aac89f`, which predates all three plans. Everything else on
+Windows is green — 846 passed, 1 failed, up from 816 passed on the base run.
+No plan here changed EggPool behaviour, and no plan was allowed to widen into it.

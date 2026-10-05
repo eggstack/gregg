@@ -335,3 +335,17 @@ and why that is not a timezone feature, the three distinct truncation markers,
 and the group order with the reserved section and selection-centred window.
 `README.md`, `crates/gregg/README.md`, AGENTS.md, and the gregg-client skill
 carry the same invariants; the skill's cron rules grew from three to ten.
+
+### CI
+
+Existing workflow run `37371100771`: macOS arm64 **success**, macOS Intel
+**success**, MSRV (Rust 1.89) **success**, FreeBSD **success**. Linux was
+**cancelled** by the run's fail-fast after Windows finished rather than failing;
+it was **success** on the two earlier commits of this line (`37367547505`,
+`37370062234`), and this renderer change is platform-neutral Rust.
+
+The Windows job is red for exactly one test,
+`eggpool::tests::worker_cancellation_wins_over_a_full_result_channel` — the
+pre-existing, unrelated EggPool failure these plans exclude by name. It appears
+in run `37350010528` on the base commit, in `eggpool.rs` untouched since
+`1aac89f`. All 46 of this module's tests pass on Windows in that run.

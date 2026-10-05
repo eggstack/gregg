@@ -411,3 +411,18 @@ plus the one-startup-round and four-read window in "Two unequal fetch planes".
 The gregg-client skill's cron rules grew from three to seven, covering the same
 invariants. `crates/gregg/README.md` and `AGENTS.md` state the pair rule, the
 target binding, the publication predicate, and the bounded window.
+
+### CI
+
+Existing workflow run `37371100771`: macOS arm64 **success**, macOS Intel
+**success**, MSRV (Rust 1.89) **success**, FreeBSD **success**. The MSRV result
+matters here specifically: `interval_at` and `FuturesUnordered` are used in the
+cron worker, and Rust 1.89 accepts them. Linux was **cancelled** by the run's
+fail-fast after Windows finished rather than failing, and was **success** on this
+plan's own commit in run `37370062234`.
+
+The Windows job is red for exactly one test,
+`eggpool::tests::worker_cancellation_wins_over_a_full_result_channel` — the
+pre-existing, unrelated EggPool failure that this plan explicitly excludes. It
+appears in run `37350010528` on the base commit, in `eggpool.rs` untouched since
+`1aac89f`.
