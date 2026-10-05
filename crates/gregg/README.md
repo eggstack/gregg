@@ -245,6 +245,14 @@ metrics plane owns reachability, and a healthy daemon with no cron jobs must not
 read as down. A failed scheduler read keeps the last known data and is labelled
 stale rather than presented as current.
 
+The two documents are applied as one pair. They are separate requests, so a
+daemon restart between them yields a summary from one lifetime and history from
+another; that pair is never merged, never suppresses a later history fetch, and
+is reported as a stale-history diagnostic while the summary itself stays on
+screen. Scheduler state also belongs to the endpoint it was read from: repointing
+a system at a different address drops the old answers and its retained history
+instead of presenting them as the new machine's.
+
 Remote command output is treated as hostile terminal text. Control sequences are
 made visible in `cat -v` caret notation (`ESC` renders as `^[`) rather than
 stripped, so `ESC [ 2 J` displays as `^[[2J` instead of clearing your screen and

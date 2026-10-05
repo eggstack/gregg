@@ -1,6 +1,6 @@
 # Plan 174: Gregg cron client-daemon coherence and polling corrective
 
-Status: planned.
+Status: complete. Code at `PLAN174SHA`; see the closure record at the end.
 
 Depends on: completed Plans 166-167 plus current main at
 `1aac89f1a82fcd347066379b55105e2ff6bfe770`. Independent of Plan 091 and
@@ -226,26 +226,26 @@ Do not expose the concurrency bound as new user configuration.
 
 ## Acceptance criteria
 
-- [ ] Every render-visible summary/error transition causes a new frontend
+- [x] Every render-visible summary/error transition causes a new frontend
       document even when history revision is unchanged.
-- [ ] Unchanged successful polls do not republish only because local attempt
+- [x] Unchanged successful polls do not republish only because local attempt
       timestamps move.
-- [ ] Summary/history epoch+revision mismatches are never merged and never
+- [x] Summary/history epoch+revision mismatches are never merged and never
       advance the history-fetch gate.
-- [ ] A stable-ID endpoint repoint cannot accept an old target's cron
+- [x] A stable-ID endpoint repoint cannot accept an old target's cron
       observation or suppress the new target's initial history fetch.
-- [ ] Repointing clears target-specific current/history state; equivalent
+- [x] Repointing clears target-specific current/history state; equivalent
       endpoint spellings preserve it.
-- [ ] Startup performs one cron round, not two back-to-back rounds.
-- [ ] Fleet cron polling uses a fixed small in-flight bound and removes
+- [x] Startup performs one cron round, not two back-to-back rounds.
+- [x] Fleet cron polling uses a fixed small in-flight bound and removes
       single-endpoint head-of-line blocking without request bursts.
-- [ ] History remains revision/epoch-driven and is not downloaded every summary
+- [x] History remains revision/epoch-driven and is not downloaded every summary
       cadence.
-- [ ] Scheduler failures remain distinct from Systems reachability.
-- [ ] Scheduler attempt/success timestamps have truthful semantics.
-- [ ] Focused clientd/cron tests, workspace tests, workspace Clippy, and
+- [x] Scheduler failures remain distinct from Systems reachability.
+- [x] Scheduler attempt/success timestamps have truthful semantics.
+- [x] Focused clientd/cron tests, workspace tests, workspace Clippy, and
       `./scripts/check-local.sh` pass.
-- [ ] Active client-daemon architecture/skill documentation is reconciled.
+- [x] Active client-daemon architecture/skill documentation is reconciled.
 
 ## Stop conditions
 
@@ -270,3 +270,144 @@ Open a separate plan rather than broadening if:
 - broad local IPC redesign;
 - unrelated EggPool worker/test behavior;
 - new workflows/jobs/matrices or release automation.
+
+## Closure record
+
+Implemented in `crates/gregg/src/clientd/cron.rs` (worker, observation, gate),
+`crates/gregg/src/cron.rs` (cache/retention), `crates/gregg/src/state.rs`
+(reconciliation and the target check), and `crates/gregg/src/clientd/daemon.rs`
+(the one place that drops a replaced target's answer).
+
+### Finding 1 — publication follows operator-visible state
+
+`CronSystemState::rendered_state()` returns the exact state a cron row can draw:
+capability, the summary's job rows, the `(epoch, revision)` identity, and the
+stale marker. `CronObservation::apply` snapshots it around the write and returns
+`after != before`. That replaced a predicate built from `history_revision`,
+`epoch`, and capability only, which could not see idle → waiting, a job starting,
+a load gate appearing, a next-due advancing, or an error clearing — because
+`history_revision` is a *history* revision and none of those move it.
+
+The digest deliberately omits `generated_at_unix_ms` and the local
+attempt/success timestamps. Nothing renders them, and `greggd` rebuilds its
+document on any live transition, so including them would make every 30-second
+cadence a full document rebuild for every frontend.
+
+The digest clones the bounded job list instead of hashing it: one clone per
+cadence per endpoint, next to an HTTP request that allocated far more.
+
+### Finding 2 — summary and history are one pair
+
+`settle` compares `history.epoch`/`history_revision` against the summary before
+anything else happens. A mismatch produces the new
+`CronFetchError::Incoherent`, is not merged, and leaves the gate where it was so
+the next cadence retries. `generated_at_unix_ms` equality is deliberately not
+required, because a live-state-only publication can rebuild the pair without
+changing retained history.
+
+### Finding 3 — observations and gates are target-bound
+
+`CronObservation` carries the host and port it polled. The engine compares them
+against the configured endpoint with the *same* `equivalent_endpoint_host` rule
+the metrics reducer applies to poll results, and drops a mismatch — silently,
+because a replaced endpoint is not an operator problem. `HistoryGate` is keyed by
+`(system id, normalized host, port)` with a unit separator, so a repoint is a new
+key and re-discovers its history even when the two report identical
+epoch/revision numbers; `forget_absent` prunes by the same keys.
+`FleetState::reconcile_systems` — the single boundary that can see a repoint —
+calls `CronCache::reset_system`, clearing capability, summary, error, and
+retained history for that id.
+
+### Finding 4 — exactly one startup round
+
+`tokio::time::interval`'s first tick is already due, so awaiting it right after
+the manual startup round fired a second back-to-back round. `interval_at` with
+`MissedTickBehavior::Delay` keeps one round at startup and one per period.
+
+### Finding 5 — a fixed four-read window
+
+A round is one `FuturesUnordered` window of at most `CRON_MAX_IN_FLIGHT` (4)
+futures on the worker's own task; each completion refills the window from a
+snapshot of the endpoint list. Nothing is spawned, so a reload or shutdown drops
+at most those few reads and none outlives the worker. Gate *decisions* stay
+serial: the concurrent phase reads an immutable round snapshot, and `settle`
+mutates the single gate as results land, so history bookkeeping is still
+single-owner. The bound is a constant, not configuration.
+
+`futures-util`'s `async-await` feature is now declared explicitly. `StreamExt` in
+`input.rs` already depended on it being switched on transitively by `hyper-util`,
+which is not something this crate's correctness should rest on.
+
+### Timestamp bookkeeping
+
+`apply_summary` now records the successful read as *both* the latest attempt and
+the latest success, since a success is the most recent attempt too.
+`CronObservation.now_unix_ms` is captured in `settle`, after every request the
+round made, which is what its documentation claims. Neither participates in the
+publication decision.
+
+### Two measurement traps the tests found
+
+Both were mistakes in the *test instrument*, not in the product, and both are
+recorded because the wrong instrument would have passed a regression:
+
+1. Twelve endpoints pointed at one port measure a peak of one, because the HTTP
+   client pools per origin. The window test now uses twelve distinct remotes.
+2. A loopback answer fits in a single socket write, so a server handler runs to
+   completion inside one poll and a genuinely concurrent client still measures a
+   peak of one. The gated server therefore stalls *before* answering, and counts
+   a request out the instant its response is on the wire — holding the connection
+   afterwards instead double-counts a connection that already had its answer.
+
+### Evidence
+
+- `cargo test -p gregg --all-features -- clientd::cron` — **24 passed, 0 failed**
+  (13 pre-existing, 11 new):
+  - `a_live_transition_with_an_unchanged_history_revision_is_still_a_visible_change`
+  - `clearing_a_scheduler_error_with_an_otherwise_identical_summary_is_a_visible_change`
+  - `an_identical_successful_poll_does_not_publish_just_because_a_timestamp_moved`
+  - `a_history_from_another_epoch_is_rejected_rather_than_merged`
+  - `a_history_at_a_different_revision_is_rejected_the_same_way`
+  - `the_next_coherent_poll_after_a_mismatch_refetches_and_applies_history` — an
+    instrumented loopback server answers round 1 incoherently and round 2
+    coherently, so recovery is proven rather than assumed
+  - `a_target_key_distinguishes_a_repoint_from_an_equivalent_spelling`
+  - `a_repointed_target_whose_numbers_collide_still_performs_first_discovery`
+  - `startup_runs_exactly_one_round_before_the_first_period` — asserts one summary
+    request at startup, no second round 150 ms later, and that the cadence still
+    elapses
+  - `one_slow_endpoint_does_not_stall_the_rest_of_the_fleet` — the slow endpoint
+    is *first* in the list, so a sequential walk could not have delivered the
+    seven fast systems inside the budget they are given
+  - `the_in_flight_request_count_never_exceeds_the_cron_bound` — a fleet-wide
+    meter over twelve remotes proves the peak is at most 4, greater than 1, and
+    back to zero when the round ends
+- `cargo test -p gregg --all-features -- state::` — includes
+  `a_repoint_forgets_the_previous_targets_cron_state`,
+  `a_late_observation_for_a_replaced_endpoint_is_ignored`, and
+  `an_equivalent_endpoint_spelling_keeps_cron_state`.
+- Unchanged regressions still green: `an_unchanged_revision_suppresses_the_history_body_entirely`,
+  `a_revision_change_fetches_history_exactly_once`, `a_daemon_restart_reseeds_from_the_remote_ring`,
+  `many_frontends_cannot_add_a_single_remote_request`,
+  `an_old_daemon_is_unsupported_rather_than_a_failure`,
+  `a_malformed_document_is_reported_as_invalid_not_as_a_network_error`,
+  `a_failed_history_fetch_does_not_advance_the_gate`,
+  `a_repeated_observation_does_not_grow_the_cache`,
+  `a_scheduler_failure_keeps_the_last_known_data`,
+  `a_summary_served_without_its_history_route_is_reported`.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean.
+- `./scripts/check-local.sh` — `=== all checks passed (mode: default) ===`;
+  **878 gregg tests, 0 failed** (was 866).
+
+No stop condition was hit: no IPC/frame format changed, no dependency was added,
+no command-output history entered the metrics document, no per-TUI polling was
+reintroduced, and a scheduler-route failure still cannot reach reachability.
+
+### Documentation
+
+`architecture/gregg-client.md` gained "One publication per real change", "A
+summary and its history are one pair", and "Scheduler state is target-bound",
+plus the one-startup-round and four-read window in "Two unequal fetch planes".
+The gregg-client skill's cron rules grew from three to seven, covering the same
+invariants. `crates/gregg/README.md` and `AGENTS.md` state the pair rule, the
+target binding, the publication predicate, and the bounded window.

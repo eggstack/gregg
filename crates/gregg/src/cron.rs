@@ -40,7 +40,7 @@
 
 use std::collections::BTreeMap;
 
-use gregg_protocol::{SchedulerEpochV2, SchedulerHistoryV2, SchedulerSummaryV2};
+use gregg_protocol::{SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobV2, SchedulerSummaryV2};
 use serde::{Deserialize, Serialize};
 
 /// Number of terminal records the cron view shows for the selected job when
@@ -117,6 +117,13 @@ pub enum CronFetchError {
     /// that breaks its own contract" is a different problem from "the network
     /// flapped", and conflating them hides a real bug.
     Invalid(String),
+    /// The history document does not belong to the summary it was fetched with.
+    ///
+    /// Summary and history are two independent requests, so a remote restart or
+    /// a history change between them can pair summary A with history B. That
+    /// pair is not history, so it is neither merged nor allowed to advance the
+    /// history gate; the retained summary stays and the next cadence retries.
+    Incoherent(String),
 }
 
 impl std::fmt::Display for CronFetchError {
@@ -125,8 +132,40 @@ impl std::fmt::Display for CronFetchError {
             Self::Transport(message) => write!(f, "{message}"),
             Self::BodyTooLarge => write!(f, "response exceeded the scheduler body cap"),
             Self::Invalid(message) => write!(f, "invalid scheduler document: {message}"),
+            Self::Incoherent(message) => {
+                write!(f, "scheduler history does not match the summary: {message}")
+            }
         }
     }
+}
+
+/// The operator-visible scheduler state of one system.
+///
+/// This is exactly what a cron row can draw: the capability the header shows,
+/// the summary's job rows, the `(epoch, revision)` the retained records are
+/// keyed by, and the stale marker. Two states with equal digests render
+/// identically, and *that* — not "a timestamp moved" — is what a frontend
+/// publication has to be driven by.
+///
+/// `generated_at_unix_ms` and the local attempt/success timestamps are
+/// deliberately absent. Nothing in a row renders them, and a `greggd` rebuilds
+/// its document whenever any live transition happens, so including them would
+/// turn an ordinary 30-second cadence into a full document rebuild for every
+/// frontend. Everything here is either drawn, or the identity that decides
+/// whether the drawn records are the right ones.
+///
+/// The digest clones the bounded job list rather than hashing it: one clone per
+/// cron cadence per endpoint, next to an HTTP request that allocated far more.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CronRenderedState {
+    /// Whether the remote serves the scheduler routes.
+    pub capability: CronCapability,
+    /// `(epoch, history_revision)` of the retained live state.
+    pub identity: Option<(SchedulerEpochV2, u64)>,
+    /// The job rows, in the remote's own order; `None` when no summary is held.
+    pub jobs: Option<Vec<SchedulerJobV2>>,
+    /// The stale marker, including its absence.
+    pub last_error: Option<CronFetchError>,
 }
 
 /// One retained terminal record, tagged with the epoch it was observed under.
@@ -229,11 +268,30 @@ impl CronSystemState {
     }
 
     /// Record a successful summary read.
+    ///
+    /// A success is also the latest *attempt*: the read happened, and both
+    /// timestamps are what a diagnostic needs to say "we asked recently and it
+    /// worked". Neither is operator-visible, so neither forces a publication.
     pub fn apply_summary(&mut self, summary: SchedulerSummaryV2, now_unix_ms: u64) {
         self.capability = CronCapability::Supported;
+        self.last_attempt_at_unix_ms = Some(now_unix_ms);
         self.last_success_at_unix_ms = Some(now_unix_ms);
         self.last_error = None;
         self.summary = Some(summary);
+    }
+
+    /// The operator-visible scheduler state, for the publication decision.
+    #[must_use]
+    pub fn rendered_state(&self) -> CronRenderedState {
+        CronRenderedState {
+            capability: self.capability,
+            identity: self
+                .summary
+                .as_ref()
+                .map(|summary| (summary.epoch, summary.history_revision)),
+            jobs: self.summary.as_ref().map(|summary| summary.jobs.clone()),
+            last_error: self.last_error.clone(),
+        }
     }
 
     /// Record that the remote does not serve the scheduler routes.
@@ -443,6 +501,30 @@ impl CronCache {
     /// Mutable per-system state, created on first use.
     pub fn system_mut(&mut self, system_id: &str) -> &mut CronSystemState {
         self.systems.entry(system_id.to_owned()).or_default()
+    }
+
+    /// Forget everything known about one system.
+    ///
+    /// Used when a stable id is deliberately repointed at a different endpoint:
+    /// the previous target's capability, summary, error, and retained job
+    /// history all described a machine that is no longer configured under this
+    /// id. Keeping any of it would let the new target inherit a stale summary,
+    /// an error that is not its own, and records Gregg observed somewhere else —
+    /// and it would also leave the pane showing the old endpoint's jobs with no
+    /// marker that they are not current.
+    ///
+    /// An equivalent spelling of the *same* normalized endpoint must not call
+    /// this: the reconciliation that decides uses the same equivalence rule the
+    /// metrics reducer applies to poll results.
+    pub fn reset_system(&mut self, system_id: &str) -> bool {
+        let removed = self.systems.remove(system_id).is_some();
+        if removed {
+            // Recount rather than subtracting: this is the same bulk-removal
+            // shape as `retain_systems`, and recounting is one pass over a
+            // bounded map instead of a second invariant to keep correct.
+            self.recount();
+        }
+        removed
     }
 
     /// Drop every system that is no longer in the fleet.

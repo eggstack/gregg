@@ -53,7 +53,7 @@ renders a Ratatui-based terminal UI.
 | `endpoint` | `src/endpoint.rs` | Canonical IPv4/IPv6/DNS endpoint parsing (`parse_add_input`); HTTP-URL/nickname adaptation lives in `cli.rs::parse_add_target` |
 | `clock` | `src/clock.rs` | Clock trait for deterministic testing |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI consumption |
-| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s summary cadence, revision-gated history fetch, `CronWorker` task |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s summary cadence with one startup round, target-keyed revision/epoch-gated history fetch, coherent pair check, four-reads-in-flight round, `CronWorker` task |
 
 ### Input
 
@@ -935,6 +935,64 @@ cadence slower than the metrics interval is deliberate: a load-delayed transitio
 is visible on the order of a minute, which is fast enough for an operator
 watching Gregg and slow enough that scheduler observability does not double a
 five-second fleet's request count.
+
+A fresh daemon runs **exactly one** round at startup and then one per period.
+`tokio::time::interval`'s first tick is already due, so awaiting it straight
+after a startup round fired a second back-to-back round and asked every endpoint
+twice before the daemon had learned anything; `interval_at` puts the first
+deadline one interval out instead. `MissedTickBehavior::Delay` stays, so a slow
+round is never followed by a burst of catch-up rounds.
+
+Each round observes endpoints with a **fixed bound of four reads in flight**,
+never a sequential walk. Sequential order meant one endpoint's request deadline
+delayed every system behind it, so the effective fleet cadence became a multiple
+of the nominal 30 seconds for reasons that had nothing to do with the remote.
+Four removes that head-of-line wait and still caps concurrent scheduler requests
+far below the metrics scheduler's own in-flight bound, so the two planes cannot
+add up to a burst. The bound is a constant, not configuration. Nothing is
+spawned: a round is one bounded set of futures on the worker's own task, so a
+reload or shutdown drops at most those few reads and none outlives the worker.
+
+### One publication per real change
+
+A frontend document is republished when the **operator-visible** scheduler state
+changes — capability, the summary's job rows, the `(epoch, revision)` the
+retained records are keyed by, or the stale marker — compared around the write
+rather than guessed from a revision counter. `history_revision` is a *history*
+revision: it does not move for an ordinary live transition (idle → waiting, a job
+starting, a load gate appearing, a next-due advancing), and judging "changed"
+from it alone let a valid newer summary sit in the cache unpublished until some
+unrelated metrics event forced a document. The same blindness hid error recovery,
+because a successful read clears the error while epoch and revision can both be
+unchanged. `generated_at_unix_ms` and the local attempt/success timestamps are
+excluded from that comparison, so an unchanged successful poll publishes nothing;
+a successful read is still recorded as the latest *attempt*, which is bookkeeping
+rather than something a row draws.
+
+### A summary and its history are one pair
+
+Summary and history are two independent requests, so a `greggd` restart or a
+history change between them yields summary A with history B. That pair is not
+history: it is never merged, never advances the history gate (which would tell
+the next summary *for B* that its history was already downloaded), and is
+reported as a scheduler-scoped `Incoherent` diagnostic while the valid summary is
+kept. `generated_at_unix_ms` equality is deliberately not required — a
+live-state-only publication can legitimately rebuild the pair without changing
+retained history. The next cadence retries.
+
+### Scheduler state is target-bound
+
+A cron observation carries the endpoint it actually polled, exactly like a
+metrics result. `Ctrl-R` can repoint a stable id while the old target's scheduler
+request is still in flight, and that late answer belongs to a target the
+configuration no longer contains, so the engine drops it at the boundary that
+knows the current config. Repointing also clears that id's capability, summary,
+error, and retained history: all of it described a machine that is no longer
+configured here. The history gate is keyed by `(system id, normalized host,
+port)` for the same reason — a gate keyed by id alone let a new target inherit
+the previous target's "already fetched" answer whenever the two reported the
+same epoch and revision. An equivalent spelling of the same normalized endpoint
+changes neither, so rewriting a config by hand does not silently discard history.
 
 ### Epoch is part of every identity
 

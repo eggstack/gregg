@@ -263,6 +263,7 @@ impl FleetState {
             .into_iter()
             .map(|system| (system.id.clone(), system))
             .collect::<std::collections::HashMap<_, _>>();
+        let mut repointed: Vec<String> = Vec::new();
 
         self.systems = config
             .systems
@@ -280,10 +281,45 @@ impl FleetState {
                     old.configured_name.clone_from(&entry.name);
                     old
                 } else {
+                    repointed.push(entry.id.clone());
                     system_from_entry(entry)
                 }
             })
             .collect();
+
+        // A repointed id's scheduler state described the endpoint that was just
+        // replaced: its capability, summary, error marker, and retained job
+        // history all belong to a machine that is no longer configured here.
+        // Dropping it here — at the one boundary that can see the change —
+        // keeps the pane from showing the old target's jobs as if they were the
+        // new one's, and lets the new target's first support discovery run
+        // normally. An equivalent spelling of the same endpoint takes the branch
+        // above and keeps everything.
+        for id in repointed {
+            self.cron.reset_system(&id);
+        }
+    }
+
+    /// Whether a scheduler observation still describes a configured endpoint.
+    ///
+    /// A cron observation is bound to the target it polled, exactly like a
+    /// metrics result: `Ctrl-R` can repoint a stable id while a scheduler
+    /// request for the old target is still in flight, and that late answer
+    /// belongs to an endpoint the configuration no longer contains. Keyed by id
+    /// alone it would be accepted as the new target's answer.
+    ///
+    /// The endpoint comparison is the same normalized host/port equivalence the
+    /// metrics reducer applies to poll results, so an equivalent spelling of one
+    /// endpoint is not treated as a repoint.
+    pub fn accepts_cron_observation(
+        &self,
+        observation: &crate::clientd::cron::CronObservation,
+    ) -> bool {
+        self.systems.iter().any(|system| {
+            system.id == observation.system_id
+                && system.endpoint.port == observation.port
+                && equivalent_endpoint_host(&system.endpoint.host, &observation.host)
+        })
     }
 
     /// Record a rejected config reload for publication to frontends.
@@ -1590,6 +1626,135 @@ mod cron_intent_tests {
         assert!(
             !app.adopt_snapshot(&later),
             "an identical scheduler read must not force a frame"
+        );
+    }
+
+    /// One supported scheduler observation for a target, as the worker hands it
+    /// to the engine.
+    fn cron_observation_for(
+        system_id: &str,
+        host: &str,
+        port: u16,
+    ) -> crate::clientd::cron::CronObservation {
+        crate::clientd::cron::CronObservation {
+            system_id: system_id.to_owned(),
+            host: host.to_owned(),
+            port,
+            summary: crate::clientd::cron::SummaryOutcome::Supported(Box::new(
+                gregg_protocol::SchedulerSummaryV2 {
+                    schema_version: 2,
+                    generated_at_unix_ms: 1_700_000_000_000,
+                    epoch: gregg_protocol::SchedulerEpochV2 {
+                        started_at_unix_ms: 1_000,
+                        nonce: 1,
+                    },
+                    history_revision: 1,
+                    jobs: vec![gregg_protocol::SchedulerJobV2 {
+                        name: "backup".to_owned(),
+                        schedule: "0 3 * * *".to_owned(),
+                        next_due_unix_ms: 1_700_100_000_000,
+                        state: gregg_protocol::SchedulerJobStateV2::Idle,
+                        load: None,
+                        pending_since_unix_ms: None,
+                        next_retry_unix_ms: None,
+                        running_since_unix_ms: None,
+                        last: None,
+                    }],
+                },
+            )),
+            history: None,
+            history_error: None,
+            now_unix_ms: 1_700_000_000_000,
+        }
+    }
+
+    fn config_with_system(host: &str, port: u16) -> Config {
+        Config {
+            systems: vec![crate::config::SystemEntry {
+                id: "sys-a".to_owned(),
+                host: host.to_owned(),
+                port,
+                name: None,
+            }],
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn a_repoint_forgets_the_previous_targets_cron_state() {
+        // Everything the old target contributed described a machine that is no
+        // longer configured under this id. Keeping it would show the old
+        // endpoint's jobs as if they were the new one's, with nothing marking
+        // them as not current.
+        let mut fleet = fleet_with_cron("backup", 3);
+        assert!(
+            fleet
+                .cron
+                .system("sys-a")
+                .and_then(|state| state.summary.as_ref())
+                .is_some(),
+            "the old target really was observed first"
+        );
+
+        fleet.reconcile_systems(&config_with_system("other", 11_311));
+
+        let state = fleet.cron.system("sys-a");
+        assert!(
+            state.is_none(),
+            "a repointed id must not keep the previous target's scheduler state"
+        );
+        assert_eq!(
+            fleet.cron.total_records(),
+            0,
+            "the previous target's retained history must not carry over"
+        );
+    }
+
+    #[test]
+    fn a_late_observation_for_a_replaced_endpoint_is_ignored() {
+        // `Ctrl-R` can repoint an id while the old target's scheduler request is
+        // still in flight. That answer belongs to an endpoint the config no
+        // longer contains.
+        let mut fleet = fleet_with_cron("backup", 3);
+        fleet.reconcile_systems(&config_with_system("other", 11_311));
+
+        let late = cron_observation_for("sys-a", "box", 11_310);
+        assert!(
+            !fleet.accepts_cron_observation(&late),
+            "an old target's late answer must not be accepted as the new one's"
+        );
+        assert!(
+            fleet.accepts_cron_observation(&cron_observation_for("sys-a", "other", 11_311)),
+            "the configured target must still be observed"
+        );
+        assert!(
+            !fleet.accepts_cron_observation(&cron_observation_for("gone", "other", 11_311)),
+            "a system that left the fleet must not be observed"
+        );
+    }
+
+    #[test]
+    fn an_equivalent_endpoint_spelling_keeps_cron_state() {
+        // DNS case is not a different machine, and an IPv6 spelling change is
+        // not either. Treating those as repoints would silently discard retained
+        // history every time a config was rewritten by hand.
+        let mut fleet = fleet_with_cron("backup", 3);
+        let before = fleet
+            .cron
+            .system("sys-a")
+            .map(crate::cron::CronSystemState::rendered_state);
+        fleet.reconcile_systems(&config_with_system("BOX", 11_310));
+        assert_eq!(
+            fleet
+                .cron
+                .system("sys-a")
+                .map(crate::cron::CronSystemState::rendered_state),
+            before,
+            "an equivalent spelling of the same endpoint must not discard state"
+        );
+        assert!(
+            fleet.accepts_cron_observation(&cron_observation_for("sys-a", "box", 11_310)),
+            "an equivalent spelling must still count as the configured target"
         );
     }
 

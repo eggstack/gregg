@@ -36,7 +36,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, `SchedulerCommand` enum, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS; HTTP URL convenience adapter |
 | `clock` | `src/clock.rs` | Clock trait; `RealClock` and `FakeClock` for testing |
-| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s summary cadence, revision-gated history, `CronWorker` task; the only code that fetches cron |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s cadence with one startup round, target-keyed revision/epoch-gated history, coherent summary+history pair, four reads in flight, `CronWorker` task; the only code that fetches cron |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI; `aggregate_drives()` |
 
 ### Input
@@ -525,6 +525,33 @@ Three rules govern this plane and are easy to break:
    `Failed` and retains the last known data; a document that fails its own wire
    validation is `Invalid`, because a daemon producing a document that breaks its
    own contract is a different problem from a flaky network.
+4. **Publish on operator-visible change, not on `history_revision`.** Republish
+   when capability, the job rows, the `(epoch, revision)` identity, or the stale
+   marker change — an idle → running transition and a cleared error both leave
+   `history_revision` alone, and a revision-only predicate hid both until some
+   unrelated event forced a document. Never republish because
+   `generated_at_unix_ms` or the local attempt/success timestamps moved; they are
+   bookkeeping, not something a row draws.
+5. **A summary and its history are one pair, or neither.** Two independent
+   requests can straddle a restart, so apply history only when
+   `history.epoch == summary.epoch && history.history_revision ==
+   summary.history_revision`. A mismatch is never merged, never advances the
+   gate (that would tell the next summary for the newer lifetime that its history
+   was already fetched), and is reported as an `Incoherent` diagnostic with the
+   summary retained. Do not require `generated_at_unix_ms` equality.
+6. **Cron state is target-bound, like metrics.** An observation carries the host
+   and port it polled; the engine drops one whose target is no longer configured
+   for that stable id, repointing clears that id's capability/summary/error/
+   history, and the history gate is keyed by `(system id, normalized host, port)`
+   so a new target re-discovers even when its epoch/revision numerically collides.
+   An equivalent spelling of the same endpoint changes nothing.
+7. **One startup round, then one per period, with a four-read window.** Use
+   `interval_at` (not `interval`, whose first tick is already due) so startup does
+   not poll twice, keep `MissedTickBehavior::Delay`, and observe the fleet with at
+   most `CRON_MAX_IN_FLIGHT` (4) requests in flight rather than sequentially — a
+   sequential walk made the effective cadence a multiple of the nominal one behind
+   any slow endpoint. The bound is a constant, never configuration, and the round
+   spawns nothing, so a reload or shutdown drops at most those few reads.
 
 Remote text is inert before it reaches a cell: controls render in `cat -v` caret
 notation rather than being stripped, escaping happens at the `adopt_snapshot`

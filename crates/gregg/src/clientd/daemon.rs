@@ -503,8 +503,19 @@ impl Engine {
                 // cache only, and it can never turn a system offline: the
                 // metrics plane owns reachability, and a cron route failure on
                 // an otherwise healthy system must not say otherwise.
+                //
+                // A late answer for a replaced endpoint is dropped here rather
+                // than in the worker, because this is where the current
+                // configuration lives: the worker knows what it polled, and only
+                // the fleet knows what is still configured.
                 Some(observation) = cron_rx.recv() => {
-                    dirty |= observation.apply(&mut fleet.cron);
+                    // Silently on purpose, like every other best-effort nudge
+                    // in this daemon: a discarded answer is not an operator
+                    // problem, and the frontend never learns that a repoint
+                    // happened.
+                    if fleet.accepts_cron_observation(&observation) {
+                        dirty |= observation.apply(&mut fleet.cron);
+                    }
                 }
 
                 Some(inbound) = request_rx.recv() => {
