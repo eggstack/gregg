@@ -91,6 +91,8 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo registry and git
         uses: actions/cache@v4
@@ -102,6 +104,13 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+
+      # Plan 169: Windows-only Rust is compiled and tested here, so it must be
+      # linted here too. Code behind a `cfg` the Linux loop never compiles is
+      # code nobody is checking; that is exactly how the client daemon shipped
+      # uncompilable in Plan 168.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Test
         run: cargo test --workspace --all-targets --all-features

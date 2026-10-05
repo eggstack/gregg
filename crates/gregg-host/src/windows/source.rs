@@ -728,7 +728,12 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
             let success = unsafe {
                 // Safety: all output pointers reference initialized writable
                 // locals and the root pointer is valid for this call.
-                ffi::GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut free)
+                ffi::GetDiskFreeSpaceExW(
+                    wide.as_ptr(),
+                    std::ptr::from_mut(&mut available),
+                    std::ptr::from_mut(&mut total),
+                    std::ptr::from_mut(&mut free),
+                )
             };
             if success == 0 || total == 0 || free > total || available > total {
                 continue;
@@ -1071,7 +1076,7 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
                             "disk performance structure size exceeds API limit",
                         )
                     })?,
-                    &mut returned,
+                    std::ptr::from_mut(&mut returned),
                     std::ptr::null_mut(),
                 )
             } != 0;
@@ -1112,7 +1117,7 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
     #[cfg(target_os = "windows")]
     {
         let mut table = std::ptr::null_mut();
-        let status = unsafe { ffi::GetIfTable2(&mut table) };
+        let status = unsafe { ffi::GetIfTable2(std::ptr::from_mut(&mut table)) };
         if status != 0 || table.is_null() {
             return Err(CollectError::new(
                 CollectErrorKind::SourceUnavailable,
@@ -1206,7 +1211,11 @@ fn get_hostname() -> Result<String, CollectError> {
         unsafe {
             let mut size: u32 = 0;
             // First call to determine required buffer size.
-            ffi::GetComputerNameExW(COMPUTER_NAME_DNS_HOSTNAME, std::ptr::null_mut(), &mut size);
+            ffi::GetComputerNameExW(
+                COMPUTER_NAME_DNS_HOSTNAME,
+                std::ptr::null_mut(),
+                std::ptr::from_mut(&mut size),
+            );
 
             if size == 0 {
                 return Err(CollectError::new(
@@ -1216,8 +1225,11 @@ fn get_hostname() -> Result<String, CollectError> {
             }
 
             let mut buffer: Vec<u16> = vec![0; size as usize];
-            let success =
-                ffi::GetComputerNameExW(COMPUTER_NAME_DNS_HOSTNAME, buffer.as_mut_ptr(), &mut size);
+            let success = ffi::GetComputerNameExW(
+                COMPUTER_NAME_DNS_HOSTNAME,
+                buffer.as_mut_ptr(),
+                std::ptr::from_mut(&mut size),
+            );
 
             if success == 0 {
                 return Err(CollectError::new(

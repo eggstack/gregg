@@ -87,15 +87,14 @@ fn try_lock(file: &File) -> bool {
 
     let handle = file.as_raw_handle();
     let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
-    #[allow(clippy::ptr_as_ptr)]
     let result = unsafe {
         LockFileEx(
-            handle as *mut _,
+            handle.cast(),
             LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
             0,
             1,
             0,
-            &mut overlapped,
+            std::ptr::from_mut(&mut overlapped),
         )
     };
     result != 0

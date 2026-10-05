@@ -359,7 +359,7 @@ pub fn run_update(config_path: &Path, explicit: bool) -> Result<UpdateOutcome, U
     let lifecycle = {
         let post = crate::service::platform_service_manager()
             .query_registration()
-            .map_err(windows_ownership_error)?;
+            .map_err(|error| windows_ownership_error(&error))?;
         let lifecycle =
             decide_windows_update_lifecycle(&post, &original_exe).map_err(UpdateError::Io)?;
         // An owned-to-foreign/unknown transition across the (potentially
@@ -494,14 +494,17 @@ fn quiesce_windows_service_if_needed(
     // stopped dispositions perform zero SCM mutation.
     let registration = crate::service::platform_service_manager()
         .query_registration()
-        .map_err(windows_ownership_error)?;
+        .map_err(|error| windows_ownership_error(&error))?;
     let owned = registration
         .executable_path
         .as_deref()
         .is_some_and(|target| gregg_update::uninstall::paths_equivalent(target, exe));
     match (lifecycle, registration.state, owned) {
-        (UpdateLifecycle::ManagedRunning, ServiceState::Running, true)
-        | (UpdateLifecycle::ManagedRunning, ServiceState::StartPending, true) => {
+        (
+            UpdateLifecycle::ManagedRunning,
+            ServiceState::Running | ServiceState::StartPending,
+            true,
+        ) => {
             eprintln!("Stopping owned Windows service after candidate verification...");
             crate::service::platform_service_manager()
                 .stop()
@@ -556,7 +559,7 @@ fn quiesce_windows_service_if_needed(
 /// A query that cannot answer must never be treated as "not owned": refusing
 /// is the fail-closed answer for both permission and unknown conditions.
 #[cfg(target_os = "windows")]
-fn windows_ownership_error(error: crate::service::ServiceError) -> UpdateError {
+fn windows_ownership_error(error: &crate::service::ServiceError) -> UpdateError {
     let message = error.to_string();
     if message.to_ascii_lowercase().contains("access denied")
         || message.to_ascii_lowercase().contains("permission")

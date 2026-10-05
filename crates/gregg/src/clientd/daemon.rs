@@ -1059,19 +1059,27 @@ pub fn empty_document() -> FrontendSnapshot {
     FrontendSnapshot::empty(Vec::new())
 }
 
-#[cfg(all(test, unix))]
-mod tests {
+/// The daemon test harness, shared by every platform.
+///
+/// Plan 169 found the Windows half of this module had never been compiled,
+/// because the whole module sat behind `#[cfg(unix)]` for a reason that turned
+/// out to be three lines: a raw-`UnixStream` byte-ordering probe, a socket-file
+/// unlink assertion, and nothing else. Everything here — the temporary config,
+/// the running daemon, the document reader, and the counting remote — is
+/// platform-neutral and drives the real `ipc` layer, so on Windows it drives
+/// the real `\\.\pipe\gregg-client-<id>` transport.
+#[cfg(test)]
+mod test_support {
     use super::*;
-    use crate::clientd::frontend::FrontendLink;
     use crate::clientd::snapshot::FrontendSnapshot;
     use crate::config::{Config, SystemEntry};
     use std::time::Duration;
 
     /// A per-test temporary directory that cleans itself up.
-    struct TempDir(std::path::PathBuf);
+    pub(super) struct TempDir(std::path::PathBuf);
 
     impl TempDir {
-        fn new(tag: &str) -> Self {
+        pub(super) fn new(tag: &str) -> Self {
             let path = std::env::temp_dir().join(format!(
                 "gregg-clientd-{tag}-{}-{:?}",
                 std::process::id(),
@@ -1082,11 +1090,16 @@ mod tests {
             Self(path)
         }
 
-        fn config_path(&self) -> std::path::PathBuf {
+        pub(super) fn config_path(&self) -> std::path::PathBuf {
             self.0.join("gregg.toml")
         }
 
-        fn socket_path(&self) -> std::path::PathBuf {
+        /// The socket file the daemon must unlink on an orderly exit.
+        ///
+        /// Only Unix has one: a Windows pipe has no filesystem entry, so the
+        /// cleanup assertion is not meaningful there.
+        #[cfg(unix)]
+        pub(super) fn socket_path(&self) -> std::path::PathBuf {
             self.0.join("gregg-client.sock")
         }
     }
@@ -1102,8 +1115,9 @@ mod tests {
     /// An empty system list means the scheduler produces no batches at all,
     /// which is exactly what the ownership and fan-out tests need: they are
     /// about the local channel, not about metrics, and must not depend on a
-    /// reachable host.
-    fn write_empty_config(dir: &TempDir) -> ConfigStore {
+    /// reachable host. It also makes publications fully deterministic, because
+    /// a `Ctrl-R` becomes the only thing that can mint a new generation.
+    pub(super) fn write_empty_config(dir: &TempDir) -> ConfigStore {
         let config = Config {
             refresh_seconds: 1,
             ..Config::default()
@@ -1113,15 +1127,32 @@ mod tests {
         store
     }
 
+    /// A config pointing at one loopback port, with a one-second cadence.
+    pub(super) fn write_single_system_config(dir: &TempDir, port: u16) -> ConfigStore {
+        let config = Config {
+            refresh_seconds: 1,
+            systems: vec![SystemEntry {
+                id: "sys-a".to_owned(),
+                host: "127.0.0.1".to_owned(),
+                port,
+                name: Some("remote".to_owned()),
+            }],
+            ..Config::default()
+        };
+        let store = ConfigStore::new(dir.config_path());
+        store.write(&config).expect("writes config");
+        store
+    }
+
     /// A running daemon plus the identity needed to reach it.
-    struct Running {
-        cancel: CancellationToken,
-        handle: tokio::task::JoinHandle<Result<(), DaemonError>>,
-        identity: ClientDaemonIdentity,
+    pub(super) struct Running {
+        pub(super) cancel: CancellationToken,
+        pub(super) handle: tokio::task::JoinHandle<Result<(), DaemonError>>,
+        pub(super) identity: ClientDaemonIdentity,
     }
 
     impl Running {
-        fn start(dir: &TempDir, store: ConfigStore) -> Self {
+        pub(super) fn start(dir: &TempDir, store: ConfigStore) -> Self {
             let identity = ClientDaemonIdentity::for_path(&dir.config_path());
             let cancel = CancellationToken::new();
             let handle = {
@@ -1137,7 +1168,7 @@ mod tests {
         }
 
         /// Wait for the endpoint to appear, bounded.
-        async fn ready(&self) {
+        pub(super) async fn ready(&self) {
             for _ in 0..200 {
                 if self
                     .identity
@@ -1152,7 +1183,7 @@ mod tests {
             panic!("the daemon never bound its endpoint");
         }
 
-        async fn shutdown(self) {
+        pub(super) async fn shutdown(self) {
             self.cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(5), self.handle).await;
         }
@@ -1164,7 +1195,9 @@ mod tests {
     /// [`FrameStream::next`] waits indefinitely for a frame, so a daemon that
     /// stops publishing hangs this helper rather than failing it. Tests that
     /// wait for state which may never arrive must use [`await_documents`].
-    async fn next_snapshot(frames: &mut crate::clientd::frontend::FrameStream) -> FrontendSnapshot {
+    pub(super) async fn next_snapshot(
+        frames: &mut crate::clientd::frontend::FrameStream,
+    ) -> FrontendSnapshot {
         for _ in 0..200 {
             if let FrontendFrame::Snapshot(document) = frames.next().await.expect("reads") {
                 return *document;
@@ -1183,7 +1216,7 @@ mod tests {
     /// published in an earlier document is just as true as one in the latest,
     /// and a test that only inspected the final read would report a failure for
     /// state that arrived perfectly correctly one read earlier.
-    async fn await_documents(
+    pub(super) async fn await_documents(
         frames: &mut crate::clientd::frontend::FrameStream,
         budget: Duration,
         mut wanted: impl FnMut(&FrontendSnapshot) -> bool,
@@ -1204,11 +1237,204 @@ mod tests {
         panic!("the expected state did not arrive within {budget:?}");
     }
 
+    /// A fully-counting remote: serves metrics *and* both scheduler routes and
+    /// records how many times each was asked.
+    ///
+    /// Plan 167's primary architectural proof needs request counts, not
+    /// publication counts. Two subscribers receiving the same generation only
+    /// shows the fan-out is shared; it does not show the *remote* was not
+    /// polled twice.
+    pub(super) struct CountingGreggd {
+        pub(super) port: u16,
+        status: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        summary: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        history: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingGreggd {
+        pub(super) fn status_hits(&self) -> usize {
+            self.status.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        pub(super) fn summary_hits(&self) -> usize {
+            self.summary.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        pub(super) fn history_hits(&self) -> usize {
+            self.history.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    pub(super) async fn spawn_counting_greggd() -> CountingGreggd {
+        use gregg_protocol::test_support::LinuxSnapshotV2Builder;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let status_body = serde_json::to_vec(
+            &LinuxSnapshotV2Builder::default()
+                .sample_interval_ms(1_000)
+                .build_payload(),
+        )
+        .expect("status serializes");
+        let (summary_body, history_body) = scheduler_documents();
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let status = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let summary = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let history = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (t_status, t_summary, t_history) = (
+            std::sync::Arc::clone(&status),
+            std::sync::Arc::clone(&summary),
+            std::sync::Arc::clone(&history),
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let (status_body, summary_body, history_body) = (
+                    status_body.clone(),
+                    summary_body.clone(),
+                    history_body.clone(),
+                );
+                let (t_status, t_summary, t_history) = (
+                    std::sync::Arc::clone(&t_status),
+                    std::sync::Arc::clone(&t_summary),
+                    std::sync::Arc::clone(&t_history),
+                );
+                tokio::spawn(async move {
+                    let mut request = String::new();
+                    let mut chunk = [0_u8; 1024];
+                    loop {
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(count) => {
+                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
+                                if request.contains("\r\n\r\n") {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // This remote serves every route, so there is no 404 arm:
+                    // any request that is not a scheduler route is a metrics
+                    // request, which is exactly what the counts are asserting.
+                    let body = if request.contains("/v2/scheduler/history") {
+                        t_history.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        history_body
+                    } else if request.contains("/v2/scheduler") {
+                        t_summary.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        summary_body
+                    } else {
+                        t_status.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        status_body
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        String::from_utf8_lossy(&body)
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.flush().await;
+                });
+            }
+        });
+        CountingGreggd {
+            port,
+            status,
+            summary,
+            history,
+        }
+    }
+
+    /// The scheduler documents the counting remote serves.
+    #[allow(clippy::type_complexity)]
+    fn scheduler_documents() -> (Vec<u8>, Vec<u8>) {
+        use gregg_protocol::{
+            SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
+            SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
+            SchedulerRunSummaryV2, SchedulerSummaryV2,
+        };
+        let epoch = SchedulerEpochV2 {
+            started_at_unix_ms: 1_700_000_000_000,
+            nonce: 11,
+        };
+        let summary = serde_json::to_vec(&SchedulerSummaryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![SchedulerJobV2 {
+                name: "backup".to_owned(),
+                schedule: "0 3 * * *".to_owned(),
+                next_due_unix_ms: 1_700_100_000_000,
+                state: SchedulerJobStateV2::Idle,
+                load: None,
+                pending_since_unix_ms: None,
+                next_retry_unix_ms: None,
+                running_since_unix_ms: None,
+                last: Some(SchedulerRunSummaryV2 {
+                    sequence: 1,
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    finished_unix_ms: 1_700_000_001_000,
+                    outcome: SchedulerOutcomeV2::Success,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(1_000),
+                    delay_ms: 0,
+                    coalesced: false,
+                }),
+            }],
+        })
+        .expect("summary serializes");
+        let history = serde_json::to_vec(&SchedulerHistoryV2 {
+            schema_version: 2,
+            generated_at_unix_ms: 1_700_000_000_000,
+            epoch,
+            history_revision: 1,
+            jobs: vec![SchedulerJobHistoryV2 {
+                name: "backup".to_owned(),
+                records: vec![SchedulerRunRecordV2 {
+                    sequence: 1,
+                    scheduled_unix_ms: 1_700_000_000_000,
+                    started_unix_ms: Some(1_700_000_000_100),
+                    finished_unix_ms: 1_700_000_001_000,
+                    outcome: SchedulerOutcomeV2::Success,
+                    exit_code: Some(0),
+                    signal: None,
+                    duration_ms: Some(900),
+                    delay_ms: 0,
+                    coalesced: false,
+                    stdout: SchedulerOutputV2::new("ok\n".to_owned(), false),
+                    stderr: SchedulerOutputV2::new(String::new(), false),
+                }],
+            }],
+        })
+        .expect("history serializes");
+        (summary, history)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::test_support::{
+        await_documents, next_snapshot, spawn_counting_greggd, write_empty_config,
+        write_single_system_config, Running, TempDir,
+    };
+    use super::*;
+    use crate::clientd::frontend::FrontendLink;
+    use crate::config::SystemEntry;
+    use std::time::Duration;
+
     /// Read one length-prefixed frame straight off a raw socket.
     ///
     /// Hand-rolled on purpose: the ordering test below is about the *first
     /// bytes on the wire*, so it must not go through the client-side frame
     /// reader, which is exactly the thing that would hide a violated ordering.
+    /// `tokio` has no named-pipe stream, so this probe is Unix-only; the
+    /// Windows equivalent is the `Hello`-first contract asserted through the
+    /// production `attach` path in `windows_tests`.
     async fn read_raw_frame(stream: &mut tokio::net::UnixStream) -> FrontendFrame {
         use tokio::io::AsyncReadExt;
 
@@ -1382,23 +1608,6 @@ mod tests {
             summary_hits,
             history_hits,
         }
-    }
-
-    /// A config pointing at one loopback port, with a one-second cadence.
-    fn write_single_system_config(dir: &TempDir, port: u16) -> ConfigStore {
-        let config = Config {
-            refresh_seconds: 1,
-            systems: vec![SystemEntry {
-                id: "sys-a".to_owned(),
-                host: "127.0.0.1".to_owned(),
-                port,
-                name: Some("remote".to_owned()),
-            }],
-            ..Config::default()
-        };
-        let store = ConfigStore::new(dir.config_path());
-        store.write(&config).expect("writes config");
-        store
     }
 
     #[tokio::test]
@@ -1743,184 +1952,6 @@ mod tests {
         drop(first_sender);
         drop(second_sender);
         running.shutdown().await;
-    }
-
-    /// A fully-counting remote: serves metrics *and* both scheduler routes and
-    /// records how many times each was asked.
-    ///
-    /// Plan 167's primary architectural proof needs request counts, not
-    /// publication counts. Two subscribers receiving the same generation only
-    /// shows the fan-out is shared; it does not show the *remote* was not
-    /// polled twice.
-    struct CountingGreggd {
-        port: u16,
-        status: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        summary: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        history: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl CountingGreggd {
-        fn status_hits(&self) -> usize {
-            self.status.load(std::sync::atomic::Ordering::SeqCst)
-        }
-
-        fn summary_hits(&self) -> usize {
-            self.summary.load(std::sync::atomic::Ordering::SeqCst)
-        }
-
-        fn history_hits(&self) -> usize {
-            self.history.load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
-    async fn spawn_counting_greggd() -> CountingGreggd {
-        use gregg_protocol::test_support::LinuxSnapshotV2Builder;
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
-
-        let status_body = serde_json::to_vec(
-            &LinuxSnapshotV2Builder::default()
-                .sample_interval_ms(1_000)
-                .build_payload(),
-        )
-        .expect("status serializes");
-        let (summary_body, history_body) = scheduler_documents();
-
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let status = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let summary = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let history = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (t_status, t_summary, t_history) = (
-            std::sync::Arc::clone(&status),
-            std::sync::Arc::clone(&summary),
-            std::sync::Arc::clone(&history),
-        );
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut stream, _)) = listener.accept().await else {
-                    return;
-                };
-                let (status_body, summary_body, history_body) = (
-                    status_body.clone(),
-                    summary_body.clone(),
-                    history_body.clone(),
-                );
-                let (t_status, t_summary, t_history) = (
-                    std::sync::Arc::clone(&t_status),
-                    std::sync::Arc::clone(&t_summary),
-                    std::sync::Arc::clone(&t_history),
-                );
-                tokio::spawn(async move {
-                    let mut request = String::new();
-                    let mut chunk = [0_u8; 1024];
-                    loop {
-                        match stream.read(&mut chunk).await {
-                            Ok(0) | Err(_) => break,
-                            Ok(count) => {
-                                request.push_str(String::from_utf8_lossy(&chunk[..count]).as_ref());
-                                if request.contains("\r\n\r\n") {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // This remote serves every route, so there is no 404 arm:
-                    // any request that is not a scheduler route is a metrics
-                    // request, which is exactly what the counts are asserting.
-                    let body = if request.contains("/v2/scheduler/history") {
-                        t_history.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        history_body
-                    } else if request.contains("/v2/scheduler") {
-                        t_summary.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        summary_body
-                    } else {
-                        t_status.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                        status_body
-                    };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
-                        body.len(),
-                        String::from_utf8_lossy(&body)
-                    );
-                    let _ = stream.write_all(response.as_bytes()).await;
-                    let _ = stream.flush().await;
-                });
-            }
-        });
-        CountingGreggd {
-            port,
-            status,
-            summary,
-            history,
-        }
-    }
-
-    /// The scheduler documents the counting remote serves.
-    #[allow(clippy::type_complexity)]
-    fn scheduler_documents() -> (Vec<u8>, Vec<u8>) {
-        use gregg_protocol::{
-            SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobStateV2,
-            SchedulerJobV2, SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2,
-            SchedulerRunSummaryV2, SchedulerSummaryV2,
-        };
-        let epoch = SchedulerEpochV2 {
-            started_at_unix_ms: 1_700_000_000_000,
-            nonce: 11,
-        };
-        let summary = serde_json::to_vec(&SchedulerSummaryV2 {
-            schema_version: 2,
-            generated_at_unix_ms: 1_700_000_000_000,
-            epoch,
-            history_revision: 1,
-            jobs: vec![SchedulerJobV2 {
-                name: "backup".to_owned(),
-                schedule: "0 3 * * *".to_owned(),
-                next_due_unix_ms: 1_700_100_000_000,
-                state: SchedulerJobStateV2::Idle,
-                load: None,
-                pending_since_unix_ms: None,
-                next_retry_unix_ms: None,
-                running_since_unix_ms: None,
-                last: Some(SchedulerRunSummaryV2 {
-                    sequence: 1,
-                    scheduled_unix_ms: 1_700_000_000_000,
-                    finished_unix_ms: 1_700_000_001_000,
-                    outcome: SchedulerOutcomeV2::Success,
-                    exit_code: Some(0),
-                    signal: None,
-                    duration_ms: Some(1_000),
-                    delay_ms: 0,
-                    coalesced: false,
-                }),
-            }],
-        })
-        .expect("summary serializes");
-        let history = serde_json::to_vec(&SchedulerHistoryV2 {
-            schema_version: 2,
-            generated_at_unix_ms: 1_700_000_000_000,
-            epoch,
-            history_revision: 1,
-            jobs: vec![SchedulerJobHistoryV2 {
-                name: "backup".to_owned(),
-                records: vec![SchedulerRunRecordV2 {
-                    sequence: 1,
-                    scheduled_unix_ms: 1_700_000_000_000,
-                    started_unix_ms: Some(1_700_000_000_100),
-                    finished_unix_ms: 1_700_000_001_000,
-                    outcome: SchedulerOutcomeV2::Success,
-                    exit_code: Some(0),
-                    signal: None,
-                    duration_ms: Some(900),
-                    delay_ms: 0,
-                    coalesced: false,
-                    stdout: SchedulerOutputV2::new("ok\n".to_owned(), false),
-                    stderr: SchedulerOutputV2::new(String::new(), false),
-                }],
-            }],
-        })
-        .expect("history serializes");
-        (summary, history)
     }
 
     #[tokio::test]
@@ -2302,6 +2333,200 @@ mod tests {
             Some(crate::state::EggpoolWorkerState::Idle),
             "a frontend that has not opened the pane leaves the worker inactive"
         );
+        running.shutdown().await;
+    }
+}
+
+/// The Windows half of the fan-out proof.
+///
+/// Plan 168 closed the Windows transport but left "two TUIs on one Windows
+/// client daemon" argued from the shared code path rather than demonstrated,
+/// because the whole daemon harness sat behind `#[cfg(unix)]`. The harness is
+/// now platform-neutral, so these tests drive `run_daemon` and `attach` for
+/// real: on this platform that means `CreateNamedPipeW` with the owner-only
+/// SDDL on the daemon side and `CreateFileW` plus `PeekNamedPipe` on each
+/// frontend side.
+///
+/// No interactive terminal windows are involved, and nothing here reaches for
+/// a mock transport: the assertions are about the real `\\.\pipe\` endpoint.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::test_support::{
+        await_documents, next_snapshot, spawn_counting_greggd, write_empty_config,
+        write_single_system_config, Running, TempDir,
+    };
+    use super::*;
+    use std::time::Duration;
+
+    /// Two real named-pipe frontends over one real client daemon.
+    ///
+    /// The config has no systems, which is what makes this deterministic rather
+    /// than a timing race: the daemon polls nothing, so the only things that
+    /// can mint a new generation are an explicit `Ctrl-R`. Each bullet the plan
+    /// asks for therefore lands on a specific, awaited generation instead of on
+    /// "whatever the cadence happened to produce".
+    #[tokio::test]
+    async fn two_frontends_share_one_daemon_and_one_publication_over_real_named_pipes() {
+        let dir = TempDir::new("win-fanout");
+        let running = Running::start(&dir, write_empty_config(&dir));
+        running.ready().await;
+
+        // The endpoint really is the Windows pipe namespace, not a socket path.
+        let endpoint = &running.identity.candidates()[0];
+        let endpoint_text = endpoint.to_string_lossy().into_owned();
+        assert!(
+            endpoint_text.starts_with(r"\\.\pipe\gregg-client-"),
+            "the endpoint must be a named pipe in the gregg-client namespace, got \
+             {endpoint_text}"
+        );
+
+        // Two independent frontend connections, each completing the version and
+        // config handshake through the production `attach` path.
+        let first = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("the first frontend attaches");
+        let second = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("the second frontend attaches");
+        assert_eq!(
+            first.hello.daemon_id,
+            running.identity.id(),
+            "the hello must name the config this daemon serves"
+        );
+        assert_eq!(second.hello.daemon_id, running.identity.id());
+        assert_eq!(
+            first.hello.protocol_version, second.hello.protocol_version,
+            "both frontends negotiated against the same daemon"
+        );
+
+        let (first_frontend, mut first_frames) = (first.frontend, first.frames);
+        let (second_frontend, mut second_frames) = (second.frontend, second.frames);
+
+        // Both receive the same published generation. The daemon serializes one
+        // document for every frontend, so sharing a generation is the observable
+        // form of "one polling plane, two readers".
+        let initial_first = next_snapshot(&mut first_frames).await;
+        let initial_second = next_snapshot(&mut second_frames).await;
+        assert_eq!(initial_first.systems.len(), 0);
+        assert_eq!(
+            initial_first.generation, initial_second.generation,
+            "both frontends observe the same publication, not two polls"
+        );
+
+        // One `Ctrl-R` from one frontend is one publication, and both frontends
+        // see the same generation of it.
+        first_frontend.request_reload(1).expect("queues the reload");
+        let reloaded_first = next_snapshot(&mut first_frames).await;
+        let reloaded_second = next_snapshot(&mut second_frames).await;
+        assert!(reloaded_first.generation > initial_first.generation);
+        assert_eq!(
+            reloaded_first.generation, reloaded_second.generation,
+            "one reload must reach both frontends as one generation"
+        );
+
+        // Losing one frontend must not stop the daemon or the other frontend.
+        drop(second_frontend);
+        drop(second_frames);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let status = status(&running.identity).await.expect("status answers");
+        assert!(status.running, "one window closing must not stop clientd");
+        assert_eq!(status.daemon_id, running.identity.id());
+
+        // And a later publication still reaches the window that stayed.
+        first_frontend
+            .request_reload(2)
+            .expect("queues the second reload");
+        let later = next_snapshot(&mut first_frames).await;
+        assert!(
+            later.generation > reloaded_first.generation,
+            "the surviving frontend must keep receiving publications: {} -> {}",
+            reloaded_first.generation,
+            later.generation
+        );
+
+        drop(first_frontend);
+        drop(first_frames);
+        running.shutdown().await;
+    }
+
+    /// The transport-level echo of the plan's conditional request-count check.
+    ///
+    /// Plan 167 proved one polling plane on Unix. This repeats the count on the
+    /// named-pipe transport so the claim is not carried across platforms by
+    /// argument alone. The metrics bound is deliberately loose — the point is
+    /// to catch a *second poll plane* (a 2x jump), not to measure the cadence.
+    #[tokio::test]
+    async fn a_second_windows_frontend_does_not_add_a_second_polling_plane() {
+        let remote = spawn_counting_greggd().await;
+        let dir = TempDir::new("win-one-plane");
+        let running = Running::start(&dir, write_single_system_config(&dir, remote.port));
+        running.ready().await;
+
+        let mut first = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        // Let the first window settle on both the metrics and the scheduler
+        // plane, so the baselines below are the one-window steady state.
+        await_documents(&mut first.frames, Duration::from_secs(20), |document| {
+            document.systems[0].reachability == crate::state::Reachability::Online
+                && document
+                    .cron_for("sys-a")
+                    .is_some_and(|cron| cron.capability == crate::cron::CronCapability::Supported)
+        })
+        .await;
+        assert_eq!(
+            remote.history_hits(),
+            1,
+            "discovery fetches history exactly once"
+        );
+        let baseline_status = remote.status_hits();
+        let baseline_summary = remote.summary_hits();
+        assert!(baseline_status > 0, "the fleet must actually be polled");
+
+        // A second window, with the cron pane open, over the same pipe transport.
+        let second = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        second
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+            .expect("queues the intent");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+        // The metrics cadence keeps flowing for both windows and is not
+        // doubled, and neither scheduler plane is re-read for the new window.
+        assert!(
+            remote.status_hits() >= baseline_status,
+            "metrics must keep flowing for both windows"
+        );
+        assert!(
+            remote.status_hits() < baseline_status * 2 + 4,
+            "a second window must not double the metrics cadence: {baseline_status} -> {}",
+            remote.status_hits()
+        );
+        assert_eq!(
+            remote.summary_hits(),
+            baseline_summary,
+            "a second window must not double the scheduler cadence"
+        );
+        assert_eq!(
+            remote.history_hits(),
+            1,
+            "a second window, and an open cron pane, must not refetch history"
+        );
+
+        // Closing one of the two windows changes nothing about the remote: the
+        // daemon keeps polling for the window that stayed.
+        let before_close = remote.status_hits();
+        drop(first);
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        assert!(
+            remote.status_hits() > before_close,
+            "the daemon keeps polling after one of two windows closes"
+        );
+        assert_eq!(remote.history_hits(), 1);
+
+        drop(second);
         running.shutdown().await;
     }
 }

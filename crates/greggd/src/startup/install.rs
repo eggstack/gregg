@@ -363,6 +363,11 @@ pub(crate) fn ensure_config_preserved(config_path: &Path) -> io::Result<()> {
 /// relaxes the mode to world-readable and ensures the parent directory is
 /// traversable. Best-effort for missing paths; hard errors for real I/O
 /// failures so install surfaces them.
+// Only the `unix` body can fail, but the signature is shared: `systemd.rs`
+// and `launchd.rs` compile on every platform and both map the failure into
+// `InstallError::Io`, so making the return type platform-dependent would
+// push `cfg` into shared callers and read worse than one inert `Ok(())`.
+#[allow(clippy::unnecessary_wraps)]
 pub(crate) fn repair_system_config_permissions(config_path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
