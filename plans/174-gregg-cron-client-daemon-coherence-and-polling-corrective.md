@@ -1,6 +1,6 @@
 # Plan 174: Gregg cron client-daemon coherence and polling corrective
 
-Status: complete. Code at `PLAN174SHA`; see the closure record at the end.
+Status: complete. Code at `b8c9788`; see the closure record at the end.
 
 Depends on: completed Plans 166-167 plus current main at
 `1aac89f1a82fcd347066379b55105e2ff6bfe770`. Independent of Plan 091 and
