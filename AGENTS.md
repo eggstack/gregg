@@ -48,7 +48,9 @@ cargo test -p greggd --all-features -- collector::macos     # macOS adapter
 cargo test -p greggd --all-targets --all-features -- collector::windows    # Windows native
 ```
 
-CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `gregg-host` native + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs workspace tests + release `greggd` and `gregg` builds + `scripts/smoke-windows.ps1` SCM smoke; FreeBSD runs `gregg-host` native; MSRV job runs `cargo test --workspace --all-targets --all-features` on Rust 1.89.
+CI (`RUSTFLAGS: -D warnings`, so warnings fail there but not locally): Linux runs `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-targets --all-features`; macOS runs workspace check + `gregg-host` native + `collector::macos::ffi::native_tests` on arm64+Intel; Windows runs the same full-workspace Clippy gate *and* workspace tests (Windows-only Rust is linted natively, not cross-checked from Linux — `#[cfg(windows)]` code nobody compiles is how Plan 168 shipped a client daemon that did not build), plus release `greggd` and `gregg` builds and `scripts/smoke-windows.ps1` SCM smoke; FreeBSD runs `gregg-host` native; MSRV job runs `cargo test --workspace --all-targets --all-features` on Rust 1.89.
+
+Cross-checking a `--target x86_64-pc-windows-gnu` Clippy run locally is a fast development aid, but **only a native Windows CI run is authority** for Windows lint/test status: MSVC needs the MSVC toolchain and named pipes need a real Windows host. A green local cross-run is not closure evidence.
 
 ## Key constraints
 

@@ -1186,8 +1186,42 @@ mod test_support {
         pub(super) async fn shutdown(self) {
             self.cancel.cancel();
             let _ = tokio::time::timeout(Duration::from_secs(5), self.handle).await;
+            release_parked_accept(&self.identity);
         }
     }
+
+    /// Release a `ConnectNamedPipe` wait the accept loop left behind.
+    ///
+    /// On Windows the listener parks its blocking-pool thread in
+    /// `ConnectNamedPipe` and `run_daemon` only *aborts* the accept task, which
+    /// cannot cancel a `spawn_blocking` job that is already running: the
+    /// closure owns the pipe handle and stays parked until a client arrives.
+    /// Dropping the runtime then waits on that thread forever, so both a real
+    /// `gregg daemon run` and a `#[tokio::test]` fail to finish.
+    ///
+    /// Opening one throwaway client is enough: the parked instance is available,
+    /// so the connect completes, `ConnectNamedPipe` returns, and the blocking
+    /// thread ends. This is a *test* teardown, not a fix — the production
+    /// process has the same defect, tracked in Plan 171.
+    ///
+    /// No-op on Unix, where `accept` is a cancellable async operation and the
+    /// accept task's own abort is enough.
+    #[cfg(windows)]
+    fn release_parked_accept(identity: &ClientDaemonIdentity) {
+        // Best-effort: a released accept is a convenience, and a failure here
+        // must not be the reason a test fails.
+        let _ = ipc::connect(&identity.candidates());
+    }
+
+    #[cfg(not(windows))]
+    fn release_parked_accept(_identity: &ClientDaemonIdentity) {}
+
+    /// How long a single expected document may take to arrive.
+    ///
+    /// Generous, because it is only ever reached on failure: the point is that a
+    /// daemon which stops publishing fails a test instead of wedging the CI job
+    /// until its own timeout.
+    pub(super) const DOCUMENT_BUDGET: Duration = Duration::from_secs(20);
 
     /// The next state document.
     ///
@@ -1204,6 +1238,24 @@ mod test_support {
             }
         }
         panic!("no state document arrived");
+    }
+
+    /// A deadline-bounded [`next_snapshot`].
+    ///
+    /// [`next_snapshot`] bounds the *frame count* it will read, not how long it
+    /// will wait, because `FrameStream::next` waits for a frame indefinitely.
+    /// That is fine inside [`await_documents`], which owns a deadline, but not
+    /// for a test that waits on a specific generation: a daemon that stops
+    /// publishing would wedge the whole CI job instead of failing it. Every
+    /// direct wait in the Windows tests goes through this.
+    pub(super) async fn next_snapshot_within(
+        frames: &mut crate::clientd::frontend::FrameStream,
+        budget: Duration,
+    ) -> FrontendSnapshot {
+        match tokio::time::timeout(budget, next_snapshot(frames)).await {
+            Ok(document) => document,
+            Err(elapsed) => panic!("no state document arrived within {budget:?}: {elapsed}"),
+        }
     }
 
     /// Read documents until `wanted` is satisfied, or fail after `budget`.
@@ -1419,8 +1471,8 @@ mod test_support {
 #[cfg(all(test, unix))]
 mod tests {
     use super::test_support::{
-        await_documents, next_snapshot, spawn_counting_greggd, write_empty_config,
-        write_single_system_config, Running, TempDir,
+        await_documents, next_snapshot_within, spawn_counting_greggd, write_empty_config,
+        write_single_system_config, Running, TempDir, DOCUMENT_BUDGET,
     };
     use super::*;
     use crate::clientd::frontend::FrontendLink;
@@ -1625,7 +1677,9 @@ mod tests {
         let mut observer = attach(&running.identity, env!("CARGO_PKG_VERSION"))
             .await
             .expect("observer attaches");
-        let baseline = next_snapshot(&mut observer.frames).await.generation;
+        let baseline = next_snapshot_within(&mut observer.frames, DOCUMENT_BUDGET)
+            .await
+            .generation;
 
         // A second connection that connects and then stays deliberately silent,
         // so it is subscribed to the publication slot without ever having sent
@@ -1906,7 +1960,7 @@ mod tests {
 
         // The first frame after the handshake is the complete current state,
         // not a delta: a fresh TUI never has to wait for a poll.
-        let document = next_snapshot(&mut frames).await;
+        let document = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
         assert_eq!(document.systems.len(), 0);
         assert_eq!(
             document.generation, 1,
@@ -1934,8 +1988,8 @@ mod tests {
             .expect("handshakes");
         let (second_sender, mut second_frames) = second.split();
 
-        let initial_first = next_snapshot(&mut first_frames).await;
-        let initial_second = next_snapshot(&mut second_frames).await;
+        let initial_first = next_snapshot_within(&mut first_frames, DOCUMENT_BUDGET).await;
+        let initial_second = next_snapshot_within(&mut second_frames, DOCUMENT_BUDGET).await;
         assert_eq!(
             initial_first.generation, initial_second.generation,
             "both subscribers observe the same publication, not two polls"
@@ -1944,8 +1998,8 @@ mod tests {
         // One reload produces exactly one publication, and both subscribers
         // see the same generation of it.
         first_sender.request_reload(1).expect("queues");
-        let reloaded_first = next_snapshot(&mut first_frames).await;
-        let reloaded_second = next_snapshot(&mut second_frames).await;
+        let reloaded_first = next_snapshot_within(&mut first_frames, DOCUMENT_BUDGET).await;
+        let reloaded_second = next_snapshot_within(&mut second_frames, DOCUMENT_BUDGET).await;
         assert!(reloaded_first.generation > initial_first.generation);
         assert_eq!(reloaded_first.generation, reloaded_second.generation);
 
@@ -2109,7 +2163,7 @@ mod tests {
             link.handshake(&running.identity, "test")
                 .expect("handshakes");
             let (_sender, mut frames) = link.split();
-            next_snapshot(&mut frames).await;
+            next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
         }
         // Give the accept loop a moment to notice the closed socket.
         tokio::time::sleep(Duration::from_millis(80)).await;
@@ -2124,7 +2178,7 @@ mod tests {
         link.handshake(&running.identity, "test")
             .expect("handshakes");
         let (_sender, mut frames) = link.split();
-        next_snapshot(&mut frames).await;
+        next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
 
         running.shutdown().await;
     }
@@ -2208,7 +2262,7 @@ mod tests {
         link.handshake(&running.identity, "test")
             .expect("handshakes");
         let (sender, mut frames) = link.split();
-        let initial = next_snapshot(&mut frames).await;
+        let initial = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
         assert_eq!(initial.systems.len(), 1);
         assert!(initial.config_reload_error.is_none());
 
@@ -2220,7 +2274,7 @@ mod tests {
 
         let mut saw_error = false;
         for _ in 0..10 {
-            let document = next_snapshot(&mut frames).await;
+            let document = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
             if let Some(error) = document.config_reload_error {
                 assert!(
                     error.contains("config reload failed"),
@@ -2243,7 +2297,7 @@ mod tests {
         sender.request_reload(2).expect("queues");
         let mut cleared = false;
         for _ in 0..10 {
-            let document = next_snapshot(&mut frames).await;
+            let document = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
             if document.config_reload_error.is_none() {
                 cleared = true;
                 break;
@@ -2326,7 +2380,7 @@ mod tests {
         let mut link = FrontendLink::connect(&identity.candidates()).expect("connects");
         link.handshake(&identity, "test").expect("handshakes");
         let (_sender, mut frames) = link.split();
-        let document = next_snapshot(&mut frames).await;
+        let document = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
         assert!(document.eggpool.is_some());
         assert_eq!(
             document.eggpool.as_ref().map(|e| e.worker_state),
@@ -2352,8 +2406,8 @@ mod tests {
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::test_support::{
-        await_documents, next_snapshot, spawn_counting_greggd, write_empty_config,
-        write_single_system_config, Running, TempDir,
+        await_documents, next_snapshot_within, spawn_counting_greggd, write_empty_config,
+        write_single_system_config, Running, TempDir, DOCUMENT_BUDGET,
     };
     use super::*;
     use std::time::Duration;
@@ -2405,8 +2459,8 @@ mod windows_tests {
         // Both receive the same published generation. The daemon serializes one
         // document for every frontend, so sharing a generation is the observable
         // form of "one polling plane, two readers".
-        let initial_first = next_snapshot(&mut first_frames).await;
-        let initial_second = next_snapshot(&mut second_frames).await;
+        let initial_first = next_snapshot_within(&mut first_frames, DOCUMENT_BUDGET).await;
+        let initial_second = next_snapshot_within(&mut second_frames, DOCUMENT_BUDGET).await;
         assert_eq!(initial_first.systems.len(), 0);
         assert_eq!(
             initial_first.generation, initial_second.generation,
@@ -2416,8 +2470,8 @@ mod windows_tests {
         // One `Ctrl-R` from one frontend is one publication, and both frontends
         // see the same generation of it.
         first_frontend.request_reload(1).expect("queues the reload");
-        let reloaded_first = next_snapshot(&mut first_frames).await;
-        let reloaded_second = next_snapshot(&mut second_frames).await;
+        let reloaded_first = next_snapshot_within(&mut first_frames, DOCUMENT_BUDGET).await;
+        let reloaded_second = next_snapshot_within(&mut second_frames, DOCUMENT_BUDGET).await;
         assert!(reloaded_first.generation > initial_first.generation);
         assert_eq!(
             reloaded_first.generation, reloaded_second.generation,
@@ -2436,7 +2490,7 @@ mod windows_tests {
         first_frontend
             .request_reload(2)
             .expect("queues the second reload");
-        let later = next_snapshot(&mut first_frames).await;
+        let later = next_snapshot_within(&mut first_frames, DOCUMENT_BUDGET).await;
         assert!(
             later.generation > reloaded_first.generation,
             "the surviving frontend must keep receiving publications: {} -> {}",
