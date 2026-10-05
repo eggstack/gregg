@@ -534,9 +534,9 @@ impl CronCache {
                     continue;
                 };
                 let candidate = OldestRecord {
+                    finished_unix_ms: head.record.finished_unix_ms,
                     system: system_id.clone(),
                     job: job_name.clone(),
-                    finished_unix_ms: head.record.finished_unix_ms,
                 };
                 best = Some(match best {
                     Some(current) if current <= candidate => current,
@@ -555,11 +555,16 @@ impl Default for CronCache {
 }
 
 /// Identity of the next record eviction would drop.
+///
+/// The derived `Ord` is the eviction policy, so the fields are ordered as the
+/// documented policy reads: oldest timestamp first, ties broken by
+/// `(system id, job name)`. Leading with the identity would make the minimum
+/// the alphabetically-first `(system, job)` pair instead of the oldest record.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct OldestRecord {
+    finished_unix_ms: u64,
     system: String,
     job: String,
-    finished_unix_ms: u64,
 }
 
 #[cfg(test)]
@@ -902,6 +907,38 @@ mod tests {
         assert_eq!(cache.system("a").unwrap().job_records("backup"), &[]);
         assert_eq!(cache.system("b").unwrap().job_records("backup").len(), 1);
         assert_eq!(cache.system("c").unwrap().job_records("backup").len(), 1);
+    }
+
+    /// The alphabetically-first system must not decide the victim.
+    ///
+    /// Timestamps deliberately run *against* the system order here, which is
+    /// the case the policy exists for: a system that sorts first but holds the
+    /// newest record keeps it, and the oldest record anywhere in the fleet goes
+    /// instead.
+    #[test]
+    fn eviction_follows_the_timestamp_even_when_system_order_disagrees() {
+        let mut cache = CronCache::new(10, 2);
+        // Newest first by system name: `alpha` is both alphabetically first and
+        // the newest.
+        for (index, system) in ["alpha", "mike", "zulu"].iter().enumerate() {
+            let finished = 1_700_000_009_000 - index as u64 * 1_000;
+            cache.apply_history(
+                system,
+                &history_document(epoch(1_000, 1), 1, "backup", vec![record(1, finished)]),
+            );
+        }
+        assert_eq!(cache.total_records(), 2);
+        assert_eq!(
+            cache.system("alpha").unwrap().job_records("backup").len(),
+            1,
+            "the newest record must survive"
+        );
+        assert_eq!(cache.system("mike").unwrap().job_records("backup").len(), 1);
+        assert_eq!(
+            cache.system("zulu").unwrap().job_records("backup"),
+            &[],
+            "the globally oldest record is the victim, not the first system"
+        );
     }
 
     #[test]

@@ -1010,7 +1010,12 @@ fn cmd_list(store: &ConfigStore, json: bool) -> Result<(), Box<dyn std::error::E
 }
 
 fn cmd_remove(store: &ConfigStore, endpoint_str: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let spec = EndpointSpec::parse(endpoint_str)?;
+    // `remove` takes a stored host on its own, so a bare IPv6 literal is read
+    // as that host rather than as the ambiguous `ipv6:port` shape: the host
+    // `gregg add [2001:db8::1:2]:11310` stored is removable by the very string
+    // in the config. `add` keeps the stricter parse, where the ambiguity has to
+    // be an error rather than a guess.
+    let spec = EndpointSpec::parse_host_only(endpoint_str)?;
     let exact_port = if spec.port_was_explicit {
         Some(spec.port)
     } else {
@@ -1993,6 +1998,39 @@ mod tests {
         let config = store.load_existing().unwrap();
         assert_eq!(config.systems.len(), 1);
         assert_eq!(config.systems[0].port, 9090);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stored IPv6 host is removable by the exact string in the config.
+    ///
+    /// `2001:db8::1:2` reads as both a host and `2001:db8::1` plus the port `2`,
+    /// which `add` has to reject. `remove` takes a host on its own, so it must
+    /// not inherit that rejection and force the operator to retype the
+    /// bracketed form.
+    #[test]
+    fn remove_accepts_the_stored_form_of_an_ambiguous_bare_ipv6_host() {
+        let dir = tmp_dir("remove_ipv6");
+        let path = dir.join("config.toml");
+        let store = ConfigStore::new(path);
+
+        cmd_add(&store, "[2001:db8::1:2]:11310", None, false).unwrap();
+        cmd_add(&store, "[2001:db8::1:3]:11310", None, false).unwrap();
+        assert_eq!(
+            store.load_existing().unwrap().systems[0].host,
+            "2001:db8::1:2",
+            "the stored host is the bare literal"
+        );
+
+        cmd_remove(&store, "2001:db8::1:2").unwrap();
+
+        let config = store.load_existing().unwrap();
+        assert_eq!(config.systems.len(), 1);
+        assert_eq!(config.systems[0].host, "2001:db8::1:3");
+
+        // The bracketed host-only and host:port forms keep working.
+        cmd_remove(&store, "[2001:db8::1:3]:11310").unwrap();
+        assert_eq!(store.load_existing().unwrap().systems.len(), 0);
 
         let _ = fs::remove_dir_all(&dir);
     }

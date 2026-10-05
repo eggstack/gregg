@@ -1057,6 +1057,8 @@ mod tests {
     fn render_zero_swap() {
         let config = test_config(&["srv"]);
         let mut state = AppState::synthetic(&config);
+        // A swapless host: `gregg-host` reports swap with a zero total, which
+        // means there is nothing to measure, not that swap is measurably 0%.
         let snap = LinuxSnapshotBuilder::default().swap(0, 0).build();
         apply_online(&mut state, 0, snap);
         let output = render_state(&state, 120, 8);
@@ -1066,8 +1068,12 @@ mod tests {
             "SWP row should contain label, got: {swap_line}"
         );
         assert!(
-            swap_line.contains("0.0%"),
-            "zero swap should show '0.0%', got: {swap_line}"
+            swap_line.contains('—'),
+            "zero swap should show the unavailable marker, got: {swap_line}"
+        );
+        assert!(
+            !swap_line.contains("0.0%"),
+            "zero swap must never render as a measured zero, got: {swap_line}"
         );
     }
 

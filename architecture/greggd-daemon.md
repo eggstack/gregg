@@ -227,6 +227,15 @@ compares the derived `(epoch, history_revision, jobs)` against the last
 publication and skips the swap when they match, so the Plan-160 one-minute
 civil-clock reconciliation wake publishes nothing when nothing changed. The
 `generated_at_unix_ms` stamp is deliberately excluded from that comparison.
+The published job state is the truth about the slot, not a momentary one: the
+job actually holding the global child slot carries `running_since_unix_ms` for
+its whole run, and a load-deferred job carries its real future retry rather
+than the second the tick began in.
+
+**Cache eviction is oldest-first.** When a global record ceiling forces a
+drop, the victim is the record with the smallest `finished_unix_ms` across
+every system and job, with `(system, job)` as the stable tie breaker — the
+same order the bounded per-job `VecDeque` uses.
 
 **Bounded terminal history** is one `VecDeque` per configured job at the
 configured depth (`scheduler_history_limit`, default 5, hard maximum 10, `0`
@@ -287,7 +296,13 @@ scheduler task and pays zero cost.
 Pending selection is an allocation-free bounded scan over job state: the
 oldest pending time wins with config order as the stable tie breaker, and
 no candidate vector is built merely to choose a job. Every load-gated launch
-rechecks the latest cached load. No occurrence history is persisted or
+rechecks the latest cached load, and **every** load-blocked occurrence is
+rescheduled whether or not a winner was chosen: a job that becomes due while
+the gate is closed must never keep an elapsed `retry_at`, or that past instant
+would become the `sleep_until` deadline and the loop would spin. A wake
+deadline is therefore only ever a retry that is still in the future, and a
+load-delayed job is published as load-delayed for its whole wait with a real
+`next_retry_unix_ms` countdown. No occurrence history is persisted or
 replayed after restart. The process adapter uses direct Tokio argv execution
 with stdin null and `kill_on_drop`; stdout/stderr are null unless history
 capture is enabled, in which case they are piped and concurrently drained (see

@@ -104,6 +104,15 @@ const READ_BUFFER_BYTES: usize = 8192;
 /// exists so a transport regression fails as a bounded error instead of a hang.
 const ACCEPT_STOP_GRACE: Duration = Duration::from_secs(5);
 
+/// How many buffered state documents `stop` skips while looking for the
+/// acknowledgement to its own request.
+///
+/// A document is never an answer to a stop, but one the handshake left buffered
+/// is legitimate traffic rather than a protocol violation, so it is skipped
+/// rather than reported. The bound keeps a daemon that keeps publishing from
+/// keeping the read alive indefinitely.
+const MAX_STOP_SKIPPED_DOCUMENTS: usize = 8;
+
 /// Capacity of the scheduler observation channel.
 ///
 /// Bounded: a full channel means the engine is not draining, and an unbounded
@@ -569,7 +578,17 @@ impl Engine {
                 // the same intent is a no-op, which is what keeps a
                 // reconnecting frontend from minting generations forever.
                 let changed = previous != Some(EggpoolIntent { active, period });
-                if fleet.set_eggpool_period(period) || changed || refresh {
+                // Fleet-global state must carry the window the worker is
+                // actually driven with: the converged reduction over every
+                // attached frontend, not this one frontend's request. Writing
+                // a single frontend's period here would make the reducer
+                // reject every result the worker fetched as soon as two
+                // frontends disagreed, leaving both panes in `Refreshing`
+                // with no error.
+                let converged = hub.with_intents(|intents| fleet.eggpool_desired_state(intents));
+                let window_changed =
+                    converged.is_some_and(|desired| fleet.set_eggpool_period(desired.period));
+                if window_changed || changed || refresh {
                     fleet.begin_eggpool_request();
                 }
                 (generation, true, None)
@@ -1044,21 +1063,46 @@ pub async fn stop(identity: &ClientDaemonIdentity, version: &str) -> Result<(), 
         .frontend
         .request_shutdown(1)
         .map_err(|error| AttachError::Refused(error.to_string()))?;
-    match attachment.frames.next_terminal().await {
-        Ok(FrontendFrame::ControlAck {
-            accepted, detail, ..
-        }) => {
-            if accepted {
-                Ok(())
-            } else {
-                Err(AttachError::Refused(detail.unwrap_or_else(|| {
-                    "the daemon refused the stop request".to_owned()
-                })))
+    // A state document the handshake left buffered is not an answer, and
+    // neither is a protocol violation or a timeout: only the acknowledgement
+    // or a clean disconnect is. Anything else used to be reported as a
+    // successful stop, which is the unsound signal the endpoint check below
+    // exists to backstop. The skip is bounded so a daemon that keeps
+    // publishing cannot keep this read alive forever.
+    let deadline = tokio::time::Instant::now() + crate::clientd::frontend::TERMINAL_FRAME_TIMEOUT;
+    let mut skipped = 0;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let Ok(frame) = tokio::time::timeout(remaining, attachment.frames.next()).await else {
+            return Err(AttachError::Refused(
+                "the client daemon did not answer the stop request in time".to_owned(),
+            ));
+        };
+        match frame {
+            Ok(FrontendFrame::Snapshot(_)) if skipped < MAX_STOP_SKIPPED_DOCUMENTS => {
+                skipped += 1;
+            }
+            Ok(FrontendFrame::ControlAck {
+                accepted, detail, ..
+            }) => {
+                break if accepted {
+                    Ok(())
+                } else {
+                    Err(AttachError::Refused(detail.unwrap_or_else(|| {
+                        "the daemon refused the stop request".to_owned()
+                    })))
+                };
+            }
+            // The daemon closes after honouring a stop, so a clean disconnect
+            // immediately after the request is a success, not a failure.
+            Err(error) if error.is_disconnect() => break Ok(()),
+            Err(error) => break Err(AttachError::Refused(error.to_string())),
+            Ok(other) => {
+                break Err(AttachError::Refused(format!(
+                    "the client daemon answered the stop request with {other:?} instead of an acknowledgement"
+                )));
             }
         }
-        // The daemon closes after honouring a stop, so a clean disconnect
-        // immediately after the request is a success, not a failure.
-        Ok(_) | Err(_) => Ok(()),
     }?;
 
     // Wait for the endpoint to go away. Returning on the acknowledgement alone
@@ -2399,6 +2443,93 @@ mod tests {
             Some(crate::state::EggpoolWorkerState::Idle),
             "a frontend that has not opened the pane leaves the worker inactive"
         );
+        running.shutdown().await;
+    }
+
+    /// Two frontends that disagree about the window must never make the
+    /// advertised period drift from the window the worker fetches.
+    ///
+    /// The worker is driven with the converged shortest *active* window, so
+    /// fleet-global state has to carry that same value. If one frontend's
+    /// request were written there instead, the reducer would reject every
+    /// result the worker actually returned (`result.period != eggpool.period`)
+    /// and both panes would sit in `Refreshing` with no error.
+    #[tokio::test]
+    async fn divergent_frontends_advertise_the_converged_eggpool_period() {
+        let dir = TempDir::new("converged");
+        let store = write_empty_config(&dir);
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        store.write(&config).expect("writes");
+
+        let running = Running::start(&dir, store);
+        running.ready().await;
+        let identity = running.identity.clone();
+
+        let mut hour_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        hour_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+        let mut day_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        day_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+
+        // Frontend A asks for `Hour`, frontend B for `Day`. The worker is
+        // driven with the shortest active window, so `Hour` is the only period
+        // the daemon is ever going to fetch.
+        hour_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Hour,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+        day_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Day,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+        // B then re-sends its own intent, which is what a pane move, a manual
+        // refresh, or the next key press looks like on the wire.
+        day_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Day,
+                refresh: true,
+                generation: 2,
+            })
+            .expect("writes");
+
+        let (_sender, mut frames) = hour_frontend.split();
+        // A result has to arrive for the window to be meaningful; the pane is
+        // active, so the worker is driven and its failed fetch publishes.
+        let documents = await_documents(&mut frames, DOCUMENT_BUDGET, |document| {
+            document
+                .eggpool
+                .as_ref()
+                .is_some_and(|eggpool| eggpool.last_attempt_at_unix_ms.is_some())
+        })
+        .await;
+        for document in &documents {
+            let eggpool = document.eggpool.as_ref().expect("eggpool is configured");
+            assert_eq!(
+                eggpool.period,
+                EggpoolPeriod::Hour,
+                "the advertised window must be the converged one the worker fetches"
+            );
+        }
         running.shutdown().await;
     }
 }

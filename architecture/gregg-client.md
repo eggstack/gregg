@@ -304,7 +304,10 @@ gregg
   relaunched on the current binary. A daemon *newer* than this frontend is
   reported with upgrade guidance and left running — it may be serving a newer
   window elsewhere, and downgrading that session because one window is old would
-  be a worse failure than an error message.
+  be a worse failure than an error message. Waiting for the old daemon to release
+  the endpoint asks the transport, never the filesystem: a Windows named pipe is
+  never a path that exists, so a path-existence check reports the endpoint as
+  already free and the replacement races a daemon that is still unwinding.
 - **User-scoped startup only.** A `systemctl --user` unit, a
   `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a
   managed user crontab watchdog. Never a system unit, never `LocalService` SCM,
@@ -845,6 +848,16 @@ transition. Commit `d31d72f` remains a truthful historical record.
 
 **Periods:** `Hour`, `Day`, `Week`, `Month` — cycled with `longer()`/`shorter()`
 
+**The advertised window is the converged one.** With more than one frontend
+attached, the worker is driven with the shortest *active* window across all of
+them, and that same value is what fleet state carries. Fleet state must never
+hold one frontend's requested period: the reducer accepts a result only when the
+period matches, so writing a per-frontend value would reject every result the
+worker actually fetched and leave both panes on `Refreshing` with no error. A
+frontend that asked for a longer window than the convergence sees its request
+recorded and the converged window displayed — the pane only ever shows a period
+the daemon actually fetched.
+
 **Summary fields:** accounted tokens, cache read ratio, output tok/s, avg TTFT
 
 ## Tests
@@ -955,6 +968,13 @@ which a CJK or emoji job name silently overflows. Every string that becomes a
 cell is passed through `sanitize` immediately before construction, so the
 guarantee is local to the renderer rather than dependent on a distant chokepoint
 staying correct.
+
+The budget is measured, not estimated. The requested row count and the job
+table are both derived from the renderer's own line-producing functions, and the
+job table is capped by the same constant the budget is built from, so a wide cron
+table cannot consume the whole block and push the selected job's history out of
+view. Both sides of the comparison use the same function the frame is built
+from: an estimate that drifts from the renderer silently drops the newest record.
 
 The renderer enforces truthfulness rules that are easy to get wrong:
 

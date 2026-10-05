@@ -79,11 +79,16 @@ pub fn desired_rows(state: &AppState) -> usize {
         // believes is open.
         return 1;
     };
-    let jobs = job_rows(cron);
-    let mut rows = HEADER_ROWS + jobs.len();
+    let jobs = job_rows(cron).len().min(MAX_JOB_ROWS);
+    let mut rows = HEADER_ROWS + jobs;
     if let Some((job, records)) = selected_job_view(state, cron) {
         let _ = job;
-        rows += SELECTED_JOB_ROWS + records.iter().map(record_rows).sum::<usize>();
+        let depth = state.cron_display_history.max(1);
+        rows += SELECTED_JOB_ROWS
+            + records
+                .iter()
+                .map(|record| record_rows(record, depth))
+                .sum::<usize>();
     }
     rows.min(MAX_JOB_ROWS + SELECTED_JOB_ROWS + 8)
 }
@@ -137,7 +142,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, rows_visible: usize) 
         return;
     }
 
-    for (job, selected) in job_rows(cron).into_iter().zip(job_flags(state, cron)) {
+    // The job table is bounded by the same constant the vertical budget is
+    // built from, so a wide cron table cannot consume the whole block and push
+    // the selected job's own history out of view entirely.
+    for (job, selected) in job_rows(cron)
+        .into_iter()
+        .take(MAX_JOB_ROWS)
+        .zip(job_flags(state, cron))
+    {
         if !line(job_row(job, selected, width), f, &mut row, &mut emitted) {
             return;
         }
@@ -472,19 +484,16 @@ fn outcome_label(outcome: SchedulerOutcomeV2) -> String {
     }
 }
 
-/// Rows one record costs: its headline plus any output lines.
-fn record_rows(record: &CronRecord) -> usize {
-    let stdout = if record.record.stdout.text.is_empty() {
-        0
-    } else {
-        2
-    };
-    let stderr = if record.record.stderr.text.is_empty() {
-        0
-    } else {
-        2
-    };
-    1 + stdout + stderr
+/// Rows one record costs: its headline plus exactly the output lines
+/// [`stream_lines`] emits.
+///
+/// Derived from the renderer rather than assumed flat. A record whose output is
+/// four lines costs six rows, not the three a flat estimate gives it, and a
+/// record the remote truncated costs one more for the marker row — an
+/// under-count is what pushes the newest record out of a fixed budget.
+fn record_rows(record: &CronRecord, depth: usize) -> usize {
+    1 + stream_lines(record, Stream::Stdout, depth).len()
+        + stream_lines(record, Stream::Stderr, depth).len()
 }
 
 /// Render a Unix millisecond stamp as `MM-DD HH:MM`.
@@ -887,7 +896,80 @@ mod tests {
         }
     }
 
+    /// A record costs exactly the rows its own output renders as.
+    ///
+    /// A flat two-per-stream estimate is what silently pushed the newest
+    /// record out of a fixed budget, so the accounting is asserted against the
+    /// renderer's own line count.
     #[test]
+    fn a_records_row_cost_is_the_number_of_rows_it_really_renders() {
+        let single = record(1, "one line", "");
+        // Headline plus one output line.
+        assert_eq!(record_rows(&single, 5), 2);
+
+        let four = record(2, "a\nb\nc\nd", "");
+        // Headline plus four output lines.
+        assert_eq!(record_rows(&four, 5), 5);
+        assert_eq!(stream_lines(&four, Stream::Stdout, 5).len(), 4);
+
+        let both = record(3, "a\nb", "x\ny\nz");
+        assert_eq!(record_rows(&both, 5), 6);
+        assert_eq!(
+            stream_lines(&both, Stream::Stdout, 5).len()
+                + stream_lines(&both, Stream::Stderr, 5).len(),
+            5
+        );
+    }
+
+    /// Output longer than the pane's depth costs the marker row as well.
+    #[test]
+    fn output_longer_than_the_pane_depth_costs_its_marker_row() {
+        let mut deep = record(1, "1\n2\n3\n4\n5\n6\n7\n8", "");
+        deep.record.stdout.truncated = true;
+        // The sanitizer keeps the depth and reports the rest, so the record is
+        // a headline, five kept lines and one marker row.
+        assert_eq!(record_rows(&deep, 5), 7);
+        assert_eq!(stream_lines(&deep, Stream::Stdout, 5).len(), 6);
+        // A remote truncation flag on its own adds no row when the stored text
+        // already fits, because nothing was dropped here.
+        let mut shallow = record(2, "kept line", "");
+        shallow.record.stdout.truncated = true;
+        assert_eq!(record_rows(&shallow, 5), 2);
+    }
+
+    /// A wide job table cannot consume the block and hide the selected job's
+    /// own history.
+    #[test]
+    fn the_job_table_is_capped_so_the_selected_history_still_has_rows() {
+        let jobs: Vec<(&str, SchedulerJobStateV2)> = (0..MAX_JOB_ROWS + 8)
+            .map(|index| {
+                (
+                    Box::leak(format!("job-{index:02}").into_boxed_str()) as &str,
+                    SchedulerJobStateV2::Idle,
+                )
+            })
+            .collect();
+        let records: Vec<CronRecord> = (1..=3)
+            .map(|sequence| record(sequence, &format!("line-{sequence}"), ""))
+            .collect();
+        // The selected job sorts first, so it is inside the cap.
+        let state = state_with_cron(&jobs, "job-00", records);
+
+        // A budget large enough for the whole capped table plus the history.
+        let rows = desired_rows(&state).min(MAX_JOB_ROWS + SELECTED_JOB_ROWS + 8);
+        let block = drawn(&state, 120, rows);
+        let text = text(&block);
+        // The cap takes effect on the table, so the jobs past it are not drawn
+        // even when the budget would have had room for them.
+        assert!(text.contains("job-00"), "{text}");
+        assert!(
+            !text.contains("job-24"),
+            "a job past the cap of {MAX_JOB_ROWS} was drawn: {text}"
+        );
+        // And the selected job's newest record still has rows.
+        assert!(text.contains("line-3"), "{text}");
+    }
+
     fn a_pane_budget_truncates_the_history_and_the_viewport_is_the_only_thing_cut() {
         let records: Vec<CronRecord> = (1..=5)
             .map(|sequence| record(sequence, &format!("line-{sequence}"), ""))

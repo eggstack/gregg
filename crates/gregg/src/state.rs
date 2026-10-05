@@ -2004,36 +2004,40 @@ impl AppState {
             ),
             last_health_error: dto.last_health_error.clone(),
         });
-        let new_systems: Vec<SystemState> = snapshot
-            .systems
+        // The document's own strings are cleaned once, and both the stored state
+        // and the visible-change comparison are built from that same cleaned
+        // copy. Comparing the stored (cleaned) state against the raw document
+        // reported a difference for every string `sanitize` rewrites — a tab, a
+        // bare CR — on *every* document, so the TUI redrew on every poll.
+        let mut clean_systems = snapshot.systems.clone();
+        for dto in &mut clean_systems {
+            dto.endpoint.host = clean(&dto.endpoint.host);
+            dto.endpoint.name = dto.endpoint.name.as_deref().map(clean);
+            dto.configured_name = dto.configured_name.as_deref().map(clean);
+            if let Some(latest) = dto.latest.as_mut() {
+                clean_snapshot(latest);
+            }
+        }
+        let new_systems: Vec<SystemState> = clean_systems
             .iter()
-            .map(|dto| {
-                let mut endpoint = dto.endpoint.clone();
-                endpoint.host = clean(&endpoint.host);
-                endpoint.name = endpoint.name.as_deref().map(clean);
-                let mut latest = dto.latest.clone();
-                if let Some(latest) = latest.as_mut() {
-                    clean_snapshot(latest);
-                }
-                SystemState {
-                    id: dto.id.clone(),
-                    endpoint,
-                    configured_name: dto.configured_name.as_deref().map(clean),
-                    reachability: dto.reachability,
-                    latest,
-                    last_success_at: instant_from_unix_ms(
-                        dto.last_success_at_unix_ms,
-                        now,
-                        now_unix_ms,
-                    ),
-                    last_attempt_at: instant_from_unix_ms(
-                        dto.last_attempt_at_unix_ms,
-                        now,
-                        now_unix_ms,
-                    ),
-                    latency: dto.latency_ms.map(Duration::from_millis),
-                    offline_reason: dto.offline_reason.clone(),
-                }
+            .map(|dto| SystemState {
+                id: dto.id.clone(),
+                endpoint: dto.endpoint.clone(),
+                configured_name: dto.configured_name.clone(),
+                reachability: dto.reachability,
+                latest: dto.latest.clone(),
+                last_success_at: instant_from_unix_ms(
+                    dto.last_success_at_unix_ms,
+                    now,
+                    now_unix_ms,
+                ),
+                last_attempt_at: instant_from_unix_ms(
+                    dto.last_attempt_at_unix_ms,
+                    now,
+                    now_unix_ms,
+                ),
+                latency: dto.latency_ms.map(Duration::from_millis),
+                offline_reason: dto.offline_reason.clone(),
             })
             .collect();
         self.eggpool_period_request = None;
@@ -2054,7 +2058,7 @@ impl AppState {
         // Timestamps and latency alone never count: a row that already says
         // the same thing at a slightly different age does not need a frame, and
         // treating it as changed would redraw on every single poll.
-        let systems_changed = systems_visibly_differ(&self.systems, &snapshot.systems);
+        let systems_changed = systems_visibly_differ(&self.systems, &clean_systems);
         self.systems = new_systems;
         let visible_changed = self.refresh_status != refresh_before
             || self.config_reload_error != reload_error_before
@@ -3006,6 +3010,35 @@ mod tests {
                     }
                 })
                 .collect(),
+        }
+    }
+
+    /// A remote string `sanitize` rewrites must not report a visible change on
+    /// every document.
+    ///
+    /// The stored system state is sanitized while the document it is compared
+    /// against was not, so a host containing a tab (the kernel does not forbid
+    /// tabs in interface names) looked different on every single poll and
+    /// redrew the screen each time.
+    #[test]
+    fn a_sanitized_remote_string_does_not_report_a_change_on_every_document() {
+        let mut config = Config::default();
+        config.systems.push(SystemEntry {
+            id: "tabbed".to_owned(),
+            host: "host\tlocal".to_owned(),
+            port: 11310,
+            name: Some("Tabbed".to_owned()),
+        });
+        let mut state = AppState::synthetic(&config);
+        assert_eq!(
+            state.systems[0].endpoint.host, "host    local",
+            "the tab is expanded once, at adoption"
+        );
+        for _ in 0..5 {
+            assert!(
+                !state.republish(),
+                "an unchanged document must not warrant another frame"
+            );
         }
     }
 

@@ -394,7 +394,13 @@ load/swap which Windows cannot produce.
 Current frequency uses documented ProcessorInformation / CurrentMhz data. Disk
 performance uses bounded direct physical-disk handles and closes each handle.
 Network uses GetIfTable2 rows for InOctets, OutOctets, directional speeds,
-operational state, and native loopback type. Failed optional queries are
+operational state, and native loopback type. The `MIB_IF_ROW2` mirror declares
+every SDK member, including the six `*Octets` fields this collector does not
+read: a `#[repr(C)]` mirror that omits one shifts every member after it, so a
+missing field silently renames a counter and shortens the stride used to walk the
+API's own allocation. The struct size and the offsets of the members that are
+read are asserted at compile time, so a divergence fails the build rather than
+the numbers. Failed optional queries are
 omitted without changing core readiness.
 
 ## FreeBSD backend (Plan 136)
@@ -409,12 +415,12 @@ abstraction; NetBSD/OpenBSD remain separate future backends.
 |------|---------------|
 | CPU | `kern.cp_time` (user/nice/sys/intr/idle); busy excludes idle; no `iowait` mapping |
 | Load | `getloadavg(3)` via libc |
-| Memory | `hw.physmem` + `hw.pagesize` + `vm.stats.vm.v_{free,inactive,cache,laundry}_count`; `available = min((free+inactive+cache+laundry) * page_size, total)` |
+| Memory | `hw.physmem` + `hw.pagesize` + `vm.stats.vm.v_{free,inactive,cache,laundry}_count`; `available = min((free+inactive+cache+laundry) * page_size, total)`. All four counters propagate a `sysctl` failure rather than defaulting to `0`, which would shrink `available` and overstate `usage_pct` — a fabricated measurement, not a missing family |
 | Swap | Unsupported (truthful absence); `kvm_getswapinfo` unprivileged validation is a recorded follow-up |
 | Frequency | Unsupported (no validated unprivileged source); recorded follow-up |
 | Drives | `getmntinfo`/`statfs` via libc with `MNT_LOCAL` selection + shared normalization/slow-probe isolation |
 | Disk I/O | Base `libdevstat` (`devstat_checkversion` gate, null-kvm `devstat_getdevs`, generation-aware, plausibility-gated entries, shared reset-safe baselines) |
-| Network | `ifmib(4)` integer-MIB rows (`net.link.generic.system.ifcount` + `IFMIB_IFDATA` rows, sparse-tolerant, plausibility-gated, loopback detail-only). `ifmib_record` is unit tested against synthetic rows (name charset/length filtering, `IFF_UP` operational state, loopback by flag or `IFT_LOOP`, zero baudrate as unknown capacity) |
+| Network | `ifmib(4)` integer-MIB rows (`net.link.generic.system.ifcount` + `IFMIB_IFDATA` rows, sparse-tolerant, plausibility-gated, loopback detail-only). Each row is copied out of the `Vec<u8>` with `read_unaligned` before it is read, because that buffer only guarantees alignment 1 while `IfmibData` embeds `u64` counters — the same treatment the macOS collector gives its integer-struct reads. `ifmib_record` is unit tested against synthetic rows (name charset/length filtering, `IFF_UP` operational state, loopback by flag or `IFT_LOOP`, zero baudrate as unknown capacity) |
 
 Capabilities: `cpu_iowait=false`, `load_average=true`, `swap=false`,
 `memory_commit=false`, `drives/disk_io/network=true`, `cpu_frequency=false`.

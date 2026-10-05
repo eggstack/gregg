@@ -199,12 +199,13 @@ impl<'a> Engine<'a> {
             .map(|(index, state)| {
                 let config = &self.configs[index];
                 let running_here = running.filter(|(active, _)| *active == index);
-                let deferred = state.last_gate.is_some()
-                    && running_here.is_none()
-                    && state
-                        .pending
-                        .as_ref()
-                        .is_some_and(|pending| pending.retry_at <= Instant::now());
+                // A load gate is holding the occurrence back exactly when a
+                // gate decision exists, nothing is running for this job, and
+                // the occurrence is still waiting. The retry instant is then
+                // always in the future, so the published civil time is a real
+                // countdown rather than the second the tick started in.
+                let deferred =
+                    state.last_gate.is_some() && running_here.is_none() && state.pending.is_some();
                 SchedulerJobV2 {
                     name: config.name.clone(),
                     schedule: config.schedule.clone(),
@@ -244,9 +245,17 @@ impl<'a> Engine<'a> {
     /// the free global slot to `winner`, recording the reading behind each
     /// decision so the published load context is the one that actually
     /// delayed the job.
+    ///
+    /// `winner` is `None` when no candidate was eligible at all. That case is
+    /// not an early return: a load-gated occurrence created in the same tick
+    /// keeps its already-elapsed `retry_at`, which would otherwise become the
+    /// `sleep_until` deadline in [`Engine::next_deadline`] and spin the loop
+    /// until the gate opens. With `None` every load-blocked candidate is
+    /// deferred, and with `Some(winner)` the ordering filter keeps the
+    /// documented "visited before the winner" boundary.
     fn defer_blocked_before(
         &mut self,
-        winner: (Instant, usize),
+        winner: Option<(Instant, usize)>,
         now: Instant,
         unix_now: u64,
         load: LoadGateState,
@@ -256,7 +265,9 @@ impl<'a> Engine<'a> {
             let Some(pending) = state.pending.as_ref() else {
                 continue;
             };
-            if pending.retry_at > now || (pending.since, blocked) >= winner {
+            if pending.retry_at > now
+                || winner.is_some_and(|winner| (pending.since, blocked) >= winner)
+            {
                 continue;
             }
             let config = &configs[blocked];
@@ -399,13 +410,16 @@ impl<'a> Engine<'a> {
             }
         }
         let Some((since, index)) = selected else {
+            // Nothing was eligible. Every load-blocked candidate is still
+            // rescheduled here so no pending keeps an elapsed `retry_at`.
+            self.defer_blocked_before(None, now, unix_now, load);
             return Ok(None);
         };
 
         // Defer every load-blocked candidate that would have been visited
         // before the winner, so an older blocked job neither hides nor is
         // hidden by the job that takes the free global slot.
-        self.defer_blocked_before((since, index), now, unix_now, load);
+        self.defer_blocked_before(Some((since, index)), now, unix_now, load);
 
         let pending = self.states[index]
             .pending
@@ -447,7 +461,11 @@ impl<'a> Engine<'a> {
             let candidate = now + until_due;
             deadline = Some(deadline.map_or(candidate, |current: Instant| current.min(candidate)));
             if let Some(pending) = &state.pending {
-                if slot_available {
+                // An elapsed `retry_at` describes work the tick in front of
+                // this call already decided against, so folding it in would
+                // park `sleep_until` on the past and spin the loop. Only a
+                // retry that is genuinely still in the future is a deadline.
+                if slot_available && pending.retry_at > now {
                     deadline = Some(deadline.map_or(pending.retry_at, |current: Instant| {
                         current.min(pending.retry_at)
                     }));
@@ -478,6 +496,9 @@ struct RunningChild<'a> {
     /// and the child keeps the original null streams.
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
+    /// Index into the configured job set, so every publication can name the
+    /// job that actually holds the global child slot.
+    index: usize,
     job_name: &'a str,
     started: Instant,
     started_unix_ms: u64,
@@ -510,7 +531,11 @@ fn exit_signal(_status: ExitStatus) -> Option<u32> {
     None
 }
 
-fn start_child(job: &ScheduledJobConfig, capture_output: bool) -> Result<RunningChild<'_>, String> {
+fn start_child(
+    job: &ScheduledJobConfig,
+    index: usize,
+    capture_output: bool,
+) -> Result<RunningChild<'_>, String> {
     let Some(executable) = job.command.first() else {
         return Err("validated command has no executable".to_owned());
     };
@@ -542,6 +567,7 @@ fn start_child(job: &ScheduledJobConfig, capture_output: bool) -> Result<Running
         child,
         stdout,
         stderr,
+        index,
         job_name: &job.name,
         started: Instant::now(),
         started_unix_ms: now_unix_ms(),
@@ -578,7 +604,7 @@ pub(crate) async fn run(
         let load_state = *load_rx.borrow_and_update();
         if let Some(launch) = engine.tick(wall_now, now, load_state, active.is_none())? {
             let job = &jobs[launch.index];
-            match start_child(job, capture_output) {
+            match start_child(job, launch.index, capture_output) {
                 Ok(mut child) => {
                     child.scheduled_unix_ms =
                         launch.scheduled.timestamp_millis().max(0).unsigned_abs();
@@ -595,7 +621,7 @@ pub(crate) async fn run(
                     engine
                         .publish(
                             Local::now(),
-                            active.as_ref().map(|c| (launch.index, c.started_unix_ms)),
+                            active.as_ref().map(|c| (c.index, c.started_unix_ms)),
                         )
                         .await;
                 }
@@ -622,7 +648,15 @@ pub(crate) async fn run(
             }
             continue;
         }
-        engine.publish(wall_now, None).await;
+        // The running child is named here too: a long run otherwise leaves the
+        // job published as idle with no `running_since_unix_ms` for its whole
+        // duration.
+        engine
+            .publish(
+                wall_now,
+                active.as_ref().map(|c| (c.index, c.started_unix_ms)),
+            )
+            .await;
 
         let semantic_deadline = engine.next_deadline(wall_now, Instant::now(), active.is_none());
         // Re-reading civil time at least once per minute bounds how long a
@@ -768,6 +802,7 @@ mod tests {
 
     use super::*;
     use chrono::{TimeZone, Utc};
+    use gregg_protocol::{SchedulerJobStateV2, SchedulerSummaryV2};
 
     fn job(name: &str, max_load: Option<f32>) -> ScheduledJobConfig {
         ScheduledJobConfig {
@@ -1008,6 +1043,106 @@ mod tests {
         assert_eq!(younger.retry_at, mono);
     }
 
+    /// A load-gated occurrence that never finds a free candidate must still be
+    /// rescheduled, with the child slot idle the whole time.
+    ///
+    /// The wake deadline is only correct while `retry_at` is in the future: an
+    /// elapsed one makes `sleep_until` return immediately and the loop spins
+    /// on a core until the gate opens.
+    #[test]
+    fn a_gated_occurrence_with_a_free_slot_is_deferred_instead_of_spinning() {
+        let wall = wall_time();
+        let mut config = job("gated", Some(8.0));
+        config.retry_interval_ms = Some(10_000);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine =
+            Engine::new(std::slice::from_ref(&config), wall, 5, publisher.clone()).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        // The occurrence becomes due and is gated in the same tick, so no
+        // candidate is ever selected and `defer_blocked_before` used to be
+        // unreachable.
+        assert!(engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
+        let pending = engine.states[0]
+            .pending
+            .as_ref()
+            .expect("a gated occurrence stays pending");
+        assert_eq!(pending.retry_at, mono + Duration::from_millis(10_000));
+        assert!(engine.next_deadline(due, mono, true) > mono);
+        // The gate is still closed long after that retry elapsed: the retry is
+        // pushed forward again instead of parking the wake on the past.
+        let later = mono + Duration::from_secs(30);
+        assert!(engine
+            .tick(due, later, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
+        assert!(engine.states[0].pending.as_ref().unwrap().retry_at > later);
+        assert!(engine.next_deadline(due, later, true) > later);
+    }
+
+    /// The published retry is a real countdown, not the second the tick began.
+    #[tokio::test]
+    async fn a_deferred_job_publishes_a_future_retry_and_a_load_state() {
+        let wall = wall_time();
+        let mut config = job("gated", Some(8.0));
+        config.retry_interval_ms = Some(60_000);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine =
+            Engine::new(std::slice::from_ref(&config), wall, 5, publisher.clone()).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        assert!(engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
+        engine.publish(wall, None).await;
+        let publication = publisher.current().await;
+        let summary: SchedulerSummaryV2 =
+            serde_json::from_slice(&publication.summary_bytes).expect("valid summary");
+        summary.validate().expect("summary validates");
+        let job = &summary.jobs[0];
+        assert_eq!(job.state, SchedulerJobStateV2::LoadHigh);
+        let retry = job
+            .next_retry_unix_ms
+            .expect("a load-deferred job publishes its retry");
+        assert!(
+            retry > summary.generated_at_unix_ms,
+            "retry {retry} must be in the future, not the current second"
+        );
+    }
+
+    /// The job holding the global child slot is published as running for its
+    /// whole duration, not only at the instant it started.
+    #[tokio::test]
+    async fn the_job_holding_the_child_slot_is_published_as_running() {
+        let wall = wall_time();
+        let mut config = job("running", Some(8.0));
+        config.retry_interval_ms = Some(10_000);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine =
+            Engine::new(std::slice::from_ref(&config), wall, 5, publisher.clone()).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        let launch = engine
+            .tick(due, mono, ready(1.0, 1.0, 1.0), true)
+            .unwrap()
+            .expect("an open gate launches");
+        // A later wake, while the child still holds the slot.
+        let started = now_unix_ms();
+        engine.publish(wall, Some((launch.index, started))).await;
+        let publication = publisher.current().await;
+        let summary: SchedulerSummaryV2 =
+            serde_json::from_slice(&publication.summary_bytes).expect("valid summary");
+        summary.validate().expect("summary validates");
+        let job = &summary.jobs[launch.index];
+        assert_eq!(job.state, SchedulerJobStateV2::Running);
+        assert_eq!(job.running_since_unix_ms, Some(started));
+        assert!(job.pending_since_unix_ms.is_none());
+    }
+
     #[test]
     fn load_is_rechecked_after_a_previous_child_releases_the_slot() {
         let wall = wall_time();
@@ -1057,7 +1192,7 @@ mod tests {
         assert_eq!(launch.index, 0);
         assert_eq!(engine.pending_count(), 0);
         config.command[0] = "/greggd-test-does-not-exist".to_owned();
-        assert!(start_child(&config, true).is_err());
+        assert!(start_child(&config, 0, true).is_err());
     }
 
     #[test]
@@ -1412,7 +1547,7 @@ mod tests {
             retry_interval_ms: None,
             max_wait_ms: None,
         };
-        let mut child = start_child(&job, true).unwrap();
+        let mut child = start_child(&job, 0, true).unwrap();
         child.child.start_kill().unwrap();
         let result = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
             .await
@@ -1460,7 +1595,7 @@ mod observation_tests {
         job: &ScheduledJobConfig,
         launched: Launch,
     ) -> (TerminalRecord, SchedulerOutcomeV2) {
-        let mut child = start_child(job, true).expect("child spawns");
+        let mut child = start_child(job, 0, true).expect("child spawns");
         child.scheduled_unix_ms = launched.scheduled.timestamp_millis().max(0).unsigned_abs();
         child.delay_ms = duration_millis(launched.pending_age);
         child.coalesced = launched.coalesced;
@@ -1605,7 +1740,7 @@ mod observation_tests {
     #[tokio::test]
     async fn disabled_capture_keeps_the_original_null_streams() {
         let job = job_config("quiet", &["/bin/sh", "-c", "printf 'ignored'"], None);
-        let mut child = start_child(&job, false).expect("child spawns");
+        let mut child = start_child(&job, 0, false).expect("child spawns");
         assert!(child.stdout.is_none());
         assert!(child.stderr.is_none());
         let status = tokio::time::timeout(CHILD_SHUTDOWN_BOUND, child.child.wait())
@@ -1634,7 +1769,7 @@ mod observation_tests {
             coalesced: false,
         };
         // Mirror the scheduler's own spawn-failure path.
-        let Err(error) = start_child(&job, true) else {
+        let Err(error) = start_child(&job, 0, true) else {
             panic!("a missing executable cannot spawn");
         };
         assert_ne!(error, "");

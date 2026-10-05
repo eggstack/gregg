@@ -598,10 +598,14 @@ fn physical_memory() -> Result<RawPhysicalMemory, CollectError> {
             "hw.pagesize is zero",
         ));
     }
+    // All four page counters are read the same way and propagate their error:
+    // substituting `0` for a counter the kernel did not return would silently
+    // shrink `available_bytes` and overstate `usage_pct`, which is a fabricated
+    // measurement rather than a missing family.
     let free_count = u64::from(sysctl_u32("vm.stats.vm.v_free_count")?);
     let inactive_count = u64::from(sysctl_u32("vm.stats.vm.v_inactive_count")?);
-    let cache_count = sysctl_u32("vm.stats.vm.v_cache_count").unwrap_or(0);
-    let laundry_count = sysctl_u32("vm.stats.vm.v_laundry_count").unwrap_or(0);
+    let cache_count = sysctl_u32("vm.stats.vm.v_cache_count")?;
+    let laundry_count = sysctl_u32("vm.stats.vm.v_laundry_count")?;
     Ok(RawPhysicalMemory {
         total_bytes: total,
         page_size,
@@ -1079,9 +1083,13 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
         if fetched != 0 || len < prefix as libc::size_t {
             continue;
         }
-        // Safety: the first `prefix` bytes were initialized by sysctl.
-        let row_data: &IfmibData = unsafe { &*buffer.as_ptr().cast() };
-        if let Some(record) = ifmib_record(row, row_data) {
+        // Safety: the first `prefix` bytes were initialized by sysctl, and
+        // `len >= prefix` was checked above. `Vec<u8>` only guarantees
+        // alignment 1 while `IfmibData` embeds `u64` counters, so the row is
+        // copied out with `read_unaligned` into an owned, aligned value
+        // rather than dereferenced in place.
+        let row_data: IfmibData = unsafe { std::ptr::read_unaligned(buffer.as_ptr().cast()) };
+        if let Some(record) = ifmib_record(row, &row_data) {
             out.push(record);
         }
     }

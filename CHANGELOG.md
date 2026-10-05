@@ -45,6 +45,93 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`greggd` busy-looped a core while a job waited behind a load gate.** A
+  job that became due and was held back by `max_load` in the same tick kept an
+  already-elapsed `retry_at`: the reschedule pass that pushes such an occurrence
+  forward was reachable only *after* a winner was chosen, and it explicitly
+  skipped the winner. Nothing was eligible, so it never ran. With the global
+  child slot idle, that elapsed `retry_at` became the `sleep_until` deadline, so
+  the loop woke, republished, and re-checked immediately — pegging one core and
+  republishing a fresh civil timestamp several times a second until the gate
+  opened, which a `retry_interval` of up to 24 hours makes a long wait.
+
+  A gated occurrence with a free slot is now rescheduled like any other, and a
+  retry that is already in the past is no longer used as a wake deadline. A
+  load-delayed job is also published as load-delayed for its whole wait, with a
+  real `next_retry_unix_ms` countdown instead of the second the tick began in,
+  and the job actually holding the child slot reports `running_since_unix_ms`
+  for its whole run rather than only at the instant it started.
+
+- **Windows `Tx/s` was a receive counter on every host.** The `MIB_IF_ROW2`
+  mirror declared in `gregg-host` omitted the six `*Octets` members the SDK
+  places inline, so `out_octets` read the kernel's `InUcastOctets` — transmit
+  bytes rendered as unicast *receive* bytes — and the 48-byte short struct
+  stepped `from_raw_parts` through `GetIfTable2`'s allocation with the wrong
+  stride, so every interface after the first was read from the wrong offset. The
+  size and the offsets of the members this collector reads are now asserted at
+  compile time, so a future mismatch fails the build instead of the numbers.
+
+- **Two frontends with different EggPool windows left both panes stuck.** Fleet
+  state stored the *window one frontend asked for* while the worker was driven
+  with the converged shortest active window. The reducer accepts a result only
+  when the window matches, so as soon as two frontends disagreed, every result
+  the worker actually fetched was dropped: both panes sat on `Refreshing` with no
+  data and no error, and the next key press from either one re-minted the
+  generation. Fleet state now carries the converged window the worker is driven
+  with, which is also the window the pane is allowed to show.
+
+- **The cron pane's vertical budget was miscounted and the job table uncapped.**
+  A record's row cost was estimated flat, so multi-line output under-counted its
+  own height and pushed the newest record out of the budget; the count is now
+  derived from the same function that renders the lines. The job table is also
+  bounded by the constant the budget is built from, so a wide table can no
+  longer consume the block and hide the selected job's history.
+
+- **A swapless host reported `SWP 0.0%`.** Linux reports swap with a zero total
+  when there is none, which means there is nothing to measure rather than a swap
+  measurably at zero. The row suppressed `0 B / 0 B` and then fell through to
+  the percentage, so the one row that had no measurement behind it was the row
+  that claimed a measured zero. It now renders `—`, as a host that omits swap
+  entirely already did.
+
+- **A stored IPv6 host could not be removed by the form stored in the config.**
+  `gregg add [2001:db8::1:2]:11310` stores the host `2001:db8::1:2`, but
+  `gregg remove 2001:db8::1:2` was refused, because that string really does read
+  as both a host and a host plus the port `2` — the ambiguity `add` exists to
+  reject. `remove` takes a host on its own and has no such guess to protect, so
+  it now reads a bare IPv6 literal as that host; the bracketed forms are
+  unchanged.
+
+- **FreeBSD read each interface row from a possibly unaligned address.** The row
+  was dereferenced in place out of a `Vec<u8>`, whose alignment is 1, while
+  `IfmibData` embeds `u64` counters. It is now copied out with `read_unaligned`,
+  matching the macOS collector. Two page counters that silently became `0` when
+  `sysctl` failed now propagate their error like their two neighbours, instead
+  of understating available memory and overstating usage.
+
+- **A Windows daemon rotation never waited for the old daemon to release the
+  pipe.** The wait checked that the endpoint path existed, and a named pipe is
+  never a filesystem entry, so it returned immediately and a replacement could
+  race a daemon that was still unwinding. It now asks the transport directly,
+  the same way the readiness probe does.
+
+- **Cron record eviction was not oldest-first.** The derived ordering that picks
+  the victim led with the system and job name, so the alphabetically first
+  `(system, job)` pair was dropped rather than the oldest record. The documented
+  policy is now what the code does, ties included.
+
+- **`gregg daemon stop` reported success for a non-answer.** A state document
+  the handshake left buffered, a protocol violation, or a timeout was all read
+  as a completed stop. Only the acknowledgement or a clean disconnect is now a
+  success; a buffered document is skipped, since it is legitimate traffic rather
+  than an answer.
+
+- **The TUI redrew on every poll for a host whose data `sanitize` rewrites.**
+  The visible-change check compared the sanitized stored state against the raw
+  document, so a string containing a tab or a bare carriage return differed on
+  every document. Both sides are now cleaned the same way, as the cron branch
+  beside it already was.
+
 - **A `gregg-update` test reported a spawn failure as a missing file (Plan 172).
   Test-only; no update behavior changed.** The download-classification tests
   asserted `DownloadOutcome::Failed(_)`, which is also exactly what a failed

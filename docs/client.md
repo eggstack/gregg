@@ -41,7 +41,12 @@ prints the exact `cargo uninstall` command to run after the process exits.
 `192.168.182.146`, `::1`), HTTP URL without a port, `nickname@host` without
 a port, `nickname@`, and the ambiguous combination of inline `nickname@`
 with `--name`. HTTPS is never accepted and is not downgraded to HTTP.
-`gregg remove` still accepts host-only input. Persisted fields are normalized
+`gregg remove` still accepts host-only input. That includes a bare IPv6
+literal: because `remove` takes a host on its own, it reads `2001:db8::1:2` as
+the host and not as the host `2001:db8::1` plus the port `2`, so the exact
+string `gregg add [2001:db8::1:2]:11310` stored is removable by the exact
+string in the config. The stricter reading stays where it is needed, in `add`,
+which still rejects that shape rather than guessing. Persisted fields are normalized
 `host` and `port`; the inline `nickname@` form populates the existing
 `SystemEntry.name` field. `default_port` remains in the configuration schema
 for compatibility but is not used by `gregg add`. Do not rely on implicit

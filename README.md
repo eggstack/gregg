@@ -81,7 +81,10 @@ gregg
 
 `gregg add` requires an explicit port (`host:port`,
 `nickname@host:port`, or `http://host:port/`); host-only input is rejected
-and HTTPS is never accepted. `gregg remove` accepts host-only input. See
+and HTTPS is never accepted. `gregg remove` accepts host-only input, including
+a bare IPv6 literal: because `remove` takes a host on its own, the string in
+the config always removes it, where `add` still rejects the ambiguous
+`2001:db8::1:2` and asks for `[2001:db8::1:2]:11310`. See
 [Client](docs/client.md).
 
 ## Supported targets

@@ -512,6 +512,14 @@ mod ffi {
         pub storage_manager_name: [u16; 8],
     }
 
+    /// `MIB_IF_ROW2` — one interface row of `GetIfTable2`.
+    ///
+    /// The six `*Octets` members the SDK places inline are declared even
+    /// though this collector only reads four of them: every omitted member
+    /// shifts the ones after it, so `OutOctets` would read `InUcastOctets`
+    /// and every row after the first would be stepped by a wrong stride.
+    /// The layout is pinned by the assertions below, which is the only thing
+    /// a `#[repr(C)]` mirror of an SDK struct can be checked against.
     #[repr(C)]
     pub struct MibIfRow2 {
         pub interface_luid: u64,
@@ -543,13 +551,30 @@ mod ffi {
         pub in_discards: u64,
         pub in_errors: u64,
         pub in_unknown_protos: u64,
+        pub in_ucast_octets: u64,
+        pub in_multicast_octets: u64,
+        pub in_broadcast_octets: u64,
         pub out_octets: u64,
         pub out_ucast_pkts: u64,
         pub out_nucast_pkts: u64,
         pub out_discards: u64,
         pub out_errors: u64,
+        pub out_ucast_octets: u64,
+        pub out_multicast_octets: u64,
+        pub out_broadcast_octets: u64,
         pub out_qlen: u64,
     }
+
+    /// The real `MIB_IF_ROW2` is 1352 bytes on `x86_64` with every member
+    /// declared; a short mirror also strides `from_raw_parts` through the API's
+    /// own allocation incorrectly, so the size is asserted rather than assumed.
+    const _: () = assert!(std::mem::size_of::<MibIfRow2>() == 1352);
+    /// The members this collector reads are asserted individually so a wrong
+    /// mirror cannot silently line them up with a neighbouring counter.
+    const _: () = assert!(std::mem::offset_of!(MibIfRow2, in_octets) == 1208);
+    const _: () = assert!(std::mem::offset_of!(MibIfRow2, out_octets) == 1280);
+    const _: () = assert!(std::mem::offset_of!(MibIfRow2, out_qlen) == 1344);
+    const _: () = assert!(std::mem::offset_of!(MibIfRow2, interface_type) == 1128);
 
     /// `SYSTEM_INFO` — processor architecture info (simplified for `x86_64`).
     #[repr(C)]
@@ -746,11 +771,16 @@ fn logical_drives() -> Result<Vec<RawLogicalDrive>, CollectError> {
                 available_bytes: available,
             });
         }
-        result.sort_by(|left, right| left.root.cmp(&right.root));
         // Windows volume roots are case-insensitive, so `C:\` and `c:\` name
-        // the same volume. De-duplicate case-insensitively (the sort keeps
-        // variants adjacent) so the wire payload cannot carry one volume
-        // twice under two spellings.
+        // the same volume. The sort uses the same case-insensitive key the
+        // de-duplication compares, because `dedup_by` only ever compares
+        // adjacent entries: an ordinal sort leaves `C:\`, `D:\`, `c:\` and the
+        // duplicate survives.
+        result.sort_by(|left, right| {
+            left.root
+                .to_ascii_lowercase()
+                .cmp(&right.root.to_ascii_lowercase())
+        });
         result.dedup_by(|left, right| left.root.eq_ignore_ascii_case(&right.root));
         Ok(result)
     }

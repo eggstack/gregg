@@ -329,19 +329,27 @@ pub(crate) fn build_metric_rows_with_aggregates(
 
     let third = match (&snap.swap, &snap.commit) {
         (Some(swap_info), _) => {
-            let detail = if swap_info.total_bytes == 0 {
-                None
+            if swap_info.total_bytes == 0 {
+                // A swap total of zero means there is no swap to measure, not a
+                // swap that is measurably at 0%. `detail: None` alone used to
+                // fall through to the percentage, so a swapless host rendered a
+                // bare `0.0%` for a measurement that does not exist — while a
+                // host that omits swap entirely rendered `—`.
+                MetricRow {
+                    label: "SWP",
+                    pct: None,
+                    detail: None,
+                }
             } else {
-                Some(format!(
-                    "{}/{}",
-                    text::format_bytes(swap_info.used_bytes),
-                    text::format_bytes(swap_info.total_bytes)
-                ))
-            };
-            MetricRow {
-                label: "SWP",
-                pct: Some(swap_info.usage_pct),
-                detail,
+                MetricRow {
+                    label: "SWP",
+                    pct: Some(swap_info.usage_pct),
+                    detail: Some(format!(
+                        "{}/{}",
+                        text::format_bytes(swap_info.used_bytes),
+                        text::format_bytes(swap_info.total_bytes)
+                    )),
+                }
             }
         }
         (None, Some(commit_info)) => MetricRow {

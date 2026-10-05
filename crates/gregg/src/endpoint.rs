@@ -329,6 +329,34 @@ impl EndpointSpec {
         }
     }
 
+    /// Parse input that is allowed to name a host on its own, with no port.
+    ///
+    /// Identical to [`Self::parse`] except that a bare IPv6 literal is never
+    /// read as the ambiguous `ipv6:port` shape. A compressed literal whose last
+    /// hextet is a decimal (`2001:db8::1:2`) really is both, and `add` has to
+    /// reject it so a typed `:2` is never silently read as the default port.
+    /// `remove` has no such ambiguity to protect: it accepts a stored host by
+    /// itself, so the host `gregg add [2001:db8::1:2]:11310` stored must be
+    /// removable by the very string that is in the config. Bracketed input
+    /// still goes through the full parse, so `[2001:db8::1:2]:11310` and a
+    /// bracketed host-only form keep working.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EndpointError`] if the input is malformed.
+    pub fn parse_host_only(input: &str) -> Result<Self, EndpointError> {
+        let trimmed = input.trim();
+        if trimmed.parse::<IpAddr>().is_ok() || is_ipv6_with_zone_id(trimmed) {
+            return Ok(Self {
+                host: normalize_host(trimmed)?,
+                port: DEFAULT_PORT,
+                port_was_explicit: false,
+                name: None,
+            });
+        }
+        Self::parse(trimmed)
+    }
+
     /// Parse the endpoint input accepted by `gregg add`.
     ///
     /// Canonical host and port input is delegated to [`Self::parse`]. An HTTP

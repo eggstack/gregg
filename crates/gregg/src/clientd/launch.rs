@@ -286,13 +286,19 @@ async fn rotate(identity: &ClientDaemonIdentity, version: &str) -> Result<(), En
 }
 
 /// Wait, bounded, for the endpoint to stop being served.
+///
+/// [`crate::clientd::ipc::endpoint_is_live`] rather than `Path::exists()`: a
+/// Windows named pipe is never a filesystem entry, so a plain existence check
+/// answers "no" for a daemon that is still running and this would return on its
+/// first iteration, handing the caller a daemon that has not finished
+/// unwinding. That is the same hazard the helper's own documentation calls out.
 async fn wait_gone(identity: &ClientDaemonIdentity, timeout: Duration) {
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
         if !identity
             .candidates()
             .iter()
-            .any(|candidate| candidate.exists())
+            .any(|candidate| crate::clientd::ipc::endpoint_is_live(candidate))
         {
             return;
         }

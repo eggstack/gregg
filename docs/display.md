@@ -30,7 +30,9 @@ matches the percentage calculation; explicit caller-available capacity is
 preserved by the normalized model and surfaced only through the expanded
 per-drive rows. On Windows, the third row uses `COMMIT` (memory commit
 charge) instead of `SWP`. Unreachable rows render `—` instead of fabricating
-a `0.0%`.
+a `0.0%`. A host with no swap at all counts as unreachable rather than as
+measurably empty: Linux reports swap with a zero total when there is none, and
+that is an absent measurement, not a measured `0%`.
 
 When the longest natural metric suffix across the entire online fleet exceeds
 one quarter of the terminal width, every normal-view metric row collapses to
