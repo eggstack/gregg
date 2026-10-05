@@ -665,24 +665,90 @@ mod tests {
         );
     }
 
+    /// Bounded attempts for a stub `curl` that never got started.
+    ///
+    /// A loaded CI runner can refuse a `fork` with `EAGAIN`.
+    /// `download_file` reports that as a hard `Failed` (it cannot know the
+    /// difference between "the server said no" and "the child never ran"),
+    /// which is honest, and it is also indistinguishable from a real
+    /// classification result unless the caller looks for it.
+    #[cfg(unix)]
+    const SPAWN_RETRY_ATTEMPTS: u32 = 4;
+
+    /// Backoff between spawn retries. Short, because the contention being
+    /// retried is momentary; long enough not to spin a loaded runner harder.
+    #[cfg(unix)]
+    const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(50);
+
+    /// Invoke `download_file` and require that the stub child actually ran.
+    ///
+    /// Every stub in this module appends a line to `calls` as its first act,
+    /// so a missing `calls` file is direct evidence that no child was ever
+    /// started — as opposed to a child that ran and was classified. That
+    /// distinction is what lets a download test assert a *classification*
+    /// rather than the far wider `DownloadOutcome::Failed(_)`, which a
+    /// `fork` failure satisfies just as happily as a genuine HTTP 500.
+    ///
+    /// "The child started" is therefore proven by the child's own side effect
+    /// rather than by parsing a production error string, so this helper cannot
+    /// drift away from what `download_file` does. A spawn failure is retried
+    /// up to [`SPAWN_RETRY_ATTEMPTS`]; exhausting them is a named assertion
+    /// about the spawn, carrying the reason `download_file` reported.
+    #[cfg(unix)]
+    fn download_file_with_started_stub(
+        curl: &str,
+        url: &str,
+        dest: &std::path::Path,
+        calls: &std::path::Path,
+    ) -> DownloadOutcome {
+        let mut last = String::new();
+        for attempt in 1..=SPAWN_RETRY_ATTEMPTS {
+            let _ = std::fs::remove_file(calls);
+            let outcome = download_file(curl, url, dest);
+            if calls.exists() {
+                return outcome;
+            }
+            last = match &outcome {
+                DownloadOutcome::Failed(reason) => reason.clone(),
+                other => format!("{other:?}"),
+            };
+            eprintln!("attempt {attempt}/{SPAWN_RETRY_ATTEMPTS} started no stub: {last}; retrying");
+            thread::sleep(SPAWN_RETRY_DELAY);
+        }
+        panic!(
+            "no stub child was started in {SPAWN_RETRY_ATTEMPTS} attempts \
+             (the `calls` log was never written); the last reported failure was {last:?}. \
+             That is a spawn failure in the test environment, not an HTTP \
+             classification result."
+        );
+    }
+
     /// Stub `curl` that writes a body larger than `MAX_DOWNLOAD_BYTES` while
     /// reporting HTTP 200, simulating a curl that ignored `--max-filesize`.
+    ///
+    /// The `calls` log line is written first, exactly as the other stubs do,
+    /// so every stub-based download test can tell "curl never started" from
+    /// "curl started and was classified" with the same evidence.
     #[cfg(unix)]
     fn stub_curl_oversized_asset(dir: &std::path::Path) -> String {
         use std::os::unix::fs::PermissionsExt;
         let stub = dir.join("curl");
         // Discover curl's `-o` target so the stub writes where the caller
         // expects the asset, then produce one MiB block more than the cap.
-        let script = concat!(
-            "#!/bin/sh\n",
-            "printf '200'\n",
-            "out=\"\"\n",
-            "while [ \"$#\" -gt 0 ]; do\n",
-            "  if [ \"$1\" = \"-o\" ]; then out=\"$2\"; fi\n",
-            "  shift\n",
-            "done\n",
-            "dd if=/dev/zero of=\"$out\" bs=1048576 count=65 2>/dev/null\n",
-            "exit 0\n",
+        let script = format!(
+            concat!(
+                "#!/bin/sh\n",
+                "echo x >> \"{}\"\n",
+                "printf '200'\n",
+                "out=\"\"\n",
+                "while [ \"$#\" -gt 0 ]; do\n",
+                "  if [ \"$1\" = \"-o\" ]; then out=\"$2\"; fi\n",
+                "  shift\n",
+                "done\n",
+                "dd if=/dev/zero of=\"$out\" bs=1048576 count=65 2>/dev/null\n",
+                "exit 0\n",
+            ),
+            dir.join("calls").display(),
         );
         let _ = std::fs::write(&stub, script);
         std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -695,11 +761,20 @@ mod tests {
         let temp = crate::stage::create_temp_dir("gregg-update-test-oversize").unwrap();
         let dir = temp.path().to_path_buf();
         let dest = dir.join("asset");
+        let calls = dir.join("calls");
         let curl = stub_curl_oversized_asset(&dir);
-        let outcome = download_file(&curl, "https://example.invalid/asset", &dest);
+        // Without the started-stub check, a child that never spawned would
+        // also report `Failed` and also leave no `dest` — both assertions
+        // below would pass while the cap was never exercised at all.
+        let outcome =
+            download_file_with_started_stub(&curl, "https://example.invalid/asset", &dest, &calls);
+        let DownloadOutcome::Failed(reason) = outcome else {
+            panic!("an oversized asset must never become a candidate: {outcome:?}");
+        };
         assert!(
-            matches!(outcome, DownloadOutcome::Failed(_)),
-            "an oversized asset must never become a candidate"
+            reason.contains(&format!("exceeding the {MAX_DOWNLOAD_BYTES} byte maximum")),
+            "an oversized asset must be rejected for exceeding the cap, \
+             not for some unrelated reason: {reason}"
         );
         assert!(!dest.exists(), "oversized partial must be removed");
     }
@@ -768,21 +843,122 @@ mod tests {
 
         // Exact 404 → NotFound, with no second probe request.
         let curl = stub_curl_with_code(&dir, "404");
-        assert!(matches!(
-            download_file(&curl, "https://example.invalid/asset", &dest),
-            DownloadOutcome::NotFound
-        ));
+        let outcome =
+            download_file_with_started_stub(&curl, "https://example.invalid/asset", &dest, &calls);
+        assert_eq!(outcome, DownloadOutcome::NotFound);
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
-        let _ = std::fs::remove_file(&calls);
 
-        // A body/message mentioning 404 must not be sniffed as NotFound
-        // when the captured status code is 500.
+        // A 500 requested from a URL that mentions 404 must still be a hard
+        // failure, never a fallback-permitting NotFound.
+        //
+        // This asserts the specific classification, not `Failed(_)`: a
+        // `Failed` is also what a child that never started produces, so the
+        // wide match could be satisfied by a runner that could not fork at
+        // all. Production always passes `-f`, so a 5xx exits non-zero and is
+        // classified through the failed-run arm.
         let curl = stub_curl_with_code(&dir, "500");
-        assert!(matches!(
-            download_file(&curl, "https://example.invalid/404-docs", &dest),
-            DownloadOutcome::Failed(_)
-        ));
+        let outcome = download_file_with_started_stub(
+            &curl,
+            "https://example.invalid/404-docs",
+            &dest,
+            &calls,
+        );
+        let DownloadOutcome::Failed(reason) = outcome else {
+            panic!(
+                "a 500 must be a hard failure, never a fallback-permitting NotFound: {outcome:?}"
+            );
+        };
+        assert!(
+            reason.contains("curl exit"),
+            "a 500 must be reported from the failed curl run, never as a status \
+             the fallback could use: {reason}"
+        );
         assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
+
+        // The defense in depth the status capture exists for: a curl that did
+        // *not* fail on the status and exited 0 on a 5xx. The recorded code
+        // decides here, not the body's mention of 404, and the error body
+        // never becomes a candidate.
+        let curl = stub_curl_success_with_code(&dir, "500");
+        let outcome = download_file_with_started_stub(
+            &curl,
+            "https://example.invalid/404-docs",
+            &dest,
+            &calls,
+        );
+        let DownloadOutcome::Failed(reason) = outcome else {
+            panic!("a recorded 500 on an exit-0 curl must never be a candidate: {outcome:?}");
+        };
+        assert!(
+            reason.contains("unexpected HTTP 500"),
+            "the recorded code, not the body, must decide: {reason}"
+        );
+        assert!(!dest.exists(), "an error body must never land as an asset");
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x\n");
+    }
+
+    /// Stub `curl` that exits 0 (as a curl without `-f` would) while reporting
+    /// `code`, and whose captured message mentions a `404`.
+    #[cfg(unix)]
+    fn stub_curl_success_with_code(dir: &std::path::Path, code: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let stub = dir.join("curl");
+        let script = format!(
+            "#!/bin/sh\necho x >> \"{}\"\nprintf '%s' \"{code}\"\necho 'error page, see /404-docs' >&2\nexit 0\n",
+            dir.join("calls").display(),
+        );
+        std::fs::write(&stub, script).unwrap();
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+        stub.to_string_lossy().to_string()
+    }
+
+    /// A stub that cannot be spawned at all is the one case `download_file`
+    /// cannot classify, and the reason [`download_file_with_started_stub`]
+    /// exists. This locks that such a child is reported as a *named spawn
+    /// failure* carrying the underlying error, rather than as a bare `ENOENT`
+    /// from reading a `calls` file the stub never had the chance to write.
+    #[cfg(unix)]
+    #[test]
+    fn a_stub_that_never_started_is_reported_as_a_spawn_failure() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-nospawn").unwrap();
+        let dir = temp.path().to_path_buf();
+        let dest = dir.join("asset");
+        let calls = dir.join("calls");
+        let absent = dir.join("curl-never-created");
+        let absent_str = absent.to_str().expect("utf-8 stub path").to_string();
+        let url = "https://example.invalid/asset";
+        assert!(
+            !absent.exists(),
+            "the fixture must name a curl that is absent"
+        );
+
+        // The reason production reports for a child that never started,
+        // taken from production itself so this asserts no fixed strerror.
+        let DownloadOutcome::Failed(reason) = download_file(&absent_str, url, &dest) else {
+            panic!("a curl that does not exist can only fail to spawn");
+        };
+
+        let reported = std::panic::catch_unwind(|| {
+            download_file_with_started_stub(&absent_str, url, &dest, &calls)
+        })
+        .expect_err("a stub that cannot be spawned must not report a classification");
+        let reported = reported
+            .downcast_ref::<String>()
+            .expect("the helper panics with a formatted message")
+            .clone();
+
+        assert!(
+            reported.contains("spawn failure in the test environment"),
+            "the failure must name the spawn it is about, not an unrelated file: {reported}"
+        );
+        assert!(
+            reported.contains(&reason),
+            "the failure must carry the spawn error production reported: {reported}"
+        );
+        assert!(
+            reported.contains(&format!("{SPAWN_RETRY_ATTEMPTS} attempts")),
+            "the failure must say how many spawn attempts it made: {reported}"
+        );
     }
 
     /// Stub `curl` that exits 0 (success) but prints unparseable stdout,
@@ -806,13 +982,23 @@ mod tests {
         let temp = crate::stage::create_temp_dir("gregg-update-test-download-garbage").unwrap();
         let dir = temp.path().to_path_buf();
         let dest = dir.join("asset");
+        let calls = dir.join("calls");
         std::fs::write(&dest, b"partial").unwrap();
 
         let curl = stub_curl_success_with_output(&dir, "garbage");
-        assert!(matches!(
-            download_file(&curl, "https://example.invalid/asset", &dest),
-            DownloadOutcome::Failed(_)
-        ));
+        // The pre-seeded `dest` is removed by *both* the unparseable-status
+        // arm and the spawn-failure arm, so the removal check alone cannot
+        // tell them apart; the started-stub check supplies the difference.
+        let outcome =
+            download_file_with_started_stub(&curl, "https://example.invalid/asset", &dest, &calls);
+        let DownloadOutcome::Failed(reason) = outcome else {
+            panic!("an unparseable status must never become a candidate: {outcome:?}");
+        };
+        assert!(
+            reason.contains("unparseable HTTP status"),
+            "a curl that exits 0 with junk on stdout must be rejected for that \
+             reason, not for some unrelated one: {reason}"
+        );
         assert!(
             !dest.exists(),
             "partial file must be removed on unparseable status"
@@ -853,8 +1039,10 @@ mod tests {
     #[cfg(test)]
     mod curl_baseline {
         use super::*;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio::net::TcpListener;
+        use tokio::net::{TcpListener, TcpStream};
 
         fn have_curl() -> Option<String> {
             find_curl().ok()
@@ -947,11 +1135,35 @@ mod tests {
             spawn_server(|listener| serve_once(listener, response))
         }
 
+        /// Serve one canned `response` and report through `connected` whether
+        /// a client actually arrived.
+        ///
+        /// The flag is the fixture's own evidence that a child ran, which is
+        /// what lets a baseline assert a *classification* instead of the far
+        /// wider `DownloadOutcome::Failed(_)`: a `curl` that could not be
+        /// spawned reports the same `Failed` without ever reaching the server.
+        /// The child exits only after the request completes, so by the time
+        /// `download_file` returns the flag is already settled.
+        fn spawn_recording_response(response: Vec<u8>, connected: Arc<AtomicBool>) -> u16 {
+            spawn_server(move |listener| async move {
+                let Ok((stream, _)) = listener.accept().await else {
+                    return;
+                };
+                connected.store(true, Ordering::SeqCst);
+                respond(stream, response).await;
+            })
+        }
+
         /// Serve one connection: read the head, write `response`, close.
         async fn serve_once(listener: TcpListener, response: Vec<u8>) {
-            let Ok((mut stream, _)) = listener.accept().await else {
+            let Ok((stream, _)) = listener.accept().await else {
                 return;
             };
+            respond(stream, response).await;
+        }
+
+        /// Read one request head off an accepted connection, answer it, close.
+        async fn respond(mut stream: TcpStream, response: Vec<u8>) {
             let mut buf = [0u8; 4096];
             let mut total = 0;
             while let Ok(n) = stream.read(&mut buf[total..]).await {
@@ -1038,14 +1250,30 @@ mod tests {
                 eprintln!("skipping: curl not in PATH");
                 return;
             };
-            let port = spawn_response(static_response(
-                "500 Internal Server Error",
-                b"see /404-docs",
-            ));
+            let connected = Arc::new(AtomicBool::new(false));
+            let port = spawn_recording_response(
+                static_response("500 Internal Server Error", b"see /404-docs"),
+                Arc::clone(&connected),
+            );
             let temp = crate::stage::create_temp_dir("gregg-update-test-base500").unwrap();
             let dest = temp.path().join("asset");
             let outcome = download_file(&curl, &format!("http://127.0.0.1:{port}/asset"), &dest);
-            assert!(matches!(outcome, DownloadOutcome::Failed(_)));
+            // Without this the `Failed` below is satisfied just as well by a
+            // `curl` that never started, and the 500 would never be exercised.
+            assert!(
+                connected.load(Ordering::SeqCst),
+                "no client reached the fixture, so no HTTP status was classified: {outcome:?}"
+            );
+            let DownloadOutcome::Failed(reason) = outcome else {
+                panic!("a 500 must be a hard failure, never a fallback-permitting NotFound: {outcome:?}");
+            };
+            // A `-f` curl exits non-zero on a 5xx, so the code arrives through
+            // the non-success arm rather than the "unexpected HTTP" one.
+            assert!(
+                reason.contains("curl exit"),
+                "the 500 must be reported from the failed curl run, not as \
+                 something else: {reason}"
+            );
             assert!(!dest.exists());
         }
 
