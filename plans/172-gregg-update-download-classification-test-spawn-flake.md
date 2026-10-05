@@ -239,3 +239,17 @@ CI is the only authority, and it is green.
   `a_stub_that_never_started_…` test is the real evidence, because it produces
   the same spawn failure on every run instead of waiting for the runner to.
 
+### CI
+
+**Run `37308641245` on `2dee87c`: all six jobs green** — Linux, both macOS
+jobs, Windows, MSRV Rust 1.89, and FreeBSD. MSRV is the job that failed in
+`37270317172` and is green here; it is not a claim that a `fork` never fails,
+but the assertion it was making is now incapable of being satisfied by one.
+
+The Windows job's `Clippy` step is green, which is the direct confirmation that
+the `#[cfg(unix)]` gate on the new constants was required: without it the
+Windows job would have failed on `-D warnings` for two dead-code constants, and
+the local cross-run was the only thing that caught it in time. The Windows log
+also shows the six `curl_baseline` tests executing — the stub-cluster tests are
+correctly excluded there, which is the gating working as intended.
+
