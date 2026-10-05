@@ -1001,6 +1001,12 @@ pub struct CronIntent {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct CronIntents {
     entries: std::collections::HashMap<u64, CronIntent>,
+    /// Bumped by every mutation, including a departed frontend's removal.
+    ///
+    /// The engine needs to know that *something* changed without being handed
+    /// the change itself: a disconnect is cleaned up by the connection task,
+    /// which has no engine handle and so cannot raise a publication trigger.
+    revision: u64,
 }
 
 /// The `(job, depth)` pairs the published document must carry for one system.
@@ -1009,6 +1015,7 @@ pub type CronRequests = std::collections::BTreeMap<String, usize>;
 impl CronIntents {
     /// Record a subscriber's current intent, returning the previous one.
     pub fn set(&mut self, id: u64, intent: CronIntent) -> Option<CronIntent> {
+        self.revision = self.revision.saturating_add(1);
         self.entries.insert(id, intent)
     }
 
@@ -1018,7 +1025,19 @@ impl CronIntents {
     /// keep the daemon publishing records nobody is reading for the rest of the
     /// process's life.
     pub fn remove(&mut self, id: u64) -> Option<CronIntent> {
+        self.revision = self.revision.saturating_add(1);
         self.entries.remove(&id)
+    }
+
+    /// Monotonic count of mutations to this set.
+    ///
+    /// The engine compares it against the revision it last published at, so a
+    /// change made anywhere — including on a connection task during its
+    /// cleanup — becomes a publication trigger rather than silently waiting
+    /// for an unrelated edit.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Whether any frontend currently has a cron detail open.
@@ -2041,7 +2060,19 @@ impl AppState {
                 offline_reason: dto.offline_reason.clone(),
             })
             .collect();
-        self.eggpool_period_request = None;
+        // A pending period request is only *satisfied* by a document that
+        // actually carries the requested window. Clearing it on every document
+        // let an unrelated poll erase the operator's `j`/`k`, after which the
+        // event loop re-derived the old converged period and suppressed the
+        // re-send as unchanged — so a request the daemon had not taken yet was
+        // lost until the key was pressed twice.
+        if self
+            .eggpool
+            .as_ref()
+            .is_some_and(|eggpool| Some(eggpool.period) == self.eggpool_period_request)
+        {
+            self.eggpool_period_request = None;
+        }
         self.last_snapshot_generation = snapshot.generation;
 
         // Cron arrives through the same document, sanitized at the same single

@@ -91,7 +91,7 @@ impl Drop for PollActivityGuard<'_> {
 /// This is a hostile-input guard, not a wire-contract limit. A *valid* v2
 /// payload is bounded by the protocol's collection caps — 32 drives, 32
 /// disk-io devices and 32 network interfaces, each carrying a name and a
-/// stable id of up to 512 UTF-8 bytes — which measures 111_465 bytes
+/// stable id of up to 512 UTF-8 bytes — which measures `111_465` bytes
 /// (`maximum_valid_v2_payload_fits_response_cap_with_margin`), so a 64 KiB cap
 /// would refuse a conforming daemon and show the system as offline for being
 /// well-formed. 256 KiB clears that bound with room to spare while staying a

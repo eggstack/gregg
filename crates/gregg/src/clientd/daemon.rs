@@ -254,11 +254,11 @@ pub async fn run_daemon(
         .run(endpoints.clone(), tasks.clone(), scheduler_rx),
     );
 
-    let eggpool_worker = config.eggpool.clone().map(|entry| {
-        eggpool::spawn_worker(eggpool::EggpoolClient::new(timeout), entry, tasks.clone())
-    });
-    let eggpool_control = eggpool_worker.as_ref().map(|worker| worker.control.clone());
-    let mut eggpool_results = eggpool_worker.map(|worker| worker.results);
+    let eggpool_client = eggpool::EggpoolClient::new(timeout);
+    // The worker itself is wired by `Engine::sync_eggpool_worker`, so a reload
+    // that adds or removes the entry is honored instead of being frozen into
+    // this process's startup config.
+    let mut eggpool_results: Option<mpsc::Receiver<eggpool::EggpoolResult>> = None;
 
     // Bind before the first document is published, so a frontend can never
     // observe a daemon that is not yet serving.
@@ -310,9 +310,15 @@ pub async fn run_daemon(
         // first real change.
         generation: 1,
         converged: fleet.eggpool_desired_state(&EggpoolIntents::default()),
+        eggpool_worker: None,
+        eggpool_client,
         cron_dirty: false,
+        cron_revision: 0,
         store: ConfigStore::new(config_path),
     };
+    // The entry the config already names is wired before the loop, so a
+    // configured `EggPool` endpoint is live from the first document.
+    engine.sync_eggpool_worker(&fleet, &tasks, &mut eggpool_results);
 
     let result = engine
         .run(
@@ -320,17 +326,16 @@ pub async fn run_daemon(
             &mut fleet,
             &mut batch_rx,
             &mut eggpool_results,
-            eggpool_control.as_ref(),
             &scheduler_tx,
             &mut request_rx,
             &mut cron_rx,
             &cancel,
+            &tasks,
         )
         .await;
 
     tasks.cancel();
     cron_task.abort();
-    drop(eggpool_control);
     // Stop accepting *before* the endpoint is released, so no client can be
     // handed a connection by a listener that is on its way out.
     //
@@ -388,17 +393,43 @@ impl Hub {
     }
 }
 
+/// The live `EggPool` worker together with the entry it was spawned for.
+struct EggpoolWorkerHandle {
+    endpoint: crate::config::EggpoolEntry,
+    control: eggpool::EggpoolControl,
+}
+
 /// Mutable engine bookkeeping that is not part of the fleet.
 struct Engine {
     /// Local IPC generation of the most recent publication.
     generation: u64,
     /// The `EggPool` desired state the worker currently holds.
     converged: Option<EggpoolDesiredState>,
+    /// The worker currently serving the configured `EggPool` entry.
+    ///
+    /// Owned by the engine and re-checked against the config on every reload,
+    /// rather than derived once at startup. `Ctrl-R` is the daemon's only
+    /// config boundary and an operator can add or remove `[eggpool]` at it;
+    /// derived only at startup, *adding* one produced a document carrying a
+    /// pane with no worker behind it, so every request moved it to
+    /// `Refreshing` and nothing ever resolved it.
+    eggpool_worker: Option<EggpoolWorkerHandle>,
+    /// The client the worker is spawned with, reused across reloads so a
+    /// rewire keeps the daemon's configured timeout.
+    eggpool_client: eggpool::EggpoolClient,
     /// Whether a cron-detail intent changed since the last publication.
     ///
     /// Tracked separately from the cache because an intent change alters what
     /// the *document* carries without altering the cache at all.
     cron_dirty: bool,
+    /// The intent-set revision this engine last published at.
+    ///
+    /// A departing frontend's intent is removed by its connection task, which
+    /// has no engine handle and cannot raise `cron_dirty` itself. Comparing the
+    /// revision on the reduce tick covers every mutation, wherever it was made,
+    /// so a disconnect stops transmitting unread history instead of waiting for
+    /// an unrelated change to republish.
+    cron_revision: u64,
     /// The config file this daemon reloads.
     ///
     /// Resolved from the daemon's own startup path, never from a
@@ -416,11 +447,11 @@ impl Engine {
         fleet: &mut FleetState,
         batch_rx: &mut Option<mpsc::Receiver<crate::poller::PollBatch>>,
         eggpool_results: &mut Option<mpsc::Receiver<eggpool::EggpoolResult>>,
-        eggpool_control: Option<&eggpool::EggpoolControl>,
         scheduler_tx: &mpsc::Sender<SchedulerCommand>,
         request_rx: &mut mpsc::Receiver<Inbound>,
         cron_rx: &mut mpsc::Receiver<crate::clientd::cron::CronObservation>,
         cancel: &CancellationToken,
+        tasks: &CancellationToken,
     ) -> Result<(), DaemonError> {
         let mut stop = Control::Continue;
         let mut tick = tokio::time::interval(INTENT_REDUCE_INTERVAL);
@@ -477,14 +508,21 @@ impl Engine {
                 }
 
                 Some(inbound) = request_rx.recv() => {
-                    stop = self
-                        .handle_request(fleet, hub, scheduler_tx, inbound)
-                        .await;
+                    // Synchronous by design: this runs on the single task that
+                    // owns the fleet, applies cron/EggPool results, and writes
+                    // every frontend's document, so it must never park.
+                    stop = self.handle_request(fleet, hub, scheduler_tx, inbound);
+                    // A reload may have added, removed, or repointed the
+                    // `EggPool` entry, so the worker is re-checked against the
+                    // config it now holds rather than the one this process
+                    // started with.
+                    self.sync_eggpool_worker(fleet, tasks, eggpool_results);
                     dirty = true;
                 }
 
                 _ = tick.tick() => {
-                    dirty |= self.reduce_intents(fleet, hub, eggpool_control);
+                    dirty |= self.reduce_intents(fleet, hub);
+                    dirty |= self.note_cron_intent_revision(hub);
                 }
             }
 
@@ -510,13 +548,8 @@ impl Engine {
 
     /// Recompute the converged `EggPool` worker state from every attached
     /// frontend's intent, publishing only on a real change.
-    fn reduce_intents(
-        &mut self,
-        fleet: &mut FleetState,
-        hub: &Arc<Hub>,
-        eggpool_control: Option<&eggpool::EggpoolControl>,
-    ) -> bool {
-        let Some(control) = eggpool_control else {
+    fn reduce_intents(&mut self, fleet: &mut FleetState, hub: &Arc<Hub>) -> bool {
+        let Some(control) = self.eggpool_worker.as_ref().map(|worker| &worker.control) else {
             return false;
         };
         // A poisoned lock still holds usable data: the guard is only poisoned
@@ -534,8 +567,37 @@ impl Engine {
         if self.converged == Some(desired) {
             return false;
         }
+        // The fleet must carry the window the worker is actually driven with on
+        // *every* path that changes it, not only on the request path. A
+        // disconnect has no request of its own, so this is where a departing
+        // frontend's removal actually lands: without it the converged period
+        // moves while `fleet.eggpool.period` stays on the old one, and the
+        // reducer then rejects every result the worker fetches — the pane
+        // freezes and the worker burns a request per interval, all discarded.
+        if fleet.set_eggpool_period(desired.period) {
+            // A new window needs a fresh worker generation, or the worker
+            // returns the previous generation's result and the reducer rejects
+            // it as stale.
+            fleet.begin_eggpool_request();
+        }
+        // Derive what to publish *after* the fleet updates, so the worker is
+        // driven with the generation the reducer will accept. Publishing the
+        // pre-bump generation instead made the worker fetch a result that was
+        // rejected on arrival, and the next tick then republished at the real
+        // generation — which the worker treats as superseding, so it aborted
+        // the fetch it had just started and issued a second one. One wasted
+        // round trip per event, on every pane.
+        let desired = fleet.eggpool_desired_state(&intents).unwrap_or(desired);
         if control.publish(desired).is_err() {
+            // The worker's control channel is closed, and no amount of
+            // re-publishing reopens it. Recording the converged state anyway
+            // bounds this to one publication: without it, every 250ms tick
+            // re-detected the same failure, marked the pane unavailable again,
+            // and re-encoded and broadcast a full fleet document forever. A
+            // *different* intent still retries, because it is a different
+            // desired state, so this is not a permanent mute.
             fleet.mark_eggpool_worker_unavailable();
+            self.converged = Some(desired);
             return true;
         }
         self.converged = Some(desired);
@@ -555,8 +617,62 @@ impl Engine {
         false
     }
 
+    /// Republish when the cron-intent set changed outside a frontend request.
+    ///
+    /// A departing frontend's intent is removed by its connection task, which
+    /// has no engine handle and cannot raise `cron_dirty` itself. Comparing the
+    /// set's revision covers every mutation wherever it was made, so the
+    /// departed window's history stops being transmitted instead of riding
+    /// along until some unrelated change republishes.
+    fn note_cron_intent_revision(&mut self, hub: &Arc<Hub>) -> bool {
+        let revision = hub.cron_intents().revision();
+        if revision == self.cron_revision {
+            return false;
+        }
+        self.cron_revision = revision;
+        self.cron_dirty = true;
+        true
+    }
+
+    /// Wire or drop the `EggPool` worker to match the current configuration.
+    ///
+    /// Called after every frontend request, because `Ctrl-R` is the daemon's
+    /// only config boundary and the operator may add, remove, or repoint the
+    /// entry there. Removing the entry already worked by accident — the worker
+    /// simply stopped being driven — while *adding* one left a pane that no
+    /// worker could ever answer, which is a far worse failure than none at all.
+    ///
+    /// Dropping the control handle closes the worker's watch channel, which is
+    /// how the old worker is told to stop, and its result receiver is retired
+    /// with it. A fresh worker starts inactive, so the converged memo is
+    /// cleared as well: the next intent tick republishes and drives it.
+    fn sync_eggpool_worker(
+        &mut self,
+        fleet: &FleetState,
+        tasks: &CancellationToken,
+        eggpool_results: &mut Option<mpsc::Receiver<eggpool::EggpoolResult>>,
+    ) {
+        let wanted = fleet.eggpool.as_ref().map(|state| state.endpoint.clone());
+        if self.eggpool_worker.as_ref().map(|w| &w.endpoint) == wanted.as_ref() {
+            return;
+        }
+        self.eggpool_worker = None;
+        *eggpool_results = None;
+        self.converged = None;
+        let Some(entry) = wanted else {
+            return;
+        };
+        let worker =
+            eggpool::spawn_worker(self.eggpool_client.clone(), entry.clone(), tasks.clone());
+        *eggpool_results = Some(worker.results);
+        self.eggpool_worker = Some(EggpoolWorkerHandle {
+            endpoint: entry,
+            control: worker.control,
+        });
+    }
+
     /// Apply one frontend request, returning whether the daemon should stop.
-    async fn handle_request(
+    fn handle_request(
         &mut self,
         fleet: &mut FleetState,
         hub: &Arc<Hub>,
@@ -574,7 +690,7 @@ impl Engine {
             // Handled by the connection before it ever reaches the engine.
             DaemonRequest::Handshake { .. } => return stop,
             DaemonRequest::ReloadConfig { generation } => {
-                let (accepted, detail) = self.reload_config(fleet, hub, scheduler_tx).await;
+                let (accepted, detail) = self.reload_config(fleet, hub, scheduler_tx);
                 (generation, accepted, detail)
             }
             DaemonRequest::SetEggpoolIntent {
@@ -625,6 +741,9 @@ impl Engine {
                 if previous.as_ref() != Some(&intent) {
                     self.cron_dirty = true;
                 }
+                // Keep the memo in step so the tick does not republish a
+                // change this request already accounted for.
+                self.cron_revision = hub.cron_intents().revision();
                 (generation, true, None)
             }
             DaemonRequest::Shutdown { generation } => {
@@ -646,7 +765,7 @@ impl Engine {
     }
 
     /// Re-read the config and reconcile, or keep the last-known-good fleet.
-    async fn reload_config(
+    fn reload_config(
         &mut self,
         fleet: &mut FleetState,
         hub: &Arc<Hub>,
@@ -686,9 +805,7 @@ impl Engine {
                 hub.cron_reload.notify_one();
                 // Accepted config that changes endpoints polls immediately
                 // rather than waiting out the remaining cadence.
-                let _ = scheduler_tx
-                    .send(SchedulerCommand::ReplaceEndpoints(endpoints))
-                    .await;
+                request_scheduler_poll(scheduler_tx, SchedulerCommand::ReplaceEndpoints(endpoints));
                 (true, None)
             }
             Err(error) => {
@@ -696,11 +813,36 @@ impl Engine {
                 fleet.set_config_reload_error(message.clone());
                 // Still poll: a temporarily invalid file must not freeze
                 // metrics that were already being collected.
-                let _ = scheduler_tx.send(SchedulerCommand::Refresh).await;
+                request_scheduler_poll(scheduler_tx, SchedulerCommand::Refresh);
                 (false, Some(message))
             }
         }
     }
+}
+
+/// Ask the poll task for an early poll, without ever parking the caller.
+///
+/// A `SchedulerCommand` is a *request*, never state: the poll task keeps the
+/// endpoint list it was given and applies the command when it next receives
+/// one, and `Refresh` only asks to skip ahead to the next poll. The channel is
+/// bounded and the scheduler reads commands only *between* generations, so a
+/// full channel simply means a generation is in flight — and the fixed cadence
+/// polls anyway.
+///
+/// A blocking `send().await` on this path would park the single engine task
+/// that owns the fleet, applies cron and `EggPool` results, and writes every
+/// frontend's document. That freezes every attached TUI for the rest of the
+/// generation and leaves a `Shutdown` request unread, so a refusal here costs
+/// at most the early poll — never the fan-out.
+///
+/// Silent by construction: the client daemon has no subscriber, so a dropped
+/// early poll is indistinguishable in the product from the cadence poll it
+/// replaces.
+fn request_scheduler_poll(
+    scheduler_tx: &mpsc::Sender<SchedulerCommand>,
+    command: SchedulerCommand,
+) {
+    let _ = scheduler_tx.try_send(command);
 }
 
 fn encode_document(
@@ -774,8 +916,9 @@ async fn serve(mut connection: Connection, hub: Arc<Hub>, subscriber: u64) {
     // worker would stay activated for a window nobody is watching.
     hub.with_intents(|intents| intents.remove(subscriber));
     // Same for cron: a departed window that left its intent behind would keep
-    // the daemon transmitting history records nobody is reading, for the rest
-    // of the process's life.
+    // the daemon transmitting history records nobody is reading. This task has
+    // no engine handle, so it cannot raise a publication trigger itself; the
+    // revision this bumps is what makes the engine's reduce tick republish.
     hub.with_cron_intents(|intents| intents.remove(subscriber));
 }
 
@@ -885,7 +1028,7 @@ async fn serve_inner(
                 // unsent tail is the only thing that may not be dropped.
                 connection.flush_outbound()?;
                 match connection.read_available(&mut read_buffer) {
-                    Ok(count) => connection.push_bytes(&read_buffer[..count]),
+                    Ok(count) => connection.push_bytes(&read_buffer[..count])?,
                     // Nothing yet. The loop retries on its next tick.
                     Err(TransportError::WouldBlock) => {}
                     Err(TransportError::Disconnected) => return Ok(()),
@@ -1553,6 +1696,257 @@ mod tests {
     use crate::config::SystemEntry;
     use std::time::Duration;
 
+    /// A full scheduler channel must not stall the engine's own work.
+    ///
+    /// The poll task only reads commands *between* generations, so a bounded
+    /// channel fills routinely while a generation is in flight. `Ctrl-R` plus a
+    /// run of mutating CLI nudges is enough to fill it. A blocking send there
+    /// parked the single engine task, freezing every attached TUI and leaving a
+    /// `Shutdown` unread for the rest of the generation.
+    #[test]
+    fn a_full_scheduler_channel_does_not_stop_the_reload_path() {
+        let dir = TempDir::new("scheduler-backpressure");
+        let store = write_single_system_config(&dir, 1);
+        let (snapshots, _) = watch::channel(
+            encode_document(
+                &FleetState::from_config(&store.load_existing().expect("loads")),
+                1,
+                &CronIntents::default(),
+            )
+            .expect("encodes"),
+        );
+        let (requests, _request_rx) = mpsc::channel(1);
+        let hub = Arc::new(Hub {
+            snapshots,
+            requests,
+            intents: Arc::new(Mutex::new(EggpoolIntents::default())),
+            cron_intents: Arc::new(Mutex::new(CronIntents::default())),
+            cron_endpoints: Arc::new(Mutex::new(Vec::new())),
+            cron_reload: Arc::new(Notify::new()),
+            daemon_id: "test".to_owned(),
+            shutdown: CancellationToken::new(),
+        });
+        let mut fleet = FleetState::from_config(&store.load_existing().expect("loads"));
+        let mut engine = Engine {
+            generation: 0,
+            converged: None,
+            eggpool_worker: None,
+            eggpool_client: eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            cron_dirty: false,
+            cron_revision: 0,
+            store: ConfigStore::new(dir.config_path()),
+        };
+
+        // A channel with no receiver: the scheduler task is gone and every
+        // send is refused. This is the worst case a real full channel has.
+        let (scheduler_tx, scheduler_rx) = mpsc::channel::<SchedulerCommand>(1);
+        drop(scheduler_rx);
+        let (accepted, detail) = engine.reload_config(&mut fleet, &hub, &scheduler_tx);
+        assert!(accepted, "the reload itself still succeeds: {detail:?}");
+        assert_eq!(
+            fleet.systems.len(),
+            1,
+            "the fleet must be reconciled even when the poll request is dropped"
+        );
+
+        // And a *full* (not closed) channel is equally harmless.
+        let (scheduler_tx, _scheduler_rx) = mpsc::channel::<SchedulerCommand>(1);
+        scheduler_tx
+            .try_send(SchedulerCommand::Refresh)
+            .expect("the single slot is free");
+        request_scheduler_poll(
+            &scheduler_tx,
+            SchedulerCommand::ReplaceEndpoints(Vec::new()),
+        );
+        assert_eq!(
+            fleet.systems.len(),
+            1,
+            "a refused early poll must not cost the daemon its own work"
+        );
+    }
+
+    /// A window change publishes one generation, not two.
+    ///
+    /// `reduce_intents` used to record the converged memo and then bump the
+    /// worker generation, so the next tick saw a difference and republished the
+    /// same window one generation later. The worker treats that as superseding:
+    /// it aborted the fetch it had just started and issued a second one. The
+    /// pane still converged — at the cost of a wasted round trip per event.
+    #[tokio::test]
+    async fn a_window_change_publishes_the_generation_the_reducer_accepts() {
+        let dir = TempDir::new("one-generation");
+        let store = write_empty_config(&dir);
+        let entry = crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            // A closed port: the worker runs and fails fast, so this stays a
+            // test of the daemon's bookkeeping rather than of the network.
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        };
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(entry.clone());
+        store.write(&config).expect("writes");
+        let (snapshots, _) = watch::channel(
+            encode_document(
+                &FleetState::from_config(&config),
+                1,
+                &CronIntents::default(),
+            )
+            .expect("encodes"),
+        );
+        let (requests, _request_rx) = mpsc::channel(1);
+        let hub = Arc::new(Hub {
+            snapshots,
+            requests,
+            intents: Arc::new(Mutex::new(EggpoolIntents::default())),
+            cron_intents: Arc::new(Mutex::new(CronIntents::default())),
+            cron_endpoints: Arc::new(Mutex::new(Vec::new())),
+            cron_reload: Arc::new(Notify::new()),
+            daemon_id: "test".to_owned(),
+            shutdown: CancellationToken::new(),
+        });
+        let mut fleet = FleetState::from_config(&config);
+        let worker = eggpool::spawn_worker(
+            eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            entry.clone(),
+            CancellationToken::new(),
+        );
+        let mut engine = Engine {
+            generation: 0,
+            converged: None,
+            eggpool_worker: Some(EggpoolWorkerHandle {
+                endpoint: entry,
+                control: worker.control,
+            }),
+            eggpool_client: eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            cron_dirty: false,
+            cron_revision: 0,
+            store: ConfigStore::new(dir.config_path()),
+        };
+
+        // Open the pane on a one-hour window, then ask for a longer one.
+        hub.with_intents(|intents| intents.set(1, true, EggpoolPeriod::Hour));
+        engine.reduce_intents(&mut fleet, &hub);
+        hub.with_intents(|intents| intents.set(1, true, EggpoolPeriod::Day));
+        engine.reduce_intents(&mut fleet, &hub);
+
+        let intents = hub.with_intents(|guard| guard.clone());
+        assert_eq!(
+            engine.converged,
+            fleet.eggpool_desired_state(&intents),
+            "the memo must describe the generation the worker was just driven with"
+        );
+        assert_eq!(
+            engine.converged.map(|state| state.generation),
+            fleet.eggpool.as_ref().map(|state| state.request_generation),
+            "the reducer would otherwise reject every result the worker fetches"
+        );
+        assert!(
+            !engine.reduce_intents(&mut fleet, &hub),
+            "the next tick must have nothing to republish"
+        );
+    }
+
+    /// A dead `EggPool` worker is published once, not once per tick.
+    ///
+    /// The reduce tick runs every 250ms. With the converged memo left unset
+    /// after a failed publish, one dead worker re-detected its own failure on
+    /// every tick and re-encoded and broadcast a full fleet document forever.
+    #[tokio::test]
+    async fn a_dead_eggpool_worker_publishes_once_and_then_settles() {
+        let dir = TempDir::new("dead-worker");
+        let store = write_empty_config(&dir);
+        let entry = crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        };
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(entry.clone());
+        store.write(&config).expect("writes");
+
+        let (snapshots, _) = watch::channel(
+            encode_document(
+                &FleetState::from_config(&config),
+                1,
+                &CronIntents::default(),
+            )
+            .expect("encodes"),
+        );
+        let (requests, _request_rx) = mpsc::channel(1);
+        let hub = Arc::new(Hub {
+            snapshots,
+            requests,
+            intents: Arc::new(Mutex::new(EggpoolIntents::default())),
+            cron_intents: Arc::new(Mutex::new(CronIntents::default())),
+            cron_endpoints: Arc::new(Mutex::new(Vec::new())),
+            cron_reload: Arc::new(Notify::new()),
+            daemon_id: "test".to_owned(),
+            shutdown: CancellationToken::new(),
+        });
+        let mut fleet = FleetState::from_config(&config);
+        hub.with_intents(|intents| intents.set(1, true, EggpoolPeriod::Hour));
+
+        // A real worker, then stopped: cancelling its token ends the task, so
+        // the control channel closes and publishing fails exactly as a dead
+        // worker's does.
+        let tasks = CancellationToken::new();
+        let worker = eggpool::spawn_worker(
+            eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            entry.clone(),
+            tasks.clone(),
+        );
+        tasks.cancel();
+        let probe = EggpoolDesiredState {
+            active: true,
+            period: EggpoolPeriod::Hour,
+            generation: 1,
+        };
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+            if worker.control.publish(probe).is_err() {
+                break;
+            }
+        }
+        worker
+            .control
+            .publish(probe)
+            .expect_err("the worker is stopped, so its channel is closed");
+
+        let mut engine = Engine {
+            generation: 0,
+            converged: None,
+            eggpool_worker: Some(EggpoolWorkerHandle {
+                endpoint: entry,
+                control: worker.control,
+            }),
+            eggpool_client: eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            cron_dirty: false,
+            cron_revision: 0,
+            store: ConfigStore::new(dir.config_path()),
+        };
+
+        assert!(
+            engine.reduce_intents(&mut fleet, &hub),
+            "the dead worker is reported once"
+        );
+        assert_eq!(
+            fleet.eggpool.as_ref().map(|state| state.worker_state),
+            Some(crate::state::EggpoolWorkerState::WorkerUnavailable),
+            "a pane with no worker says so rather than pretending to load"
+        );
+        assert!(
+            !engine.reduce_intents(&mut fleet, &hub),
+            "an unchanged dead worker must not re-publish on the next tick"
+        );
+    }
+
     /// Read one length-prefixed frame straight off a raw socket.
     ///
     /// Hand-rolled on purpose: the ordering test below is about the *first
@@ -2197,11 +2591,17 @@ mod tests {
         drop(first);
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // A brand-new window, which knows nothing about the old one, must
-        // immediately see the history the daemon still holds.
+        // A brand-new window reopens the same cron detail. The records come
+        // from the daemon's retained cache, not from the remote: the departed
+        // window's intent is gone, so transmission is re-established by asking
+        // again rather than by inheriting a dead window's intent.
         let mut second = attach(&running.identity, env!("CARGO_PKG_VERSION"))
             .await
             .expect("attaches");
+        second
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 2)
+            .expect("queues the reopened intent");
         let documents = await_documents(&mut second.frames, Duration::from_secs(20), |document| {
             document
                 .cron_for("sys-a")
@@ -2221,6 +2621,123 @@ mod tests {
             remote.history_hits(),
             1,
             "and the daemon did not refetch it from the remote"
+        );
+
+        running.shutdown().await;
+    }
+
+    /// A departing frontend's cleanup is a publication trigger in its own right.
+    ///
+    /// `serve` removes the intent but cannot raise `cron_dirty`, so without this
+    /// the removal waited for an unrelated change: attached frontends kept
+    /// receiving the departed window's history, and a new attach was handed
+    /// history it never asked for.
+    #[test]
+    fn a_cron_intent_removed_by_a_disconnect_is_a_publication_trigger() {
+        let dir = TempDir::new("cron-intent-trigger");
+        let store = write_empty_config(&dir);
+        let (snapshots, _) = watch::channel(
+            encode_document(
+                &FleetState::from_config(&store.load_existing().expect("loads")),
+                1,
+                &CronIntents::default(),
+            )
+            .expect("encodes"),
+        );
+        let (requests, _request_rx) = mpsc::channel(1);
+        let hub = Arc::new(Hub {
+            snapshots,
+            requests,
+            intents: Arc::new(Mutex::new(EggpoolIntents::default())),
+            cron_intents: Arc::new(Mutex::new(CronIntents::default())),
+            cron_endpoints: Arc::new(Mutex::new(Vec::new())),
+            cron_reload: Arc::new(Notify::new()),
+            daemon_id: "test".to_owned(),
+            shutdown: CancellationToken::new(),
+        });
+        let mut engine = Engine {
+            generation: 0,
+            converged: None,
+            eggpool_worker: None,
+            eggpool_client: eggpool::EggpoolClient::new(Duration::from_secs(1)),
+            cron_dirty: false,
+            cron_revision: hub.cron_intents().revision(),
+            store: ConfigStore::new(dir.config_path()),
+        };
+
+        assert!(
+            !engine.note_cron_intent_revision(&hub),
+            "an unchanged intent set is not a publication trigger"
+        );
+
+        // Exactly what `serve` does when a frontend disconnects.
+        hub.with_cron_intents(|intents| {
+            intents.set(
+                1,
+                crate::clientd::daemon::CronIntent {
+                    system_id: Some("sys-a".to_owned()),
+                    job: Some("backup".to_owned()),
+                    display_history: 5,
+                },
+            )
+        });
+        assert!(engine.note_cron_intent_revision(&hub));
+        assert!(engine.cron_dirty, "an added intent is dirty");
+        // The engine's publication consumes the flag.
+        assert!(std::mem::take(&mut engine.cron_dirty));
+        assert!(!engine.note_cron_intent_revision(&hub));
+
+        hub.with_cron_intents(|intents| intents.remove(1));
+        assert!(
+            engine.note_cron_intent_revision(&hub),
+            "a disconnect's removal must republish, not wait for an unrelated change"
+        );
+        assert!(engine.cron_dirty);
+    }
+
+    /// A departed frontend's cron intent stops being transmitted.
+    ///
+    /// The connection task removes the departing intent but has no engine
+    /// handle, so nothing raised a publication trigger: attached frontends kept
+    /// receiving that history and a newly attached one was handed history it
+    /// never asked for, until some unrelated change happened to republish.
+    #[tokio::test]
+    async fn a_departed_frontends_cron_intent_is_no_longer_transmitted() {
+        let remote = spawn_counting_greggd().await;
+        let dir = TempDir::new("departed-cron-intent");
+        let running = Running::start(&dir, write_single_system_config(&dir, remote.port));
+        running.ready().await;
+
+        let mut watcher = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        watcher
+            .frontend
+            .request_cron_intent(Some("sys-a"), Some("backup"), 5, 1)
+            .expect("queues the intent");
+        await_documents(&mut watcher.frames, Duration::from_secs(20), |document| {
+            document
+                .cron_for("sys-a")
+                .is_some_and(|entry| !entry.history.is_empty())
+        })
+        .await;
+
+        // The window closes without asking for anything on its way out.
+        drop(watcher);
+        // Let the connection task finish its own cleanup.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // A brand-new window asked for no cron detail at all, so it must not be
+        // handed the departed window's history.
+        let mut fresh = attach(&running.identity, env!("CARGO_PKG_VERSION"))
+            .await
+            .expect("attaches");
+        let documents = next_snapshot_within(&mut fresh.frames, DOCUMENT_BUDGET).await;
+        assert!(
+            documents
+                .cron_for("sys-a")
+                .is_none_or(|entry| entry.history.is_empty()),
+            "a departing frontend's cron intent must not keep transmitting history: {documents:?}"
         );
 
         running.shutdown().await;
@@ -2461,6 +2978,76 @@ mod tests {
             Some(crate::state::EggpoolWorkerState::Idle),
             "a frontend that has not opened the pane leaves the worker inactive"
         );
+        running.shutdown().await;
+    }
+
+    /// An `[eggpool]` entry *added* by `Ctrl-R` must come up live.
+    ///
+    /// The worker used to be spawned once from the startup config, so adding the
+    /// entry published a pane no worker could answer: any request moved it to
+    /// `Refreshing` and nothing ever resolved it, which reads as a permanent
+    /// "still loading" rather than as "unavailable".
+    #[tokio::test]
+    async fn adding_an_eggpool_entry_by_reload_brings_up_a_live_worker() {
+        let dir = TempDir::new("reload-adds-eggpool");
+        let store = write_empty_config(&dir);
+        let identity = ClientDaemonIdentity::for_path(&dir.config_path());
+
+        let running = Running::start(&dir, ConfigStore::new(dir.config_path()));
+        running.ready().await;
+        let mut link = FrontendLink::connect(&identity.candidates()).expect("connects");
+        link.handshake(&identity, "test").expect("handshakes");
+        let (sender, mut frames) = link.split();
+        let initial = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
+        assert!(
+            initial.eggpool.is_none(),
+            "the daemon starts with no `EggPool` entry at all"
+        );
+
+        // Add the entry and press the one config-reload boundary.
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            // A closed port: the worker runs and fails to fetch, which is the
+            // observable difference from a pane with no worker behind it.
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        store.write(&config).expect("writes");
+        sender.request_reload(1).expect("queues");
+
+        let mut added = None;
+        for _ in 0..10 {
+            let document = next_snapshot_within(&mut frames, DOCUMENT_BUDGET).await;
+            if document.eggpool.is_some() {
+                added = Some(document);
+                break;
+            }
+        }
+        let added = added.expect("the added entry must be published");
+        let eggpool = added.eggpool.as_ref().expect("the entry is present");
+        assert_eq!(eggpool.endpoint.id, "pool");
+
+        // A live worker answers the pane: the request leaves the daemon and a
+        // result comes back, so an attempt is recorded. A pane with no worker
+        // behind it never records one — it sits `Idle`, or moves to
+        // `Refreshing` on a key press and never leaves, which reads as a
+        // permanent "still loading" rather than as "unavailable".
+        sender
+            .request_eggpool_intent(true, EggpoolPeriod::Hour, false, 2)
+            .expect("queues");
+        await_documents(&mut frames, DOCUMENT_BUDGET, |document| {
+            document
+                .eggpool
+                .as_ref()
+                .is_some_and(|entry| entry.last_attempt_at_unix_ms.is_some())
+        })
+        .await;
+
+        drop(sender);
         running.shutdown().await;
     }
 

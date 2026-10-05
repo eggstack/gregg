@@ -266,7 +266,13 @@ futures **borrow** the streams instead of
 spawning tasks: a cancelled select (deadline or shutdown) simply stops draining
 and leaves the handles in place for the next wake, so no drain task can outlive
 the scheduler or delay shutdown, and the existing two-second direct-child
-shutdown bound is unchanged. Tails are fixed-capacity (1024 raw bytes per
+shutdown bound is unchanged. That cancellation cancels the *read*, not the
+capture: each stream's bounded tail is owned by the `RunningChild`, not by the
+drain future, so the bytes already read survive a wake. A wake is capped at the
+60-second civil-clock reconciliation bound, so any job that outlives one wake
+would otherwise publish only the bytes read since that wake — or none at all —
+while still reporting `truncated: false`. Tails are fixed-capacity (1024 raw
+bytes per
 stream) and fold each read chunk in with a single bounded drain, so retention is
 independent of how much a child writes. A read error ends that one stream and
 keeps what was already captured rather than failing the scheduler.

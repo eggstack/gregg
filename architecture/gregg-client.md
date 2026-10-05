@@ -324,7 +324,11 @@ gregg
   honest way to choose which human a shared binary should watch for.
 - **Ownership is proven by parsing what would be written**, then re-read after
   writing as a self-check. `Unknown` (unreadable) is treated exactly like
-  `Foreign`: "I could not read it" is not a licence to delete it.
+  `Foreign`: "I could not read it" is not a licence to delete it. Ownership is
+  also *bounded*: removing a managed crontab block consumes the marker and the
+  one command line it announced, because that is all the block contains. Scanning
+  forward to a blank line instead would eat whatever the operator appended after
+  it with `crontab -e` — silent, unrecoverable loss of a job Gregg never owned.
 - **Update is prepare-then-quiesce.** The daemon is identified first, the
   candidate is fully prepared and verified, and only then is the daemon stopped,
   the executable replaced, and the daemon relaunched. A failed relaunch is
@@ -392,15 +396,22 @@ slower plane over the Plan-162 scheduler routes and feeds `FleetState.cron`.
   and `offline_endpoint_remains_in_scheduler_across_generations` lock in
   that one ordered result per endpoint per generation.
 
-The Systems-pane `Ctrl-R` reloads the already-resolved `ConfigStore`, derives
-the replacement endpoint vector, and delivers it through the bounded
-scheduler command channel. `try_send` success reconciles the `ConfigStore`
-replacement immediately with an immediate poll; only `Full` installs a
-`PendingSystemRefresh` that reconciles after delivery, and a closed receiver
-returns through the
-TUI's normal error boundary. Failed config loads retain the
-last-known-good state, issue an ordinary best-effort refresh, and display the
-reload error in the existing diagnostic line until a later reload succeeds.
+The Systems-pane `Ctrl-R` is the **client daemon's** reload boundary: the
+daemon re-reads its own resolved `ConfigStore`, reconciles the fleet, and asks
+its poll task for an immediate poll through the bounded scheduler command
+channel. That ask is a `try_send` and never a blocking send. The engine is the
+single task that owns the fleet, applies cron and EggPool results, and writes
+every frontend's document, so parking it would freeze every attached TUI for the
+rest of the generation and leave a `Shutdown` request unread. A refused ask
+costs only the early poll, which the fixed cadence provides anyway. Failed
+config loads retain the last-known-good fleet, publish a reload diagnostic, and
+still ask for a poll.
+
+A reload may also add, remove, or repoint the `[eggpool]` entry, so the worker
+is wired from the *current* config rather than from the startup config. Removing
+it already worked by accident; *adding* it used to publish a pane that no
+worker could answer, which left the pane in `Refreshing` forever instead of
+reporting `WorkerUnavailable`.
 
 Plan 070 evaluated replacing the per-endpoint tasks and semaphore with a
 buffered future stream. That candidate was rejected because it would remove

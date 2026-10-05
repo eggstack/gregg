@@ -165,18 +165,23 @@ impl Default for OutputTail {
 /// already retained: losing the tail is better than failing the scheduler, and
 /// the terminal record still reports the child's own exit status.
 ///
-/// The returned future borrows the stream rather than owning it, so
-/// cancellation (a deadline or shutdown wake) simply stops draining and leaves
-/// the handle in place for the next wake. Nothing is spawned, so no drain task
-/// can outlive the scheduler or delay shutdown.
-pub(crate) async fn drain_tail<R>(reader: Option<&mut R>) -> OutputTail
+/// The tail is **borrowed**, not created here, and that is the whole point:
+/// the returned future is rebuilt on every scheduler wake (a bounded
+/// civil-clock recheck can fire while the child is still running), so an
+/// accumulator owned by the future would be dropped with it and every byte
+/// read before the last wake would vanish — while the terminal record still
+/// reported `truncated: false`. The caller owns the tail across wakes, so a
+/// cancelled drain stops *reading* without losing what it already folded in.
+///
+/// The returned future borrows the stream rather than owning it, so nothing
+/// can outlive the scheduler or delay shutdown. Nothing is spawned.
+pub(crate) async fn drain_into<R>(reader: Option<&mut R>, tail: &mut OutputTail)
 where
     R: AsyncReadExt + Unpin,
 {
     let Some(reader) = reader else {
-        return OutputTail::new();
+        return;
     };
-    let mut tail = OutputTail::new();
     let mut scratch = [0u8; DRAIN_CHUNK];
     loop {
         match reader.read(&mut scratch).await {
@@ -188,7 +193,6 @@ where
             }
         }
     }
-    tail
 }
 
 /// One immutable scheduler publication, shared with the HTTP server.
@@ -686,14 +690,42 @@ mod tests {
     async fn drain_reads_a_stream_to_eof() {
         let data: &'static [u8] = b"line one\nline two\n";
         let mut cursor = std::io::Cursor::new(data);
-        let tail = drain_tail(Some(&mut cursor)).await;
+        let mut tail = OutputTail::new();
+        drain_into(Some(&mut cursor), &mut tail).await;
         assert_eq!(tail.into_wire().text, "line one\nline two\n");
     }
 
     #[tokio::test]
     async fn drain_handles_a_missing_stream() {
-        let tail = drain_tail(None::<&mut std::io::Cursor<Vec<u8>>>).await;
+        let mut tail = OutputTail::new();
+        drain_into(None::<&mut std::io::Cursor<Vec<u8>>>, &mut tail).await;
         assert_eq!(tail.into_wire().text, "");
+    }
+
+    /// A drain cancelled by a scheduler wake and then re-entered must keep what
+    /// it already read. This is the mechanism that stops a child running longer
+    /// than one civil-clock recheck from publishing an empty tail.
+    #[tokio::test]
+    async fn a_cancelled_drain_keeps_what_it_already_folded_in() {
+        let data: &'static [u8] = b"first line\nsecond line\n";
+        let mut cursor = std::io::Cursor::new(data);
+        let mut tail = OutputTail::new();
+        // First wake: one read reaches the scheduler, then a deadline wake
+        // cancels the drain. Only bytes already folded into `tail` survive it.
+        let mut chunk = [0u8; 11];
+        let count = cursor.read(&mut chunk).await.expect("a cursor never fails");
+        tail.push(&chunk[..count]);
+        assert_eq!(tail.total_bytes(), 11);
+
+        // Second wake: the rebuilt drain continues into the *same* tail, so the
+        // record carries the whole run rather than only the post-wake bytes.
+        drain_into(Some(&mut cursor), &mut tail).await;
+        let wire = tail.into_wire();
+        assert_eq!(wire.text, "first line\nsecond line\n");
+        assert!(
+            !wire.truncated,
+            "a complete short run must not claim output was dropped"
+        );
     }
 
     #[test]

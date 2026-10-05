@@ -144,6 +144,15 @@ pub struct Sampler<C: SystemCollector, Clk: Clock> {
     snapshot: Option<Arc<StatusSnapshot>>,
     snapshot_v2: Option<Arc<StatusPayloadV2>>,
     consecutive_failures: u32,
+    /// The one collection cycle that may be in flight, if any.
+    ///
+    /// A timed-out `spawn_blocking` closure **cannot** be cancelled — dropping
+    /// its handle only detaches it, so the cycle keeps running and keeps holding
+    /// the collector mutex. Retaining the handle is what stops the loop from
+    /// queueing another closure per interval behind that mutex, which would grow
+    /// the blocking pool (512 threads by default) without bound for as long as
+    /// the read stayed hung. Exactly one cycle is ever outstanding.
+    in_flight: Option<tokio::task::JoinHandle<Result<CollectedMetrics, CollectError>>>,
 }
 
 impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
@@ -161,6 +170,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             snapshot: None,
             snapshot_v2: None,
             consecutive_failures: 0,
+            in_flight: None,
         }
     }
 
@@ -180,6 +190,7 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             snapshot: None,
             snapshot_v2: None,
             consecutive_failures: 0,
+            in_flight: None,
         })
     }
 
@@ -269,7 +280,8 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             // hung native read cannot stall shutdown beyond COLLECTION_TIMEOUT.
             // The blocking task itself cannot be aborted; on timeout or
             // shutdown-race the cycle is recorded as SourceUnavailable and
-            // the last snapshot keeps serving.
+            // the last snapshot keeps serving. Its handle is retained in
+            // `in_flight`, so a hung cycle is never joined by a second one.
             let result = tokio::select! {
                 result = tokio::time::timeout(
                     COLLECTION_TIMEOUT,
@@ -324,19 +336,35 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// duration of one cycle. If the collection task panics, the mutex is
     /// poisoned but the collector itself survives; later cycles recover the
     /// lock and continue sampling instead of losing metrics permanently.
+    ///
+    /// At most one cycle is outstanding. A cycle that outlives
+    /// [`COLLECTION_TIMEOUT`] keeps running (a `spawn_blocking` closure cannot
+    /// be aborted), so its handle stays in `self.in_flight` and the next cycle
+    /// picks *that* cycle up instead of queueing another closure behind the
+    /// collector mutex. Dropping the handle on timeout — which is what awaiting
+    /// an owned handle would do — is exactly what turned one hung read into one
+    /// parked blocking thread every interval.
     async fn sample_on_blocking_pool(&mut self) -> Result<CollectedMetrics, CollectError>
     where
         C: Send + 'static,
     {
-        let collector = Arc::clone(&self.collector);
-        let join_result = tokio::task::spawn_blocking(move || {
-            let mut guard = match collector.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            guard.sample()
-        })
-        .await;
+        if self.in_flight.is_none() {
+            let collector = Arc::clone(&self.collector);
+            self.in_flight = Some(tokio::task::spawn_blocking(move || {
+                let mut guard = match collector.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                guard.sample()
+            }));
+        }
+        // Awaited by reference on purpose: a timeout cancels this *wait*, never
+        // the cycle, so the handle survives to be awaited again next cycle.
+        let join_result = {
+            let handle = self.in_flight.as_mut().expect("a cycle was installed");
+            handle.await
+        };
+        self.in_flight = None;
         match join_result {
             Ok(result) => result,
             Err(join_error) => {
@@ -1341,6 +1369,115 @@ mod tests {
         let second = worker.sample_once_via_worker().await;
         assert!(second.is_some());
         let _ = worker.shutdown_bounded(Duration::from_secs(2));
+    }
+
+    /// A hung collection cycle is never joined by a second one.
+    ///
+    /// A `spawn_blocking` closure cannot be aborted, so a read that outlives
+    /// `COLLECTION_TIMEOUT` keeps running and keeps holding the collector
+    /// mutex. If the loop simply started another cycle per interval, every one
+    /// would park a blocking-pool thread behind that mutex until the pool (512
+    /// by default) was exhausted. One hung read must stay exactly one task.
+    ///
+    /// The bound is injected short rather than slept at its production value,
+    /// per the no-production-intervals rule; the production timeout is a
+    /// constant the loop passes to the same wait.
+    #[tokio::test]
+    async fn a_hung_collection_cycle_is_never_joined_by_a_second_one() {
+        struct HangingCollector {
+            entered: Arc<AtomicU64>,
+            released: Arc<AtomicU64>,
+            release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        }
+
+        impl SystemCollector for HangingCollector {
+            fn identity(&self) -> Result<SystemIdentity, CollectError> {
+                Ok(test_identity())
+            }
+
+            fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
+                self.entered.fetch_add(1, Ordering::SeqCst);
+                let (lock, cvar) = &*self.release;
+                let mut open = lock.lock().expect("release lock poisoned");
+                while !*open {
+                    open = cvar.wait(open).expect("release lock poisoned");
+                }
+                self.released.fetch_add(1, Ordering::SeqCst);
+                Ok(successful_metrics())
+            }
+
+            fn capabilities(&self) -> MetricCapabilities {
+                MetricCapabilities { cpu_iowait: false }
+            }
+        }
+
+        let collector = HangingCollector {
+            entered: Arc::new(AtomicU64::new(0)),
+            released: Arc::new(AtomicU64::new(0)),
+            release: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        };
+        let mut sampler = Sampler::new(
+            HangingCollector {
+                entered: Arc::clone(&collector.entered),
+                released: Arc::clone(&collector.released),
+                release: Arc::clone(&collector.release),
+            },
+            SyntheticClock::new(1_700_000_000_000),
+        );
+
+        // First cycle: started, then abandoned at the bound with the collector still
+        // held by the unread hung read.
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(300),
+                sampler.sample_on_blocking_pool(),
+            )
+            .await
+            .is_err(),
+            "the hung cycle must not resolve on its own"
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while collector.entered.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the abandoned cycle is inside the collector");
+
+        // Two more cycles abandon the same way. None of them may start a new
+        // collection while the first still holds the collector.
+        for _ in 0..2 {
+            assert!(
+                tokio::time::timeout(
+                    Duration::from_millis(100),
+                    sampler.sample_on_blocking_pool(),
+                )
+                .await
+                .is_err(),
+                "every cycle is abandoned at the bound while the read stays hung"
+            );
+        }
+        assert_eq!(
+            collector.entered.load(Ordering::SeqCst),
+            1,
+            "a hung read must leave exactly one collection task in flight"
+        );
+
+        // Releasing the read lets the retained cycle resolve; sampling resumes
+        // without ever having run a second concurrent collection.
+        let (lock, cvar) = &*collector.release;
+        *lock.lock().expect("release lock poisoned") = true;
+        cvar.notify_all();
+        let result =
+            tokio::time::timeout(Duration::from_secs(2), sampler.sample_on_blocking_pool())
+                .await
+                .expect("the retained cycle resolves once the read returns");
+        assert!(result.is_ok(), "sampling resumes after the read returns");
+        assert_eq!(
+            collector.released.load(Ordering::SeqCst),
+            1,
+            "the retained cycle ran exactly once"
+        );
     }
 
     #[tokio::test]

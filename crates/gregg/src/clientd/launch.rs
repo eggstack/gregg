@@ -751,7 +751,7 @@ mod tests {
                         break;
                     }
                     if let Ok(count) = connection.read_available(&mut buffer) {
-                        connection.push_bytes(&buffer[..count]);
+                        let _ = connection.push_bytes(&buffer[..count]);
                     }
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }

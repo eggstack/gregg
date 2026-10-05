@@ -2004,7 +2004,7 @@ mod tests {
 
     #[test]
     fn blank_and_nul_padded_drive_names_are_rejected() {
-        for name in ["   ", "\t", "C:\\ "] {
+        for name in ["   ", "\t", "C:\\\0"] {
             let payload = valid_payload(Some(vec![DriveMetrics {
                 name: name.into(),
                 used_bytes: 0,

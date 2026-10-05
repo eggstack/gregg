@@ -4,6 +4,7 @@ use gregg::action;
 use gregg::cli;
 use gregg::clientd::frontend::FrameStream;
 use gregg::clientd::protocol::FrontendFrame;
+use gregg::clientd::snapshot::FrontendSnapshot;
 use gregg::clientd::{ControlSink, EggpoolIntentRequest};
 use gregg::event;
 use gregg::input;
@@ -156,6 +157,9 @@ enum FrontendExit {
 }
 
 #[allow(clippy::too_many_arguments)]
+// One branch per source of work; each is short, and splitting them across
+// helpers would only move the same dispatch somewhere less readable.
+#[allow(clippy::too_many_lines)]
 async fn run_event_loop(
     terminal: &mut terminal::Terminal,
     app_state: &mut state::AppState,
@@ -240,7 +244,13 @@ async fn run_event_loop(
                         // A document that is not newer than the last applied
                         // one is skipped, not rendered: that is the whole point
                         // of a latest-state channel.
-                        dirty |= app_state.adopt_snapshot(&document);
+                        dirty |= apply_document(
+                            app_state,
+                            &document,
+                            sink,
+                            &mut request_generation,
+                            &mut last_intent,
+                        );
                     }
                     // The daemon's introduction carries no renderable state —
                     // the complete document that follows carries everything —
@@ -358,8 +368,75 @@ fn dispatch_action(
     // A dropped intent must not be remembered as sent: the daemon never heard
     // it, so recording it would suppress every retry until the pane moved
     // again, and the pane would sit on a window the worker is not fetching.
-    // The next drain re-offers it instead.
+    // `retry_pending_eggpool_intent` re-offers it instead.
     changed
+}
+
+/// Adopt one daemon document and settle everything it implies.
+///
+/// An arriving document is also the drain the intent path needs: a period
+/// request the daemon refused earlier is re-offered here rather than waiting
+/// for another key press. That changes nothing on screen, so it is not
+/// returned as a redraw reason.
+fn apply_document(
+    app_state: &mut state::AppState,
+    document: &FrontendSnapshot,
+    sink: &dyn ControlSink,
+    request_generation: &mut u64,
+    last_intent: &mut Option<EggpoolIntentRequest>,
+) -> bool {
+    let dirty = app_state.adopt_snapshot(document);
+    retry_pending_eggpool_intent(app_state, sink, request_generation, last_intent);
+    dirty
+}
+
+/// Re-offer an `EggPool` period the daemon has not taken yet.
+///
+/// `request_eggpool_intent` is a bounded `try_send`, so it refuses whenever the
+/// per-connection request channel is full — routine while the daemon is busy
+/// and the operator is holding `j`/`k` down. A refused request stays pending in
+/// `AppState::eggpool_period_request` until a document *confirms* the window,
+/// and this is the drain that actually retries it: an arriving document proves
+/// the daemon is responsive and has drained at least one request, so it is the
+/// natural moment to hand over the one that was dropped. Without it, a dropped
+/// period survived only until the next key press.
+///
+/// Cheap and self-limiting by construction: it sends nothing once the daemon
+/// has converged on the requested window (the request is cleared), and nothing
+/// while the daemon already holds this exact intent.
+fn retry_pending_eggpool_intent(
+    app_state: &state::AppState,
+    sink: &dyn ControlSink,
+    request_generation: &mut u64,
+    last_intent: &mut Option<EggpoolIntentRequest>,
+) {
+    let Some(period) = app_state.eggpool_period_request else {
+        return;
+    };
+    // No EggPool entry, or the daemon already converged on this exact window:
+    // there is nothing outstanding to re-offer.
+    if app_state
+        .eggpool
+        .as_ref()
+        .is_none_or(|eggpool| eggpool.period == period)
+    {
+        return;
+    }
+    let intent = EggpoolIntentRequest {
+        active: app_state.active_pane == state::Pane::Eggpool,
+        period,
+        refresh: false,
+    };
+    if *last_intent == Some(intent) {
+        return;
+    }
+    *request_generation = request_generation.saturating_add(1);
+    if sink
+        .request_eggpool_intent(&intent, *request_generation)
+        .is_ok()
+    {
+        *last_intent = Some(intent);
+    }
 }
 
 /// What this frontend currently has open in a cron detail block.
@@ -440,7 +517,10 @@ fn forward_cron_intent(
 /// with a window no attached frontend asked for.
 #[cfg(test)]
 mod tests {
-    use super::{dispatch_action, ControlSink, CronIntentRequest, EggpoolIntentRequest};
+    use super::{
+        dispatch_action, retry_pending_eggpool_intent, ControlSink, CronIntentRequest,
+        EggpoolIntentRequest,
+    };
     use gregg::action;
     use gregg::clientd::frontend::FrontError;
     use gregg::clientd::snapshot::{EggpoolSnapshotDto, FrontendSnapshot, SystemSnapshotDto};
@@ -508,7 +588,7 @@ mod tests {
         }
     }
 
-    fn app_with_eggpool() -> AppState {
+    fn snapshot_with_eggpool(period: EggpoolPeriod) -> FrontendSnapshot {
         let mut snapshot = FrontendSnapshot::empty(vec![SystemSnapshotDto::placeholder(
             0,
             Reachability::Pending,
@@ -522,7 +602,7 @@ mod tests {
                 name: None,
                 api_key_env: None,
             },
-            period: EggpoolPeriod::Day,
+            period,
             request_generation: 0,
             worker_state: EggpoolWorkerState::Idle,
             summary: None,
@@ -534,7 +614,11 @@ mod tests {
             last_health_attempt_at_unix_ms: None,
             last_health_error: None,
         });
-        AppState::from_snapshot(&snapshot)
+        snapshot
+    }
+
+    fn app_with_eggpool() -> AppState {
+        AppState::from_snapshot(&snapshot_with_eggpool(EggpoolPeriod::Day))
     }
 
     /// An intent the daemon accepted is remembered, so an unchanged pane is not
@@ -631,6 +715,109 @@ mod tests {
             *sink.cron_intents.borrow(),
             3,
             "and again, for as long as the daemon has not taken one"
+        );
+    }
+
+    /// The reported defect: a `j`/`k` period request the daemon refused was
+    /// erased by the next document, so nothing ever re-offered it and the pane
+    /// silently kept the old window.
+    #[test]
+    fn a_refused_period_survives_a_document_and_is_re_offered_without_a_key_press() {
+        let mut app_state = app_with_eggpool();
+        let sink = RefusingSink::refusing();
+        let mut generation = 0_u64;
+        let mut last_intent: Option<EggpoolIntentRequest> = None;
+        let mut last_cron_intent: Option<CronIntentRequest> = None;
+
+        // Open the pane and lengthen the window; the send is refused.
+        dispatch_action(
+            &mut app_state,
+            action::Action::NextPane,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        dispatch_action(
+            &mut app_state,
+            action::Action::MoveDown,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        let requested = app_state.eggpool_period_request;
+        assert!(requested.is_some(), "the key press recorded a request");
+        assert!(
+            last_intent.is_none(),
+            "the refused period must not be remembered as sent"
+        );
+
+        // An unrelated document arrives carrying the *old* converged window.
+        app_state.adopt_snapshot(&snapshot_with_eggpool(EggpoolPeriod::Day));
+        assert_eq!(
+            app_state.eggpool_period_request, requested,
+            "an unrelated document must not erase a request the daemon never took"
+        );
+
+        // The arriving document is the retry: no key press in between.
+        retry_pending_eggpool_intent(&app_state, &sink, &mut generation, &mut last_intent);
+        assert_eq!(
+            *sink.eggpool_intents.borrow(),
+            3,
+            "the dropped period must be re-offered by the next document"
+        );
+        assert!(last_intent.is_none(), "still refused, so still unsent");
+    }
+
+    /// Once the daemon converges, the request is cleared and the retry stops.
+    #[test]
+    fn a_confirmed_period_stops_the_retry() {
+        let mut app_state = app_with_eggpool();
+        let sink = RefusingSink::accepting();
+        let mut generation = 0_u64;
+        let mut last_intent: Option<EggpoolIntentRequest> = None;
+        let mut last_cron_intent: Option<CronIntentRequest> = None;
+
+        dispatch_action(
+            &mut app_state,
+            action::Action::NextPane,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        dispatch_action(
+            &mut app_state,
+            action::Action::MoveDown,
+            &sink,
+            &mut generation,
+            &mut last_intent,
+            &mut last_cron_intent,
+        );
+        let requested = app_state
+            .eggpool_period_request
+            .expect("the key press recorded a request");
+
+        // The daemon answers with the window it converged on.
+        let mut snapshot = snapshot_with_eggpool(requested);
+        snapshot
+            .eggpool
+            .as_mut()
+            .expect("the entry is set")
+            .request_generation = 1;
+        app_state.adopt_snapshot(&snapshot);
+        assert_eq!(
+            app_state.eggpool_period_request, None,
+            "the confirmed request is cleared"
+        );
+
+        let before = *sink.eggpool_intents.borrow();
+        retry_pending_eggpool_intent(&app_state, &sink, &mut generation, &mut last_intent);
+        assert_eq!(
+            *sink.eggpool_intents.borrow(),
+            before,
+            "a converged window must not keep re-offering an intent"
         );
     }
 }

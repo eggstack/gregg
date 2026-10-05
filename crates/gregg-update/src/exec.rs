@@ -818,7 +818,7 @@ mod tests {
             panic!("a flooded status pipe must not be accepted: {outcome:?}");
         };
         assert!(
-            reason.contains(&RESPONSE_TOO_LARGE_FRAGMENT),
+            reason.contains(RESPONSE_TOO_LARGE_FRAGMENT),
             "the download must fail for exceeding the cap, \
              not for some unrelated reason: {reason}"
         );

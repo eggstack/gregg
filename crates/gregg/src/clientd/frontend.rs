@@ -323,7 +323,10 @@ impl FrameStream {
             }
             let mut read_buffer = [0_u8; READ_BUFFER_BYTES];
             match self.connection.read_available(&mut read_buffer) {
-                Ok(count) => self.connection.push_bytes(&read_buffer[..count]),
+                Ok(count) => self
+                    .connection
+                    .push_bytes(&read_buffer[..count])
+                    .map_err(FrontError::Transport)?,
                 // Nothing yet. Yield and let the caller retry.
                 Err(TransportError::WouldBlock) => {}
                 Err(TransportError::Disconnected) => return Err(FrontError::Disconnected),

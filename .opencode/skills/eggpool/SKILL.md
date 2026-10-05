@@ -188,6 +188,16 @@ extra JSON fields stay tolerated.
 - No runtime diagnostics, charts, history, alerts, or exports
 - No configurable cadence; fixed 60-second passive deadline
 - Authentication is request-local; never stored in outcomes
+- The worker is wired from the *current* config, so `Ctrl-R` can add or remove
+  the entry; adding one must bring up a live worker, never a pane stuck in
+  `Refreshing`
+- The converged memo records the generation the worker was actually driven
+  with, after the fleet bumps it — never the pre-bump one, which costs a
+  wasted fetch per event
+- Result delivery waits for a channel slot inside a `select!` biased toward
+  cancellation, so a pane that stops reading can never park the worker
+- A failed publication records the converged state anyway: one dead worker
+  publishes once, not once per reduce tick
 
 ## Tests
 

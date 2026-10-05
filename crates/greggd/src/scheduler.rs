@@ -16,7 +16,7 @@ use tokio::time::Instant;
 
 use crate::config::{ScheduledJobConfig, MAX_JOBS};
 use observation::{
-    drain_tail, job_state, OutputTail, SchedulerObserver, SchedulerPublisher, TerminalRecord,
+    drain_into, job_state, OutputTail, SchedulerObserver, SchedulerPublisher, TerminalRecord,
 };
 use schedule::LocalSchedule;
 
@@ -504,6 +504,17 @@ struct RunningChild<'a> {
     /// and the child keeps the original null streams.
     stdout: Option<tokio::process::ChildStdout>,
     stderr: Option<tokio::process::ChildStderr>,
+    /// Accumulated bounded tail per piped stream, owned here rather than by the
+    /// drain future.
+    ///
+    /// The drain future is rebuilt on every scheduler wake, and a wake is
+    /// capped at [`MAX_CIVIL_RECHECK`] even while a child keeps running. A
+    /// per-wake accumulator would therefore be dropped — together with every
+    /// byte already read — on the first deadline wake, publishing an empty (or
+    /// post-wake-only) tail that still claimed `truncated: false`. Owning the
+    /// tail here makes a cancelled drain lose nothing it had folded in.
+    stdout_tail: OutputTail,
+    stderr_tail: OutputTail,
     /// Index into the configured job set, so every publication can name the
     /// job that actually holds the global child slot.
     index: usize,
@@ -533,15 +544,18 @@ struct ChildCompletion {
 /// select simply stops draining and leaves the handles in place for the next
 /// wake — no drain task can outlive the scheduler or delay shutdown.
 async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion {
-    let (status, stdout, stderr) = tokio::join!(
+    let status = tokio::join!(
         child.child.wait(),
-        drain_tail(child.stdout.as_mut()),
-        drain_tail(child.stderr.as_mut()),
-    );
+        drain_into(child.stdout.as_mut(), &mut child.stdout_tail),
+        drain_into(child.stderr.as_mut(), &mut child.stderr_tail),
+    )
+    .0;
+    // Both drains have reached EOF (the child holds no write end), so the
+    // accumulated tails are final and move into the terminal record.
     ChildCompletion {
         status,
-        stdout,
-        stderr,
+        stdout: std::mem::take(&mut child.stdout_tail),
+        stderr: std::mem::take(&mut child.stderr_tail),
     }
 }
 
@@ -598,6 +612,8 @@ fn start_child(
         child,
         stdout,
         stderr,
+        stdout_tail: OutputTail::new(),
+        stderr_tail: OutputTail::new(),
         index,
         job_name: &job.name,
         started: Instant::now(),
@@ -1750,6 +1766,52 @@ mod observation_tests {
         assert!(record.duration_ms.is_some());
         let stdout = record.stdout.into_wire();
         assert_eq!(stdout.text, "");
+    }
+
+    /// Output a child wrote before a deadline wake must still be published.
+    ///
+    /// `run` caps every wake at [`MAX_CIVIL_RECHECK`], so any child that
+    /// outlives one wake has its completion future — and with it the whole
+    /// drain — cancelled and rebuilt. The tail has to live on the child for the
+    /// record to describe the run instead of only its last minute. The
+    /// intervals here are injected and short; the production 60s cap is
+    /// exercised in `bounded_wake_deadline` above.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn output_written_before_a_deadline_wake_still_reaches_the_record() {
+        let job = job_config(
+            "slow-writer",
+            &["/bin/sh", "-c", "echo the-log-line; sleep 0.5"],
+            None,
+        );
+        let mut child = start_child(&job, 0, true).expect("child spawns");
+
+        // First wake: cancel the completion future while the child still runs,
+        // exactly as the civil-clock cap does.
+        let wake_at = Instant::now() + Duration::from_millis(150);
+        let cancelled = tokio::select! {
+            result = async { await_child_completion(&mut child).await.status } => {
+                panic!("child outlived the injected wake: {result:?}")
+            }
+            () = tokio::time::sleep_until(wake_at) => true,
+        };
+        assert!(cancelled);
+
+        // Second wake: the rebuilt drain continues into the same tail.
+        let completion = await_child_completion(&mut child).await;
+        assert_eq!(
+            completion.status.expect("child exit observed").code(),
+            Some(0)
+        );
+        let stdout = completion.stdout.into_wire();
+        assert_eq!(
+            stdout.text, "the-log-line\n",
+            "output read before the wake must not be discarded"
+        );
+        assert!(
+            !stdout.truncated,
+            "a short complete run must not claim its output was truncated"
+        );
     }
 
     /// The output-flood proof: a child writing far beyond both caps must not

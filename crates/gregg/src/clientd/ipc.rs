@@ -28,8 +28,21 @@ use std::io::Read as _;
 use std::path::PathBuf;
 
 use crate::clientd::protocol::{
-    parse_length, DaemonRequest, DecodeError, LEN_PREFIX_BYTES, PROTOCOL_VERSION,
+    parse_length, DaemonRequest, DecodeError, LEN_PREFIX_BYTES, MAX_FRAME_BYTES, PROTOCOL_VERSION,
 };
+
+/// Hard ceiling on the bytes buffered from one peer.
+///
+/// [`MAX_FRAME_BYTES`] bounds a *single announced frame*; it says nothing about
+/// how many frames a peer may pipeline. Both serve loops drain at most one
+/// request per tick, so a peer that pipelines faster than it is served — easy
+/// for a same-user peer on the private endpoint — grows this buffer without
+/// bound until the daemon runs out of memory.
+///
+/// One full frame plus a read chunk of headroom is the most a conforming peer
+/// can need: the next frame is drained on the very next tick, so exceeding
+/// this means the peer is not reading what it already sent.
+const MAX_BUFFERED_BYTES: usize = MAX_FRAME_BYTES + 64 * 1024;
 
 /// Where a bound listener ended up, and which path a client should dial.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,8 +283,21 @@ impl Connection {
     }
 
     /// Feed freshly read bytes into the buffer.
-    pub fn push_bytes(&mut self, bytes: &[u8]) {
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`TransportError`] when the peer has pipelined more than
+    /// [`MAX_BUFFERED_BYTES`] without the serve loop draining it. That peer is
+    /// not reading what it sends, and the alternative is unbounded memory for
+    /// the daemon's lifetime.
+    pub fn push_bytes(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        if self.buffer.len().saturating_add(bytes.len()) > MAX_BUFFERED_BYTES {
+            return Err(TransportError::Protocol(format!(
+                "peer buffered more than {MAX_BUFFERED_BYTES} bytes without draining"
+            )));
+        }
         self.buffer.extend_from_slice(bytes);
+        Ok(())
     }
 
     /// Bytes still buffered but not yet consumed as a frame.
@@ -337,7 +363,6 @@ impl Connection {
     /// # Errors
     ///
     /// Returns a [`TransportError`] when the peer is gone or the stream fails.
-    #[must_use]
     pub fn flush_outbound(&mut self) -> Result<bool, TransportError> {
         loop {
             if self.inflight.is_empty() {
@@ -1311,6 +1336,49 @@ mod tests {
         }
     }
 
+    /// A peer that pipelines faster than the serve loop drains is cut off.
+    ///
+    /// `MAX_FRAME_BYTES` bounds one announced frame, so an unbounded buffer
+    /// only shows up when a peer keeps sending without reading: the serve loop
+    /// drains at most one request per tick, so a pipelining peer could grow the
+    /// buffer until the daemon ran out of memory.
+    #[tokio::test]
+    async fn an_undrained_pipelining_peer_is_cut_off_at_the_buffer_ceiling() {
+        let candidates = temp_candidates("bufferceiling");
+        let mut listener = bind(&candidates).expect("binds");
+        let endpoint = listener.endpoint().clone();
+        let raw = RawUnixStream::connect(&endpoint.path).expect("connects");
+        listener.accept().await.expect("accepts");
+        let mut connection = Connection::new(Stream::Unix(raw));
+
+        // One chunk short of the ceiling is still buffered, not refused.
+        let chunk = vec![0u8; 64 * 1024];
+        let mut buffered = 0_usize;
+        while buffered + chunk.len() <= super::MAX_BUFFERED_BYTES {
+            connection
+                .push_bytes(&chunk)
+                .expect("buffering up to the ceiling is allowed");
+            buffered += chunk.len();
+        }
+        assert_eq!(connection.buffered(), buffered);
+
+        // One more chunk crosses it.
+        let error = connection
+            .push_bytes(&chunk)
+            .expect_err("an undrained peer must be cut off");
+        assert!(
+            matches!(error, TransportError::Protocol(_)),
+            "expected a protocol error, got {error}"
+        );
+        assert_eq!(
+            connection.buffered(),
+            buffered,
+            "the refused bytes must not be retained"
+        );
+
+        cleanup(&endpoint.path);
+    }
+
     #[tokio::test]
     async fn a_request_before_the_handshake_is_refused() {
         let candidates = temp_candidates("nohandshake");
@@ -1324,7 +1392,9 @@ mod tests {
         let frame =
             crate::clientd::protocol::encode_frame(&DaemonRequest::ReloadConfig { generation: 1 })
                 .expect("encodes");
-        connection.push_bytes(&frame);
+        connection
+            .push_bytes(&frame)
+            .expect("a small frame always fits");
         let error = connection.try_read_request().expect_err("must refuse");
         assert!(
             matches!(error, TransportError::Protocol(_)),
@@ -1349,7 +1419,9 @@ mod tests {
         let mut accepted = listener.accept().await.expect("accepts");
         let mut buf = [0u8; 1024];
         let count = accepted.stream.read(&mut buf).unwrap_or(0);
-        accepted.push_bytes(&buf[..count]);
+        accepted
+            .push_bytes(&buf[..count])
+            .expect("buffered bytes fit");
         let error = accepted.try_read_request().expect_err("must refuse");
         match error {
             TransportError::VersionMismatch { daemon, frontend } => {
@@ -1407,7 +1479,7 @@ mod tests {
 
         // Now behave like a peer that woke up, and like the serve loop that
         // flushes on every tick.
-        let mut read_buffer = [0_u8; 64 * 1024];
+        let mut read_buffer = vec![0_u8; 64 * 1024];
         let mut received = Vec::new();
         loop {
             let flushed = writer
@@ -1420,7 +1492,9 @@ mod tests {
                 received.push(frame);
             }
             match reader.read_available(&mut read_buffer) {
-                Ok(count) => reader.push_bytes(&read_buffer[..count]),
+                Ok(count) => reader
+                    .push_bytes(&read_buffer[..count])
+                    .expect("buffered bytes fit"),
                 Err(TransportError::WouldBlock) => {
                     if flushed && reader.buffered() == 0 {
                         break;
@@ -1456,7 +1530,9 @@ mod tests {
         let mut accepted = listener.accept().await.expect("accepts");
         let mut buf = [0u8; 2048];
         let count = accepted.stream.read(&mut buf).expect("reads");
-        accepted.push_bytes(&buf[..count]);
+        accepted
+            .push_bytes(&buf[..count])
+            .expect("buffered bytes fit");
 
         // Both frames arrive in one read: partial buffering must not lose one.
         assert_eq!(
@@ -1570,7 +1646,9 @@ mod tests {
 
         let mut buf = [0u8; 4096];
         let count = server.stream.read(&mut buf).expect("reads");
-        server.push_bytes(&buf[..count]);
+        server
+            .push_bytes(&buf[..count])
+            .expect("buffered bytes fit");
         assert!(matches!(
             server.try_read_request().expect("reads"),
             Some(DaemonRequest::Handshake { .. })
@@ -1660,7 +1738,9 @@ mod windows_tests {
                 return Some(frame);
             }
             match connection.read_available(&mut buffer) {
-                Ok(count) => connection.push_bytes(&buffer[..count]),
+                Ok(count) => connection
+                    .push_bytes(&buffer[..count])
+                    .expect("buffered bytes fit"),
                 Err(TransportError::WouldBlock) => {}
                 Err(error) => panic!("{what}: read failed: {error}"),
             }
@@ -1712,7 +1792,9 @@ mod windows_tests {
         let mut seen = None;
         while Instant::now() < deadline && seen.is_none() {
             match client.read_available(&mut buffer) {
-                Ok(count) => client.push_bytes(&buffer[..count]),
+                Ok(count) => client
+                    .push_bytes(&buffer[..count])
+                    .expect("buffered bytes fit"),
                 Err(TransportError::WouldBlock) => {}
                 Err(error) => panic!("client read failed: {error}"),
             }

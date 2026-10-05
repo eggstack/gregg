@@ -140,6 +140,12 @@ JSON-escaped bytes). Both streams truncate independently, so a noisy stdout
 cannot hide the only useful stderr diagnostic. Invalid UTF-8 is replaced
 lossily after the byte bound is applied.
 
+The tail belongs to the child, not to the drain future. A job that outlives the
+60-second civil-clock reconciliation wake has its drain cancelled and rebuilt,
+so a tail owned by the future would lose everything read before that wake — and
+report `truncated: false` while doing so. What survives a wake is the read, not
+the capture.
+
 > **Output is visible to anything that can reach this listener.** Scheduler
 > output is more sensitive than CPU or memory telemetry. The configured
 > `greggd` HTTP listener is unauthenticated, so any principal that can reach it

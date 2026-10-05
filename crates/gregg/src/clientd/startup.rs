@@ -945,17 +945,20 @@ pub fn merge_cron_block(existing: &str, block: &str) -> String {
         return existing.to_owned();
     };
     let mut kept: Vec<&str> = Vec::new();
-    let mut skipping = false;
+    let mut skip_command = false;
     for line in existing.lines() {
-        if line.starts_with(&marker) {
-            skipping = true;
+        if skip_command {
+            // A managed block is exactly two lines: the marker and the single
+            // `@reboot` command line `render_cron_watchdog` emits after it. The
+            // block is appended last, so a job the operator later adds with
+            // `crontab -e` lands *after* it with no blank line to scan for.
+            // Consuming exactly this one line — and no more — is what keeps
+            // that job out of the skip state and off the rewrite.
+            skip_command = false;
             continue;
         }
-        if skipping {
-            // A managed block is exactly two lines: the marker and the command.
-            if line.trim().is_empty() {
-                skipping = false;
-            }
+        if line.starts_with(&marker) {
+            skip_command = true;
             continue;
         }
         kept.push(line);
@@ -979,18 +982,19 @@ pub fn merge_cron_block(existing: &str, block: &str) -> String {
 pub fn remove_cron_block(existing: &str, identity: &str) -> (String, bool) {
     let marker = format!("# gregg-client-daemon {identity}");
     let mut kept: Vec<&str> = Vec::new();
-    let mut skipping = false;
+    let mut skip_command = false;
     let mut removed = false;
     for line in existing.lines() {
-        if line.starts_with(&marker) {
-            skipping = true;
-            removed = true;
+        if skip_command {
+            // Exactly the command line the marker announced — see
+            // `merge_cron_block`. Anything the operator appended after the
+            // block must survive an uninstall too.
+            skip_command = false;
             continue;
         }
-        if skipping {
-            if line.trim().is_empty() {
-                skipping = false;
-            }
+        if line.starts_with(&marker) {
+            skip_command = true;
+            removed = true;
             continue;
         }
         kept.push(line);
@@ -1486,6 +1490,40 @@ mod tests {
         assert!(!removed.contains("daemon run"));
         let (_, again) = remove_cron_block(&removed, &target.identity);
         assert!(!again, "removal is idempotent");
+    }
+
+    #[test]
+    fn a_user_job_added_after_our_block_survives_a_rerun_and_an_uninstall() {
+        let target = target("0123456789abcdef");
+        let before = "0 3 * * * /usr/bin/backup.sh\n";
+        let merged = merge_cron_block(before, &render_cron_watchdog(&target));
+        // `crontab -e` after install: the operator's own job lands after the
+        // block, and the managed block is the tail with no blank line after it.
+        let edited = format!("{merged}*/5 * * * * /usr/bin/my-own-job.sh\n");
+        assert_eq!(
+            cron_block_ownership(&edited, &target.executable, &target.config),
+            ArtifactOwnership::Owned,
+            "the edited table is still ours to rewrite"
+        );
+
+        let rerun = merge_cron_block(&edited, &render_cron_watchdog(&target));
+        assert!(
+            rerun.contains("/usr/bin/my-own-job.sh"),
+            "a rerun must not destroy a job added after the block: {rerun}"
+        );
+        assert!(
+            rerun.contains("/usr/bin/backup.sh"),
+            "a rerun must not disturb a job before the block: {rerun}"
+        );
+
+        let (uninstalled, removed) = remove_cron_block(&edited, &target.identity);
+        assert!(removed);
+        assert!(
+            uninstalled.contains("/usr/bin/my-own-job.sh"),
+            "an uninstall must not destroy a job added after the block: {uninstalled}"
+        );
+        assert!(uninstalled.contains("/usr/bin/backup.sh"));
+        assert!(!uninstalled.contains("daemon run"));
     }
 
     #[test]

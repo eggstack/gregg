@@ -45,6 +45,96 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Re-installing or uninstalling Gregg could delete the user's own crontab
+  jobs.** A managed cron block is exactly two lines and is appended last, so a
+  job the operator later added with `crontab -e` landed *after* it with no blank
+  line to scan for. The rewrite consumed lines until the next blank one, so that
+  job was silently dropped and the truncated table written back — on the Linux
+  path where systemd is unavailable. Merge and removal now consume exactly the
+  marker and the one command line it announced, which is all a managed block
+  contains. This was the only place Gregg could destroy data outside its own
+  ownership.
+
+- **A `greggd` job that ran longer than a minute published an empty output tail
+  while claiming nothing was truncated.** The wake is capped at the 60-second
+  civil-clock reconciliation bound, so a long-running job had its drain future
+  cancelled and rebuilt every wake — and the bounded tail was a local inside that
+  future, so every byte read before the last wake was dropped. A job that logged
+  its line and then slept published nothing at all. The tail now belongs to the
+  running child, so what a wake cancels is the read, not the capture, and
+  `truncated` again means what it says. History capture is on by default, so this
+  affected ordinary long jobs rather than an opt-in edge.
+
+- **A refused `j`/`k` on the EggPool pane was lost permanently.** The intent
+  request is a bounded `try_send`, so it is refused whenever the daemon is busy,
+  and the pending request was then erased by the next document: the next key
+  press re-derived the old converged window and was suppressed as unchanged. The
+  request now survives until a document *confirms* the window, and an arriving
+  document re-offers it — so the pane converges without a second key press.
+
+- **Five reloads in one poll generation could freeze every attached TUI.**
+  `Ctrl-R` and every mutating CLI nudge ask the poll task for an immediate poll
+  through a 4-slot channel that is only read *between* generations, so a few in
+  a row filled it. The ask was a blocking send on the single engine task that
+  owns the fleet and writes every frontend's document, parking it for the rest of
+  the generation and leaving a stop request unread. It is now a `try_send`: a
+  refused ask costs the early poll, which the fixed cadence provides anyway, and
+  never the fan-out.
+
+- **Adding an `[eggpool]` entry with `Ctrl-R` left the pane permanently
+  `Refreshing`.** The worker was spawned once from the startup config, so a
+  config that gained an entry published a pane no worker could answer; any
+  request moved it to `Refreshing` and nothing ever resolved it. The worker is
+  now wired from the current config, so adding, removing, or repointing the
+  entry all work. Removing it already did.
+
+- **A native read that hung longer than the collection timeout accumulated one
+  parked OS thread every sampling interval.** A timed-out `spawn_blocking` cannot
+  be cancelled, so the cycle kept running and kept holding the collector mutex
+  while the loop queued another closure behind it every interval — exhausting the
+  blocking pool in under an hour. At most one collection cycle is now
+  outstanding, and a hung one is picked back up rather than joined by a second.
+
+- **A departing frontend's cron intent kept being transmitted.** The removal
+  happens on the connection task, which has no engine handle and so raised no
+  publication trigger: attached windows kept receiving that history, and a newly
+  attached one was handed history it never asked for, until some unrelated change
+  happened to republish. The intent set now carries a revision, so any change
+  republishes. Reopening the cron pane still shows the daemon's retained history
+  without refetching.
+
+- **A dead EggPool worker republished a full fleet document every 250 ms.** A
+  failed publication left the converged memo unset, so each reduce tick
+  re-detected the same failure and republished forever. It is recorded once; a
+  different intent still retries.
+
+- **The per-connection read buffer had no ceiling.** One announced frame is
+  capped, but the number of *pipelined* frames was not, and the serve loops drain
+  at most one request per tick — so a peer on the private endpoint that sent
+  faster than it was served grew the buffer without bound. It is now cut off at
+  one frame plus a read chunk of headroom.
+
+- **An EggPool worker could not be cancelled while the daemon was not reading
+  results.** Delivering a finished fetch awaited the send inside the completion
+  branch, so a full result channel left cancellation, a newer desired state, and
+  the passive refresh deadline unpolled. Delivery now waits for a slot inside a
+  `select!` biased toward cancellation.
+
+- **A window change cost two fetches instead of one.** The converged memo was
+  recorded before the worker generation was bumped, so the next tick saw a
+  difference and republished the same window one generation later — which the
+  worker treats as superseding, aborting the fetch it had just started. The memo
+  now records the generation the worker was actually driven with.
+
+- **A raw NUL byte in `gregg-protocol`'s v2 validation tests** made that source
+  file classify as binary to `grep` and `diff`. It is spelled as an escape, like
+  the rest of the codebase.
+
+- **The `main` clippy gate was red on four sites** (`double_must_use`,
+  `doc_markdown`, `needless_borrows_for_generic_args`, `large_stack_arrays`)
+  after a commit whose stated verification was the fmt-and-tests loop. The gate is
+  green again; `./scripts/check-local.sh --release` runs it.
+
 - **A `greggd` child that wrote more than one pipe buffer could wedge the
   scheduler forever.** The wait for a running job awaited the child's exit
   *before* draining its output, so a job that filled the 64 KiB stdout pipe
