@@ -1,6 +1,6 @@
 # Plan 170: Gregg client-daemon footprint and source-boundary optimization
 
-Status: planned.
+Status: complete (RETAIN CURRENT).
 
 Depends on: completed Plan 169 so size measurements begin from one clean
 cross-platform verification baseline. Independent of Plan 091.
