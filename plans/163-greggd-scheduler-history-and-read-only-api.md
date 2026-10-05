@@ -454,3 +454,20 @@ The TUI `c` view is deliberately **not** documented here; that is Plan 166.
 `cargo test -p gregg-protocol --all-features` (183) green; workspace clippy with
 `--all-targets --all-features` produces zero warnings; `./scripts/check-local.sh`
 passes. Existing native CI is recorded once on the final Plan 167 SHA.
+
+
+## Post-closure correction note (2026-10-05)
+
+A later source review of current main at `1aac89f` found one execution-boundary
+defect in this otherwise-valid historical implementation record:
+`await_child_completion` waits for stdout/stderr EOF as well as the direct
+child's exit. A descendant that inherits either write end can therefore retain
+greggd's one global scheduled-child slot after the scheduled direct child has
+already terminated. The same review found a smaller attribution smell where the
+completion path searches by job name and falls back to job index zero even
+though `RunningChild` already carries the authoritative index.
+
+Those findings do **not** rewrite this plan's closure evidence or the bounded
+capture design. They are registered as Plan 173, which preserves concurrent
+bounded draining while the direct child runs and restores the direct-child
+termination boundary with bounded post-exit output cleanup.
