@@ -525,15 +525,23 @@ fn dispatch_daemon(
             let cancel = tokio_util::sync::CancellationToken::new();
             runtime
                 .block_on(async {
+                    let daemon = crate::clientd::run_daemon(
+                        ConfigStore::new(store.path().to_path_buf()),
+                        identity,
+                        cancel.clone(),
+                    );
+                    tokio::pin!(daemon);
                     tokio::select! {
-                        result = crate::clientd::run_daemon(
-                            ConfigStore::new(store.path().to_path_buf()),
-                            identity,
-                            cancel.clone(),
-                        ) => result,
+                        result = &mut daemon => result,
                         () = shutdown_signal() => {
+                            // Await the daemon instead of abandoning it. It owns
+                            // the whole teardown — cancelling the worker tasks,
+                            // interrupting the parked accept wait, unlinking the
+                            // endpoint — and dropping its future here on signal
+                            // would skip every one of those, leaving a process
+                            // that acknowledged a stop and then hung.
                             cancel.cancel();
-                            Ok(())
+                            daemon.await
                         }
                     }
                 })

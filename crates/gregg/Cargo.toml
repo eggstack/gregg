@@ -58,6 +58,11 @@ libc = "0.2"
 # `Win32_System_Pipes` the named-pipe calls, and `Win32_Foundation` the shared
 # handle/`BOOL`/error-constant surface. `LockFileEx` and its flags are in
 # `Win32_Storage_FileSystem`, not `Win32_System_IO`.
+#
+# `Win32_System_Threading` is needed only for the `THREAD_TERMINATE` access
+# right, which the accept wait's cancellation asks for when it duplicates the
+# blocking thread's handle. `CancelSynchronousIo` itself is in `Win32_System_IO`
+# and needs no feature of its own.
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -65,6 +70,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Pipes",
+    "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

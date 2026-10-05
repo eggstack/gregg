@@ -523,6 +523,16 @@ mod imp {
             &self.endpoint
         }
 
+        /// A handle that can interrupt this listener's accept wait.
+        ///
+        /// There is nothing to interrupt: a Unix accept is a non-blocking
+        /// syscall, so the loop returns to its own cancellation check within
+        /// milliseconds and no thread is ever parked. The handle exists so the
+        /// daemon can drive both platforms through one code path.
+        pub fn stop_handle(&self) -> AcceptStop {
+            AcceptStop
+        }
+
         /// Accept one connection, or report that none is waiting.
         ///
         /// `async` only so that one signature can serve both platforms: a
@@ -650,6 +660,18 @@ mod imp {
     pub fn endpoint_is_live(path: &Path) -> bool {
         path.exists()
     }
+
+    /// Ask a bound listener to stop waiting for its next client.
+    ///
+    /// A no-op by design: see [`Listener::stop_handle`]. Kept as a real type so
+    /// the daemon's shutdown sequence is written once for both platforms.
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct AcceptStop;
+
+    impl AcceptStop {
+        /// Nothing to interrupt on Unix.
+        pub fn request(&self) {}
+    }
 }
 
 // ===== Windows =====
@@ -658,6 +680,10 @@ mod imp {
 mod imp {
     use super::*;
     use std::path::Path;
+    use std::sync::Arc;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::System::IO::CancelSynchronousIo;
 
     /// Owner-only DACL: full access for the object's owner and nobody else.
     ///
@@ -682,6 +708,13 @@ mod imp {
     /// Large enough that a full snapshot frame is written without the writer
     /// interleaving with the reader's next poll.
     const PIPE_BUFFER_BYTES: u32 = 65_536;
+
+    /// How many times an accept cancel is re-issued while the wait is still up.
+    ///
+    /// Only ever exhausted in a genuine failure. The gap it covers is a few
+    /// instructions wide, so the second attempt is effectively always the one
+    /// that lands; the bound exists so this can never become an unbounded spin.
+    const ACCEPT_CANCEL_ATTEMPTS: u32 = 256;
 
     /// `OWNER_ONLY_SDDL` as the NUL-terminated UTF-16 the `W` APIs take.
     fn wide_sddl() -> Vec<u16> {
@@ -717,6 +750,8 @@ mod imp {
         endpoint: BoundEndpoint,
         /// Handle to the pending instance, rotated by `accept`.
         pending: Option<Stream>,
+        /// Shared with the accept wait so a stop request can interrupt it.
+        gate: Arc<AcceptGate>,
     }
 
     impl Listener {
@@ -731,12 +766,22 @@ mod imp {
                 name,
                 endpoint,
                 pending: Some(pending),
+                gate: Arc::new(AcceptGate::default()),
             })
         }
 
         /// Where clients must connect.
         pub fn endpoint(&self) -> &BoundEndpoint {
             &self.endpoint
+        }
+
+        /// A handle that can interrupt this listener's accept wait.
+        ///
+        /// Taken *before* the listener is moved into the accept task, because
+        /// that task is the only other owner of it and shutdown is driven from
+        /// the caller's own future.
+        pub fn stop_handle(&self) -> AcceptStop {
+            AcceptStop(Arc::clone(&self.gate))
         }
 
         /// Accept one connection.
@@ -752,9 +797,202 @@ mod imp {
             // one client at a time, so the next arrival must find a waiting
             // instance or it is refused outright.
             self.pending = Some(create_instance(&self.name)?);
-            let stream = connect_instance(stream).await?;
+            let stream = connect_instance(stream, Arc::clone(&self.gate)).await?;
             Ok(Connection::new(stream))
         }
+    }
+
+    /// Ask a bound listener to stop waiting for its next client.
+    ///
+    /// Cheap to clone, usable from any thread, and safe to call more than once.
+    /// The point is that it *ends* the wait rather than abandoning the thread
+    /// that is parked in it: the parked `ConnectNamedPipe` returns, its
+    /// blocking-pool job finishes, and the runtime has nothing left to wait for
+    /// when it shuts down. A no-op on Unix, where `accept` is a non-blocking
+    /// syscall and the accept loop observes its cancellation token directly.
+    #[derive(Debug, Clone, Default)]
+    pub struct AcceptStop(Arc<AcceptGate>);
+
+    impl AcceptStop {
+        /// Interrupt the accept wait, if one is in progress.
+        pub fn request(&self) {
+            self.0.request();
+        }
+    }
+
+    /// The state an accept wait shares with whoever may cancel it.
+    #[derive(Debug, Default)]
+    struct AcceptGate {
+        /// Set by [`AcceptGate::request`] before it looks for a parked wait.
+        ///
+        /// A wait that starts *after* this is set never enters the kernel, which
+        /// is what closes the gap between "no wait is parked yet" and "a wait
+        /// parks one instruction later".
+        requested: std::sync::atomic::AtomicBool,
+        /// The thread currently blocked in `ConnectNamedPipe`, if any.
+        ///
+        /// Held only long enough to publish the record, to read it, and to call
+        /// `CancelSynchronousIo` — never across the wait itself. It *is* held
+        /// across that call on purpose: the call returns without waiting for
+        /// the operation to complete, and holding the lock is what proves the
+        /// recorded thread is still inside the accept wait rather than already
+        /// back on the blocking pool doing something else.
+        parked: std::sync::Mutex<Option<ParkedThread>>,
+    }
+
+    /// A real handle to the thread that is parked in the accept wait.
+    ///
+    /// Duplicated from the thread's own pseudo-handle *inside* the wait, so it
+    /// can only ever name that thread. A thread **id** would not be safe here:
+    /// ids are recycled once a thread exits, so cancelling by id could hit an
+    /// unrelated thread that happened to be handed the same number.
+    #[derive(Debug)]
+    struct ParkedThread(HANDLE);
+
+    // SAFETY: a `HANDLE` is a process-wide kernel object identifier, not a
+    // pointer into this thread's address space, so it stays valid when the
+    // thread that duplicated it moves on — which is the whole point: the
+    // duplicate is published by the blocking-pool thread and read by the task
+    // that asks for the stop. The handle is created, read, and closed exactly
+    // once each, and every read and the close are serialized by
+    // `AcceptGate::parked`, so no two threads can be inside
+    // `CancelSynchronousIo` and `CloseHandle` at the same time.
+    #[allow(unsafe_code)] // The safety argument is this impl's own comment.
+    unsafe impl Send for ParkedThread {}
+
+    impl Drop for ParkedThread {
+        #[allow(unsafe_code)] // CloseHandle on the handle this type owns.
+        fn drop(&mut self) {
+            // SAFETY: the handle was created by `duplicate_current_thread` and
+            // this is its only owner, so closing it here cannot close anything
+            // else. `CloseHandle` on a thread handle takes no I/O action.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    impl AcceptGate {
+        fn lock(&self) -> std::sync::MutexGuard<'_, Option<ParkedThread>> {
+            // A poisoned lock still holds a usable record: the only mutation
+            // under it is a whole-value assignment, so a panic can leave at
+            // worst a stale entry, and treating that as "nothing parked" is the
+            // safe direction.
+            self.parked
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        /// Register the calling thread as the parked accept.
+        ///
+        /// Returns `false` when a stop was already requested, in which case the
+        /// caller must not enter the wait at all.
+        fn begin(&self) -> bool {
+            // Checked outside the lock first, so the overwhelmingly common case
+            // — nobody ever stops this listener — costs one relaxed-ish load and
+            // no locking at all.
+            if self.requested.load(std::sync::atomic::Ordering::Acquire) {
+                return false;
+            }
+            let Some(thread) = duplicate_current_thread().map(ParkedThread) else {
+                // Without a cancellable handle the wait would be unkillable, so
+                // refusing to park is the only safe answer. It is reported as a
+                // disconnected accept, which the accept loop already tolerates.
+                return false;
+            };
+            let mut parked = self.lock();
+            // Re-checked under the lock. The requester sets `requested` *before*
+            // it takes this same lock, so exactly one of the two orderings
+            // holds: either the store is visible here and the wait is skipped,
+            // or the store is not yet visible and the requester's lock
+            // acquisition is still to come, so it will find the record.
+            if self.requested.load(std::sync::atomic::Ordering::Acquire) {
+                // Returning drops `thread`, whose `Drop` closes the duplicate.
+                // It was never published, so nothing else can close it.
+                return false;
+            }
+            *parked = Some(thread);
+            true
+        }
+
+        /// Remove the park record, ending the cancellable window.
+        fn end(&self) {
+            // Dropping the record closes the thread handle. It happens after the
+            // wait has returned and before the closure can be handed back to the
+            // blocking pool, so a concurrent `request` can never cancel a thread
+            // that has moved on to other work.
+            *self.lock() = None;
+        }
+
+        /// Interrupt the parked wait, if one is in progress.
+        ///
+        /// `CancelSynchronousIo` only cancels I/O that is *already pending* and
+        /// is not remembered for later, so a cancel issued in the gap between
+        /// the thread publishing its record and actually entering the kernel
+        /// finds nothing to cancel. The request is therefore re-issued while the
+        /// record is still up. That is bounded, and it terminates: the record is
+        /// cleared only by the wait finishing, so the loop ends either because a
+        /// cancel was accepted or because the wait ended without one.
+        #[allow(unsafe_code)] // CancelSynchronousIo on the recorded thread handle.
+        fn request(&self) {
+            self.requested
+                .store(true, std::sync::atomic::Ordering::Release);
+            for _ in 0..ACCEPT_CANCEL_ATTEMPTS {
+                let parked = self.lock();
+                let Some(thread) = parked.as_ref() else {
+                    return;
+                };
+                // `CancelSynchronousIo` marks whatever synchronous I/O this
+                // thread has pending for cancellation and returns without
+                // waiting for it to finish. The lock is held across the call on
+                // purpose: the wait can only return by reaching `end`, which
+                // needs this same lock, so the recorded thread is provably
+                // still the parked one and not some other blocking-pool job.
+                if unsafe { CancelSynchronousIo(thread.0) } != 0 {
+                    return;
+                }
+                // Nothing was pending. The lock is released before trying again
+                // so the parked thread can make progress — it needs the same
+                // lock to clear the record — and the thread is yielded so a
+                // single-core runner is not starved out of the wait it is
+                // supposed to enter.
+                drop(parked);
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    /// Duplicate the calling thread's pseudo-handle into a real handle.
+    ///
+    /// `CancelSynchronousIo` takes a **thread** handle — it cancels whatever
+    /// synchronous I/O that thread currently has pending — so the parked accept
+    /// has to publish the thread it runs on, not the pipe. `THREAD_TERMINATE` is
+    /// the access right that call requires, and asking for exactly that is
+    /// enough; `DUPLICATE_SAME_ACCESS` is deliberately *not* used, because it
+    /// would silently widen the duplicate to whatever the pseudo-handle allows.
+    #[allow(unsafe_code)] // DuplicateHandle over the pseudo-handle.
+    fn duplicate_current_thread() -> Option<HANDLE> {
+        use windows_sys::Win32::Foundation::DuplicateHandle;
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, THREAD_TERMINATE};
+
+        let mut duplicate: HANDLE = std::ptr::null_mut();
+        // SAFETY: both pseudo-handles are valid for the current process and
+        // thread and need no closing, `duplicate` is a live pointer-sized
+        // out-parameter, and `THREAD_TERMINATE` is exactly the access right
+        // `CancelSynchronousIo` requires. `bInheritHandle = 0` and a null
+        // `dwOptions` (0, i.e. not `DUPLICATE_SAME_ACCESS`) ask for a private,
+        // least-privilege duplicate rather than a copy of the pseudo-handle's own
+        // access.
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                GetCurrentThread(),
+                GetCurrentProcess(),
+                &raw mut duplicate,
+                THREAD_TERMINATE,
+                0,
+                0,
+            )
+        };
+        (ok != 0).then_some(duplicate)
     }
 
     /// Wait for a client on this instance without stalling the runtime.
@@ -767,25 +1005,55 @@ mod imp {
     /// closure, so the handle keeps a single owner for the whole wait and is
     /// closed if the wait is ever abandoned.
     ///
+    /// The wait is still cancellable, which is what `JoinHandle::abort` is not:
+    /// the closure publishes the thread it parks on into `gate`, so an
+    /// [`AcceptStop`] can cancel the pending `ConnectNamedPipe` and let the
+    /// blocking job — and the runtime — finish. Aborting this task instead would
+    /// drop the future while the thread kept waiting for a client that is never
+    /// coming, and the runtime would then block forever on shutdown.
+    ///
     /// `ERROR_PIPE_CONNECTED` (535) means a client won the race between
     /// instance creation and this call. That is a success, not a failure.
+    /// `ERROR_OPERATION_ABORTED` (995) is how a cancelled wait reports itself,
+    /// and is reported as a disconnect rather than a connection: no client
+    /// attached, so handing the pipe on would give the accept loop a dead
+    /// connection to serve. The accept loop already tolerates a disconnect
+    /// without giving up, and its own cancellation check ends it on the next
+    /// pass.
     #[allow(unsafe_code)] // windows-sys ConnectNamedPipe on the owned handle.
-    async fn connect_instance(stream: Stream) -> Result<Stream, TransportError> {
+    async fn connect_instance(
+        stream: Stream,
+        gate: Arc<AcceptGate>,
+    ) -> Result<Stream, TransportError> {
         use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED;
+        use windows_sys::Win32::Foundation::{ERROR_OPERATION_ABORTED, ERROR_PIPE_CONNECTED};
         use windows_sys::Win32::System::Pipes::ConnectNamedPipe;
 
         let Stream::Windows(pipe) = stream;
         tokio::task::spawn_blocking(move || {
+            if !gate.begin() {
+                // A stop arrived before this wait ever started.
+                return Err(TransportError::Disconnected);
+            }
+            // The raw handle is read *inside* the closure, never hoisted out of
+            // it: a `HANDLE` is a raw pointer and so is not `Send`, and only the
+            // owning `File` is allowed to travel to the blocking-pool thread.
             // SAFETY: `pipe` owns a live named-pipe server handle for the whole
             // closure, and a null `OVERLAPPED` selects the synchronous form of
             // the API, which is the form this handle was created for.
             let ok = unsafe { ConnectNamedPipe(pipe.as_raw_handle(), std::ptr::null_mut()) };
+            // The record must go before anything else can run, so a concurrent
+            // `request` can never cancel this thread once it is off the wait.
+            gate.end();
             if ok == 0 {
                 let error = io::Error::last_os_error();
-                if error.raw_os_error() != Some(ERROR_PIPE_CONNECTED.cast_signed()) {
-                    return Err(TransportError::Io(error));
+                if error.raw_os_error() == Some(ERROR_PIPE_CONNECTED.cast_signed()) {
+                    return Ok(Stream::Windows(pipe));
                 }
+                if error.raw_os_error() == Some(ERROR_OPERATION_ABORTED.cast_signed()) {
+                    return Err(TransportError::Disconnected);
+                }
+                return Err(TransportError::Io(error));
             }
             Ok(Stream::Windows(pipe))
         })
@@ -936,8 +1204,10 @@ mod imp {
 
 // The daemon and the frontend client are written once, against this uniform
 // `bind`/`connect`/`accept`/`cleanup` surface, so neither carries a
-// `#[cfg]` of its own.
-pub use imp::{bind, cleanup, connect, endpoint_is_live, Listener};
+// `#[cfg]` of its own. `AcceptStop` is part of that surface for the same reason:
+// a shutdown has to be able to interrupt a parked accept on one platform and be
+// a no-op on the other, without the daemon knowing which it is running on.
+pub use imp::{bind, cleanup, connect, endpoint_is_live, AcceptStop, Listener};
 
 #[cfg(all(test, unix))]
 mod tests {
@@ -1197,7 +1467,10 @@ mod tests {
 // `ConnectNamedPipe` that is parked on the blocking pool, `CreateFileW` on the
 // client side, and the `PeekNamedPipe`/`ReadFile` pair that stands in for a
 // non-blocking read. A test that cannot fail is worthless, so each one asserts
-// an observable outcome rather than merely that the calls returned.
+// an observable outcome rather than merely that the calls returned. The last
+// two are Plan 171's: on Unix there is no parked accept to interrupt, so the
+// `AcceptStop` no-op there is correct and only this platform can prove the
+// mechanism that makes `gregg daemon run` exit on Windows.
 #[cfg(all(test, windows))]
 mod windows_tests {
     use super::{bind, cleanup, connect, endpoint_is_live, Connection, TransportError};
@@ -1376,5 +1649,59 @@ mod windows_tests {
         let missing = candidates[0].with_extension("absent");
         let error = connect(&[missing]).expect_err("must refuse");
         assert!(matches!(error, TransportError::Io(_)), "got {error}");
+    }
+
+    /// A stop request ends a wait that no client will ever satisfy.
+    ///
+    /// This is the mechanism Plan 171 is built on, asserted directly and with no
+    /// client in sight. If `CancelSynchronousIo` stopped reaching the parked
+    /// `ConnectNamedPipe`, this accept would never return and the bounded wait
+    /// below would say so.
+    #[tokio::test]
+    async fn a_stop_request_ends_a_parked_accept_wait() {
+        let candidates = pipe_candidates("stop");
+        let mut listener = bind(&candidates).expect("binds");
+        let stop = listener.stop_handle();
+
+        // Request the stop before the accept is even awaited. `AcceptStop` has
+        // to record the request so a wait that starts afterwards declines to
+        // park, which is what makes shutdown race-free rather than a matter of
+        // who happens to call first.
+        stop.request();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("a stopped listener must not wait for a client that is never coming");
+        assert!(
+            matches!(outcome, Err(TransportError::Disconnected)),
+            "a stopped accept must report a disconnect, not a connection: {outcome:?}"
+        );
+    }
+
+    /// A stop that arrives while the wait is already parked still ends it.
+    ///
+    /// The test above covers the "before it starts" ordering, which the recorded
+    /// request settles on its own. This one covers the ordering the production
+    /// defect actually lived in: the accept is already blocked in
+    /// `ConnectNamedPipe` when the stop is requested, so the cancellation is the
+    /// only thing that can release that thread.
+    #[tokio::test]
+    async fn a_stop_request_interrupts_an_already_parked_accept() {
+        let candidates = pipe_candidates("parked");
+        let mut listener = bind(&candidates).expect("binds");
+        let stop = listener.stop_handle();
+
+        // Let the accept actually park, so this cannot pass by the "declines to
+        // start" path the other test covers.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        stop.request();
+
+        let outcome = tokio::time::timeout(Duration::from_secs(10), listener.accept())
+            .await
+            .expect("a parked accept must be interruptible, not merely abandoned");
+        assert!(
+            matches!(outcome, Err(TransportError::Disconnected)),
+            "an interrupted accept must report a disconnect: {outcome:?}"
+        );
     }
 }

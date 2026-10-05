@@ -96,6 +96,14 @@ const REQUEST_CHANNEL_CAPACITY: usize = 64;
 /// Read buffer for one connection.
 const READ_BUFFER_BYTES: usize = 8192;
 
+/// How long the accept loop may take to unwind once its wait is interrupted.
+///
+/// Generous, and only ever reached on failure: a Unix accept returns to its
+/// cancellation check within milliseconds, and an interrupted Windows
+/// `ConnectNamedPipe` returns as soon as the cancellation is marked. The bound
+/// exists so a transport regression fails as a bounded error instead of a hang.
+const ACCEPT_STOP_GRACE: Duration = Duration::from_secs(5);
+
 /// Capacity of the scheduler observation channel.
 ///
 /// Bounded: a full channel means the engine is not draining, and an unbounded
@@ -269,7 +277,10 @@ pub async fn run_daemon(
         shutdown: tasks.clone(),
     });
 
-    let accept_task = tokio::spawn({
+    // Taken before the listener is moved into the accept task: that task is the
+    // only other owner of the listener, and shutdown is driven from here.
+    let accept_stop = listener.stop_handle();
+    let mut accept_task = tokio::spawn({
         let hub = Arc::clone(&hub);
         let cancel = tasks.clone();
         async move { accept_loop(listener, hub, cancel).await }
@@ -309,9 +320,28 @@ pub async fn run_daemon(
         .await;
 
     tasks.cancel();
-    accept_task.abort();
     cron_task.abort();
     drop(eggpool_control);
+    // Stop accepting *before* the endpoint is released, so no client can be
+    // handed a connection by a listener that is on its way out.
+    //
+    // The interrupt matters on Windows, where the accept wait is parked in a
+    // blocking-pool thread that `abort` cannot reach: requesting the stop ends
+    // that wait, so the accept loop unwinds and the runtime has nothing left to
+    // wait for when it is dropped. Aborting alone would drop the task's future
+    // while the thread kept waiting for a client that is never coming, and the
+    // process would hang instead of exiting. On Unix the request is a no-op and
+    // the loop reaches its own cancellation check in milliseconds.
+    accept_stop.request();
+    if tokio::time::timeout(ACCEPT_STOP_GRACE, &mut accept_task)
+        .await
+        .is_err()
+    {
+        // Last resort, and the old defective path on Windows: it cannot cancel a
+        // `spawn_blocking` job that is already running. Kept so a transport
+        // regression surfaces as a bounded failure rather than a silent hang.
+        accept_task.abort();
+    }
     ipc::cleanup(&endpoint.path);
     result
 }
@@ -1183,38 +1213,20 @@ mod test_support {
             panic!("the daemon never bound its endpoint");
         }
 
+        /// Stop the daemon and wait for it to actually finish.
+        ///
+        /// Bounded on purpose: if the accept wait ever became uncancellable
+        /// again this would fail the test rather than wedge the CI job until its
+        /// own timeout, which is the failure this harness exists to catch.
         pub(super) async fn shutdown(self) {
             self.cancel.cancel();
-            let _ = tokio::time::timeout(Duration::from_secs(5), self.handle).await;
-            release_parked_accept(&self.identity);
+            tokio::time::timeout(Duration::from_secs(10), self.handle)
+                .await
+                .expect("the daemon must exit after a stop request")
+                .expect("the daemon task must not panic")
+                .expect("a clean stop must not be an error");
         }
     }
-
-    /// Release a `ConnectNamedPipe` wait the accept loop left behind.
-    ///
-    /// On Windows the listener parks its blocking-pool thread in
-    /// `ConnectNamedPipe` and `run_daemon` only *aborts* the accept task, which
-    /// cannot cancel a `spawn_blocking` job that is already running: the
-    /// closure owns the pipe handle and stays parked until a client arrives.
-    /// Dropping the runtime then waits on that thread forever, so both a real
-    /// `gregg daemon run` and a `#[tokio::test]` fail to finish.
-    ///
-    /// Opening one throwaway client is enough: the parked instance is available,
-    /// so the connect completes, `ConnectNamedPipe` returns, and the blocking
-    /// thread ends. This is a *test* teardown, not a fix — the production
-    /// process has the same defect, tracked in Plan 171.
-    ///
-    /// No-op on Unix, where `accept` is a cancellable async operation and the
-    /// accept task's own abort is enough.
-    #[cfg(windows)]
-    fn release_parked_accept(identity: &ClientDaemonIdentity) {
-        // Best-effort: a released accept is a convenience, and a failure here
-        // must not be the reason a test fails.
-        let _ = ipc::connect(&identity.candidates());
-    }
-
-    #[cfg(not(windows))]
-    fn release_parked_accept(_identity: &ClientDaemonIdentity) {}
 
     /// How long a single expected document may take to arrive.
     ///
@@ -2582,5 +2594,82 @@ mod windows_tests {
 
         drop(second);
         running.shutdown().await;
+    }
+
+    /// Plan 171's regression test: the daemon process must actually exit.
+    ///
+    /// `run_daemon` *returning* is not the claim. The claim is that the
+    /// **runtime is released**, because `dispatch_daemon` drops the runtime as
+    /// the last thing `gregg daemon run` does, and a blocking-pool job that is
+    /// still parked makes that drop block forever. So this test builds the same
+    /// current-thread runtime the command builds, drives a real daemon over a
+    /// real named pipe on that runtime, and stops it the way an operator does.
+    ///
+    /// No client ever connects, which is the whole design of the test: the
+    /// accept wait is therefore parked in `ConnectNamedPipe` when the stop
+    /// arrives, which is exactly the state that used to leave a thread waiting
+    /// for a client that was never coming. There is no "eventually" for it to
+    /// recover on, so a prompt release is the only passing outcome.
+    ///
+    /// The drop is what is being asserted, so it cannot simply be awaited: a
+    /// drop that never returns *is* the defect, and waiting on one in-line is
+    /// indistinguishable from a hung test. Handing it to a thread and reporting
+    /// a named failure on timeout turns a wedged CI job into an assertion.
+    #[test]
+    fn a_stopped_daemon_releases_its_runtime() {
+        let dir = TempDir::new("win-runtime");
+        let store = write_empty_config(&dir);
+        let identity = ClientDaemonIdentity::for_path(&dir.config_path());
+        let endpoint = identity.candidates()[0].clone();
+        let cancel = CancellationToken::new();
+        let stop = cancel.clone();
+
+        let (released, reported) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("gregg-win-runtime".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("builds the current-thread runtime `dispatch_daemon` uses");
+                runtime.block_on(async move {
+                    let daemon = run_daemon(store, identity, cancel);
+                    tokio::pin!(daemon);
+                    tokio::select! {
+                        result = &mut daemon => {
+                            result.expect("an unsolicited daemon exit is not this test");
+                        }
+                        // Wait for the endpoint to be really bound before
+                        // stopping, so the accept wait is parked rather than
+                        // merely about to start.
+                        () = async {
+                            while !ipc::endpoint_is_live(&endpoint) {
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                            }
+                        } => {
+                            stop.cancel();
+                            daemon
+                                .await
+                                .expect("a clean stop must not be reported as an error");
+                        }
+                    }
+                });
+                // The assertion. This drop joins the blocking pool, so it is
+                // where an uncancellable accept wait used to park forever.
+                let elapsed = std::time::Instant::now();
+                drop(runtime);
+                let _ = released.send(elapsed.elapsed());
+            })
+            .expect("spawns the runtime thread");
+
+        match reported.recv_timeout(Duration::from_secs(20)) {
+            Ok(_) => {
+                worker.join().expect("the runtime thread must not panic");
+            }
+            Err(error) => panic!(
+                "the runtime was not released within the budget ({error}): a parked \
+                 accept wait is blocking `gregg daemon run` from exiting"
+            ),
+        }
     }
 }
