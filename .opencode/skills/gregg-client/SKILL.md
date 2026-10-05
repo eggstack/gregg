@@ -90,6 +90,12 @@ reads no config file and opens no network connection.
   has no batch/EggPool/reload entry point; `AppState::adopt_snapshot` is its
   only fleet writer. `#[cfg(test)] test_fleet` lets renderer tests drive the
   real publish/adopt path and is absent from production builds.
+- **Windows accept is not cancellable (open defect, Plan 171).** The accept
+  wait is parked on the blocking pool, and `accept_task.abort()` cannot cancel a
+  `spawn_blocking` job that is already running, so on Windows `gregg daemon run`
+  acknowledges a stop and then hangs instead of exiting. `release_parked_accept`
+  in the daemon test harness is a documented test-only work-around, not the fix.
+  Never treat "aborting the accept task" as sufficient teardown on Windows.
 - **No fallback.** A frontend that cannot reach a compatible daemon reports the
   reason and exits. Never add a direct-polling fallback.
 

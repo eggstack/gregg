@@ -112,6 +112,37 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **Windows-only Rust is now linted in CI (Plan 169):** the Windows job installs
+  the `clippy` component and runs the same full-workspace
+  `--all-targets --all-features -- -D warnings` gate that Linux already runs.
+  There is still no extra CI job and no extra matrix entry.
+
+  The Windows job had been compiling and testing Windows-only code without ever
+  linting it, which is how a pedantic backlog built up unnoticed and how
+  two stale `#[allow]` attributes ended up suppressing nothing while hiding two
+  real findings underneath them. All twelve backlog findings are now fixed. The
+  release binaries are byte-identical, so this is a verification change only.
+
+  The Windows job also now runs the first native tests that start
+  `gregg daemon run` at all. They immediately exposed a real defect: on Windows
+  the accept wait is parked on the blocking pool, and aborting the accept task
+  cannot cancel a blocking job that is already running, so the daemon
+  acknowledges a stop request and then hangs instead of exiting. That defect is
+  **not fixed here**; it is tracked in Plan 171. The test harness works around
+  it explicitly rather than hiding it, and every document wait in the daemon
+  tests is now bounded so a future regression fails a test instead of wedging a
+  CI job.
+
+- **The ~996 KiB the client-daemon line added to `gregg` is measured and kept
+  (Plan 170):** attribution over unstripped paired builds attributes the growth
+  to 486,985 bytes of new `clientd` code plus serde surface reached through the
+  new fan-out document. Two findings correct how the growth reads: the line
+  *shrank* third-party text by 31,684 bytes and cut `run_tui` from 41,854 to
+  25,266 bytes, because the TUI no longer owns a polling loop; and the largest
+  single module deltas are serde impls that were previously inlined and are now
+  outlined, not new logic. No candidate cleared a 64 KiB bar without weakening
+  something the architecture depends on, so nothing was changed.
+
 - **`gregg` is now a frontend (Plan 164):** all remote polling for a
   configuration file moved out of the TUI and into a new per-config
   **client daemon**, `gregg daemon run`. Each config gets its own daemon,

@@ -220,6 +220,28 @@ off-box), and no `FILE_FLAG_OVERLAPPED`. The descriptor the SDDL conversion
 allocates is self-relative and is released with `LocalFree` in the same block
 that created the pipe.
 
+**Known defect: the accept wait is not cancellable (Plan 171).** Parking the wait
+on the blocking pool is what keeps the runtime free, but it makes the wait
+immune to `accept_task.abort()`. Aborting a task cannot cancel a `spawn_blocking`
+job that is already running, and the closure owns the pipe handle, so the thread
+stays in `ConnectNamedPipe` until a client arrives. `dispatch_daemon` drops the
+`Runtime` at the end of the function and Tokio's shutdown waits for outstanding
+blocking jobs without a timeout, so on Windows `gregg daemon run` currently
+acknowledges a stop request, unwinds, unlinks the endpoint — and then hangs
+instead of exiting. A later `gregg` finds a live pipe held by a wedged process.
+
+Two consequences for anyone working here:
+
+- The `Listener`'s own `pending` instance is not an escape hatch. It is a
+  different handle; the parked one is unreachable from outside the closure.
+- `clientd/daemon.rs`'s `release_parked_accept` is a **test-only** work-around
+  that opens one throwaway client to release the parked thread. It must not be
+  mistaken for the fix, and it must not be copied into production paths. Plan 171
+  removes it.
+
+Unix has no equivalent problem: `tokio::net::UnixListener::accept` is a
+cancellable async operation, so aborting the accept task is sufficient.
+
 ### Lifecycle (Plan 165)
 
 `gregg` ensures its own daemon, so the client is usable by default without
