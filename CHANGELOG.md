@@ -45,6 +45,26 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **A `gregg-update` test reported a spawn failure as a missing file (Plan 172).
+  Test-only; no update behavior changed.** The download-classification tests
+  asserted `DownloadOutcome::Failed(_)`, which is also exactly what a failed
+  `Command::spawn` produces. Under a loaded CI runner a transient `fork` `EAGAIN`
+  therefore satisfied the "HTTP 500 is a hard failure" assertion, and the next
+  line then read a `calls` file the stub never had the chance to write — so the
+  build went red with `ENOENT` on a file that has nothing to do with HTTP
+  classification, pointing at the wrong code entirely.
+
+  Every stub `curl` now records itself in a `calls` log as its first act, so a
+  test can tell "curl never started" from "curl started and was classified"
+  using the child's own side effect rather than a production error string. A
+  spawn failure is retried a bounded number of times, and if it never succeeds
+  the failure is a named assertion about the spawn that carries the underlying
+  error — never a missing `calls` file.
+
+  The four sibling download tests that shared the over-wide assumption are
+  corrected in the same pass, and the real-`curl` 500 baseline now records
+  whether a client actually reached the fixture before accepting its result.
+
 - **`gregg daemon run` never exited on Windows (Plan 171).** A stop request, a
   supervisor stop signal, and Ctrl-C were all acknowledged — the engine loop
   unwound and the endpoint was released — and then the process hung instead of

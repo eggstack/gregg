@@ -126,4 +126,14 @@ target in all consumers at once, never in one place alone.
   `chmod`, or exec steps.
   `exit 4` mapping is caller-owned; the shared crate returns
   `PermissionDenied` with a platform-correct hint.
+- A test that asserts an HTTP *classification* must first prove its child ran.
+  `download_file` cannot tell "the server refused" from "the child never
+  started": both are `DownloadOutcome::Failed(_)`, so a bare
+  `matches!(outcome, Failed(_))` is satisfied by a runner that could not
+  `fork` at all (Plan 172). Proof comes from the child's own side effect, never
+  from parsing a production error string: the stub `curl` scripts append to a
+  `calls` log as their first act and `download_file_with_started_stub` requires
+  that log to exist, retrying a bounded number of times and then failing as a
+  *named spawn* assertion. The real-`curl` baselines use the same idea with
+  `spawn_recording_response`, which records that a client reached the fixture.
 - Publish order: `gregg-protocol` → `gregg-update` → `gregg-host` → `greggd` → `gregg`.
