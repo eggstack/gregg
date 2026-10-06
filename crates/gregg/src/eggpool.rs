@@ -940,9 +940,10 @@ where
                             EggpoolHealthFetchOutcome::NetworkError,
                         ),
                     };
-                    let delivered = deliver_result_or_cancel(
+                    let delivered = deliver_result_or_interrupt(
                         &result_tx,
                         &cancel,
+                        &mut control_rx,
                         EggpoolResult {
                             generation,
                             period,
@@ -953,20 +954,41 @@ where
                         },
                     )
                     .await;
-                    if !delivered {
-                        // Shutting down, or the daemon is gone: nothing is left
-                        // to report to and no pane can be waiting.
-                        worker.abort_request();
-                        break;
-                    }
-                    if worker.desired.active {
-                        // Two clocks: `started_at`/`completed_at` use wall-clock
-                        // `now()` while the refresh deadline uses the Tokio
-                        // timer clock `tokio_now()`. A fake clock must advance
-                        // the wall clock for timestamps and rely on the runtime
-                        // clock for deadlines (see `FakeClock`); advancing one
-                        // without the other breaks refresh scheduling silently.
-                        worker.next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
+                    match delivered {
+                        ResultDelivery::Delivered => {
+                            if worker.desired.active {
+                                // Two clocks: `started_at`/`completed_at` use
+                                // wall-clock `now()` while the refresh deadline
+                                // uses the Tokio timer clock `tokio_now()`. A
+                                // fake clock must advance the wall clock for
+                                // timestamps and rely on the runtime clock for
+                                // deadlines (see `FakeClock`); advancing one
+                                // without the other breaks refresh scheduling
+                                // silently.
+                                worker.next_refresh_at =
+                                    Some(clock.tokio_now() + REFRESH_INTERVAL);
+                            }
+                        }
+                        ResultDelivery::Cancelled
+                        | ResultDelivery::ControlGone
+                        | ResultDelivery::ResultReceiverGone => {
+                            // Shutting down, or the daemon is gone: nothing is
+                            // left to report to and no pane can be waiting.
+                            worker.abort_request();
+                            break;
+                        }
+                        ResultDelivery::Superseded(desired) => {
+                            // A newer intent was published while this result was
+                            // backpressured. Do not arm the old result's passive
+                            // refresh deadline — that would schedule a fetch for
+                            // superseded intent. Convergence owns the transition:
+                            // it adopts the newest retained state, clears the
+                            // passive deadline, and reports whether exactly one
+                            // request must start for it.
+                            if worker.converge(desired) {
+                                worker.start_request(&client, &endpoint, &clock);
+                            }
+                        }
                     }
                 }
             }
@@ -978,32 +1000,107 @@ where
     }
 }
 
-/// Deliver one completed result, yielding to cancellation while it blocks.
+/// Deliver one completed result, yielding to shutdown **and to newer intent**
+/// while it blocks.
 ///
 /// The fetch has already finished, so a full result channel is ordinary
 /// backpressure — the worker must wait for a slot rather than buffer without
 /// bound. Awaiting `send` in the worker loop's branch body parked the whole
 /// loop, leaving cancellation, a newer desired state, and the passive refresh
 /// deadline unpolled until a slot happened to free. Selecting inside this
-/// primitive keeps that wait bounded by the same cancellation signal as every
-/// other worker branch, and keeps the completed result losslessly abandoned
-/// when the daemon is shutting down.
+/// primitive keeps that wait bounded by the same signals as every other worker
+/// branch, and keeps the completed result losslessly abandoned when the daemon
+/// is shutting down.
 ///
-/// The `biased` ordering makes cancellation win a race against a slot that
-/// frees at the same instant: once this worker is ending, no pane can be
-/// waiting for the result.
+/// Selecting only on cancellation was not enough. While the fifth result waits
+/// for a slot the worker is *inside* this helper and no longer polling
+/// `control_rx.changed()`, so a newly published desired state — deactivation, a
+/// period change, a refresh generation — stayed unapplied until the daemon
+/// drained a result slot. That is the Plan-151 contract that the worker converges
+/// onto the *newest* state rather than replaying stale work, and full backpressure
+/// is exactly when it matters most: leaving the `EggPool` pane could otherwise be
+/// delayed behind a completed fetch nobody is reading. So the newest retained
+/// desired state is inspected with `borrow_and_update()` and, when it supersedes
+/// this result, the result is abandoned and that state is handed back to the
+/// worker loop to converge on.
 ///
-/// Same shape the poll scheduler uses for its own sends.
-async fn deliver_result_or_cancel(
+/// A notification carrying an *equivalent* state is consumed and the wait
+/// continues: the completed result is still authoritative for it, and dropping
+/// it would turn a redundant publication into a lost result.
+///
+/// The reservation is taken with `reserve()` rather than by sending directly so
+/// a lost race returns the value instead of consuming it — the loop needs the
+/// same result to retry with.
+///
+/// `biased` ordering makes shutdown win a race against a slot that frees at the
+/// same instant: once this worker is ending, no pane can be waiting for the
+/// result. The newest intent is authoritative for the same reason — an obsolete
+/// completed result need not be delivered ahead of intent already known to be
+/// newer.
+///
+/// Same shape the cron worker uses for its own observation hand-off.
+async fn deliver_result_or_interrupt(
     sender: &tokio::sync::mpsc::Sender<EggpoolResult>,
     cancel: &tokio_util::sync::CancellationToken,
+    control_rx: &mut tokio::sync::watch::Receiver<EggpoolDesiredState>,
     result: EggpoolResult,
-) -> bool {
-    tokio::select! {
-        biased;
-        () = cancel.cancelled() => false,
-        sent = sender.send(result) => sent.is_ok(),
+) -> ResultDelivery {
+    loop {
+        tokio::select! {
+            biased;
+            () = cancel.cancelled() => return ResultDelivery::Cancelled,
+            changed = control_rx.changed() => {
+                if changed.is_err() {
+                    // No publisher remains, so no desired state can supersede
+                    // this one. Cancel is not required here.
+                    return ResultDelivery::ControlGone;
+                }
+                let desired = *control_rx.borrow_and_update();
+                if !supersedes_result(&result, desired) {
+                    // An equivalent publication. Consume it and keep waiting:
+                    // the completed result is still the answer for this state.
+                    continue;
+                }
+                return ResultDelivery::Superseded(desired);
+            }
+            reserved = sender.reserve() => match reserved {
+                Ok(permit) => {
+                    permit.send(result);
+                    return ResultDelivery::Delivered;
+                }
+                // The daemon is gone: nothing is left to report to.
+                Err(_) => return ResultDelivery::ResultReceiverGone,
+            },
+        }
     }
+}
+
+/// How one completed-result hand-off ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResultDelivery {
+    /// The bounded channel accepted the result.
+    Delivered,
+    /// Shutdown pre-empted the hand-off; the result was abandoned.
+    Cancelled,
+    /// The control publisher is gone, so the worker ends.
+    ControlGone,
+    /// The result receiver is gone, so the worker ends.
+    ResultReceiverGone,
+    /// A newer desired state made this result obsolete.
+    ///
+    /// Carries that newest state so the worker converges onto it directly rather
+    /// than waiting to be woken a second time.
+    Superseded(EggpoolDesiredState),
+}
+
+/// Whether a newly published desired state makes a completed result obsolete.
+///
+/// Inactive always supersedes — the pane no longer wants `EggPool` work at all.
+/// An active state supersedes when the rolling window or the refresh generation
+/// differs, because the result was fetched for the previous one. An identical
+/// active state does not: the result still answers it.
+fn supersedes_result(result: &EggpoolResult, desired: EggpoolDesiredState) -> bool {
+    !desired.active || desired.period != result.period || desired.generation != result.generation
 }
 
 /// One completed `EggPool` request carrying both independent planes.
@@ -1909,6 +2006,8 @@ mod tests {
     async fn a_full_result_channel_never_delays_cancellation() {
         let (result_tx, mut result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
         let cancel = tokio_util::sync::CancellationToken::new();
+        let (_control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
 
         // Precondition: exactly the bounded capacity is buffered, in order.
         for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
@@ -1921,15 +2020,16 @@ mod tests {
 
         // The fifth delivery is blocked, and the worker is still live.
         {
-            let mut blocked = Box::pin(deliver_result_or_cancel(
+            let mut blocked = Box::pin(deliver_result_or_interrupt(
                 &result_tx,
                 &cancel,
+                &mut control_rx,
                 buffered_result(99),
             ));
             tokio::select! {
                 biased;
                 delivered = &mut blocked => panic!(
-                    "a full channel must block delivery, but it reported {delivered}"
+                    "a full channel must block delivery, but it reported {delivered:?}"
                 ),
                 () = tokio::task::yield_now() => {}
             }
@@ -1947,8 +2047,9 @@ mod tests {
                     panic!("cancellation must complete the blocked delivery")
                 }
             };
-            assert!(
-                !delivered,
+            assert_eq!(
+                delivered,
+                ResultDelivery::Cancelled,
                 "a cancelled delivery reports the result as abandoned"
             );
         }
@@ -1967,6 +2068,345 @@ mod tests {
             result_rx.recv().await.is_none(),
             "the closed channel proves the sender is gone"
         );
+    }
+
+    /// A full result channel must not delay **deactivation**.
+    ///
+    /// This is the defect Plan 176 left open: cancellation was already first in
+    /// the select, but the control watch was not polled at all while delivery
+    /// was blocked. So closing the `EggPool` pane could leave the worker still
+    /// trying to hand over a completed result — deactivation stuck behind
+    /// receiver capacity.
+    ///
+    /// The full-channel precondition is built by filling the real bounded
+    /// channel, as Plan 176 established: a closed port or OS connection timing
+    /// proves nothing about the hand-off.
+    #[tokio::test]
+    async fn a_full_result_channel_never_delays_deactivation() {
+        let (result_tx, result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+        let control = EggpoolControl { sender: control_tx };
+        for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
+            result_tx
+                .send(buffered_result(generation))
+                .await
+                .expect("a slot is free while filling to capacity");
+        }
+
+        let mut blocked = Box::pin(deliver_result_or_interrupt(
+            &result_tx,
+            &cancel,
+            &mut control_rx,
+            buffered_result(7),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // No receiver capacity is freed; only the deactivation is published.
+        control
+            .publish(inactive(EggpoolPeriod::Hour, 7))
+            .expect("a live publisher");
+        let delivered = tokio::select! {
+            biased;
+            delivered = blocked.as_mut() => delivered,
+            () = tokio::task::yield_now() => {
+                panic!("a deactivation must complete the blocked delivery")
+            }
+        };
+        assert_eq!(
+            delivered,
+            ResultDelivery::Superseded(inactive(EggpoolPeriod::Hour, 7)),
+            "the inactive newest state is handed back for the worker to converge on"
+        );
+        assert_eq!(
+            result_rx.len(),
+            RESULT_CHANNEL_CAPACITY,
+            "the abandoned result must not occupy a slot"
+        );
+    }
+
+    /// A full result channel must not delay adoption of a newer period or
+    /// generation, and only the **newest** retained state is adopted.
+    ///
+    /// Watch latest-value coalescing is the product contract, so several
+    /// publications while blocked must collapse to the last one with no
+    /// intermediate replay required.
+    #[tokio::test]
+    async fn a_full_result_channel_never_delays_a_newer_period_or_generation() {
+        let (result_tx, result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+        let control = EggpoolControl { sender: control_tx };
+        for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
+            result_tx
+                .send(buffered_result(generation))
+                .await
+                .expect("a slot is free while filling to capacity");
+        }
+
+        let mut blocked = Box::pin(deliver_result_or_interrupt(
+            &result_tx,
+            &cancel,
+            &mut control_rx,
+            buffered_result(1),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // Three publications while blocked; only the last is authoritative.
+        control.publish(desired(EggpoolPeriod::Month, 1)).unwrap();
+        control.publish(desired(EggpoolPeriod::Hour, 2)).unwrap();
+        let newest = desired(EggpoolPeriod::Day, 3);
+        control.publish(newest).unwrap();
+
+        let delivered = tokio::select! {
+            biased;
+            delivered = blocked.as_mut() => delivered,
+            () = tokio::task::yield_now() => {
+                panic!("a newer period/generation must complete the blocked delivery")
+            }
+        };
+        assert_eq!(
+            delivered,
+            ResultDelivery::Superseded(newest),
+            "only the newest retained desired state is adopted"
+        );
+        assert_eq!(result_rx.len(), RESULT_CHANNEL_CAPACITY);
+    }
+
+    /// An **equivalent** publication must not discard a still-current result.
+    ///
+    /// The pane republishes the same `(active, period, generation)` on ordinary
+    /// repaints. Treating that as supersession would turn a redundant
+    /// publication into a silently dropped `EggPool` result.
+    #[tokio::test]
+    async fn an_equivalent_desired_state_does_not_discard_a_valid_result() {
+        let (result_tx, mut result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+        let control = EggpoolControl { sender: control_tx };
+        for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
+            result_tx
+                .send(buffered_result(generation))
+                .await
+                .expect("a slot is free while filling to capacity");
+        }
+
+        let mut blocked = Box::pin(deliver_result_or_interrupt(
+            &result_tx,
+            &cancel,
+            &mut control_rx,
+            buffered_result(7),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // The same state the completed result answers.
+        control.publish(desired(EggpoolPeriod::Hour, 7)).unwrap();
+        // Give the helper every chance to react to that notification.
+        for _ in 0..64 {
+            tokio::select! {
+                biased;
+                delivered = &mut blocked => panic!(
+                    "an equivalent publication must not abandon the result, got {delivered:?}"
+                ),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+
+        // Free exactly one slot: the result must now be delivered. The bounded
+        // mpsc is FIFO, so the newcomer appends behind the buffered placeholders.
+        result_rx.recv().await.expect("a buffered placeholder");
+        assert_eq!(
+            blocked.await,
+            ResultDelivery::Delivered,
+            "an equivalent notification is consumed, then the result is delivered"
+        );
+        assert_eq!(
+            result_rx.len(),
+            RESULT_CHANNEL_CAPACITY,
+            "delivery refilled the slot it took"
+        );
+        for expected in 2..=RESULT_CHANNEL_CAPACITY as u64 {
+            assert_eq!(
+                result_rx
+                    .recv()
+                    .await
+                    .expect("a buffered placeholder")
+                    .generation,
+                expected,
+                "the remaining placeholders stay intact and in order"
+            );
+        }
+        assert_eq!(
+            result_rx
+                .recv()
+                .await
+                .expect("the delivered result")
+                .generation,
+            7,
+            "the result must be delivered, not dropped by the equivalent publication"
+        );
+    }
+
+    /// Cancellation still outranks a superseding control change.
+    #[tokio::test]
+    async fn cancellation_outranks_a_superseding_control_change() {
+        let (result_tx, result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+        let control = EggpoolControl { sender: control_tx };
+        for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
+            result_tx
+                .send(buffered_result(generation))
+                .await
+                .expect("a slot is free while filling to capacity");
+        }
+
+        let mut blocked = Box::pin(deliver_result_or_interrupt(
+            &result_tx,
+            &cancel,
+            &mut control_rx,
+            buffered_result(7),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        control.publish(inactive(EggpoolPeriod::Hour, 8)).unwrap();
+        cancel.cancel();
+        assert_eq!(
+            blocked.await,
+            ResultDelivery::Cancelled,
+            "shutdown is the higher-priority signal"
+        );
+        assert_eq!(result_rx.len(), RESULT_CHANNEL_CAPACITY);
+    }
+
+    /// A gone control publisher or result receiver ends delivery rather than
+    /// parking forever.
+    #[tokio::test]
+    async fn a_gone_channel_ends_delivery() {
+        let (result_tx, result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+
+        // No publisher: the newest state can never supersede this one.
+        drop(control_tx);
+        assert_eq!(
+            deliver_result_or_interrupt(&result_tx, &cancel, &mut control_rx, buffered_result(1),)
+                .await,
+            ResultDelivery::ControlGone
+        );
+
+        // No receiver: the daemon is gone.
+        let (control_tx, mut control_rx) =
+            tokio::sync::watch::channel(EggpoolDesiredState::INACTIVE);
+        let control = EggpoolControl { sender: control_tx };
+        control.publish(desired(EggpoolPeriod::Hour, 1)).unwrap();
+        drop(result_rx);
+        assert_eq!(
+            deliver_result_or_interrupt(&result_tx, &cancel, &mut control_rx, buffered_result(1),)
+                .await,
+            ResultDelivery::ResultReceiverGone
+        );
+    }
+
+    /// Worker level: a newer desired state starts its request while the prior
+    /// completed result is still blocked by full output backpressure.
+    ///
+    /// The primitive is pinned by the helper tests above; this proves the worker
+    /// loop converges on what the primitive hands back. Nothing reads
+    /// `worker.results` here, so each passive refresh fills one slot of the
+    /// bounded channel and the next completed result is genuinely undeliverable
+    /// — the exact pressure that used to strand deactivation and period changes.
+    #[tokio::test(start_paused = true)]
+    async fn a_worker_converges_onto_newer_intent_while_a_result_is_backpressured() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let worker = worker_for(port, &cancel);
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
+        );
+        // Open the gate once: it then answers every request, so each cycle below
+        // completes.
+        gate.send(true).ok();
+
+        // One passive refresh per cycle. The first three fill the remaining
+        // slots; the fourth's result cannot be delivered.
+        for cycle in 1..=RESULT_CHANNEL_CAPACITY {
+            tokio::time::advance(REFRESH_INTERVAL).await;
+            assert_eq!(
+                next_request(&mut requests).await,
+                "/api/stats/summary?period=1h",
+                "passive cycle {cycle} must issue the refresh"
+            );
+            for _ in 0..256 {
+                tokio::task::yield_now().await;
+            }
+        }
+        assert_eq!(
+            worker.results.len(),
+            RESULT_CHANNEL_CAPACITY,
+            "the channel is full and no later result may be delivered into it"
+        );
+
+        // A newer intent must still be adopted, and its request started, with
+        // the previous result undeliverable.
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Month, 2))
+            .unwrap();
+        assert_eq!(
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=30d",
+            "convergence must not wait for a result slot nobody is draining"
+        );
+
+        // The abandoned result left the channel untouched, and deactivation is
+        // honoured without one either.
+        worker
+            .control
+            .publish(inactive(EggpoolPeriod::Month, 3))
+            .unwrap();
+        for _ in 0..1_000 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            worker.results.len(),
+            RESULT_CHANNEL_CAPACITY,
+            "no further result was queued behind the backpressure"
+        );
+        assert_eq!(
+            worker.control.published(),
+            inactive(EggpoolPeriod::Month, 3)
+        );
+
+        cancel.cancel();
+        server_task.abort();
+        let _ = server_task.await;
     }
 
     #[tokio::test(start_paused = true)]

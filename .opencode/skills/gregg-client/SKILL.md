@@ -36,7 +36,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, `SchedulerCommand` enum, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS; HTTP URL convenience adapter |
 | `clock` | `src/clock.rs` | Clock trait; `RealClock` and `FakeClock` for testing |
-| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s cadence with one startup round, target-keyed revision/epoch-gated history committed only after delivery, coherent summary+history pair, four reads in flight, reload/cancel-preemptible rounds, `CronWorker` task; the only code that fetches cron |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s cadence with one startup round, target-keyed revision/epoch-gated history committed only after delivery, coherent summary+history pair, four reads in flight, reload/cancel-preemptible rounds (remote reads *and* the bounded observation hand-off), `CronWorker` task; the only code that fetches cron |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI; `aggregate_drives()` |
 
 ### Input
@@ -471,6 +471,23 @@ period the daemon actually fetched. `refresh: true` is the manual-refresh escape
 hatch, without which a re-sent identical intent could not mint a new worker
 generation.
 
+The worker's latest-desired-state convergence must stay live **while a completed
+result is backpressured**, not only while an HTTP request is in flight. The
+bounded four-slot result channel is the one place it parks after a fetch has
+already finished, and Plan 176 made only shutdown observable there — so closing
+the pane or switching window could sit behind a result slot nobody drains. Deliver
+through `deliver_result_or_interrupt`, selecting cancellation, then
+`control_rx.changed()`, then the result reservation (`reserve()`, so a lost race
+returns the value). Inspect the newest retained state with `borrow_and_update()`:
+inactive, or active with a different period/generation, abandons the completed
+result and is returned to the worker loop to converge on; an **equivalent**
+publication is consumed and the wait continues, because that result still answers
+it. Ordering is `biased` — shutdown, then superseding state, then send — and the
+passive refresh deadline is armed only after a *delivered* current result. Keep
+the channel bounded and one-request-at-a-time; do not make delivery lossy to
+"fix" this, and do not add a second desired-state queue: latest-value coalescing
+is the contract.
+
 ## Key constraints
 
 - One ordered result per endpoint, the semaphore limit, panic-to-`Cancelled` conversion, fixed periodic cadence, and cancellation behavior are all intentional.
@@ -552,8 +569,9 @@ Ten rules govern this plane and are easy to break:
    sequential walk made the effective cadence a multiple of the nominal one behind
    any slow endpoint. The bound is a constant, never configuration, and the round
    spawns nothing, so a reload or shutdown drops at most those few reads.
-8. **A reload preempts the round it lands in.** Select reload and cancellation
-   *inside* `CronWorker::round`, not only between rounds. Waiting for the round to
+8. **A reload preempts the whole round it lands in — remote reads *and* the
+   observation hand-off.** Select reload and cancellation *inside*
+   `CronWorker::round`, not only between rounds. Waiting for the round to
    finish made reaction time proportional to the superseded fleet —
    `ceil(fleet / 4)` timeout waves — so a newly added or repointed system went
    unobserved for minutes. On reload: stop enqueueing, drop the in-flight futures
@@ -561,13 +579,23 @@ Ten rules govern this plane and are easy to break:
    prune gate keys absent from the new target set, and start a fresh round at once
    without waiting out the cadence. Cancellation ends the worker the same way.
    Keep the bound at four, never spawn per endpoint, and never overlap rounds.
+   The finished-fetch `send` is the second place a round can wait — the bounded
+   64-slot engine channel is the only receiver — so deliver through
+   `deliver_observation`, which selects cancellation, then reload, then the send.
+   Never `await` that `send` bare in the round body, or a reload waits on receiver
+   capacity for work already superseded; order the signals ahead of the send so a
+   slot freeing alongside a stored signal cannot let the obsolete observation win.
+   This is bounded loss of *superseded* work only: with no signal the send still
+   backpressures, and `CRON_CHANNEL_CAPACITY` (64) must not grow to hide the gap.
 9. **Commit the history gate only after delivery.** `settle` returns the
    observation plus a `PendingGateCommit`; the round applies the commit only
-   after `updates.send(observation)` succeeds. Advancing the gate during settlement
-   let a document that was dropped (preempted round, closed engine channel) claim
-   "already fetched" and suppress history forever. The invariant: **"the gate says
-   fetched" implies the coherent document reached the engine.** `observe()` commits
-   inline because returning the observation *is* the delivery.
+   after the bounded channel accepts the observation. Advancing the gate during
+   settlement let a document that was dropped (preempted round, abandoned
+   hand-off, closed engine channel) claim "already fetched" and suppress history
+   forever. Every non-delivery path returns before the commit line. The
+   invariant: **"the gate says fetched" implies the coherent document reached the
+   engine.** `observe()` commits inline because returning the observation *is* the
+   delivery. Keep the gate worker-private; add no acknowledgement traffic.
 10. **Never render a load relation that is not true.** `greggd` retains the gate
    decision that admitted a job, so a running or idle row can carry a reading
    *below* the threshold. Only `load delayed` prints `load15m 9.24 > 8.00`; a

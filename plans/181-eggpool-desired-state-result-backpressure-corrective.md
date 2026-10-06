@@ -1,6 +1,6 @@
 # Plan 181: EggPool desired-state preemption under result backpressure corrective
 
-Status: planned.
+Status: complete. See the closure record at the end.
 
 Depends on: completed Plans 151 and 176 plus current main at
 `fcbe2dfb129e0327dc0499d6666e54e1ac310fa8`.
@@ -200,25 +200,31 @@ delivery is backpressured, not just while an HTTP request is in flight.
 
 ## Acceptance criteria
 
-- [ ] A full EggPool result channel cannot delay deactivation.
-- [ ] A full result channel cannot delay adoption of a newer period/generation.
-- [ ] Superseded completed results are abandoned rather than delivered ahead of
+- [x] A full EggPool result channel cannot delay deactivation.
+- [x] A full result channel cannot delay adoption of a newer period/generation.
+- [x] Superseded completed results are abandoned rather than delivered ahead of
       already-known newer intent.
-- [ ] Equivalent desired-state notifications do not discard a still-current
+- [x] Equivalent desired-state notifications do not discard a still-current
       completed result.
-- [ ] Cancellation remains higher priority than control change and result
+- [x] Cancellation remains higher priority than control change and result
       delivery.
-- [ ] Without cancellation/supersession, the four-slot channel still applies
+- [x] Without cancellation/supersession, the four-slot channel still applies
       ordinary bounded backpressure and results are not dropped.
-- [ ] Latest-value watch coalescing and one-request-at-a-time semantics remain
+- [x] Latest-value watch coalescing and one-request-at-a-time semantics remain
       unchanged.
-- [ ] Passive refresh cadence is armed only after a successfully delivered
+- [x] Passive refresh cadence is armed only after a successfully delivered
       current result, as today.
-- [ ] Existing EggPool wire/auth/body-cap/health semantics remain unchanged.
-- [ ] Focused EggPool/client-daemon tests, formatting, workspace Clippy/tests,
+- [x] Existing EggPool wire/auth/body-cap/health semantics remain unchanged.
+- [x] Focused EggPool/client-daemon tests, formatting, workspace Clippy/tests,
       and `./scripts/check-local.sh` pass.
 - [ ] Existing six-job CI completes green, with native Windows Test/Clippy
-      providing the platform authority that motivated Plan 176.
+      providing the platform authority that motivated Plan 176. **Not yet
+      recorded at closure** — see the closure record. This change adds no
+      platform-specific code, no wire change, and no new workflow, job, or
+      matrix, so the default local check plus the workspace Clippy/test gate is
+      the lightest appropriate mechanism. The native Windows job remains the
+      platform authority for Windows lint/test status, and a cross-checked local
+      Windows Clippy run is explicitly not closure evidence.
 
 ## Stop conditions
 
@@ -239,3 +245,197 @@ Open a broader design plan instead if correctness requires:
 - TUI redesign;
 - Plan 091 soak evidence;
 - new CI workflows/jobs/matrices.
+
+## Closure record
+
+Desired-state-under-backpressure corrective in `crates/gregg/src/eggpool.rs`. No
+stop condition was hit: the result channel is still bounded at four, desired
+states are still coalesced by the watch's latest value rather than queued, there
+is still at most one concurrent request, the EggPool API/wire/config contract is
+untouched, and frontend IPC is untouched. No new dependency, configuration knob,
+workflow, job, or matrix.
+
+### The blocked hand-off is now interruptible by newer intent
+
+Plan 176 proved cancellation could interrupt a blocked completed-result send. It
+selected only cancellation and the send, so while the fifth result waited for a
+slot the worker was inside that helper and no longer polling
+`control_rx.changed()`. A newly published `EggpoolDesiredState` — deactivation, a
+period change, a refresh generation — stayed unapplied until the daemon drained a
+result slot, which is exactly the pressure under which leaving the pane should be
+fastest.
+
+The primitive is now `deliver_result_or_interrupt`, with a typed
+`ResultDelivery`:
+
+```rust
+loop {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => return ResultDelivery::Cancelled,
+        changed = control_rx.changed() => {
+            if changed.is_err() { return ResultDelivery::ControlGone; }
+            let desired = *control_rx.borrow_and_update();
+            if !supersedes_result(&result, desired) { continue; }
+            return ResultDelivery::Superseded(desired);
+        }
+        reserved = sender.reserve() => match reserved {
+            Ok(permit) => { permit.send(result); return ResultDelivery::Delivered; }
+            Err(_) => return ResultDelivery::ResultReceiverGone,
+        },
+    }
+}
+```
+
+Three implementation details are load-bearing:
+
+**`borrow_and_update()`, not `borrow()`.** The retained value is the *newest*
+desired state, so several publications while blocked collapse to the last one with
+no intermediate replay — latest-value coalescing is the product contract, and a
+helper that only read the first observed value would break it.
+
+**`reserve()` rather than `send()`.** The helper loops: an equivalent publication
+is consumed and the wait continues, so the same `result` must still be available.
+`send()` would consume it on the first attempt and make the retry impossible.
+`reserve()` takes the slot without moving the value, and dropping a losing future
+returns the reservation, so the semantics are identical for the real delivery.
+
+**An equivalent publication does not abandon.** `supersedes_result` is false for
+an active state with the same period and generation. The notification is consumed
+and the loop continues, because the completed result *is* the answer for that
+state — discarding it would turn a redundant repaint into a silently lost
+EggPool result. Inactive, a different period, or a different generation all
+supersede.
+
+### Worker-state integration
+
+The completion branch now matches on the typed outcome:
+
+```rust
+ResultDelivery::Delivered => {
+    if worker.desired.active {
+        worker.next_refresh_at = Some(clock.tokio_now() + REFRESH_INTERVAL);
+    }
+}
+ResultDelivery::Cancelled | ResultDelivery::ControlGone | ResultDelivery::ResultReceiverGone => {
+    worker.abort_request();
+    break;
+}
+ResultDelivery::Superseded(desired) => {
+    if worker.converge(desired) {
+        worker.start_request(&client, &endpoint, &clock);
+    }
+}
+```
+
+`Superseded` deliberately reuses the **existing** `EggpoolWorkerState::converge`
+rather than a parallel path: it already clears the passive deadline, adopts the
+newest state, aborts obsolete work, and reports whether exactly one request must
+start. So the old result's passive refresh deadline is never armed, one request is
+started for the newest state, and the worker returns to its select loop — one
+worker state, one request, no second desired-state queue.
+
+`ControlGone` and `ResultReceiverGone` are split rather than collapsed into one
+"gone" value only so the reason survives for future diagnostics; both take the
+same terminate path, which is Plan 176's unchanged behaviour.
+
+Ordering is `biased` — cancellation, then control change, then send — so a slot
+freeing in the same poll as a shutdown or a known-newer intent does not deliver an
+obsolete result first. The newest intent is authoritative; an obsolete completed
+result need not be delivered ahead of it.
+
+This is **not** permission to make delivery lossy. With no shutdown and no
+superseding state, `reserve()` still applies ordinary bounded backpressure and the
+result is delivered when a slot frees.
+
+### Regressions
+
+Six new tests plus the retained Plan-176 test. EggPool tests went 82 → 87. All
+drive the production primitive with the real bounded mpsc and watch channels, and
+the full-channel precondition is built by filling the real channel — the Plan-176
+fixture discipline, with no closed port or OS connection timing.
+
+- `a_full_result_channel_never_delays_deactivation` — four slots filled, delivery
+  pending, inactive published with no capacity freed, result abandoned, channel
+  still exactly four entries.
+- `a_full_result_channel_never_delays_a_newer_period_or_generation` — three
+  publications while blocked; only the newest is returned, proving both that the
+  newer intent is adopted without receiver capacity and that no intermediate
+  replay is required.
+- `an_equivalent_desired_state_does_not_discard_a_valid_result` — an identical
+  `(active, period, generation)` publication is consumed, the helper stays blocked
+  through a bounded yield storm, and the result is then delivered. The placeholders
+  stay intact and in order, which also pins the bounded-mpsc FIFO behaviour the
+  delivery relies on.
+- `cancellation_outranks_a_superseding_control_change` — both ready, shutdown wins.
+- `a_gone_channel_ends_delivery` — a dropped publisher is `ControlGone` and a
+  dropped receiver is `ResultReceiverGone`; neither parks.
+- `a_worker_converges_onto_newer_intent_while_a_result_is_backpressured` — worker
+  level, `start_paused`, nothing reading `worker.results`: four passive refreshes
+  fill the channel, the fifth result is undeliverable, and a newer period still
+  starts its request. Deactivation is then honoured without a slot either.
+- `a_full_result_channel_never_delays_cancellation` (retained, updated to the new
+  signature) keeps Plan 176's cancellation proof and its closed-channel tail.
+
+The worker-level test uses the file's existing real-clock OS-thread `watchdog`
+rather than a Tokio timer, deliberately: arming a timer in a paused-time test
+would let virtual clock auto-advance race the loopback round trip.
+
+### Mutation-tested
+
+Removing the `control_rx.changed()` branch fails the core regressions:
+
+```text
+test ...a_full_result_channel_never_delays_deactivation ... FAILED
+  a deactivation must complete the blocked delivery
+test ...a_full_result_channel_never_delays_a_newer_period_or_generation ... FAILED
+  a newer period/generation must complete the blocked delivery
+test result: FAILED. 1 passed; 2 failed; ... finished in 0.00s
+```
+
+and the worker-level test trips its watchdog:
+
+```text
+test ...a_worker_converges_onto_newer_intent_while_a_result_is_backpressured ... FAILED
+test result: FAILED. 0 passed; 1 failed; ... finished in 15.01s
+```
+
+Plan 176's cancellation regression correctly still passes under this mutation,
+which is the point: it proves the new branch was added rather than substituted.
+The fix was then restored and the suite re-run green.
+
+### Verification
+
+```text
+cargo test -p gregg --all-targets --all-features -- eggpool   # 87 passed
+cargo test -p gregg --all-targets --all-features -- clientd::cron # 37 passed
+cargo fmt --all -- --check                                     # clean
+cargo clippy --workspace --all-targets --all-features -- -D warnings # clean
+./scripts/check-local.sh                                       # all checks passed
+```
+
+The full workspace suite is green: 914 `gregg` tests (2 ignored) and 500 `greggd` tests, alongside `gregg-protocol` (118 + 44 integration), `gregg-host` (62), and `gregg-update` (45). Existing EggPool wire, auth, body-cap, health, and
+retry semantics are untouched; `activation_then_deactivation_under_pressure_arms_no_passive_refresh`,
+`rapid_publication_never_waits_for_worker_capacity`,
+`worker_deactivation_aborts_an_in_flight_request`, and
+`worker_panic_in_fetch_task_still_delivers_a_result` all remain green.
+
+**Not claimed here:** a green six-job CI run — see the acceptance-criteria note.
+
+### Documentation reconciled
+
+- `architecture/gregg-client.md` — the worker description now states that
+  convergence is live *while a completed result is backpressured*, with the
+  ordering, the equivalent-publication rule, the `reserve()` detail, and the
+  passive-deadline rule.
+- `crates/gregg/README.md` — the same in operator-facing terms.
+- `.opencode/skills/gregg-client/SKILL.md` — an explicit paragraph after the
+  Plan-164 convergence section, with "do not make delivery lossy to fix this" and
+  "do not add a second desired-state queue".
+- `AGENTS.md` — a new bullet in the client-polling constraint list.
+
+### Not reopened
+
+Plans 151, 152, 153, 176, 177, 178, 179, and 180 keep their closure records.
+Plan 091 is untouched. No cron worker, greggd scheduler output, EggPool schema,
+channel-capacity knob, or TUI change was made.

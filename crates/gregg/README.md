@@ -204,6 +204,15 @@ older EggPool without `/api/status` keeps the metrics and reports health as
 unsupported, and a failed health read never hides a valid summary. `j`/Down and `k`/Up select the period,
 while `h`/Left and `l`/Right enter or leave the pane. `Ctrl-R` refreshes only
 the active pane, and EggPool's active refresh cadence is fixed at 60 seconds.
+
+The worker always converges on the *newest* published intent, including while a
+finished result is waiting for room in the bounded four-slot result channel:
+cancellation, a newer `(active, period, refresh)` intent, and delivery are all
+selected together, so closing the pane or switching window is never delayed
+behind a result nobody is reading. A publication identical to the state the
+completed result already answers is consumed without discarding that result, and
+with no shutdown or newer intent the channel still applies ordinary backpressure
+rather than dropping anything.
 Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.
 Editor fallbacks: `hx`, `vim`, `vi` (Unix) or `hx`, `code`, `notepad` (Windows).
 Malformed or URL-unrepresentable EggPool endpoints are reported as invalid

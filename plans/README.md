@@ -137,14 +137,82 @@ Plans 176-178 are the completed narrow follow-up correctives from the subsequent
 review of main at `892a771`; all three are independent of Plan 091 and of each
 other, and each was closed against its own acceptance criteria.
 
-Plans 179-181 are the active post-closure bounded-liveness correctives from the
-2026-10-06 review of current main at `fcbe2df`. Plan 179 makes the fixed 250 ms
-greggd post-exit settle deadline authoritative even against continuously-ready
-descendant output. Plan 180 extends cron reload/cancellation preemption through
-the bounded worker-to-engine observation send while preserving transactional
-history-gate commit. Plan 181 keeps EggPool's latest desired state live while a
-completed result is backpressured by the full four-slot result channel. The three
-plans are independent of Plan 091 and of each other.
+Plans 179-181 are the completed post-closure bounded-liveness correctives from
+the 2026-10-06 review of main at `fcbe2df`; all three are independent of Plan 091
+and of each other, and each was closed against its own acceptance criteria.
+
+Plan 179 is complete. The 250 ms post-exit settle deadline is now the *first*
+branch of the biased select in `settle_output`, which is what makes it
+authoritative rather than decorative. Plan 177 had removed stdout/stderr mutual
+starvation but left the timer last, so a descendant that inherits a descriptor and
+keeps writing left one `drain_step` ready on every poll and kept winning every
+biased poll — the fixed bound could be read past indefinitely and one inherited
+writer could hold the one global child slot forever. Before the deadline the timer
+is pending, so Plan 177's alternating preference alone arbitrates and two ready
+streams still make fair bounded progress; at or after it the timer wins over
+either stream and no byte is read. An `Instant::now()` guard was deliberately
+*not* added as a substitute: it can pass and then lose the next poll to a drain
+that completed in between, so the priority has to live in the ordering — recorded
+in the function docs and `AGENTS.md` so it is not "simplified" away. Two new
+helper-level regressions use an already-expired deadline plus a scripted
+continuously-ready reader, and both were mutation-tested: restoring the
+drain-first ordering consumes 262,144 bytes (64 × `DRAIN_CHUNK`) past the bound
+and fails them in 0.00 s. The retained silent-writer and
+cancellation/rebuild cases still prove the bound without an EOF and that a
+rebuilt future cannot restart it. Paired stripped `greggd` grew 16 bytes
+(3,312,688 → 3,312,704, +0.0005%), so Plan 159 is not re-baselined and Plan
+162's 3,400,000 ceiling holds with 87,296 bytes of headroom. No new dependency,
+workflow, or job.
+
+Plan 180 is complete. Cron reload/cancellation preemption now covers the *whole*
+round, not just its HTTP fetches. Plan 178 made the fetches preemptible and the
+history gate transactional with delivery, but the delivery itself still ran as a
+bare `updates.send(observation).await` into the bounded 64-slot worker-to-engine
+channel — the one await a round could park on unboundedly, and while parked the
+round polled neither reload nor cancellation. `deliver_observation` now selects
+cancellation, then reload, then the send, and the round returns that outcome as
+the existing typed `RoundOutcome`, so only `Ok(())` ever reaches
+`gate.commit(commit)`. Signals precede the send so a slot freeing alongside a
+stored signal cannot let an obsolete observation and its pending commit win. This
+is bounded loss of *superseded* work only: with no signal the channel still
+backpressures and the observation is delivered. Eight new tests drive the real
+bounded channel — `CRON_CHANNEL_CAPACITY` became `pub(crate)` so the
+full-channel precondition is filled directly rather than synthesized through a
+live fleet — and cron tests went 29 → 37. Reverting the send to a bare `await`
+fails the full-channel reload, cancellation, and round-level tests in 0.03 s.
+`CRON_CHANNEL_CAPACITY = 64` and `CRON_MAX_IN_FLIGHT = 4` are unchanged, as are
+cadence, the one startup round, and revision/epoch-driven history.
+
+Plan 181 is complete. EggPool's latest-desired-state convergence now stays live
+*while a completed result is backpressured*, not just while an HTTP request is in
+flight. Plan 176 had proved cancellation could interrupt a blocked result send,
+but that helper selected only cancellation and the send, so the worker stopped
+polling `control_rx.changed()` and a newer `(active, period, generation)` intent
+waited for a result slot — the exact pressure under which leaving the pane should
+be fastest. `deliver_result_or_interrupt` selects cancellation, then the control
+watch, then the reservation, and returns a typed `ResultDelivery`.
+`borrow_and_update()` keeps latest-value coalescing intact; `reserve()` rather
+than `send()` is what makes the retry-after-equivalent-publication path possible;
+and an *equivalent* publication is consumed rather than treated as supersession,
+so a redundant repaint cannot silently lose a valid result. `Superseded` reuses
+the existing `EggpoolWorkerState::converge`, so the abandoned result arms no
+passive refresh deadline and at most one new request starts. Six new tests plus
+the retained Plan-176 case drive the real channels; EggPool tests went 82 → 87.
+Removing the `control_rx.changed()` branch fails deactivation, supersession, and
+the worker-level test, while Plan 176's cancellation regression correctly still
+passes — proving the branch was added rather than substituted. Latest-value
+coalescing, one-request-at-a-time, the four-slot bound, and all EggPool
+wire/auth/body-cap/health semantics are unchanged.
+
+All three plans deliberately leave their "existing six-job CI completes green"
+boxes unchecked rather than claim an unobserved run: none adds platform-specific
+code, protocol/ wire changes, or CI infrastructure, so the default local check
+plus the workspace Clippy/test gate is the lightest appropriate mechanism under
+this repository's completion rule. The native Windows job remains the platform
+authority for Windows lint/test status, and a cross-checked local Windows Clippy
+run is explicitly not closure evidence. Because all three are terminal, they
+unblock no remaining plan; Plan 091 is still the only in-progress plan, gated
+solely on its own extended soak record.
 
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
@@ -207,9 +275,9 @@ Windows Clippy and Test steps. Its predecessor `37408868235` on `515c106` failed
 only on a `-D dead-code` gate over Plan 177's test-only predicate, recorded in that
 plan's closure record.
 
-None of Plans 176-178 reopens Plan 091. Their historical closures remain valid,
-but the later review opened Plans 179-181 for three narrower liveness edges that
-do not rewrite those closure records.
+None of Plans 176-181 reopens Plan 091. Their historical closures remain valid,
+and the later review's Plans 179-181 closed three narrower liveness edges without
+rewriting the 176-178 closure records.
 
 Plan 175 is complete: the cron block is truthful about what it can actually
 know. Load rows state the relation they mean — only a load-delayed job prints

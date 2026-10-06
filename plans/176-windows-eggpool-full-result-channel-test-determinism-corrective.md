@@ -285,3 +285,17 @@ superseding latest desired state able to abandon the stale completed result and
 converge immediately, and preserves ordinary bounded backpressure for a result
 that is still current. This plan's Windows test-determinism correction and its
 proof of cancellation behavior remain valid.
+
+### Resolution (2026-10-06, after Plan 181 closed)
+
+Plan 181 landed the correction this note anticipated. The extracted primitive
+`deliver_result_or_cancel` was replaced by `deliver_result_or_interrupt`, which
+selects cancellation, then `control_rx.changed()`, then the result reservation,
+and returns a typed `ResultDelivery`. Cancellation remains the highest-priority
+branch; a superseding latest desired state abandons the stale completed result and
+converges immediately; ordinary bounded backpressure is preserved for a result
+that is still current. This plan's Windows test-determinism correction and its
+proof of cancellation behavior remain valid — and Plan 181's mutation check
+confirms the two are independent, since Plan 176's cancellation regression still
+passes when the new control branch is removed. See
+`181-eggpool-desired-state-result-backpressure-corrective.md`.

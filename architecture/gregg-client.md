@@ -838,6 +838,30 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
 - The worker converges on the newest desired state, coalescing states it did
   not observe individually, aborting obsolete in-flight work, and arming a
   fresh request-relative deadline only after a request completes
+- Convergence is live **while a completed result is backpressured**, not just
+  while an HTTP request is in flight. The bounded four-slot result channel is
+  the one place the worker can park after a fetch has already finished, and
+  Plan 176 had made only shutdown observable there. `deliver_result_or_interrupt`
+  therefore selects cancellation, then `control_rx.changed()`, then the result
+  reservation, and inspects the newest retained state with `borrow_and_update()`.
+  A state that is inactive, or active with a different period or generation,
+  abandons the completed result and is handed straight back to the worker to
+  converge on — so leaving the pane, or switching window, is never delayed
+  behind a result slot nobody is draining
+- An *equivalent* publication is consumed and the wait continues: the completed
+  result is still the answer for that state, and discarding it would turn a
+  redundant repaint into a silently lost result
+- Ordering is `biased`: shutdown first, then the superseding state, then the
+  send. The newest intent is authoritative, so an obsolete completed result
+  need not be delivered ahead of intent already known to be newer
+- The slot is taken with `reserve()` rather than by sending directly, so a lost
+  race returns the value instead of consuming it
+- Passive refresh is armed **only** after a delivered current result; an
+  abandoned one arms nothing, because a deadline for superseded intent would
+  schedule a fetch nobody asked for
+- This is not license to make delivery lossy: with no shutdown and no
+  superseding state the four-slot channel applies ordinary bounded backpressure
+  and results are never dropped
 - Deactivation aborts in-flight work, clears the passive deadline, and emits
   no synthetic result; passive refresh reuses the reducer generation
 - Cancellation aborts in-flight work and terminates the worker without a
