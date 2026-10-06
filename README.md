@@ -176,7 +176,7 @@ gregg                    # the TUI; starts the daemon if it is not already up
 gregg daemon run         # run it in the foreground (it never self-daemonizes)
 gregg daemon status      # is one running for this config?
 gregg daemon stop        # stop it
-gregg daemon restart     # stop and start it again
+gregg daemon restart     # stop and start it again, then confirm it is serving
 ```
 
 Each configuration gets its own daemon on its own `0600` endpoint. The TUI
@@ -198,6 +198,13 @@ That is always a **user** registration. Gregg never installs a system service or
 a `LocalService` SCM entry for the client daemon, never runs `sudo` internally,
 and a root install registers nothing on anyone's behalf — each user registers
 their own, or relies on lazy activation.
+
+Where that registration is a managed user crontab (Linux without user systemd),
+Gregg rewrites only its own marked block and nothing else. Because `crontab -`
+replaces the whole table, it never rewrites a table it did not read successfully:
+if `crontab -l` times out, fails to start, or returns something that is not
+readable text, the install stops and tells you to run `gregg daemon startup
+instructions` and add the line yourself, rather than risk your other jobs.
 
 `gregg update` prepares and verifies the replacement before it touches a running
 daemon, then relaunches it on the new binary and says so if that relaunch

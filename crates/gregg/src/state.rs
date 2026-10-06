@@ -1627,6 +1627,31 @@ mod cron_intent_tests {
         assert!(app.adopt_snapshot(&document));
     }
 
+    /// A cron-history depth change alone is a render-visible change.
+    ///
+    /// The visible-change decision is made from the *old* values, but this term
+    /// compared the field against itself: it had already been overwritten with
+    /// the new document's value two lines earlier, so the comparison was always
+    /// false. A document that changed nothing but the depth — which is what a
+    /// `Ctrl-R` config reload produces — was adopted as "nothing changed", and
+    /// the cron pane kept its old height.
+    #[test]
+    fn a_cron_display_history_change_alone_is_a_render_visible_change() {
+        let fleet = fleet_with_cron("backup", 3);
+        let mut document = fleet.to_dto(std::time::Instant::now(), 1, 1);
+        let mut app = AppState::from_snapshot(&document);
+        let before = app.cron_display_history;
+
+        document.generation = 2;
+        document.cron_display_history = before + 4;
+        // Everything else identical, so this term is the only one that can fire.
+        assert!(
+            app.adopt_snapshot(&document),
+            "a depth-only change must still repaint the cron pane"
+        );
+        assert_eq!(app.cron_display_history, before + 4);
+    }
+
     #[test]
     fn an_unchanged_scheduler_read_is_not_a_render_visible_change() {
         // Timestamps move on every publication; treating that as a change would
@@ -2261,6 +2286,9 @@ impl AppState {
             clean_cron(entry);
         }
         let cron_changed = cron_visibly_differ(&self.cron, &new_cron);
+        // Captured before it is overwritten below: the visible-change decision
+        // is made from the old values, and a cron-history depth is one of them.
+        let cron_display_history_before = self.cron_display_history;
         self.cron = new_cron;
         self.cron_display_history = snapshot.cron_display_history;
 
@@ -2276,7 +2304,7 @@ impl AppState {
             || eggpool_changed
             || systems_changed
             || cron_changed
-            || self.cron_display_history != snapshot.cron_display_history;
+            || cron_display_history_before != snapshot.cron_display_history;
 
         // An `EggPool`-only config has nothing to select in Systems, so the
         // pane starts where the content is.

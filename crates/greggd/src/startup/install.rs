@@ -375,19 +375,20 @@ pub(crate) fn repair_system_config_permissions(config_path: &Path) -> io::Result
         // Only relax when an unprivileged open would actually fail (no
         // other-read on the file, or no other traverse+read on the parent).
         // Already-relaxed modes are never clobbered, preserving
-        // operator-managed modes such as 0750/0640.
+        // operator-managed modes such as 0750/0640 — so this *adds* the missing
+        // bits and leaves every other bit exactly as the operator set it.
         if let Some(parent) = config_path.parent() {
             if parent.exists() {
                 let mode = fs::metadata(parent)?.permissions().mode() & 0o777;
                 if mode & 0o005 != 0o005 {
-                    fs::set_permissions(parent, fs::Permissions::from_mode(0o755))?;
+                    fs::set_permissions(parent, fs::Permissions::from_mode(mode | 0o755))?;
                 }
             }
         }
         if config_path.exists() {
             let mode = fs::metadata(config_path)?.permissions().mode() & 0o777;
             if mode & 0o004 != 0o004 {
-                fs::set_permissions(config_path, fs::Permissions::from_mode(0o644))?;
+                fs::set_permissions(config_path, fs::Permissions::from_mode(mode | 0o644))?;
             }
         }
         Ok(())
@@ -978,6 +979,73 @@ mod tests {
             fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
             0o755,
             "system config dir must stay traversable"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The permission repair adds the bits it needs and touches nothing else.
+    ///
+    /// The predicate only fires when other-read is missing, so a mode that is
+    /// already group-tight (`0750` / `0640`) fails it — and replacing the mode
+    /// outright would widen exactly the operator-managed permissions the
+    /// function documents preserving.
+    #[test]
+    #[cfg(unix)]
+    fn repair_system_config_permissions_preserves_group_only_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("greggd_test_repair_group_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        fs::write(&path, "name = \"greggd\"\n").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+
+        repair_system_config_permissions(&path).unwrap();
+
+        // Only other-read/traverse is added; the operator's group and owner
+        // bits, and the absence of other-write, are all preserved.
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "a group-readable config must keep its group bits, gaining only other-read"
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "a group-traversable config dir must keep its group bits, gaining only other-traverse"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// An already-relaxed config is left completely untouched.
+    #[test]
+    #[cfg(unix)]
+    fn repair_system_config_permissions_leaves_relaxed_modes_alone() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("greggd_test_repair_relaxed_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("greggd.toml");
+        fs::write(&path, "name = \"greggd\"\n").unwrap();
+        // Deliberately unusual but already other-readable: the predicate must
+        // not fire, so even the other-write bit survives.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o757)).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+
+        repair_system_config_permissions(&path).unwrap();
+
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o666
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o757
         );
         let _ = fs::remove_dir_all(&dir);
     }

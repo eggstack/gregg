@@ -116,13 +116,19 @@ pub struct CargoOwnership {
 impl CargoOwnership {
     /// Exact operator command that removes the package without leaving
     /// stale Cargo tracking metadata.
+    ///
+    /// The root is quoted for the shell the text is destined for — POSIX
+    /// single quotes on Unix, double quotes on Windows — so a Cargo root under
+    /// `/home/user name/.cargo` pastes back as one path. `package` is a crate
+    /// name, which never contains a space or a quote, and is rendered bare.
     #[must_use]
     pub fn uninstall_command(&self) -> String {
-        format!(
-            "cargo uninstall --root {} {}",
-            self.root.display(),
-            self.package
-        )
+        let root = if cfg!(windows) {
+            format!("\"{}\"", self.root.display())
+        } else {
+            crate::stage::unix_shell_quote(&self.root)
+        };
+        format!("cargo uninstall --root {root} {}", self.package)
     }
 }
 
@@ -190,8 +196,11 @@ pub fn cargo_lists_package(cargo_bin: &str, root: &Path, package: &str) -> bool 
 
     const LIST_TIMEOUT: Duration = Duration::from_secs(30);
     let mut cmd = Command::new(cargo_bin);
-    cmd.args(["install", "--list", "--root", &root.to_string_lossy()]);
-    cmd.stdout(std::process::Stdio::piped())
+    // The root is passed as a path: a lossy conversion could ask Cargo about
+    // a root that is not the one ownership was proven against.
+    cmd.args(["install", "--list", "--root"])
+        .arg(root)
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
     let Ok(output) = crate::exec::run_child_with_timeout_capped(
         cmd,
@@ -263,13 +272,13 @@ pub fn cargo_uninstall(ownership: &CargoOwnership) -> Result<(), UpdateError> {
 
     let cargo_bin = crate::exec::find_cargo()?;
     let mut cmd = Command::new(&cargo_bin);
-    cmd.args([
-        "uninstall",
-        "--root",
-        &ownership.root.to_string_lossy(),
-        &ownership.package,
-    ]);
-    cmd.stdout(std::process::Stdio::null())
+    // The root is the exact path the ownership check proved, passed as a path:
+    // a lossy conversion could remove a *different* installation of the same
+    // package than the one that was identified as owned.
+    cmd.args(["uninstall", "--root"])
+        .arg(&ownership.root)
+        .arg(&ownership.package)
+        .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     let output =
         crate::exec::run_command_with_timeout_for_cargo(cmd, crate::exec::CARGO_UNINSTALL_TIMEOUT)?;
@@ -385,14 +394,37 @@ mod tests {
     }
 
     #[test]
-    fn handoff_command_is_exact() {
+    fn handoff_command_quotes_the_cargo_root() {
         let ownership = CargoOwnership {
             root: PathBuf::from("/home/u/.cargo"),
             package: "greggd".to_string(),
         };
+        #[cfg(not(windows))]
         assert_eq!(
             ownership.uninstall_command(),
-            "cargo uninstall --root /home/u/.cargo greggd"
+            "cargo uninstall --root '/home/u/.cargo' greggd"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            ownership.uninstall_command(),
+            "cargo uninstall --root \"/home/u/.cargo\" greggd"
+        );
+
+        // A Cargo root under a home directory with a space is one argument,
+        // not two — this string is the operator's documented handoff.
+        let spaced = CargoOwnership {
+            root: PathBuf::from("/home/user name/.cargo"),
+            package: "greggd".to_string(),
+        };
+        #[cfg(not(windows))]
+        assert_eq!(
+            spaced.uninstall_command(),
+            "cargo uninstall --root '/home/user name/.cargo' greggd"
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            spaced.uninstall_command(),
+            "cargo uninstall --root \"/home/user name/.cargo\" greggd"
         );
     }
 

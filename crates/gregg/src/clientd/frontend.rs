@@ -22,7 +22,7 @@
 //! the truth about what is reachable — and it would make daemon failure
 //! invisible, which is the opposite of what observability is for.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use tokio::sync::mpsc;
@@ -108,7 +108,17 @@ impl FrontendLink {
     /// delivered to it through the channel so it can interleave writes with
     /// reads, which is what keeps `Ctrl-R` responsive while state documents
     /// are streaming in.
+    ///
+    /// The candidate path this link actually reached.
+    ///
+    /// Not necessarily the first candidate: a daemon binds a fallback when the
+    /// config-adjacent location is unusable, and a diagnostic that names the
+    /// primary would then point at a file that does not exist.
     #[must_use]
+    pub fn endpoint(&self) -> Option<&Path> {
+        self.connection.endpoint()
+    }
+
     pub fn split(self) -> (FrontendSender, FrameStream) {
         let (request_tx, request_rx) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
         (

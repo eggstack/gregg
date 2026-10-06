@@ -42,7 +42,7 @@
 //! stop: continuing would publish stale state indefinitely, which is
 //! indistinguishable from a healthy fleet that happens not to be changing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -204,6 +204,26 @@ pub enum DaemonError {
     /// The `EggPool` worker task died.
     #[error("the EggPool worker stopped unexpectedly")]
     EggpoolWorkerStopped,
+}
+
+/// What a closed poll or `EggPool` channel means.
+///
+/// A live task holds its sender: the scheduler deliberately stays alive with no
+/// endpoints so `Ctrl-R` can add systems, and the `EggPool` receiver is only
+/// replaced by [`Engine::sync_eggpool_worker`] when the worker itself is
+/// rewired. So a channel closing is not "there is nothing to report yet" — it
+/// is the task having *ended*.
+///
+/// Under shutdown that is orderly and the engine returns `Ok`. At any other
+/// time the task is dead, and the only honest outcome is to stop the process:
+/// continuing would keep serving documents whose numbers can never change
+/// again, which an operator cannot tell apart from a healthy, quiet fleet.
+fn task_ended(shutting_down: bool, dead: DaemonError) -> Result<Control, DaemonError> {
+    if shutting_down {
+        Ok(Control::Stop)
+    } else {
+        Err(dead)
+    }
 }
 
 impl DaemonError {
@@ -472,13 +492,24 @@ impl Engine {
                     stop = Control::Stop;
                 }
 
-                // An empty system list produces no batches at all, so the
-                // receiver is retired rather than left pending forever.
                 maybe = recv_opt(batch_rx), if batch_rx.is_some() => {
                     let was_initialized = fleet.last_applied_generation != 0;
-                            match maybe {
-                        Some(batch) => dirty |= fleet.apply_batch_owned_changed(batch),
-                        None => *batch_rx = None,
+                    if let Some(batch) = maybe {
+                        dirty |= fleet.apply_batch_owned_changed(batch);
+                    } else {
+                        // The scheduler holds its sender for as long as the
+                        // task lives — an empty config deliberately keeps
+                        // it running so `Ctrl-R` can add systems — so a closed
+                        // channel means the task *ended*. Under shutdown that
+                        // is orderly; otherwise the poller is dead, and
+                        // retiring the receiver would leave the daemon
+                        // publishing frozen metrics forever, which is
+                        // indistinguishable from a healthy quiet fleet.
+                        *batch_rx = None;
+                        match task_ended(cancel.is_cancelled(), DaemonError::SchedulerStopped) {
+                            Ok(control) => stop = control,
+                            Err(fatal) => return Err(fatal),
+                        }
                     }
                     // The transition from "never polled" to "polled at least
                     // once" is published even when it changed nothing visible.
@@ -496,9 +527,18 @@ impl Engine {
                     if let Some(result) = maybe {
                         dirty |= fleet.apply_eggpool_result_changed(&result);
                     } else {
-                        fleet.mark_eggpool_worker_unavailable();
+                        // Same contract as the poller: a worker that ends on
+                        // its own is not recoverable in place, and quietly
+                        // marking the pane "unavailable" would leave the
+                        // daemon running with no EggPool worker behind it.
                         *eggpool_results = None;
-                        dirty = true;
+                        match task_ended(
+                            cancel.is_cancelled() || tasks.is_cancelled(),
+                            DaemonError::EggpoolWorkerStopped,
+                        ) {
+                            Ok(control) => stop = control,
+                            Err(fatal) => return Err(fatal),
+                        }
                     }
                 }
 
@@ -581,6 +621,7 @@ impl Engine {
         if self.converged == Some(desired) {
             return false;
         }
+        let mut changed = false;
         // The fleet must carry the window the worker is actually driven with on
         // *every* path that changes it, not only on the request path. A
         // disconnect has no request of its own, so this is where a departing
@@ -594,6 +635,14 @@ impl Engine {
             // it as stale. Whether the pane is active comes from the converged
             // reduction, never from one frontend's request.
             fleet.begin_eggpool_request(desired.active);
+            // Those mutations are what frontends read — the converged period,
+            // the cleared summary and error, and the `Refreshing`/`Idle`
+            // request state — so moving them is a publication in its own right.
+            // A departing frontend has no request of its own, so this is the
+            // only path on which a disconnect's period change can reach the
+            // surviving pane; reporting "nothing changed" here left it showing
+            // statistics for a window the daemon had stopped fetching.
+            changed = true;
         }
         // Derive what to publish *after* the fleet updates, so the worker is
         // driven with the generation the reducer will accept. Publishing the
@@ -624,7 +673,7 @@ impl Engine {
         // it ever did become reachable: `begin_eggpool_request` published
         // `Refreshing` on paths where the converged state was inactive, and an
         // inactive worker emits no result to resolve it.
-        false
+        changed
     }
 
     /// Republish when the cron-intent set changed outside a frontend request.
@@ -1107,6 +1156,12 @@ pub struct Attachment {
     pub frames: crate::clientd::frontend::FrameStream,
     /// What the daemon said about itself.
     pub hello: HelloPayload,
+    /// The candidate endpoint this attachment actually reached.
+    ///
+    /// Not necessarily the primary: `bind` falls back when the config-adjacent
+    /// location is unusable, so diagnostics must report where the daemon is
+    /// rather than where it would preferably have been.
+    pub endpoint: PathBuf,
 }
 
 /// Attach to the client daemon for one configuration.
@@ -1126,6 +1181,10 @@ pub async fn attach(
         .map_err(AttachError::Transport)?;
     link.handshake(identity, version)
         .map_err(AttachError::Transport)?;
+    let endpoint = link.endpoint().map_or_else(
+        || candidates.first().cloned().unwrap_or_default(),
+        Path::to_path_buf,
+    );
     let (sender, mut stream) = link.split();
 
     // Wait for the daemon to identify itself before trusting anything else.
@@ -1139,6 +1198,7 @@ pub async fn attach(
             frontend: sender,
             frames: stream,
             hello: *hello,
+            endpoint,
         }),
         FrontendFrame::VersionMismatch(payload) => Err(AttachError::VersionMismatch {
             daemon: payload.daemon,
@@ -1200,7 +1260,10 @@ impl DaemonStatus {
 /// answer cannot be a guess about an unrelated process that happens to share a
 /// name.
 pub async fn status(identity: &ClientDaemonIdentity) -> Result<DaemonStatus, AttachError> {
-    let endpoint = identity
+    // The endpoint a client would dial is only the right answer to "where is
+    // it" when nothing is running; a live daemon reports the candidate it
+    // actually answered on.
+    let primary = identity
         .candidates()
         .first()
         .cloned()
@@ -1211,7 +1274,7 @@ pub async fn status(identity: &ClientDaemonIdentity) -> Result<DaemonStatus, Att
             running: true,
             version: Some(attachment.hello.version.clone()),
             protocol_version: Some(attachment.hello.protocol_version),
-            endpoint,
+            endpoint: attachment.endpoint,
             detail: None,
         }),
         Err(error) => Ok(DaemonStatus {
@@ -1219,7 +1282,7 @@ pub async fn status(identity: &ClientDaemonIdentity) -> Result<DaemonStatus, Att
             running: false,
             version: None,
             protocol_version: None,
-            endpoint,
+            endpoint: primary,
             detail: Some(error.to_string()),
         }),
     }
@@ -3229,6 +3292,136 @@ mod tests {
             })
         })
         .await;
+        running.shutdown().await;
+    }
+
+    /// A window change caused by a *disconnect* is published on its own.
+    ///
+    /// A departure is the only `EggPool` window change with no request of its
+    /// own, so it lands only in `reduce_intents`. That function reported "nothing
+    /// changed" after moving `fleet.eggpool.period`, so the surviving pane kept
+    /// showing statistics for a window the daemon had stopped fetching until an
+    /// unrelated result happened to land. The existing reconvergence test cannot
+    /// see this: it waits for a result, which is exactly the event that used to
+    /// mask the missing publication.
+    /// A closed poll or `EggPool` channel is fatal unless the daemon is already
+    /// stopping.
+    ///
+    /// Both variants used to have no constructor at all: the engine retired the
+    /// receiver and kept running, so a dead poller produced frozen metrics that
+    /// looked healthy, and `is_fatal` — which already called these fatal — could
+    /// never fire.
+    #[test]
+    fn a_dead_poll_or_eggpool_task_is_fatal_unless_the_daemon_is_stopping() {
+        assert!(
+            matches!(
+                task_ended(true, DaemonError::SchedulerStopped),
+                Ok(Control::Stop)
+            ),
+            "an orderly shutdown must not be reported as a dead task"
+        );
+        assert!(matches!(
+            task_ended(true, DaemonError::EggpoolWorkerStopped),
+            Ok(Control::Stop)
+        ));
+        assert!(matches!(
+            task_ended(false, DaemonError::SchedulerStopped),
+            Err(DaemonError::SchedulerStopped)
+        ));
+        assert!(matches!(
+            task_ended(false, DaemonError::EggpoolWorkerStopped),
+            Err(DaemonError::EggpoolWorkerStopped)
+        ));
+        assert!(DaemonError::SchedulerStopped.is_fatal());
+        assert!(DaemonError::EggpoolWorkerStopped.is_fatal());
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_publishes_the_new_window_before_any_result_lands() {
+        let dir = TempDir::new("reconverge-publish");
+        let store = write_empty_config(&dir);
+        let mut config = store.load_existing().expect("loads");
+        config.eggpool = Some(crate::config::EggpoolEntry {
+            id: "pool".into(),
+            host: "127.0.0.1".into(),
+            // Port 1 refuses, so no summary ever succeeds and no result can be
+            // what moves the period. Only the publication can.
+            port: 1,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        });
+        store.write(&config).expect("writes");
+
+        let running = Running::start(&dir, store);
+        running.ready().await;
+        let identity = running.identity.clone();
+
+        let mut short_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        short_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+        let mut long_frontend = FrontendLink::connect(&identity.candidates()).expect("connects");
+        long_frontend
+            .handshake(&identity, "test")
+            .expect("handshakes");
+        short_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Day,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+        long_frontend
+            .send(&DaemonRequest::SetEggpoolIntent {
+                active: true,
+                period: EggpoolPeriod::Week,
+                refresh: false,
+                generation: 1,
+            })
+            .expect("writes");
+
+        let (short_sender, short_frames) = short_frontend.split();
+        let (_long_sender, mut long_frames) = long_frontend.split();
+        await_documents(&mut long_frames, DOCUMENT_BUDGET, |document| {
+            document
+                .eggpool
+                .as_ref()
+                .is_some_and(|eggpool| eggpool.period == EggpoolPeriod::Day)
+        })
+        .await;
+
+        // The shorter-window pane leaves; `Week` is now the converged window.
+        drop(short_sender);
+        drop(short_frames);
+        let seen = await_documents(&mut long_frames, DOCUMENT_BUDGET, |document| {
+            document
+                .eggpool
+                .as_ref()
+                .is_some_and(|eggpool| eggpool.period == EggpoolPeriod::Week)
+        })
+        .await;
+
+        let switched = seen
+            .iter()
+            .find(|document| {
+                document
+                    .eggpool
+                    .as_ref()
+                    .is_some_and(|eggpool| eggpool.period == EggpoolPeriod::Week)
+            })
+            .expect("the reconvergence document itself");
+        let eggpool = switched.eggpool.as_ref().expect("has eggpool");
+        assert!(
+            eggpool.last_attempt_at_unix_ms.is_none(),
+            "the window must switch on its own publication, not because a result landed: {eggpool:?}"
+        );
+        assert_eq!(
+            eggpool.worker_state,
+            crate::state::EggpoolWorkerState::Refreshing,
+            "a new window must be observable as Refreshing immediately: {eggpool:?}"
+        );
         running.shutdown().await;
     }
 }

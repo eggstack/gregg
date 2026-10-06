@@ -128,8 +128,14 @@ unprivileged source was found. Disk counters come from IOKit block-storage
 driver statistics and network counters/capacity prefer `NET_RT_IFLIST2` /
 `if_msghdr2` 64-bit counters with a correctly typed `getifaddrs` / `if_data`
 fallback (never `if_data64` from `getifaddrs`).
-Malformed storage records are skipped independently; loopback is retained only
-as detail and never contributes aggregate capacity. Optional drive/network/
+Malformed storage records are skipped independently — a non-UTF-8 mount point or
+filesystem type drops that one drive, not every drive — and loopback is retained
+only as detail and never contributes aggregate capacity. The `getifaddrs` list
+is owned by a scope guard installed immediately after the success check, so
+every exit path (including per-record skips) calls `freeifaddrs` exactly once.
+Tunnel/pseudo interfaces are excluded from the aggregate by `if_data.ifi_type`
+(PPP, tunnel/GIF/ENC, STF, PFLOG/PFSYNC, and `IFT_OTHER`, which is what `utun*`
+reports), matching what Linux does with a slave's `master` symlink. Optional drive/network/
 disk-I/O failures use bounded transition logging with family and error context.
 
 Capabilities: `cpu_iowait: false`, `load_average: true`, `swap: true`, `memory_commit: false`
@@ -153,6 +159,18 @@ CurrentMhz, direct per-disk IOCTL_DISK_PERFORMANCE, and documented IP Helper
 MIB_IF_ROW2 data. Inaccessible disks and failed optional API calls are skipped
 or omitted without failing the core sample; disconnected adapters and loopback
 do not contribute aggregate capacity.
+
+Two things about the disk request have to be right together, because either one
+alone leaves `disk_io` empty on every host (and the collector then publishes
+`disk_io: None`, since the rule is "non-empty or absent"): the control code is
+`IOCTL_DISK_PERFORMANCE` = `CTL_CODE(FILE_DEVICE_DISK, 0x20, METHOD_BUFFERED,
+FILE_READ_ACCESS)` = `0x00074080` — the similar-looking `0x00070020` decodes as
+`IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` — and the `\\.\PhysicalDriveN` handle is
+opened with `FILE_READ_ACCESS`, because the I/O manager checks the code's
+required access against the handle's granted access before the driver runs.
+Compose the code from its parts and never transcribe the literal. Tunnel and
+pseudo adapters (`IF_TYPE_PPP`, `IF_TYPE_SOFTWARE_LOOPBACK`, `IF_TYPE_TUNNEL`)
+are excluded from the aggregate; Ethernet and Wi-Fi stay in.
 
 Capabilities: `cpu_iowait: false`, `load_average: false`, `swap: false`, `memory_commit: true`
 

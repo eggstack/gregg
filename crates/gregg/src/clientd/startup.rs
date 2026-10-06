@@ -866,7 +866,7 @@ fn install_windows_entry(target: &StartupTarget) -> Result<Installed, StartupErr
 }
 
 fn install_cron(target: &StartupTarget) -> Result<Installed, StartupError> {
-    let existing = run_crontab();
+    let existing = run_crontab()?;
     let ownership = cron_block_ownership(&existing, &target.executable, &target.config);
     match ownership {
         ArtifactOwnership::Foreign => {
@@ -896,15 +896,61 @@ fn install_cron(target: &StartupTarget) -> Result<Installed, StartupError> {
     })
 }
 
-fn run_crontab() -> String {
-    // An empty crontab exits non-zero with a diagnostic on stderr, which is
-    // the normal "you have no jobs" case and not a failure worth propagating.
-    // Anything else that goes wrong also reads as "nothing to merge into", and
-    // `write_crontab` will fail loudly if the real problem is the write.
-    match crate::startup_support::run("crontab", &["-l"]) {
-        Some(output) if output.succeeded() => output.combined,
-        _ => String::new(),
+fn run_crontab() -> Result<String, StartupError> {
+    // A crontab is one shared file that `crontab -` *replaces whole*, so this read
+    // is the only thing standing between a manager hiccup and the loss of every
+    // unrelated job the user has. It therefore fails closed: only two outcomes
+    // are trusted, and everything else is an error rather than an empty table.
+    let Some(output) = crate::startup_support::run("crontab", &["-l"]) else {
+        // Spawn failure or the bounded timeout. `None` used to collapse into
+        // "you have no crontab", which is how a `crontab -l` that blocked writing
+        // a large table used to be rewritten from scratch.
+        return Err(StartupError::Manager {
+            command: "crontab -l".to_owned(),
+            message: "reading the crontab timed out or could not be started, so it will not \
+                      be rewritten; add the line from `gregg daemon startup instructions` \
+                      yourself"
+                .to_owned(),
+        });
+    };
+    if !output.lossless {
+        // Non-UTF-8 or over-cap output would be rewritten with U+FFFD
+        // substitutions, quietly corrupting the user's jobs.
+        return Err(StartupError::Manager {
+            command: "crontab -l".to_owned(),
+            message: "the crontab is not readable as text, so it will not be rewritten; add \
+                      the line from `gregg daemon startup instructions` yourself"
+                .to_owned(),
+        });
     }
+    if output.succeeded() {
+        return Ok(output.combined);
+    }
+    // A non-zero exit is the ordinary "you have no jobs" case, but it is also
+    // what an unreadable spool looks like. Only the standard absence diagnostic
+    // is treated as an empty table; every other failure — and every locale whose
+    // message is not this one — fails closed toward the manual instruction.
+    if crontab_reports_absence(&output.combined) {
+        Ok(String::new())
+    } else {
+        Err(StartupError::Manager {
+            command: "crontab -l".to_owned(),
+            message: format!(
+                "the crontab could not be read ({}), so it will not be rewritten; add the line \
+                 from `gregg daemon startup instructions` yourself",
+                output.combined.trim()
+            ),
+        })
+    }
+}
+
+/// Whether a failed `crontab -l` reported the standard "no crontab" diagnostic.
+///
+/// This is deliberately a conservative match: an unrecognised message means the
+/// table is treated as unreadable rather than empty, so a localized `crontab`
+/// degrades to "install by hand" instead of to data loss.
+fn crontab_reports_absence(diagnostics: &str) -> bool {
+    diagnostics.to_ascii_lowercase().contains("no crontab")
 }
 
 fn write_crontab(contents: &str) -> Result<(), StartupError> {
@@ -1060,8 +1106,14 @@ pub fn inspect_with(target: &StartupTarget, method: StartupMethod) -> UninstallS
             (path, ownership)
         }
         StartupMethod::Cron => {
-            let ownership =
-                cron_block_ownership(&run_crontab(), &target.executable, &target.config);
+            // An unreadable crontab is not an absent one. Reporting `Absent`
+            // here would tell the operator their jobs are already gone when in
+            // fact Gregg simply could not read the file, so it reports the
+            // "could not prove this is ours" verdict instead.
+            let ownership = match run_crontab() {
+                Ok(existing) => cron_block_ownership(&existing, &target.executable, &target.config),
+                Err(_) => ArtifactOwnership::Unknown,
+            };
             return UninstallStep {
                 artifact: PathBuf::from("(user crontab)"),
                 // A crontab is one shared file, so a foreign Gregg block or an
@@ -1167,7 +1219,7 @@ pub fn uninstall_with(
             })?;
         }
         StartupMethod::Cron => {
-            let existing = run_crontab();
+            let existing = run_crontab()?;
             let (remaining, removed) = remove_cron_block(&existing, &target.identity);
             if removed {
                 write_crontab(&remaining)?;

@@ -25,7 +25,7 @@ use std::io::{self, Write as _};
 // warning, which CI treats as an error.
 #[cfg(unix)]
 use std::io::Read as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::clientd::protocol::{
     parse_length, DaemonRequest, DecodeError, LEN_PREFIX_BYTES, MAX_FRAME_BYTES, PROTOCOL_VERSION,
@@ -131,6 +131,12 @@ impl From<DecodeError> for TransportError {
 #[derive(Debug)]
 pub struct Connection {
     stream: Stream,
+    /// The candidate path this connection actually reached.
+    ///
+    /// A daemon may legitimately bind a fallback candidate when the primary is
+    /// unusable, so the first candidate is not a truthful answer to "where is
+    /// the daemon". Diagnostics report this instead.
+    endpoint: Option<PathBuf>,
     buffer: Vec<u8>,
     /// True once a compatible handshake frame has been parsed.
     handshaken: bool,
@@ -163,12 +169,19 @@ impl Connection {
     fn new(stream: Stream) -> Self {
         Self {
             stream,
+            endpoint: None,
             buffer: Vec::with_capacity(8192),
             handshaken: false,
             claimed_daemon_id: None,
             inflight: Vec::new(),
             queued: None,
         }
+    }
+
+    /// The candidate path this connection reached, when it was dialled by path.
+    #[must_use]
+    pub fn endpoint(&self) -> Option<&Path> {
+        self.endpoint.as_deref()
     }
 
     /// Whether a compatible handshake has completed.
@@ -687,6 +700,17 @@ mod imp {
         for (index, path) in candidates.iter().enumerate() {
             if let Some(parent) = path.parent() {
                 if !parent.is_dir() {
+                    // Recorded like the other two failure arms, so a daemon that
+                    // falls back to a later candidate can still say *why* the
+                    // preferred one was unusable. Silently continuing here meant
+                    // a typo'd or missing config directory bound the temp
+                    // fallback with no mention of the directory at all — while
+                    // the launch lock, which is derived from the primary path,
+                    // failed separately for the same cause.
+                    last = Some(TransportError::Io(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("the parent directory of {} does not exist", path.display()),
+                    )));
                     continue;
                 }
             }
@@ -736,7 +760,9 @@ mod imp {
             match UnixStream::connect(path) {
                 Ok(stream) => {
                     stream.set_nonblocking(true)?;
-                    return Ok(Connection::new(Stream::Unix(stream)));
+                    let mut connection = Connection::new(Stream::Unix(stream));
+                    connection.endpoint = Some(path.clone());
+                    return Ok(connection);
                 }
                 Err(error) => {
                     last = Some(TransportError::Io(error));
@@ -1325,6 +1351,62 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gregg-ipc-{tag}-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         vec![dir.join("gregg-client-test.sock")]
+    }
+
+    /// A connect reports the candidate it reached, not the first one.
+    ///
+    /// `bind` falls back when the config-adjacent location is unusable, so a
+    /// diagnostic that named candidate 0 would point the operator at a file that
+    /// does not exist — precisely the "running, but there is nothing at the path
+    /// it printed" confusion.
+    #[test]
+    fn connect_reports_the_candidate_it_actually_reached() {
+        let dir = std::env::temp_dir().join(format!("gregg-ipc-fallback-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let primary = dir.join("missing-dir").join("gregg-client-test.sock");
+        let fallback = dir.join("gregg-client-test.sock");
+        let candidates = vec![primary.clone(), fallback.clone()];
+
+        // Bind against the full candidate list, exactly as the daemon does when
+        // the primary's parent directory is unusable.
+        let listener = bind(&candidates).expect("binds the fallback");
+        assert!(
+            !listener.endpoint().primary,
+            "bound a fallback, as intended"
+        );
+
+        let connection = connect(&candidates).expect("connects to the fallback");
+        assert_eq!(
+            connection.endpoint(),
+            Some(fallback.as_path()),
+            "a connect must report where it landed, not candidate 0"
+        );
+        drop(connection);
+        cleanup(&fallback);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A candidate skipped for a missing parent directory records why.
+    ///
+    /// The other two arms of the bind loop both recorded a reason. Skipping in
+    /// silence meant a missing config directory bound the temp fallback with no
+    /// mention of it anywhere — while the launch lock, derived from that same
+    /// primary path, failed separately for the same cause.
+    #[test]
+    fn bind_names_the_directory_that_made_a_candidate_unusable() {
+        let dir = std::env::temp_dir().join(format!("gregg-ipc-noskip-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing_parent = dir.join("no-such-dir").join("gregg-client-test.sock");
+        let error = bind(std::slice::from_ref(&missing_parent))
+            .expect_err("the only candidate is unusable");
+        let text = error.to_string();
+        assert!(
+            text.contains("no-such-dir"),
+            "the reported reason must name the missing directory: {text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn hello() -> HelloPayload {

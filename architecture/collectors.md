@@ -187,6 +187,28 @@ source could not disprove — and `aggregate_member: false` alongside it, which 
 a combination the validator accepts. macOS (`macos/ffi.rs`) and Windows
 (`windows/mod.rs`) derive loopback from native flags and cannot fail open.
 
+**Tunnel and virtual adapters are excluded from the aggregate on every
+platform, not just Linux.** Linux drops a slave (an interface with a `master`
+symlink), which also removes VPN/VLAN members of a bond or bridge. The other
+three platforms decide by interface type instead: Windows `MIB_IF_ROW2.Type`
+(`IF_TYPE_PPP`, `IF_TYPE_SOFTWARE_LOOPBACK`, `IF_TYPE_TUNNEL`), Darwin and
+FreeBSD `if_data.ifi_type` (`IFT_PPP`, `IFT_TUNNEL`/`IFT_GIF`/`IFT_ENC`,
+`IFT_STF`, `IFT_PFLOG`/`IFT_PFSYNC`, WireGuard, and — on Darwin — `IFT_OTHER`,
+which is what `utun*` reports). Both membership decisions are exclusion-based on
+a closed set of known tunnel/pseudo types, so an unrecognised type stays a
+member. This matters for the denominator as well as the numerator: the
+directional capacities are summed from the same rows, so counting a tunnel's
+encapsulated frames next to its underlay inflated the capacity that the
+utilization is measured against.
+
+**Malformed records are skipped per record, never per collection.** A mount
+point or filesystem type that is not valid UTF-8 drops that one macOS drive, not
+every drive; an interface name that is not valid UTF-8 drops that one interface,
+not the whole `getifaddrs` list. Linux already recovered per entry in
+`parse_mountinfo_line`. The `getifaddrs` list itself is owned by a scope guard
+installed immediately after the success check, so every exit path — including
+the per-record skips — releases it exactly once.
+
 `logical_cores` is the kernel's count, never the process's CPU allotment.
 `std::thread::available_parallelism` honours a `taskset` mask or cpuset, so a
 restricted daemon would publish `logical_cores: 1` on a many-core host and
@@ -409,6 +431,21 @@ Empty hostnames are rejected (returns error).
 ### Drives
 
 From `GetLogicalDriveStringsW` + `GetDiskFreeSpaceExW`. Fixed and removable drives (`DRIVE_FIXED` and `DRIVE_REMOVABLE`) with positive capacity are candidates. Windows volume roots are case-insensitive, so case variants of one root (`C:\` / `c:\`) are collapsed before normalization; otherwise one volume would reach the wire twice and the protocol's duplicate-drive-name rule would reject the payload.
+
+### Disk I/O
+
+`IOCTL_DISK_PERFORMANCE` on a `\\.\PhysicalDriveN` handle, composed from its
+published parts as `CTL_CODE(FILE_DEVICE_DISK, 0x20, METHOD_BUFFERED,
+FILE_READ_ACCESS)` = `0x00074080`. Both halves of this request have to be right
+together: the handle is opened with `FILE_READ_ACCESS` because the I/O manager
+compares the control code's `RequiresFileAccess` against the access already
+granted to the handle *before* the driver sees the request, so a zero-access
+handle fails `ERROR_ACCESS_DENIED`. The neighbouring `0x00070020` decodes as
+`FILE_DEVICE_DISK`, function `0x08`, `FILE_ANY_ACCESS` — that is
+`IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, a different request with a different output
+structure, which can never populate `DISK_PERFORMANCE`. Either mistake alone left
+`disk_io` empty on every host, and the collector then publishes `disk_io: None`
+because the rule is "non-empty or absent", never a fabricated zero.
 
 ### Capabilities
 

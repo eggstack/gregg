@@ -31,6 +31,23 @@ error on every backend. Three Linux edges this crate holds that line on:
   `/sys/devices/system/cpu/online` (the same cpulist grammar the CPUFreq
   weighting uses), falls back to `processor` entries in `/proc/cpuinfo`, and only
   then falls back to the allotment probe.
+- **Tunnel and virtual adapters stay out of the aggregate on every platform.**
+  Linux drops a slave (an interface with a `master` symlink). The other three
+  platforms decide by interface type: Windows `MIB_IF_ROW2.Type`
+  (`IF_TYPE_PPP`/`SOFTWARE_LOOPBACK`/`TUNNEL`), Darwin and FreeBSD
+  `if_data.ifi_type` (PPP, tunnel/GIF/ENC, STF, PFLOG/PFSYNC, WireGuard, and on
+  Darwin `IFT_OTHER`, which is what `utun*` reports). Both decisions are
+  exclusions over a closed set, so an unrecognised type still counts. Without
+  this, a VPN adapter's encapsulated frames and its physical underlay's copy of
+  the same frames were both summed — and the directional capacities were summed
+  from the same rows, so the utilization denominator inflated too.
+- **A malformed record is skipped, not fatal.** A mount point or filesystem type
+  that is not valid UTF-8 drops that one macOS drive; an interface name that is
+  not valid UTF-8 drops that one interface. The `getifaddrs` list is owned by a
+  scope guard installed right after the success check, so every exit path —
+  including those skips — releases it exactly once. (It used to be released only
+  at the end of the function, so the early return leaked the whole chain once
+  per sample.)
 - **Swap fails closed on a truncated `/proc/meminfo`.** An absent `SwapTotal` —
   or an absent `SwapFree`, which would fabricate full usage — is a parse error,
   matching what `compute_memory` already does for `MemTotal`. A genuine

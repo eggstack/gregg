@@ -78,7 +78,8 @@ replacement, then atomically replaces the current executable (via
 falls back to `cargo install --locked --version "=X.Y.Z"` staged to a temp
 `--root`; checksum/version mismatch or transport failure never falls back.
 No background checks or `sudo` internally; permission failures print
-`sudo gregg update`. The download/verify/stage/replace mechanism is shared
+`sudo gregg update` (with the executable path shell-quoted, so an install path
+containing a space is not pasted into a command that runs the wrong binary). The download/verify/stage/replace mechanism is shared
 with `greggd update` in the internal `gregg-update` crate.
 
 IPv6 link-local zone identifiers are accepted in bare `%eth0` or URL-escaped

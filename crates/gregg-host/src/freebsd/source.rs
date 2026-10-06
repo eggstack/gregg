@@ -995,6 +995,54 @@ const IFF_LOOPBACK_FLAG: u32 = 0x8;
 const IFF_UP_FLAG: u32 = 0x1;
 /// Interface type for loopback (net/if_types.h; stable ABI).
 const IFT_LOOP_TYPE: u8 = 24;
+/// Interface type for PPP (net/if_types.h; stable ABI).
+const IFT_PPP_TYPE: u8 = 0x17;
+/// Interface type for SLIP (net/if_types.h; stable ABI).
+const IFT_SLIP_TYPE: u8 = 0x1c;
+/// Interface type for a generic tunnel, which is what `tun0`/`tap0` report
+/// (net/if_types.h; stable ABI).
+const IFT_TUNNEL_TYPE: u8 = 0x83;
+/// Interface type for the 6to4 pseudo-interface (net/if_types.h; stable ABI).
+const IFT_STF_TYPE: u8 = 0xd7;
+/// Interface type for the generic tunnel interface (net/if_types.h).
+const IFT_GIF_TYPE: u8 = 0xf0;
+/// Interface type for an encapsulating interface (net/if_types.h).
+const IFT_ENC_TYPE: u8 = 0xf4;
+/// Interface type for the packet-filter logging interface (net/if_types.h).
+const IFT_PFLOG_TYPE: u8 = 0xf6;
+/// Interface type for the packet-filter state-sync interface (net/if_types.h).
+const IFT_PFSYNC_TYPE: u8 = 0xf7;
+/// Interface type for the WireGuard tunnel (net/if_types.h).
+const IFT_WIREGUARD_TYPE: u8 = 0xf8;
+
+/// Whether an `if_data.ifi_type` may contribute to the network aggregate.
+///
+/// A tunnel row counts the same bytes twice whenever its underlay link is also
+/// aggregated: the tunnel counters hold the encapsulated frames and the
+/// physical NIC counts the identical frames again, and the directional
+/// capacities summed from the same rows inflate the utilization denominator
+/// with it. Linux already excludes this class through a slave interface's
+/// `master` symlink; FreeBSD exposes it as `ifi_type`.
+///
+/// Bridge (`0xd1`), L2 VLAN (`0x87`) and link-aggregate (`0xa1`) masters stay
+/// members — their member ports are what Linux drops, mirroring Linux's own
+/// treatment of `bridge0`/`bond0`.
+#[cfg(any(target_os = "freebsd", test))]
+const fn is_aggregate_member_type(interface_type: u8) -> bool {
+    !matches!(
+        interface_type,
+        IFT_PPP_TYPE
+            | IFT_SLIP_TYPE
+            | IFT_TUNNEL_TYPE
+            | IFT_STF_TYPE
+            | IFT_GIF_TYPE
+            | IFT_ENC_TYPE
+            | IFT_PFLOG_TYPE
+            | IFT_PFSYNC_TYPE
+            | IFT_WIREGUARD_TYPE
+    )
+}
+
 /// Interface name length (net/if.h `IFNAMSIZ`; stable ABI).
 #[cfg(any(target_os = "freebsd", test))]
 const IFNAMSIZ: usize = 16;
@@ -1137,7 +1185,7 @@ fn ifmib_record(row: u32, data: &IfmibData) -> Option<RawNetworkInterface> {
         tx_capacity_bps: baudrate,
         is_loopback,
         operational,
-        aggregate_member: !is_loopback,
+        aggregate_member: !is_loopback && is_aggregate_member_type(data.ifmd_data.ifi_type),
     })
 }
 
@@ -1267,6 +1315,42 @@ mod tests {
             down.rx_capacity_bps, None,
             "a zero baudrate is reported as unknown capacity"
         );
+    }
+
+    #[test]
+    fn ifmib_record_excludes_tunnel_and_virtual_types_from_the_aggregate() {
+        // `tun0`/`tap0` report `IFT_TUNNEL`, and the encrypted frames they
+        // count are counted again by the physical NIC underneath.
+        let tun =
+            ifmib_record(1, &synthetic_ifmib_row("tun0", 0x1, 131, 10, 20, 0)).expect("tunnel row");
+        assert!(!tun.is_loopback, "a tunnel is not loopback");
+        assert!(
+            !tun.aggregate_member,
+            "a tunnel double-counts its underlay link"
+        );
+        // WireGuard and GIF are the same class.
+        assert!(
+            !ifmib_record(2, &synthetic_ifmib_row("wg0", 0x1, 248, 1, 2, 0))
+                .expect("wireguard row")
+                .aggregate_member
+        );
+        assert!(
+            !ifmib_record(3, &synthetic_ifmib_row("gif0", 0x1, 240, 1, 2, 0))
+                .expect("gif row")
+                .aggregate_member
+        );
+        // PPP is a tunnel too.
+        assert!(
+            !ifmib_record(4, &synthetic_ifmib_row("ppp0", 0x1, 23, 1, 2, 0))
+                .expect("ppp row")
+                .aggregate_member
+        );
+        // Physical Ethernet stays an aggregate member; the row is still
+        // published in detail either way.
+        let ether =
+            ifmib_record(5, &synthetic_ifmib_row("em0", 0x1, 6, 30, 40, 0)).expect("ethernet row");
+        assert!(ether.aggregate_member);
+        assert!(!ether.is_loopback);
     }
 
     #[test]

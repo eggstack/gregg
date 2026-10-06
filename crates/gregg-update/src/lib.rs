@@ -247,18 +247,14 @@ pub fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, U
     let cargo_root = temp_root.path().join("cargo-root");
     std::fs::create_dir_all(&cargo_root)
         .map_err(|e| UpdateError::Io(format!("failed to create cargo root: {e}")))?;
-    let cargo_root_str = cargo_root.to_string_lossy().to_string();
     let version_arg = format!("={version}");
     let mut cmd = Command::new(&cargo_bin);
-    cmd.args([
-        "install",
-        "--locked",
-        "--version",
-        &version_arg,
-        "--root",
-        &cargo_root_str,
-        program,
-    ]);
+    // The staging root is passed as a path, never lossy-converted: a
+    // `TMPDIR` with non-UTF-8 bytes would otherwise install into — and
+    // later read back from — a different directory than the one created.
+    cmd.args(["install", "--locked", "--version", &version_arg, "--root"])
+        .arg(&cargo_root)
+        .arg(program);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let output = exec::run_command_with_timeout_for_cargo(cmd, exec::CARGO_TIMEOUT)?;
     if !output.status.success() {

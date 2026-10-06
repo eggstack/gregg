@@ -62,10 +62,21 @@ Both binaries share the same binary-first policy (see also
   overwriting the symlink file itself). Unix uses same-filesystem atomic rename via `self-replace`; Windows uses
   the same helper for running-image semantics. Never elevate internally;
   permission failures return `PermissionDenied` with a platform-correct rerun
-  hint: `sudo <exe> update` on Unix, or the exact executable/operation from
+  hint: `sudo '<exe>' update` on Unix, or the exact executable/operation from
   an Administrator terminal/PowerShell on Windows (`greggd` maps it to exit
   `4`; `gregg` surfaces it as operation failure exit `3` with the hint in the
-  message — exit mapping is caller-owned).
+  message — exit mapping is caller-owned). The Unix hint quotes the path
+  POSIX-style (single quotes, embedded `'` as `'\''`), so an install path
+  containing a space does not paste into a command that runs the wrong binary —
+  the same reason the Windows branch quotes its argument.
+
+  Paths reach external commands as `OsStr`/`Path` arguments and are **never**
+  lossily converted. `TempDir` is built from `env::temp_dir()`, so a `TMPDIR`
+  with non-UTF-8 bytes would otherwise become a U+FFFD-substituted path naming a
+  different — normally nonexistent — file, turning a path error into a download
+  error, and for `cargo uninstall --root` potentially targeting a different
+  installation than the ownership check proved. Display strings are the only
+  place a path may be rendered lossy.
 
 ## Caller split
 

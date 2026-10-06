@@ -122,6 +122,13 @@ process first.
 Never add a PID file or a global daemon registry. The lock file is never unlinked
 and never read as a signal.
 
+Only `NotFound` and `ConnectionRefused` are plain absence. Any other `Io`
+(`EMFILE`/`ENFILE`, `EACCES` on the socket, an endpoint already held) is **not**
+absence and must not authorize a spawn. `restart` follows the same rule for its
+own window: take the launch lock *before* deciding to stop anything, re-decide
+running-or-not from inside it, and propagate the readiness result rather than
+discarding it.
+
 **User-scoped startup only** (`clientd::startup`): `systemctl --user`, a
 `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a managed
 user crontab watchdog. Never a system unit, never `LocalService` SCM, never
@@ -130,8 +137,18 @@ tested; only the manager calls touch the OS, through `startup_support`'s fixed
 allowlist with no shell and a bounded wait. `Unknown` ownership is preserved
 exactly like `Foreign`.
 
+**A crontab is never rewritten from an unverified read.** `crontab -` replaces
+the whole table, so a manager failure must never read as "you have no jobs": only
+a successful exit, or a non-zero exit carrying the standard "no crontab"
+diagnostic, is trusted. A timeout, a spawn failure, non-UTF-8 output, or an
+over-cap read is an error naming `gregg daemon startup instructions`. This is also
+why `startup_support::run_bounded` drains the child's pipes *while it runs* — a
+pipe holds about 64 KiB, so a larger `crontab -l` would block in `write(2)`,
+get killed at the timeout, and land in exactly that "failure == absence" case.
+
 **Update** identifies, prepares, verifies, then stops/replaces/relaunches, and
-reports a failed relaunch as partial success. **Uninstall** plans first (the
+reports a failed relaunch as partial success — including a relaunch that started
+but never became ready, since readiness is the result of a restart. **Uninstall** plans first (the
 plan names the startup entry and the running daemon), stops only an identified
 owned daemon, removes only a provably owned entry, and blocks executable
 deletion when it cannot confidently stop a running daemon.
@@ -176,6 +193,12 @@ Config → Endpoint list → PollScheduler → PollBatch channel → FleetState 
   `offline_endpoint_is_retried_and_recovers_on_next_generation` and
   `offline_endpoint_remains_in_scheduler_across_generations` tests in
   `scheduler.rs` lock in one ordered result per endpoint per generation.
+- A dead poll or `EggPool` task stops the daemon (`SchedulerStopped` /
+  `EggpoolWorkerStopped`). A closed channel unambiguously means the task ended:
+  the scheduler stays alive with zero endpoints so `Ctrl-R` can add systems, and
+  the `EggPool` receiver is only replaced on a worker rewire. Retiring the
+  receiver instead would serve documents whose numbers can never change again,
+  which an operator cannot distinguish from a healthy quiet fleet.
 
 Endpoint normalization rejects an IPv6 `%25` zone separator with no zone
 name, and invalid hosts are excluded from duplicate-address indexing so one

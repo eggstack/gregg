@@ -87,6 +87,28 @@ pub fn format_capacity(bits_per_sec: Option<u64>) -> String {
     }
 }
 
+/// Format a link capacity that has one value per direction.
+///
+/// `None` means "not measured in that direction", which is a real state —
+/// Windows reads each direction from an independent MIB value, and a
+/// unidirectional or virtual NIC reports only one. It is qualified rather than
+/// collapsed, so the rendered line never asserts a capacity the daemon did not
+/// measure. Equal two-sided values stay unqualified because then the number is
+/// unambiguous.
+fn format_directional_capacity(rx: Option<u64>, tx: Option<u64>) -> String {
+    match (rx, tx) {
+        (Some(rx), Some(tx)) if rx == tx => format_capacity(Some(rx)),
+        (Some(rx), Some(tx)) => format!(
+            "{}/{}",
+            format_capacity(Some(rx)),
+            format_capacity(Some(tx))
+        ),
+        (Some(value), None) => format!("{} rx", format_capacity(Some(value))),
+        (None, Some(value)) => format!("{} tx", format_capacity(Some(value))),
+        (None, None) => format_capacity(None),
+    }
+}
+
 /// Format a percentage value.
 ///
 /// Non-finite input renders as the unavailable marker `—` rather than
@@ -623,19 +645,15 @@ pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u1
     let utilization = network
         .aggregate_utilization_pct()
         .map_or_else(|| "—".into(), format_pct);
-    let capacity = match (
+    // Capacity is directional — `aggregate_utilization_pct` evaluates rx and tx
+    // separately for exactly that reason — so it is rendered directionally too.
+    // A one-sided payload is real (Windows derives each direction from an
+    // independent MIB value), and collapsing it to a bare number asserted a
+    // capacity for the direction that was never measured.
+    let capacity = format_directional_capacity(
         network.aggregate_rx_capacity_bps,
         network.aggregate_tx_capacity_bps,
-    ) {
-        (Some(rx), Some(tx)) if rx == tx => format_capacity(Some(rx)),
-        (Some(rx), Some(tx)) => format!(
-            "{}/{}",
-            format_capacity(Some(rx)),
-            format_capacity(Some(tx))
-        ),
-        (Some(value), None) | (None, Some(value)) => format_capacity(Some(value)),
-        (None, None) => "—".into(),
-    };
+    );
     let mut lines = vec![truncate_width(
         &format!(
             "  NETWORK TOTAL  RX {}  TX {}  CAP {}  {}",
@@ -653,7 +671,7 @@ pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u1
                 interface.name,
                 format_rate(interface.rx_bytes_per_sec),
                 format_rate(interface.tx_bytes_per_sec),
-                format_capacity(interface.rx_capacity_bps.or(interface.tx_capacity_bps)),
+                format_directional_capacity(interface.rx_capacity_bps, interface.tx_capacity_bps),
             ),
             usize::from(width),
         )
@@ -822,6 +840,55 @@ mod tests {
         assert!(lines[0].contains("CAP —"));
         assert!(lines.iter().any(|line| line.contains("eth0")));
         assert!(lines.iter().any(|line| line.contains("lo")));
+    }
+
+    /// A capacity known in only one direction is rendered as that direction.
+    ///
+    /// `aggregate_utilization_pct` scores rx and tx separately precisely
+    /// because capacity is directional, so the label beside it must not imply a
+    /// number for the direction that was never measured.
+    #[test]
+    fn a_one_sided_capacity_is_qualified_rather_than_collapsed() {
+        let interface =
+            |rx: Option<u64>, tx: Option<u64>| crate::normalized::NormalizedNetworkInterface {
+                id: "nic0".into(),
+                name: "nic0".into(),
+                rx_bytes_per_sec: MIB,
+                tx_bytes_per_sec: MIB,
+                rx_capacity_bps: rx,
+                tx_capacity_bps: tx,
+                is_loopback: false,
+                aggregate_member: true,
+            };
+        let network = |rx: Option<u64>, tx: Option<u64>| NormalizedNetwork {
+            aggregate_rx_bytes_per_sec: 10 * MIB,
+            aggregate_tx_bytes_per_sec: 2 * MIB,
+            aggregate_rx_capacity_bps: rx,
+            aggregate_tx_capacity_bps: tx,
+            interfaces: vec![interface(rx, tx)],
+        };
+
+        let rx_only = render_network_detail_lines(&network(Some(1_000_000_000), None), 120);
+        assert!(rx_only[0].contains("CAP 1.00Gb/s rx"), "{:?}", rx_only[0]);
+        assert!(rx_only[1].contains("LINK 1.00Gb/s rx"), "{:?}", rx_only[1]);
+
+        let tx_only = render_network_detail_lines(&network(None, Some(1_600_000_000)), 120);
+        assert!(tx_only[0].contains("CAP 1.60Gb/s tx"), "{:?}", tx_only[0]);
+        assert!(tx_only[1].contains("LINK 1.60Gb/s tx"), "{:?}", tx_only[1]);
+
+        // Equal two-sided values stay unqualified, and differing ones keep the
+        // slash form they always had.
+        let both =
+            render_network_detail_lines(&network(Some(1_000_000_000), Some(1_000_000_000)), 120);
+        assert!(both[0].contains("CAP 1.00Gb/s "), "{:?}", both[0]);
+        assert!(!both[0].contains("CAP 1.00Gb/s rx"), "{:?}", both[0]);
+        let split =
+            render_network_detail_lines(&network(Some(800_000_000), Some(1_600_000_000)), 120);
+        assert!(
+            split[0].contains("CAP 800.00Mb/s/1.60Gb/s"),
+            "{:?}",
+            split[0]
+        );
     }
 
     fn drive(name: &str, used: u64, total: u64, available: Option<u64>) -> NormalizedDrive {

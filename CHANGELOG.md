@@ -45,6 +45,163 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`gregg daemon startup install` could erase your entire crontab.** On Linux
+  without user systemd — the documented `auto` → cron fallback — the bounded
+  manager runner read a child's stdout and stderr only *after* the child exited.
+  A pipe holds about 64 KiB, so a `crontab -l` whose output exceeded that blocked
+  in `write(2)`, never exited, and was killed at the 20s timeout. That timeout
+  returned the same `None` a spawn failure would, which the crontab reader mapped
+  to `String::new()` — "you have no jobs". The ownership gate then classified the
+  empty table as `Absent`, the merge produced a table containing only the Gregg
+  block, and `crontab -` **replaced the whole file**. The command reported
+  success. Any hang reached the same path, so a stuck `crontab` (an NFS home, a
+  wedged PAM lookup) was enough with no large output at all.
+
+  Both halves are fixed. The shared runner now drains both pipes *while the
+  child runs*, on the same discipline `gregg-update` uses for its downloads.
+  And the crontab read **fails closed**: only a successful exit, or a non-zero
+  exit carrying the standard "no crontab" diagnostic, is trusted as a table.
+  A timeout, a spawn failure, non-UTF-8 output, or an over-cap read is now an
+  error naming `gregg daemon startup instructions`, so the crontab is never
+  rewritten from an unverified read. `uninstall` shares the reader and reports an
+  unreadable crontab as *unknown* rather than *already absent*.
+
+- **Windows disk telemetry asked for the wrong thing and opened the handle with
+  no rights.** `DeviceIoControl` was issued `0x00070020`, which decodes as
+  `FILE_DEVICE_DISK`, function `0x08`, `FILE_ANY_ACCESS` —
+  `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, not `IOCTL_DISK_PERFORMANCE` — so no
+  performance counters ever came back. Separately, the `\\.\PhysicalDriveN`
+  handle was opened with `dwDesiredAccess = 0`, and the I/O manager compares the
+  control code's required access against the access already granted *before* the
+  driver sees the request, so it failed `ERROR_ACCESS_DENIED`. Either mistake
+  alone left `disk_io` empty on every Windows host, and the collector publishes
+  `disk_io: None` for an empty set — so `R/s`, `W/s` and the `IO` row were
+  silently missing with no error and no capability flag. The control code is now
+  composed from its published parts as `CTL_CODE(FILE_DEVICE_DISK, 0x20,
+  METHOD_BUFFERED, FILE_READ_ACCESS)` = `0x00074080`, and the handle carries
+  `FILE_READ_ACCESS`. Both had to land together; verified by tests that recompute
+  the code from first principles, with native Windows CI as the only runtime
+  authority.
+
+- **macOS leaked the whole `getifaddrs` list on every sample.** The interface
+  walker took ownership of the kernel-allocated chain and released it once, at
+  the end — but a non-UTF-8 interface name returned early through `?`, skipping
+  that release. Because the collection runs once per sample, a long-running
+  `greggd` leaked unboundedly until restart. The list is now owned by a scope
+  guard installed immediately after the success check, so every exit path
+  releases it exactly once, and a non-UTF-8 name skips just that interface
+  instead of aborting the walk.
+
+- **One non-UTF-8 macOS mount point discarded every drive.** `getmntinfo` walk
+  aborted the whole collection on the first mount whose name or filesystem type
+  was not valid UTF-8, so `drives` was permanently empty while that mount
+  existed. Malformed records are now skipped individually, matching Linux's
+  `parse_mountinfo_line`.
+
+- **Tunnel and virtual adapters were counted twice on Windows, macOS and
+  FreeBSD.** All three treated every non-loopback interface as an aggregate
+  member, so a VPN adapter's counters (the encapsulated frames) and its physical
+  underlay's counters (the same frames) were both summed — approaching 2× on a
+  saturated tunnel. Because the directional capacities were summed from the same
+  rows, the utilization denominator inflated with the numerator. Linux already
+  excluded this class through a slave interface's `master` symlink; the other
+  three now decide by interface type (`IF_TYPE_TUNNEL`, `IFT_TUNNEL`/`IFT_GIF`,
+  WireGuard, `utun*`'s `IFT_OTHER`, and the pseudo types), by exclusion over a
+  closed set so an unrecognised type still counts.
+
+- **`gregg daemon restart` reported success with nothing running.** It discarded
+  the result of its own readiness wait, so a child that exited at startup — which
+  `run_daemon` does on any config validation violation, since it begins with
+  `store.load_or_default()?` — still printed the success line and exited 0. It
+  now propagates the failure, which also means `gregg update` reports
+  `RelaunchFailed` instead of claiming `Relaunched`.
+
+- **A concurrent `restart` could kill the daemon a launching TUI had just
+  started.** Its destructive stop ran outside the config's launch lock,
+  breaking the invariant the module states about itself. It could observe a
+  daemon that `ensure_running` had just spawned and was still waiting to become
+  ready, stop it, and leave that TUI to exhaust its 15s budget and exit
+  `NotReady`. The lock is now taken before the stop is even considered, and the
+  running-or-not decision is re-made from inside it.
+
+- **A dead poll or EggPool task was retired instead of stopping the daemon.**
+  `SchedulerStopped` and `EggpoolWorkerStopped` existed and `is_fatal` already
+  called them fatal, but nothing ever constructed them: the engine dropped the
+  receiver and kept serving documents whose numbers could never change again —
+  indistinguishable, to an operator, from a healthy fleet that is merely quiet.
+  Both variants are now raised. A closed channel unambiguously means the task
+  ended, because the scheduler deliberately stays alive with zero endpoints so
+  `Ctrl-R` can add systems.
+
+- **`greggd` config writes deleted a concurrent writer's live temp file.** The
+  stale-temp sweep matched `.greggd-*.toml.tmp` with no age check, so a second
+  writer — a daemon bootstrap racing `startup install` or `uninstall --purge` —
+  could unlink a temp file between its creation and its `rename`, failing a write
+  that had already succeeded. The client side of the workspace already gated this
+  on age for exactly this reason; the daemon now does the same.
+
+- **`greggd startup install` widened the permissions it promises to preserve.**
+  The repair added missing bits by *replacing* the mode, so an operator's
+  deliberate `0750` directory and `0640` config — the very modes its own comment
+  names as preserved — were silently loosened to world-readable on every install
+  and restart. It now ORs the missing bits and leaves everything else alone.
+
+- **A link capacity measured in only one direction was rendered as a capacity
+  for both.** The aggregate collapsed a one-sided payload into a bare number, so
+  the pane asserted a capacity the daemon never measured — while rendering
+  `800Mb/s/1.60Gb/s` two lines later when it did know both, and scoring
+  utilization per direction precisely because capacity is directional. A
+  one-sided capacity is now labelled `rx` or `tx`. Windows can produce this:
+  each direction comes from an independent MIB value.
+
+- **The EggPool pane measured fit in characters, not terminal cells.** An
+  identity containing wide glyphs passed the fit test while overflowing the
+  one-row header rect, and the clipped surplus was the `Window:` indicator — the
+  one thing the pane is supposed to keep. Fit now counts display cells, like
+  `truncate_width` and the sanitiser already did.
+
+- **An EggPool worker that had never once succeeded claimed to be "updated".**
+  The failure footer rendered absence of a timestamp as the word `updated`. It
+  now says `never updated`.
+
+- **A cron-history depth change alone never repainted.** `adopt_snapshot`
+  decided visibility from the pre-update values, but compared
+  `cron_display_history` against itself — it had already been overwritten two
+  lines earlier, so the term was always false. A document that changed nothing
+  but the depth (exactly what a `Ctrl-R` reload produces) was adopted as
+  unchanged and the cron pane kept its old height.
+
+- **Connect failures that were not "nothing there" authorized a daemon
+  spawn.** Any `TransportError::Io` classified as plain absence, so fd
+  exhaustion (`EMFILE`/`ENFILE`) or `EACCES` on the socket started a daemon
+  nobody asked for, which then failed readiness for 15 seconds. Only
+  `NotFound` and `ConnectionRefused` are absence now.
+
+- **`gregg daemon status` named an endpoint the daemon was not using.** It
+  reported the first candidate path even when the daemon had bound the temp
+  fallback — printing a path that does not exist for the case an operator
+  reaches for exactly when "running, but there is nothing at the path it
+  printed". A connect now reports the candidate it reached.
+
+- **A skipped socket candidate recorded no reason.** `bind` noted an occupied
+  endpoint and a bind failure but silently `continue`d past a candidate whose
+  parent directory did not exist, so a typo'd config directory bound the temp
+  fallback with no mention of the directory — while the launch lock, derived
+  from that same path, failed separately for the same cause.
+
+- **Operator remediation commands were emitted unquoted on Unix.** A `sudo`
+  rerun hint or a `cargo uninstall --root` handoff printed a path with a space
+  unquoted, so the documented recovery path ran the wrong binary. Paths are now
+  POSIX single-quoted, matching what the Windows branch already did with the same
+  argument.
+
+- **Staging paths were lossily converted before being passed to external
+  commands.** `TMPDIR`/`HOME` with non-UTF-8 bytes produced a U+FFFD-substituted
+  path naming a different — normally nonexistent — file, so `curl -o` failed as a
+  download error and, worse, `cargo uninstall --root` could have targeted a
+  different installation than the ownership check proved. Paths are now passed
+  as `OsStr` arguments with no conversion.
+
 - **The normal-view cron pane painted over the system card it belongs under.**
   `c` in the default view put the `CRON` header, the selected job's header, and
   its record rows directly on top of `name@host:port`, CPU, MEM, SWP/COMMIT and

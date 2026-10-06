@@ -333,7 +333,6 @@ pub enum DownloadOutcome {
 /// Keeping this transport UA-free avoids threading caller identity through
 /// every test stub for no server requirement.
 pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadOutcome {
-    let dest_str = dest.to_string_lossy().to_string();
     let max_filesize = MAX_DOWNLOAD_BYTES.to_string();
     let mut cmd = Command::new(curl);
     // `--proto '=https'` pins production HTTPS fetches to TLS only;
@@ -349,11 +348,6 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
             DOWNLOAD_TIMEOUT_SECS,
             "--max-filesize",
             &max_filesize,
-            "-o",
-            &dest_str,
-            "-w",
-            "%{http_code}",
-            url,
         ]);
     } else {
         cmd.args([
@@ -362,13 +356,17 @@ pub fn download_file(curl: &str, url: &str, dest: &std::path::Path) -> DownloadO
             DOWNLOAD_TIMEOUT_SECS,
             "--max-filesize",
             &max_filesize,
-            "-o",
-            &dest_str,
-            "-w",
-            "%{http_code}",
-            url,
         ]);
     }
+    // `dest` is passed as a path, never as a lossy string: staging is built
+    // under `env::temp_dir()`, and a `TMPDIR` carrying non-UTF-8 bytes would
+    // otherwise name a different (normally nonexistent) file and surface as a
+    // misleading download failure.
+    cmd.arg("-o")
+        .arg(dest)
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     // Capped like every other child: the asset body goes to `-o <dest>`, so
     // these pipes carry only the `%{http_code}` line and curl's diagnostics,

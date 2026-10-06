@@ -420,6 +420,78 @@ const COMPUTER_NAME_DNS_HOSTNAME: u32 = 3;
 pub(crate) const DRIVE_FIXED: u32 = 3;
 pub(crate) const DRIVE_REMOVABLE: u32 = 2;
 
+// ---------------------------------------------------------------------------
+// Win32 control-code composition (winioctl.h / winnt.h; stable ABI)
+// ---------------------------------------------------------------------------
+
+/// Compose a device control code.
+///
+/// `CTL_CODE(DeviceType, Function, Method, Access)` is
+/// `DeviceType << 16 | Access << 14 | Function << 2 | Method`, with `Method`
+/// occupying the low two bits. Composing the published constants keeps a
+/// transcription error out of the IOCTL table below.
+const fn ctl_code(device_type: u32, function: u32, method: u32, access: u32) -> u32 {
+    (device_type << 16) | (access << 14) | (function << 2) | method
+}
+
+/// `FILE_DEVICE_DISK` from `winioctl.h`.
+const FILE_DEVICE_DISK: u32 = 0x0007;
+/// `METHOD_BUFFERED` from `winioctl.h`.
+const METHOD_BUFFERED: u32 = 0x0000;
+/// `FILE_READ_ACCESS` from `winnt.h`.
+const FILE_READ_ACCESS: u32 = 0x0001;
+
+/// `IOCTL_DISK_PERFORMANCE` — the `DISK_PERFORMANCE` counter query this
+/// collector's output structure is shaped for.
+///
+/// It is `CTL_CODE(FILE_DEVICE_DISK, 0x20, METHOD_BUFFERED, FILE_READ_ACCESS)`.
+/// The near-miss `0x0007_0020` decodes as `FILE_DEVICE_DISK`, function `0x08`,
+/// `METHOD_BUFFERED`, `FILE_ANY_ACCESS` — that is
+/// `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX`, a different request with a different
+/// output structure, so it can never populate these counters.
+const IOCTL_DISK_PERFORMANCE: u32 =
+    ctl_code(FILE_DEVICE_DISK, 0x20, METHOD_BUFFERED, FILE_READ_ACCESS);
+
+/// Access granted to a physical-drive handle.
+///
+/// The I/O manager compares the IOCTL's `RequiresFileAccess` against the
+/// access already granted to the handle *before* the driver sees the request,
+/// so a zero-access handle is refused with `ERROR_ACCESS_DENIED` and
+/// `CreateFileW` returns `INVALID_HANDLE_VALUE`. It must therefore carry at
+/// least the `FILE_READ_ACCESS` that `IOCTL_DISK_PERFORMANCE` declares.
+const DISK_HANDLE_ACCESS: u32 = FILE_READ_ACCESS;
+
+// ---------------------------------------------------------------------------
+// Network interface types (`IF_TYPE` from `ipifcons.h`; stable ABI)
+// ---------------------------------------------------------------------------
+
+/// `IF_TYPE_PPP` — point-to-point protocol link.
+const IF_TYPE_PPP: u32 = 23;
+/// `IF_TYPE_SOFTWARE_LOOPBACK` — the software loopback adapter.
+const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+/// `IF_TYPE_TUNNEL` — encapsulation/tunnel interface.
+const IF_TYPE_TUNNEL: u32 = 131;
+
+/// Whether an `MIB_IF_ROW2.Type` row may contribute to the network aggregate.
+///
+/// A tunnel row counts the same bytes twice whenever its underlay link is also
+/// aggregated: the tunnel counters hold the encapsulated frames and the
+/// physical NIC counts the identical frames again. Because the directional
+/// capacities are summed from the same rows, the overstatement inflates the
+/// utilization denominator as well as the numerator. Linux already excludes
+/// this class through a slave interface's `master` symlink; Windows exposes it
+/// as the interface type.
+///
+/// Physical Ethernet (`IF_TYPE_ETHERNET_CSMACD`, 6) and Wi-Fi
+/// (`IF_TYPE_IEEE80211`, 71) stay members — they are the underlay the
+/// double-count was hiding behind.
+const fn is_aggregate_member_type(interface_type: u32) -> bool {
+    !matches!(
+        interface_type,
+        IF_TYPE_PPP | IF_TYPE_SOFTWARE_LOOPBACK | IF_TYPE_TUNNEL
+    )
+}
+
 #[cfg(target_os = "windows")]
 #[allow(unsafe_code)]
 mod ffi {
@@ -839,7 +911,11 @@ fn validate_drive_string_count(required: u32) -> Result<usize, CollectError> {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::validate_drive_string_count;
+    use super::{
+        ctl_code, is_aggregate_member_type, validate_drive_string_count, DISK_HANDLE_ACCESS,
+        FILE_DEVICE_DISK, FILE_READ_ACCESS, IF_TYPE_PPP, IF_TYPE_SOFTWARE_LOOPBACK, IF_TYPE_TUNNEL,
+        IOCTL_DISK_PERFORMANCE, METHOD_BUFFERED,
+    };
     use crate::error::CollectErrorKind;
 
     #[test]
@@ -852,6 +928,76 @@ mod tests {
     fn zero_retry_length_is_source_failure() {
         let error = validate_drive_string_count(0).expect_err("zero retry result must fail");
         assert_eq!(error.kind, CollectErrorKind::SourceUnavailable);
+    }
+
+    /// `IOCTL_DISK_PERFORMANCE` recomputed from its four `CTL_CODE` parts.
+    ///
+    /// The literal is pinned against the published Win32 value and against the
+    /// composition itself, so a future edit cannot reintroduce a code that
+    /// decodes to some other request.
+    #[test]
+    fn disk_performance_ioctl_matches_ctl_code_composition() {
+        assert_eq!(IOCTL_DISK_PERFORMANCE, 0x0007_4080);
+        assert_eq!(
+            IOCTL_DISK_PERFORMANCE,
+            ctl_code(FILE_DEVICE_DISK, 0x20, METHOD_BUFFERED, FILE_READ_ACCESS)
+        );
+        // Device type, function, method and access decode back out of the
+        // published literal exactly as `CTL_CODE` laid them down.
+        assert_eq!(IOCTL_DISK_PERFORMANCE >> 16, FILE_DEVICE_DISK);
+        assert_eq!((IOCTL_DISK_PERFORMANCE >> 14) & 0x3, FILE_READ_ACCESS);
+        assert_eq!((IOCTL_DISK_PERFORMANCE >> 2) & 0xFFF, 0x20);
+        assert_eq!(IOCTL_DISK_PERFORMANCE & 0x3, METHOD_BUFFERED);
+    }
+
+    /// The code this collector used to send is a *different* request.
+    ///
+    /// `0x0007_0020` decodes as `FILE_DEVICE_DISK` function `0x08` with
+    /// `FILE_ANY_ACCESS` (`0`) — `IOCTL_DISK_GET_DRIVE_GEOMETRY_EX` — which
+    /// returns a geometry structure, never `DISK_PERFORMANCE` counters.
+    #[test]
+    fn geometry_ex_literal_is_not_the_performance_ioctl() {
+        const FILE_ANY_ACCESS: u32 = 0;
+        let geometry_ex = ctl_code(FILE_DEVICE_DISK, 0x08, METHOD_BUFFERED, FILE_ANY_ACCESS);
+        assert_eq!(geometry_ex, 0x0007_0020);
+        assert_ne!(geometry_ex, IOCTL_DISK_PERFORMANCE);
+        // The cross-checked `IOCTL_DISK_GET_LENGTH_INFO` value composes
+        // through the same formula and must differ from both.
+        assert_eq!(
+            ctl_code(FILE_DEVICE_DISK, 0x17, METHOD_BUFFERED, FILE_READ_ACCESS),
+            0x0007_405C
+        );
+    }
+
+    /// The handle access must satisfy the IOCTL's own access requirement.
+    ///
+    /// `DeviceIoControl`'s `RequiresFileAccess` is checked against the access
+    /// already granted to the handle before the driver runs, so a handle opened
+    /// without `FILE_READ_ACCESS` never reaches `DISK_PERFORMANCE` at all.
+    #[test]
+    fn disk_handle_access_satisfies_the_ioctl_requirement() {
+        assert_eq!(DISK_HANDLE_ACCESS, FILE_READ_ACCESS);
+        assert_eq!(FILE_READ_ACCESS, 1);
+        assert_eq!((IOCTL_DISK_PERFORMANCE >> 14) & 0x3, DISK_HANDLE_ACCESS);
+        assert_ne!(
+            DISK_HANDLE_ACCESS, 0,
+            "a zero-access handle fails with ERROR_ACCESS_DENIED"
+        );
+    }
+
+    /// Tunnel, PPP and loopback rows leave the aggregate; physical links stay.
+    #[test]
+    fn aggregate_member_excludes_tunnel_ppp_and_loopback_types() {
+        assert!(!is_aggregate_member_type(IF_TYPE_SOFTWARE_LOOPBACK));
+        assert!(!is_aggregate_member_type(IF_TYPE_TUNNEL));
+        assert!(!is_aggregate_member_type(IF_TYPE_PPP));
+        // `IF_TYPE_ETHERNET_CSMACD` and `IF_TYPE_IEEE80211` are the physical
+        // underlay the tunnel double-count was hiding behind.
+        assert!(is_aggregate_member_type(6));
+        assert!(is_aggregate_member_type(71));
+        // An unrecognised type stays a member: only the tunnel family is
+        // excluded, never physical Ethernet or Wi-Fi.
+        assert!(is_aggregate_member_type(117));
     }
 }
 
@@ -1119,7 +1265,7 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
             let handle = unsafe {
                 ffi::CreateFileW(
                     path.as_ptr(),
-                    0,
+                    DISK_HANDLE_ACCESS,
                     3,
                     std::ptr::null(),
                     3,
@@ -1137,7 +1283,7 @@ fn disk_io() -> Result<Vec<RawDiskIo>, CollectError> {
                 // buffer has the declared DISK_PERFORMANCE size.
                 ffi::DeviceIoControl(
                     handle,
-                    0x0007_0020,
+                    IOCTL_DISK_PERFORMANCE,
                     std::ptr::null(),
                     0,
                     performance.as_mut_ptr().cast(),
@@ -1219,7 +1365,7 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
         let mut records = Vec::with_capacity(count);
         for row in rows {
             let name = utf16_field(&row.alias);
-            let is_loopback = row.interface_type == 24;
+            let is_loopback = row.interface_type == IF_TYPE_SOFTWARE_LOOPBACK;
             let operational = row.oper_status == 1 && row.media_connect_state == 1;
             records.push(RawNetworkInterface {
                 id: format!("luid-{:016x}", row.interface_luid),
@@ -1230,7 +1376,7 @@ fn network_interfaces() -> Result<Vec<RawNetworkInterface>, CollectError> {
                 tx_capacity_bps: (row.transmit_link_speed > 0).then_some(row.transmit_link_speed),
                 is_loopback,
                 operational,
-                aggregate_member: !is_loopback,
+                aggregate_member: is_aggregate_member_type(row.interface_type),
             });
         }
         unsafe {

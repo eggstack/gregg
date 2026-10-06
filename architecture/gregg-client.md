@@ -337,10 +337,19 @@ gregg
   one command line it announced, because that is all the block contains. Scanning
   forward to a blank line instead would eat whatever the operator appended after
   it with `crontab -e` — silent, unrecoverable loss of a job Gregg never owned.
+  A crontab is also **never rewritten from an unverified read**: `crontab -`
+  replaces the whole table, so a manager failure must not be mistaken for "you
+  have no jobs". A timeout, a spawn failure, or output that is not valid UTF-8
+  is an error with the exact manual instruction, never an empty table. This is
+  why the shared bounded runner drains the child's pipes *while it runs* — a
+  pipe holds about 64 KiB, so a table larger than that would otherwise block the
+  child in `write(2)` and be killed at the timeout, which is precisely the
+  "failure reads as absence" case.
 - **Update is prepare-then-quiesce.** The daemon is identified first, the
   candidate is fully prepared and verified, and only then is the daemon stopped,
   the executable replaced, and the daemon relaunched. A failed relaunch is
-  reported as partial success with the retry command.
+  reported as partial success with the retry command — including a relaunch that
+  started but never became ready, because readiness is the result of a restart.
 - **Uninstall is ownership-first.** `--dry-run` names the startup entry and the
   running daemon; execution stops only an identified owned daemon, removes only
   a provably owned entry, and blocks the executable deletion when it cannot
@@ -403,6 +412,14 @@ slower plane over the Plan-162 scheduler routes and feeds `FleetState.cron`.
   regression tests `offline_endpoint_is_retried_and_recovers_on_next_generation`
   and `offline_endpoint_remains_in_scheduler_across_generations` lock in
   that one ordered result per endpoint per generation.
+- **A dead poll or `EggPool` task stops the daemon.** Per-endpoint panics are
+  already converted to `Cancelled`, so a closed channel means the task itself
+  ended: the scheduler deliberately stays alive with zero endpoints so `Ctrl-R`
+  can add systems, and the `EggPool` receiver is only replaced when the worker is
+  rewired. Under shutdown that is orderly; at any other time the daemon exits
+  with `SchedulerStopped` / `EggpoolWorkerStopped` rather than retiring the
+  receiver, because continuing would serve documents whose numbers can never
+  change again — indistinguishable, to an operator, from a healthy quiet fleet.
 
 The Systems-pane `Ctrl-R` is the **client daemon's** reload boundary: the
 daemon re-reads its own resolved `ConfigStore`, reconciles the fleet, and asks

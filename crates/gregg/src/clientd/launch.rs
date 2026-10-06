@@ -128,7 +128,7 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
     // the launch lock and a stop is at least as destructive as the spawn the
     // lock exists to serialize.
     match probe(&identity, version).await? {
-        Probe::Ready(attachment) => return Ok(attachment),
+        Probe::Ready(attachment) => return Ok(*attachment),
         Probe::Absent | Probe::Replaceable => {}
     }
 
@@ -150,7 +150,7 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
     // and spawn over it — which is exactly the outcome the classification above
     // exists to prevent.
     let attachment = match probe(&identity, version).await? {
-        Probe::Ready(attachment) => attachment,
+        Probe::Ready(attachment) => *attachment,
         // The destructive branch lives here, under the lock, on a
         // classification this process just made. Rotating on the stale
         // classification from the unlocked probe above would let a launcher
@@ -179,7 +179,10 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
 /// What one attach attempt resolved to, with no side effects.
 enum Probe {
     /// Our daemon answered; attach to this.
-    Ready(Attachment),
+    ///
+    /// Boxed because an `Attachment` owns the connection's buffers and stream,
+    /// which makes it far larger than the other two variants carry.
+    Ready(Box<Attachment>),
     /// Nothing is there; a launch is authorized.
     Absent,
     /// Our daemon answered at an older protocol. It may be replaced, but only
@@ -201,7 +204,7 @@ enum Probe {
 /// the healthy current daemon the other had just installed.
 async fn probe(identity: &ClientDaemonIdentity, version: &str) -> Result<Probe, EnsureError> {
     match daemon::attach(identity, version).await {
-        Ok(attachment) => Ok(Probe::Ready(attachment)),
+        Ok(attachment) => Ok(Probe::Ready(Box::new(attachment))),
         Err(error) => match classify(&error) {
             Classification::Absent => Ok(Probe::Absent),
             Classification::Rotate => Ok(Probe::Replaceable),
@@ -257,10 +260,23 @@ enum Classification {
 
 fn classify(error: &AttachError) -> Classification {
     match error {
-        // A connect that could not even be made, or a peer that hung up before
-        // saying anything, is what "nothing is serving this endpoint" looks
-        // like from here. Only this authorizes a spawn.
-        AttachError::Transport(TransportError::Io(_)) => Classification::Absent,
+        // "Nothing is serving this endpoint" has exactly two shapes: the socket
+        // file is not there, or it is there and nobody is listening. Only these
+        // authorize a spawn. A connect can fail for other reasons — `EMFILE`/
+        // `ENFILE` fd exhaustion, `EACCES` on the socket, an already-in-use
+        // endpoint reported by `remove_stale_socket` — and none of those is
+        // absence: spawning there would add a daemon the operator never asked
+        // for on top of a failure they still have to fix.
+        AttachError::Transport(TransportError::Io(io)) => {
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+            ) {
+                Classification::Absent
+            } else {
+                Classification::Foreign
+            }
+        }
         // The peer completed enough of a handshake to report its protocol
         // version, and the identity it reported is this config's — the
         // daemon's own error path only emits this frame after
@@ -279,9 +295,9 @@ fn classify(error: &AttachError) -> Classification {
                 Classification::Rotate
             }
         }
-        // A refusal, a peer that hung up without identifying itself, or a
-        // connect that failed for any reason other than "nothing there" is
-        // somebody else's service. None of it is absence: spawning over a peer
+        // A refusal, a peer that hung up without identifying itself, a connect
+        // that failed for any reason other than "nothing there", or an endpoint
+        // somebody already holds. None of it is absence: spawning over a peer
         // that answered is how you end up with two daemons and no idea which
         // one the TUI is showing.
         AttachError::Refused(_)
@@ -426,19 +442,54 @@ fn spawn_daemon(config_path: &std::path::Path) -> Result<(), EnsureError> {
 pub async fn restart(store: &ConfigStore) -> Result<(), EnsureError> {
     let identity = ClientDaemonIdentity::for_path(store.path());
     let version = env!("CARGO_PKG_VERSION");
+
+    // The stop belongs *inside* the launch lock, and the decision to stop is
+    // re-made from it. An unlocked `status` can observe a daemon that a
+    // concurrent `ensure_running` has just spawned and is still waiting to
+    // become ready; stopping that one kills a healthy launch the operator never
+    // asked to interrupt, and the waiter's readiness then fails for a reason
+    // that has nothing to do with its own state. Taking the lock first is what
+    // makes this window exclusive with the one `ensure_running` holds.
+    let lock = acquire_launch_lock(&identity).await?;
     if daemon::status(&identity).await?.running {
         daemon::stop(&identity, version)
             .await
             .map_err(EnsureError::Transport)?;
         wait_gone(&identity, ROTATE_STOP_TIMEOUT).await;
     }
-    let lock = acquire_launch_lock(&identity).await?;
-    if !daemon::status(&identity).await?.running {
-        spawn_daemon(store.path())?;
-        let _ = wait_ready(&identity, version, READY_TIMEOUT).await;
-    }
+
+    // Spawn and then *confirm readiness*, both unconditionally. Readiness is the
+    // result of a restart: a child that dies at startup — a config validation
+    // violation, an endpoint it could not claim — has to be reported, not
+    // swallowed. `gregg update` turns this `Ok(())` into
+    // `DaemonLifecycle::Relaunched`, so a discarded `NotReady` would claim a
+    // relaunch with nothing listening. A daemon that outlived `wait_gone` is
+    // not a reason to skip the spawn either: `bind` refuses an endpoint it
+    // cannot claim, so the collision surfaces as a real error instead of as a
+    // silent success.
+    let ready = spawn_and_confirm(store.path(), &identity, version, READY_TIMEOUT).await;
     drop(lock);
-    Ok(())
+    ready
+}
+
+/// Start a fresh daemon and confirm it is actually serving.
+///
+/// The two steps are one outcome on purpose: a spawn that never becomes ready
+/// is a failed launch, and the caller must be able to tell that apart from a
+/// successful one. `ready_timeout` is a parameter so the wait can be exercised
+/// without spending the production budget.
+async fn spawn_and_confirm(
+    config_path: &std::path::Path,
+    identity: &ClientDaemonIdentity,
+    version: &str,
+    ready_timeout: Duration,
+) -> Result<(), EnsureError> {
+    match spawn_daemon(config_path) {
+        Ok(()) => wait_ready(identity, version, ready_timeout)
+            .await
+            .map(|_| ()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(all(test, unix))]
@@ -561,6 +612,14 @@ mod tests {
         )));
         assert_eq!(classify(&io), Classification::Absent);
 
+        // A socket that is present but unlistening is the other half of plain
+        // absence.
+        let refused = AttachError::Transport(TransportError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        )));
+        assert_eq!(classify(&refused), Classification::Absent);
+
         // Everything else means something is there, and nothing may be spawned
         // over it.
         for present in [
@@ -580,6 +639,34 @@ mod tests {
                 classify(&present),
                 Classification::Foreign,
                 "{present:?} must not authorize a competing daemon"
+            );
+        }
+    }
+
+    /// A connect that failed for a reason other than "nothing there" is not
+    /// absence, no matter how much it looks like it from the outside.
+    ///
+    /// Treating *any* `Io` as absent spawned a daemon on top of fd exhaustion
+    /// (`EMFILE`/`ENFILE`) or a socket the TUI may not open (`EACCES`); the
+    /// spawn then failed readiness for 15s and left behind a daemon nobody
+    /// asked for.
+    #[test]
+    fn a_connect_failure_that_is_not_absence_does_not_authorize_a_spawn() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::AddrInUse,
+            std::io::ErrorKind::AlreadyExists,
+            std::io::ErrorKind::TimedOut,
+        ] {
+            let error = AttachError::Transport(TransportError::Io(std::io::Error::new(
+                kind,
+                "not an absence",
+            )));
+            assert_ne!(
+                classify(&error),
+                Classification::Absent,
+                "{kind:?} must not authorize a spawn"
             );
         }
     }
@@ -604,6 +691,98 @@ mod tests {
     }
 
     // ── End to end ────────────────────────────────────────────────────
+
+    /// A spawn that never becomes ready is a failed launch, not a success.
+    ///
+    /// `restart` used to write `let _ = wait_ready(..)`, so a child that exited
+    /// at startup — which `run_daemon` does on any config validation violation,
+    /// because it begins with `store.load_or_default()?` — still returned `Ok`.
+    /// `gregg update` maps that `Ok` to `DaemonLifecycle::Relaunched`, i.e. it
+    /// claimed a successful relaunch with nothing listening.
+    ///
+    /// The spawned executable here is this test binary, which rejects the
+    /// `daemon run` arguments and exits, so it stands in for a daemon that dies
+    /// immediately. The wait budget is injected rather than the production one.
+    #[test]
+    fn a_spawn_that_never_becomes_ready_is_not_a_successful_restart() {
+        let dir = TempDir::new("notready");
+        let store = store_for(&dir);
+        let identity = ClientDaemonIdentity::for_path(store.path());
+
+        let outcome = runtime().block_on(spawn_and_confirm(
+            store.path(),
+            &identity,
+            "test",
+            Duration::from_millis(200),
+        ));
+
+        assert!(
+            matches!(outcome, Err(EnsureError::NotReady { .. })),
+            "a launch that never served must report NotReady, got {outcome:?}"
+        );
+    }
+
+    /// Restart takes the launch lock *before* it decides to stop anything.
+    ///
+    /// The stop used to happen outside the lock, so a `restart` could observe a
+    /// daemon that a concurrent `ensure_running` had just spawned and was still
+    /// waiting on, and kill it — turning that launch's readiness wait into a
+    /// failure that had nothing to do with its own state.
+    #[test]
+    fn restart_holds_the_launch_lock_across_its_destructive_window() {
+        let dir = TempDir::new("restart-lock");
+        let store = Arc::new(store_for(&dir));
+        let identity = ClientDaemonIdentity::for_path(store.path());
+
+        runtime().block_on(async {
+            // Stand in for the in-flight `ensure_running`: hold the same lock
+            // a real launcher holds across its probe/spawn/readiness window,
+            // and publish a daemon that is serving while it is held.
+            let holder = acquire_launch_lock(&identity)
+                .await
+                .expect("takes the lock");
+            let cancel = CancellationToken::new();
+            let daemon_task = tokio::spawn(run_daemon(
+                ConfigStore::new(store.path().to_path_buf()),
+                identity.clone(),
+                cancel.clone(),
+            ));
+            for _ in 0..400 {
+                if crate::clientd::daemon::status(&identity)
+                    .await
+                    .is_ok_and(|status| status.running)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            // `restart` runs concurrently and must not get past the lock while
+            // the window is held. A short budget is enough to prove the
+            // ordering; it would be far too short to stop and replace a daemon.
+            let contender = tokio::spawn({
+                let store = Arc::clone(&store);
+                async move { restart(&store).await }
+            });
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert!(
+                !contender.is_finished(),
+                "restart must not complete its destructive window while the launch lock is held"
+            );
+            assert!(
+                crate::clientd::daemon::status(&identity)
+                    .await
+                    .is_ok_and(|status| status.running),
+                "the daemon inside the launch window must survive a concurrent restart"
+            );
+
+            // Release the window; the daemon is ours to stop.
+            cancel.cancel();
+            drop(holder);
+            let _ = tokio::time::timeout(Duration::from_secs(10), contender).await;
+            let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+        });
+    }
 
     fn runtime() -> tokio::runtime::Runtime {
         tokio::runtime::Builder::new_current_thread()

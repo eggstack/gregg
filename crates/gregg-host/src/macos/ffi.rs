@@ -534,6 +534,25 @@ fn native_c_string(bytes: &[libc::c_char]) -> Result<String, CollectError> {
     })
 }
 
+/// Keep every record that converts; drop only the ones that fail.
+///
+/// A single malformed record must not discard the healthy ones around it, so
+/// conversion failures recover per record here exactly as a malformed
+/// `parse_mountinfo_line` entry is skipped on Linux. Only the record's own
+/// conversion can fail in these walks, so nothing else is swallowed.
+fn keep_converted<T, E>(records: impl IntoIterator<Item = Result<T, E>>) -> Vec<T> {
+    records.into_iter().flatten().collect()
+}
+
+/// Decode one native interface name, or `None` when the bytes are not UTF-8.
+///
+/// The caller skips that interface and keeps walking; aborting the whole
+/// `getifaddrs` traversal on one undecodable name would drop every healthy
+/// interface the sample would otherwise have published.
+fn utf8_interface_name(bytes: &[u8]) -> Option<&str> {
+    std::str::from_utf8(bytes).ok()
+}
+
 /// Read the opaque Darwin `fsid_t` as its two native `i32` components.
 ///
 /// `libc::fsid_t` exposes no public fields; on Darwin it is two `i32` values
@@ -580,14 +599,12 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
         // accepted record is copied into an owned Rust value before returning.
         let count = unsafe { libc::getmntinfo(&mut pointer, 0) };
         let count = mounted_filesystem_count(count, pointer)?;
-        let mut result = Vec::with_capacity(count);
-        for index in 0..count {
+        Ok(keep_converted((0..count).map(|index| {
             // Safety: index is bounded by the count returned by getmntinfo and
             // the pointer targets a kernel-owned array valid for this call.
             let stat = unsafe { &*pointer.add(index) };
-            result.push(raw_from_statfs(stat)?);
-        }
-        Ok(result)
+            raw_from_statfs(stat)
+        })))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -608,12 +625,82 @@ fn mounted_filesystems() -> Result<Vec<RawMountedFilesystem>, CollectError> {
 #[cfg(target_os = "macos")]
 const MAX_IFLIST2_BYTES: usize = 16 * 1024 * 1024;
 
+// ---------------------------------------------------------------------------
+// Darwin interface types (`bsd/net/if_types.h`; stable ABI)
+//
+// Darwin's `utun` driver attaches its interfaces as `IFT_OTHER`, which is why
+// that value is on the exclusion list even though the name reads like a
+// catch-all: an undecodable type stays a member, only this closed set of
+// known tunnel/pseudo types leaves the aggregate.
+// ---------------------------------------------------------------------------
+
+/// `IFT_OTHER` — also what `utun*` attaches as.
+const IFT_OTHER: u8 = 0x01;
+/// `IFT_PPP` — point-to-point protocol link.
+const IFT_PPP: u8 = 0x17;
+/// `IFT_LOOP` — loopback.
+const IFT_LOOP: u8 = 0x18;
+/// `IFT_SLIP` — IP over a generic serial line.
+const IFT_SLIP: u8 = 0x1c;
+/// `IFT_GIF` — generic tunnel interface.
+const IFT_GIF: u8 = 0x37;
+/// `IFT_STF` — 6to4 tunnel interface.
+const IFT_STF: u8 = 0x39;
+/// `IFT_6LOWPAN` — IPv6 over low-power wireless personal area network.
+const IFT_6LOWPAN: u8 = 0x40;
+/// `IFT_ENC` — encapsulating interface.
+const IFT_ENC: u8 = 0xf4;
+/// `IFT_PFLOG` — packet-filter logging pseudo interface.
+const IFT_PFLOG: u8 = 0xf5;
+/// `IFT_PFSYNC` — packet-filter state-sync pseudo interface.
+const IFT_PFSYNC: u8 = 0xf6;
+/// `IFT_PKTAP` — packet tap pseudo interface.
+const IFT_PKTAP: u8 = 0xfe;
+
+/// `IFT_ETHER` — Ethernet CSMA/CD, which Darwin's wireless links report too.
+///
+/// Test-only: production membership is decided by exclusion, so no production
+/// path needs to name the physical type.
+#[cfg(test)]
+const IFT_ETHER: u8 = 0x06;
+
+/// Whether an `if_data.ifi_type` may contribute to the network aggregate.
+///
+/// A tunnel row counts the same bytes twice whenever its underlay link is also
+/// aggregated: the tunnel counters hold the encapsulated frames and the
+/// physical NIC counts the identical frames again, and the directional
+/// capacities summed from the same rows inflate the utilization denominator
+/// with it. Linux already excludes this class through a slave interface's
+/// `master` symlink; Darwin exposes it as `ifi_type`.
+///
+/// Wired and wireless links both report `IFT_ETHER` (`0x06`) on Darwin and
+/// stay members, as do bridge (`0xd1`), L2 VLAN (`0x87`), link-aggregate
+/// (`0x88`) and cellular (`0xff`) masters.
+#[cfg(target_os = "macos")]
+const fn is_aggregate_member_type(interface_type: u8) -> bool {
+    !matches!(
+        interface_type,
+        IFT_OTHER
+            | IFT_PPP
+            | IFT_LOOP
+            | IFT_SLIP
+            | IFT_GIF
+            | IFT_STF
+            | IFT_6LOWPAN
+            | IFT_ENC
+            | IFT_PFLOG
+            | IFT_PFSYNC
+            | IFT_PKTAP
+    )
+}
+
 /// One parsed `RTM_IFINFO2` record: native index, flags, and 64-bit counters.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IfList2Record {
     index: u32,
     flags: i32,
+    interface_type: u8,
     rx_bytes: u64,
     tx_bytes: u64,
     baudrate_bps: u64,
@@ -696,6 +783,7 @@ fn parse_iflist2_buffer(buffer: &[u8]) -> Vec<IfList2Record> {
                 records.push(IfList2Record {
                     index: u32::from(header.ifm_index),
                     flags: header.ifm_flags,
+                    interface_type: header.ifm_data.ifi_type,
                     rx_bytes: header.ifm_data.ifi_ibytes,
                     tx_bytes: header.ifm_data.ifi_obytes,
                     baudrate_bps: header.ifm_data.ifi_baudrate,
@@ -727,7 +815,7 @@ fn build_iflist2_interface(record: &IfList2Record, name: &str) -> RawNetworkInte
         tx_capacity_bps: capacity,
         is_loopback,
         operational,
-        aggregate_member: !is_loopback,
+        aggregate_member: !is_loopback && is_aggregate_member_type(record.interface_type),
     }
 }
 
@@ -749,7 +837,7 @@ fn raw_from_if_data(name: &str, flags: u32, data: &libc::if_data) -> RawNetworkI
         tx_capacity_bps: capacity,
         is_loopback,
         operational,
-        aggregate_member: !is_loopback,
+        aggregate_member: !is_loopback && is_aggregate_member_type(data.ifi_type),
     }
 }
 
@@ -894,6 +982,34 @@ fn network_interfaces_iflist2() -> Result<Vec<RawNetworkInterface>, CollectError
     Ok(sort_dedup_interfaces(interfaces))
 }
 
+/// Owns a `getifaddrs` list so every exit path releases it exactly once.
+///
+/// The list is kernel-allocated and this runs once per sample, so an early
+/// return without the release leaks the whole chain on every collection for
+/// the remaining life of the process.
+#[cfg(target_os = "macos")]
+struct IfAddrsGuard(*mut libc::ifaddrs);
+
+#[cfg(target_os = "macos")]
+impl IfAddrsGuard {
+    /// Take ownership of the list `getifaddrs` just returned.
+    fn new(head: *mut libc::ifaddrs) -> Self {
+        Self(head)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for IfAddrsGuard {
+    fn drop(&mut self) {
+        // Safety: `self.0` is the head returned by a successful `getifaddrs`,
+        // ownership was taken by `new` and never handed back or duplicated
+        // (the guard is not `Clone`), and the field is private so no other
+        // code path can free it. Exactly one `Drop` runs per guard, so the
+        // list is released exactly once.
+        unsafe { libc::freeifaddrs(self.0) };
+    }
+}
+
 /// Compatibility fallback: `getifaddrs` with correctly typed `if_data`.
 ///
 /// Darwin documents `AF_LINK` `ifa_data` as `struct if_data` (32-bit
@@ -901,8 +1017,9 @@ fn network_interfaces_iflist2() -> Result<Vec<RawNetworkInterface>, CollectError
 #[cfg(target_os = "macos")]
 fn network_interfaces_getifaddrs() -> Result<Vec<RawNetworkInterface>, CollectError> {
     let mut head = std::ptr::null_mut();
-    // Safety: getifaddrs initializes an owned linked list on success;
-    // every returned list is released exactly once below.
+    // Safety: getifaddrs initializes an owned linked list on success and
+    // reports failure without allocating one; on success the guard below
+    // owns it and releases it exactly once on every exit path.
     let result = unsafe { libc::getifaddrs(&mut head) };
     if result != 0 {
         return Err(
@@ -910,11 +1027,12 @@ fn network_interfaces_getifaddrs() -> Result<Vec<RawNetworkInterface>, CollectEr
                 .with_source(std::io::Error::last_os_error()),
         );
     }
+    let _guard = IfAddrsGuard::new(head);
     let mut records = Vec::new();
     let mut current = head;
     while !current.is_null() {
         // Safety: current is a node in the list owned by getifaddrs and
-        // remains valid until freeifaddrs after this traversal.
+        // remains valid until the guard releases it after this traversal.
         let item = unsafe { &*current };
         if !item.ifa_name.is_null()
             && !item.ifa_addr.is_null()
@@ -925,18 +1043,21 @@ fn network_interfaces_getifaddrs() -> Result<Vec<RawNetworkInterface>, CollectEr
             // legacy `if_data` record for this interface. Copy scalar fields
             // only; never interpret these bytes as `if_data64`.
             let data = unsafe { &*(item.ifa_data.cast::<libc::if_data>()) };
-            let name = unsafe { std::ffi::CStr::from_ptr(item.ifa_name) }
-                .to_str()
-                .map_err(|_| {
-                    CollectError::new(CollectErrorKind::Parse, "interface name is not UTF-8")
-                })?;
-            records.push(raw_from_if_data(name, item.ifa_flags, data));
+            // Safety: `ifa_name` was checked non-null above and getifaddrs(3)
+            // guarantees it points at a NUL-terminated name inside this list;
+            // the bytes are decoded before the guard releases the list and
+            // never outlive it.
+            let name_bytes = unsafe { std::ffi::CStr::from_ptr(item.ifa_name) }.to_bytes();
+            // Recover per record: an interface whose name is not UTF-8 is
+            // skipped so the rest of the list still publishes, matching how a
+            // malformed `parse_mountinfo_line` entry is skipped on Linux.
+            if let Some(name) = utf8_interface_name(name_bytes) {
+                records.push(raw_from_if_data(name, item.ifa_flags, data));
+            }
         }
         // Safety: traversal remains within the list returned by getifaddrs.
         current = unsafe { (*current).ifa_next };
     }
-    // Safety: head was returned by getifaddrs and has not been freed yet.
-    unsafe { libc::freeifaddrs(head) };
     Ok(sort_dedup_interfaces(records))
 }
 
@@ -1104,9 +1225,11 @@ fn mounted_filesystem_count(count: i32, pointer: *mut libc::statfs) -> Result<us
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::{
-        build_iflist2_interface, mounted_filesystem_count, parse_iflist2_buffer, raw_from_if_data,
-        raw_from_statfs, route_message_prefix, sort_dedup_interfaces, IfList2Record,
-        RawMountedFilesystem, RawNetworkInterface, ROUTE_MESSAGE_PREFIX_LEN,
+        build_iflist2_interface, is_aggregate_member_type, keep_converted,
+        mounted_filesystem_count, parse_iflist2_buffer, raw_from_if_data, raw_from_statfs,
+        route_message_prefix, sort_dedup_interfaces, utf8_interface_name, IfList2Record,
+        RawMountedFilesystem, RawNetworkInterface, IFT_ETHER, IFT_GIF, IFT_OTHER, IFT_PPP,
+        ROUTE_MESSAGE_PREFIX_LEN,
     };
     use crate::error::CollectErrorKind;
 
@@ -1418,6 +1541,7 @@ mod tests {
         let loopback = IfList2Record {
             index: 1,
             flags: libc::IFF_LOOPBACK | libc::IFF_UP | libc::IFF_RUNNING,
+            interface_type: super::IFT_LOOP,
             rx_bytes: 10,
             tx_bytes: 20,
             baudrate_bps: 1_000,
@@ -1430,6 +1554,7 @@ mod tests {
         let down = IfList2Record {
             index: 2,
             flags: 0,
+            interface_type: super::IFT_ETHER,
             rx_bytes: 30,
             tx_bytes: 40,
             baudrate_bps: 5_000,
@@ -1445,6 +1570,7 @@ mod tests {
         let no_capacity = IfList2Record {
             index: 3,
             flags: libc::IFF_UP | libc::IFF_RUNNING,
+            interface_type: super::IFT_ETHER,
             rx_bytes: 0,
             tx_bytes: 0,
             baudrate_bps: 0,
@@ -1515,6 +1641,123 @@ mod tests {
             .expect("post-wrap interval recovers");
         assert_eq!(recovered.first_per_sec, 1_000);
         assert_eq!(recovered.second_per_sec, 1_000);
+    }
+
+    #[test]
+    fn non_utf8_interface_name_is_skipped_not_fatal() {
+        // A `getifaddrs` node whose name is not UTF-8 must be skipped; the
+        // traversal continues so the sibling interfaces still publish. The
+        // name bytes are exactly what `CStr::to_bytes` hands over.
+        assert_eq!(
+            utf8_interface_name(b"en0"),
+            Some("en0"),
+            "a valid name decodes"
+        );
+        assert_eq!(
+            utf8_interface_name(b"utun3"),
+            Some("utun3"),
+            "a tunnel name decodes too — exclusion is by type, not by name"
+        );
+        assert_eq!(
+            utf8_interface_name(&[0xFF, 0xFE]),
+            None,
+            "an undecodable name yields None so only this record is dropped"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_wrap)]
+    fn one_malformed_mount_is_skipped_and_siblings_survive() {
+        // Two good records sandwich one whose mount point is not UTF-8. The
+        // walk must publish the siblings: propagating the parse failure would
+        // leave `drives` permanently empty and the slow probe would retry the
+        // same permanently-failing walk forever.
+        let healthy_root = test_statfs("/", "apfs", super::MNT_LOCAL, 4096, 100, 25, 20);
+        let mut broken = test_statfs("/Volumes/broken", "apfs", super::MNT_LOCAL, 4096, 10, 5, 5);
+        broken.f_mntonname[0] = 0xFFu8 as libc::c_char;
+        broken.f_mntonname[1] = 0xFEu8 as libc::c_char;
+        let mut broken_fs = test_statfs("/Volumes/other", "?", super::MNT_LOCAL, 4096, 10, 5, 5);
+        broken_fs.f_fstypename[0] = 0xFFu8 as libc::c_char;
+        broken_fs.f_fstypename[1] = 0xFEu8 as libc::c_char;
+        let healthy_data = test_statfs("/Volumes/data", "hfs", super::MNT_LOCAL, 4096, 50, 10, 8);
+
+        // The conversion still reports the per-record failure truthfully.
+        assert_eq!(
+            raw_from_statfs(&broken)
+                .expect_err("bad mount name fails")
+                .kind,
+            CollectErrorKind::Parse
+        );
+        assert_eq!(
+            raw_from_statfs(&broken_fs)
+                .expect_err("bad fs type fails")
+                .kind,
+            CollectErrorKind::Parse
+        );
+
+        let records = keep_converted(
+            [&healthy_root, &broken, &broken_fs, &healthy_data]
+                .into_iter()
+                .map(raw_from_statfs),
+        );
+        let mounts: Vec<&str> = records
+            .iter()
+            .map(|record| record.mount_point.as_str())
+            .collect();
+        assert_eq!(
+            mounts,
+            vec!["/", "/Volumes/data"],
+            "one malformed record must not discard its healthy siblings"
+        );
+    }
+
+    #[test]
+    fn aggregate_member_excludes_tunnel_and_virtual_interface_types() {
+        // `utun` attaches as `IFT_OTHER`; `gif0` as `IFT_GIF`; `ppp0` as
+        // `IFT_PPP`. Each counts the same bytes as its underlay link.
+        assert!(!is_aggregate_member_type(IFT_OTHER));
+        assert!(!is_aggregate_member_type(IFT_GIF));
+        assert!(!is_aggregate_member_type(IFT_PPP));
+        // Wired and wireless links both report `IFT_ETHER` on Darwin.
+        assert!(is_aggregate_member_type(IFT_ETHER));
+        // An unrecognised type stays a member rather than being dropped.
+        assert!(is_aggregate_member_type(0x7f));
+
+        // The 64-bit preferred path agrees with the predicate.
+        let tunnel = IfList2Record {
+            index: 2,
+            flags: libc::IFF_UP | libc::IFF_RUNNING,
+            interface_type: IFT_OTHER,
+            rx_bytes: 100,
+            tx_bytes: 200,
+            baudrate_bps: 0,
+        };
+        let record = build_iflist2_interface(&tunnel, "utun2");
+        assert!(!record.is_loopback);
+        assert!(!record.aggregate_member, "utun double-counts en0");
+
+        let wired = IfList2Record {
+            interface_type: IFT_ETHER,
+            ..tunnel
+        };
+        assert!(
+            build_iflist2_interface(&wired, "en0").aggregate_member,
+            "the physical underlay stays in the aggregate"
+        );
+
+        // The legacy `getifaddrs` fallback path reaches the same decision.
+        // Safety: integer record; zeroed bytes are valid before fields are set.
+        let mut data: libc::if_data = unsafe { std::mem::zeroed() };
+        data.ifi_type = IFT_OTHER;
+        data.ifi_baudrate = 1_000;
+        let record = raw_from_if_data(
+            "utun0",
+            libc::IFF_UP as u32 | libc::IFF_RUNNING as u32,
+            &data,
+        );
+        assert!(!record.aggregate_member);
+        data.ifi_type = IFT_ETHER;
+        assert!(raw_from_if_data("en0", libc::IFF_UP as u32, &data).aggregate_member);
     }
 }
 

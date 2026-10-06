@@ -211,7 +211,15 @@ default file. Atomic writes restrict newly created parent directories to
 Daemon config temp files are `0600` during the write, then the final file is
 `0644` (no secrets; unprivileged `croncheck`/`status`/`configprint` must work).
 Systemd/launchd installs repair older `0600` system configs to `0644`/`0755`;
-control sockets stay `0600`.
+control sockets stay `0600`. That repair **adds** the missing bits and leaves
+every other bit alone — an operator-managed `0750` directory or `0640` config
+keeps its group permissions, so never replace the whole mode.
+
+The stale-temp sweep before a write is gated on **age** (five minutes), matching
+the client-side gate in `gregg::config::store`. A concurrent writer's in-flight
+`.greggd-*.toml.tmp` matches the same pattern, and unlinking it between its
+creation and its `rename` failed a write that had already succeeded. An
+unreadable mtime, or one in the future from clock skew, fails closed (skip).
 
 ## Tests
 

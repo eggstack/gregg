@@ -149,7 +149,16 @@ fn gap() -> String {
 
 fn fits(width: usize, parts: &[&str]) -> bool {
     let separators = HEADER_GAP * parts.len().saturating_sub(1);
-    parts.iter().map(|part| part.chars().count()).sum::<usize>() + separators <= width
+    // Terminal *cells*, not characters: `label` is built with `truncate_width`,
+    // which measures cells, and the pane draws into a one-row rect, so a
+    // character-count fit lets a wide glyph line overflow and get clipped —
+    // taking the window label with it.
+    parts
+        .iter()
+        .map(|part| crate::sanitize::cells(part))
+        .sum::<usize>()
+        + separators
+        <= width
 }
 
 fn join(parts: &[&str]) -> String {
@@ -166,9 +175,14 @@ fn footer_line(eggpool: &EggpoolState, width: usize) -> Option<String> {
         EggpoolWorkerState::Refreshing => "refreshing".to_owned(),
         EggpoolWorkerState::Idle => match eggpool.last_error.as_ref() {
             Some(error) => {
-                let updated = eggpool.last_success_at.map_or("updated".to_string(), |at| {
-                    format!("Updated {}", clock_text(at))
-                });
+                // Absence of a timestamp is not a timestamp. A worker that has
+                // never once succeeded has nothing that could be "updated", and
+                // saying so is the same fabrication the success path avoids.
+                let updated = eggpool
+                    .last_success_at
+                    .map_or("never updated".to_string(), |at| {
+                        format!("Updated {}", clock_text(at))
+                    });
                 format!("{updated} — refresh failed: {}", outcome_text(error))
             }
             None => provider_counts_text(eggpool),
@@ -526,5 +540,70 @@ mod tests {
         let output = buffer(&state, 100, 8);
         assert!(output.contains("Health: ready"), "{output}");
         assert!(output.contains("Providers: none reported"), "{output}");
+    }
+
+    /// A worker that has never succeeded has nothing that could be "updated".
+    #[test]
+    fn a_first_ever_refresh_failure_never_says_updated() {
+        let mut state = state();
+        with_summary(&mut state);
+        let eggpool = state.eggpool.as_mut().unwrap();
+        eggpool.worker_state = EggpoolWorkerState::Idle;
+        eggpool.last_error = Some(EggpoolFetchOutcome::Timeout);
+        eggpool.last_success_at = None;
+        let output = buffer(&state, 100, 8);
+        let footer = output
+            .lines()
+            .find(|line| line.contains("refresh failed"))
+            .unwrap_or_else(|| panic!("no footer: {output}"));
+        assert!(
+            footer.trim_start().starts_with("never updated"),
+            "absence of a timestamp must be stated, not rendered as one: {footer:?}"
+        );
+        assert!(
+            !footer.trim_start().starts_with("updated"),
+            "the footer must never claim a successful update: {footer:?}"
+        );
+    }
+
+    /// Fit is measured in terminal cells, not characters.
+    ///
+    /// `label` is built by `truncate_width`, which measures cells, and the
+    /// header is drawn into a one-row rect. Counting characters let a wide-glyph
+    /// identity pass the fit test while overflowing the pane, and the clipped
+    /// surplus was the window label — the very thing the pane must never drop.
+    #[test]
+    fn header_fit_is_measured_in_cells_not_characters() {
+        let wide = "테스트 서버";
+        assert_eq!(wide.chars().count(), 6, "six characters …");
+        assert_eq!(crate::sanitize::cells(wide), 11, "… but eleven cells");
+
+        assert!(
+            fits(11, &[wide]),
+            "an eleven-cell line fits an eleven-cell pane even though it is six characters"
+        );
+        assert!(!fits(10, &[wide]), "eleven cells cannot fit in ten");
+        // 11 + 4 (separator) + 1 for the second part.
+        assert!(!fits(15, &[wide, "x"]), "separators count toward the fit");
+        assert!(fits(16, &[wide, "x"]));
+    }
+
+    /// A wide-glyph identity keeps the rest of the header intact.
+    #[test]
+    fn a_wide_glyph_identity_does_not_cost_the_pane_its_window_label() {
+        let mut state = state();
+        with_summary(&mut state);
+        let eggpool = state.eggpool.as_mut().unwrap();
+        eggpool.endpoint.name = Some("테스트 서버".to_owned());
+        eggpool.health = Some(snapshot(EggpoolProxyHealth::Degraded));
+
+        // label 21 cells + health 16 + window 13 + two 4-cell gaps = 58.
+        let output = buffer(&state, 60, 8);
+        // The extracted buffer pads a wide glyph's second cell with a space, so
+        // the identity is matched on its ASCII-safe parts rather than on the
+        // glyph run itself.
+        assert!(output.contains("테 스 트"), "identity: {output}");
+        assert!(output.contains("Window: 1 hour"), "window: {output}");
+        assert!(output.contains("Health: degraded"), "health: {output}");
     }
 }

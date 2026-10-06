@@ -181,6 +181,17 @@ impl Default for Config {
     }
 }
 
+/// Whether a temp file is old enough to be treated as abandoned.
+///
+/// Fails closed: an unknown mtime, or an mtime in the future (clock skew),
+/// is *not* stale, so the only way to reach `remove_file` is a file that is
+/// demonstrably old.
+fn temp_is_stale(modified: Option<std::time::SystemTime>) -> bool {
+    modified
+        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+        .is_some_and(|age| age >= STALE_TEMP_AGE)
+}
+
 impl Config {
     /// Plan 162: effective per-job terminal history depth.
     ///
@@ -193,7 +204,18 @@ impl Config {
     }
 }
 
+/// How old a `.greggd-*.toml.tmp` file must be before it is treated as stale.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Remove stale `.greggd-*.toml.tmp` files left by prior crashes.
+///
+/// Only files older than [`STALE_TEMP_AGE`] are removed. A concurrent writer's
+/// in-flight temp matches this same pattern, and unlinking it mid-write makes
+/// that writer fail re-validation or `rename` on a write that had already
+/// succeeded — a daemon bootstrap racing a `startup install` or
+/// `uninstall --purge` is enough to trigger it. This mirrors the client-side
+/// gate in `gregg::config::store`, which says the same thing about
+/// `.gregg-*.toml.tmp`.
 fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
     let entries = fs::read_dir(dir)?;
     for entry in entries {
@@ -209,6 +231,11 @@ fn cleanup_stale_temps(dir: &Path) -> std::io::Result<()> {
                 // damage anything outside this directory.
                 let eligible = entry.file_type().is_ok_and(|file_type| file_type.is_file());
                 if eligible {
+                    // Age gate: skip a recent file that may belong to a writer
+                    // that is still in flight.
+                    if !temp_is_stale(entry.metadata().and_then(|meta| meta.modified()).ok()) {
+                        continue;
+                    }
                     match fs::remove_file(entry.path()) {
                         Ok(()) => {}
                         // Already gone: another process cleaned it up after
@@ -1389,6 +1416,63 @@ unknown_field = "oops"
         assert_eq!(config, loaded);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh temp file may belong to a writer that is still in flight.
+    ///
+    /// `write_atomic` sweeps stale temps *before* creating its own, so an
+    /// age-blind sweep deletes a concurrent writer's live temp between its
+    /// `create_secure_temp_file` and its `rename` — failing that write even
+    /// though it had already succeeded. The sweep must therefore leave a
+    /// recent `.greggd-*.toml.tmp` alone.
+    #[test]
+    fn write_atomic_leaves_a_concurrent_writers_temp_alone() {
+        let dir = std::env::temp_dir().join("greggd_test_concurrent_temp");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let in_flight = dir.join(".greggd-inflight-1234.toml.tmp");
+        fs::write(&in_flight, "half-written").unwrap();
+
+        Config::default()
+            .write_atomic(&dir.join("config.toml"))
+            .unwrap();
+
+        assert!(
+            in_flight.exists(),
+            "a concurrent writer's in-flight temp must survive another writer's sweep"
+        );
+        assert_eq!(
+            fs::read_to_string(&in_flight).unwrap(),
+            "half-written",
+            "the in-flight temp must not have been truncated or replaced"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The age gate still cleans up after a crashed writer, and only after one.
+    #[test]
+    fn temp_staleness_gate_is_about_age() {
+        let now = std::time::SystemTime::now();
+        let ago = |seconds: u64| now.checked_sub(std::time::Duration::from_secs(seconds));
+
+        assert!(
+            !temp_is_stale(Some(now)),
+            "a just-created temp is another writer's in-flight file"
+        );
+        assert!(!temp_is_stale(Some(ago(1).unwrap())));
+        assert!(
+            temp_is_stale(Some(ago(STALE_TEMP_AGE.as_secs() + 60).unwrap())),
+            "a crashed writer's temp must eventually be cleaned up"
+        );
+        assert!(
+            !temp_is_stale(None),
+            "an unreadable mtime fails closed: skip rather than delete"
+        );
+        assert!(
+            !temp_is_stale(Some(now + std::time::Duration::from_secs(3600))),
+            "an mtime in the future (clock skew) fails closed: skip rather than delete"
+        );
     }
 
     #[test]

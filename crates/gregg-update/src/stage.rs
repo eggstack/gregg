@@ -19,8 +19,29 @@ use crate::error::UpdateError;
 /// a pre-epoch clock that always yields `0`) never share a name.
 static PROBE_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Quote a path for a POSIX shell command line.
+///
+/// Wraps in single quotes and escapes an embedded `'` as `'\''`, so a path
+/// with a space stays one word and `$`, backticks, globs, and every other
+/// metacharacter stay literal. Same convention as the `shell_quote` helper in
+/// `greggd`'s startup writer; it is duplicated rather than imported because
+/// the crate dependency is one-way (`greggd` depends on `gregg-update`).
+///
+/// Display-only, so this is the one place a path may be rendered lossy: bytes
+/// that are not UTF-8 cannot be spelled as a single-quoted literal. Command
+/// arguments and filesystem paths in this crate are never lossy-converted.
+#[must_use]
+pub fn unix_shell_quote(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\\''"))
+}
+
 /// Render the exact command an operator should rerun with the privilege level
 /// required by the host platform. The updater never performs elevation itself.
+///
+/// `operation` is deliberately left unquoted: every call site passes a
+/// controlled literal from this crate's own vocabulary (`update`, `uninstall`,
+/// `uninstall --purge`) — verbs and flags, never a path or other input — so it
+/// carries no metacharacter. The executable is real data and is quoted.
 #[must_use]
 pub fn elevated_rerun_hint(exe: &Path, operation: &str) -> String {
     #[cfg(windows)]
@@ -32,7 +53,7 @@ pub fn elevated_rerun_hint(exe: &Path, operation: &str) -> String {
     }
     #[cfg(not(windows))]
     {
-        format!("sudo {} {operation}", exe.display())
+        format!("sudo {} {operation}", unix_shell_quote(exe))
     }
 }
 
@@ -277,7 +298,7 @@ mod tests {
         };
         let msg = err.to_string();
         #[cfg(not(windows))]
-        assert!(msg.contains("sudo /usr/local/bin/gregg update"));
+        assert!(msg.contains("sudo '/usr/local/bin/gregg' update"));
         #[cfg(windows)]
         {
             assert!(msg.contains("Administrator"));
@@ -291,12 +312,56 @@ mod tests {
         let hint = elevated_rerun_hint(Path::new("/tmp/greggd"), "uninstall --purge");
         assert!(hint.contains("uninstall --purge"));
         #[cfg(not(windows))]
-        assert!(hint.starts_with("sudo /tmp/greggd"));
+        assert!(hint.starts_with("sudo '/tmp/greggd'"));
         #[cfg(windows)]
         {
             assert!(hint.contains("Administrator"));
             assert!(!hint.contains("sudo"));
         }
+    }
+
+    #[test]
+    fn shell_quote_renders_posix_single_quoted_literal() {
+        // Plain path: quoted, so the shape can never depend on the content.
+        assert_eq!(
+            unix_shell_quote(Path::new("/usr/local/bin/greggd")),
+            "'/usr/local/bin/greggd'"
+        );
+        // The reported bug: an install path with a space.
+        assert_eq!(
+            unix_shell_quote(Path::new("/opt/My Tools/greggd")),
+            "'/opt/My Tools/greggd'"
+        );
+        // An embedded single quote closes and reopens the literal: `'\''`.
+        assert_eq!(
+            unix_shell_quote(Path::new("/opt/it's here/greggd")),
+            "'/opt/it'\\''s here/greggd'"
+        );
+        // Metacharacters are inert inside single quotes — no `$` or backtick
+        // expansion reaches the shell.
+        let inert = unix_shell_quote(Path::new("/opt/$HOME `id` */greggd"));
+        assert_eq!(inert, "'/opt/$HOME `id` */greggd'");
+        assert!(inert.starts_with('\'') && inert.ends_with('\''));
+        // Empty input still yields a valid (empty) quoted word.
+        assert_eq!(unix_shell_quote(Path::new("")), "''");
+    }
+
+    #[test]
+    fn elevated_hint_quotes_a_path_with_spaces() {
+        // The operator pastes this verbatim: an unquoted path here runs
+        // `/opt/My` with `Tools/greggd` as arguments and silently fails.
+        let hint = elevated_rerun_hint(Path::new("/opt/My Tools/greggd"), "update");
+        #[cfg(not(windows))]
+        assert_eq!(hint, "sudo '/opt/My Tools/greggd' update");
+        #[cfg(windows)]
+        assert_eq!(
+            hint,
+            "run from an Administrator terminal/PowerShell: \"/opt/My Tools/greggd\" update"
+        );
+        // A hostile path cannot escape the literal.
+        let hostile = elevated_rerun_hint(Path::new("/tmp/a;rm -rf ~/'x"), "uninstall");
+        #[cfg(not(windows))]
+        assert_eq!(hostile, "sudo '/tmp/a;rm -rf ~/'\\''x' uninstall");
     }
 
     #[test]

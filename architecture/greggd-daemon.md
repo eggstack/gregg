@@ -447,7 +447,19 @@ and compare, then rename; the final daemon config is relaxed to `0644` because i
 and read-only `croncheck`/`status`/`configprint` must work for unprivileged
 operators and cron. Systemd/launchd installs repair older `0600` system
 configs to `0644` with a traversable (`0755`) parent; the Unix control
-socket stays `0600`.
+socket stays `0600`. That repair **adds** the bits an unprivileged open needs and
+leaves every other bit alone, so an operator-managed `0750` directory or `0640`
+config keeps its group permissions instead of being widened to world-readable —
+`OR`-ing rather than replacing the mode is the whole point, and the predicate
+only fires when other-read is actually missing.
+
+The stale-temp sweep before a write is gated on **age** (five minutes), matching
+the client-side gate in `gregg::config::store`. A concurrent writer's in-flight
+`.greggd-*.toml.tmp` matches the same pattern, and unlinking it between its
+`create_secure_temp_file` and its `rename` failed that write on a write that had
+already succeeded — a daemon bootstrap racing a `startup install` or
+`uninstall --purge` was enough to trigger it. An unreadable mtime, or one in the
+future from clock skew, fails closed (skip) rather than open (delete).
 
 Platform defaults:
 - Linux: `/etc/gregg/greggd.toml`
