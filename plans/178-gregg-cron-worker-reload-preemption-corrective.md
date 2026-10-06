@@ -319,3 +319,19 @@ beside the existing coherence rule; `crates/gregg/README.md`,
 `.opencode/skills/gregg-client/SKILL.md` (rules 8 and 9), and `AGENTS.md` now say
 that "reload wakes the worker immediately" means active-round preemption rather
 than a stored notification consumed after the old fleet finishes.
+
+
+## Follow-up correction note (2026-10-06, Plan 180)
+
+A later review found one remaining backpressure gap after this plan's active HTTP
+round preemption. Once an endpoint fetch settles, the worker still awaits the
+bounded `updates.send(observation)` directly. If the 64-slot worker-to-engine
+channel is full, that await stops polling both reload and cancellation until the
+engine frees capacity. The pending history-gate commit is correctly withheld
+while blocked, so the transactional gate fix remains valid.
+
+Plan 180 owns the narrow correction: make the observation hand-off itself
+selectable by reload/cancellation, abandon superseded work without committing
+its gate entry, and keep ordinary full-channel backpressure when no signal is
+present. This plan's request preemption, target binding, coherence, four-read
+bound, and steady cadence remain the settled baseline.
