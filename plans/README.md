@@ -120,8 +120,8 @@ assertion was satisfied by a transient `fork` failure, so it then reported
 every affected test now proves its child actually ran before asserting a
 classification. All four remain independent of Plan 091.
 
-Plans 173-175 are the active post-closure cron correctness line opened from the
-2026-10-05 review of current main at `1aac89f`. Plan 173 corrects greggd's
+Plans 173-175 are the completed post-closure cron correctness line opened from the
+2026-10-05 review of main at `1aac89f`. Plan 173 corrects greggd's
 direct-child/output lifetime so an inherited stdout/stderr writer cannot retain
 the one global scheduler slot after the scheduled child exits. Plan 174 corrects
 the Gregg client daemon's live-summary dirty predicate, summary/history
@@ -132,6 +132,17 @@ and selected-job visibility on large/short layouts. The three plans preserve the
 settled read-only scheduler boundary, memory-only bounded history, one remote
 polling plane, and default-five display history. They are independent of Plan
 091 and do not include the unrelated current Windows EggPool test failure.
+
+Plans 176-178 are the active narrow follow-up correctives from the subsequent
+review of current main at `892a771`. Plan 176 makes the Windows EggPool
+full-result-channel cancellation regression deterministic and is test/evidence
+only unless a controlled fixture disproves the existing production select
+semantics. Plan 177 corrects one Plan-173 post-exit capture edge so an idle
+inherited writer on one stream cannot prevent the other ready stream from
+draining multiple chunks during the fixed 250 ms settle. Plan 178 bounds
+client-daemon reaction to config reload while a cron fleet round is active and
+makes history-gate advancement transactional with successful observation
+delivery. They remain independent of Plan 091 and of each other.
 
 Plan 175 is complete: the cron block is truthful about what it can actually
 know. Load rows state the relation they mean — only a load-delayed job prints
@@ -722,6 +733,9 @@ excluded.
 | [`173-greggd-scheduler-direct-child-output-lifecycle-corrective.md`](173-greggd-scheduler-direct-child-output-lifecycle-corrective.md) | Correct the greggd scheduler/output lifetime so direct-child exit, not inherited pipe EOF, releases the one global scheduled-child slot; keep bounded concurrent output capture and direct-child timing/attribution truthful | complete; two-phase child/output state machine with a fixed 250 ms post-exit settle, frozen direct-child timing, carried-index attribution; 76 scheduler tests + default local check green; stripped greggd +5,104 bytes; independent of 091 and 174-175 |
 | [`174-gregg-cron-client-daemon-coherence-and-polling-corrective.md`](174-gregg-cron-client-daemon-coherence-and-polling-corrective.md) | Publish live scheduler-summary/error transitions even with unchanged history revision; require coherent epoch+revision history, bind observations/gates to endpoint identity, eliminate the duplicate startup round, and use a small bounded cron request concurrency | complete; operator-visible publication predicate, coherent summary+history pair, target-bound observations/gates, one startup round, four reads in flight; 24 cron + 878 workspace tests + default local check green; **unblocks 175** |
 | [`175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md`](175-gregg-cron-tui-truthfulness-and-bounded-layout-corrective.md) | Correct cron load/elapsed/timestamp wording, account for stale/truncated rows truthfully, and keep the selected job/history visible with large job sets and constrained terminal height | complete; relation-by-meaning load labels, elapsed-vs-countdown grammar, `Z`-labelled record clocks, one row builder feeding both heights, reserved selected-job section, selection-centred job window, explicit viewport truncation; 47 renderer + 894 workspace tests + default local check green; no protocol change |
+| [`176-windows-eggpool-full-result-channel-test-determinism-corrective.md`](176-windows-eggpool-full-result-channel-test-determinism-corrective.md) | Replace the Windows-sensitive closed-port timing fixture with a deterministic proof that cancellation wins over a blocked send to the full bounded EggPool result channel | **planned** on current `892a771`; test/evidence corrective by default; independent of 091/177/178; closure requires the existing six-job CI to finish green |
+| [`177-greggd-post-exit-dual-stream-drain-progress-corrective.md`](177-greggd-post-exit-dual-stream-drain-progress-corrective.md) | Preserve Plan 173's 250 ms direct-child settle while allowing ready stdout/stderr streams to make independent post-exit progress when the other inherited stream remains open and idle | **planned**; depends on completed 173/current main; independent of 091/176/178; no protocol/process-group change |
+| [`178-gregg-cron-worker-reload-preemption-corrective.md`](178-gregg-cron-worker-reload-preemption-corrective.md) | Let accepted config reload/cancellation interrupt an active bounded cron fleet round, and commit the history gate only after a coherent observation is handed to the engine | **planned**; depends on completed 174/current main; independent of 091/176/177; preserves four-read bound and 30s steady cadence |
 
 Dependency order:
 
@@ -756,6 +770,9 @@ current post-154 main -> 155
 163 + 167 + current post-172 main -> 173
 166 + 167 + current post-172 main -> 174
 174 -> 175
+current 892a771 -> 176
+173 + current 892a771 -> 177
+174 + current 892a771 -> 178
 155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 Plan 161 coordinated the cron-observability/client-daemon line and is now closed with all of 162-167 complete: 162 `42e2fc2` settled the remote scheduler wire/output/memory/footprint contract before 163 changed greggd; 164 `b25ca04` built the client-daemon split, independently justified by duplicate TUI polling; 165 `c8f2542`/`ee6ad7e` added per-user lifecycle on the Plan-164 boundary; 166 `53c06e5` added the bounded local cron cache and plain `c` view on top of the remote scheduler plus clientd core; 167 `154ab36` closed the line on measured multi-client, restart, memory, payload, security, and footprint evidence. Plans 161-167 were and remain independent of Plan 091, and added no workflow, job, or matrix requirement.
 Plan 168 is the post-closure corrective pass for the one gap Plans 161 and 167 both flagged honestly: the Windows job had not been run. Running it showed the Windows half of the client daemon had been written but never compiled, so the Windows CI job had been red since Plan 164 landed. 168 corrected the transport (stream ownership, the owner-only SDDL descriptor, `PIPE_REJECT_REMOTE_CLIENTS` placement, the `windows-sys` feature gates, the `\\.\pipe\` endpoint name, a blocking-pool accept, and a `PeekNamedPipe` read), added a `WaitNamedPipeW` liveness probe so the `stop` confirmation stops answering "not running" for a running daemon, and added four Windows tests that execute the pipe path for the first time. Those tests then found a second, pre-existing defect: `FrontendFrame::ProtocolError(String)` can never be serialized because the enum is internally tagged, so every "here is why you were refused" frame had always been silently discarded. Plan 168 depends on 161-167 and remains independent of Plan 091, and adds no workflow, job, or matrix requirement.
@@ -770,7 +787,12 @@ whole cron fleet. Plan 175 follows 174 only so it is verified against corrected
 state delivery; it owns renderer truthfulness/layout defects and makes no
 protocol change. Plans 173 and 174 may be implemented in parallel; both are
 now complete, and Plan 175 followed 174 and is now complete too, so the
-173-175 line is closed.
+173-175 line is closed. Plans 176-178 do not reopen that line's architecture: 176 is a
+deterministic CI/test correction for the independently introduced EggPool
+backpressure test, 177 is a bounded output-completeness correction to 173's
+post-exit settle, and 178 is a reload/cancellation responsiveness correction to
+174's worker loop with the existing fleet-side target check retained as final
+authority.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
