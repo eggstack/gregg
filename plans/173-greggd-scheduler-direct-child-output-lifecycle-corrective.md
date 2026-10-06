@@ -331,3 +331,21 @@ failure these plans list under preserved exclusions: it is present in run
 touched by commit `1aac89f`, which predates all three plans. Everything else on
 Windows is green — 846 passed, 1 failed, up from 816 passed on the base run.
 No plan here changed EggPool behaviour, and no plan was allowed to widen into it.
+
+
+## Follow-up correction note (2026-10-05, Plan 177)
+
+A later review of the landed two-phase drain found one bounded
+output-completeness edge that does not invalidate this plan's direct-child
+liveness correction. During the fixed post-exit settle, stdout and stderr
+currently advance one `drain_step` each through a joined pair. If one stream is
+held open but idle by a descendant while the other has multiple chunks ready,
+the ready stream can consume one chunk and then wait behind the idle read until
+the settle deadline. The scheduler slot still releases at the correct fixed
+deadline, but bytes already available on the active stream can be omitted.
+
+Plan 177 owns the correction: keep the same frozen 250 ms deadline and
+single-task/borrowed-stream model, but let ready post-exit streams make
+independent progress. This plan's closure evidence, direct-child timing
+semantics, no-descendant-ownership boundary, and footprint record remain
+historical facts.
