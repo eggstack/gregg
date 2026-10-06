@@ -303,3 +303,20 @@ Documentation reconciled: `architecture/greggd-daemon.md`,
 and `AGENTS.md` now state that stdout and stderr progress independently within one
 fixed settle budget, and none of them claims descendant output is guaranteed or
 that greggd waits for descendant EOF.
+
+
+## Follow-up correction note (2026-10-06, Plan 179)
+
+A later review found that this plan's stream-to-stream fairness correction did
+not yet make the frozen settle deadline authoritative. `settle_output` uses a
+biased select with the two drain branches before `sleep_until(settle_deadline)`.
+When a descendant keeps at least one inherited stream continuously readable, a
+drain can therefore remain ready on every poll and beat the timer even after the
+250 ms deadline is ready. The direct-child timestamps remain frozen correctly,
+but the scheduler slot can stay owned beyond the intended settle bound.
+
+Plan 179 owns the narrow correction: retain independent alternating stream
+progress before the deadline, but make the frozen deadline outrank any ready
+drain once it fires. This plan's idle-stream completeness fix, no-descendant-
+ownership boundary, paired footprint evidence, and other closure results remain
+historical facts.
