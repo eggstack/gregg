@@ -214,11 +214,14 @@ Linux, macOS arm64, macOS Intel, Windows (full-workspace Clippy and Test, both
 release builds, SCM lifecycle smoke), MSRV Rust 1.89, and FreeBSD `gregg-host`
 native — so those boxes are now checked and each closure record carries a CI
 evidence note. The Windows steps are precisely the native authority the earlier
-withholding was waiting for, and the workflow itself is unmodified. The
-intermediate commits for Plans 179 and 180 were superseded by later pushes and
-are covered by this same green tree, so no separate run is claimed for them.
-Because all three are terminal, they unblock no remaining plan; Plan 091 is
-still the only in-progress plan, gated solely on its own extended soak record.
+withholding was waiting for, and the workflow itself is unmodified. Later run
+`37485114828` on the documentation-only record commit `0670165` confirms those
+evidence notes also left `main` green; repeated green runs are not a standing
+requirement. The intermediate commits for Plans 179 and 180 were superseded by
+later pushes and are covered by this same green tree, so no separate run is
+claimed for them. Because all three are terminal, they unblock no remaining
+plan; Plan 091 is still the only in-progress plan, gated solely on its own
+extended soak record.
 
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already

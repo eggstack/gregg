@@ -401,3 +401,6 @@ green on the commit that carries the deadline-first ordering — including the
 `-D warnings` gate that Plan 177 once failed on a test-only predicate. The
 intermediate commits for Plans 180 and 181 were superseded by later pushes and
 are covered by this same green tree, so no separate run is claimed for them.
+Later run `37485114828` on the documentation-only record commit `0670165`
+confirms this evidence note itself also left `main` green; repeated green runs
+are not a standing requirement.

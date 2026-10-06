@@ -412,4 +412,6 @@ The Windows Test step is the platform where the reload/cancel round-selection
 regressions actually execute, so it is the authority this plan was withholding.
 The workflow is unmodified. The intermediate commits for Plans 179 and 181 were
 superseded by later pushes and are covered by this same green tree, so no
-separate run is claimed for them.
+separate run is claimed for them. Later run `37485114828` on the
+documentation-only record commit `0670165` confirms this evidence note itself
+also left `main` green; repeated green runs are not a standing requirement.
