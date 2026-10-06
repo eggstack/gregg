@@ -972,6 +972,23 @@ shutdown does not wait on a remote request deadline either. The concurrency boun
 is unchanged and rounds never overlap: a tick that comes due during a long round
 is handled by `MissedTickBehavior::Delay`.
 
+"Preemptible inside the round" covers **both** places a round can wait, not just
+the HTTP reads. A fetch that has already finished still has to reach the bounded
+64-slot worker-to-engine channel, and that send is the one await that can park
+for an unbounded time — the engine is the only receiver, so a full channel means
+"not draining". `deliver_observation` therefore selects cancellation, then
+reload, then the send, rather than awaiting `send` bare. Without it a reload
+could sit behind receiver capacity for work the operator had already superseded,
+which made the claim above false under exactly the pressure it exists for.
+Reload and cancellation are ordered *ahead* of the send so a slot freeing at the
+same instant as a stored signal cannot let the obsolete observation win, and its
+pending history-gate commit with it.
+
+This is bounded loss of superseded work, not lossy steady-state delivery: with
+no reload and no cancellation the send still applies ordinary backpressure and
+the round waits for a slot rather than dropping an observation. The channel stays
+bounded at 64 and the in-flight window at four.
+
 ### One publication per real change
 
 A frontend document is republished when the **operator-visible** scheduler state
@@ -1016,13 +1033,17 @@ changes neither, so rewriting a config by hand does not silently discard history
 A coherent pair advances the gate **only after its observation has been handed to
 the engine**. Settling a fetch and delivering what it produced are two steps, and
 settling used to advance the gate itself: a document that was then dropped — by a
-reload preempting the round, or by the engine channel closing — still told the
+reload preempting the round, by cancellation, by a blocked hand-off abandoned to a
+signal, or by the engine channel closing — still told the
 next round "already fetched", so an equivalent or unchanged target could suppress
 its history fetch indefinitely while no cache ever received a byte. `settle` now
 returns the observation plus a *pending* gate commit, and the round applies that
 commit only after the bounded worker-to-engine channel accepts the observation.
-The invariant is simply: **"the gate says fetched" implies the coherent document
-reached the engine.**
+Every non-delivery path — superseded, cancelled, or undeliverable — returns before
+that line, so no abandoned observation can ever reach it. The invariant is
+simply: **"the gate says fetched" implies the coherent document reached the
+engine.** The gate stays worker-private; "delivered" means accepted by that one
+bounded channel, and no acknowledgement traffic was added.
 
 ### Epoch is part of every identity
 

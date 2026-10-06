@@ -335,3 +335,14 @@ selectable by reload/cancellation, abandon superseded work without committing
 its gate entry, and keep ordinary full-channel backpressure when no signal is
 present. This plan's request preemption, target binding, coherence, four-read
 bound, and steady cadence remain the settled baseline.
+
+### Resolution (2026-10-06, after Plan 180 closed)
+
+Plan 180 landed the correction this note anticipated. The bare
+`updates.send(observation).await` is replaced by `deliver_observation`, which
+selects cancellation, then reload, then the send; only its `Ok(())` reaches
+`gate.commit(commit)`, so every non-delivery path still fails closed. This plan's
+claim that reload and cancellation are selected inside an active round is now
+true for the whole round rather than only while HTTP work is outstanding, and its
+transactional gate invariant is unchanged. See
+`180-gregg-cron-observation-delivery-preemption-corrective.md`.

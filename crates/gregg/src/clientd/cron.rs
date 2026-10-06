@@ -576,11 +576,20 @@ impl CronWorker {
 
     /// Observe every endpoint once, at most [`CRON_MAX_IN_FLIGHT`] at a time.
     ///
-    /// The round itself is preemptible: reload and cancellation are selected
-    /// *inside* it, so an accepted config change does not wait out the
-    /// superseded fleet's remaining request deadlines. Preemption drops the
-    /// in-flight futures — they are plain futures on this task, so dropping them
-    /// cancels the requests without spawning or leaking anything.
+    /// The round itself is fully preemptible: reload and cancellation are
+    /// selected *inside* it, so an accepted config change does not wait out the
+    /// superseded fleet's remaining request deadlines — and not only while HTTP
+    /// work is outstanding. A finished fetch still has to reach the bounded
+    /// worker-to-engine channel, and that hand-off is the one place a round can
+    /// park: with [`CRON_CHANNEL_CAPACITY`] slots occupied and the engine not
+    /// draining, `send().await` would leave the round polling neither reload nor
+    /// cancellation until a slot happened to free. [`deliver_observation`] makes
+    /// the hand-off itself preemptible, so a reload cannot wait on receiver
+    /// capacity for work the operator has already superseded.
+    ///
+    /// Preemption drops the in-flight futures — they are plain futures on this
+    /// task, so dropping them cancels the requests without spawning or leaking
+    /// anything.
     ///
     /// The gate is read through one immutable round snapshot and mutated serially
     /// as results land, so history decisions stay single owner, and each commit
@@ -617,12 +626,13 @@ impl CronWorker {
                 Some(finished) = in_flight.next() => finished,
             };
             let (observation, commit) = settle(finished);
-            if updates.send(observation).await.is_err() {
-                return RoundOutcome::EngineGone;
+            if let Err(outcome) = deliver_observation(updates, reload, cancel, observation).await {
+                return outcome;
             }
             // Only now. A gate that claimed "fetched" for a document the
             // engine never received would suppress the next fetch and lose the
-            // target's history silently.
+            // target's history silently. A superseded, cancelled, or undeliverable
+            // observation returns above instead of ever reaching this line.
             if let Some(commit) = commit {
                 gate.commit(commit);
             }
@@ -656,6 +666,46 @@ enum RoundOutcome {
     EngineGone,
     /// Shutdown arrived mid-round.
     Cancelled,
+}
+
+/// Hand one settled observation to the engine, or report why the round ended.
+///
+/// `Ok(())` means the bounded worker-to-engine channel accepted the observation,
+/// which is the *only* thing that may advance the history gate. Every other
+/// outcome abandons the observation, and the round stops there.
+///
+/// Why this is its own preemptible primitive rather than a bare
+/// `updates.send(observation).await`: the send is the one await in a round that
+/// can park for an unbounded time, because the channel is bounded and the engine
+/// is the only receiver. While parked, the round polls neither `reload` nor
+/// `cancel`, so a config reload could wait for receiver capacity instead of
+/// discarding the superseded observation and re-snapshotting the fleet.
+///
+/// Reload and cancellation are ordered ahead of the send deliberately. A slot
+/// freeing at the same instant as a stored signal must not let the old
+/// observation win: the work it describes is already obsolete, and the gate must
+/// not record a document the engine was never going to receive in this lifetime.
+///
+/// This is bounded loss of *superseded* work, not lossy steady-state delivery.
+/// With no reload and no cancellation the send still applies ordinary
+/// backpressure and the round waits for a slot rather than dropping an
+/// observation. The channel stays bounded at [`CRON_CHANNEL_CAPACITY`].
+async fn deliver_observation(
+    updates: &mpsc::Sender<CronObservation>,
+    reload: &Notify,
+    cancel: &CancellationToken,
+    observation: CronObservation,
+) -> Result<(), RoundOutcome> {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => Err(RoundOutcome::Cancelled),
+        () = reload.notified() => Err(RoundOutcome::Reloaded),
+        delivered = updates.send(observation) => match delivered {
+            Ok(()) => Ok(()),
+            // The engine is gone, which is the only reason to stop.
+            Err(_) => Err(RoundOutcome::EngineGone),
+        },
+    }
 }
 
 /// Fetch one endpoint's summary, and its history only when the gate asks.
@@ -772,6 +822,7 @@ fn settle(finished: EndpointFetch) -> (CronObservation, Option<PendingGateCommit
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clientd::daemon::CRON_CHANNEL_CAPACITY;
     use gregg_protocol::{
         SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobHistoryV2, SchedulerJobV2,
         SchedulerOutcomeV2, SchedulerOutputV2, SchedulerRunRecordV2, SchedulerRunSummaryV2,
@@ -2226,5 +2277,368 @@ mod tests {
             meter.peak() > 1,
             "the window must overlap requests for this to mean anything"
         );
+    }
+
+    /// Fill the *real* bounded observation channel to capacity.
+    ///
+    /// Plan 180's precondition must not be synthesized through a large live
+    /// fleet: an indirect fill depends on request timing and proves nothing about
+    /// the hand-off. Each placeholder is a distinct observation stamped with its
+    /// own `now_unix_ms`, so a test can prove which one a freed slot received.
+    fn saturated_updates() -> (
+        mpsc::Sender<CronObservation>,
+        mpsc::Receiver<CronObservation>,
+    ) {
+        let (tx, rx) = mpsc::channel::<CronObservation>(CRON_CHANNEL_CAPACITY);
+        for slot in 0..CRON_CHANNEL_CAPACITY as u64 {
+            tx.try_send(observation(
+                SummaryOutcome::Failed(CronFetchError::Transport(format!("fill-{slot}"))),
+                slot,
+            ))
+            .expect("a slot is free while filling to capacity");
+        }
+        assert_eq!(rx.len(), CRON_CHANNEL_CAPACITY);
+        (tx, rx)
+    }
+
+    /// A full observation channel must not delay a reload.
+    ///
+    /// `send().await` inside the round's completion branch parked the whole
+    /// round: reload and cancellation were both unpolled until the engine
+    /// drained a slot, so an accepted config change could wait on receiver
+    /// capacity for work the operator had already superseded.
+    ///
+    /// Bounded by `yield_now` rather than a timer throughout: with no reload and
+    /// no cancellation the delivery is genuinely pending, so this fails fast
+    /// instead of hanging the moment delivery stops observing the signal.
+    #[tokio::test]
+    async fn a_full_observation_channel_never_delays_a_reload() {
+        let (tx, rx) = saturated_updates();
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        let mut blocked = Box::pin(deliver_observation(
+            &tx,
+            &reload,
+            &cancel,
+            observation(
+                SummaryOutcome::Supported(Box::new(summary_document(1, epoch()))),
+                1,
+            ),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // No receiver capacity is freed: only the stored reload signal arrives.
+        reload.notify_one();
+        let delivered = tokio::select! {
+            biased;
+            delivered = blocked.as_mut() => delivered,
+            () = tokio::task::yield_now() => panic!("a reload must complete the blocked delivery"),
+        };
+        assert_eq!(
+            delivered,
+            Err(RoundOutcome::Reloaded),
+            "the reload preempts the hand-off rather than queueing behind it"
+        );
+
+        // The superseded observation never entered the channel.
+        assert_eq!(
+            rx.len(),
+            CRON_CHANNEL_CAPACITY,
+            "an abandoned observation must not occupy a slot"
+        );
+    }
+
+    /// The mirror case with cancellation instead of reload.
+    #[tokio::test]
+    async fn a_full_observation_channel_never_delays_cancellation() {
+        let (tx, rx) = saturated_updates();
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        let mut blocked = Box::pin(deliver_observation(
+            &tx,
+            &reload,
+            &cancel,
+            observation(
+                SummaryOutcome::Supported(Box::new(summary_document(1, epoch()))),
+                1,
+            ),
+        ));
+        tokio::select! {
+            biased;
+            delivered = &mut blocked => panic!("a full channel must block delivery, got {delivered:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        cancel.cancel();
+        let delivered = tokio::select! {
+            biased;
+            delivered = blocked.as_mut() => delivered,
+            () = tokio::task::yield_now() => panic!("cancellation must complete the blocked delivery"),
+        };
+        assert_eq!(
+            delivered,
+            Err(RoundOutcome::Cancelled),
+            "shutdown preempts the hand-off"
+        );
+        assert_eq!(rx.len(), CRON_CHANNEL_CAPACITY);
+    }
+
+    /// The steady-state half of the contract: with no signal, a full channel
+    /// still applies ordinary bounded backpressure rather than dropping the
+    /// observation.
+    ///
+    /// This is what keeps the preemption from quietly becoming lossy delivery.
+    #[tokio::test]
+    async fn a_full_observation_channel_still_delivers_once_a_slot_frees() {
+        let (tx, mut rx) = saturated_updates();
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        let mut blocked = Box::pin(deliver_observation(
+            &tx,
+            &reload,
+            &cancel,
+            observation(
+                SummaryOutcome::Supported(Box::new(summary_document(2, epoch()))),
+                7,
+            ),
+        ));
+        tokio::select! {
+            biased;
+            outcome = &mut blocked => panic!("a full channel must block delivery, got {outcome:?}"),
+            () = tokio::task::yield_now() => {}
+        }
+
+        // Free exactly one slot; the observation must take it rather than be
+        // dropped. The bounded mpsc is FIFO, so the newcomer appends behind the
+        // placeholders that are still buffered.
+        rx.recv().await.expect("a buffered placeholder");
+        assert_eq!(
+            blocked.await,
+            Ok(()),
+            "no signal means ordinary backpressure, then delivery"
+        );
+        assert_eq!(
+            rx.len(),
+            CRON_CHANNEL_CAPACITY,
+            "delivery refilled the slot it took"
+        );
+        for expected in 1..CRON_CHANNEL_CAPACITY as u64 {
+            assert_eq!(
+                rx.recv().await.expect("a buffered placeholder").now_unix_ms,
+                expected,
+                "the remaining placeholders stay intact and in order"
+            );
+        }
+        assert_eq!(
+            rx.recv()
+                .await
+                .expect("the delivered observation")
+                .now_unix_ms,
+            7,
+            "the observation must arrive, not be dropped"
+        );
+    }
+
+    /// Signal priority at simultaneous readiness.
+    ///
+    /// The channel has room *and* a reload permit is already stored, so the
+    /// signal and the send are both ready on the very first poll. The `biased`
+    /// ordering must let the reload win, or the superseded observation would be
+    /// handed to the engine — and its history gate committed — for a fleet the
+    /// operator has already replaced.
+    #[tokio::test]
+    async fn a_stored_reload_outranks_a_ready_send() {
+        let (tx, mut rx) = mpsc::channel::<CronObservation>(CRON_CHANNEL_CAPACITY);
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+        // A stored permit exists *before* delivery starts, so reload and the
+        // send are both ready on the very first poll.
+        reload.notify_one();
+
+        assert_eq!(
+            deliver_observation(
+                &tx,
+                &reload,
+                &cancel,
+                observation(
+                    SummaryOutcome::Supported(Box::new(summary_document(3, epoch()))),
+                    1
+                ),
+            )
+            .await,
+            Err(RoundOutcome::Reloaded),
+            "reload is ordered ahead of the send, so it wins the tie"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "the observation the reload superseded must not be delivered"
+        );
+
+        // With the reload consumed and capacity still free, the identical
+        // delivery now succeeds — proving the first result was ordering, not a
+        // channel that had no room.
+        assert_eq!(
+            deliver_observation(
+                &tx,
+                &reload,
+                &cancel,
+                observation(
+                    SummaryOutcome::Supported(Box::new(summary_document(4, epoch()))),
+                    2
+                ),
+            )
+            .await,
+            Ok(())
+        );
+        assert!(rx.try_recv().is_ok());
+    }
+
+    /// Cancellation outranks reload, which outranks delivery.
+    #[tokio::test]
+    async fn cancellation_outranks_a_stored_reload() {
+        let (tx, mut rx) = mpsc::channel::<CronObservation>(CRON_CHANNEL_CAPACITY);
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+        reload.notify_one();
+        cancel.cancel();
+
+        assert_eq!(
+            deliver_observation(
+                &tx,
+                &reload,
+                &cancel,
+                observation(
+                    SummaryOutcome::Supported(Box::new(summary_document(3, epoch()))),
+                    1
+                ),
+            )
+            .await,
+            Err(RoundOutcome::Cancelled)
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// A closed receiver is still the only `EngineGone`.
+    #[tokio::test]
+    async fn a_closed_observation_channel_ends_the_round() {
+        let (tx, rx) = mpsc::channel::<CronObservation>(CRON_CHANNEL_CAPACITY);
+        drop(rx);
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        assert_eq!(
+            deliver_observation(
+                &tx,
+                &reload,
+                &cancel,
+                observation(
+                    SummaryOutcome::Supported(Box::new(summary_document(5, epoch()))),
+                    1
+                ),
+            )
+            .await,
+            Err(RoundOutcome::EngineGone)
+        );
+    }
+
+    /// Round-level: a blocked observation hand-off cannot keep the old snapshot
+    /// alive after an accepted reload.
+    ///
+    /// The helper tests above pin the primitive. This proves the round actually
+    /// uses it — a full channel plus a downloaded history document must return
+    /// `Reloaded` without waiting for the engine, abandoning the observation and
+    /// leaving the gate as though the history had never been fetched.
+    ///
+    /// Bounded by `yield_now` throughout rather than a timer, so the mutation
+    /// fails fast instead of hanging the suite.
+    #[tokio::test]
+    async fn a_reload_preempts_a_round_blocked_on_the_observation_channel() {
+        let server = spawn_counting_server(1).await;
+        // The real channel, already at capacity: the round's first settled
+        // observation has nowhere to go.
+        let (tx, rx) = saturated_updates();
+        let mut worker = CronWorker::new(Duration::from_secs(10));
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        let outcome = {
+            let mut round = Box::pin(worker.round(
+                vec![gated_endpoint("sys", server.port)],
+                &tx,
+                &reload,
+                &cancel,
+            ));
+            // Drive the round until it has downloaded history and then parked in
+            // the hand-off. Yielding lets the executor run the server, so this
+            // converges without any wall-clock bound.
+            for _ in 0..100_000 {
+                tokio::select! {
+                    biased;
+                    outcome = &mut round => panic!(
+                        "the round must park on the full observation channel, got {outcome:?}"
+                    ),
+                    () = tokio::task::yield_now() => {}
+                }
+                if server.history_hits() == 1 {
+                    break;
+                }
+            }
+            assert_eq!(
+                server.history_hits(),
+                1,
+                "the history document really was downloaded before delivery"
+            );
+            // Well past the fetch: the round is now blocked on the full channel.
+            for _ in 0..10_000 {
+                tokio::select! {
+                    biased;
+                    outcome = &mut round => panic!(
+                        "a full channel and no signal must keep the round parked, got {outcome:?}"
+                    ),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+
+            reload.notify_one();
+            let mut parked = Box::pin(&mut round);
+            tokio::select! {
+                biased;
+                outcome = &mut parked => outcome,
+                () = tokio::task::yield_now() => {
+                    panic!("a reload must end the round that is blocked on delivery")
+                }
+            }
+        };
+
+        assert_eq!(outcome, RoundOutcome::Reloaded);
+        assert_eq!(
+            rx.len(),
+            CRON_CHANNEL_CAPACITY,
+            "the abandoned observation must not occupy a slot"
+        );
+        let key = target_key("sys", "127.0.0.1", server.port);
+        assert!(
+            worker.gate.needs(&key, &summary_document(1, epoch())),
+            "an abandoned observation must leave the gate asking for that history"
+        );
+    }
+
+    /// No steady-state budget regression: the in-flight window and the observation
+    /// channel capacity are unchanged by the preemption. Cadence and
+    /// revision-driven history are locked by
+    /// `startup_runs_exactly_one_round_before_the_first_period`,
+    /// `the_in_flight_request_count_never_exceeds_the_cron_bound`, and
+    /// `an_unchanged_revision_suppresses_the_history_body_entirely`.
+    #[tokio::test]
+    async fn the_cron_budgets_are_unchanged() {
+        assert_eq!(CRON_CHANNEL_CAPACITY, 64);
+        assert_eq!(CRON_MAX_IN_FLIGHT, 4);
     }
 }

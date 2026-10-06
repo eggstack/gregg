@@ -118,7 +118,10 @@ const MAX_STOP_SKIPPED_DOCUMENTS: usize = 8;
 /// Bounded: a full channel means the engine is not draining, and an unbounded
 /// one would let a fleet of endpoints accumulate observations faster than they
 /// can be applied.
-const CRON_CHANNEL_CAPACITY: usize = 64;
+///
+/// `pub(crate)` so the cron worker's hand-off regressions can fill the real
+/// channel rather than synthesize a full one indirectly.
+pub(crate) const CRON_CHANNEL_CAPACITY: usize = 64;
 
 /// One publication: the encoded frame plus the generation it carries.
 struct Document {

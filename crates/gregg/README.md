@@ -251,10 +251,17 @@ The client daemon owns this plane, so it polls whether or not any TUI is
 attached. It observes the fleet with at most four reads in flight, and an
 accepted `Ctrl-R` config reload interrupts the round it lands in: the in-flight
 requests are dropped, the new endpoint list is read, and a fresh round starts
-immediately instead of waiting out the old fleet's request deadlines. History is
-re-downloaded only after a fetched document has actually been handed to the
-engine, so an interrupted round never marks a target's history as already
-fetched.
+immediately instead of waiting out the old fleet's request deadlines.
+
+"Interrupts the round it lands in" covers both places a round can wait, not just
+the remote reads. Handing a finished observation to the engine goes through the
+same bounded 64-slot channel and can park there when the engine is not draining,
+so cancellation and reload are selected ahead of that send rather than after it.
+Without that, a reload could wait on receiver capacity for work already
+superseded. With no signal in flight the channel still applies ordinary
+backpressure, so nothing is silently dropped. History is re-downloaded only after
+a fetched document has actually been handed to the engine, so an interrupted or
+abandoned round never marks a target's history as already fetched.
 
 A `greggd` that does not serve the routes is reported as *unsupported*, which
 is the normal state for an older daemon and never marks the system offline: the
