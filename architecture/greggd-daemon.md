@@ -293,13 +293,26 @@ EOF. At the bound greggd preserves every byte already folded into the
 fixed-capacity tails, closes the read handles, finalizes the terminal record,
 and frees the slot — a descendant that writes after that point is outside the
 direct-child execution/history contract, and greggd does not block the scheduler,
-spawn a process group, or kill anything it did not start to capture it. The
-frozen exit, its status, and its settle deadline all live on the `RunningChild`
-rather than in the completion future, so a completion future cancelled and
-rebuilt by a wake keeps the first instant and cannot restart the settle budget.
-Terminal attribution uses the configuration index the child was launched with;
-the running child carries it authoritatively, so there is no job-name search and
-no index-zero fallback.
+spawn a process group, or kill anything it did not start to capture it.
+
+Within that one settle budget the two streams make progress **independently**.
+One stream can be open and permanently idle — inherited by a descendant that has
+nothing left to say — so each iteration selects among one pending `drain_step`
+per unfinished stream and the frozen deadline, and whichever stream is ready
+first wins that iteration. The preferred branch alternates, so when both are
+continuously ready neither starves the other. A pending read on one stream
+therefore never withholds bytes already available on the other. Only bytes
+returned by a completed read are folded into the `RunningChild`-owned tails, so
+cancelling a losing read loses nothing. Descendant output is still not
+guaranteed: greggd never waits for descendant EOF, and the deadline is fixed at
+the direct child's exit and never restarted by a wake or by per-stream progress.
+
+The frozen exit, its status, and its settle deadline all live on the
+`RunningChild` rather than in the completion future, so a completion future
+cancelled and rebuilt by a wake keeps the first instant and cannot restart the
+settle budget. Terminal attribution uses the configuration index the child was
+launched with; the running child carries it authoritatively, so there is no
+job-name search and no index-zero fallback.
 
 Wire conversion happens after the byte bound: lossy UTF-8, then the frozen
 JSON-escaped length budget (512 escaped bytes per stream), with independent

@@ -160,7 +160,7 @@ No new workflow, job, matrix, or retry wrapper is required.
 - [x] No EggPool wire/config/API behavior changes.
 - [x] `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`,
       workspace tests, and `./scripts/check-local.sh` pass.
-- [ ] Native Windows CI executes the corrected test and the complete existing
+- [x] Native Windows CI executes the corrected test and the complete existing
       six-job workflow finishes green.
 
 ## Stop conditions
@@ -260,3 +260,11 @@ records are historical and are not rewritten; the deterministic replacement is
 81 `eggpool` tests pass, including the new deterministic fixture and the
 retained lifecycle tests. `cargo fmt --all -- --check`, workspace Clippy with
 `-D warnings`, and `./scripts/check-local.sh` are green.
+
+Native Windows CI is the only mechanism that can prove the original failure is
+gone, since the defect was Windows-scheduler-specific. Ordinary CI run
+`37407151408` on implementation SHA `2e14a83fef256e308418f6e03b485208aaade1f6`
+finished green across all six existing jobs — Linux, macOS arm64, macOS Intel,
+Windows (including full-workspace Clippy and Test), MSRV Rust 1.89, and FreeBSD
+`gregg-host` native. No new workflow, job, matrix, or retry wrapper was added; the
+workflow is unmodified.

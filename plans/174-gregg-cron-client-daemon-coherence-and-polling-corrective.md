@@ -444,3 +444,8 @@ preemption cannot mark a coherent history document fetched before its
 observation is handed to the engine. This plan's four-read concurrency bound,
 summary/history coherence, target-bound reducer, and steady 30-second cadence
 remain the settled baseline.
+
+**Resolved by Plan 178.** It made reload and cancellation preempt an active
+bounded round and moved the history-gate commit behind successful observation
+delivery. The four-read concurrency bound, summary/history coherence rule,
+target-bound reducer, and steady 30-second cadence recorded above are unchanged.

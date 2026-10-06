@@ -49,7 +49,10 @@ use tokio::sync::RwLock;
 /// One chunk is read, folded into the fixed-capacity tail, and reused. The
 /// child's pipe never accumulates more than this one scratch buffer on the
 /// daemon side, so a noisy child cannot grow daemon memory.
-const DRAIN_CHUNK: usize = 4096;
+///
+/// Crate-visible so the scheduler's post-exit settle tests can size their
+/// scripted readers against the real read size.
+pub(crate) const DRAIN_CHUNK: usize = 4096;
 
 /// Process-lifetime counter mixed into the epoch nonce.
 ///
@@ -137,7 +140,7 @@ impl OutputTail {
     /// Total bytes observed on this stream, regardless of how many were
     /// retained. Proves retention is independent of the child's output volume.
     #[cfg(test)]
-    fn total_bytes(&self) -> u64 {
+    pub(crate) fn total_bytes(&self) -> u64 {
         self.total_bytes
     }
 

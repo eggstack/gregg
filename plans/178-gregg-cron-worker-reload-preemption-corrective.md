@@ -1,6 +1,6 @@
 # Plan 178: Gregg cron worker reload preemption corrective
 
-Status: planned.
+Status: complete. See the closure record at the end.
 
 Depends on: completed Plan 174 plus current main at
 `892a77195b0a91c7d4e9fb7ee02d560e7ae64c83`.
@@ -152,23 +152,23 @@ coherence rule.
 
 ## Acceptance criteria
 
-- [ ] Accepted config reload can interrupt an active cron round and does not wait
+- [x] Accepted config reload can interrupt an active cron round and does not wait
       for the remaining old-fleet timeout waves.
-- [ ] In-flight requests from the superseded endpoint snapshot are dropped on
+- [x] In-flight requests from the superseded endpoint snapshot are dropped on
       reload; no unbounded task survives the round.
-- [ ] Cancellation interrupts an active round without waiting for request
+- [x] Cancellation interrupts an active round without waiting for request
       timeout.
-- [ ] `CRON_MAX_IN_FLIGHT` remains four and no new concurrency/config knob is
+- [x] `CRON_MAX_IN_FLIGHT` remains four and no new concurrency/config knob is
       added.
-- [ ] A history gate entry is committed only after its coherent observation has
+- [x] A history gate entry is committed only after its coherent observation has
       been handed to the engine.
-- [ ] Plan 174's endpoint identity rejection and epoch+revision coherence remain
+- [x] Plan 174's endpoint identity rejection and epoch+revision coherence remain
       authoritative and green.
-- [ ] Startup/cadence/history-fetch request budgets remain unchanged in the
+- [x] Startup/cadence/history-fetch request budgets remain unchanged in the
       no-reload case.
-- [ ] Focused cron/client-daemon tests, workspace tests, workspace Clippy, and
+- [x] Focused cron/client-daemon tests, workspace tests, workspace Clippy, and
       `./scripts/check-local.sh` pass.
-- [ ] Active client-daemon documentation states the bounded reload/preemption
+- [x] Active client-daemon documentation states the bounded reload/preemption
       semantics accurately.
 
 ## Stop conditions
@@ -193,3 +193,123 @@ Open a separate plan rather than broadening this one if:
 - EggPool behavior;
 - Plan 091 soak evidence;
 - new workflows/jobs/matrices.
+
+## Closure record
+
+Responsiveness and gate-transactionality corrective in
+`crates/gregg/src/clientd/cron.rs`. No stop condition was hit: the local IPC frame
+protocol is unchanged, no per-endpoint task is spawned, the cron cache stayed in
+the single-owner engine, and rounds never overlap or exceed the existing window.
+No new configuration field, dependency, workflow, or job.
+
+### Reload now preempts the round it lands in
+
+`CronWorker::round` takes the reload notification and the cancellation token, and
+selects among them *inside* the active round:
+
+```rust
+let finished = tokio::select! {
+    biased;
+    () = cancel.cancelled() => return RoundOutcome::Cancelled,
+    () = reload.notified() => return RoundOutcome::Reloaded,
+    Some(finished) = in_flight.next() => finished,
+};
+```
+
+The round returns a typed `RoundOutcome`. `Reloaded` is handled by `continue` in
+the outer loop, which re-reads the shared endpoint list, prunes history-gate keys
+absent from the new normalized target set via the existing `forget_absent`, and
+starts a fresh bounded round immediately — it does **not** fall through to the
+cadence wait. That distinction was the one real implementation trap: a first
+version that treated `Reloaded` and `Completed` identically passed the round but
+then parked on the next `select!`, so the reload test failed until the arms were
+split.
+
+Dropping the round drops its `FuturesUnordered`, and those futures *are* the
+requests, so in-flight HTTP is cancelled with no task to leak and nothing to
+abort. The round stays one task with one `FuturesUnordered`, `CRON_MAX_IN_FLIGHT`
+is still 4, and `MissedTickBehavior::Delay` still prevents an overlapping round, so
+the no-reload request budget is byte-for-byte unchanged.
+
+`biased` is deliberate: a stored reload permit must win over an endpoint result
+that happens to be ready in the same poll.
+
+### The history gate commits only after delivery
+
+`settle` no longer mutates the gate. It returns `(CronObservation,
+Option<PendingGateCommit>)`, where the commit carries the target's `(epoch,
+history_revision)` for the coherent document it produced. The round applies it
+only after `updates.send(observation).await` succeeds:
+
+```rust
+let (observation, commit) = settle(finished);
+if updates.send(observation).await.is_err() {
+    return RoundOutcome::EngineGone;
+}
+if let Some(commit) = commit {
+    gate.commit(commit);
+}
+```
+
+That closes the history-loss race: previously a coherent document that was then
+dropped — by a preempted round or a closed engine channel — still advanced the
+gate, so an equivalent or unchanged target could suppress every later history
+fetch while no cache ever received a byte. The invariant is now simply **"the gate
+says fetched" implies the coherent document reached the engine.**
+
+`HistoryGate::record` was replaced by `commit`, which takes a
+`PendingGateCommit` rather than a document, so the only way to advance the gate is
+to have produced one. `observe()` commits inline: returning the observation to its
+caller *is* the delivery, and that path has no channel hand-off.
+
+Coherence itself is unchanged — a straddling `(epoch, revision)` pair still is
+never merged, never produces a commit, and is still reported as a scheduler-scoped
+`Incoherent` diagnostic with the summary kept.
+
+### Regressions
+
+Five new deterministic tests, none of which sleeps for a 30- or 60-second
+duration:
+
+- `a_reload_interrupts_an_active_round_before_its_requests_time_out` — exactly
+  one full window of stalled endpoints (60 s, far beyond any bound the test waits
+  on), then a fleet replacement: the new target is observed within 10 s and read
+  exactly once.
+- `reload_latency_does_not_scale_with_the_superseded_fleet_size` — twelve stalled
+  endpoints, three timeout waves at a bound of four; the replacement target still
+  lands inside 5 s, and the meter's peak stays at or below `CRON_MAX_IN_FLIGHT`.
+- `cancellation_interrupts_an_active_round_without_a_request_timeout` — the worker
+  task ends while every request is still stalled.
+- `an_undelivered_history_document_never_advances_the_gate` — the engine channel
+  is dropped, so the round returns `EngineGone` after a history fetch that really
+  happened (`history_hits() == 1`); the gate still asks for history.
+- `a_delivered_history_document_advances_the_gate_and_suppresses_the_next_fetch` —
+  the delivered observation advances the gate, and the next unchanged round
+  suppresses the history body (`history_hits() == 1`, `summary_hits() == 2`).
+
+Both new invariants were mutation-tested. Restoring the old
+`in_flight.next().await` loop fails the reload and cancellation tests; moving the
+gate commit back ahead of the send fails the undelivered-history test.
+
+Plan 174's behaviors remain authoritative and green, covering the plan's
+regressions 3, 4, 7, and 10: `a_repointed_target_whose_numbers_collide_still_performs_first_discovery`,
+`a_target_key_distinguishes_a_repoint_from_an_equivalent_spelling`,
+`a_history_from_another_epoch_is_rejected_rather_than_merged`,
+`a_history_at_a_different_revision_is_rejected_the_same_way`,
+`an_unchanged_revision_suppresses_the_history_body_entirely`, and
+`a_revision_change_fetches_history_exactly_once`. Regression 9 is
+`startup_runs_exactly_one_round_before_the_first_period` plus
+`the_in_flight_request_count_never_exceeds_the_cron_bound`.
+
+### Verification
+
+29 `clientd::cron` tests pass (24 existing, 5 new),
+`cargo fmt --all -- --check`, workspace Clippy with `-D warnings`, workspace
+tests, and `./scripts/check-local.sh` are green.
+
+Documentation reconciled: `architecture/gregg-client.md` gains a dedicated
+"A reload preempts the round it lands in" section and states the gate-commit rule
+beside the existing coherence rule; `crates/gregg/README.md`,
+`.opencode/skills/gregg-client/SKILL.md` (rules 8 and 9), and `AGENTS.md` now say
+that "reload wakes the worker immediately" means active-round preemption rather
+than a stored notification consumed after the old fleet finishes.

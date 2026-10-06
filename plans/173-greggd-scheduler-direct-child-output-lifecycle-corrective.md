@@ -349,3 +349,8 @@ single-task/borrowed-stream model, but let ready post-exit streams make
 independent progress. This plan's closure evidence, direct-child timing
 semantics, no-descendant-ownership boundary, and footprint record remain
 historical facts.
+
+**Resolved by Plan 177.** It kept this plan's frozen 250 ms deadline and
+single-task/borrowed-stream model and made the two post-exit streams progress
+independently within that budget. The direct-child completion boundary, timing
+semantics, and no-descendant-ownership boundary recorded above are unchanged.

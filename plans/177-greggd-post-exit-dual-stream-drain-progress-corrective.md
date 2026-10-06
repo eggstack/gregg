@@ -1,6 +1,6 @@
 # Plan 177: greggd post-exit dual-stream drain progress corrective
 
-Status: planned.
+Status: complete. See the closure record at the end.
 
 Depends on: completed Plan 173 plus current main at
 `892a77195b0a91c7d4e9fb7ee02d560e7ae64c83`.
@@ -137,23 +137,23 @@ greggd waits for descendant EOF.
 
 ## Acceptance criteria
 
-- [ ] During the post-exit settle, an idle/open stdout cannot block ready stderr
+- [x] During the post-exit settle, an idle/open stdout cannot block ready stderr
       progress and an idle/open stderr cannot block ready stdout progress.
-- [ ] Multiple ready chunks on one stream can be consumed while the other stream
+- [x] Multiple ready chunks on one stream can be consumed while the other stream
       remains pending.
-- [ ] The original 250 ms settle deadline remains fixed at direct-child exit and
+- [x] The original 250 ms settle deadline remains fixed at direct-child exit and
       is never restarted by a wake or per-stream progress.
-- [ ] Direct-child finish time/duration and global-slot release semantics from
+- [x] Direct-child finish time/duration and global-slot release semantics from
       Plan 173 remain unchanged.
-- [ ] No spawned drain task, process-group ownership, descendant kill, whole
+- [x] No spawned drain task, process-group ownership, descendant kill, whole
       output buffer, or `wait_with_output` is introduced.
-- [ ] Existing flood, cancellation/rebuild, inherited-descriptor, shutdown, and
+- [x] Existing flood, cancellation/rebuild, inherited-descriptor, shutdown, and
       carried-index regressions remain green.
-- [ ] Focused scheduler tests, workspace tests, workspace Clippy, and
+- [x] Focused scheduler tests, workspace tests, workspace Clippy, and
       `./scripts/check-local.sh` pass.
-- [ ] Stripped paired `greggd` footprint is recorded and remains within the
+- [x] Stripped paired `greggd` footprint is recorded and remains within the
       existing scheduler ceiling or opens a separate explicit decision.
-- [ ] Active daemon architecture/skill documentation matches the corrected
+- [x] Active daemon architecture/skill documentation matches the corrected
       independent-progress semantics.
 
 ## Stop conditions
@@ -175,3 +175,115 @@ Open a separate plan rather than broadening this one if:
 - process groups/cgroups/job objects;
 - Plan 091 soak evidence;
 - new workflows/jobs/matrices.
+
+## Closure record
+
+Output-completeness corrective in `crates/greggd/src/scheduler.rs` plus a test
+seam in `scheduler/observation.rs`. No stop condition was hit: progress needed no
+detached task, the 250 ms settle is unchanged, greggd still never waits for
+descendant EOF, and no process-group or descendant ownership was introduced.
+
+### The edge, restated
+
+Plan 173's post-exit loop advanced one stdout step and one stderr step through a
+`tokio::join!` per iteration. With stdout holding several ready chunks and stderr
+inherited by a descendant that keeps the descriptor open without writing, the
+first iteration consumed one stdout chunk and then parked on the idle stderr read.
+Stdout could not issue its next read until stderr produced data, hit EOF, or the
+settle deadline won. The slot still freed on time — Plan 173's liveness correction
+is untouched — but bytes already available on the active stream were dropped from
+the retained tail purely because the *other* stream stayed open.
+
+### One helper, three independent futures
+
+The post-exit loop is now `settle_output`, which selects per iteration among:
+
+- one `drain_step` for stdout, while stdout is not finished;
+- one `drain_step` for stderr, while stderr is not finished;
+- `sleep_until(settle_deadline)`.
+
+Whichever stream is ready first wins that iteration, so a pending read on one can
+never withhold progress from the other. The `biased` preferred branch alternates
+each iteration, so when both streams are continuously ready neither starves the
+other for the whole settle.
+
+Two details make the guard meaningful rather than decorative:
+
+- **Finished streams are excluded by precondition, not by their return value.**
+  `drain_step` returns `false` immediately for a finished stream, so under `biased`
+  a completed stream would otherwise be permanently ready and win every iteration,
+  starving the live one. Each branch carries `if !*<stream>_done`.
+- **Each iteration strictly reduces what remains.** A `drain_step` either folds
+  bytes or marks its own stream finished, so the loop cannot spin.
+
+The deadline is passed in rather than recomputed, so neither a wake nor a
+per-stream read can extend the bound frozen at the child's exit. Nothing is
+spawned; the streams are still borrowed, and only bytes returned by a completed
+read are folded into the `RunningChild`-owned tails, so cancelling a losing read
+loses nothing. The frozen exit, its status, the settle deadline, both done flags,
+and both tails stay on `RunningChild`, so a future rebuilt by a wake retains
+them.
+
+### Deterministic helper-level tests
+
+`ScriptedReader` yields a fixed number of `DRAIN_CHUNK` blocks and then EOF;
+`IdleOpenReader` is permanently `Pending` and never registers a waker — the shape of
+a pipe whose only writer is an idle descendant. `poll_settle_once` drives the
+production helper under a `tokio::time::timeout(Duration::ZERO, …)`, the pattern
+already used by `a_settle_cancelled_by_a_wake_keeps_the_frozen_exit_and_budget`:
+a fresh future dropped one poll later, exactly what a deadline wake does. No
+`test-util` feature, no paused clock, and no wall-clock wait.
+
+- `an_idle_stderr_does_not_withhold_ready_stdout_chunks` — stdout's three chunks
+  and EOF are consumed in a single poll while stderr never becomes readable, and
+  the settle is still pending afterwards. `total_bytes()` proves three chunks, not
+  one; the retained tail is the final bounded 512 escaped bytes and is truncated.
+- `an_idle_stdout_does_not_withhold_ready_stderr_chunks` — the mirror case.
+- `two_ready_streams_both_make_progress_within_the_settle` — both streams reach
+  EOF without the deadline being consulted, so alternating preference starves
+  neither.
+- `a_silent_settle_ends_at_the_frozen_deadline_without_an_eof` — two permanently
+  idle streams end the settle at an already-expired deadline and neither reports
+  EOF, which is precisely the bound.
+
+Both mirror tests were mutation-tested: restoring the old `join!` implementation
+makes them fail (the ready stream cannot get past its first chunk), and they pass
+against the new helper. The process-level
+`an_inherited_output_writer_cannot_retain_the_global_child_slot`,
+`a_settle_cancelled_by_a_wake_keeps_the_frozen_exit_and_budget`,
+`shutdown_reaps_a_killed_child_despite_an_inherited_writer`,
+`output_flood_stays_bounded_and_never_deadlocks`, and the carried-index
+attribution regressions all remain green, so the end-to-end descendant behavior is
+still covered.
+
+`RunningChild::output_drained` is now used only by tests and is marked
+`#[cfg(test)]`; `DRAIN_CHUNK` and `OutputTail::total_bytes` became
+`pub(crate)`/`pub(crate)`-visible for the same reason.
+
+### Footprint
+
+Paired stripped release `greggd`, both built from this workspace with
+`cargo build --release -p greggd` and `strip`:
+
+| Build | Stripped bytes |
+|-------|----------------|
+| pre-change (`892a771`) | 3,312,456 |
+| post-change | 3,312,688 |
+| **delta** | **+232 (+0.007%)** |
+
+Plan 159's baseline is not re-baselined and no separate decision is opened. The
+scheduler line stands at 51,024 bytes over the 3,261,664 baseline, and Plan 162's
+explicit 3,400,000-byte ceiling is retained with 87,312 bytes of headroom. No new
+dependency.
+
+### Verification
+
+20 `greggd` scheduler/observation tests pass, `cargo fmt --all -- --check`,
+workspace Clippy with `-D warnings`, workspace tests, and
+`./scripts/check-local.sh` are green.
+
+Documentation reconciled: `architecture/greggd-daemon.md`,
+`crates/greggd/README.md`, `docs/daemon.md`, `.opencode/skills/greggd-daemon/SKILL.md`,
+and `AGENTS.md` now state that stdout and stderr progress independently within one
+fixed settle budget, and none of them claims descendant output is guaranteed or
+that greggd waits for descendant EOF.

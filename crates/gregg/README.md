@@ -247,6 +247,15 @@ Everything here is a read-only projection of remote scheduler state:
   `history_revision` changes, so it is never on the hot path to draw five job
   rows.
 
+The client daemon owns this plane, so it polls whether or not any TUI is
+attached. It observes the fleet with at most four reads in flight, and an
+accepted `Ctrl-R` config reload interrupts the round it lands in: the in-flight
+requests are dropped, the new endpoint list is read, and a fresh round starts
+immediately instead of waiting out the old fleet's request deadlines. History is
+re-downloaded only after a fetched document has actually been handed to the
+engine, so an interrupted round never marks a target's history as already
+fetched.
+
 A `greggd` that does not serve the routes is reported as *unsupported*, which
 is the normal state for an older daemon and never marks the system offline: the
 metrics plane owns reachability, and a healthy daemon with no cron jobs must not

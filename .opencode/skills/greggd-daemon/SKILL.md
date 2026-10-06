@@ -78,8 +78,14 @@ service lifecycle. For platform metric collection itself, use the
   non-configurable post-exit settle (250 ms) on bytes still in flight before
   closing the read handles, finalizing the record, and freeing the one global
   child slot. A descendant that merely inherited a descriptor must never retain
-  the slot, and greggd never kills it or claims its output. While the child is
-  alive, both streams drain **concurrently with the wait** by borrowing the
+  the slot, and greggd never kills it or claims its output. Inside that settle
+  budget stdout and stderr progress **independently** — select one pending
+  `drain_step` per unfinished stream plus the frozen deadline, with an
+  alternating preferred branch — so an idle open writer on one stream cannot
+  withhold bytes already available on the other, and neither stream can starve
+  the other. Fold only the bytes a completed read returns; the losing read is
+  cancelled, never partially applied. While the child is alive, both streams
+  drain **concurrently with the wait** by borrowing the
   streams (never `wait_with_output`, never a spawned drain task, never a line
   reader that can grow unboundedly, and never one stream drained to EOF before
   the other) so neither a cancelled select nor a flooding child can deadlock the

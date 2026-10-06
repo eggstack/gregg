@@ -156,6 +156,15 @@ flight land in the tails. After that the read handles close, the record is
 finalized, and the slot is free. `greggd` never kills a descendant to shorten
 this, and never reports output a descendant writes after the boundary.
 
+Those two streams progress **independently** inside the one settle budget. A
+stream whose only writer is an idle descendant stays open and unreadable, so it
+must not stall the other: each step selects among one pending read per
+unfinished stream and the frozen deadline, and whichever is ready first wins.
+Bytes already buffered on the busy stream are therefore still captured even
+while the other is open, and the preferred stream alternates so neither can
+starve the other. Only bytes from a completed read are retained, so cancelling
+a losing read loses nothing.
+
 > **Output is visible to anything that can reach this listener.** Scheduler
 > output is more sensitive than CPU or memory telemetry. The configured
 > `greggd` HTTP listener is unauthenticated, so any principal that can reach it

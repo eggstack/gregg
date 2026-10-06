@@ -36,7 +36,7 @@ Use this when modifying the client's TUI, polling pipeline, state engine, action
 | `scheduler` | `src/scheduler.rs` | Periodic poll scheduler, `SchedulerCommand` enum, generation-based concurrency |
 | `endpoint` | `src/endpoint.rs` | Endpoint parsing: IPv4, IPv6, DNS; HTTP URL convenience adapter |
 | `clock` | `src/clock.rs` | Clock trait; `RealClock` and `FakeClock` for testing |
-| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s cadence with one startup round, target-keyed revision/epoch-gated history, coherent summary+history pair, four reads in flight, `CronWorker` task; the only code that fetches cron |
+| `clientd/cron` | `src/clientd/cron.rs` | Daemon-owned `/v2/scheduler` client: 30s cadence with one startup round, target-keyed revision/epoch-gated history committed only after delivery, coherent summary+history pair, four reads in flight, reload/cancel-preemptible rounds, `CronWorker` task; the only code that fetches cron |
 | `normalized` | `src/normalized.rs` | Normalized v1/v2 snapshot for UI; `aggregate_drives()` |
 
 ### Input
@@ -552,20 +552,36 @@ Ten rules govern this plane and are easy to break:
    sequential walk made the effective cadence a multiple of the nominal one behind
    any slow endpoint. The bound is a constant, never configuration, and the round
    spawns nothing, so a reload or shutdown drops at most those few reads.
-8. **Never render a load relation that is not true.** `greggd` retains the gate
+8. **A reload preempts the round it lands in.** Select reload and cancellation
+   *inside* `CronWorker::round`, not only between rounds. Waiting for the round to
+   finish made reaction time proportional to the superseded fleet —
+   `ceil(fleet / 4)` timeout waves — so a newly added or repointed system went
+   unobserved for minutes. On reload: stop enqueueing, drop the in-flight futures
+   (they *are* the requests), return a typed outcome, re-read the endpoint list,
+   prune gate keys absent from the new target set, and start a fresh round at once
+   without waiting out the cadence. Cancellation ends the worker the same way.
+   Keep the bound at four, never spawn per endpoint, and never overlap rounds.
+9. **Commit the history gate only after delivery.** `settle` returns the
+   observation plus a `PendingGateCommit`; the round applies the commit only
+   after `updates.send(observation)` succeeds. Advancing the gate during settlement
+   let a document that was dropped (preempted round, closed engine channel) claim
+   "already fetched" and suppress history forever. The invariant: **"the gate says
+   fetched" implies the coherent document reached the engine.** `observe()` commits
+   inline because returning the observation *is* the delivery.
+10. **Never render a load relation that is not true.** `greggd` retains the gate
    decision that admitted a job, so a running or idle row can carry a reading
    *below* the threshold. Only `load delayed` prints `load15m 9.24 > 8.00`; a
    running row prints `start load15m 1.20 <= 8.00`; an idle or slot-waiting row
    prints `last gate ...` so an old reading is not presented as current load; and
    with no reading there is no comparison at all — `load15m unavailable (max
    8.00)`, never `— > 8.00` and never `0.00`. A time-only job has no load token.
-9. **Elapsed grammar, and two time bases.** Elapsed states read `for 3m`,
+11. **Elapsed grammar, and two time bases.** Elapsed states read `for 3m`,
    `pending 17m`, `queued 2m`; countdowns read `next 11h`, `retry 20s`. Never
    `… ago` on a duration, and let clock skew saturate at `0ms` rather than
    underflow. A record's clock is labelled `Z` (`10-05 07:00Z`) because it is a
    UTC instant while the schedule beside it is the remote's local civil cron; do
    not "fix" that by inventing a remote timezone — that needs a protocol change.
-10. **One row builder, one reserved section, one window.** `block_rows` feeds
+12. **One row builder, one reserved section, one window.** `block_rows` feeds
     both `desired_rows` and `render`, so the requested height includes the stale
     notice and cannot drift from what is emitted. The selected job's header and
     newest record are reserved before any job row, the job table is a window

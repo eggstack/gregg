@@ -10,6 +10,7 @@ use chrono::{DateTime, Local};
 use gregg_protocol::{
     LoadAverage, ReadinessState, SchedulerJobV2, SchedulerLoadGateV2, SchedulerOutcomeV2,
 };
+use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::{broadcast, watch};
 use tokio::time::Instant;
@@ -582,6 +583,7 @@ impl RunningChild<'_> {
 
     /// Whether both piped streams are finished, so the post-exit settle has
     /// nothing left to wait for.
+    #[cfg(test)]
     fn output_drained(&self) -> bool {
         self.stdout_done && self.stderr_done
     }
@@ -627,7 +629,8 @@ struct ChildCompletion {
 ///    most [`POST_EXIT_OUTPUT_SETTLE`] — ending early the moment both reach
 ///    EOF. This is what keeps an inherited writer from retaining the one global
 ///    child slot after the scheduled child is gone, while never blocking the
-///    scheduler to capture a descendant's later output.
+///    scheduler to capture a descendant's later output. Within that budget the
+///    two streams progress independently: see [`settle_output`].
 async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion {
     if child.exit.is_none() {
         // The inner block scopes the drain borrows so the frozen exit can be
@@ -671,28 +674,16 @@ async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion
     let settle_deadline = child
         .settle_deadline
         .expect("a frozen exit carries its settle bound");
-    while !child.output_drained() {
-        let progressed = tokio::select! {
-            (out, err) = async {
-                tokio::join!(
-                    drain_step(
-                        child.stdout.as_mut(),
-                        &mut child.stdout_tail,
-                        &mut child.stdout_done,
-                    ),
-                    drain_step(
-                        child.stderr.as_mut(),
-                        &mut child.stderr_tail,
-                        &mut child.stderr_done,
-                    ),
-                )
-            } => out || err,
-            () = tokio::time::sleep_until(settle_deadline) => false,
-        };
-        if !progressed {
-            break;
-        }
-    }
+    settle_output(
+        child.stdout.as_mut(),
+        &mut child.stdout_tail,
+        &mut child.stdout_done,
+        child.stderr.as_mut(),
+        &mut child.stderr_tail,
+        &mut child.stderr_done,
+        settle_deadline,
+    )
+    .await;
     let exit = child
         .exit
         .take()
@@ -708,6 +699,67 @@ async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion
         duration_ms: duration_millis(exit.finished.saturating_duration_since(child.started)),
         stdout: std::mem::take(&mut child.stdout_tail),
         stderr: std::mem::take(&mut child.stderr_tail),
+    }
+}
+
+/// Spend the post-exit settle on both streams **independently**.
+///
+/// After the direct child has exited, one stream can stay open with nothing to
+/// read at all: a descendant inherited that descriptor and is still alive.
+/// Awaiting that read inside a `join!` with the other stream's read means the
+/// busy stream performs exactly one chunk and then stalls until the idle one
+/// produces bytes or the deadline wins — so output that was already available is
+/// silently dropped from the retained tail.
+///
+/// So each iteration selects among three independent futures: one `drain_step`
+/// per stream that is not finished, and the frozen deadline. Whichever stream is
+/// ready first wins that iteration, so a pending read on one never withholds
+/// progress from the other. The preferred branch alternates, so when both streams
+/// are continuously ready neither can starve the other for the whole settle.
+///
+/// A read that loses the select is cancelled having consumed nothing, and the
+/// tails are borrowed from the `RunningChild`, so losing a cancelled read — or
+/// losing this whole future to a scheduler wake — loses nothing already folded
+/// in. Each iteration strictly reduces what remains: a `drain_step` either folds
+/// bytes or marks its own stream finished.
+///
+/// `settle_deadline` is passed in rather than recomputed, so neither a wake nor
+/// a per-stream read can extend the bound frozen at the child's exit. Nothing is
+/// spawned: the deadline returns exactly when the idle inherited writer has had
+/// its budget, and greggd never waits for descendant EOF.
+async fn settle_output<O, E>(
+    mut stdout: Option<&mut O>,
+    stdout_tail: &mut OutputTail,
+    stdout_done: &mut bool,
+    mut stderr: Option<&mut E>,
+    stderr_tail: &mut OutputTail,
+    stderr_done: &mut bool,
+    settle_deadline: Instant,
+) where
+    O: AsyncReadExt + Unpin,
+    E: AsyncReadExt + Unpin,
+{
+    let mut prefer_stdout = true;
+    loop {
+        if *stdout_done && *stderr_done {
+            return;
+        }
+        if prefer_stdout {
+            tokio::select! {
+                biased;
+                _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
+                _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
+                () = tokio::time::sleep_until(settle_deadline) => return,
+            }
+        } else {
+            tokio::select! {
+                biased;
+                _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
+                _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
+                () = tokio::time::sleep_until(settle_deadline) => return,
+            }
+        }
+        prefer_stdout = !prefer_stdout;
     }
 }
 
@@ -1825,9 +1877,10 @@ mod tests {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
-    use crate::scheduler::observation::{SchedulerObserver, TerminalRecord};
+    use crate::scheduler::observation::{SchedulerObserver, TerminalRecord, DRAIN_CHUNK};
     use gregg_protocol::{
         SchedulerHistoryV2, SchedulerJobStateV2, SchedulerSummaryV2, MAX_SCHEDULER_HISTORY_LIMIT,
+        MAX_SCHEDULER_OUTPUT_TEXT_BYTES,
     };
 
     fn job_config(name: &str, command: &[&str], max_load: Option<f32>) -> ScheduledJobConfig {
@@ -2262,6 +2315,291 @@ mod observation_tests {
             wall_window < duration_millis(POST_EXIT_OUTPUT_SETTLE),
             "the recorded window must exclude the post-exit settle ({wall_window} ms)"
         );
+    }
+
+    /// A reader with scripted readiness, so post-exit settle progress can be
+    /// tested without depending on OS pipe scheduling.
+    ///
+    /// It yields exactly `blocks` full chunks, each filled with `byte`, and then
+    /// reports EOF. Every `poll_read` hands over the whole script at once, so
+    /// the number of completed `drain_step` calls is the number of iterations
+    /// the settle helper managed — which is exactly what is under test.
+    struct ScriptedReader {
+        blocks: usize,
+        byte: u8,
+    }
+
+    impl ScriptedReader {
+        fn new(blocks: usize, byte: u8) -> Self {
+            Self { blocks, byte }
+        }
+    }
+
+    impl tokio::io::AsyncRead for ScriptedReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            let this = self.get_mut();
+            if this.blocks == 0 {
+                // Empty result is EOF.
+                return std::task::Poll::Ready(Ok(()));
+            }
+            let count = this.blocks.min(buf.remaining() / DRAIN_CHUNK);
+            this.blocks -= count;
+            let chunk = [this.byte; DRAIN_CHUNK];
+            buf.put_slice(&chunk[..count * DRAIN_CHUNK]);
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A pipe that stays open and permanently idle.
+    ///
+    /// This is the shape of a descriptor whose only writer is a descendant that
+    /// inherited it and has nothing left to say: never readable, never EOF. It
+    /// never registers a waker, so only the settle deadline can end it — which
+    /// is precisely why it must not be able to withhold the other stream's
+    /// progress.
+    #[derive(Debug, Default)]
+    struct IdleOpenReader;
+
+    impl tokio::io::AsyncRead for IdleOpenReader {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            _cx: &mut std::task::Context<'_>,
+            _buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            std::task::Poll::Pending
+        }
+    }
+
+    /// Poll the production settle helper the way a scheduler wake does: a fresh
+    /// future, dropped one poll later.
+    ///
+    /// A zero timeout never sleeps, so each call runs the helper's select until
+    /// it either returns or parks, and the loop below repeats it. Progress is
+    /// therefore driven entirely by what the scripted readers return — no wall
+    /// clock, no `test-util` timer, and no dependence on the settle deadline
+    /// firing.
+    #[allow(clippy::too_many_arguments)]
+    async fn poll_settle_once<O, E>(
+        stdout: &mut O,
+        stdout_tail: &mut OutputTail,
+        stdout_done: &mut bool,
+        stderr: &mut E,
+        stderr_tail: &mut OutputTail,
+        stderr_done: &mut bool,
+        settle_deadline: Instant,
+    ) -> bool
+    where
+        O: tokio::io::AsyncRead + Unpin,
+        E: tokio::io::AsyncRead + Unpin,
+    {
+        tokio::time::timeout(
+            Duration::ZERO,
+            settle_output(
+                Some(&mut *stdout),
+                stdout_tail,
+                stdout_done,
+                Some(&mut *stderr),
+                stderr_tail,
+                stderr_done,
+                settle_deadline,
+            ),
+        )
+        .await
+        .is_ok()
+    }
+
+    /// The plan's core regression at the helper level: stdout has three chunks
+    /// already buffered while stderr stays open and idle.
+    ///
+    /// Joining the two reads made stdout's second and third chunks unreachable:
+    /// each joined iteration handed over one stdout chunk and then parked on
+    /// stderr, so the settle ended with only the first chunk retained.
+    #[tokio::test]
+    async fn an_idle_stderr_does_not_withhold_ready_stdout_chunks() {
+        let mut stdout = ScriptedReader::new(3, b'a');
+        let mut stderr = IdleOpenReader;
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let settle_deadline = Instant::now() + POST_EXIT_OUTPUT_SETTLE;
+
+        // One poll is enough to drain every chunk and observe EOF: the helper
+        // iterated repeatedly without ever parking on stderr. Joining the two
+        // reads instead parked after the first chunk, so this never completes
+        // on one poll.
+        assert!(
+            !poll_settle_once(
+                &mut stdout,
+                &mut stdout_tail,
+                &mut stdout_done,
+                &mut stderr,
+                &mut stderr_tail,
+                &mut stderr_done,
+                settle_deadline,
+            )
+            .await,
+            "the settle must not finish while stderr's writer is still open"
+        );
+        assert!(
+            stdout_done,
+            "the ready stream must reach EOF while stderr stays pending"
+        );
+        assert!(
+            !stderr_done,
+            "a stream whose inherited writer stays open can never report EOF"
+        );
+        assert_eq!(
+            stdout_tail.total_bytes(),
+            3 * DRAIN_CHUNK as u64,
+            "more than one chunk must be consumed while stderr stays pending"
+        );
+        assert_eq!(stderr_tail.total_bytes(), 0);
+
+        // The settle is still genuinely waiting on stderr: another poll neither
+        // completes nor drains anything, because the bound has not expired.
+        assert!(
+            !poll_settle_once(
+                &mut stdout,
+                &mut stdout_tail,
+                &mut stdout_done,
+                &mut stderr,
+                &mut stderr_tail,
+                &mut stderr_done,
+                settle_deadline,
+            )
+            .await,
+            "the settle must remain pending on the open idle stream"
+        );
+        assert_eq!(stderr_tail.total_bytes(), 0);
+
+        // Retention is unaffected by how much the stream carried: the tail is
+        // the final bounded bytes, whatever the total observed.
+        let wire = stdout_tail.into_wire();
+        assert_eq!(
+            wire.text.len(),
+            MAX_SCHEDULER_OUTPUT_TEXT_BYTES,
+            "the retained tail is the final bounded bytes of that stream"
+        );
+        assert!(wire.truncated, "retention stays bounded");
+    }
+
+    /// The mirror case: stderr is the ready stream and stdout the idle one.
+    ///
+    /// This one cannot be reached by simply swapping arguments, because the
+    /// alternating preference only tries the idle stream after the ready one.
+    #[tokio::test]
+    async fn an_idle_stdout_does_not_withhold_ready_stderr_chunks() {
+        let mut stdout = IdleOpenReader;
+        let mut stderr = ScriptedReader::new(3, b'b');
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let settle_deadline = Instant::now() + POST_EXIT_OUTPUT_SETTLE;
+
+        // The mirror case cannot be reached by only preferring stdout: stderr's
+        // own read has to win its turn.
+        assert!(
+            !poll_settle_once(
+                &mut stdout,
+                &mut stdout_tail,
+                &mut stdout_done,
+                &mut stderr,
+                &mut stderr_tail,
+                &mut stderr_done,
+                settle_deadline,
+            )
+            .await,
+            "the settle must not finish while stdout's writer is still open"
+        );
+        assert!(
+            stderr_done,
+            "stderr must reach EOF while stdout stays pending"
+        );
+        assert!(!stdout_done, "an idle open stdout cannot report EOF");
+        assert_eq!(
+            stderr_tail.total_bytes(),
+            3 * DRAIN_CHUNK as u64,
+            "stderr progress must not wait on an idle open stdout"
+        );
+        assert_eq!(stdout_tail.total_bytes(), 0);
+    }
+
+    /// Both streams ready at once must both progress: the preferred branch
+    /// alternates, so neither stream can starve the other for the whole settle.
+    #[tokio::test]
+    async fn two_ready_streams_both_make_progress_within_the_settle() {
+        let mut stdout = ScriptedReader::new(2, b'a');
+        let mut stderr = ScriptedReader::new(2, b'b');
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let settle_deadline = Instant::now() + POST_EXIT_OUTPUT_SETTLE;
+
+        // Both streams reach EOF without the deadline ever being consulted.
+        assert!(tokio::time::timeout(
+            Duration::ZERO,
+            settle_output(
+                Some(&mut stdout),
+                &mut stdout_tail,
+                &mut stdout_done,
+                Some(&mut stderr),
+                &mut stderr_tail,
+                &mut stderr_done,
+                settle_deadline,
+            ),
+        )
+        .await
+        .is_ok());
+
+        assert!(stdout_done && stderr_done, "both streams reach EOF");
+        assert_eq!(stdout_tail.total_bytes(), 2 * DRAIN_CHUNK as u64);
+        assert_eq!(
+            stderr_tail.total_bytes(),
+            2 * DRAIN_CHUNK as u64,
+            "an alternating preference must not starve either stream"
+        );
+    }
+
+    /// The settle is bounded by the deadline frozen at the direct child's exit,
+    /// and it returns *without* an EOF from the open writer. Two permanently
+    /// idle streams are the strongest case: nothing can ever finish them, so
+    /// only the deadline can end the wait.
+    #[tokio::test]
+    async fn a_silent_settle_ends_at_the_frozen_deadline_without_an_eof() {
+        let mut stdout = IdleOpenReader;
+        let mut stderr = IdleOpenReader;
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        // An already-expired deadline: `sleep_until` is ready on the first poll,
+        // so this proves the bound is what ends the settle without waiting.
+        let settle_deadline = Instant::now() - Duration::from_millis(1);
+
+        settle_output(
+            Some(&mut stdout),
+            &mut stdout_tail,
+            &mut stdout_done,
+            Some(&mut stderr),
+            &mut stderr_tail,
+            &mut stderr_done,
+            settle_deadline,
+        )
+        .await;
+
+        assert!(
+            !stdout_done && !stderr_done,
+            "no amount of settling produces EOF from an idle writer"
+        );
+        assert_eq!(stdout_tail.total_bytes(), 0);
+        assert_eq!(stderr_tail.total_bytes(), 0);
     }
 
     /// Shutdown keeps its established bound: a killed direct child is reaped

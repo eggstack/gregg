@@ -429,15 +429,19 @@ impl HistoryGate {
         }
     }
 
-    /// Record a successfully fetched *and coherent* history document.
+    /// Record a successfully fetched *and coherent* history document whose
+    /// observation has been handed to the engine.
     ///
     /// Only a document that matched the summary it was fetched with may get
     /// here. Advancing the gate from a mismatched pair would tell the next
     /// summary for the newer lifetime that its history was already downloaded,
     /// which is exactly how a new epoch's records go missing indefinitely.
-    fn record(&mut self, key: &str, history: &SchedulerHistoryV2) {
+    ///
+    /// Reached only through [`HistoryGate::commit`], so "the gate says
+    /// fetched" always means "the engine has the document".
+    fn commit(&mut self, commit: PendingGateCommit) {
         self.entries
-            .insert(key.to_owned(), (history.epoch, history.history_revision));
+            .insert(commit.key, (commit.epoch, commit.revision));
     }
 
     /// Forget targets that are no longer polled.
@@ -458,6 +462,27 @@ struct EndpointFetch {
     endpoint: Endpoint,
     summary: SummaryOutcome,
     history: HistoryAttempt,
+}
+
+/// A history-gate update that is not yet valid.
+///
+/// Settling a fetch and *delivering* the observation it produced are two
+/// separate steps, and the gate may only move between them. Advancing it during
+/// settlement meant a coherent history document that was then dropped — by a
+/// reload preempting the round, or by a closed engine channel — still told the
+/// next round "already fetched", so an equivalent or unchanged target could
+/// suppress its history fetch forever while the cache never received a byte.
+///
+/// The gate is worker-private, so "delivered" means "accepted by the bounded
+/// worker-to-engine channel", which is the only handoff this plane has.
+#[derive(Debug, Clone, PartialEq)]
+struct PendingGateCommit {
+    /// The target this commit belongs to, including host and port.
+    key: String,
+    /// The coherent history document's own epoch.
+    epoch: gregg_protocol::SchedulerEpochV2,
+    /// The coherent history document's own revision.
+    revision: u64,
 }
 
 /// What became of the history request for one endpoint.
@@ -530,18 +555,20 @@ impl CronWorker {
                 .map(|endpoint| target_key(&endpoint.id, &endpoint.host, endpoint.port))
                 .collect();
             self.gate.forget_absent(&live);
-            // A closed receiver means the engine is gone, which is the only
-            // reason to stop.
-            if !self.round(current, &updates).await {
-                return;
+            match self.round(current, &updates, &reload, &cancel).await {
+                // A closed receiver means the engine is gone, which is the only
+                // reason to stop.
+                RoundOutcome::EngineGone | RoundOutcome::Cancelled => return,
+                // A reload that arrived mid-round discarded its requests on
+                // purpose, so the next round starts at once rather than parking
+                // on the cadence: the operator's new system must not wait out the
+                // remainder of a slow old fleet's timeout waves.
+                RoundOutcome::Reloaded => continue,
+                RoundOutcome::Completed => {}
             }
             tokio::select! {
                 () = cancel.cancelled() => return,
                 _ = tick.tick() => {}
-                // A reload wakes the worker immediately rather than making the
-                // operator wait out the remainder of the interval to see a
-                // newly added system. `notify_one` stores a permit, so a reload
-                // that lands mid-round is still observed on the next wait.
                 () = reload.notified() => {}
             }
         }
@@ -549,15 +576,22 @@ impl CronWorker {
 
     /// Observe every endpoint once, at most [`CRON_MAX_IN_FLIGHT`] at a time.
     ///
-    /// Returns `false` when the receiver closed, which is the only reason to
-    /// stop. The HTTP work overlaps on one task with a fixed window, while the
-    /// gate is read through one immutable round snapshot and mutated serially as
-    /// results land, so history decisions stay single owner.
+    /// The round itself is preemptible: reload and cancellation are selected
+    /// *inside* it, so an accepted config change does not wait out the
+    /// superseded fleet's remaining request deadlines. Preemption drops the
+    /// in-flight futures — they are plain futures on this task, so dropping them
+    /// cancels the requests without spawning or leaking anything.
+    ///
+    /// The gate is read through one immutable round snapshot and mutated serially
+    /// as results land, so history decisions stay single owner, and each commit
+    /// lands only after its observation reached the engine.
     async fn round(
         &mut self,
         endpoints: Vec<Endpoint>,
         updates: &mpsc::Sender<CronObservation>,
-    ) -> bool {
+        reload: &Notify,
+        cancel: &CancellationToken,
+    ) -> RoundOutcome {
         let Self { client, gate } = self;
         // One snapshot per round rather than one per endpoint. It is read-only
         // inside the concurrent phase and never shared between endpoints — each
@@ -572,23 +606,56 @@ impl CronWorker {
             };
             in_flight.push(fetch(&*client, endpoint, &snapshot));
         }
-        while let Some(finished) = in_flight.next().await {
-            let observation = settle(gate, finished);
+        loop {
+            if in_flight.is_empty() {
+                return RoundOutcome::Completed;
+            }
+            let finished = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return RoundOutcome::Cancelled,
+                () = reload.notified() => return RoundOutcome::Reloaded,
+                Some(finished) = in_flight.next() => finished,
+            };
+            let (observation, commit) = settle(finished);
             if updates.send(observation).await.is_err() {
-                return false;
+                return RoundOutcome::EngineGone;
+            }
+            // Only now. A gate that claimed "fetched" for a document the
+            // engine never received would suppress the next fetch and lose the
+            // target's history silently.
+            if let Some(commit) = commit {
+                gate.commit(commit);
             }
             if let Some(endpoint) = pending.next() {
                 in_flight.push(fetch(&*client, endpoint, &snapshot));
             }
         }
-        true
     }
 
     /// One bounded observation for one endpoint.
     pub async fn observe(&mut self, endpoint: &Endpoint) -> CronObservation {
         let finished = fetch(&self.client, endpoint.clone(), &self.gate).await;
-        settle(&mut self.gate, finished)
+        let (observation, commit) = settle(finished);
+        // The caller receives the observation directly, so delivery is part of
+        // this call's return rather than a later channel hand-off.
+        if let Some(commit) = commit {
+            self.gate.commit(commit);
+        }
+        observation
     }
+}
+
+/// How one bounded cron round ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundOutcome {
+    /// Every endpoint in the snapshot was observed.
+    Completed,
+    /// A config reload arrived mid-round; its in-flight requests were dropped.
+    Reloaded,
+    /// The engine channel closed, which is the only reason to stop.
+    EngineGone,
+    /// Shutdown arrived mid-round.
+    Cancelled,
 }
 
 /// Fetch one endpoint's summary, and its history only when the gate asks.
@@ -615,7 +682,7 @@ async fn fetch(client: &CronClient, endpoint: Endpoint, gate: &HistoryGate) -> E
     }
 }
 
-/// Turn one finished fetch into an observation: coherence first, then the gate.
+/// Turn one finished fetch into an observation plus a *pending* gate commit.
 ///
 /// The coherence check is the load-bearing part. `/v2/scheduler` and
 /// `/v2/scheduler/history` are two independent requests, so a `greggd` restart
@@ -626,10 +693,15 @@ async fn fetch(client: &CronClient, endpoint: Endpoint, gate: &HistoryGate) -> E
 /// happened to change. A mismatch is therefore reported as a scheduler-scoped
 /// diagnostic, the gate is left alone, and the next cadence retries.
 ///
+/// A *matching* pair yields a [`PendingGateCommit`] rather than mutating the
+/// gate, because the caller still has to deliver the observation: a commit that
+/// lands here could describe a document the engine never receives if the round
+/// is preempted or the channel closes between the two.
+///
 /// `generated_at_unix_ms` equality is deliberately not required: a live-state
 /// publication can legitimately rebuild the pair without changing the retained
 /// history.
-fn settle(gate: &mut HistoryGate, finished: EndpointFetch) -> CronObservation {
+fn settle(finished: EndpointFetch) -> (CronObservation, Option<PendingGateCommit>) {
     let EndpointFetch {
         endpoint,
         summary,
@@ -641,6 +713,7 @@ fn settle(gate: &mut HistoryGate, finished: EndpointFetch) -> CronObservation {
     let key = target_key(&system_id, &host, port);
 
     let mut applied = None;
+    let mut commit = None;
     let mut history_error = None;
     if let SummaryOutcome::Supported(document) = &summary {
         match history {
@@ -649,7 +722,11 @@ fn settle(gate: &mut HistoryGate, finished: EndpointFetch) -> CronObservation {
                 if found.epoch == document.epoch
                     && found.history_revision == document.history_revision
                 {
-                    gate.record(&key, &found);
+                    commit = Some(PendingGateCommit {
+                        key,
+                        epoch: found.epoch,
+                        revision: found.history_revision,
+                    });
                     applied = Some(found);
                 } else {
                     history_error = Some(CronFetchError::Incoherent(format!(
@@ -676,17 +753,20 @@ fn settle(gate: &mut HistoryGate, finished: EndpointFetch) -> CronObservation {
             }
         }
     }
-    CronObservation {
-        system_id,
-        host,
-        port,
-        summary,
-        history: applied,
-        history_error,
-        // The round's completion time: captured after every request, so the
-        // documented meaning is true rather than aspirational.
-        now_unix_ms: now_unix_ms(),
-    }
+    (
+        CronObservation {
+            system_id,
+            host,
+            port,
+            summary,
+            history: applied,
+            history_error,
+            // The round's completion time: captured after every request, so the
+            // documented meaning is true rather than aspirational.
+            now_unix_ms: now_unix_ms(),
+        },
+        commit,
+    )
 }
 
 #[cfg(test)]
@@ -1500,10 +1580,16 @@ mod tests {
             summary: observation.summary.clone(),
             history: HistoryAttempt::Fetched(Ok(Some(history))),
         };
-        observation = settle(&mut gate, finished);
+        let (settled, commit) = settle(finished);
+        observation = settled;
         let SummaryOutcome::Supported(summary) = &observation.summary else {
             panic!("a supported summary stays supported");
         };
+        // Only a *delivered* observation may commit. This helper delivers it,
+        // so the commit is applied exactly as `round` would apply it.
+        if let Some(commit) = commit {
+            gate.commit(commit);
+        }
         let still_needs = gate.needs(&target_key("sys", "127.0.0.1", 11_310), summary);
         (observation, still_needs)
     }
@@ -1865,7 +1951,9 @@ mod tests {
             }
             fast
         };
-        let (_round, fast) = tokio::join!(worker.round(endpoints, &tx), collect);
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+        let (_round, fast) = tokio::join!(worker.round(endpoints, &tx, &reload, &cancel), collect);
 
         assert_eq!(
             fast, 7,
@@ -1878,6 +1966,227 @@ mod tests {
             CRON_MAX_IN_FLIGHT
         );
         assert_eq!(meter.in_flight(), 0, "no read outlives the round");
+    }
+
+    // ---------------------------------------------------------------------
+    // Plan 178: bounded reaction to an accepted config reload.
+    // ---------------------------------------------------------------------
+
+    /// How long a deliberately stalled endpoint holds its request open.
+    ///
+    /// Longer than every bound any test here waits on, so "the superseded
+    /// fleet's requests timed out" can never be mistaken for "the reload
+    /// preempted them".
+    const STALLED_ENDPOINT_DELAY: Duration = Duration::from_secs(60);
+
+    /// Wait until the round has actually opened its full request window.
+    ///
+    /// This observes a condition rather than sleeping for a fixed duration, and
+    /// the window is only reached when the round is genuinely mid-flight — which
+    /// is exactly the state the reload has to interrupt.
+    async fn wait_for_full_window(meter: &RequestMeter) {
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while meter.in_flight() < CRON_MAX_IN_FLIGHT {
+            assert!(
+                Instant::now() < give_up,
+                "the round never opened its {CRON_MAX_IN_FLIGHT} request window"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    }
+
+    /// A fleet of `count` endpoints whose every request stalls.
+    async fn stalled_fleet(meter: &RequestMeter, prefix: &str, count: usize) -> Vec<Endpoint> {
+        let mut endpoints = Vec::with_capacity(count);
+        for index in 0..count {
+            let port = spawn_gated_server(meter.clone(), STALLED_ENDPOINT_DELAY).await;
+            endpoints.push(gated_endpoint(&format!("{prefix}-{index}"), port));
+        }
+        endpoints
+    }
+
+    /// The plan's core regression: an accepted reload interrupts the *active*
+    /// round instead of waiting out the superseded fleet's request deadlines.
+    #[tokio::test]
+    async fn a_reload_interrupts_an_active_round_before_its_requests_time_out() {
+        let meter = RequestMeter::default();
+        // Exactly one full window: with the bound of four, every request slot is
+        // stalled when the reload lands.
+        let old = stalled_fleet(&meter, "old", CRON_MAX_IN_FLIGHT).await;
+        let replacement = spawn_counting_server(1).await;
+        let shared = Arc::new(std::sync::Mutex::new(old));
+        let reload = Arc::new(Notify::new());
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel::<CronObservation>(64);
+        let worker = CronWorker::new(Duration::from_secs(30));
+        let handle = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            let reload = Arc::clone(&reload);
+            let cancel = cancel.clone();
+            async move { worker.run(shared, reload, tx, cancel).await }
+        });
+
+        wait_for_full_window(&meter).await;
+
+        // The operator replaces the fleet. Every old request is still open.
+        *shared.lock().expect("lock") = vec![gated_endpoint("new", replacement.port)];
+        reload.notify_one();
+
+        let observation = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("the new target is observed without waiting out the old requests")
+            .expect("an observation");
+        assert_eq!(observation.system_id, "new");
+        assert_eq!(
+            replacement.summary_hits(),
+            1,
+            "the replacement target is read immediately"
+        );
+        cancel.cancel();
+        let _ = handle.await;
+    }
+
+    /// Reload latency must not scale with the size of the fleet being replaced.
+    ///
+    /// Twelve stalled endpoints at a bound of four is three timeout waves; the
+    /// reload still has to land on the very next round.
+    #[tokio::test]
+    async fn reload_latency_does_not_scale_with_the_superseded_fleet_size() {
+        let meter = RequestMeter::default();
+        let old = stalled_fleet(&meter, "old", 12).await;
+        let replacement = spawn_counting_server(1).await;
+        let shared = Arc::new(std::sync::Mutex::new(old));
+        let reload = Arc::new(Notify::new());
+        let cancel = CancellationToken::new();
+        let (tx, mut rx) = mpsc::channel::<CronObservation>(64);
+        let worker = CronWorker::new(Duration::from_secs(30));
+        let handle = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            let reload = Arc::clone(&reload);
+            let cancel = cancel.clone();
+            async move { worker.run(shared, reload, tx, cancel).await }
+        });
+
+        wait_for_full_window(&meter).await;
+        *shared.lock().expect("lock") = vec![gated_endpoint("new", replacement.port)];
+        reload.notify_one();
+
+        let started = Instant::now();
+        let observation = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("three waves of stalled requests must not delay the reload")
+            .expect("an observation");
+        assert_eq!(observation.system_id, "new");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "reload latency tracked the old fleet size"
+        );
+        assert!(
+            meter.peak() <= CRON_MAX_IN_FLIGHT,
+            "preemption must not raise the concurrency bound"
+        );
+        cancel.cancel();
+        let _ = handle.await;
+    }
+
+    /// Cancellation ends the worker promptly too, rather than letting a
+    /// stalled remote request decide when shutdown finishes.
+    #[tokio::test]
+    async fn cancellation_interrupts_an_active_round_without_a_request_timeout() {
+        let meter = RequestMeter::default();
+        let old = stalled_fleet(&meter, "old", CRON_MAX_IN_FLIGHT).await;
+        let shared = Arc::new(std::sync::Mutex::new(old));
+        let reload = Arc::new(Notify::new());
+        let cancel = CancellationToken::new();
+        let (tx, _rx) = mpsc::channel::<CronObservation>(64);
+        let worker = CronWorker::new(Duration::from_secs(30));
+        let handle = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            let reload = Arc::clone(&reload);
+            let cancel = cancel.clone();
+            async move { worker.run(shared, reload, tx, cancel).await }
+        });
+
+        wait_for_full_window(&meter).await;
+        cancel.cancel();
+
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("cancellation must not wait for a stalled request")
+            .expect("the worker task ends cleanly");
+    }
+
+    /// A coherent history document that never reached the engine may not claim
+    /// the gate. This is the history-loss race the transactional commit closes.
+    #[tokio::test]
+    async fn an_undelivered_history_document_never_advances_the_gate() {
+        let server = spawn_counting_server(1).await;
+        let (tx, rx) = mpsc::channel::<CronObservation>(1);
+        // The engine is gone, so no cache can ever receive this observation.
+        drop(rx);
+        let mut worker = CronWorker::new(Duration::from_secs(10));
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+
+        let outcome = worker
+            .round(
+                vec![gated_endpoint("sys", server.port)],
+                &tx,
+                &reload,
+                &cancel,
+            )
+            .await;
+
+        assert_eq!(outcome, RoundOutcome::EngineGone);
+        assert_eq!(
+            server.history_hits(),
+            1,
+            "the history document really was downloaded"
+        );
+        let key = target_key("sys", "127.0.0.1", server.port);
+        assert!(
+            worker.gate.needs(&key, &summary_document(1, epoch())),
+            "a gate advanced for an undelivered document would suppress every \
+             later history fetch for this target"
+        );
+    }
+
+    /// The complement: a delivered observation may advance the gate, and the
+    /// next unchanged round then suppresses the history fetch as designed.
+    #[tokio::test]
+    async fn a_delivered_history_document_advances_the_gate_and_suppresses_the_next_fetch() {
+        let server = spawn_counting_server(1).await;
+        let (tx, mut rx) = mpsc::channel::<CronObservation>(8);
+        let mut worker = CronWorker::new(Duration::from_secs(10));
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+        let targets = vec![gated_endpoint("sys", server.port)];
+        let key = target_key("sys", "127.0.0.1", server.port);
+
+        assert_eq!(
+            worker.round(targets.clone(), &tx, &reload, &cancel).await,
+            RoundOutcome::Completed
+        );
+        let observation = rx.recv().await.expect("the observation is delivered");
+        assert!(
+            observation.history.is_some(),
+            "the coherent history document was applied"
+        );
+        assert!(
+            !worker.gate.needs(&key, &summary_document(1, epoch())),
+            "a delivered document advances the gate"
+        );
+
+        assert_eq!(
+            worker.round(targets, &tx, &reload, &cancel).await,
+            RoundOutcome::Completed
+        );
+        assert_eq!(
+            server.history_hits(),
+            1,
+            "an unchanged round must not refetch history"
+        );
+        assert_eq!(server.summary_hits(), 2, "the summary is still periodic");
     }
 
     #[tokio::test]
@@ -1893,7 +2202,9 @@ mod tests {
         }
         let (tx, mut rx) = mpsc::channel::<CronObservation>(32);
         let mut worker = CronWorker::new(Duration::from_secs(10));
-        let round = worker.round(endpoints, &tx);
+        let reload = Notify::new();
+        let cancel = CancellationToken::new();
+        let round = worker.round(endpoints, &tx, &reload, &cancel);
         let collect = async {
             let mut seen = 0;
             while let Ok(Some(_)) = tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {

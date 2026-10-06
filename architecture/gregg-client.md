@@ -953,6 +953,25 @@ add up to a burst. The bound is a constant, not configuration. Nothing is
 spawned: a round is one bounded set of futures on the worker's own task, so a
 reload or shutdown drops at most those few reads and none outlives the worker.
 
+### A reload preempts the round it lands in
+
+Reload and cancellation are selected **inside** an active round, not only between
+rounds. Waiting until the round finished made reaction time proportional to the
+superseded fleet: with a window of four and a request deadline that can reach a
+minute, an accepted reload sat behind a stored permit while the worker burned
+through `ceil(fleet / 4)` timeout waves — so "reload wakes the worker
+immediately" was materially false, and a newly added or repointed system could go
+unobserved for minutes.
+
+When reload wins, the round stops enqueueing work, drops its in-flight requests
+(the futures are the requests, so dropping them cancels them), and returns a typed
+outcome. The worker then re-reads the endpoint list, prunes history-gate keys
+absent from the new normalized target set, and starts a fresh round at once —
+without waiting out the cadence. Cancellation ends the worker the same way, so
+shutdown does not wait on a remote request deadline either. The concurrency bound
+is unchanged and rounds never overlap: a tick that comes due during a long round
+is handled by `MissedTickBehavior::Delay`.
+
 ### One publication per real change
 
 A frontend document is republished when the **operator-visible** scheduler state
@@ -993,6 +1012,17 @@ port)` for the same reason — a gate keyed by id alone let a new target inherit
 the previous target's "already fetched" answer whenever the two reported the
 same epoch and revision. An equivalent spelling of the same normalized endpoint
 changes neither, so rewriting a config by hand does not silently discard history.
+
+A coherent pair advances the gate **only after its observation has been handed to
+the engine**. Settling a fetch and delivering what it produced are two steps, and
+settling used to advance the gate itself: a document that was then dropped — by a
+reload preempting the round, or by the engine channel closing — still told the
+next round "already fetched", so an equivalent or unchanged target could suppress
+its history fetch indefinitely while no cache ever received a byte. `settle` now
+returns the observation plus a *pending* gate commit, and the round applies that
+commit only after the bounded worker-to-engine channel accepts the observation.
+The invariant is simply: **"the gate says fetched" implies the coherent document
+reached the engine.**
 
 ### Epoch is part of every identity
 
