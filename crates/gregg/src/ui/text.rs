@@ -117,7 +117,9 @@ pub fn format_load(load: &gregg_protocol::LoadAverage) -> String {
 /// 2. I/O-wait value (Plan 087: emitted only when `cpu_iowait_supported`
 ///    and a real `iowait_pct` are present; otherwise the entire
 ///    `IO <value>%` token is omitted instead of producing a placeholder)
-/// 3. Load averages or "--" for unsupported
+/// 3. Load averages, or `L —` when unsupported. An em dash, never a number:
+///    a missing load reading is not a load of zero, and `--` could be read as
+///    the two ASCII dashes of a rendering artifact rather than as "absent".
 /// 4. Logical core count
 /// 5. OS name/version
 /// 6. Kernel release
@@ -284,7 +286,14 @@ fn build_drive_detail_row_with_io(
         }
     });
     DriveDetailRow {
-        name: drive.name.clone(),
+        // Escaped here, where the row is built, because the table layout
+        // measures *this* field to size the name column. Adoption sanitized it
+        // with newline-as-separator semantics (stdout needs that), which leaves
+        // a `\n` in the name; measuring the unescaped name and then rendering
+        // the escaped one costs a column cell and silently elides the last
+        // character. `truncate_width` applies the same mode as a safety net for
+        // every other one-row field.
+        name: crate::sanitize::sanitize_single_line(&drive.name).text,
         used,
         total,
         remaining,
@@ -658,10 +667,30 @@ pub(crate) fn render_network_detail_lines(network: &NormalizedNetwork, width: u1
 /// wider than the whole budget (e.g. a wide CJK character with
 /// `max_width == 1`), nothing of it is emitted and the result collapses to
 /// the ellipsis placeholder rather than a partial glyph.
+///
+/// One row in, one row out. Every caller builds a *single* terminal line — a
+/// drive name, a job row, an interface row, a header, a footer — so a `\n` in
+/// the input can never be honoured: the cell builder drops a control grapheme
+/// rather than breaking the row, and the text on either side of it fuses into an
+/// identifier the remote never sent. Adoption ([`crate::state`]) sanitizes every
+/// remote string with newline-as-separator semantics because stdout and stderr
+/// are multi-line bodies, so this is where a one-row field is switched to
+/// newline-as-anomaly and the break becomes a visible `^J`.
+///
+/// The `contains` guard keeps the common case allocation-free: adoption has
+/// already escaped every other control, so a string with no `\n` and no `\r`
+/// cannot change here.
 pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
     }
+    let owned;
+    let s = if s.contains('\n') || s.contains('\r') {
+        owned = crate::sanitize::sanitize_single_line(s).text;
+        owned.as_str()
+    } else {
+        s
+    };
     let mut width = 0;
     let mut end = 0;
     for (index, ch) in s.char_indices() {
@@ -685,6 +714,53 @@ pub(crate) fn truncate_width(s: &str, max_width: usize) -> String {
 mod tests {
     use super::*;
     use crate::normalized::NormalizedSnapshot;
+
+    /// A newline in a drive name used to reach the cell builder intact and get
+    /// *deleted* there, fusing the halves into a device that does not exist.
+    /// Adoption sanitizes with newline-as-separator semantics (stdout needs
+    /// that), so the one-row path is where the break has to become `^J`.
+    #[test]
+    fn a_newline_in_a_remote_name_is_caret_escaped_not_merged() {
+        let drives = vec![NormalizedDrive {
+            name: "/dev/sda1\nroot".into(),
+            used_bytes: MIB,
+            total_bytes: 2 * MIB,
+            available_bytes: Some(MIB),
+        }];
+        let lines = render_drive_detail_lines(&drives, 120);
+        let rendered = lines.join("\n");
+        assert!(
+            rendered.contains("/dev/sda1^Jroot"),
+            "the break must stay visible: {rendered}"
+        );
+        assert!(
+            !rendered.contains("/dev/sda1root"),
+            "the two halves must never fuse into one device: {rendered}"
+        );
+        assert!(
+            !rendered.contains('\n'),
+            "one row out, so no row may carry a raw newline: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn truncate_width_alone_is_enough_for_a_one_row_field() {
+        // This is the single chokepoint every one-row field goes through, so a
+        // new call site cannot reintroduce the merge.
+        assert_eq!(truncate_width("a\nb", 20), "a^Jb");
+        assert_eq!(truncate_width("a\r\nb", 20), "a^M^Jb");
+        // Escaping widens the string (`\n` becomes two printable cells), and the
+        // width budget is applied to the escaped form — the column is measured
+        // from what is actually drawn.
+        assert_eq!(truncate_width("/dev/sda1\nroot", 15), "/dev/sda1^Jroot");
+        assert_eq!(truncate_width("/dev/sda1\nroot", 12), "/dev/sda1^Jr");
+        // Ordinary text is untouched, and a genuine width budget still elides: with
+        // room to spare for the marker (`ab日` in 3 cells) or filling the budget
+        // exactly, which needs no marker and so has none.
+        assert_eq!(truncate_width("/dev/sda1", 20), "/dev/sda1");
+        assert_eq!(truncate_width("/dev/sda1", 8), "/dev/sda");
+        assert_eq!(truncate_width("ab日", 3), "ab…");
+    }
 
     #[test]
     fn format_pct_renders_unavailable_marker_for_nan() {

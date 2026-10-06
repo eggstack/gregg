@@ -35,13 +35,39 @@ pub(crate) mod test_helpers {
     //! Shared test helpers for the config modules (single implementation so
     //! the split does not duplicate fixture scaffolding).
     use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// Isolated temp dir for one test.
-    pub(crate) fn tmp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gregg_test_{name}"));
+    /// Process-lifetime counter that keeps two parallel tests apart.
+    static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// A temp directory under `std::env::temp_dir()` that no other caller has
+    /// ever been given.
+    ///
+    /// `label` is a readability aid only; uniqueness comes from the pid and the
+    /// process-lifetime counter. That matters because this helper *deletes* the
+    /// directory before creating it, so a name built from the label alone would
+    /// make a second caller remove the first one's in-flight files — and the
+    /// first would fail with a verification error naming a directory nobody
+    /// else can see. Labels in use today are unique, which is exactly the kind
+    /// of property that decays silently: a renamed test can reintroduce a
+    /// collision without anything looking wrong.
+    ///
+    /// `prefix` keeps a module's leftovers recognisable in `/tmp` without
+    /// letting one module's label space reach another's.
+    pub(crate) fn unique_tmp_dir(prefix: &str, label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}_{label}_{}_{}",
+            std::process::id(),
+            TMP_SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// Isolated temp dir for one config test.
+    pub(crate) fn tmp_dir(name: &str) -> PathBuf {
+        unique_tmp_dir("gregg_test", name)
     }
 
     /// Locate the `lock_helper` binary for cross-process tests.

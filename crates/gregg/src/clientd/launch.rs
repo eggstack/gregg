@@ -123,11 +123,17 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
     let identity = ClientDaemonIdentity::for_path(store.path());
     let version = env!("CARGO_PKG_VERSION");
 
-    if let Some(outcome) = probe(&identity, version).await? {
-        return Ok(outcome);
+    // First, a **side-effect-free** probe. It may only answer "attach" or
+    // "take the lock"; it never stops anything, because this point is outside
+    // the launch lock and a stop is at least as destructive as the spawn the
+    // lock exists to serialize.
+    match probe(&identity, version).await? {
+        Probe::Ready(attachment) => return Ok(attachment),
+        Probe::Absent | Probe::Replaceable => {}
     }
 
-    // Absent. Exactly one process may cross this point per config.
+    // Absent, or an older owned daemon that may need replacing. Exactly one
+    // process may cross this point per config.
     //
     // The lock wait is a blocking sleep loop, so it runs on a blocking thread.
     // Calling it inline would be a real bug, not a style choice: the TUI runs
@@ -143,39 +149,62 @@ pub async fn ensure_running(store: &ConfigStore) -> Result<Attachment, EnsureErr
     // for the lock, and re-probing alone would classify that as "still absent"
     // and spawn over it — which is exactly the outcome the classification above
     // exists to prevent.
-    if let Some(outcome) = probe(&identity, version).await? {
-        drop(lock);
-        return Ok(outcome);
-    }
-
-    spawn_daemon(store.path())?;
-    let ready = wait_ready(&identity, version, READY_TIMEOUT).await;
-    // The lock is released before attaching so a slow client never blocks
-    // another launch; readiness has already been established at this point.
+    let attachment = match probe(&identity, version).await? {
+        Probe::Ready(attachment) => attachment,
+        // The destructive branch lives here, under the lock, on a
+        // classification this process just made. Rotating on the stale
+        // classification from the unlocked probe above would let a launcher
+        // that waited on the lock kill the current daemon the winner had
+        // already installed.
+        Probe::Replaceable => {
+            rotate(&identity, version).await?;
+            daemon::attach(&identity, version)
+                .await
+                .map_err(EnsureError::Transport)?
+        }
+        Probe::Absent => {
+            spawn_daemon(store.path())?;
+            let ready = wait_ready(&identity, version, READY_TIMEOUT).await;
+            // The lock is released before attaching so a slow client never
+            // blocks another launch; readiness has already been established at
+            // this point.
+            drop(lock);
+            return ready;
+        }
+    };
     drop(lock);
-    ready
+    Ok(attachment)
 }
 
-/// One attach attempt, resolved into "ready", "leave it alone", or "absent".
+/// What one attach attempt resolved to, with no side effects.
+enum Probe {
+    /// Our daemon answered; attach to this.
+    Ready(Attachment),
+    /// Nothing is there; a launch is authorized.
+    Absent,
+    /// Our daemon answered at an older protocol. It may be replaced, but only
+    /// by the caller, and only while holding the launch lock.
+    Replaceable,
+}
+
+/// One side-effect-free attach attempt.
 ///
-/// `Ok(Some(attachment))` means attach. `Ok(None)` means the endpoint is
-/// genuinely absent and a launch is authorized. `Err` means something is there
-/// that this binary must not touch, with the reason already classified.
-async fn probe(
-    identity: &ClientDaemonIdentity,
-    version: &str,
-) -> Result<Option<Attachment>, EnsureError> {
+/// `Ok(Ready)` means attach. `Ok(Absent)` means the endpoint is genuinely
+/// absent and a launch is authorized. `Ok(Replaceable)` means this config's own
+/// older daemon is running and the caller may stop it — but only after
+/// re-classifying under the launch lock. `Err` means something is there that
+/// this binary must not touch, with the reason already classified.
+///
+/// This never stops a daemon: a probe that could mutate would make the
+/// unlocked call in [`ensure_running`] an unsynchronized kill, and two
+/// launchers racing on an older owned daemon would have one of them tear down
+/// the healthy current daemon the other had just installed.
+async fn probe(identity: &ClientDaemonIdentity, version: &str) -> Result<Probe, EnsureError> {
     match daemon::attach(identity, version).await {
-        Ok(attachment) => Ok(Some(attachment)),
+        Ok(attachment) => Ok(Probe::Ready(attachment)),
         Err(error) => match classify(&error) {
-            Classification::Absent => Ok(None),
-            Classification::Rotate => {
-                rotate(identity, version).await?;
-                daemon::attach(identity, version)
-                    .await
-                    .map(Some)
-                    .map_err(EnsureError::Transport)
-            }
+            Classification::Absent => Ok(Probe::Absent),
+            Classification::Rotate => Ok(Probe::Replaceable),
             Classification::Foreign => Err(EnsureError::ForeignPeer(error.to_string())),
             Classification::Incompatible => Err(EnsureError::IncompatibleOwned {
                 daemon: match &error {
@@ -193,7 +222,9 @@ async fn probe(
 /// The OS-level wait is a poll loop, so it belongs on a blocking thread. The
 /// guard is `Send`, so it comes back across cleanly and is released when it
 /// drops — which is what keeps the lock scoped to the
-/// probe/spawn/readiness window and never to the daemon's lifetime.
+/// probe/rotate/spawn/readiness window and never to the daemon's lifetime.
+/// Every destructive step is inside that window: [`probe`] is side-effect-free,
+/// so nothing is stopped or spawned outside it.
 ///
 /// # Errors
 ///

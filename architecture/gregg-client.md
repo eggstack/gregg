@@ -286,28 +286,36 @@ anyone having to start a background process first.
 
 ```
 gregg
-  ├─ bounded handshake probe
+  ├─ bounded, side-effect-free handshake probe
   │    ├─ attached            → run the TUI
   │    ├─ absent              → launch (below)
+  │    ├─ ours but replaceable → launch (below, to rotate under the lock)
   │    └─ refused/foreign/newer → report, start nothing
   └─ launch
        ├─ acquire the config-specific launch lock   (spawn_blocking)
        ├─ re-probe *and re-classify* under the lock
-       ├─ detached spawn of the exact current executable
+       ├─ rotate (stop + wait gone), *or* detached spawn
        └─ bounded readiness wait, then attach
 ```
 
 - **The lock is an advisory OS lock**, held only across
-  probe/spawn/readiness and never for the daemon's lifetime. Its file is never
-  unlinked and is never read as a signal, so a crashed launcher cannot leave
-  behind something that makes the next launch believe a daemon is starting.
-  There is no PID file and no registry.
+  probe/rotate/spawn/readiness and never for the daemon's lifetime. Its file is
+  never unlinked and is never read as a signal, so a crashed launcher cannot
+  leave behind something that makes the next launch believe a daemon is
+  starting. There is no PID file and no registry.
 - **The lock wait runs on `spawn_blocking`.** It is a blocking sleep loop, and
   the TUI runs on a current-thread runtime, so waiting inline would starve the
   tasks that make the winner's daemon reach readiness.
-- **Only plain absence authorizes a spawn**, and the classification is redone
-  under the lock: someone else can bind a foreign service while this process
-  waits, and re-probing alone would have spawned over it.
+- **The probe is side-effect-free.** It returns a classification and stops
+  nothing. Only *plain absence* authorizes a spawn, and the classification is
+  redone under the lock: someone else can bind a foreign service while this
+  process waits, and re-probing alone would have spawned over it. The same
+  discipline covers the **destructive** step, which is at least as damaging as
+  the spawn — rotating on a classification taken *before* waiting on the lock let
+  a second launcher tear down the current daemon the winner had just installed,
+  because it was still acting on a stale `Replaceable`. So `probe` never stops a
+  daemon; `rotate` runs only after the lock is held and the classification has
+  been redone.
 - **Rotation is directional.** A daemon *older* than this frontend is stopped and
   relaunched on the current binary. A daemon *newer* than this frontend is
   reported with upgrade guidance and left running — it may be serving a newer
@@ -1144,6 +1152,19 @@ reload error verbatim: it is the daemon's config-parser output quoted from a
 local file, so it is remote-shaped text and is escaped when the document is
 adopted, not only where a metrics string is built.
 
+**A newline means two different things, and the sanitizer has two modes for
+them.** `sanitize` treats `\n` as a *separator*, because job stdout and stderr
+are multi-line bodies. `sanitize_single_line` treats it as an *anomaly* and
+renders it `^J`, because a drive name, job name, interface name, or hostname
+occupies exactly one row. That distinction is load-bearing rather than stylistic:
+the cell builder drops a control grapheme instead of breaking the row, so an
+unescaped newline in a one-row field is *deleted* and the text on either side
+fuses into an identifier the remote never reported — `/dev/sda1\nroot` renders as
+`/dev/sda1root`, a device that does not exist, with no marker that anything was
+lost. `truncate_width` is the chokepoint that applies the one-row mode, because
+every caller builds a single terminal line and that is the last point where the
+field is known to be one row.
+
 The budget is measured, not estimated. `block_rows` builds the block once, as
 ordered groups, and *both* the requested height (`desired_rows`) and the emitted
 height (`render`) read that same list — so the two cannot drift, and an estimate
@@ -1186,8 +1207,13 @@ The renderer enforces truthfulness rules that are easy to get wrong:
   low load, and there is no number to compare in that state;
 - **elapsed states use elapsed grammar.** `for 3m`, `pending 17m`, `queued 2m`,
   and countdowns `next 11h`, `retry 20s`. The old shared `age()` helper produced
-  `running for 3m ago`, which reads as a contradiction. Clock skew degrades to a
-  saturated `0ms` in either direction rather than underflowing a `u64`;
+  `running for 3m ago`, which reads as a contradiction. An *elapsed* age that
+  lands in the future (clock skew, a transition captured before its own start)
+  degrades to a saturated `0ms` rather than underflowing a `u64`, because there
+  it means "just began". A *countdown* whose instant has already passed is a
+  different relation, not skew, and reads `due` / `retry due`: `next 0ms` is a
+  confident duration for a schedule that has not run yet, and on a pane whose
+  purpose is to say when a job runs it is the fabricated-value class;
 - **record clocks are labelled `Z`.** Those fields are UTC instants while the
   schedule column beside them is the remote's *local* civil cron, so an
   unlabelled `07:00` next to a `03:00` schedule read as a contradiction across a
@@ -1205,13 +1231,19 @@ The renderer enforces truthfulness rules that are easy to get wrong:
   field that does not parse as a time keeps the verbatim string. A current
   `greggd` rejects such a schedule at config validation, so this needs an older,
   faulted, or hostile remote, and remote scheduler data is untrusted input;
-- remote truncation (`stdout+`), remote line truncation (`more lines not shown`),
-  and the pane's own viewport truncation (`… more cron rows not shown`) are three
-  different facts with three different markers;
+- remote tail truncation (`stdout+`), the pane's own record-depth drop
+  (`more lines not shown`), and the pane's viewport truncation
+  (`… more cron rows not shown`) are three different facts with three different
+  markers. The middle one deliberately carries **no** stream name or `+`: it
+  reports a local budget, not a cut the remote made, and reusing `stdout+` for it
+  would collapse two facts into one label;
 - a failed scheduler read is labelled stale and never rendered as a system
   failure;
 - a pane with a zero row budget draws nothing rather than indexing outside the
-  buffer, and one that cannot be shown still gets a row that says so.
+  buffer. When the card is *exactly* full there is no row to say "needs more
+  room" in, and the first cron row would land on the next system or the footer,
+  so the layout allocates zero and `cron::render` clips to the rect it was handed
+  rather than trading a missing pane for a corrupted neighbour.
 
 `c` / `Shift-J` / `Shift-K` are the whole key surface. Unshifted `j`/`k` stay
 bound to the system list, so a cron-expanded system does not change what the

@@ -3332,4 +3332,142 @@ mod tests {
         let second = render_state(&state, 80, 10);
         assert_eq!(first, second, "cached second render must match the first");
     }
+
+    // ── Normal-view cron pane placement ───────────────────────────────
+
+    /// One online system with real metrics and a scheduler reporting a single
+    /// job, so the normal-view card has both metric rows and cron rows to lay
+    /// out.
+    fn normal_cron_state() -> AppState {
+        let mut state = AppState::blank();
+        state.adopt_snapshot(&crate::clientd::snapshot::FrontendSnapshot {
+            generation: 1,
+            produced_at_unix_ms: 1_700_000_000_000,
+            refresh_status: crate::clientd::snapshot::RefreshStatusDto::Idle,
+            poll_initialized: true,
+            cron_display_history: 5,
+            systems: vec![crate::clientd::snapshot::SystemSnapshotDto {
+                id: "sys-a".to_owned(),
+                endpoint: crate::endpoint::Endpoint::new("box".to_owned(), 11310, None),
+                configured_name: Some("alpha".to_owned()),
+                reachability: Reachability::Online,
+                latest: Some(crate::normalized::NormalizedSnapshot::from_v1(&linux_snap())),
+                last_success_at_unix_ms: Some(1_700_000_000_000),
+                last_attempt_at_unix_ms: Some(1_700_000_000_000),
+                latency_ms: Some(10),
+                offline_reason: None,
+            }],
+            cron: vec![crate::clientd::snapshot::SystemCronDto {
+                system_id: "sys-a".to_owned(),
+                capability: crate::cron::CronCapability::Supported,
+                summary: Some(gregg_protocol::SchedulerSummaryV2 {
+                    schema_version: 2,
+                    generated_at_unix_ms: 1_700_000_000_000,
+                    epoch: gregg_protocol::SchedulerEpochV2 {
+                        started_at_unix_ms: 1_700_000_000_000,
+                        nonce: 3,
+                    },
+                    history_revision: 1,
+                    jobs: vec![gregg_protocol::SchedulerJobV2 {
+                        name: "backup".to_owned(),
+                        schedule: "0 3 * * *".to_owned(),
+                        next_due_unix_ms: 1_700_000_100_000,
+                        state: gregg_protocol::SchedulerJobStateV2::Idle,
+                        load: None,
+                        pending_since_unix_ms: None,
+                        next_retry_unix_ms: None,
+                        running_since_unix_ms: None,
+                        last: None,
+                    }],
+                }),
+                epoch: Some(gregg_protocol::SchedulerEpochV2 {
+                    started_at_unix_ms: 1_700_000_000_000,
+                    nonce: 3,
+                }),
+                history_revision: Some(1),
+                last_attempt_at_unix_ms: Some(1_700_000_000_000),
+                last_success_at_unix_ms: Some(1_700_000_000_000),
+                last_error: None,
+                history: Vec::new(),
+            }],
+            eggpool: None,
+            config_reload_error: None,
+        });
+        state.cron_expanded = true;
+        state
+    }
+
+    #[test]
+    fn normal_view_cron_pane_is_drawn_below_the_rows_it_was_laid_out_under() {
+        let state = normal_cron_state();
+        let lines = render_state(&state, 78, 24)
+            .split('\n')
+            .map(str::to_owned)
+            .collect::<Vec<String>>();
+
+        // The header and metric rows must survive: cron::render does no
+        // rebasing of its own, so an unrebased rect paints straight over
+        // them. `layout.rs` reserves the pane's rows *after* these, so a
+        // correct render leaves both regions intact.
+        let header = lines
+            .iter()
+            .position(|line| line.contains("alpha"))
+            .unwrap_or_else(|| panic!("the card header was painted over:\n{}", lines.join("\n")));
+        for label in ["CPU", "MEM", "SWP", "DISK"] {
+            assert!(
+                lines[header..].iter().any(|line| line.contains(label)),
+                "the {label} row was painted over by the cron pane:\n{}",
+                lines.join("\n")
+            );
+        }
+        let cron = lines
+            .iter()
+            .position(|line| line.contains("CRON"))
+            .unwrap_or_else(|| panic!("the cron pane was not drawn at all:\n{}", lines.join("\n")));
+        assert!(
+            cron > header,
+            "the cron pane must start below the header, not on it \
+             (header row {header}, cron row {cron}):\n{}",
+            lines.join("\n")
+        );
+        // Every metric row must still be above the pane, which is what the
+        // reserved geometry says: the pane starts after base_height plus
+        // whatever the drive and network details claimed.
+        for label in ["CPU", "MEM", "SWP", "DISK"] {
+            let row = lines
+                .iter()
+                .position(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("the {label} row vanished:\n{}", lines.join("\n")));
+            assert!(
+                row < cron,
+                "the {label} row ({row}) must stay above the cron pane ({cron}):\n{}",
+                lines.join("\n")
+            );
+        }
+    }
+
+    #[test]
+    fn normal_view_cron_pane_stays_below_the_header_on_a_short_card() {
+        // Same state at a height where the reserved rows are tight: the pane
+        // still may not claim row 0, which is the card header.
+        let state = normal_cron_state();
+        let lines = render_state(&state, 78, 12)
+            .split('\n')
+            .map(str::to_owned)
+            .collect::<Vec<String>>();
+        let cron = lines
+            .iter()
+            .position(|line| line.contains("CRON"))
+            .unwrap_or_else(|| panic!("the cron pane was not drawn at all:\n{}", lines.join("\n")));
+        assert!(
+            cron > 0,
+            "row 0 is the card header, so the pane may not start there:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines[..cron].iter().any(|line| line.contains("alpha")),
+            "the header must still be readable above the pane:\n{}",
+            lines.join("\n")
+        );
+    }
 }

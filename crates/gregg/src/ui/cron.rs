@@ -265,6 +265,13 @@ fn job_window(jobs: &[&SchedulerJobV2], selected: Option<&str>, max: usize) -> J
 /// not fit, one row is reserved for the truncation marker so the block always
 /// says what it left out, and the job window shrinks around the selection rather
 /// than being cut off at a fixed boundary.
+///
+/// `area` is a hard bound, not just a width and an origin: this block is drawn
+/// inside a system card that may be followed immediately by the next card or the
+/// footer, so a row past `area`'s last line would corrupt a neighbour. The
+/// layout normally makes that unreachable — it never allocates more cron rows
+/// than the card has room for — but the clip belongs here rather than resting on
+/// a caller's arithmetic.
 pub fn render(f: &mut Frame, area: Rect, state: &AppState, rows_visible: usize) {
     if rows_visible == 0 || area.width == 0 || area.height == 0 {
         return;
@@ -314,8 +321,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState, rows_visible: usize) 
     }
 }
 
-/// Draw one row, clipped to the terminal width.
+/// Draw one row, clipped to the terminal width and to `area`'s last line.
 fn draw_row(f: &mut Frame, area: Rect, width: usize, y: u16, text: &str) {
+    // `area` is the card, not the frame: a row at or past its bottom belongs to
+    // the next card or the footer, so drawing it would be an overpaint rather
+    // than a truncation.
+    if y >= area.y.saturating_add(area.height) {
+        return;
+    }
     let clipped = truncate_width(text, width);
     render_text_line(
         f,
@@ -662,8 +675,11 @@ fn stream_lines(record: &CronRecord, stream: Stream, depth: usize) -> Vec<String
         .collect();
     if cleaned.dropped_lines {
         // The remote's own tail truncation and this pane's row budget are
-        // different facts, and the `+` in the label already reports the first.
-        lines.push(format!("    {label}: more lines not shown"));
+        // different facts, and the `+` in the label already reports the first,
+        // so the local marker must not reuse it: `stdout+: more lines not shown`
+        // reads as one fact when it is two. This row carries no stream name at
+        // all, which is what separates it from the lines above it.
+        lines.push("    more lines not shown".to_owned());
     }
     lines
 }
@@ -743,7 +759,10 @@ fn civil_from_days(days: i64) -> (u32, u32) {
 }
 
 /// A compact duration, from milliseconds up to days.
-fn duration_label(millis: u64) -> String {
+///
+/// Crate-visible so the `EggPool` footer reports an age in the same units and
+/// with the same ladder instead of inventing a second one.
+pub(crate) fn duration_label(millis: u64) -> String {
     const SECOND: u64 = 1_000;
     const MINUTE: u64 = 60 * SECOND;
     const HOUR: u64 = 60 * MINUTE;
@@ -775,12 +794,26 @@ fn elapsed_since(unix_ms: u64) -> String {
     duration_label(crate::state::now_unix_ms().saturating_sub(unix_ms))
 }
 
+/// What a due instant that has already passed reads as.
+///
+/// A word, not a saturated `0ms`. `next 0ms` states a confident duration for a
+/// schedule the daemon has not run yet, which is the fabricated-value class
+/// this pane exists to avoid; "due" is the relation that actually holds.
+const DUE: &str = "due";
+
 /// How long until a scheduled instant, in whole units.
 ///
-/// The same conservative boundary as [`elapsed_since`]: a due instant already in
-/// the past reads `0ms` rather than wrapping.
+/// Unlike [`elapsed_since`], a past instant here is not clock skew that degrades
+/// to a small number — it is the ordinary reading of a schedule whose time has
+/// come, possibly by hours. It reads [`DUE`] rather than a countdown, so the row
+/// says the relation it means instead of a `0ms` that implies the job is about
+/// to start.
 fn countdown_to(unix_ms: u64) -> String {
-    duration_label(unix_ms.saturating_sub(crate::state::now_unix_ms()))
+    let now = crate::state::now_unix_ms();
+    if unix_ms <= now {
+        return DUE.to_owned();
+    }
+    duration_label(unix_ms - now)
 }
 
 /// One plain `label  value` line, for the "nothing here" cases.
@@ -1665,10 +1698,19 @@ mod tests {
         assert_eq!(state_detail(&queued).as_deref(), Some("queued 2m00s"));
 
         // The retry countdown reads as a countdown, like the next-due one.
+        // Two minutes out rather than twenty seconds: the countdown is measured
+        // against a clock read *after* the instant was chosen, so a sub-second
+        // target makes the assertion about milliseconds no test can pin — and
+        // that is exactly how this test failed on a loaded machine. Both
+        // readings the clock can produce are accepted; what is asserted is the
+        // grammar, `retry <m>s`.
         let mut retrying = pending.clone();
-        retrying.next_retry_unix_ms = Some(now + 20_000);
+        retrying.next_retry_unix_ms = Some(now + 120_000);
         let label = load_gate_label(&retrying).expect("gate");
-        assert!(label.contains("retry 20.0s"), "{label}");
+        assert!(
+            label.contains("retry 2m00s") || label.contains("retry 1m59s"),
+            "the retry countdown must read as a countdown: {label}"
+        );
 
         for state in [idle, running, pending, queued] {
             if let Some(detail) = state_detail(&state) {
@@ -1684,11 +1726,37 @@ mod tests {
     fn clock_skew_degrades_to_zero_rather_than_wrapping() {
         let now = crate::state::now_unix_ms();
         // A remote clock ahead, or a transition captured before its own start.
+        // An elapsed age saturates to a small number: it means "just began".
         assert_eq!(elapsed_since(now + 5 * 60_000), "0ms");
-        assert_eq!(countdown_to(now.saturating_sub(5 * 60_000)), "0ms");
         // And the ordinary cases still read correctly.
         assert_eq!(elapsed_since(now.saturating_sub(90_000)), "1m30s");
         assert_eq!(countdown_to(now + 90_000), "1m30s");
+    }
+
+    #[test]
+    fn a_passed_due_instant_reads_due_not_a_zero_countdown() {
+        // `next 0ms` is a confident duration for a schedule whose time has
+        // already come, and reads as "starting now" for a job that has not
+        // started. The relation that actually holds is that it is due.
+        let now = crate::state::now_unix_ms();
+        assert_eq!(countdown_to(now.saturating_sub(5 * 60_000)), "due");
+        assert_eq!(countdown_to(now), "due");
+        // Far past is still `due`, never a wrapped absurd duration.
+        assert_eq!(countdown_to(now.saturating_sub(3 * 86_400_000)), "due");
+
+        let mut state = state_with_cron(&[("backup", SchedulerJobStateV2::Idle)], "", Vec::new());
+        state.cron[0].summary.as_mut().expect("summary").jobs[0].next_due_unix_ms = 1;
+        let lines = drawn(&state, 100, 6);
+        assert!(
+            text(&lines).contains("next due"),
+            "an overdue idle job must read `next due`:\n{}",
+            text(&lines)
+        );
+        assert!(
+            !text(&lines).contains("next 0ms"),
+            "an overdue idle job must never read `next 0ms`:\n{}",
+            text(&lines)
+        );
     }
 
     #[test]
@@ -1795,6 +1863,89 @@ mod tests {
             rendered.contains(TRUNCATION_MARKER),
             "and the viewport cut keeps a different one: {rendered}"
         );
+    }
+
+    /// The per-stream "more lines not shown" row reports a *local* drop, so it
+    /// must not borrow the stream name and `+` that mean the remote cut the
+    /// tail. With both facts true, `stdout+: more lines not shown` reads as one
+    /// fact when it is two — and the reader cannot tell which happened.
+    #[test]
+    fn the_local_line_marker_does_not_reuse_the_remote_stream_label() {
+        let mut deep = record(2, "1\n2\n3\n4\n5\n6\n7\n8", "");
+        // The remote truncated its tail *and* the pane dropped lines of its own.
+        deep.record.stdout.truncated = true;
+        let state = state_with_cron(
+            &[("backup", SchedulerJobStateV2::Idle)],
+            "backup",
+            vec![record(1, "older", ""), deep],
+        );
+        let rendered = text(&drawn(&state, 120, 24));
+        assert!(
+            rendered.contains("stdout+"),
+            "the remote's own truncation keeps its marker: {rendered}"
+        );
+        assert!(
+            rendered.contains("\n    more lines not shown"),
+            "the pane's own drop is still marked: {rendered}"
+        );
+        assert!(
+            !rendered.contains("stdout+: more lines not shown"),
+            "the local marker must not claim the remote truncated stdout: {rendered}"
+        );
+    }
+
+    /// The block lives inside a system card, and the rows below that card belong
+    /// to the next system or the footer. An over-generous `rows_visible` must
+    /// not reach them: the card rect is the hard bound, so this is the last line
+    /// of defence if a caller ever passes a budget the card cannot hold.
+    #[test]
+    fn a_budget_wider_than_the_card_never_paints_below_it() {
+        const WIDTH: u16 = 60;
+        const HEIGHT: u16 = 10;
+        let state = state_with_cron(
+            &[
+                ("backup", SchedulerJobStateV2::Idle),
+                ("sweep", SchedulerJobStateV2::Idle),
+            ],
+            "backup",
+            Vec::new(),
+        );
+        let mut terminal = Terminal::new(TestBackend::new(WIDTH, HEIGHT)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                // A two-row card at y=2, with a budget of eight rows and blank
+                // rows beneath it that must survive untouched.
+                render(
+                    frame,
+                    Rect {
+                        x: 0,
+                        y: 2,
+                        width: WIDTH,
+                        height: 2,
+                    },
+                    &state,
+                    8,
+                );
+            })
+            .expect("draws");
+        let buffer = terminal.backend().buffer().clone();
+        let row_text = |y: u16| -> String {
+            (0..WIDTH)
+                .map(|x| buffer[(x, y)].symbol().to_owned())
+                .collect()
+        };
+        assert!(
+            row_text(2).contains("CRON"),
+            "the first cron row belongs inside the card: {:?}",
+            row_text(2)
+        );
+        for y in 4..HEIGHT {
+            assert!(
+                row_text(y).trim().is_empty(),
+                "row {y} is below the card and must stay blank: {:?}",
+                row_text(y)
+            );
+        }
     }
 
     /// A fleet with far more jobs than the window, and a selection the test

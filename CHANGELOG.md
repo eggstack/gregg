@@ -45,6 +45,92 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The normal-view cron pane painted over the system card it belongs under.**
+  `c` in the default view put the `CRON` header, the selected job's header, and
+  its record rows directly on top of `name@host:port`, CPU, MEM, SWP/COMMIT and
+  DISK, leaving the rows `layout.rs` had reserved for the pane blank. The cron
+  block draws relative to the rect it is handed and does no rebasing of its own;
+  the drive and network renderers rebase by offset and the condensed view rebased
+  inline, but the normal view passed the unrebased card rect. It now starts where
+  the previous detail ended. `cron::render` additionally clips to the rect it was
+  given, so an over-generous budget can never reach the next system or the
+  footer.
+
+- **A second `gregg` launch could kill the client daemon the first one had just
+  installed.** The launcher took its advisory launch lock only after an initial
+  probe, and that probe was not a pure query: when it classified the endpoint as
+  an older *owned* daemon, it went ahead and stopped it. Two launches racing
+  against one stale daemon therefore meant the loser waited on the lock and then
+  acted on a classification it had taken before waiting — tearing down the
+  current, healthy daemon the winner had just spawned and disconnecting every
+  attached TUI. The probe is now side-effect-free and returns a classification;
+  the destructive rotate happens only with the lock held, on a classification
+  redone at that moment. The rule the launcher already documented — only plain
+  absence authorizes a spawn, and the classification is redone under the lock —
+  now covers the stop, which is at least as destructive as the spawn.
+
+- **`gregg update` could hang instead of failing.** The shared child runner's
+  deadline bounded the child's *lifetime* only. Once the child exited — and on
+  the timeout path itself — it joined the pipe reader threads with no bound, and
+  a descendant that inherited a write end keeps that pipe open forever. The
+  result was a silent hang rather than an error. Pipe bytes now arrive over a
+  channel (a `JoinHandle::join()` cannot be given a deadline) and every drain gets
+  one fixed 250 ms post-exit settle bound. An expired bound is reported as an
+  error, not as short output: an incomplete capture that looked complete would
+  let a caller act on a version line or status code it never received.
+
+- **A newline in a remote name silently merged the two halves into a name that
+  does not exist.** Control characters in remote text are rendered in `cat -v`
+  caret notation, but a `\n` was deliberately left inert because job output is
+  multi-line and splits on it. A drive name, job name, interface name, or
+  hostname occupies exactly one row, and ratatui *drops* a control grapheme
+  rather than breaking the row — so `/dev/sda1\nroot` rendered as
+  `/dev/sda1root`, a device that is not on the machine, with no `^J` and no
+  marker. Sanitizing now has two modes for a newline (separator for a body,
+  anomaly `^J` for a one-row field), and the one-row mode is applied at the
+  single chokepoint every single-row field already passes through.
+
+- **An overdue cron schedule rendered a confident `next 0ms`.** A due instant
+  hours in the past saturated to zero, which on a pane whose purpose is to say
+  when a job runs reads as "starting now" for a job that has not started. A
+  passed instant now reads `due`. Elapsed ages are unchanged: there, a future
+  stamp is clock skew and `0ms` correctly means "just began".
+
+- **The EggPool footer always claimed the result was recent.** It read
+  `Updated recently` regardless of when the last summary refresh actually
+  succeeded, so an hours-old snapshot read the same as a fresh one. The footer
+  now reports the real age using the cron pane's unit ladder, which keeps the two
+  panes from disagreeing about how long three minutes is.
+
+- **The cron pane's local line-drop marker reused the remote truncation label.**
+  When both facts held, the row read `stdout+: more lines not shown`, so the `+`
+  that means "the remote cut this stream's tail" also labelled a purely local
+  budget drop. The two are different facts and now read differently: the remote
+  keeps `stdout+`, the local drop says only `more lines not shown`.
+
+- **A failed atomic config write could not say why it failed.**
+  `AtomicWriteError::VerificationFailed` was a unit variant that discarded the
+  underlying error, so a re-read that could not open the temporary file and a
+  re-read that got *different* configuration were one opaque label — and an
+  intermittent `write_atomic` failure under parallel tests was undiagnosable from
+  its own report. The two modes are now named separately.
+
+- **The CI Clippy gate failed on `main`.** `cargo clippy --workspace
+  --all-targets --all-features -- -D warnings` exited 101 with 17
+  `large_futures` errors: the scheduler's `await_child_completion` had grown to
+  ~17 KB because each `drain_step` future carried its 4 KiB read scratch buffer
+  *inline*, and the scheduler keeps several of those futures alive at once. The
+  scratch now lives in the tail it was folded into, so a drain future's size no
+  longer scales with the read size, at one allocation per stream instead of one
+  per read.
+
+- **Test temp directories were keyed by label alone, and the helper deletes
+  before it creates.** A duplicate label — from a renamed test, say — would have
+  one test remove another's in-flight config temp file, which surfaces as an
+  intermittent verification failure naming a directory nobody else can see. The
+  pid and a process-lifetime counter now make each directory unique, so the
+  labels are the readability aid they were always meant to be.
+
 - **`greggd` could be held past its own shutdown bound by an orphaned
   collection.** A collection cycle runs on the blocking pool and
   `spawn_blocking` cannot be aborted. When shutdown won the select the sampler

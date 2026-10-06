@@ -674,8 +674,16 @@ pub enum AtomicWriteError {
     Io(std::io::Error),
     /// TOML serialization failed.
     Serialization(toml::ser::Error),
-    /// The file was written but verification re-parse failed.
-    VerificationFailed,
+    /// The file was written but verification did not reproduce it.
+    ///
+    /// Carries *why*, in words. This is the one atomic-write failure whose
+    /// cause is invisible from the outside — every other variant wraps its
+    /// source and `source()` can walk to it — so a unit variant here discards
+    /// the only information needed to tell a re-read that failed to open the
+    /// file apart from one that re-read it and got something different. Two
+    /// distinct faults, one opaque label, and an intermittent CI failure that
+    /// cannot be diagnosed from the report.
+    VerificationFailed(String),
 }
 impl fmt::Display for AtomicWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -683,14 +691,14 @@ impl fmt::Display for AtomicWriteError {
             Self::NoParentDirectory => write!(f, "path has no parent directory"),
             Self::Io(e) => write!(f, "I/O error: {e}"),
             Self::Serialization(e) => write!(f, "TOML serialization error: {e}"),
-            Self::VerificationFailed => write!(f, "verification re-parse failed"),
+            Self::VerificationFailed(reason) => write!(f, "verification re-parse failed: {reason}"),
         }
     }
 }
 impl std::error::Error for AtomicWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::NoParentDirectory | Self::VerificationFailed => None,
+            Self::NoParentDirectory | Self::VerificationFailed(_) => None,
             Self::Io(e) => Some(e),
             Self::Serialization(e) => Some(e),
         }

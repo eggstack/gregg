@@ -106,9 +106,13 @@ pub fn compute_viewport(
         } else {
             0
         };
-        // Cron takes what is left. A selected system with cron open always
-        // gets at least one row, so a too-small card says so instead of
-        // rendering an empty block for a pane the operator believes is open.
+        // Cron takes what is left. When nothing is left the pane is dropped to
+        // zero rows, because the card is already exactly full: the first cron
+        // row would land at `area.y + h`, which is the *next* entry's first row
+        // (or the footer), not this card's. Allocating one "just to say
+        // something" would trade a missing pane for a corrupted neighbour, and
+        // `cron::render` clips to the rect it was handed, so the safe answer is
+        // the honest one — draw nothing rather than draw outside the card.
         let cron_rows_visible = if is_selected && state.cron_expanded {
             let remaining = h
                 .saturating_sub(base_height)

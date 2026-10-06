@@ -35,6 +35,19 @@
 //! what the remote program emitted, so the operator sees the anomaly instead of
 //! a quietly mangled log.
 //!
+//! # One rule, two modes: what a newline means
+//!
+//! [`sanitize`] treats `\n` as a **separator**, because job stdout and stderr
+//! are multi-line bodies and the caller wants their lines.
+//!
+//! [`sanitize_single_line`] treats it as an **anomaly** and renders it `^J`,
+//! because a drive name, job name, interface name, or hostname occupies exactly
+//! one row. That distinction is load-bearing rather than stylistic: the cell
+//! builder drops control graphemes instead of breaking the row, so an unescaped
+//! newline in a one-row field is *deleted* and the text on either side of it
+//! fuses into an identifier the remote never reported. Caret notation is what
+//! keeps that from being a silent merge.
+//!
 //! # What is *not* escaped
 //!
 //! Printable Unicode passes through untouched, including wide (double-cell)
@@ -100,8 +113,43 @@ impl Sanitized {
 /// [`Sanitized::dropped_lines`] reports whether the bound actually bit, and is
 /// distinct from the remote daemon's own truncation flag: this one is about
 /// local viewport pressure, that one is about what the remote ring retained.
+///
+/// A newline here is a *separator*: the result may span several rows. For a
+/// field that occupies exactly one row, use [`sanitize_single_line`] instead —
+/// this function's `\n` handling is wrong for that case, not merely different.
 #[must_use]
 pub fn sanitize(text: &str, max_lines: usize) -> Sanitized {
+    sanitize_inner(text, max_lines, true)
+}
+
+/// Make `text` safe for a field that occupies exactly one terminal row.
+///
+/// The same escaping as [`sanitize`], except that a newline is an anomaly
+/// rather than a separator: it is rendered as `^J` (and a CR/LF pair as
+/// `^M^J`) instead of splitting the row.
+///
+/// This is not cosmetic. Ratatui builds cells through
+/// `symbol.contains(char::is_control)` and *drops* a control grapheme rather
+/// than breaking the row, so an unescaped `\n` inside a drive name, job name,
+/// interface name, or hostname is silently deleted at render time and the text
+/// on either side of it fuses into a single identifier that the remote never
+/// reported — `/dev/sda1\nroot` renders as `/dev/sda1root`, a device that does
+/// not exist, with no marker that anything was lost. Caret notation keeps the
+/// anomaly visible instead, which is the same rule this module applies to every
+/// other control.
+///
+/// There is no line bound: a single-line field is one row by definition, and
+/// bounding it here would report a truncation that is really the renderer's
+/// width budget. `dropped_lines` is therefore always `false`.
+#[must_use]
+pub fn sanitize_single_line(text: &str) -> Sanitized {
+    // `max_lines` is unreachable in single-line mode — no character closes a
+    // line, so `emitted` never advances — but the guard is a bound, not a
+    // promise, so it stays finite and unremarkable.
+    sanitize_inner(text, usize::MAX, false)
+}
+
+fn sanitize_inner(text: &str, max_lines: usize, newline_breaks_line: bool) -> Sanitized {
     let mut out = Sanitized::default();
     let mut current = String::new();
     let mut current_escaped = false;
@@ -114,7 +162,7 @@ pub fn sanitize(text: &str, max_lines: usize) -> Sanitized {
     // *closed*, which is also the only point where we know another line began.
     while let Some(character) = characters.next() {
         match character {
-            '\n' => {
+            '\n' if newline_breaks_line => {
                 if emitted == max_lines {
                     out.dropped_lines = true;
                     return out;
@@ -128,13 +176,22 @@ pub fn sanitize(text: &str, max_lines: usize) -> Sanitized {
                 current_escaped = false;
                 emitted += 1;
             }
+            // In single-line mode nothing closes a row, so a break must be made
+            // visible instead of acting as one.
+            '\n' => {
+                current.push_str("^J");
+                current_escaped = true;
+            }
             '\r' => {
                 // A CR/LF pair is one line break, so CRLF output does not
                 // acquire a phantom blank line. A *lone* CR is an overwrite
                 // attempt rather than a line break, and rewriting it as one
                 // here would let output defeat the line accounting above, so it
                 // is made visible instead.
-                if characters.peek() == Some(&'\n') {
+                //
+                // In single-line mode the LF is escaped rather than consumed,
+                // so both halves stay visible: a `^M^J` says what arrived.
+                if newline_breaks_line && characters.peek() == Some(&'\n') {
                     continue;
                 }
                 current.push_str("^M");
@@ -155,8 +212,10 @@ pub fn sanitize(text: &str, max_lines: usize) -> Sanitized {
 
     // Whatever follows the final newline is a line of its own, unless it is
     // empty. A trailing newline therefore does not add a phantom empty line.
+    // Single-line mode has no final newline to account for, and its text is
+    // always flushed below.
     if !current.is_empty() {
-        if emitted == max_lines {
+        if newline_breaks_line && emitted == max_lines {
             out.dropped_lines = true;
             return out;
         }
@@ -461,6 +520,73 @@ mod tests {
                 out.escaped,
                 is_inert(character),
                 out.text
+            );
+        }
+    }
+
+    /// A newline inside a one-row field is deleted by the cell builder, so it
+    /// must be made visible instead. Without this the two halves of the name
+    /// fuse into an identifier the remote never reported.
+    #[test]
+    fn single_line_mode_caret_escapes_a_newline_instead_of_splitting_it() {
+        let out = sanitize_single_line("/dev/sda1\nroot");
+        assert_eq!(out.text, "/dev/sda1^Jroot");
+        assert!(out.escaped);
+        assert!(!out.text.contains('\n'));
+        assert_eq!(
+            out.lines(),
+            vec!["/dev/sda1^Jroot"],
+            "still exactly one row"
+        );
+        // The multi-line mode is unchanged: it is the stdout/stderr path and
+        // must keep splitting there.
+        assert_eq!(
+            sanitize("/dev/sda1\nroot", 8).lines(),
+            vec!["/dev/sda1", "root"]
+        );
+    }
+
+    #[test]
+    fn single_line_mode_keeps_both_halves_of_a_crlf_visible() {
+        // Multi-line mode folds CRLF into one break. Single-line mode escapes
+        // both halves, because `^M^J` is what actually arrived and a lone `^M`
+        // would claim a CR that was not there.
+        assert_eq!(sanitize_single_line("a\r\nb").text, "a^M^Jb");
+        assert_eq!(sanitize_single_line("a\rb").text, "a^Mb");
+        assert_eq!(sanitize("a\r\nb", 8).text, "a\nb");
+    }
+
+    #[test]
+    fn single_line_mode_never_claims_a_truncation_it_did_not_perform() {
+        // The width budget is the renderer's decision, not this function's, so
+        // reporting `dropped_lines` here would conflate the two facts the pane
+        // keeps separate.
+        let out = sanitize_single_line("1\n2\n3");
+        assert!(!out.dropped_lines);
+        assert_eq!(out.text, "1^J2^J3");
+    }
+
+    #[test]
+    fn single_line_mode_agrees_with_the_multi_line_mode_on_every_other_control() {
+        // The two modes differ on newlines only. Anything else must be escaped
+        // identically, or a one-row field would be a weaker filter than a body.
+        for code in 0_u32..=0x10_FFFF {
+            let Some(character) = char::from_u32(code) else {
+                continue;
+            };
+            if matches!(character, '\n' | '\r') {
+                continue;
+            }
+            let single = sanitize_single_line(&character.to_string());
+            let multi = sanitized(&character.to_string());
+            assert_eq!(
+                single.text, multi.text,
+                "disagreement at U+{code:04X}: single={:?} multi={:?}",
+                single.text, multi.text
+            );
+            assert_eq!(
+                single.escaped, multi.escaped,
+                "disagreement at U+{code:04X}"
             );
         }
     }

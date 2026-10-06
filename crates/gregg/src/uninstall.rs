@@ -442,10 +442,7 @@ mod tests {
     use std::fs;
 
     fn tmp_case(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("gregg_uninstall_{name}"));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::config::test_helpers::unique_tmp_dir("gregg_uninstall", name)
     }
 
     fn no_cargo(_: &Path, _: &str) -> bool {

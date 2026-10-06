@@ -151,7 +151,24 @@ pub(crate) fn render_online(
     // Cron goes last: it is the most expensive detail, so it takes whatever
     // the drive and network details did not claim. The `d`, `n`, and `c`
     // expansions are independent, and none of them closes another.
-    crate::ui::cron::render(f, area, state, cron_rows_visible);
+    //
+    // `cron::render` draws relative to the rect it is handed and does no
+    // rebasing of its own, so the rect must start where the previous detail
+    // ended — exactly as `render_drive_details`/`render_network_details` do via
+    // `base_height`/`start_offset`, and as the condensed view does inline.
+    // Passing the unrebased card rect would paint the pane over the header and
+    // metric rows it is supposed to sit under.
+    let after_networks =
+        after_drives.saturating_add(u16::try_from(network_rows_visible).unwrap_or(u16::MAX));
+    crate::ui::cron::render(
+        f,
+        Rect {
+            y: area.y.saturating_add(after_networks),
+            ..area
+        },
+        state,
+        cron_rows_visible,
+    );
 }
 
 fn render_waiting(f: &mut Frame, area: Rect, system: &SystemState, is_visually_selected: bool) {

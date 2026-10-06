@@ -571,18 +571,28 @@ impl Config {
         // Verify the bytes that were actually written before exposing the
         // replacement. This catches truncated or otherwise corrupt temp
         // files before the atomic rename can replace a valid config.
-        let Ok(verified) = Config::load(&temp_path) else {
+        //
+        // The two failure modes are reported apart, because they are different
+        // faults: the temporary file could not be read back at all (an I/O or
+        // parse problem), or it read back as something other than what was
+        // written. Collapsing them into one marker is what made an
+        // intermittent failure undiagnosable from its report.
+        let verified = Config::load(&temp_path).map_err(|source| {
             let _ = fs::remove_file(&temp_path);
-            return Err(ConfigError::AtomicWrite {
+            ConfigError::AtomicWrite {
                 path: path.to_path_buf(),
-                source: AtomicWriteError::VerificationFailed,
-            });
-        };
+                source: AtomicWriteError::VerificationFailed(format!(
+                    "the temporary file could not be re-read: {source}"
+                )),
+            }
+        })?;
         if verified != *self {
             let _ = fs::remove_file(&temp_path);
             return Err(ConfigError::AtomicWrite {
                 path: path.to_path_buf(),
-                source: AtomicWriteError::VerificationFailed,
+                source: AtomicWriteError::VerificationFailed(
+                    "the re-read configuration differs from the one written".to_owned(),
+                ),
             });
         }
 

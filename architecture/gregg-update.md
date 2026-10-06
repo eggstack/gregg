@@ -119,6 +119,17 @@ target in all consumers at once, never in one place alone.
   killed and reaped instead of blocking `resolve_plan`), owner-private
   `TempDir 0700`, partial-file removal, kill/reap (no orphaned compilers), no
   predictable shared-temp pathnames.
+- **The child's *lifetime* bound does not bound its pipe drains.** A descendant
+  that inherited a write end keeps the pipe open after the direct child exits,
+  so `JoinHandle::join()` on the reader thread — on the success path *and* on the
+  timeout path — is an unbounded wait on a process this crate neither owns nor
+  kills. `PipeReader` therefore hands its bytes over a channel instead of a
+  `JoinHandle` (a join cannot be given a deadline), and every drain goes through
+  `settle_pipe`, which allows one fixed `POST_EXIT_DRAIN_SETTLE` of 250 ms per
+  stream. An expired budget is reported as a `TimedOut` error rather than as
+  short output: an incomplete capture that looks complete would let a caller act
+  on a version line or a status code it never received. The same discipline
+  `greggd`'s scheduler post-exit settle already applies.
 - A 2xx download is rejected unless the staged file is within
   `MAX_DOWNLOAD_BYTES` (`metadata().len()` re-check after the HTTP status, the
   metadata-path equivalent of the `take(MAX+1)` capture guard), so a curl that

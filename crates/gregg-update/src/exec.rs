@@ -1,8 +1,10 @@
 //! Bounded external-process execution and network fetch helpers.
 //!
 //! All subprocess I/O is bounded: `curl` requests carry `--max-time`,
-//! spawned children are killed and reaped on timeout, and pipe readers are
-//! joined on every path. No shell is invoked; no `sudo` is invoked.
+//! spawned children are killed and reaped on timeout, and every pipe drain is
+//! given its own post-exit settle bound so a descendant holding an inherited
+//! write end cannot park a caller forever. No shell is invoked; no `sudo` is
+//! invoked.
 
 use std::io::{self, Read};
 use std::process::{Command, Output, Stdio};
@@ -451,6 +453,11 @@ fn downloaded_asset_within_cap(dest: &std::path::Path) -> DownloadOutcome {
 /// Run a child process with a deadline. On timeout the child is killed and
 /// reaped before returning a `TimedOut` error, so no orphan keeps running
 /// after the caller gives up.
+///
+/// The deadline bounds the child's *lifetime*, never the pipe drains that
+/// follow it: see [`settle_pipe`]. An unbounded join there would
+/// turn this from a bounded call into a silent hang whenever a descendant
+/// inherited a write end.
 pub fn run_child_with_timeout(mut cmd: Command, timeout: Duration) -> io::Result<Output> {
     let mut child = cmd.spawn()?;
     let stdout = pipe_reader(child.stdout.take());
@@ -462,8 +469,8 @@ pub fn run_child_with_timeout(mut cmd: Command, timeout: Duration) -> io::Result
             None if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = join_pipe(stdout);
-                let _ = join_pipe(stderr);
+                let _ = settle_pipe(stdout);
+                let _ = settle_pipe(stderr);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "child process timed out and was killed",
@@ -474,20 +481,80 @@ pub fn run_child_with_timeout(mut cmd: Command, timeout: Duration) -> io::Result
     };
     Ok(Output {
         status,
-        stdout: join_pipe(stdout)?,
-        stderr: join_pipe(stderr)?,
+        stdout: settle_pipe(stdout)?,
+        stderr: settle_pipe(stderr)?,
     })
 }
 
-fn pipe_reader<R: Read + Send + 'static>(
-    reader: Option<R>,
-) -> Option<thread::JoinHandle<io::Result<Vec<u8>>>> {
+/// Budget a pipe reader gets after the child's wait result to hand over its
+/// bytes, per stream.
+///
+/// One fixed, non-configurable bound, never restarted per stream or per wake.
+/// It exists because the child's exit does not close the pipe: a descendant
+/// that inherited the write end can hold it open indefinitely, and gregg-update
+/// neither owns nor kills descendants. Without this, waiting for the reader is
+/// an unbounded wait on a writer that may never close.
+const POST_EXIT_DRAIN_SETTLE: Duration = Duration::from_millis(250);
+
+/// One child pipe being drained on its own thread.
+///
+/// The bytes arrive over a channel rather than through [`thread::JoinHandle`],
+/// because a join cannot be given a deadline. Once the budget expires the
+/// reader is abandoned: the `JoinHandle` was dropped when the `PipeReader` was
+/// built, so the thread detaches and cannot keep this call parked. Its read end
+/// stays open until it finishes, which is the price of not killing somebody
+/// else's process — and the only alternative would be an unbounded wait.
+struct PipeReader {
+    result: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
+}
+
+impl PipeReader {
+    /// Wait up to `budget` for this pipe's bytes.
+    ///
+    /// An expired budget is reported as an error rather than as short output:
+    /// an incomplete capture that looks complete would let a caller act on a
+    /// version line or status code it never actually received.
+    fn recv_within(self, budget: Duration) -> io::Result<Vec<u8>> {
+        match self.result.recv_timeout(budget) {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "child output did not settle within the post-exit bound; \
+                 an inherited writer is holding the pipe open",
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
+                "child output reader ended without producing a result",
+            )),
+        }
+    }
+}
+
+/// Wait up to [`POST_EXIT_DRAIN_SETTLE`] for one pipe's bytes.
+///
+/// Every path that used to join a reader unboundedly goes through here. An
+/// unpiped stream settles instantly; a piped one gets its own single budget,
+/// which is what closes the wait at `2 * POST_EXIT_DRAIN_SETTLE` for a child
+/// with both streams inherited by a descendant.
+fn settle_pipe(reader: Option<PipeReader>) -> io::Result<Vec<u8>> {
+    match reader {
+        Some(reader) => reader.recv_within(POST_EXIT_DRAIN_SETTLE),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn pipe_reader<R: Read + Send + 'static>(reader: Option<R>) -> Option<PipeReader> {
     reader.map(|mut reader| {
+        let (sender, result) = std::sync::mpsc::sync_channel(1);
+        // The handle is dropped immediately: the thread detaches and this
+        // process never blocks on it. `recv_timeout` is the only wait.
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            reader.read_to_end(&mut bytes)?;
-            Ok(bytes)
-        })
+            let outcome = reader.read_to_end(&mut bytes).map(|_| bytes);
+            // A failed send means the caller abandoned the drain; the bytes go
+            // with the thread.
+            let _ = sender.send(outcome);
+        });
+        PipeReader { result }
     })
 }
 
@@ -496,15 +563,18 @@ fn pipe_reader<R: Read + Send + 'static>(
 fn pipe_reader_limited<R: Read + Send + 'static>(
     reader: Option<R>,
     limit: usize,
-) -> Option<thread::JoinHandle<io::Result<Vec<u8>>>> {
+) -> Option<PipeReader> {
     reader.map(|reader| {
+        let (sender, result) = std::sync::mpsc::sync_channel(1);
         thread::spawn(move || {
             let mut bytes = Vec::new();
-            reader
+            let outcome = reader
                 .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
-                .read_to_end(&mut bytes)?;
-            Ok(bytes)
-        })
+                .read_to_end(&mut bytes)
+                .map(|_| bytes);
+            let _ = sender.send(outcome);
+        });
+        PipeReader { result }
     })
 }
 
@@ -539,8 +609,8 @@ pub(crate) fn run_child_with_timeout_capped_both(
             None if std::time::Instant::now() >= deadline => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = join_pipe(stdout);
-                let _ = join_pipe(stderr);
+                let _ = settle_pipe(stdout);
+                let _ = settle_pipe(stderr);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "child process timed out and was killed",
@@ -549,14 +619,14 @@ pub(crate) fn run_child_with_timeout_capped_both(
             None => thread::sleep(Duration::from_millis(10)),
         }
     };
-    let stdout = join_pipe(stdout)?;
+    let stdout = settle_pipe(stdout)?;
     if stdout.len() > max_stdout_bytes {
         return Err(io::Error::new(
             io::ErrorKind::OutOfMemory,
             format!("child {RESPONSE_TOO_LARGE_FRAGMENT}"),
         ));
     }
-    let stderr = join_pipe(stderr)?;
+    let stderr = settle_pipe(stderr)?;
     if stderr.len() > max_stderr_bytes {
         return Err(io::Error::new(
             io::ErrorKind::OutOfMemory,
@@ -568,15 +638,6 @@ pub(crate) fn run_child_with_timeout_capped_both(
         stdout,
         stderr,
     })
-}
-
-fn join_pipe(reader: Option<thread::JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
-    match reader {
-        Some(reader) => reader
-            .join()
-            .map_err(|_| io::Error::other("child output reader panicked"))?,
-        None => Ok(Vec::new()),
-    }
 }
 
 /// Run a command with a timeout, mapping spawn/timeout failures into the
@@ -1098,6 +1159,55 @@ mod tests {
         assert!(error.to_string().contains("timed out"));
         thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "timed-out child continued after return");
+    }
+
+    /// A descendant that inherited the write end keeps the pipe open after the
+    /// direct child has exited, so the drain — not the child's lifetime — is
+    /// what has to be bounded. Without the post-exit settle bound this call
+    /// waits for a process gregg-update neither owns nor kills, which is a
+    /// silent hang rather than an error.
+    #[test]
+    #[cfg(unix)]
+    fn an_inherited_writer_cannot_hold_the_caller_open() {
+        let mut command = Command::new("/bin/sh");
+        // `echo` writes, then the shell exits while the backgrounded `sleep`
+        // still holds both write ends open.
+        command
+            .args(["-c", "echo started; sleep 20 & exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let started = std::time::Instant::now();
+        let outcome = run_child_with_timeout(command, Duration::from_secs(10));
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "an inherited writer must not extend the call past its settle bound: {elapsed:?}"
+        );
+        // Reported as an error rather than as short output: an incomplete
+        // capture that looked complete would let a caller act on a version line
+        // or a status code it never received.
+        let error = outcome.expect_err("a drain that never settled must not read as success");
+        assert!(
+            error.to_string().contains("inherited writer"),
+            "the reason must survive to the caller: {error}"
+        );
+    }
+
+    /// The ordinary case still returns the child's own output, unchanged, when
+    /// nothing inherits the write ends. The bound must not cost a byte.
+    #[test]
+    #[cfg(unix)]
+    fn a_child_that_closes_its_own_pipes_still_reports_its_output() {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "printf 'v1.2.3\\n'; printf 'warning\\n' >&2"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = run_child_with_timeout(command, Duration::from_secs(10))
+            .expect("a settled capture succeeds");
+        assert_eq!(output.stdout, b"v1.2.3\n");
+        assert_eq!(output.stderr, b"warning\n");
+        assert!(output.status.success());
     }
 
     // Plan 126 closed RETAIN CURL and kept these end-to-end fixtures for

@@ -237,8 +237,17 @@ fn format_duration(value: f64) -> String {
     }
 }
 
-fn clock_text(_at: Instant) -> String {
-    "recently".into()
+/// How long ago the last successful `EggPool` refresh was, in whole units.
+///
+/// Elapsed wording (`for 3m`), never `… ago`, matching the cron pane's elapsed
+/// states and its unit ladder — the two panes must not disagree about how long
+/// three minutes is. The instant is the real one: a summary whose last success
+/// was hours ago is stale, and an unconditional "recently" states the opposite
+/// of what the footer exists to report.
+fn clock_text(at: Instant) -> String {
+    let age = at.saturating_duration_since(Instant::now());
+    let millis = u64::try_from(age.as_millis()).unwrap_or(u64::MAX);
+    format!("for {}", crate::ui::cron::duration_label(millis))
 }
 
 /// Bounded health diagnostic text. Raw bodies, credentials, and upstream

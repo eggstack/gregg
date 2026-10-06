@@ -97,12 +97,41 @@ fn make_epoch_at(started_at_unix_ms: u64) -> SchedulerEpochV2 {
 /// Retains the **last** `capacity` bytes, which is the diagnostically useful
 /// end of a failure. `total_bytes` counts everything the child ever wrote on
 /// this stream so a test can prove retention is independent of it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct OutputTail {
     buffer: Vec<u8>,
     capacity: usize,
     truncated: bool,
     total_bytes: u64,
+    /// Reusable read scratch, owned here rather than inside [`drain_step`]'s
+    /// future.
+    ///
+    /// A per-read `[u8; DRAIN_CHUNK]` declared inside the future is *inlined*
+    /// into it, and the scheduler keeps up to four of these futures alive at
+    /// once (two concurrent drains plus two settle branches), so the scratch
+    /// alone made every enclosing future tens of kilobytes and failed clippy's
+    /// `large_futures`. Parking it in the tail keeps the future's size
+    /// independent of the read size, costs one allocation per stream instead of
+    /// one per read, and changes nothing about what is captured.
+    ///
+    /// `Option` only so a fold can move the box out of `&mut self` (see
+    /// [`OutputTail::push_scratch`]); it is always `Some` outside that call.
+    scratch: Option<Box<[u8; DRAIN_CHUNK]>>,
+}
+
+impl std::fmt::Debug for OutputTail {
+    /// Deliberately omits the scratch's contents: it is zero-filled read
+    /// scratch of no diagnostic value, and 4 KiB of `0` would drown the
+    /// retained tail. The field is still named so the shape stays checkable.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OutputTail")
+            .field("buffer", &self.buffer)
+            .field("capacity", &self.capacity)
+            .field("truncated", &self.truncated)
+            .field("total_bytes", &self.total_bytes)
+            .field("scratch", &format_args!("<{DRAIN_CHUNK} bytes>"))
+            .finish()
+    }
 }
 
 impl OutputTail {
@@ -115,7 +144,30 @@ impl OutputTail {
             capacity: MAX_SCHEDULER_OUTPUT_BYTES,
             truncated: false,
             total_bytes: 0,
+            scratch: Some(Box::new([0u8; DRAIN_CHUNK])),
         }
+    }
+
+    /// The reusable read scratch for the next chunk on this stream.
+    pub(crate) fn scratch(&mut self) -> &mut [u8] {
+        self.scratch
+            .as_deref_mut()
+            .expect("the drain scratch is taken only for the length of one fold")
+            .as_mut_slice()
+    }
+
+    /// Fold the first `count` bytes of this tail's read scratch into the tail.
+    ///
+    /// The scratch box is moved out for the fold rather than read through a
+    /// borrow: `push` needs `&mut self`, which a live borrow of the scratch
+    /// would forbid. Moving the box is a pointer copy, so it allocates nothing.
+    fn push_scratch(&mut self, count: usize) {
+        let scratch = self
+            .scratch
+            .take()
+            .expect("the drain scratch is taken only for the length of one fold");
+        self.push(&scratch[..count]);
+        self.scratch = Some(scratch);
     }
 
     /// Fold one read chunk into the tail.
@@ -178,6 +230,9 @@ impl Default for OutputTail {
 /// reported `truncated: false`. The returned future borrows the stream rather
 /// than owning it, so nothing can outlive the scheduler or delay shutdown.
 /// Nothing is spawned.
+///
+/// The read scratch lives in the tail for the same "nothing is owned here"
+/// reason, so this future's size does not scale with `DRAIN_CHUNK`.
 pub(crate) async fn drain_step<R>(
     reader: Option<&mut R>,
     tail: &mut OutputTail,
@@ -193,14 +248,16 @@ where
         *done = true;
         return false;
     };
-    let mut scratch = [0u8; DRAIN_CHUNK];
-    match reader.read(&mut scratch).await {
+    // Bound the borrow of the scratch to this statement: the read future is a
+    // temporary, and the arms below need `tail` mutably again.
+    let read = reader.read(tail.scratch()).await;
+    match read {
         Ok(0) => {
             *done = true;
             false
         }
         Ok(count) => {
-            tail.push(&scratch[..count]);
+            tail.push_scratch(count);
             true
         }
         Err(error) => {
