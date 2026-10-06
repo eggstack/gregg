@@ -134,8 +134,17 @@ polling plane, and default-five display history. They are independent of Plan
 091 and do not include the unrelated current Windows EggPool test failure.
 
 Plans 176-178 are the completed narrow follow-up correctives from the subsequent
-review of current main at `892a771`; all three are independent of Plan 091 and of
-each other, and each was closed against its own acceptance criteria.
+review of main at `892a771`; all three are independent of Plan 091 and of each
+other, and each was closed against its own acceptance criteria.
+
+Plans 179-181 are the active post-closure bounded-liveness correctives from the
+2026-10-06 review of current main at `fcbe2df`. Plan 179 makes the fixed 250 ms
+greggd post-exit settle deadline authoritative even against continuously-ready
+descendant output. Plan 180 extends cron reload/cancellation preemption through
+the bounded worker-to-engine observation send while preserving transactional
+history-gate commit. Plan 181 keeps EggPool's latest desired state live while a
+completed result is backpressured by the full four-slot result channel. The three
+plans are independent of Plan 091 and of each other.
 
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
@@ -198,9 +207,9 @@ Windows Clippy and Test steps. Its predecessor `37408868235` on `515c106` failed
 only on a `-D dead-code` gate over Plan 177's test-only predicate, recorded in that
 plan's closure record.
 
-None of the three reopens Plan 091, and being terminal they unblock no further
-plan: 178 is the highest-numbered plan in the tree and nothing else lists any of
-them as a dependency.
+None of Plans 176-178 reopens Plan 091. Their historical closures remain valid,
+but the later review opened Plans 179-181 for three narrower liveness edges that
+do not rewrite those closure records.
 
 Plan 175 is complete: the cron block is truthful about what it can actually
 know. Load rows state the relation they mean — only a load-delayed job prints
@@ -794,6 +803,9 @@ excluded.
 | [`176-windows-eggpool-full-result-channel-test-determinism-corrective.md`](176-windows-eggpool-full-result-channel-test-determinism-corrective.md) | Replace the Windows-sensitive closed-port timing fixture with a deterministic proof that cancellation wins over a blocked send to the full bounded EggPool result channel | **complete**; production corrected only by extracting one `deliver_result_or_cancel` primitive (same biased select) and rewriting the regression to fill the real bounded channel deterministically; 81 `eggpool` tests green; mutation-tested; CI `37407151408` green across all six jobs on `2e14a83`; independent of 091/177/178; no EggPool behavior change |
 | [`177-greggd-post-exit-dual-stream-drain-progress-corrective.md`](177-greggd-post-exit-dual-stream-drain-progress-corrective.md) | Preserve Plan 173's 250 ms direct-child settle while allowing ready stdout/stderr streams to make independent post-exit progress when the other inherited stream remains open and idle | **complete**; `settle_output` selects per iteration among one `drain_step` per unfinished stream plus the frozen deadline, with finished streams excluded by precondition and an alternating preferred branch; 20 observation tests green, both mirror cases mutation-tested; stripped `greggd` +232 bytes (3,312,456 -> 3,312,688), Plan 162 ceiling retained; depends on completed 173; independent of 091/176/178; no protocol/process-group change |
 | [`178-gregg-cron-worker-reload-preemption-corrective.md`](178-gregg-cron-worker-reload-preemption-corrective.md) | Let accepted config reload/cancellation interrupt an active bounded cron fleet round, and commit the history gate only after a coherent observation is handed to the engine | **complete**; reload/cancellation selected inside the active round with a typed `RoundOutcome` and immediate re-entry; `settle` returns a `PendingGateCommit` applied only after channel delivery; 29 cron tests green, both invariants mutation-tested; depends on completed 174; independent of 091/176/177; four-read bound and 30s steady cadence preserved |
+| [`179-greggd-post-exit-settle-deadline-authority-corrective.md`](179-greggd-post-exit-settle-deadline-authority-corrective.md) | Make the frozen 250 ms post-exit settle deadline outrank continuously-ready descendant stdout/stderr so output readiness can never retain the global scheduler slot beyond the bounded settle | **planned**; depends on completed 177/current `fcbe2df`; independent of 091/180/181; no protocol/process-group change |
+| [`180-gregg-cron-observation-delivery-preemption-corrective.md`](180-gregg-cron-observation-delivery-preemption-corrective.md) | Let reload/cancellation preempt a cron observation blocked on the full bounded worker-to-engine channel, with history-gate commit only after successful delivery | **planned**; depends on completed 178/current `fcbe2df`; independent of 091/179/181; preserves channel/concurrency/cadence bounds |
+| [`181-eggpool-desired-state-result-backpressure-corrective.md`](181-eggpool-desired-state-result-backpressure-corrective.md) | Keep EggPool latest-desired-state convergence live while a completed result is blocked on the full bounded result channel, abandoning only superseded work | **planned**; depends on completed 151+176/current `fcbe2df`; independent of 091/179/180; preserves four-slot bounded backpressure |
 
 Dependency order:
 
@@ -831,6 +843,9 @@ current post-154 main -> 155
 current 892a771 -> 176
 173 + current 892a771 -> 177
 174 + current 892a771 -> 178
+177 + current fcbe2df -> 179
+178 + current fcbe2df -> 180
+151 + 176 + current fcbe2df -> 181
 155 is the coordination roadmap for the load-aware maintenance scheduler and is independent of the remaining Plan 091 soak record; 156 qualified same-principal execution, local five-field cron semantics, process lifecycle, and prototype footprint; 157 implemented the scheduler and 158 reconciled its functional criteria and corrected validation/allocation; 159 closed the original line with the explicit re-baseline decision, so 155-159 remain complete. Plan 160 is a separate post-closure correctness hardening pass for civil-clock discontinuities and does not reopen those historical closures. None of 155-160 depends on the remaining Plan 091 soak record, and none adds a workflow, job, matrix, or artifact requirement.
 Plan 161 coordinated the cron-observability/client-daemon line and is now closed with all of 162-167 complete: 162 `42e2fc2` settled the remote scheduler wire/output/memory/footprint contract before 163 changed greggd; 164 `b25ca04` built the client-daemon split, independently justified by duplicate TUI polling; 165 `c8f2542`/`ee6ad7e` added per-user lifecycle on the Plan-164 boundary; 166 `53c06e5` added the bounded local cron cache and plain `c` view on top of the remote scheduler plus clientd core; 167 `154ab36` closed the line on measured multi-client, restart, memory, payload, security, and footprint evidence. Plans 161-167 were and remain independent of Plan 091, and added no workflow, job, or matrix requirement.
 Plan 168 is the post-closure corrective pass for the one gap Plans 161 and 167 both flagged honestly: the Windows job had not been run. Running it showed the Windows half of the client daemon had been written but never compiled, so the Windows CI job had been red since Plan 164 landed. 168 corrected the transport (stream ownership, the owner-only SDDL descriptor, `PIPE_REJECT_REMOTE_CLIENTS` placement, the `windows-sys` feature gates, the `\\.\pipe\` endpoint name, a blocking-pool accept, and a `PeekNamedPipe` read), added a `WaitNamedPipeW` liveness probe so the `stop` confirmation stops answering "not running" for a running daemon, and added four Windows tests that execute the pipe path for the first time. Those tests then found a second, pre-existing defect: `FrontendFrame::ProtocolError(String)` can never be serialized because the enum is internally tagged, so every "here is why you were refused" frame had always been silently discarded. Plan 168 depends on 161-167 and remains independent of Plan 091, and adds no workflow, job, or matrix requirement.
@@ -850,9 +865,12 @@ deterministic CI/test correction for the independently introduced EggPool
 backpressure test, 177 is a bounded output-completeness correction to 173's
 post-exit settle, and 178 is a reload/cancellation responsiveness correction to
 174's worker loop with the existing fleet-side target check retained as final
-authority. All three are now complete, so nothing is blocked on them; 176 closes
-on native Windows CI run `37407151408` on `2e14a83`, green across all six jobs,
-and the Windows EggPool backpressure regression is no longer a red CI signal.
+authority. All three are complete; 176 closes on native Windows CI run
+`37407151408` on `2e14a83`, green across all six jobs, and the Windows EggPool
+backpressure regression is no longer a red CI signal. Plans 179-181 are later,
+independently justified follow-ups: 179 owns deadline priority after 177, 180
+owns blocked observation-send preemption after 178, and 181 owns EggPool
+desired-state preemption during result-channel backpressure after 151/176.
 066 ... 097 complete or in-progress as above; 098 is the coordination roadmap for 099-101;
 099 may proceed independently of the remaining Plan 091 soak record;
 100 requires 099's binary/bootstrap contract and Plan 091's final croncheck semantics;
