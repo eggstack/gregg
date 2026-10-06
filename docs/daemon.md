@@ -85,6 +85,8 @@ as the run's outcome and captures output for a further fixed 250 ms, then closes
 the pipes so an inherited writer cannot hold up later jobs. Within that one
 budget the two streams drain independently, so an idle inherited writer on one
 of them cannot stop bytes already buffered on the other from being captured.
+That ends when the 250 ms is up: a descendant that keeps writing cannot extend
+it, and greggd stops reading at the bound whatever is still available.
 `greggd` does not track, kill, or report on such a descendant.
 
 Jobs always run as greggd's current OS principal. The Linux system service runs

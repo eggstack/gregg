@@ -1,6 +1,6 @@
 # Plan 179: greggd post-exit settle deadline authority corrective
 
-Status: planned.
+Status: complete. See the closure record at the end.
 
 Depends on: completed Plan 177 plus current main at
 `fcbe2dfb129e0327dc0499d6666e54e1ac310fa8`.
@@ -174,23 +174,27 @@ it fires.
 
 ## Acceptance criteria
 
-- [ ] A continuously-ready inherited output stream cannot keep
+- [x] A continuously-ready inherited output stream cannot keep
       `settle_output` running after the frozen settle deadline is ready.
-- [ ] When the deadline and any drain are simultaneously ready, the deadline
+- [x] When the deadline and any drain are simultaneously ready, the deadline
       wins.
-- [ ] Before the deadline, two ready streams still make fair bounded progress.
-- [ ] The 250 ms deadline is frozen once at direct-child exit and is not reset by
+- [x] Before the deadline, two ready streams still make fair bounded progress.
+- [x] The 250 ms deadline is frozen once at direct-child exit and is not reset by
       reads, wakes, or future reconstruction.
-- [ ] Direct-child timing, carried-index attribution, bounded output tails, and
+- [x] Direct-child timing, carried-index attribution, bounded output tails, and
       one-global-child semantics remain unchanged.
-- [ ] No drain task is spawned and no descendant/process-group ownership is
+- [x] No drain task is spawned and no descendant/process-group ownership is
       introduced.
-- [ ] Existing inherited-writer, flood, rebuild, shutdown, and output-bound
+- [x] Existing inherited-writer, flood, rebuild, shutdown, and output-bound
       regressions remain green.
-- [ ] Focused/local/workspace checks pass.
-- [ ] Paired stripped `greggd` size is recorded and remains under the current
+- [x] Focused/local/workspace checks pass.
+- [x] Paired stripped `greggd` size is recorded and remains under the current
       scheduler ceiling or opens a separate explicit footprint decision.
-- [ ] Existing six-job CI completes green.
+- [ ] Existing six-job CI completes green. **Not yet recorded at closure** — see
+      the closure record. Per this repository's own rule that only a native
+      Windows run is authority for Windows lint/test status, and per the standing
+      decision that plans close against the lightest appropriate mechanism, this
+      box is deliberately left unchecked rather than claimed.
 
 ## Stop conditions
 
@@ -212,3 +216,159 @@ requires:
 - process groups/cgroups/Windows job objects;
 - Plan 091 soak evidence;
 - new CI infrastructure.
+
+## Closure record
+
+Deadline-authority corrective in `crates/greggd/src/scheduler.rs`. No stop
+condition was hit: the direct-child execution boundary, the 250 ms product
+decision, output bounds, scheduler protocol/history semantics, and descendant
+ownership policy are all unchanged. Nothing is spawned, no drain task exists, and
+no process group or descendant kill was introduced. No new dependency, workflow,
+or job.
+
+### The deadline is now the first biased branch
+
+Plan 177's landed select was ordered `preferred drain`, `other drain`,
+`sleep_until(deadline)`. Alternating the two drain branches removed mutual
+starvation, but the timer was still last: a descendant that inherits a descriptor
+and keeps writing leaves one `drain_step` ready on *every* poll, so once the timer
+became ready the earlier ready drain branch kept winning and the settle continued
+for as long as output stayed available. The frozen 250 ms bound was therefore not
+authoritative, which is the exact liveness property the bound exists to provide.
+
+The fix is the ordering, and nothing else:
+
+```rust
+if prefer_stdout {
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep_until(settle_deadline) => return,
+        _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
+        _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
+    }
+} else {
+    tokio::select! {
+        biased;
+        () = tokio::time::sleep_until(settle_deadline) => return,
+        _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
+        _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
+    }
+}
+```
+
+Before the deadline the timer is pending, so the alternating preference alone
+arbitrates between two simultaneously-ready streams and Plan 177's fairness is
+untouched. At or after it the timer wins over either stream, and no further output
+read happens however ready that read is. The state machine, the
+`drain_step` primitive, the borrowed tails, and the passed-in `settle_deadline`
+are all unchanged — the deadline is still never recomputed, so a wake, a read, or
+a rebuilt completion future cannot extend it.
+
+**The `Instant::now()` guard was deliberately not added.** The plan allowed one as
+defense in depth, but a comparison alone cannot carry the property: the guard can
+pass, a drain can then complete, and the next poll can still hand the iteration
+to a ready drain. Priority has to come from the select ordering, which is tested
+against a timer that is ready in the same poll as the drain. The reasoning is
+recorded in the function's doc comment and in `AGENTS.md` so a future agent does
+not "simplify" the ordering into a wall-clock check.
+
+### Regressions
+
+Two new helper-level tests plus the two retained Plan-177/Plan-173 cases:
+
+- `a_ready_stream_never_outranks_an_expired_settle_deadline` — a continuously
+  ready stdout against an idle open stderr, with the deadline already reached
+  before the first poll. Asserts zero post-deadline bytes consumed.
+- `no_ready_stream_outranks_an_expired_settle_deadline` — the same with *both*
+  streams continuously ready, asserting neither tail moves.
+- `two_ready_streams_both_make_progress_within_the_settle` (retained, doc
+  extended) is now explicitly the pre-deadline half of the authority claim.
+- `a_silent_settle_ends_at_the_frozen_deadline_without_an_eof` (retained) still
+  proves an idle inherited writer is bounded without an EOF.
+- `a_settle_cancelled_by_a_wake_keeps_the_frozen_exit_and_budget` (retained) still
+  proves a rebuilt completion future cannot restart the 250 ms budget.
+
+The deterministic-reader fixture is `ScriptedReader` with `POST_DEADLINE_CHUNKS`
+(64) chunks. That budget is finite *on purpose*: a reader that is ready on every
+poll and never reports EOF is the descendant shape under test, but with the drains
+ordered first it also spins the settle loop forever, because a `Ready` drain never
+yields the task back to the timer. A large finite budget keeps the mutation
+observable immediately — the wrong ordering drains all 64 chunks instead of
+returning at zero — with no wall-clock timeout and no `test-util` and no risk of a
+hanging test. This is the deviation from the plan's "many `DRAIN_CHUNK` blocks
+without ever becoming pending" phrasing, and it is a strictly stronger
+observation than a timeout-based hang inference.
+
+### Mutation-tested
+
+Moving the drain branches back ahead of the timer fails both new tests
+immediately and deterministically:
+
+```text
+test scheduler::observation_tests::a_ready_stream_never_outranks_an_expired_settle_deadline ... FAILED
+test scheduler::observation_tests::no_ready_stream_outranks_an_expired_settle_deadline ... FAILED
+  assertion `left == right` failed: no byte may be read after the frozen settle deadline is ready
+    left: 262144
+   right: 0
+```
+
+262,144 bytes is 64 × `DRAIN_CHUNK` — the entire post-deadline budget read past
+its bound. The fix was then restored and the observation suite re-run green.
+
+### Footprint
+
+Paired stripped release `greggd` on this host, measured against pre-change main
+`fcbe2df`:
+
+```text
+before  3,312,688
+after   3,312,704
+delta   +16 bytes (+0.0005%)
+```
+
+Plan 159's 3,261,664-byte baseline is **not** re-baselined and Plan 177's recorded
+3,312,688 figure stands unchanged. Plan 162's explicit 3,400,000-byte scheduler
+ceiling still holds with 87,296 bytes of headroom, so no separate footprint
+decision is opened. No new dependency.
+
+### Verification
+
+```text
+cargo test -p greggd --all-features -- settle                    # 6 passed
+cargo test -p greggd --all-features -- observation_tests         # 22 passed
+cargo fmt --all -- --check                                      # clean
+cargo clippy --workspace --all-targets --all-features -- -D warnings   # clean
+./scripts/check-local.sh                                        # all checks passed (default mode)
+```
+
+The Unix process-level inherited-descriptor regression
+(`an_inherited_output_writer_cannot_retain_the_global_child_slot`), the flood
+regression, the carried-index attribution regression, the shutdown regression, and
+the ordinary-exit regression all remain green, as do all 500 `greggd` tests and
+the rest of the workspace (914 `gregg`, 118 + 44 `gregg-protocol`, 62
+`gregg-host`, 45 `gregg-update`).
+
+**Not claimed here:** a green six-job CI run. This change is Linux/macOS/Windows
+source in `greggd`'s scheduler with no platform-specific code and no protocol,
+route, or history change, so the default local check plus the workspace
+Clippy/test gate is the lightest appropriate mechanism under this repository's
+completion rule. The native Windows job remains the platform authority for
+Windows lint/test status, and a cross-checked local Windows Clippy run is not
+closure evidence.
+
+### Documentation reconciled
+
+- `architecture/greggd-daemon.md` — the settle section now states that stream
+  independence holds *only until* the deadline fires, that the deadline is the
+  first biased branch, and why a wall-clock guard is not a substitute.
+- `crates/greggd/README.md` — same claim in operator-facing terms.
+- `docs/daemon.md` — the user-facing statement that a descendant that keeps
+  writing cannot extend the 250 ms.
+- `.opencode/skills/greggd-daemon/SKILL.md` — explicit "never reorder the drains
+  ahead of the timer" and "never substitute `Instant::now()`" instructions.
+- `AGENTS.md` — the deadline-first rule with its reasoning.
+
+### Not reopened
+
+Plans 173, 174, 175, 177, and 178 keep their closure records unchanged. Plan 091
+is untouched and remains gated only on its own extended soak record.

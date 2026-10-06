@@ -715,11 +715,27 @@ async fn await_child_completion(child: &mut RunningChild<'_>) -> ChildCompletion
 /// produces bytes or the deadline wins — so output that was already available is
 /// silently dropped from the retained tail.
 ///
-/// So each iteration selects among three independent futures: one `drain_step`
-/// per stream that is not finished, and the frozen deadline. Whichever stream is
-/// ready first wins that iteration, so a pending read on one never withholds
-/// progress from the other. The preferred branch alternates, so when both streams
-/// are continuously ready neither can starve the other for the whole settle.
+/// So each iteration selects among three independent futures: the frozen
+/// deadline, and one `drain_step` per stream that is not finished. The two
+/// stream branches alternate, so a pending read on one never withholds progress
+/// from the other and neither stream starves the other for the whole settle.
+///
+/// The deadline is the **first** biased branch, and that ordering is the whole
+/// point. A descendant that inherits a descriptor and keeps writing leaves a
+/// `drain_step` ready on every single poll, so with the drains ordered ahead of
+/// the timer a continuously-ready stream wins every iteration and the settle
+/// never returns — the fixed 250 ms bound frozen at the child's exit would be
+/// fiction, and one inherited writer could hold greggd's one global child slot
+/// indefinitely. Ordering the deadline first makes the bound authoritative the
+/// instant it fires: before it, the timer is pending and the alternating
+/// preference alone arbitrates between two ready streams; at or after it, the
+/// timer wins over either of them.
+///
+/// An explicit `Instant::now() >= settle_deadline` guard would *not* be enough on
+/// its own: it could pass, a drain could then complete, and the next poll would
+/// still hand the iteration to a ready drain. Priority comes from the select
+/// ordering, which is checked against a timer that is ready in the same poll as
+/// the drain.
 ///
 /// A read that loses the select is cancelled having consumed nothing, and the
 /// tails are borrowed from the `RunningChild`, so losing a cancelled read — or
@@ -751,16 +767,16 @@ async fn settle_output<O, E>(
         if prefer_stdout {
             tokio::select! {
                 biased;
+                () = tokio::time::sleep_until(settle_deadline) => return,
                 _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
                 _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
-                () = tokio::time::sleep_until(settle_deadline) => return,
             }
         } else {
             tokio::select! {
                 biased;
+                () = tokio::time::sleep_until(settle_deadline) => return,
                 _ = drain_step(stderr.as_deref_mut(), stderr_tail, stderr_done), if !*stderr_done => {}
                 _ = drain_step(stdout.as_deref_mut(), stdout_tail, stdout_done), if !*stdout_done => {}
-                () = tokio::time::sleep_until(settle_deadline) => return,
             }
         }
         prefer_stdout = !prefer_stdout;
@@ -2378,6 +2394,18 @@ mod observation_tests {
         }
     }
 
+    /// How many chunks a *continuously ready* reader keeps producing after the
+    /// settle deadline has already fired.
+    ///
+    /// Finite on purpose. A reader that is ready on every poll and never reports
+    /// EOF is exactly the descendant shape that starves the deadline — and with
+    /// the drains ordered ahead of the timer it also spins the settle loop
+    /// forever, because a `Ready` drain never yields the task back to the timer.
+    /// A large finite budget keeps the mutation observable immediately (the
+    /// helper drains every chunk instead of returning at zero) without a test
+    /// that hangs or needs a wall-clock timeout to fail.
+    const POST_DEADLINE_CHUNKS: usize = 64;
+
     /// Poll the production settle helper the way a scheduler wake does: a fresh
     /// future, dropped one poll later.
     ///
@@ -2536,6 +2564,11 @@ mod observation_tests {
 
     /// Both streams ready at once must both progress: the preferred branch
     /// alternates, so neither stream can starve the other for the whole settle.
+    ///
+    /// This is the pre-deadline half of the deadline's authority. Ordering the
+    /// frozen deadline ahead of both drains must not disturb it: with a future
+    /// deadline the timer is pending, so the alternating preference alone
+    /// arbitrates and both streams reach EOF.
     #[tokio::test]
     async fn two_ready_streams_both_make_progress_within_the_settle() {
         let mut stdout = ScriptedReader::new(2, b'a');
@@ -2604,6 +2637,90 @@ mod observation_tests {
         );
         assert_eq!(stdout_tail.total_bytes(), 0);
         assert_eq!(stderr_tail.total_bytes(), 0);
+    }
+
+    /// The settle's frozen budget is authoritative even when an inherited
+    /// stream is continuously readable after the direct child exited.
+    ///
+    /// A descendant that keeps writing leaves one `drain_step` ready on every
+    /// poll. While the deadline branch was ordered behind the drains, that ready
+    /// stream won every biased poll and the settle kept reading past its 250 ms
+    /// bound for as long as output stayed available — the timer never got a
+    /// turn at all. The regression pins the deadline first and proves not one
+    /// post-deadline byte is consumed.
+    #[tokio::test]
+    async fn a_ready_stream_never_outranks_an_expired_settle_deadline() {
+        let mut stdout = ScriptedReader::new(POST_DEADLINE_CHUNKS, b'a');
+        let mut stderr = IdleOpenReader;
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        // Already reached before the helper is ever polled: `sleep_until` is
+        // ready on the first poll, so branch priority — not a timer that happens
+        // to fire — is the only thing under test here.
+        let settle_deadline = Instant::now() - Duration::from_millis(1);
+
+        settle_output(
+            Some(&mut stdout),
+            &mut stdout_tail,
+            &mut stdout_done,
+            Some(&mut stderr),
+            &mut stderr_tail,
+            &mut stderr_done,
+            settle_deadline,
+        )
+        .await;
+
+        assert_eq!(
+            stdout_tail.total_bytes(),
+            0,
+            "no byte may be read after the frozen settle deadline is ready"
+        );
+        assert!(
+            !stdout_done,
+            "a stream the deadline pre-empted cannot have reached EOF"
+        );
+        assert_eq!(stderr_tail.total_bytes(), 0);
+    }
+
+    /// The mirror of the deadline-authority case with **both** streams ready.
+    ///
+    /// The alternating preference is what keeps two ready streams fair; the
+    /// deadline is what bounds them. Once the budget is spent the preference
+    /// must not matter at all — neither tail may move.
+    #[tokio::test]
+    async fn no_ready_stream_outranks_an_expired_settle_deadline() {
+        let mut stdout = ScriptedReader::new(POST_DEADLINE_CHUNKS, b'a');
+        let mut stderr = ScriptedReader::new(POST_DEADLINE_CHUNKS, b'b');
+        let mut stdout_tail = OutputTail::new();
+        let mut stderr_tail = OutputTail::new();
+        let mut stdout_done = false;
+        let mut stderr_done = false;
+        let settle_deadline = Instant::now() - Duration::from_millis(1);
+
+        settle_output(
+            Some(&mut stdout),
+            &mut stdout_tail,
+            &mut stdout_done,
+            Some(&mut stderr),
+            &mut stderr_tail,
+            &mut stderr_done,
+            settle_deadline,
+        )
+        .await;
+
+        assert_eq!(
+            stdout_tail.total_bytes(),
+            0,
+            "the deadline outranks the preferred stream"
+        );
+        assert_eq!(
+            stderr_tail.total_bytes(),
+            0,
+            "the deadline outranks the alternating stream too"
+        );
+        assert!(!stdout_done && !stderr_done);
     }
 
     /// Shutdown keeps its established bound: a killed direct child is reaped

@@ -158,12 +158,18 @@ this, and never reports output a descendant writes after the boundary.
 
 Those two streams progress **independently** inside the one settle budget. A
 stream whose only writer is an idle descendant stays open and unreadable, so it
-must not stall the other: each step selects among one pending read per
-unfinished stream and the frozen deadline, and whichever is ready first wins.
-Bytes already buffered on the busy stream are therefore still captured even
-while the other is open, and the preferred stream alternates so neither can
-starve the other. Only bytes from a completed read are retained, so cancelling
-a losing read loses nothing.
+must not stall the other: each step selects among the frozen deadline and one
+pending read per unfinished stream. Bytes already buffered on the busy stream are
+therefore still captured even while the other is open, and the preferred stream
+alternates so neither can starve the other. Only bytes from a completed read are
+retained, so cancelling a losing read loses nothing.
+
+That independence lasts **only until the frozen deadline fires**, and the deadline
+is the first branch of the biased select — which is what makes the 250 ms bound real
+rather than decorative. A descendant that keeps writing leaves a read ready on every
+poll, so ordering the reads ahead of the timer would let one inherited writer extend
+the settle indefinitely and hold the global child slot. Once the deadline is ready
+it wins over both streams and no further byte is read, however ready that read is.
 
 > **Output is visible to anything that can reach this listener.** Scheduler
 > output is more sensitive than CPU or memory telemetry. The configured

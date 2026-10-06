@@ -297,15 +297,31 @@ spawn a process group, or kill anything it did not start to capture it.
 
 Within that one settle budget the two streams make progress **independently**.
 One stream can be open and permanently idle — inherited by a descendant that has
-nothing left to say — so each iteration selects among one pending `drain_step`
-per unfinished stream and the frozen deadline, and whichever stream is ready
-first wins that iteration. The preferred branch alternates, so when both are
-continuously ready neither starves the other. A pending read on one stream
-therefore never withholds bytes already available on the other. Only bytes
+nothing left to say — so each iteration selects among the frozen deadline and one
+pending `drain_step` per unfinished stream. The preferred stream branch alternates,
+so when both are continuously ready neither starves the other and a pending read
+on one stream never withholds bytes already available on the other. Only bytes
 returned by a completed read are folded into the `RunningChild`-owned tails, so
-cancelling a losing read loses nothing. Descendant output is still not
-guaranteed: greggd never waits for descendant EOF, and the deadline is fixed at
-the direct child's exit and never restarted by a wake or by per-stream progress.
+cancelling a losing read loses nothing.
+
+That independence holds **only until the frozen deadline fires**. The deadline is
+the *first* branch of the biased select, which is what makes the 250 ms bound
+authoritative rather than decorative: a descendant that inherits a descriptor and
+keeps writing leaves a `drain_step` ready on every poll, so a drain ordered ahead
+of the timer would win every iteration and extend the settle for as long as output
+stayed available — turning the fixed budget into fiction and letting one inherited
+writer hold the global child slot indefinitely. At or after the deadline the timer
+wins over either stream and no further output read happens, no matter how ready
+it is. An `Instant::now()` comparison would not be enough on its own: it could
+pass and then lose the next poll to a drain that completed in between, so the
+priority lives in the select ordering and is tested against a deadline that is
+already ready.
+
+Descendant output is still not guaranteed: greggd never waits for descendant EOF,
+and the deadline is fixed at the direct child's exit and never restarted by a wake,
+by a per-stream read, or by rebuilding the completion future. Normal executor
+scheduling overhead after the timer wakes is not a new published duration and does
+not change the direct-child timestamp.
 
 The frozen exit, its status, and its settle deadline all live on the
 `RunningChild` rather than in the completion future, so a completion future

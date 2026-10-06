@@ -79,11 +79,17 @@ service lifecycle. For platform metric collection itself, use the
   closing the read handles, finalizing the record, and freeing the one global
   child slot. A descendant that merely inherited a descriptor must never retain
   the slot, and greggd never kills it or claims its output. Inside that settle
-  budget stdout and stderr progress **independently** — select one pending
-  `drain_step` per unfinished stream plus the frozen deadline, with an
-  alternating preferred branch — so an idle open writer on one stream cannot
-  withhold bytes already available on the other, and neither stream can starve
-  the other. Fold only the bytes a completed read returns; the losing read is
+  budget stdout and stderr progress **independently** — select the frozen deadline
+  **first**, then one pending `drain_step` per unfinished stream with an alternating
+  preferred branch — so an idle open writer on one stream cannot withhold bytes
+  already available on the other, and neither stream can starve the other. That
+  independence holds **only until the deadline fires**: a continuously-readable
+  inherited writer leaves a drain ready on every poll, so the deadline-first
+  ordering is what makes the 250 ms bound authoritative instead of letting one
+  descendant hold the global slot indefinitely. Never reorder the drains ahead of
+  the timer, and never substitute an `Instant::now()` comparison for the ordering —
+  it can pass and then lose the next poll to a drain that completed in between.
+  Fold only the bytes a completed read returns; the losing read is
   cancelled, never partially applied. While the child is alive, both streams
   drain **concurrently with the wait** by borrowing the
   streams (never `wait_with_output`, never a spawned drain task, never a line

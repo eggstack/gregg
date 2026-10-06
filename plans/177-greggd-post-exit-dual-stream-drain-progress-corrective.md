@@ -320,3 +320,14 @@ progress before the deadline, but make the frozen deadline outrank any ready
 drain once it fires. This plan's idle-stream completeness fix, no-descendant-
 ownership boundary, paired footprint evidence, and other closure results remain
 historical facts.
+
+### Resolution (2026-10-06, after Plan 179 closed)
+
+Plan 179 landed the correction this note anticipated. The independent alternating
+stream selection is retained exactly as described above; the only change is that
+the frozen deadline is now the **first** branch of the biased select, so stream
+independence holds only until the bound fires and a continuously-ready inherited
+writer can no longer keep the settle running past it. The deadline is still
+passed in and never recomputed. This plan's stream-fairness claim and its four
+deterministic helper regressions remain valid. See
+`179-greggd-post-exit-settle-deadline-authority-corrective.md`.
