@@ -256,9 +256,18 @@ against the new helper. The process-level
 attribution regressions all remain green, so the end-to-end descendant behavior is
 still covered.
 
-`RunningChild::output_drained` is now used only by tests and is marked
-`#[cfg(test)]`; `DRAIN_CHUNK` and `OutputTail::total_bytes` became
+`RunningChild::output_drained` is now used only by the Unix
+inherited-descriptor regression and is marked `#[cfg(all(test, unix))]`; the
+settle no longer needs the predicate because it owns the loop that would have
+called it. `DRAIN_CHUNK` and `OutputTail::total_bytes` became
 `pub(crate)`/`pub(crate)`-visible for the same reason.
+
+That gate was not cosmetic. A plain `#[cfg(test)]` compiled on Linux — where the
+Unix regression consumes it — but left the method dead on Windows, and the
+existing native Windows Clippy gate failed the build with `-D dead-code` on the
+first CI run for this plan (`37408868235`). The narrower gate was confirmed with a
+local `--target x86_64-pc-windows-gnu` Clippy cross-run, which is only a fast
+development aid: native Windows CI remains the authority for Windows lint status.
 
 ### Footprint
 

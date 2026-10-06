@@ -583,7 +583,11 @@ impl RunningChild<'_> {
 
     /// Whether both piped streams are finished, so the post-exit settle has
     /// nothing left to wait for.
-    #[cfg(test)]
+    ///
+    /// Only the Unix inherited-descriptor regression asserts this directly; the
+    /// settle itself no longer needs the predicate because it owns the loop that
+    /// would have called it.
+    #[cfg(all(test, unix))]
     fn output_drained(&self) -> bool {
         self.stdout_done && self.stderr_done
     }
