@@ -291,6 +291,13 @@ dependency.
 workspace Clippy with `-D warnings`, workspace tests, and
 `./scripts/check-local.sh` are green.
 
+Native Windows CI is what actually proved the `#[cfg]` correction above: the
+first run for this plan, `37408868235` on `515c106`, failed the existing Windows
+Clippy gate with `-D dead-code`, and run `37409557600` on `3b2a94a` is green
+across all six existing jobs — Linux, macOS arm64, macOS Intel, Windows
+(full-workspace Clippy and Test), MSRV Rust 1.89, and FreeBSD `gregg-host`
+native. The workflow itself is unmodified.
+
 Documentation reconciled: `architecture/greggd-daemon.md`,
 `crates/greggd/README.md`, `docs/daemon.md`, `.opencode/skills/greggd-daemon/SKILL.md`,
 and `AGENTS.md` now state that stdout and stderr progress independently within one

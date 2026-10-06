@@ -193,8 +193,14 @@ tests cover both invariants and each was mutation-tested. 29 cron tests pass and
 Plan 174's target binding, epoch+revision coherence, and startup/cadence budgets
 remain authoritative. No new configuration field, dependency, or job.
 
+CI run `37409557600` on `3b2a94a` is green across all six jobs, covering the
+Windows Clippy and Test steps. Its predecessor `37408868235` on `515c106` failed
+only on a `-D dead-code` gate over Plan 177's test-only predicate, recorded in that
+plan's closure record.
+
 None of the three reopens Plan 091, and being terminal they unblock no further
-plan.
+plan: 178 is the highest-numbered plan in the tree and nothing else lists any of
+them as a dependency.
 
 Plan 175 is complete: the cron block is truthful about what it can actually
 know. Load rows state the relation they mean — only a load-delayed job prints

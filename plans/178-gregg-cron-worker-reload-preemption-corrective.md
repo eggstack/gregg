@@ -307,6 +307,12 @@ regressions 3, 4, 7, and 10: `a_repointed_target_whose_numbers_collide_still_per
 `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`, workspace
 tests, and `./scripts/check-local.sh` are green.
 
+Native Windows CI run `37409557600` on `3b2a94a` is green across all six existing
+jobs, including the Windows Test step that exercises these tests on the platform
+where the previous cron rounds depended most on request-timeout behaviour. The
+failure recorded in Plan 177's record on the previous SHA was a `-D dead-code`
+gate on a test-only predicate and not a cron or reload defect.
+
 Documentation reconciled: `architecture/gregg-client.md` gains a dedicated
 "A reload preempts the round it lands in" section and states the gate-commit rule
 beside the existing coherence rule; `crates/gregg/README.md`,
