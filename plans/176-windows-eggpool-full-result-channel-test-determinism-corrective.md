@@ -268,3 +268,20 @@ finished green across all six existing jobs — Linux, macOS arm64, macOS Intel,
 Windows (including full-workspace Clippy and Test), MSRV Rust 1.89, and FreeBSD
 `gregg-host` native. No new workflow, job, matrix, or retry wrapper was added; the
 workflow is unmodified.
+
+
+## Follow-up correction note (2026-10-06, Plan 181)
+
+The deterministic full-channel fixture confirmed this plan's intended claim:
+cancellation wins over a blocked EggPool result send. A later review found a
+separate Plan-151 convergence edge the extracted helper makes easier to see:
+`deliver_result_or_cancel` observes cancellation but not
+`control_rx.changed()`. While the four-slot result channel is full, a
+deactivation or newer active period/generation can therefore remain unapplied
+until receiver capacity returns.
+
+Plan 181 owns that separate correction. It keeps cancellation dominant, makes a
+superseding latest desired state able to abandon the stale completed result and
+converge immediately, and preserves ordinary bounded backpressure for a result
+that is still current. This plan's Windows test-determinism correction and its
+proof of cancellation behavior remain valid.
