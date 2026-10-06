@@ -1,6 +1,6 @@
 # Plan 176: Windows EggPool full-result-channel test determinism corrective
 
-Status: planned.
+Status: complete. See the closure record at the end.
 
 Depends on: current main at `892a77195b0a91c7d4e9fb7ee02d560e7ae64c83`.
 Independent of Plan 091 and Plans 177-178.
@@ -148,17 +148,17 @@ No new workflow, job, matrix, or retry wrapper is required.
 
 ## Acceptance criteria
 
-- [ ] The full-result-channel test no longer depends on closed-port completion,
+- [x] The full-result-channel test no longer depends on closed-port completion,
       OS connection timing, or a single `yield_now`.
-- [ ] The test fills the real bounded result channel deterministically before
+- [x] The test fills the real bounded result channel deterministically before
       asserting cancellation behavior.
-- [ ] The production send/cancel select remains cancellation-biased and bounded.
-- [ ] A fifth completed result blocked by a full channel is abandoned on
+- [x] The production send/cancel select remains cancellation-biased and bounded.
+- [x] A fifth completed result blocked by a full channel is abandoned on
       cancellation without requiring the receiver to free capacity.
-- [ ] Existing EggPool worker lifecycle, convergence, period, health, and
+- [x] Existing EggPool worker lifecycle, convergence, period, health, and
       backpressure tests remain green.
-- [ ] No EggPool wire/config/API behavior changes.
-- [ ] `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`,
+- [x] No EggPool wire/config/API behavior changes.
+- [x] `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`,
       workspace tests, and `./scripts/check-local.sh` pass.
 - [ ] Native Windows CI executes the corrected test and the complete existing
       six-job workflow finishes green.
@@ -182,3 +182,81 @@ deterministic full-channel fixture shows that:
 - scheduler execution/output work;
 - Plan 091 soak evidence;
 - new CI jobs or workflows.
+
+## Closure record
+
+Test/evidence corrective in `crates/gregg/src/eggpool.rs`. No stop condition was
+hit: the production cancellation path was already correct, and the deterministic
+fixture confirmed it rather than disproving it. No EggPool wire, configuration,
+API, channel-capacity, or retry behavior changed.
+
+### The production defect was the test's precondition, not the select
+
+The worker already delivered inside a cancellation-biased `tokio::select!`. The
+regression synthesized backpressure instead of establishing it: four
+generations published against closed loopback port 1, paused time advanced, one
+`yield_now` per generation, and then an assertion that the channel was full. On
+the Windows runner none of those four connection failures had completed into the
+channel yet, so `len()` was 0 against an expected 4 and the test failed before
+reaching anything about cancellation.
+
+### One production primitive, tested directly
+
+The completion branch now calls one private async primitive instead of inlining
+the expression:
+
+```text
+deliver_result_or_cancel(&result_tx, &cancel, result) -> delivered: bool
+```
+
+It keeps the exact `biased` shape it had — cancellation first, then
+`Sender::send` — so the worker body shrinks rather than the select being
+duplicated. There is no test-only reimplementation: the regression drives this
+same function.
+
+`a_full_result_channel_never_delays_cancellation` now builds the real bounded
+channel at `RESULT_CHANNEL_CAPACITY`, fills all four slots with valid
+`EggpoolResult` values before any delivery is attempted, and pins each
+precondition separately:
+
+- exactly four entries buffered, and the fifth delivery is proved still pending
+  while the token is live and no receiver slot is freed;
+- cancelling completes that delivery with `false`, without consuming receiver
+  capacity — bounded by a `yield_now` select rather than a timer, so a
+  regression that stops observing cancellation fails immediately instead of
+  hanging the suite;
+- the abandoned result never entered the channel: `len()` is still 4, and the
+  four buffered results come back in order with generations 1..=4;
+- dropping the last sender closes the receiver.
+
+Both assertions use `biased` selects over an explicitly-pending future, so
+nothing depends on wall-clock timing, OS connection scheduling, or a fixed
+sleep.
+
+The regression was mutation-tested: reverting the primitive to a bare
+`sender.send(result).await` makes it fail at the cancellation assertion, so it
+genuinely locks the property rather than merely passing.
+
+### Lifecycle coverage kept, without the closed-port race
+
+The removed worker-level test was replaced by
+`worker_cancellation_ends_the_worker_and_closes_its_result_stream`, which uses
+the existing gated loopback server to hold a request genuinely in flight, then
+requires cancellation to end the worker and close its result stream. Together
+with `worker_cancellation_aborts_an_in_flight_request` and
+`worker_deactivation_aborts_an_in_flight_request`, the worker lifecycle keeps
+its own coverage without asking a real HTTP failure to stand in for
+backpressure.
+
+### Historical note
+
+Plans 173-175 name the removed test
+`eggpool::tests::worker_cancellation_wins_over_a_full_result_channel`. Their
+records are historical and are not rewritten; the deterministic replacement is
+`eggpool::tests::a_full_result_channel_never_delays_cancellation`.
+
+### Verification
+
+81 `eggpool` tests pass, including the new deterministic fixture and the
+retained lifecycle tests. `cargo fmt --all -- --check`, workspace Clippy with
+`-D warnings`, and `./scripts/check-local.sh` are green.

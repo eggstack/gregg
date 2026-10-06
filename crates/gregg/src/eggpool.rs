@@ -940,25 +940,19 @@ where
                             EggpoolHealthFetchOutcome::NetworkError,
                         ),
                     };
-                    // Delivered inside its own `select!`, biased toward
-                    // cancellation. The fetch has already finished, so a full
-                    // result channel is ordinary backpressure — but awaiting
-                    // `send` in this branch body parks the whole loop and
-                    // leaves cancellation, a newer desired state, and the
-                    // passive refresh deadline unpolled until a slot frees.
-                    // Same shape the poll scheduler uses for its own sends.
-                    let delivered = tokio::select! {
-                        biased;
-                        () = cancel.cancelled() => false,
-                        sent = result_tx.send(EggpoolResult {
+                    let delivered = deliver_result_or_cancel(
+                        &result_tx,
+                        &cancel,
+                        EggpoolResult {
                             generation,
                             period,
                             started_at,
                             completed_at: clock.now(),
                             summary,
                             health,
-                        }) => sent.is_ok(),
-                    };
+                        },
+                    )
+                    .await;
                     if !delivered {
                         // Shutting down, or the daemon is gone: nothing is left
                         // to report to and no pane can be waiting.
@@ -981,6 +975,34 @@ where
     EggpoolWorker {
         control: EggpoolControl { sender: control_tx },
         results: result_rx,
+    }
+}
+
+/// Deliver one completed result, yielding to cancellation while it blocks.
+///
+/// The fetch has already finished, so a full result channel is ordinary
+/// backpressure — the worker must wait for a slot rather than buffer without
+/// bound. Awaiting `send` in the worker loop's branch body parked the whole
+/// loop, leaving cancellation, a newer desired state, and the passive refresh
+/// deadline unpolled until a slot happened to free. Selecting inside this
+/// primitive keeps that wait bounded by the same cancellation signal as every
+/// other worker branch, and keeps the completed result losslessly abandoned
+/// when the daemon is shutting down.
+///
+/// The `biased` ordering makes cancellation win a race against a slot that
+/// frees at the same instant: once this worker is ending, no pane can be
+/// waiting for the result.
+///
+/// Same shape the poll scheduler uses for its own sends.
+async fn deliver_result_or_cancel(
+    sender: &tokio::sync::mpsc::Sender<EggpoolResult>,
+    cancel: &tokio_util::sync::CancellationToken,
+    result: EggpoolResult,
+) -> bool {
+    tokio::select! {
+        biased;
+        () = cancel.cancelled() => false,
+        sent = sender.send(result) => sent.is_ok(),
     }
 }
 
@@ -1858,53 +1880,122 @@ mod tests {
         cancel.cancel();
     }
 
+    /// Build a completed result with no network involved.
+    fn buffered_result(generation: u64) -> EggpoolResult {
+        let at = Instant::now();
+        EggpoolResult {
+            generation,
+            period: EggpoolPeriod::Hour,
+            started_at: at,
+            completed_at: at,
+            summary: EggpoolFetchOutcome::NetworkError,
+            health: EggpoolHealthFetchOutcome::NetworkError,
+        }
+    }
+
     /// Cancellation must win over a full result channel.
     ///
     /// The delivery of a finished fetch is ordinary backpressure when the pane
     /// is not reading. Awaiting that send in the completion branch body parked
     /// the whole loop: cancellation, a newer desired state, and the passive
     /// refresh deadline were all left unpolled until a slot happened to free.
-    #[tokio::test(start_paused = true)]
-    async fn worker_cancellation_wins_over_a_full_result_channel() {
+    ///
+    /// This exercises the production delivery primitive against a channel this
+    /// test fills itself. Synthesizing backpressure from real network failures
+    /// (closed port, local server) made the precondition — *full channel* —
+    /// depend on OS connection timing, which is why this used to fail on the
+    /// Windows runner before asserting anything about cancellation.
+    #[tokio::test]
+    async fn a_full_result_channel_never_delays_cancellation() {
+        let (result_tx, mut result_rx) = mpsc::channel(RESULT_CHANNEL_CAPACITY);
         let cancel = tokio_util::sync::CancellationToken::new();
-        // A closed port: every fetch fails fast, so filling the channel needs no
-        // cooperating server.
-        let mut worker = spawn_worker(
-            EggpoolClient::new(Duration::from_secs(10)),
-            endpoint(1, None),
-            cancel.clone(),
-        );
 
-        // Fill the bounded channel: the daemon behind it is never reading these.
+        // Precondition: exactly the bounded capacity is buffered, in order.
         for generation in 1..=RESULT_CHANNEL_CAPACITY as u64 {
-            worker
-                .control
-                .publish(desired(EggpoolPeriod::Hour, generation))
-                .unwrap();
-            tokio::time::advance(Duration::from_secs(1)).await;
-            tokio::task::yield_now().await;
+            result_tx
+                .send(buffered_result(generation))
+                .await
+                .expect("a slot is free while filling to capacity");
         }
+        assert_eq!(result_rx.len(), RESULT_CHANNEL_CAPACITY);
+
+        // The fifth delivery is blocked, and the worker is still live.
+        {
+            let mut blocked = Box::pin(deliver_result_or_cancel(
+                &result_tx,
+                &cancel,
+                buffered_result(99),
+            ));
+            tokio::select! {
+                biased;
+                delivered = &mut blocked => panic!(
+                    "a full channel must block delivery, but it reported {delivered}"
+                ),
+                () = tokio::task::yield_now() => {}
+            }
+
+            // Cancellation must release the blocked delivery without the
+            // receiver ever freeing capacity. A `yield_now` bound rather than a
+            // timer: a live token leaves the delivery genuinely pending, so
+            // this fails fast (instead of hanging) if delivery ever stops
+            // observing cancellation.
+            cancel.cancel();
+            let delivered = tokio::select! {
+                biased;
+                delivered = blocked.as_mut() => delivered,
+                () = tokio::task::yield_now() => {
+                    panic!("cancellation must complete the blocked delivery")
+                }
+            };
+            assert!(
+                !delivered,
+                "a cancelled delivery reports the result as abandoned"
+            );
+        }
+
+        // The abandoned result never entered the channel, and the buffered
+        // four are intact and in order.
+        assert_eq!(result_rx.len(), RESULT_CHANNEL_CAPACITY);
+        for expected in 1..=RESULT_CHANNEL_CAPACITY as u64 {
+            let received = result_rx.recv().await.expect("a buffered result");
+            assert_eq!(received.generation, expected);
+        }
+
+        // Dropping the last sender closes the receiver: no producer survives.
+        drop(result_tx);
+        assert!(
+            result_rx.recv().await.is_none(),
+            "the closed channel proves the sender is gone"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_cancellation_ends_the_worker_and_closes_its_result_stream() {
+        let (port, mut requests, gate, server_task) = server_gated().await;
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let mut worker = worker_for(port, &cancel);
+        worker
+            .control
+            .publish(desired(EggpoolPeriod::Hour, 1))
+            .unwrap();
         assert_eq!(
-            worker.results.len(),
-            RESULT_CHANNEL_CAPACITY,
-            "the channel must be full for this to test anything"
+            next_request(&mut requests).await,
+            "/api/stats/summary?period=1h"
         );
 
         cancel.cancel();
-        // Drain what the worker already delivered, then require the worker to
-        // have ended rather than parked on the next delivery.
-        for _ in 0..RESULT_CHANNEL_CAPACITY {
-            worker.results.recv().await.expect("a buffered result");
-        }
-        let after_drain = tokio::time::timeout(Duration::from_secs(5), worker.results.recv()).await;
+        let after_cancel =
+            tokio::time::timeout(Duration::from_secs(5), worker.results.recv()).await;
         assert!(
-            after_drain.is_ok(),
-            "a cancelled worker must not park on a full result channel"
+            after_cancel.is_ok(),
+            "a cancelled worker must end rather than park"
         );
         assert!(
-            after_drain.expect("bounded").is_none(),
+            after_cancel.expect("bounded").is_none(),
             "the worker ends, which closes the channel"
         );
+        stop(&mut worker, &cancel, server_task).await;
+        gate.send(true).ok();
     }
 
     #[tokio::test(start_paused = true)]
