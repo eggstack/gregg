@@ -426,3 +426,21 @@ The Windows job is red for exactly one test,
 pre-existing, unrelated EggPool failure that this plan explicitly excludes. It
 appears in run `37350010528` on the base commit, in `eggpool.rs` untouched since
 `1aac89f`.
+
+
+## Follow-up correction note (2026-10-05, Plan 178)
+
+A later review found one responsiveness edge in this otherwise-valid closure.
+The four-request bounded cron round is state-safe across config reload because
+observations carry target identity and the fleet rejects late old-target
+answers, but `cron_reload` is only observed after the current whole fleet round
+returns. With the allowed 60-second request timeout and a large slow fleet, a
+new or repointed endpoint can therefore wait through many timeout waves before
+its first cron observation.
+
+Plan 178 owns that bounded follow-up. It makes reload/cancellation observable
+during an active round and tightens the history-gate commit boundary so
+preemption cannot mark a coherent history document fetched before its
+observation is handed to the engine. This plan's four-read concurrency bound,
+summary/history coherence, target-bound reducer, and steady 30-second cadence
+remain the settled baseline.
