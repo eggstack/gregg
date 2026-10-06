@@ -193,13 +193,11 @@ next to that statement.
       repoint, and active-fetch-preemption tests remain green.
 - [x] Focused cron/client-daemon tests, workspace Clippy/tests, formatting, and
       `./scripts/check-local.sh` pass.
-- [ ] Existing six-job CI completes green. **Not yet recorded at closure** — see
-      the closure record. The plan explicitly forbids new workflows, jobs, or
-      matrices, and this change adds no platform-specific code and no protocol
-      change, so the default local check plus the workspace Clippy/test gate is
-      the lightest appropriate mechanism. The native Windows job remains the
-      platform authority; a cross-checked local Windows Clippy run is not closure
-      evidence.
+- [x] Existing six-job CI completes green. Recorded after closure: run
+      `37414987171` on `7853743` is green across all six existing jobs, including
+      the native Windows Test step that runs these cron tests. No new workflow,
+      job, or matrix was introduced. See the CI evidence note at the end of the
+      closure record.
 
 ## Stop conditions
 
@@ -377,8 +375,14 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings # clean
 The full workspace suite is green: 914 `gregg` tests (2 ignored) and 500 `greggd` tests, alongside `gregg-protocol` (118 + 44 integration), `gregg-host` (62), and `gregg-update` (45). Plan 174's target binding, epoch+revision coherence,
 and startup/cadence budgets remain authoritative and untouched.
 
-**Not claimed here:** a green six-job CI run — see the acceptance-criteria note.
-No new configuration field, dependency, or job was introduced.
+**Not claimed at the time of closure:** a green six-job CI run — see the
+acceptance-criteria note. No new configuration field, dependency, or job was
+introduced.
+
+**Superseded after closure:** CI run `37414987171` on `7853743` is now green
+across all six existing jobs, including the native Windows Clippy and Test steps.
+No new workflow, job, or matrix was introduced. See "CI evidence" at the end of
+this record.
 
 ### Documentation reconciled
 
@@ -396,3 +400,16 @@ No new configuration field, dependency, or job was introduced.
 Plans 173, 174, 175, 177, 178, and 179 keep their closure records. Plan 091 is
 untouched. No cron TUI rendering, persistent history, polling knob, or
 EggPool worker semantics were changed.
+
+### CI evidence (recorded 2026-10-06, after closure)
+
+CI run `37414987171` on `7853743` — <https://github.com/eggstack/gregg/actions/runs/37414987171> —
+is green across all six existing jobs: Linux, macOS arm64, macOS Intel, Windows
+(full-workspace Clippy and Test, both release builds, SCM lifecycle smoke), MSRV
+Rust 1.89, and FreeBSD `gregg-host` native.
+
+The Windows Test step is the platform where the reload/cancel round-selection
+regressions actually execute, so it is the authority this plan was withholding.
+The workflow is unmodified. The intermediate commits for Plans 179 and 181 were
+superseded by later pushes and are covered by this same green tree, so no
+separate run is claimed for them.

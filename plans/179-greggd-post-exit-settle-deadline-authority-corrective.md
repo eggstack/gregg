@@ -190,11 +190,12 @@ it fires.
 - [x] Focused/local/workspace checks pass.
 - [x] Paired stripped `greggd` size is recorded and remains under the current
       scheduler ceiling or opens a separate explicit footprint decision.
-- [ ] Existing six-job CI completes green. **Not yet recorded at closure** — see
-      the closure record. Per this repository's own rule that only a native
-      Windows run is authority for Windows lint/test status, and per the standing
-      decision that plans close against the lightest appropriate mechanism, this
-      box is deliberately left unchecked rather than claimed.
+- [x] Existing six-job CI completes green. Recorded after closure: run
+      `37414987171` on `7853743` is green across all six existing jobs — Linux,
+      macOS arm64, macOS Intel, Windows (full-workspace Clippy and Test plus the
+      release builds and SCM smoke), MSRV Rust 1.89, and FreeBSD `gregg-host`
+      native. The workflow is unmodified. See the CI evidence note at the end of
+      the closure record.
 
 ## Stop conditions
 
@@ -348,13 +349,21 @@ the ordinary-exit regression all remain green, as do all 500 `greggd` tests and
 the rest of the workspace (914 `gregg`, 118 + 44 `gregg-protocol`, 62
 `gregg-host`, 45 `gregg-update`).
 
-**Not claimed here:** a green six-job CI run. This change is Linux/macOS/Windows
-source in `greggd`'s scheduler with no platform-specific code and no protocol,
-route, or history change, so the default local check plus the workspace
-Clippy/test gate is the lightest appropriate mechanism under this repository's
-completion rule. The native Windows job remains the platform authority for
-Windows lint/test status, and a cross-checked local Windows Clippy run is not
-closure evidence.
+**Not claimed at the time of closure:** a green six-job CI run. This change is
+Linux/macOS/Windows source in `greggd`'s scheduler with no platform-specific
+code and no protocol, route, or history change, so the default local check plus
+the workspace Clippy/test gate was the lightest appropriate mechanism under this
+repository's completion rule. The native Windows job remains the platform
+authority for Windows lint/test status, and a cross-checked local Windows Clippy
+run is not closure evidence.
+
+**Superseded after closure:** CI run `37414987171` on `7853743` is now green
+across all six existing jobs — Linux, macOS arm64, macOS Intel, Windows
+(full-workspace Clippy and Test, plus the two release builds and the SCM
+lifecycle smoke), MSRV Rust 1.89, and FreeBSD `gregg-host` native. The Windows
+steps are the native authority this record above was withholding, and they pass
+on the commit that carries this plan. The workflow is unmodified. See "CI
+evidence" at the end of this record.
 
 ### Documentation reconciled
 
@@ -372,3 +381,23 @@ closure evidence.
 
 Plans 173, 174, 175, 177, and 178 keep their closure records unchanged. Plan 091
 is untouched and remains gated only on its own extended soak record.
+
+### CI evidence (recorded 2026-10-06, after closure)
+
+CI run `37414987171` on `7853743` — <https://github.com/eggstack/gregg/actions/runs/37414987171> —
+is green across all six existing jobs:
+
+- Linux (fmt, workspace Clippy `-D warnings`, workspace tests)
+- macOS arm64 (`macos-15`)
+- macOS Intel (`macos-15-intel`)
+- Windows — full-workspace Clippy and Test, both release builds, and the SCM
+  lifecycle smoke
+- MSRV (Rust 1.89) workspace tests
+- FreeBSD `gregg-host` native
+
+The workflow is unmodified; no job, matrix entry, or step was added. The Windows
+job is the native authority this plan could not substitute locally, and it is
+green on the commit that carries the deadline-first ordering — including the
+`-D warnings` gate that Plan 177 once failed on a test-only predicate. The
+intermediate commits for Plans 180 and 181 were superseded by later pushes and
+are covered by this same green tree, so no separate run is claimed for them.

@@ -217,14 +217,12 @@ delivery is backpressured, not just while an HTTP request is in flight.
 - [x] Existing EggPool wire/auth/body-cap/health semantics remain unchanged.
 - [x] Focused EggPool/client-daemon tests, formatting, workspace Clippy/tests,
       and `./scripts/check-local.sh` pass.
-- [ ] Existing six-job CI completes green, with native Windows Test/Clippy
-      providing the platform authority that motivated Plan 176. **Not yet
-      recorded at closure** — see the closure record. This change adds no
-      platform-specific code, no wire change, and no new workflow, job, or
-      matrix, so the default local check plus the workspace Clippy/test gate is
-      the lightest appropriate mechanism. The native Windows job remains the
-      platform authority for Windows lint/test status, and a cross-checked local
-      Windows Clippy run is explicitly not closure evidence.
+- [x] Existing six-job CI completes green, with native Windows Test/Clippy
+      providing the platform authority that motivated Plan 176. Recorded after
+      closure: run `37414987171` on `7853743` is green across all six existing
+      jobs, including the native Windows Clippy and Test steps that are the
+      authority for the deterministic full-channel regression Plan 176 closed.
+      See the CI evidence note at the end of the closure record.
 
 ## Stop conditions
 
@@ -420,7 +418,13 @@ retry semantics are untouched; `activation_then_deactivation_under_pressure_arms
 `worker_deactivation_aborts_an_in_flight_request`, and
 `worker_panic_in_fetch_task_still_delivers_a_result` all remain green.
 
-**Not claimed here:** a green six-job CI run — see the acceptance-criteria note.
+**Not claimed at the time of closure:** a green six-job CI run — see the
+acceptance-criteria note.
+
+**Superseded after closure:** CI run `37414987171` on `7853743` is now green
+across all six existing jobs, including the native Windows Clippy and Test steps
+that are the platform authority for the deterministic full-channel regression
+Plan 176 closed. See "CI evidence" at the end of this record.
 
 ### Documentation reconciled
 
@@ -439,3 +443,18 @@ retry semantics are untouched; `activation_then_deactivation_under_pressure_arms
 Plans 151, 152, 153, 176, 177, 178, 179, and 180 keep their closure records.
 Plan 091 is untouched. No cron worker, greggd scheduler output, EggPool schema,
 channel-capacity knob, or TUI change was made.
+
+### CI evidence (recorded 2026-10-06, after closure)
+
+CI run `37414987171` on `7853743` — <https://github.com/eggstack/gregg/actions/runs/37414987171> —
+is green across all six existing jobs: Linux, macOS arm64, macOS Intel, Windows
+(full-workspace Clippy and Test, both release builds, SCM lifecycle smoke), MSRV
+Rust 1.89, and FreeBSD `gregg-host` native.
+
+Plan 176 closed because a cross-checked local Windows Clippy run was not closure
+evidence for a Windows-only test-determinism fix; this run supplies exactly that
+authority. The new backpressure regressions and the retained cancellation
+regression all execute in the Windows Test step on the commit carrying this plan.
+The workflow is unmodified. The intermediate commits for Plans 179 and 180 were
+superseded by later pushes and are covered by this same green tree, so no
+separate run is claimed for them.
