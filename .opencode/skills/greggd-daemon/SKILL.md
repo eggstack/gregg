@@ -118,6 +118,20 @@ or unsupported optional sources re-baseline or omit that family without
 blocking core readiness. Older v1 and pre-feature v2 peers remain supported;
 daemon-version transport is deferred.
 
+Shutdown is bounded twice over, because a collection cycle runs on the blocking
+pool and `spawn_blocking` cannot abort started work. The loop observes shutdown
+*while* a cycle is in flight (`COLLECTION_TIMEOUT`, 5s), and a cycle that
+outlives the loop is **joined** under `SHUTDOWN_JOIN_TIMEOUT` (1s), detached
+only past that bound with a warning. Dropping the `JoinHandle` detaches rather
+than cancels, so without the join `Runtime::drop` blocked on the pool drain with
+no bound and no diagnostic, after a clean sampler shutdown had already been
+logged. The loop's collection branch is polled **first** (`biased`): a cycle that
+completed in the same poll a stop signal became ready in must still be applied
+and published, because a discarded failure is never counted and would leave the
+daemon exiting on readiness the collector contradicted. Reaching the shutdown arm
+therefore means the cycle did not finish — readiness and the snapshot are left
+untouched and the last snapshot keeps serving.
+
 `Sampler` publishes existing typed `Arc` snapshots through internal
 `ServerState` handoff helpers. The server prepares compact v1/v2 status JSON
 once per successful publication and stores it as shared `Bytes`; public typed

@@ -177,6 +177,36 @@ accounting set. Network counters use /proc/net/dev and sysfs speed, state,
 flags, and master membership. Slaves are not added to their master, down links
 do not add capacity, and loopback is detail-only for capacity.
 
+An unreadable or unparseable `flags` file leaves loopback status *unknown*, and
+an unknown interface is **not** an aggregate member. Defaulting the failed read
+to `0` classified it as a non-loopback member, and since `lo` has no `master`
+symlink that folded loopback traffic into the fleet-wide aggregate on any host
+where `/proc/net/dev` is readable but sysfs is masked, unmounted, or `EACCES`.
+The record still publishes, reporting `is_loopback: false` — the value the
+source could not disprove — and `aggregate_member: false` alongside it, which is
+a combination the validator accepts. macOS (`macos/ffi.rs`) and Windows
+(`windows/mod.rs`) derive loopback from native flags and cannot fail open.
+
+`logical_cores` is the kernel's count, never the process's CPU allotment.
+`std::thread::available_parallelism` honours a `taskset` mask or cpuset, so a
+restricted daemon would publish `logical_cores: 1` on a many-core host and
+disagree with the Windows collector's `GetActiveProcessorCount` total. The
+Linux collector reads `/sys/devices/system/cpu/online` through the same cpulist
+grammar the CPUFreq weighting uses, falls back to the `processor` entries in
+`/proc/cpuinfo` when sysfs is masked, and only then falls back to the
+process-allotment probe. A caller-supplied count (`collect_identity`'s cache)
+still wins outright. `logical_cores` is a required wire field that must be `> 0`,
+so it cannot express "unknown" as absence; reaching the required-field floor now
+means procfs and sysfs were both unreadable, which every other read in the same
+sample has already ruled out.
+
+Swap fails closed on a truncated `/proc/meminfo`. An absent `SwapTotal` (or an
+absent `SwapFree`, which would fabricate full usage) is a parse error, not a
+zero, because the protocol requires `swap` to be `Some(_)` whenever the `swap`
+capability is asserted — so there is no representation for "could not read
+swap". This is the same bar `compute_memory` sets for an absent `MemTotal`. A
+genuine `SwapTotal: 0` is a real reading and still yields the zero sample.
+
 ## macOS collector
 
 **Source:** `crates/gregg-host/src/macos/` (facade: `crates/greggd/src/collector/macos/`)

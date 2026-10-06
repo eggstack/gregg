@@ -1726,7 +1726,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let mut worker = worker_for(port, &cancel);
         let mut app = crate::state::AppState::synthetic(&app_config(port));
-        app.begin_eggpool_request();
+        app.begin_eggpool_request(true);
         worker
             .control
             .publish(app.eggpool_desired_state().unwrap())

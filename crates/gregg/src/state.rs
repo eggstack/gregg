@@ -710,10 +710,24 @@ impl FleetState {
     }
 
     /// Mark an `EggPool` activation or manual refresh as a new request.
-    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
+    ///
+    /// `active` is whether the **converged** intent is active, not one
+    /// frontend's request. `Refreshing` means "a current desired request was
+    /// published and its result is awaited", and an inactive desired state
+    /// aborts in-flight work and emits no synthetic result — so publishing
+    /// `Refreshing` for one stranded the field with nothing able to resolve
+    /// it. Both ordinary deactivations hit that: a fresh client whose `EggPool`
+    /// pane is closed, and the pane closing on the last attached frontend.
+    /// Deactivation still bumps the generation, so a result the worker fetched
+    /// before it went inactive is rejected as superseded.
+    pub fn begin_eggpool_request(&mut self, active: bool) -> Option<(EggpoolPeriod, u64)> {
         let eggpool = self.eggpool.as_mut()?;
         eggpool.request_generation = eggpool.request_generation.saturating_add(1);
-        eggpool.worker_state = EggpoolWorkerState::Refreshing;
+        eggpool.worker_state = if active {
+            EggpoolWorkerState::Refreshing
+        } else {
+            EggpoolWorkerState::Idle
+        };
         Some((eggpool.period, eggpool.request_generation))
     }
 
@@ -2777,15 +2791,15 @@ impl AppState {
     pub fn daemon_apply_eggpool_request(&mut self) {
         if let Some(period) = self.eggpool_period_request {
             if self.test_fleet.set_eggpool_period(period) {
-                self.test_fleet.begin_eggpool_request();
+                self.test_fleet.begin_eggpool_request(true);
             }
         }
         self.republish();
     }
 
     /// Mark an `EggPool` activation or manual refresh as a new request.
-    pub fn begin_eggpool_request(&mut self) -> Option<(EggpoolPeriod, u64)> {
-        let minted = self.test_fleet.begin_eggpool_request();
+    pub fn begin_eggpool_request(&mut self, active: bool) -> Option<(EggpoolPeriod, u64)> {
+        let minted = self.test_fleet.begin_eggpool_request(active);
         if minted.is_some() {
             self.republish();
         }
@@ -3731,6 +3745,63 @@ mod tests {
         );
     }
 
+    /// A converged-*inactive* request must not publish `Refreshing`.
+    ///
+    /// `Refreshing` means "a current desired request was published and its
+    /// result is awaited", but an inactive desired state aborts in-flight work
+    /// and emits no synthetic result — so nothing could ever resolve it. Both
+    /// ordinary deactivations hit that: a fresh client whose `EggPool` pane is
+    /// closed (its very first intent is `{active: false}`), and the pane closing
+    /// on the last attached frontend.
+    #[test]
+    fn eggpool_deactivation_does_not_strand_the_worker_in_refreshing() {
+        let mut fleet = FleetState::from_config(&eggpool_config(false));
+
+        // An activation awaits a result, so `Refreshing` is the honest state.
+        let (_, activated) = fleet
+            .begin_eggpool_request(true)
+            .expect("eggpool configured");
+        assert_eq!(
+            fleet.eggpool.as_ref().map(|e| e.worker_state),
+            Some(EggpoolWorkerState::Refreshing)
+        );
+
+        // Deactivating still supersedes anything in flight — the generation
+        // moves, so a result the worker fetched beforehand is rejected as
+        // stale — but the field returns to `Idle` instead of a `Refreshing`
+        // nothing will resolve.
+        let (_, deactivated) = fleet
+            .begin_eggpool_request(false)
+            .expect("eggpool configured");
+        assert!(
+            deactivated > activated,
+            "deactivation must still supersede an in-flight result"
+        );
+        assert_eq!(
+            fleet.eggpool.as_ref().map(|e| e.worker_state),
+            Some(EggpoolWorkerState::Idle),
+            "a converged-inactive worker will never answer, so it is not refreshing"
+        );
+
+        // A deactivation from a clean idle state is a no-op on the field.
+        fleet
+            .begin_eggpool_request(false)
+            .expect("eggpool configured");
+        assert_eq!(
+            fleet.eggpool.as_ref().map(|e| e.worker_state),
+            Some(EggpoolWorkerState::Idle)
+        );
+
+        // Re-activation resumes awaiting a result.
+        fleet
+            .begin_eggpool_request(true)
+            .expect("eggpool configured");
+        assert_eq!(
+            fleet.eggpool.as_ref().map(|e| e.worker_state),
+            Some(EggpoolWorkerState::Refreshing)
+        );
+    }
+
     fn health_snapshot(proxy: crate::eggpool::EggpoolProxyHealth) -> EggpoolHealthSnapshot {
         EggpoolHealthSnapshot {
             schema_version: 1,
@@ -3752,7 +3823,7 @@ mod tests {
     #[test]
     fn eggpool_summary_and_health_planes_are_applied_independently() {
         let mut state = AppState::synthetic(&eggpool_config(false));
-        let generation = state.begin_eggpool_request().unwrap().1;
+        let generation = state.begin_eggpool_request(true).unwrap().1;
         let now = Instant::now();
         let result = |summary, health| EggpoolResult {
             generation,

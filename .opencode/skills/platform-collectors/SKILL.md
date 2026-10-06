@@ -69,7 +69,10 @@ after a valid sample.
 
 - CPU: `/proc/stat` — cumulative ticks, delta percentages
 - Memory: `/proc/meminfo` — prefers `MemAvailable`, falls back to `MemFree + Buffers + Cached + SReclaimable`
-- Swap: `/proc/meminfo` — `SwapTotal` and `SwapFree`
+- Swap: `/proc/meminfo` — `SwapTotal` and `SwapFree`; an absent key fails
+  closed (`Parse`) rather than becoming `0`, because the protocol requires a
+  swap sample whenever the swap capability is asserted, so there is no
+  representation for "could not read swap". A real `SwapTotal: 0` is valid.
 - Load: `/proc/loadavg`
 - Identity: `gethostname()`, `/proc/sys/kernel/osrelease`, `/etc/os-release`
 - Drives: `/proc/self/mountinfo` + `statvfs` on the optional refresh worker
@@ -88,6 +91,24 @@ mounted capacity rows. Network slaves are not added to their master, down
 links do not contribute capacity, and loopback remains detail-only for
 capacity. All cumulative counters use the shared monotonic baseline helper in
 `gregg-host/src/rate.rs`.
+
+Two Linux edges are "unknown is not a value":
+
+- **An unreadable or unparseable `/sys/class/net/<if>/flags` is unknown, not
+  "not loopback".** Defaulting the failed read to `0` made `lo` an aggregate
+  member (it has no `master` symlink) on any host where `/proc/net/dev` is
+  readable but sysfs is masked, unmounted, or `EACCES`, folding loopback traffic
+  into the fleet aggregate. An unknown interface stays out of the aggregate; the
+  record still publishes with `is_loopback: false`, which the validator accepts.
+- **`logical_cores` is the kernel's count, not the process CPU allotment.**
+  `std::thread::available_parallelism` honours a `taskset` mask or cpuset, so a
+  restricted daemon published `1` on a many-core host and disagreed with the
+  Windows `GetActiveProcessorCount` total. Linux reads
+  `/sys/devices/system/cpu/online` via the existing cpulist grammar, falls back
+  to `processor` entries in `/proc/cpuinfo`, and only then to the allotment
+  probe. `logical_cores` is a required `> 0` field, so it cannot express
+  absence; the required-field floor is reachable only when both procfs and
+  sysfs are unreadable.
 
 ## macOS collector
 

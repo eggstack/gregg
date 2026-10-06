@@ -30,8 +30,10 @@ const MAX_CPU_SET_MEMBERS: usize = crate::linux::MAX_LOGICAL_CORES;
 ///
 /// `read_to_string` returns the file contents or a structured
 /// [`CollectError`] distinguishing "missing" from "permission denied" via the
-/// kind. `available_parallelism` returns the kernel-reported logical core
-/// count, or `None` if the platform refuses to provide one.
+/// kind. `available_parallelism` is the last-resort core count used only when
+/// the affinity-independent sysfs and procfs enumerations are both unreadable;
+/// [`ProcSource::logical_core_count`] prefers those. It reports `None` if the
+/// platform refuses to provide one.
 pub trait FileSource: Send + Sync + std::fmt::Debug {
     /// Read the entire contents of the named file.
     fn read_to_string(&self, path: &Path) -> Result<String, CollectError>;
@@ -42,7 +44,13 @@ pub trait FileSource: Send + Sync + std::fmt::Debug {
     /// Test whether a native path exists, including a sysfs symlink.
     fn path_exists(&self, path: &Path) -> bool;
 
-    /// Return the kernel-reported logical core count, if known.
+    /// Return a fallback logical core count, if known.
+    ///
+    /// Last-resort only. This is the *calling process's* CPU allotment, which
+    /// a `taskset` mask or cpuset narrows, so it is not the kernel core count
+    /// the wire field is documented as;
+    /// [`ProcSource::logical_core_count`] reaches this only after both
+    /// affinity-independent enumerations have failed.
     fn available_parallelism(&self) -> Option<usize>;
 
     /// Read native filesystem capacity for a mounted path.
@@ -503,6 +511,17 @@ impl ProcSource {
                 continue;
             };
             let path = Path::new("/sys/class/net").join(name);
+            // A `flags` read that fails or does not parse leaves loopback
+            // status *unknown*. Defaulting it to `0` classified every such
+            // interface as a non-loopback member — and because `lo` has no
+            // `master` symlink, that folded loopback traffic into the
+            // fleet-wide aggregate on any host where `/proc/net/dev` is
+            // readable but `/sys/class/net/<if>/flags` is not (`/sys` masked
+            // or unmounted, `EACCES` on a hardened host). An unknown flag
+            // set instead drops the interface from aggregation; the record
+            // still publishes, reporting `is_loopback: false` because that is
+            // what the source could not disprove, and `aggregate_member: false`
+            // is a combination the validator accepts.
             let flags = self
                 .inner
                 .read_to_string(&path.join("flags"))
@@ -514,9 +533,8 @@ impl ProcSource {
                         .or_else(|| trimmed.strip_prefix("0X"))
                         .unwrap_or(trimmed);
                     u32::from_str_radix(hex, 16).ok()
-                })
-                .unwrap_or(0);
-            let is_loopback = flags & 0x8 != 0;
+                });
+            let is_loopback = flags.is_some_and(|flags| flags & 0x8 != 0);
             let rx_capacity_bps =
                 parse_link_speed(self.inner.read_to_string(&path.join("speed")).ok());
             let tx_capacity_bps = rx_capacity_bps;
@@ -534,7 +552,7 @@ impl ProcSource {
                 tx_capacity_bps,
                 is_loopback,
                 operational,
-                aggregate_member: !is_loopback && !slave,
+                aggregate_member: flags.is_some() && !is_loopback && !slave,
             });
         }
         records.sort_by(|left, right| left.id.cmp(&right.id));
@@ -613,10 +631,46 @@ impl ProcSource {
 
     /// Logical core count, with the cached value preferred over the kernel
     /// hint.
+    ///
+    /// The wire field is documented as *"Number of logical CPU cores available
+    /// to the kernel"*, so every candidate here must be affinity-independent.
+    /// `/sys/devices/system/cpu/online` is the kernel's own online-CPU list and
+    /// `/proc/cpuinfo` enumerates every kernel-visible processor; neither is
+    /// narrowed by a per-process CPU affinity mask or cpuset. Only if both are
+    /// unreadable does this fall back to
+    /// [`FileSource::available_parallelism`], which *is* process-narrowed.
     #[must_use]
     pub fn logical_core_count(&self) -> Option<usize> {
         self.logical_cores
+            .or_else(|| self.kernel_logical_cores())
             .or_else(|| self.inner.available_parallelism())
+    }
+
+    /// Kernel-visible logical core count, read from sysfs then procfs.
+    ///
+    /// Returns `None` when neither enumeration is readable or parseable. Both
+    /// reads are independent of the calling process's CPU affinity, unlike
+    /// [`FileSource::available_parallelism`], which reported a
+    /// `taskset`-pinned daemon as single-core on a many-core host and so
+    /// disagreed with the Windows collector's kernel total.
+    fn kernel_logical_cores(&self) -> Option<usize> {
+        if let Some(online) = self.read_online_cpus().filter(|set| set.len() > 0) {
+            return Some(online.len());
+        }
+        // `/sys` masked or unmounted (some container and chroot setups): the
+        // collector already requires procfs for `/proc/stat`, `/proc/meminfo`,
+        // and `/proc/loadavg`, so this fallback is available exactly where the
+        // rest of a Linux sample is.
+        let raw = self.inner.read_to_string(Path::new("/proc/cpuinfo")).ok()?;
+        let cores = raw
+            .lines()
+            .filter(|line| {
+                line.split(':')
+                    .next()
+                    .is_some_and(|key| key.trim() == "processor")
+            })
+            .count();
+        (cores > 0).then_some(cores)
     }
 
     fn read_path(&self, path: &Path) -> Result<String, CollectError> {
@@ -632,7 +686,8 @@ impl ProcSource {
     }
 }
 
-/// Live-host source backed by `std::fs` and `std::thread::available_parallelism`.
+/// Live-host source backed by `std::fs`, with `std::thread::available_parallelism`
+/// only as the fallback core-count probe.
 #[derive(Debug)]
 struct HostSource;
 
@@ -1170,6 +1225,148 @@ mod tests {
                 .rx_capacity_bps,
             Some(1_000_000_000)
         );
+    }
+
+    /// An unreadable or unparseable `flags` file leaves loopback status
+    /// *unknown*, and an unknown interface must not join the aggregate.
+    ///
+    /// Defaulting the failed read to `0` classified every such interface as a
+    /// non-loopback member, and because `lo` has no `master` symlink that
+    /// folded loopback traffic into the fleet-wide aggregate on any host where
+    /// `/proc/net/dev` is readable but `/sys/class/net/<if>/flags` is not —
+    /// `/sys` masked or unmounted, or `EACCES` on a hardened host.
+    #[test]
+    fn unreadable_interface_flags_do_not_make_an_unknown_link_an_aggregate_member() {
+        let net_dev = "Inter-| Receive | Transmit\n face |bytes packets errs drop fifo frame compressed multicast |bytes packets errs drop fifo colls carrier compressed\nlo: 100 0 0 0 0 0 0 0 200 0 0 0 0 0 0 0\neth0: 300 0 0 0 0 0 0 0 400 0 0 0 0 0 0 0\n";
+
+        // Absent `flags`, for both interfaces.
+        let interfaces = source_with(&[("/proc/net/dev", net_dev)])
+            .network_interfaces()
+            .expect("network fixtures");
+        assert_eq!(interfaces.len(), 2, "records are still produced");
+        for id in ["lo", "eth0"] {
+            let record = interfaces.iter().find(|i| i.id == id).unwrap();
+            assert!(
+                !record.aggregate_member,
+                "{id} has unreadable flags, so it cannot be trusted as an aggregate member"
+            );
+        }
+
+        // Present but unparseable is the same unknown, not a zero flag set.
+        let interfaces = source_with(&[
+            ("/proc/net/dev", net_dev),
+            ("/sys/class/net/lo/flags", "not a number\n"),
+            ("/sys/class/net/eth0/flags", "\n"),
+        ])
+        .network_interfaces()
+        .expect("network fixtures");
+        for id in ["lo", "eth0"] {
+            assert!(
+                !interfaces
+                    .iter()
+                    .find(|i| i.id == id)
+                    .unwrap()
+                    .aggregate_member,
+                "{id} has unparseable flags, so it cannot be trusted as an aggregate member"
+            );
+        }
+
+        // Reading works again as soon as one interface's flags are readable,
+        // which is the difference between "unknown" and "not loopback": a
+        // bridge port with no `master` still joins the aggregate.
+        let interfaces = source_with(&[
+            ("/proc/net/dev", net_dev),
+            ("/sys/class/net/lo/flags", "0x9\n"),
+            ("/sys/class/net/eth0/flags", "0x1\n"),
+        ])
+        .network_interfaces()
+        .expect("network fixtures");
+        assert!(
+            interfaces
+                .iter()
+                .find(|i| i.id == "lo")
+                .unwrap()
+                .is_loopback
+        );
+        assert!(
+            !interfaces
+                .iter()
+                .find(|i| i.id == "lo")
+                .unwrap()
+                .aggregate_member
+        );
+        assert!(
+            interfaces
+                .iter()
+                .find(|i| i.id == "eth0")
+                .unwrap()
+                .aggregate_member
+        );
+    }
+
+    /// `logical_cores` is the kernel's core count, not the calling process's
+    /// CPU allotment.
+    ///
+    /// The wire field is documented as *"Number of logical CPU cores available
+    /// to the kernel"*, but it was sourced from
+    /// `std::thread::available_parallelism`, which honours a `taskset` mask or
+    /// cpuset: a restricted daemon published `logical_cores: 1` on a 16-core
+    /// machine, disagreeing with the Windows collector's kernel total.
+    #[test]
+    fn logical_core_count_ignores_the_process_cpu_allotment() {
+        // sysfs: the kernel's own online-CPU list wins over the allotment.
+        let mut mem = MemorySource::new().with_logical_cores(1);
+        mem.add_file("/sys/devices/system/cpu/online", "0-7\n");
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), Some(8));
+
+        // `/sys` masked: procfs is the same kernel-visible enumeration, so it
+        // wins over the allotment too.
+        let mut mem = MemorySource::new().with_logical_cores(1);
+        mem.add_file("/proc/cpuinfo", cpuinfo_with_processors(8));
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), Some(8));
+
+        // A sparse online list counts identities, not the range span.
+        let mut mem = MemorySource::new().with_logical_cores(1);
+        mem.add_file("/sys/devices/system/cpu/online", "0,4,9\n");
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), Some(3));
+
+        // An empty online list is "unknown", not "zero cores": procfs answers.
+        let mut mem = MemorySource::new().with_logical_cores(1);
+        mem.add_file("/sys/devices/system/cpu/online", "   \n");
+        mem.add_file("/proc/cpuinfo", cpuinfo_with_processors(4));
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), Some(4));
+
+        // With neither enumeration readable the process allotment is the last
+        // resort, unchanged from before.
+        let mem = MemorySource::new().with_logical_cores(3);
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), Some(3));
+
+        // Neither enumeration nor a fallback probe: absent, so the caller's
+        // required-field floor applies rather than a measured zero.
+        let mut mem = MemorySource::new();
+        mem.add_file("/sys/devices/system/cpu/online", "");
+        mem.add_file("/proc/cpuinfo", "");
+        assert_eq!(ProcSource::for_memory(mem).logical_core_count(), None);
+
+        // A caller-supplied count still wins outright. This is the cache
+        // `collect_identity` seeds, so identity and the hot path agree.
+        let mut mem = MemorySource::new().with_logical_cores(1);
+        mem.add_file("/sys/devices/system/cpu/online", "0-15\n");
+        assert_eq!(
+            ProcSource::for_memory(mem)
+                .with_logical_cores(2)
+                .logical_core_count(),
+            Some(2)
+        );
+    }
+
+    fn cpuinfo_with_processors(count: usize) -> String {
+        use std::fmt::Write as _;
+        let mut raw = String::new();
+        for index in 0..count {
+            let _ = write!(raw, "processor\t: {index}\nmodel name\t: Fixture CPU\n\n");
+        }
+        raw
     }
 
     // ===== Plan 141: source-call accounting and CPUFreq structural cache =====

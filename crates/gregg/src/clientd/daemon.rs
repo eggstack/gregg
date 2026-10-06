@@ -591,8 +591,9 @@ impl Engine {
         if fleet.set_eggpool_period(desired.period) {
             // A new window needs a fresh worker generation, or the worker
             // returns the previous generation's result and the reducer rejects
-            // it as stale.
-            fleet.begin_eggpool_request();
+            // it as stale. Whether the pane is active comes from the converged
+            // reduction, never from one frontend's request.
+            fleet.begin_eggpool_request(desired.active);
         }
         // Derive what to publish *after* the fleet updates, so the worker is
         // driven with the generation the reducer will accept. Publishing the
@@ -615,19 +616,14 @@ impl Engine {
             return true;
         }
         self.converged = Some(desired);
-        // The fleet must carry the window the worker is actually driven with on
-        // *every* path that changes it, not only on the request path. A
-        // disconnect has no request of its own, so this is where a departing
-        // frontend's removal actually lands: without it the converged period
-        // moves while `fleet.eggpool.period` stays on the old one, and the
-        // reducer then rejects every result the worker fetches — the pane
-        // freezes and the worker burns a request per interval, all discarded.
-        if fleet.set_eggpool_period(desired.period) {
-            // A new window needs a fresh worker generation, or the worker
-            // returns the previous generation's result and the reducer rejects
-            // it as stale.
-            fleet.begin_eggpool_request();
-        }
+        // The converged window was already applied above, before publishing, so
+        // there is deliberately no second `set_eggpool_period` /
+        // `begin_eggpool_request` pass here. A copy of it sat after this point
+        // and was unreachable — `set_eggpool_period` returns `false` for a
+        // period that is already current — but it was the same stranding bug if
+        // it ever did become reachable: `begin_eggpool_request` published
+        // `Refreshing` on paths where the converged state was inactive, and an
+        // inactive worker emits no result to resolve it.
         false
     }
 
@@ -732,7 +728,11 @@ impl Engine {
                 let window_changed =
                     converged.is_some_and(|desired| fleet.set_eggpool_period(desired.period));
                 if window_changed || changed || refresh {
-                    fleet.begin_eggpool_request();
+                    // The converged `active`, not this frontend's `active`:
+                    // another frontend can still hold the pane open, and only a
+                    // converged-inactive intent guarantees no result will come
+                    // back to resolve `Refreshing`.
+                    fleet.begin_eggpool_request(converged.is_some_and(|d| d.active));
                 }
                 (generation, true, None)
             }

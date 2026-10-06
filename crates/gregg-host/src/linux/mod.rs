@@ -292,6 +292,13 @@ impl HostCollector for LinuxCollector {
 
         self.previous_cpu = stat.aggregate;
 
+        // `logical_cores` is a required, non-optional wire field that must be `> 0`,
+        // so it cannot express "unknown" as absence. The `unwrap_or(1)` below is
+        // therefore a required-field floor, not a measurement: reaching it means
+        // `/sys/devices/system/cpu/online`, `/proc/cpuinfo`, and the fallback
+        // probe were all unreadable, and every other procfs read in this same
+        // sample (`/proc/stat`, `/proc/meminfo`, `/proc/loadavg`) has already
+        // succeeded.
         let logical_cores = u32::try_from(
             self.source
                 .logical_core_count()

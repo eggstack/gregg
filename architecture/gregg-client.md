@@ -869,9 +869,18 @@ Optional summary pane for EggPool API metrics. Separated from greggd polling.
   `EggpoolWorkerState::WorkerUnavailable`
 
 **Local worker state** (`EggpoolWorkerState`):
-- `Idle`, `Refreshing` (Gregg published a current desired request and awaits
-  its result), `WorkerUnavailable` (Gregg's local worker/control path is
+- `Idle`, `Refreshing` (Gregg published a current **active** desired request and
+  awaits its result), `WorkerUnavailable` (Gregg's local worker/control path is
   gone)
+- `Refreshing` is only ever published for a converged-*active* intent. An
+  inactive desired state aborts in-flight work and emits no synthetic result,
+  so a deactivation must return the field to `Idle` rather than await an answer
+  that cannot arrive — the reducer's only escape for "a request that will never
+  arrive" is `EggPoolFetchOutcome::Cancelled`, which is never constructed. Both
+  ordinary deactivations reach this path: a fresh client whose pane is closed
+  (its first intent is `{active: false}`) and the pane closing on the last
+  attached frontend. Deactivation still supersedes, so the generation moves and
+  a result the worker already fetched is rejected as stale.
 - These describe Gregg machinery only. EggPool's own proxy and provider
   service health is a separate fact (Plan 152) and is never inferred here.
 - The former `Busy` variant existed only because a full bounded command queue
@@ -1187,6 +1196,15 @@ The renderer enforces truthfulness rules that are easy to get wrong:
   scheduler-local civil time is a separate protocol change, not a renderer one.
 - a non-child outcome is a real terminal record, named, with `ran —` rather than a
   fabricated `0ms`;
+- **the schedule column is compacted only when it fits.** `schedule_label` renders
+  `03:00` for `0 3 * * *` and `weekly Wed 02:30` for `30 2 * * 3`, and keeps the
+  operator's own text verbatim everywhere else. "Compacted in shape" is not
+  permission to rewrite: an all-digit field can still overflow `u32`, and
+  defaulting it to `0` rendered `99999999999999999999` as a confident `00:00` —
+  a fabricated midnight on a pane whose whole purpose is to say when a job runs. A
+  field that does not parse as a time keeps the verbatim string. A current
+  `greggd` rejects such a schedule at config validation, so this needs an older,
+  faulted, or hostile remote, and remote scheduler data is untrusted input;
 - remote truncation (`stdout+`), remote line truncation (`more lines not shown`),
   and the pane's own viewport truncation (`… more cron rows not shown`) are three
   different facts with three different markers;

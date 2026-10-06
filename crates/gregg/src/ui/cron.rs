@@ -459,9 +459,14 @@ fn schedule_label(schedule: &str) -> String {
     let weekly = dom == "*" && month == "*" && dow.len() == 1 && dow.as_bytes()[0].is_ascii_digit();
     // Parsed numerically: a width spec pads integers, not `&str`, so
     // `format!("{hour:0>2}")` on the raw field would print `3` and produce
-    // the visibly wrong `3:0`.
-    let hour_value: u32 = hour.parse().unwrap_or(0);
-    let minute_value: u32 = minute.parse().unwrap_or(0);
+    // the visibly wrong `3:0`. Both fields must parse: an all-digit string can
+    // still overflow `u32`, and `unwrap_or(0)` turned `99999999999999999999`
+    // into a plausible-looking `00:00` — a fabricated midnight on a pane whose
+    // whole purpose is to say when a job runs. A field that does not fit keeps
+    // the verbatim `clean` string, which is what this function promises.
+    let (Ok(hour_value), Ok(minute_value)) = (hour.parse::<u32>(), minute.parse::<u32>()) else {
+        return clean;
+    };
     let when = format!("{hour_value:02}:{minute_value:02}");
     if daily {
         when
@@ -1313,6 +1318,35 @@ mod tests {
         // need to see, so it is not rewritten.
         assert_eq!(schedule_label("@reboot"), "@reboot");
         assert_eq!(schedule_label("0 */6 * * 1-5"), "0 */6 * * 1-5");
+    }
+
+    /// An all-digit field that overflows `u32` must keep the verbatim
+    /// schedule, not render as a fabricated midnight.
+    ///
+    /// The digit check admits `99999999999999999999`, and `unwrap_or(0)` then
+    /// rewrote it to `00:00` — a plausible-looking wrong time on a pane whose
+    /// entire purpose is to say when a job actually runs. A current `greggd`
+    /// rejects such a schedule at config validation, so this needs an older,
+    /// faulted, or hostile remote; remote scheduler data is untrusted input.
+    #[test]
+    fn an_unrepresentable_numeric_schedule_is_kept_verbatim() {
+        for schedule in [
+            "0 99999999999999999999 * * *",
+            "0 18446744073709551616 * * *",
+            "99999999999999999999 0 * * *",
+            "0 4294967296 * * *",
+        ] {
+            assert_eq!(
+                schedule_label(schedule),
+                schedule,
+                "an overflowing field must never be rendered as a time"
+            );
+        }
+        // The boundary itself still compacts: `u32::MAX` parses.
+        assert_eq!(schedule_label("0 4294967295 * * *"), "4294967295:00");
+        // Ordinary values are unaffected.
+        assert_eq!(schedule_label("0 3 * * *"), "03:00");
+        assert_eq!(schedule_label("5 23 * * 0"), "weekly Sun 23:05");
     }
 
     #[test]

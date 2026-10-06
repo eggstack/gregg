@@ -213,6 +213,17 @@ behind a result nobody is reading. A publication identical to the state the
 completed result already answers is consumed without discarding that result, and
 with no shutdown or newer intent the channel still applies ordinary backpressure
 rather than dropping anything.
+
+The pane's `Refreshing` state is only published for a converged **active** intent,
+which is one whose result the worker will actually deliver. Closing the pane — or
+starting with it closed — converges the worker inactive, and an inactive intent
+aborts in-flight work and emits no result at all, so the pane returns to `Idle`
+instead of waiting forever for an answer that cannot arrive. Deactivation still
+supersedes: the generation advances, so a result already fetched is rejected as
+stale rather than applied. With several windows open, `active` is the converged
+reduction over all of them, so one window closing does not stop the worker while
+another still holds the pane open.
+
 Omit `[eggpool]` to remove the pane and all EggPool worker/network activity.
 Editor fallbacks: `hx`, `vim`, `vi` (Unix) or `hx`, `code`, `notepad` (Windows).
 Malformed or URL-unrepresentable EggPool endpoints are reported as invalid

@@ -78,6 +78,31 @@ startup/direct-stop work before delegating the executable to Cargo and applies
 
 `greggd update` queries the latest stable `greggd` crate on crates.io, downloads the exact `vX.Y.Z` GitHub asset plus `.sha256`, verifies checksum and candidate `version` before any replacement, observes exact-executable `UpdateLifecycle` only after full preparation (Unix ownership + selected health; Windows SCM ownership revalidated immediately before quiescence, owned-to-foreign fails pre-replacement), then atomically replaces the current executable (same-filesystem rename on Unix, `self-replace` on Windows) and restarts only `ManagedRunning`/`DirectRunning` via ownership-aware `restart_daemon()` (owned Windows running/start-pending may stop, owned stop-pending waits stopped without restart, foreign/unknown/not-installed do zero SCM mutation; Unix foreign same-config preserved, foreign inactive cannot mask direct running); intentionally stopped/foreign services remain stopped/preserved and a successful replacement with failed restart reports `Installed X.Y.Z but not activated` with the exact `greggd restart`/`systemctl`/`launchctl` command and returns nonzero. No background checks or `sudo`. The shared download/verify/stage/replace mechanism lives in the internal `gregg-update` crate; `greggd` owns only activation/restart coordination.
 
+## Shutdown
+
+A stop signal (`SIGTERM`/`SIGINT`, SCM Stop/Shutdown, or `STOP\n` on the Unix
+control socket) is bounded twice over, because a collection cycle runs on Tokio's
+blocking pool and `spawn_blocking` cannot abort started work.
+
+The sampling loop observes shutdown *while* a cycle is in flight, so a slow
+native read cannot stall the loop beyond its five-second collection bound. A
+cycle that outlives the loop is then **joined** under an explicit one-second
+bound and detached only past it, with a warning naming the cause. Without that
+join, dropping the handle detached the task instead of cancelling it and the
+runtime's shutdown blocked on the blocking-pool drain with no bound and no
+diagnostic — after the daemon had already reported a clean sampler shutdown. A
+read that was merely slow cost exit latency; a genuinely hung one (macOS
+registry traversal, a Windows CPU/power query, a wedged `/proc` read) held exit
+indefinitely.
+
+A collection that completes in the same poll the stop signal becomes ready in is
+still applied and published. The loop polls the collection branch first, so a
+finished sample is never silently discarded — and a discarded *failure* would
+never have been counted, leaving the daemon to exit reporting readiness the
+collector had contradicted. Reaching the shutdown arm therefore means the cycle
+did not finish: readiness and the last snapshot are left untouched and keep
+serving per the stale policy.
+
 ## Scheduled maintenance
 
 Optional `[[jobs]]` entries in the daemon TOML run five-field local cron

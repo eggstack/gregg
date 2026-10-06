@@ -45,6 +45,83 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`greggd` could be held past its own shutdown bound by an orphaned
+  collection.** A collection cycle runs on the blocking pool and
+  `spawn_blocking` cannot be aborted. When shutdown won the select the sampler
+  dropped the cycle's handle without awaiting it, which *detaches* the task
+  rather than cancelling it: the blocking read kept running and `Runtime::drop`
+  then blocked on the pool drain with no bound and no diagnostic — after the
+  daemon had already logged a clean sampler shutdown. A read that was merely
+  slow cost extra exit latency; a genuinely hung one (macOS registry traversal,
+  a Windows CPU/power query, FreeBSD `devstat`, a wedged `/proc` read) held
+  process exit indefinitely. A cycle that outlives the loop is now joined under
+  an explicit one-second bound and detached with a warning only past it, so the
+  shutdown path stays bounded and the pathological case says why.
+
+- **A collection that finished in the same poll a stop signal arrived in was
+  silently discarded.** The sampler's select was not `biased`, so the winning
+  branch was pseudo-random. If the cycle completed and shutdown became ready in
+  the same poll, a real sample was dropped without being applied or published —
+  and if that sample was a *failure*, it was never counted, so the daemon exited
+  reporting readiness the collector had contradicted. This is the ordinary case
+  for a fast collector on the one-second default interval. The collection branch
+  is now polled first, matching the ordering discipline already used in the
+  scheduler and the EggPool worker.
+
+- **A Linux host with readable `/proc/net/dev` but unreadable
+  `/sys/class/net/<if>/flags` counted loopback in the fleet network
+  aggregate.** The `IFF_LOOPBACK` bit came from a sysfs read whose failure mode
+  was `0`, i.e. "not loopback". Because `lo` has no `master` symlink, the
+  interface became an aggregate member and its traffic was summed into
+  `aggregate_rx_bytes_per_sec` / `aggregate_tx_bytes_per_sec`, while also
+  publishing `is_loopback: false` — a claim the client cannot contradict and the
+  validator cannot catch. Triggered by `/sys` masked or unmounted (some container
+  and chroot setups) or `EACCES` on a hardened host. An unreadable or
+  unparseable flag set is now *unknown*, and an unknown interface stays out of
+  the aggregate. macOS and Windows derive loopback from native flags and could
+  not fail open this way.
+
+- **`logical_cores` reported the process's CPU allotment, not the kernel's core
+  count.** The field is documented as the number of logical cores available to
+  the kernel, but it was sourced from `std::thread::available_parallelism`,
+  which honours a `taskset` mask or cpuset. A restricted daemon published
+  `logical_cores: 1` on a sixteen-core machine and disagreed with the Windows
+  collector's kernel total. The Linux collector now reads the kernel's own
+  online-CPU list, falling back to the `processor` entries in `/proc/cpuinfo`
+  when sysfs is masked. Both are affinity-independent; the process-allotment
+  probe is now only a last resort behind them.
+
+- **An absent `SwapTotal` was indistinguishable from "this machine has no
+  swap".** A `/proc/meminfo` that parsed but lacked the key produced a confident
+  `swap = {0 bytes, 0.0% used}` *with the swap capability asserted* — which the
+  protocol requires to be accompanied by a swap sample, so nothing could tell a
+  truncated read from a genuinely swap-free host. Swap now meets the same bar
+  memory already set for an absent `MemTotal` and fails closed. A real
+  `SwapTotal: 0` is still the legitimate zero sample.
+
+- **Closing the EggPool pane left the document claiming `Refreshing`.**
+  `worker_state = Refreshing` means a current desired request was published and
+  its result is awaited, but the same code ran for *deactivations*, where an
+  inactive desired state aborts in-flight work and emits no synthetic result.
+  Nothing could ever resolve it — the reducer's only escape for "a request that
+  will never arrive" is `EggPoolFetchOutcome::Cancelled`, which is never
+  constructed. Both ordinary deactivations hit this: a fresh client whose pane
+  is closed, and the pane closing on the last attached frontend. A deactivation
+  now returns the field to `Idle` while still superseding any in-flight result.
+  Activation now reads the *converged* intent rather than one frontend's
+  request, so a second frontend holding the pane open is still honoured, and an
+  unreachable duplicate of the convergence block was removed.
+
+- **An all-digit cron hour above `u32::MAX` rendered as a fabricated `00:00`.**
+  `schedule_label` checked that the field was ASCII digits, but an all-digit
+  string can still overflow `u32`, and the overflow was silently rewritten to
+  midnight — a plausible-looking wrong time on a pane whose entire purpose is
+  to say when a job actually runs, and the opposite of the function's promise to
+  keep the raw schedule verbatim where it does not fit. A field that does not
+  parse as a time is now kept verbatim. A current `greggd` rejects such a
+  schedule at config validation, so this needed an older, faulted, or hostile
+  remote — but remote scheduler data is untrusted input.
+
 - **Re-installing or uninstalling Gregg could delete the user's own crontab
   jobs.** A managed cron block is exactly two lines and is appended last, so a
   job the operator later added with `crontab -e` landed *after* it with no blank

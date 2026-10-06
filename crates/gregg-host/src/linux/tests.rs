@@ -265,6 +265,47 @@ fn optional_families_absent_preserve_core_sample() {
     assert_eq!(metrics.drives, None);
 }
 
+/// An absent `SwapTotal` is a malformed read, not "this machine has no
+/// swap".
+///
+/// The protocol requires `swap` to be `Some(_)` whenever the `swap`
+/// capability is asserted, so defaulting the absent total to `0` published a
+/// confident "0 bytes, 0.0% used" for a host that does have swap, with nothing
+/// the client could use to tell the two apart. Swap now meets the same bar
+/// `compute_memory` sets for an absent `MemTotal`: it fails closed. A genuine
+/// `SwapTotal: 0` is still the legitimate zero sample.
+#[test]
+fn absent_swap_total_fails_closed_instead_of_reporting_zero_swap() {
+    let truncated = parse_meminfo("MemTotal:        8000000 kB\nMemAvailable:     4000000 kB\n")
+        .expect("meminfo parses");
+    let err = compute_swap(&truncated).expect_err("absent SwapTotal must not fabricate");
+    assert_eq!(err.kind, CollectErrorKind::Parse);
+
+    let no_free = parse_meminfo("MemTotal:        8000000 kB\nSwapTotal:        4000000 kB\n")
+        .expect("meminfo parses");
+    // Absent `SwapFree` beside a present total would fabricate full usage.
+    let err = compute_swap(&no_free).expect_err("absent SwapFree must not fabricate 100% usage");
+    assert_eq!(err.kind, CollectErrorKind::Parse);
+
+    // A real zero-swap host still yields the legitimate zero sample.
+    let genuine_zero = parse_meminfo(
+        "MemTotal:        8000000 kB\nSwapTotal:              0 kB\nSwapFree:               0 kB\n",
+    )
+    .expect("meminfo parses");
+    let swap = compute_swap(&genuine_zero).expect("genuine zero swap is valid");
+    assert_eq!(swap.used_bytes, 0);
+    assert_eq!(swap.total_bytes, 0);
+
+    // And an ordinary populated host is unchanged.
+    let populated = parse_meminfo(
+        "MemTotal:        8000000 kB\nSwapTotal:        4000000 kB\nSwapFree:        1000000 kB\n",
+    )
+    .expect("meminfo parses");
+    let swap = compute_swap(&populated).expect("populated swap");
+    assert_eq!(swap.total_bytes, 4_000_000 * 1024);
+    assert_eq!(swap.used_bytes, 3_000_000 * 1024);
+}
+
 #[test]
 fn identity_uses_pretty_name_when_present() {
     let source = source_from(

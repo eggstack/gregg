@@ -149,9 +149,23 @@ pub fn compute_memory(info: &ParsedMeminfo) -> Result<MemorySample, CollectError
 }
 
 /// Compute swap metrics. Zero swap is valid and yields zero usage.
+///
+/// An absent `SwapTotal` fails closed, exactly as an absent `MemTotal` fails
+/// [`compute_memory`]. It does **not** mean "this machine has no swap": the
+/// protocol requires `swap` to be `Some(_)` whenever the `swap` capability is
+/// asserted, so defaulting it to `0` published a confident "0 bytes, 0.0% used"
+/// for a host that does have swap, and there was no way for the client to tell
+/// the two apart. A genuine `SwapTotal: 0` still yields the zero sample.
 pub fn compute_swap(info: &ParsedMeminfo) -> Result<SwapSample, CollectError> {
-    let total_kb = info.swap_total_kb.unwrap_or(0);
-    let free_kb = info.swap_free_kb.unwrap_or(0);
+    let total_kb = info.swap_total_kb.ok_or_else(|| {
+        CollectError::new(CollectErrorKind::Parse, "/proc/meminfo missing SwapTotal")
+    })?;
+    // Likewise for `SwapFree`: absent free space beside a present total would
+    // fabricate full usage (`used = total`), the exact case `compute_memory`
+    // refuses for memory.
+    let free_kb = info.swap_free_kb.ok_or_else(|| {
+        CollectError::new(CollectErrorKind::Parse, "/proc/meminfo missing SwapFree")
+    })?;
 
     let total_bytes = kb_to_bytes(total_kb)?;
     // `SwapFree` may exceed `SwapTotal` on certain kernels with zram-style

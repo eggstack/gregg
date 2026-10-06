@@ -609,6 +609,12 @@ Ten rules govern this plane and are easy to break:
    underflow. A record's clock is labelled `Z` (`10-05 07:00Z`) because it is a
    UTC instant while the schedule beside it is the remote's local civil cron; do
    not "fix" that by inventing a remote timezone — that needs a protocol change.
+   The **schedule column** is compacted only when it fits: `0 3 * * *` renders
+   `03:00` and `30 2 * * 3` renders `weekly Wed 02:30`, everything else stays
+   verbatim. "Compacted in shape" is not permission to rewrite — an all-digit
+   field can still overflow `u32`, and defaulting it to `0` rendered
+   `99999999999999999999` as a confident `00:00`. A field that does not parse
+   as a time keeps the operator's own text.
 12. **One row builder, one reserved section, one window.** `block_rows` feeds
     both `desired_rows` and `render`, so the requested height includes the stale
     notice and cannot drift from what is emitted. The selected job's header and

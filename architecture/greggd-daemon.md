@@ -194,6 +194,25 @@ The sampler owns the clock and cadence. Key behaviors:
   task poisons it, the panic is logged and reported as a source failure for
   that cycle only, and later ticks recover the lock and resume sampling.
 
+Shutdown is bounded twice, because `spawn_blocking` cannot abort started work.
+The loop observes shutdown *while* a cycle is in flight
+(`COLLECTION_TIMEOUT`, 5s), so a hung native read cannot stall the loop. A cycle
+that outlives the loop is then **joined** under `SHUTDOWN_JOIN_TIMEOUT` (1s) and
+only detached past that bound, with an explicit warning. Dropping a `JoinHandle`
+detaches rather than cancels, so without that join `Runtime::drop` blocked on the
+blocking-pool drain with no bound and no diagnostic — long after the daemon had
+logged a clean sampler shutdown.
+
+The loop's collection branch is polled **first** (`biased`). A cycle that
+completed in the same poll a stop signal became ready in must still be applied
+and published; letting the shutdown branch win discarded a real sample, and a
+discarded *failure* was never counted, so the daemon exited reporting readiness
+the collector had contradicted. Reaching the shutdown arm therefore means the
+cycle did not finish: readiness and the snapshot are left untouched and the last
+snapshot keeps serving per the stale policy. This is the same "resolved before
+the signal, never after it" ordering the scheduler and the EggPool worker already
+rely on.
+
 ### Scheduler observability (Plan 162/163)
 
 The scheduler publishes a **separate** read-only snapshot. It is deliberately

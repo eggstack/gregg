@@ -33,6 +33,18 @@ const MAX_INTERVAL_MS: u64 = 60_000;
 /// `SourceUnavailable` failures; the last snapshot keeps serving per the
 /// stale policy.
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound for joining a collection cycle that outlived the sampling loop.
+///
+/// A `spawn_blocking` closure cannot be aborted, so a cycle still running when
+/// shutdown wins keeps holding a blocking-pool thread. Dropping its handle
+/// *detaches* it: `Runtime::drop` then blocks on the pool drain with no bound
+/// and no diagnostic, long after the daemon reported a clean sampler shutdown.
+/// This bound is the grace period for reaping a cycle that is merely slow; past
+/// it the cycle is detached with an explicit warning rather than silently
+/// stalling process exit. One second is deliberately far below
+/// [`COLLECTION_TIMEOUT`] — the loop's own wait has already spent its budget on
+/// the cycle, so this is only exit latency on top of it.
+const SHUTDOWN_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // Clock trait and real implementation
@@ -269,6 +281,11 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
     /// latest snapshots. The callback returns a future that is **awaited
     /// inline** before the next sleep, ensuring ordered state updates
     /// (no detached tasks that could race with shutdown).
+    ///
+    /// Shutdown is bounded twice: the loop observes it *while* a cycle is in
+    /// flight ([`COLLECTION_TIMEOUT`]), and a cycle that outlives the loop is
+    /// joined under [`SHUTDOWN_JOIN_TIMEOUT`] so an unabortable blocking read
+    /// cannot hold process exit open without limit.
     pub async fn run<F, Fut>(&mut self, mut shutdown: broadcast::Receiver<()>, mut on_sample: F)
     where
         F: FnMut(ReadinessState, Option<Arc<StatusSnapshot>>, Option<Arc<StatusPayloadV2>>) -> Fut,
@@ -278,25 +295,37 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
         loop {
             // Observe shutdown while a collection cycle is in flight so a
             // hung native read cannot stall shutdown beyond COLLECTION_TIMEOUT.
-            // The blocking task itself cannot be aborted; on timeout or
-            // shutdown-race the cycle is recorded as SourceUnavailable and
-            // the last snapshot keeps serving. Its handle is retained in
+            //
+            // The collection branch is polled first (`biased`): a cycle that
+            // completed in this same poll is applied and published rather than
+            // discarded. Selecting pseudo-randomly let shutdown discard a
+            // finished sample — and, for a failure, skip the failure count —
+            // while the daemon reported a clean shutdown.
+            //
+            // Reaching the shutdown arm therefore means the cycle did *not*
+            // finish. The blocking closure cannot be aborted, so readiness and
+            // the snapshot are left untouched and the last snapshot keeps
+            // serving per the stale policy; `join_in_flight_cycle` then bounds
+            // how long that orphan is waited for. Its handle is retained in
             // `in_flight`, so a hung cycle is never joined by a second one.
-            let result = tokio::select! {
+            let cycle = tokio::select! {
+                biased;
                 result = tokio::time::timeout(
                     COLLECTION_TIMEOUT,
                     self.sample_on_blocking_pool(),
-                ) => match result {
+                ) => Some(match result {
                     Ok(result) => result,
                     Err(_) => Err(CollectError::new(
                         CollectErrorKind::SourceUnavailable,
                         "collection timed out",
                     )),
-                },
-                _ = shutdown.recv() => {
-                    tracing::info!("sampler shutting down");
-                    break;
-                }
+                }),
+                _ = shutdown.recv() => None,
+            };
+            let Some(result) = cycle else {
+                tracing::info!("sampler shutting down");
+                self.join_in_flight_cycle().await;
+                return;
             };
             self.apply_sample_result(result);
             on_sample(
@@ -306,13 +335,40 @@ impl<C: SystemCollector, Clk: Clock> Sampler<C, Clk> {
             )
             .await;
 
+            let mut shutting_down = false;
             tokio::select! {
                 () = self.clock.sleep(Duration::from_millis(self.interval_ms)) => {}
-                _ = shutdown.recv() => {
-                    tracing::info!("sampler shutting down");
-                    break;
-                }
+                _ = shutdown.recv() => shutting_down = true,
             }
+            if shutting_down {
+                tracing::info!("sampler shutting down");
+                self.join_in_flight_cycle().await;
+                return;
+            }
+        }
+    }
+
+    /// Join a collection cycle that outlived the sampling loop, under
+    /// [`SHUTDOWN_JOIN_TIMEOUT`].
+    ///
+    /// A no-op when no cycle is outstanding. Otherwise the handle is awaited
+    /// by value so a cycle that finishes within the bound is joined normally;
+    /// past the bound it is dropped, which detaches rather than cancels, and
+    /// that is reported — a silent detach is what let `Runtime::drop` block
+    /// on the blocking pool with no bound and no explanation.
+    async fn join_in_flight_cycle(&mut self) {
+        let Some(handle) = self.in_flight.take() else {
+            return;
+        };
+        if tokio::time::timeout(SHUTDOWN_JOIN_TIMEOUT, handle)
+            .await
+            .is_err()
+        {
+            tracing::warn!(
+                timeout_ms = SHUTDOWN_JOIN_TIMEOUT.as_millis(),
+                "collection cycle still running at shutdown; detached, and \
+                 process exit now waits on the blocking pool"
+            );
         }
     }
 
@@ -1478,6 +1534,204 @@ mod tests {
             1,
             "the retained cycle ran exactly once"
         );
+    }
+
+    /// A collection cycle that signals shutdown from *inside* the collector and
+    /// then blocks, so the signal is guaranteed to land while a cycle is
+    /// genuinely in flight rather than racing one from outside.
+    struct ShutdownThenBlockCollector {
+        shutdown: broadcast::Sender<()>,
+        entered: Arc<AtomicU64>,
+        finished: Arc<AtomicU64>,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        block: bool,
+    }
+
+    impl SystemCollector for ShutdownThenBlockCollector {
+        fn identity(&self) -> Result<SystemIdentity, CollectError> {
+            Ok(test_identity())
+        }
+
+        fn sample(&mut self) -> Result<CollectedMetrics, CollectError> {
+            let _ = self.shutdown.send(());
+            if self.block {
+                self.entered.fetch_add(1, Ordering::SeqCst);
+                let (lock, cvar) = &*self.release;
+                let mut open = lock.lock().expect("release lock poisoned");
+                while !*open {
+                    open = cvar.wait(open).expect("release lock poisoned");
+                }
+                self.finished.fetch_add(1, Ordering::SeqCst);
+            }
+            Ok(successful_metrics())
+        }
+
+        fn capabilities(&self) -> MetricCapabilities {
+            MetricCapabilities { cpu_iowait: false }
+        }
+    }
+
+    /// The collector plus the counters and gate the tests observe it through.
+    type GatedCollectorParts = (
+        ShutdownThenBlockCollector,
+        Arc<AtomicU64>,
+        Arc<AtomicU64>,
+        Arc<(Mutex<bool>, std::sync::Condvar)>,
+    );
+
+    fn shutdown_then_block_collector(
+        shutdown: broadcast::Sender<()>,
+        block: bool,
+    ) -> GatedCollectorParts {
+        let entered = Arc::new(AtomicU64::new(0));
+        let finished = Arc::new(AtomicU64::new(0));
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        (
+            ShutdownThenBlockCollector {
+                shutdown,
+                entered: Arc::clone(&entered),
+                finished: Arc::clone(&finished),
+                release: Arc::clone(&release),
+                block,
+            },
+            entered,
+            finished,
+            release,
+        )
+    }
+
+    /// An unabortable `spawn_blocking` cycle that outlives the loop must be
+    /// **joined under a bound**, not silently detached.
+    ///
+    /// Dropping a `JoinHandle` detaches rather than cancels, so the blocking
+    /// thread stayed alive with nothing watching it and `Runtime::drop` blocked
+    /// on the pool drain — with no bound and no diagnostic, long after the
+    /// daemon had logged a clean sampler shutdown. Here the read is never
+    /// released, so the join bound is the only thing that can end shutdown:
+    /// the run must return after roughly `SHUTDOWN_JOIN_TIMEOUT`, having taken
+    /// the handle, and well inside the longer `COLLECTION_TIMEOUT`.
+    #[tokio::test]
+    async fn shutdown_joins_the_outlived_cycle_under_a_bound() {
+        let (tx, shutdown) = broadcast::channel(1);
+        let (collector, entered, finished, release) = shutdown_then_block_collector(tx, true);
+        let mut sampler = Sampler::new(collector, SyntheticClock::new(1_700_000_000_000));
+
+        let handle = tokio::spawn(async move {
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
+            sampler
+        });
+
+        // The collector signals shutdown from inside `sample()` and then
+        // blocks, so `entered` only becomes visible with a cycle genuinely in
+        // flight — never racing a cycle started from outside.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while entered.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the collection cycle entered the collector");
+
+        let start = std::time::Instant::now();
+        let sampler = handle.await.expect("sampler run task completed");
+        let elapsed = start.elapsed();
+
+        assert!(
+            sampler.in_flight.is_none(),
+            "the cycle's handle must be taken and joined, never dropped detached"
+        );
+        assert_eq!(
+            finished.load(Ordering::SeqCst),
+            0,
+            "the read was still hung when shutdown completed"
+        );
+        let join_floor = SHUTDOWN_JOIN_TIMEOUT
+            .checked_sub(Duration::from_millis(100))
+            .expect("the join bound has slack");
+        assert!(
+            elapsed >= join_floor,
+            "shutdown must actually wait out the join bound, not return at once: {elapsed:?}"
+        );
+        assert!(
+            elapsed < COLLECTION_TIMEOUT,
+            "shutdown stays bounded by the join bound, not an unbounded pool drain: {elapsed:?}"
+        );
+
+        // Unblock the read last, so the blocking pool drains and the test's
+        // own runtime teardown does not inherit the very hang under test.
+        let (lock, cvar) = &*release;
+        *lock.lock().expect("release lock poisoned") = true;
+        cvar.notify_all();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while finished.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the released read finishes so the pool can drain");
+    }
+
+    /// A collection cycle that finished in the same poll that shutdown became
+    /// ready must still be applied.
+    ///
+    /// The cycle is installed as the one in-flight task *before* the loop
+    /// starts, so nothing has polled it yet and the shutdown signal below is
+    /// merely buffered. The loop's first poll therefore finds the cycle Ready
+    /// and `shutdown.recv()` Ready at the same time — exactly the race being
+    /// pinned. Without `biased` the winning branch was a coin flip, and a lost
+    /// cycle meant a real sample silently discarded: the daemon exited having
+    /// dropped it, or, for a failure, having never counted it.
+    #[tokio::test]
+    async fn a_cycle_completed_in_the_shutdown_poll_is_still_applied() {
+        // Repeated because the pre-fix failure was probabilistic — one pass
+        // catches it only some of the time, many passes nearly always.
+        for _ in 0..16 {
+            let mut sampler = Sampler::with_interval(
+                SyntheticCollector::always_fails(),
+                SyntheticClock::new(1_700_000_000_000),
+                250,
+            )
+            .expect("interval in bounds");
+            // Wait for the stand-in cycle to actually finish: `spawn_blocking`
+            // hands back a pending handle, and a cycle that is merely in
+            // progress leaves the collection branch Pending — which is the
+            // ordinary case, not the race under test. Only a cycle that is
+            // already complete puts *both* branches Ready on one poll.
+            let completed = tokio::task::spawn_blocking(|| {
+                Ok::<CollectedMetrics, CollectError>(successful_metrics())
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !completed.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the stand-in cycle completes");
+            sampler.in_flight = Some(completed);
+
+            let (tx, shutdown) = broadcast::channel(1);
+            let _ = tx.send(());
+
+            sampler
+                .run(shutdown, |_state, _snap, _snap_v2| async {})
+                .await;
+
+            assert_eq!(
+                sampler.readiness(),
+                ReadinessState::Ready,
+                "the completed cycle must be applied, not discarded by the race"
+            );
+            assert!(
+                sampler.snapshot().is_some(),
+                "the completed sample must be published"
+            );
+            assert!(
+                sampler.in_flight.is_none(),
+                "the joined cycle's handle is cleared"
+            );
+        }
     }
 
     #[tokio::test]

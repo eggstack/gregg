@@ -157,6 +157,15 @@ extra JSON fields stay tolerated.
 
 - `EggpoolWorkerState` is `Idle` / `Refreshing` / `WorkerUnavailable` and
   describes only Gregg machinery
+- `Refreshing` is published only for a converged **active** intent, because
+  `Idle` is the only honest state for a deactivation: an inactive desired state
+  aborts in-flight work and emits no result, so nothing could ever resolve it,
+  and the reducer's only escape for "a request that will never arrive"
+  (`EggpoolFetchOutcome::Cancelled`) is never constructed. Deactivation still
+  bumps the generation so an already-fetched result is rejected as stale.
+  `active` must be the converged reduction over all frontends, never one
+  frontend's request, or one window closing stops the worker while another
+  still holds the pane open
 - `EggpoolFetchOutcome` values are summary-transport facts and are never
   folded into worker lifecycle
 - EggPool's own proxy/provider service health is a separate model sourced from
