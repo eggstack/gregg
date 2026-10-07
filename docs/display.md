@@ -108,3 +108,8 @@ Condensed view shows one comparison row per system with CPU, memory, disk, and
 NET utilization, then LOAD/IOWAIT where the width tier allows. At narrow
 widths the existing HOST truncation and tier fallback preserve numeric
 columns. `v` toggles between normal and condensed views.
+
+An offline system shows the same stable failure category in either view
+(`offline (refused)`, `offline (http) HTTP 503`), so switching to the compact
+layout never costs you the reason a system went down. A pending system shows
+`pending` with no reason, because it has not been polled yet.

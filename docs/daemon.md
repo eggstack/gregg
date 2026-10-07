@@ -128,6 +128,12 @@ are `success`, `failed`, `spawn_failed`, `wait_failed`, `load_expired`, and the
 reserved `cancelled`. A `spawn_failed` or `load_expired` record carries no exit
 code, start time, or duration, because no child ever existed.
 
+A job held back by `max_load` reports `load_high` with the reading that refused
+it and a real retry countdown for its whole wait. When a new occurrence comes due
+while the previous one is still waiting, it coalesces into that occurrence rather
+than queueing a second one, and it stays reported as load-delayed — the reading
+still describes the occurrence being held.
+
 Each retained record carries a fixed-size stdout tail and stderr tail,
 truncated independently, with a per-stream `truncated` flag. The raw bound is
 1024 bytes per stream and the published text is at most 512 JSON-escaped bytes,

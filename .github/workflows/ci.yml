@@ -46,6 +46,42 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-targets --all-features
 
+  scripts:
+    # The Rust gates above cannot see the installer, the maintenance scripts, or
+    # the Python harness that drives the TUI test drivers. Shellcheck previously
+    # ran only in the release workflow, against one file, with its findings
+    # discarded; these two steps make both script surfaces blocking.
+    name: Scripts (shellcheck + pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Shellcheck
+        run: shellcheck -x scripts/*.sh packaging/*.sh scripts/tests/*.sh
+
+      - name: Install pytest
+        run: python3 -m pip install --upgrade pytest
+
+      # One case shells out to the sustained runner, which builds the gregg test
+      # binary first; it therefore needs the toolchain and a warm target dir.
+      - name: Script tests
+        run: python3 -m pytest scripts/tests -q
+
   macos:
     name: macOS (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

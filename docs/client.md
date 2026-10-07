@@ -62,7 +62,8 @@ backoff); they automatically recover and switch to the normal view as soon
 as the daemon becomes reachable again. Each accepted failure stores a stable
 provenance category (`timeout`, `dns`, `refused`, `network`, `http`,
 `too-large`, `invalid`, `unsupported`) shown in the offline row
-(`offline (refused)`); recovery clears it in the same poll generation.
+(`offline (refused)`, `offline (http) HTTP 503`) in both the normal and
+condensed views; recovery clears it in the same poll generation.
 
 The client stores its config at:
 

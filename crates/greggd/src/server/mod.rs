@@ -707,9 +707,14 @@ impl ServerState {
         self.published.read().await.consecutive_failures
     }
 
-    async fn v1_status_data(&self, now_unix_ms: Option<u64>) -> StatusDataV1 {
+    async fn v1_status_data(&self) -> StatusDataV1 {
         let state = self.published.read().await;
-        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
+        // Read the clock *after* the guard is held. A reader that parks behind
+        // a publication would otherwise compare an instant from before that
+        // publication against a snapshot from after it, and the resulting
+        // negative age is indistinguishable from a backward clock jump — a
+        // freshly published snapshot would be served as `503 stale`.
+        let snapshot_is_stale = self.is_stale(&state, now_unix_ms());
         if let Some(snapshot) = &state.snapshot {
             if snapshot_is_stale {
                 return StatusDataV1::Unavailable(Box::new(state.health.stale_v1_response()));
@@ -722,9 +727,12 @@ impl ServerState {
         StatusDataV1::Unavailable(Box::new(state.health.v1_response(None)))
     }
 
-    async fn v2_status_data(&self, now_unix_ms: Option<u64>) -> StatusDataV2 {
+    async fn v2_status_data(&self) -> StatusDataV2 {
         let state = self.published.read().await;
-        let snapshot_is_stale = self.is_stale(&state, now_unix_ms);
+        // Same rule as [`Self::v1_status_data`]: the clock is read under the
+        // guard so a read that parked behind a publication cannot mark the
+        // snapshot it just acquired as from-the-future.
+        let snapshot_is_stale = self.is_stale(&state, now_unix_ms());
         if let Some(snapshot) = &state.snapshot_v2 {
             if snapshot_is_stale {
                 return StatusDataV2::Unavailable(Box::new(state.health_v2.stale_v2_response()));
@@ -743,10 +751,7 @@ impl ServerState {
     ///
     /// Returns the body plus whether it was served from the per-publication
     /// memo (used only by tests via serialization counters).
-    async fn v1_health_cached(
-        &self,
-        now_unix_ms: Option<u64>,
-    ) -> Result<(Bytes, StatusCode), ServiceError> {
+    async fn v1_health_cached(&self) -> Result<(Bytes, StatusCode), ServiceError> {
         // Plan 144: deterministic concurrency gate for tests. No-op in
         // production builds.
         #[cfg(test)]
@@ -757,7 +762,7 @@ impl ServerState {
         // second observes the transition under a fresh read guard and
         // returns its 503 body.
         for attempt in 1..=2 {
-            let next = self.v1_health_now(now_unix_ms).await?;
+            let next = self.v1_health_now().await?;
             let (snapshot, cell) = match next {
                 ReadyHealthMemoV1::Immediate(body, status) => return Ok((body, status)),
                 ReadyHealthMemoV1::Serialize { snapshot, cell } => (snapshot, cell),
@@ -793,15 +798,12 @@ impl ServerState {
     }
 
     /// Plan 144: v2 ready-health fast path, mirroring [`Self::v1_health_cached`].
-    async fn v2_health_cached(
-        &self,
-        now_unix_ms: Option<u64>,
-    ) -> Result<(Bytes, StatusCode), ServiceError> {
+    async fn v2_health_cached(&self) -> Result<(Bytes, StatusCode), ServiceError> {
         #[cfg(test)]
         self.test_gate.arrive().await;
 
         for attempt in 1..=2 {
-            let next = self.v2_health_now(now_unix_ms).await?;
+            let next = self.v2_health_now().await?;
             let (snapshot_v2, cell) = match next {
                 ReadyHealthMemoV2::Immediate(body, status) => return Ok((body, status)),
                 ReadyHealthMemoV2::Serialize { snapshot, cell } => (snapshot, cell),
@@ -834,12 +836,10 @@ impl ServerState {
         Ok((body, StatusCode::SERVICE_UNAVAILABLE))
     }
 
-    async fn v1_health_now(
-        &self,
-        now_unix_ms: Option<u64>,
-    ) -> Result<ReadyHealthMemoV1, ServiceError> {
+    async fn v1_health_now(&self) -> Result<ReadyHealthMemoV1, ServiceError> {
         let published = self.published.read().await;
-        let snapshot_stale = self.is_stale(&published, now_unix_ms);
+        // Clock read under the guard, matching the status paths.
+        let snapshot_stale = self.is_stale(&published, now_unix_ms());
         let ready = published.health.state == ReadinessState::Ready;
         if snapshot_stale && ready {
             let body = serialize_health(&HealthResponse::failed(
@@ -875,12 +875,10 @@ impl ServerState {
         })
     }
 
-    async fn v2_health_now(
-        &self,
-        now_unix_ms: Option<u64>,
-    ) -> Result<ReadyHealthMemoV2, ServiceError> {
+    async fn v2_health_now(&self) -> Result<ReadyHealthMemoV2, ServiceError> {
         let published = self.published.read().await;
-        let snapshot_stale = self.is_stale(&published, now_unix_ms);
+        // Clock read under the guard, matching the status paths.
+        let snapshot_stale = self.is_stale(&published, now_unix_ms());
         let ready = published.health_v2.state == ReadinessState::Ready;
         if snapshot_stale && ready {
             let body = serialize_health_v2(&HealthResponseV2::failed(
@@ -1115,7 +1113,7 @@ async fn dispatch_request(state: &ServerState, request: Request) -> Result<Respo
 }
 
 async fn v1_status_response(state: &ServerState) -> Result<Response, ServiceError> {
-    match state.v1_status_data(now_unix_ms()).await {
+    match state.v1_status_data().await {
         StatusDataV1::FreshCached(body) => json_response(StatusCode::OK, body),
         StatusDataV1::FreshTyped(snapshot) => match state.serialize_v1_status(&snapshot) {
             Ok(body) => json_response(StatusCode::OK, body),
@@ -1128,7 +1126,7 @@ async fn v1_status_response(state: &ServerState) -> Result<Response, ServiceErro
 }
 
 async fn v2_status_response(state: &ServerState) -> Result<Response, ServiceError> {
-    match state.v2_status_data(now_unix_ms()).await {
+    match state.v2_status_data().await {
         StatusDataV2::FreshCached(body) => json_response(StatusCode::OK, body),
         StatusDataV2::FreshTyped(snapshot) => match state.serialize_v2_status(&snapshot) {
             Ok(body) => json_response(StatusCode::OK, body),
@@ -1142,12 +1140,12 @@ async fn v2_status_response(state: &ServerState) -> Result<Response, ServiceErro
 }
 
 async fn health_response(state: &ServerState) -> Result<Response, ServiceError> {
-    let (body, status) = state.v1_health_cached(now_unix_ms()).await?;
+    let (body, status) = state.v1_health_cached().await?;
     json_response(status, body)
 }
 
 async fn health_response_v2(state: &ServerState) -> Result<Response, ServiceError> {
-    let (body, status) = state.v2_health_cached(now_unix_ms()).await?;
+    let (body, status) = state.v2_health_cached().await?;
     json_response(status, body)
 }
 

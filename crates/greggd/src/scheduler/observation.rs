@@ -600,12 +600,13 @@ impl SchedulerObserver {
         jobs: Vec<SchedulerJobV2>,
         generated_at_unix_ms: u64,
     ) -> bool {
-        let comparable = PublishedComparable {
-            epoch: self.epoch,
-            history_revision: self.history_revision,
-            jobs: jobs.clone(),
-        };
-        if self.last_published.as_ref() == Some(&comparable) {
+        // Compared field by field against the last publication so the common
+        // "nothing changed" wake costs no allocation and no clone.
+        if self.last_published.as_ref().is_some_and(|previous| {
+            previous.epoch == self.epoch
+                && previous.history_revision == self.history_revision
+                && previous.jobs == jobs
+        }) {
             return false;
         }
         let histories = if self.limit == 0 {
@@ -626,6 +627,14 @@ impl SchedulerObserver {
                     records: history.records.iter().cloned().collect(),
                 })
                 .collect()
+        };
+        // The comparison key is only built on the path that actually publishes,
+        // where one clone is noise next to serializing two documents. The
+        // unchanged-wake path above returns before reaching it.
+        let comparable = PublishedComparable {
+            epoch: self.epoch,
+            history_revision: self.history_revision,
+            jobs: jobs.clone(),
         };
         // A serialization failure keeps the previous publication rather than
         // degrading into a fabricated empty scheduler document.

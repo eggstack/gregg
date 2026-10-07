@@ -643,11 +643,23 @@ fn status_line(system: &SystemState, layout: &CondensedTableLayout, status: &str
         .configured_name
         .as_deref()
         .unwrap_or(&system.endpoint.host);
+    // Offline systems with known provenance show the stable failure category
+    // (`offline (refused)`, `offline (http) HTTP 503`), exactly as the normal
+    // view does. Pressing `v` must not silently drop the only statement of
+    // *why* a system is offline. A pending system has no poll result yet and so
+    // never carries a reason.
+    let reason_suffix = match (&system.reachability, &system.offline_reason) {
+        (Reachability::Offline, Some(reason)) => match reason.detail.as_deref() {
+            Some(detail) => format!(" ({}) {detail}", reason.kind),
+            None => format!(" ({})", reason.kind),
+        },
+        _ => String::new(),
+    };
     // Plan 086: status rows use the full rendered row width rather than
     // the online HOST numeric-table cell. The online table header
     // already drives the HOST column width, so this branch must not
     // erase device identity when the online fleet has shorter names.
-    let status_suffix = format!("  {status}");
+    let status_suffix = format!("  {status}{reason_suffix}");
     let status_width = cell_width(&status_suffix);
     let row_width = layout.total_width;
     let name_budget = row_width.saturating_sub(status_width);
@@ -660,6 +672,7 @@ mod tests {
     use super::*;
     use crate::endpoint::Endpoint;
     use crate::normalized::NormalizedSnapshot;
+    use crate::poller::{OfflineKind, OfflineReason};
     use std::time::Instant;
     use unicode_width::UnicodeWidthStr;
 
@@ -924,6 +937,42 @@ mod tests {
         );
         assert!(line.contains("offline"), "{line:?}");
         assert!(width <= 80, "line must fit width: {line:?} ({width} cells)");
+    }
+
+    /// The compact view is the same operator surface as the normal one: an
+    /// offline row must state *why* it is offline whenever that is known.
+    ///
+    /// Pressing `v` previously replaced `srv offline (http) HTTP 503` with
+    /// `srv offline`, dropping the only statement of the failure's provenance.
+    #[test]
+    fn offline_status_keeps_the_failure_category_the_normal_view_renders() {
+        let mut sys = offline_system(Some("srv"), "192.168.182.146");
+        sys.offline_reason = Some(OfflineReason::with_detail(OfflineKind::Http, "HTTP 503"));
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
+        let line = status_line(&sys, &layout, "offline");
+        assert!(line.contains("offline (http) HTTP 503"), "{line:?}");
+        assert!(line.contains("srv"), "{line:?}");
+
+        let mut bare = offline_system(Some("srv"), "192.168.182.146");
+        bare.offline_reason = Some(OfflineReason::new(OfflineKind::Refused));
+        let line = status_line(&bare, &layout, "offline");
+        assert!(line.contains("offline (refused)"), "{line:?}");
+        assert!(!line.contains("()"), "{line:?}");
+    }
+
+    /// A pending system has no poll result, so it has nothing to blame.
+    #[test]
+    fn a_pending_status_never_carries_an_offline_reason() {
+        let mut sys = offline_system(Some("srv"), "192.168.182.146");
+        sys.reachability = Reachability::Pending;
+        sys.offline_reason = Some(OfflineReason::with_detail(OfflineKind::Http, "HTTP 503"));
+        let layout = compute_condensed_table_layout(std::slice::from_ref(&sys), 80);
+        let line = status_line(&sys, &layout, "pending");
+        assert!(
+            !line.contains("http") && !line.contains("503"),
+            "pending has no reading to report: {line:?}"
+        );
+        assert!(line.contains("pending"), "{line:?}");
     }
 
     #[test]

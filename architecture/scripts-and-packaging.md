@@ -246,6 +246,14 @@ GitHub Actions CI (`.github/workflows/ci.yml`) runs on push to `main` and
 pull requests:
 
 - **Linux**: fmt, clippy, and full workspace tests
+- **Scripts** (`ubuntu-latest`): `shellcheck -x` over `scripts/*.sh`,
+  `packaging/*.sh`, and `scripts/tests/*.sh`, plus
+  `python3 -m pytest scripts/tests`. Both are **blocking**: the Rust gates
+  cannot see the installer, the maintenance scripts, or the Python harness
+  that drives the TUI test drivers, so this job is the only thing standing
+  between a shell/Python regression and a release. It installs the Rust
+  toolchain because one pytest case shells out to the sustained runner, which
+  builds the gregg test binary first.
 - **macOS**: native workspace check + native macOS collector smoke (arm64 + Intel matrix)
 - **Windows** (`windows-2022`): all-target, all-feature workspace tests, release
   `greggd` **and** `gregg` builds (component-safety uninstall proof), and the bounded SCM lifecycle smoke

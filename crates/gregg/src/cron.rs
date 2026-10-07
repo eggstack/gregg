@@ -38,7 +38,7 @@
 //! locally retained record therefore carries the epoch it was observed under,
 //! and a new epoch never rewrites the old one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use gregg_protocol::{SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobV2, SchedulerSummaryV2};
 use serde::{Deserialize, Serialize};
@@ -77,8 +77,13 @@ pub const MAX_TOTAL_CRON_RECORDS: usize = 4096;
 
 /// Hard maximum on retained job histories (distinct job names) per system.
 ///
-/// A stale job that was removed from a remote's configuration must not
-/// accumulate forever across reloads.
+/// Two different things are bounded here, and they must not be conflated. A
+/// stale job removed from a remote's configuration must not accumulate forever
+/// across reloads, *and* a remote configured with more than this many jobs is a
+/// supported configuration whose per-job depth must not be multiplied past the
+/// global ceiling's intent. The second case is the ordinary steady state, so the
+/// cap cannot sit behind the stale sweep's "everything is still live" early
+/// return; see [`CronSystemState::evict_stale_jobs`].
 pub const MAX_CRON_JOBS_PER_SYSTEM: usize = 64;
 
 /// Whether a remote daemon serves the Plan-162 scheduler routes.
@@ -395,23 +400,19 @@ impl CronSystemState {
     /// document that arrived before one must not be read as "the remote serves
     /// no jobs at all" — that would silently discard everything.
     fn evict_stale_jobs(&mut self) {
-        if self.summary.is_none() {
+        let Some(summary) = self.summary.as_ref() else {
             return;
+        };
+        // A `HashSet` of borrowed names: the membership test is the whole cost
+        // of this function, and it runs over every retained key.
+        let live: HashSet<&str> = summary.jobs.iter().map(|job| job.name.as_str()).collect();
+        // The ceiling is unconditional. It used to sit behind an early return
+        // that fired whenever every cached job was still live, so a remote
+        // advertising more than the cap retained all of them.
+        let all_live = self.jobs.keys().all(|name| live.contains(name.as_str()));
+        if !all_live {
+            self.jobs.retain(|name, _| live.contains(name.as_str()));
         }
-        let live: Vec<String> = self
-            .summary
-            .as_ref()
-            .map(|summary| summary.jobs.iter().map(|job| job.name.clone()).collect())
-            .unwrap_or_default();
-        if self
-            .jobs
-            .keys()
-            .all(|name| live.iter().any(|kept| kept == name))
-        {
-            return;
-        }
-        self.jobs
-            .retain(|name, _| live.iter().any(|kept| kept == name));
         while self.jobs.len() > MAX_CRON_JOBS_PER_SYSTEM {
             if let Some(key) = self.jobs.keys().next().cloned() {
                 self.jobs.remove(&key);
@@ -1089,6 +1090,88 @@ mod tests {
             cache.system("sys").unwrap().job_records("old").is_empty(),
             "a removed job must not keep its records alive forever"
         );
+    }
+
+    /// A remote advertising more cron jobs than the ceiling is a supported
+    /// configuration, not a misconfiguration, so the client must bound it.
+    ///
+    /// Every job here stays live, which is what used to skip the ceiling
+    /// entirely: the clamp sat behind an early return taken whenever no cached
+    /// job had gone stale, so an 84-job remote retained all 84 histories.
+    #[test]
+    fn the_per_system_job_ceiling_holds_while_every_job_stays_live() {
+        let mut cache = CronCache::new(1, MAX_TOTAL_CRON_RECORDS);
+        let over: Vec<String> = (0..=MAX_CRON_JOBS_PER_SYSTEM)
+            .map(|index| format!("job-{index:03}"))
+            .collect();
+        let names: Vec<&str> = over.iter().map(String::as_str).collect();
+        cache.apply_summary("sys", summary_document(epoch(1_000, 1), 1, &names), 1);
+
+        // One record per job, delivered in batches so the cache is exercised
+        // the way a real poll history arrives.
+        for chunk in names.chunks(10) {
+            cache.apply_history(
+                "sys",
+                &SchedulerHistoryV2 {
+                    schema_version: 2,
+                    generated_at_unix_ms: 1_700_000_000_000,
+                    epoch: epoch(1_000, 1),
+                    history_revision: 1,
+                    jobs: chunk
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| SchedulerJobHistoryV2 {
+                            name: (*name).to_owned(),
+                            records: vec![record(
+                                index as u64 + 1,
+                                1_700_000_001_000 + index as u64,
+                            )],
+                        })
+                        .collect(),
+                },
+            );
+        }
+
+        let state = cache.system("sys").unwrap();
+        assert_eq!(
+            state.jobs.len(),
+            MAX_CRON_JOBS_PER_SYSTEM,
+            "a remote serving more jobs than the ceiling must not grow the cache past it"
+        );
+        assert!(
+            cache.total_records() <= MAX_TOTAL_CRON_RECORDS,
+            "the global ceiling still applies"
+        );
+    }
+
+    /// Dropping stale jobs and enforcing the ceiling are two different bounds.
+    ///
+    /// The ceiling is about how many live histories one system may hold, so a
+    /// system whose jobs are all still live must be clamped too.
+    #[test]
+    fn the_ceiling_evicts_a_live_job_rather_than_leaving_it_bounded_by_nothing() {
+        let mut state = CronSystemState::unknown();
+        let names: Vec<String> = (0..=MAX_CRON_JOBS_PER_SYSTEM)
+            .map(|index| format!("job-{index:03}"))
+            .collect();
+        let borrowed: Vec<&str> = names.iter().map(String::as_str).collect();
+        state.apply_summary(summary_document(epoch(1_000, 1), 1, &borrowed), 1);
+        for (index, name) in names.iter().enumerate() {
+            state.apply_history(
+                &SchedulerHistoryV2 {
+                    schema_version: 2,
+                    generated_at_unix_ms: 1_700_000_000_000,
+                    epoch: epoch(1_000, 1),
+                    history_revision: 1,
+                    jobs: vec![SchedulerJobHistoryV2 {
+                        name: name.clone(),
+                        records: vec![record(index as u64 + 1, 1_700_000_001_000)],
+                    }],
+                },
+                1,
+            );
+        }
+        assert_eq!(state.jobs.len(), MAX_CRON_JOBS_PER_SYSTEM);
     }
 
     #[test]

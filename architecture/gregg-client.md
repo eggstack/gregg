@@ -109,7 +109,13 @@ after a mapped render-visible action, terminal resize, or highlight expiry.
 `AppState::adopt_snapshot` is the sole decider: it compares what a renderer can
 actually see (endpoint, configured name, reachability, normalized snapshot,
 offline reason, EggPool window/worker/data planes) and explicitly ignores
-timestamps and latency, so an age that advanced does not force a frame. A
+timestamps and latency, so an age that advanced does not force a frame.
+
+The one exception is the EggPool footer's `Updated for Nm`. That age *is*
+rendered, and the footer's entire purpose is to say that a summary which last
+succeeded hours ago is stale, so an advanced last-success instant is a visible
+change and forces a repaint. Attempt ages stay excluded — no renderer reads
+them. A
 document that is not newer than the last applied one is skipped, not rendered —
 that is the point of a latest-state channel. Unmapped keys and channel wakeups
 that do not change visible state do not rebuild a frame. Gregg still submits
@@ -706,7 +712,11 @@ Condensed status rows (`ui/condensed.rs::status_line`) render truncated
 `name|host + status` only (no `@host:port` in text); identity is preserved via
 the fleet-wide HOST budget. `CondensedRenderKey` still carries the label
 *and* the port separately, so a port-only config edit still invalidates a
-memoized row.
+memoized row. The stable failure category is **not** condensed away: an offline
+status row appends the same ` (refused)` / ` (http) HTTP 503` suffix the normal
+view renders, inside the same width budget, because the compact view is the
+same operator surface and must not drop the only statement of *why* a system is
+offline. A pending row has no poll result and so never carries a reason.
 
 Condensed tiers add `NET` between `DISK` and `LOAD` where the tier fits:
 Wide includes `NET` and `IOWAIT`, Medium includes `NET` and `LOAD`, Narrow
@@ -1139,6 +1149,14 @@ Three bounds, because per-job depth alone does not survive
 2. a global record ceiling across every system, job, and epoch, and
 3. the remote contract's per-stream output cap, which bounds a record's size and
    so makes a record *count* a real memory bound.
+
+A fourth bound sits beside them: **a per-system ceiling on retained job
+histories** (`MAX_CRON_JOBS_PER_SYSTEM`, 64). A remote configured with more jobs
+than that is a supported configuration, not a misconfiguration, so the client
+must bound it rather than grow per remote configuration. It is enforced
+unconditionally on every history merge — separately from the stale-job sweep,
+which answers a different question (has this job gone away) and is a no-op when
+every cached job is still live.
 
 The global ceiling is a **constant, not a setting**: a user who raises the
 per-job depth must not be able to turn a bounded cache into an unbounded one.

@@ -1174,6 +1174,107 @@ async fn future_snapshot_is_stale_when_clock_goes_backward() {
     assert_eq!(parsed.message.as_deref(), Some("cached snapshot is stale"));
 }
 
+/// Let the parked reader capture whatever it captures, then let wall time move.
+///
+/// Millisecond resolution is what makes the bug observable at all: the failure
+/// is a *negative* age, so the publication's observation instant has to land in a
+/// strictly later millisecond than the instant a pre-fix reader captured. Two
+/// milliseconds is ample for that and costs nothing.
+async fn let_reader_park_and_time_advance() {
+    tokio::task::yield_now().await;
+    tokio::time::sleep(Duration::from_millis(2)).await;
+}
+
+/// Publish a snapshot through a write guard the caller already holds.
+///
+/// `update_snapshot` takes the same lock, so a test that is deliberately holding
+/// the writer cannot use it. This also makes the scenario real: the parked
+/// reader is waiting on `read()` when these writes land. The observation instant
+/// is the publication moment, not a value borrowed from the reader.
+fn publish_under_guard(state: &mut PublishedState) {
+    #[allow(clippy::cast_possible_truncation)]
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let snap = LinuxSnapshotBuilder::default()
+        .observed_at_unix_ms(now)
+        .build();
+    let mut payload_v2 = LinuxSnapshotV2Builder::default().build_payload();
+    payload_v2.snapshot.observed_at_unix_ms = now;
+    state.snapshot = Some(Arc::new(snap));
+    state.snapshot_v2 = Some(Arc::new(payload_v2));
+    state.status_bytes = Some(Bytes::from_static(b"{}"));
+    state.status_bytes_v2 = Some(Bytes::from_static(b"{}"));
+    state.health_cell = fresh_health_cell();
+    state.health_cell_v2 = fresh_health_cell();
+    state.health = HealthMetadata::ready();
+    state.health_v2 = HealthMetadata::ready();
+    state.last_observed_at_unix_ms = Some(now);
+    state.consecutive_failures = 0;
+}
+
+/// A reader must not be able to mark a freshly published snapshot stale.
+///
+/// `is_stale` treats a negative age as stale, because a negative age means a
+/// backward clock jump. But the status handlers used to evaluate their clock
+/// reading *before* awaiting the published lock, so a read that parked behind a
+/// publication compared a pre-publication instant against a post-publication
+/// snapshot. The resulting negative age was served as `503 "cached snapshot is
+/// stale"` — a fleet client rendered it as `offline (http) HTTP 503`.
+#[tokio::test]
+async fn a_snapshot_published_while_a_read_parks_is_not_reported_as_stale() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+
+    // Hold the write lock so the reader below cannot complete until after the
+    // publication, which is the window the captured clock used to break.
+    let mut held = state.published.write().await;
+
+    let reader = {
+        let state = state.clone();
+        tokio::spawn(async move { state.v1_status_data().await })
+    };
+    // Let the reader park on the lock and let wall time advance past the instant
+    // it captured, then publish underneath it. The publication is written through
+    // the guard already held here, because `update_snapshot` would take the same
+    // lock.
+    let_reader_park_and_time_advance().await;
+    publish_under_guard(&mut held);
+    drop(held);
+
+    let data = reader.await.unwrap();
+    assert!(
+        matches!(
+            data,
+            StatusDataV1::FreshCached(_) | StatusDataV1::FreshTyped(_)
+        ),
+        "a snapshot published under the parked reader must be served fresh, not as \
+         a stale-from-the-future 503"
+    );
+}
+
+/// The same window on the health path, which is what `greggd status` and the
+/// client's reachability check actually read.
+#[tokio::test]
+async fn ready_health_published_while_a_read_parks_is_not_reported_as_stale() {
+    let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));
+
+    let mut held = state.published.write().await;
+    let reader = {
+        let state = state.clone();
+        tokio::spawn(async move { state.v1_health_now().await })
+    };
+    let_reader_park_and_time_advance().await;
+    publish_under_guard(&mut held);
+    drop(held);
+
+    let next = reader.await.unwrap().expect("the memo is ready to serve");
+    assert!(
+        matches!(next, ReadyHealthMemoV1::Serialize { .. }),
+        "a ready snapshot must not be reported stale because of the read's parking"
+    );
+}
+
 #[tokio::test]
 async fn snapshot_ahead_of_now_is_stale() {
     let state = ServerState::with_stale_policy(0, std::time::Duration::from_secs(60));

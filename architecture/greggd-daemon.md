@@ -161,6 +161,14 @@ unverifiable age. If the clock is before the Unix epoch, the sampler pauses
 publication rather than emitting timestamp `0`, and an enabled age-based
 server policy treats any cached snapshot as stale until the clock is corrected.
 
+The clock is therefore read **under the published read guard**, never as a
+caller-supplied argument evaluated before the await. A negative age is
+indistinguishable by construction from a backward clock jump, so capturing the
+instant before parking behind a publication would let a read that blocked on a
+writer report the snapshot it had just acquired as from-the-future, serving a
+fresh sample as `503` and a client would read it as `offline (http) HTTP 503`.
+The retry attempt on the health path re-reads for the same reason.
+
 ### Sampler
 
 The sampler owns the clock and cadence. Key behaviors:
@@ -245,7 +253,10 @@ daemon failure (a panic at the existing fatal boundary), not an empty document.
 compares the derived `(epoch, history_revision, jobs)` against the last
 publication and skips the swap when they match, so the Plan-160 one-minute
 civil-clock reconciliation wake publishes nothing when nothing changed. The
-`generated_at_unix_ms` stamp is deliberately excluded from that comparison.
+`generated_at_unix_ms` stamp is deliberately excluded from that comparison. The
+comparison is field-by-field against the borrowed job slice rather than a
+deep-cloned comparison key, so the unchanged-wake path — the common case — does
+not allocate or copy every configured job.
 The published job state is the truth about the slot, not a momentary one: the
 job actually holding the global child slot carries `running_since_unix_ms` for
 its whole run, and a load-deferred job carries its real future retry rather
@@ -379,6 +390,14 @@ launch before the stored civil occurrence is due. Reconciliation wakes run
 the existing bounded scan silently and perform no telemetry, HTTP,
 filesystem, or process work. A daemon with no configured jobs spawns no
 scheduler task and pays zero cost.
+
+An empty job set is therefore refused **in the engine constructor**, alongside
+the 64-job upper bound, because that is where the "at least one job" precondition
+`next_deadline` relies on is actually established. It has no deadline to return
+without a job, so the assertion there would otherwise fire inside the wake loop
+— a panic in the maintenance path — instead of failing the way every other
+configuration error does. The `run.rs` empty-config guard stays as defense in
+depth, not as the sole owner of the invariant.
 Pending selection is an allocation-free bounded scan over job state: the
 oldest pending time wins with config order as the stable tie breaker, and
 no candidate vector is built merely to choose a job. Every load-gated launch
@@ -388,7 +407,15 @@ the gate is closed must never keep an elapsed `retry_at`, or that past instant
 would become the `sleep_until` deadline and the loop would spin. A wake
 deadline is therefore only ever a retry that is still in the future, and a
 load-delayed job is published as load-delayed for its whole wait with a real
-`next_retry_unix_ms` countdown. No occurrence history is persisted or
+`next_retry_unix_ms` countdown. "For its whole wait" is load-bearing: a civil
+occurrence arriving while the gate still holds a pending one coalesces into that
+pending occurrence rather than starting a new one, and **coalescing must not
+clear the gate reading**. The occurrence is the same one, so the reading that
+delayed it still describes it; `defer_blocked_before` skips a pending whose
+`retry_at` is still in the future, so nothing downstream would restore it, and
+the job would otherwise be published as `waiting_for_slot` with `load: null` and
+no retry countdown — the load relation the client is required to state. A
+*fresh* occurrence still has no decision, so only that path clears it. No occurrence history is persisted or
 replayed after restart. The process adapter uses direct Tokio argv execution
 with stdin null and `kill_on_drop`; stdout/stderr are null unless history
 capture is enabled, in which case they are piped and concurrently drained (see

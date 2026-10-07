@@ -28,6 +28,18 @@ Fast routine check (format + workspace tests):
 .\scripts\check-local.ps1         # Windows PowerShell
 ```
 
+The shell and Python surfaces have their own gates, both blocking in CI:
+
+```bash
+shellcheck -x scripts/*.sh packaging/*.sh scripts/tests/*.sh
+python3 -m pytest scripts/tests -q
+```
+
+`pytest` needs the Rust toolchain: one case drives the sustained-workload
+runner, which runs `cargo test --no-run` to locate its workload binary, so that
+case's timeout covers a build rather than the 2-second workload. Override it with
+`GREGG_TEST_BUILD_TIMEOUT_SECONDS` on a slow machine.
+
 ## Operator-managed service install (legacy helpers)
 
 These helpers remain for local builds where a checkout is present. They do

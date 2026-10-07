@@ -1652,6 +1652,55 @@ mod cron_intent_tests {
         assert_eq!(app.cron_display_history, before + 4);
     }
 
+    /// The `EggPool` footer renders `Updated for Nm` live, so an advanced
+    /// last-success age is a visible change.
+    ///
+    /// The predicate deliberately ignores *attempt* ages, which are never
+    /// rendered. Excluding the *success* age on the same grounds froze the
+    /// footer on a stale age — the exact fabrication the footer exists to
+    /// avoid ("a summary whose last success was hours ago is stale").
+    #[test]
+    fn an_advanced_eggpool_success_age_alone_forces_a_repaint() {
+        let entry = crate::config::EggpoolEntry {
+            id: "pool".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 8080,
+            scheme: crate::config::EggpoolScheme::Http,
+            name: None,
+            api_key_env: None,
+        };
+        let config = Config {
+            eggpool: Some(entry),
+            ..Config::default()
+        };
+        let mut fleet = FleetState::from_config(&config);
+        let eggpool = fleet.eggpool.as_mut().expect("configured");
+        // Ten minutes ago, safely: `Instant` has no defined origin, so
+        // `checked_sub` is the only correct way to go backwards from now.
+        eggpool.last_success_at = std::time::Instant::now().checked_sub(Duration::from_secs(600));
+        eggpool.worker_state = EggpoolWorkerState::Idle;
+
+        let base = std::time::Instant::now();
+        let document = fleet.to_dto(base, 1_700_000_000_000, 1);
+        let mut app = AppState::from_snapshot(&document);
+        assert!(
+            !app.adopt_snapshot(&document),
+            "re-adopting the identical document is not a change"
+        );
+
+        // Only the age moves: same endpoint, window, worker state, no summary,
+        // no errors. This is a persistent refresh failure on an EggPool-only
+        // config, where nothing else in the pane changes.
+        fleet.eggpool.as_mut().unwrap().last_success_at =
+            std::time::Instant::now().checked_sub(Duration::from_secs(3_600));
+        let later = fleet.to_dto(base, 1_700_000_000_000, 2);
+        assert!(later.eggpool.is_some());
+        assert!(
+            app.adopt_snapshot(&later),
+            "a footer that would render a different age must repaint"
+        );
+    }
+
     #[test]
     fn an_unchanged_scheduler_read_is_not_a_render_visible_change() {
         // Timestamps move on every publication; treating that as a change would
@@ -1925,14 +1974,29 @@ fn systems_visibly_differ(old: &[SystemState], new: &[SystemSnapshotDto]) -> boo
 /// Whether the `EggPool` pane would render differently.
 ///
 /// The endpoint, window, worker availability, both data planes, and both error
-/// classifications count. The last-attempt ages do not, for the same reason
+/// classifications count. The last *attempt* age does not, for the same reason
 /// system timestamps do not: an age that advanced is not a changed row.
+///
+/// The last *success* age is different. The footer renders it as a live
+/// elapsed `Updated for Nm`, and its entire purpose is to say that a summary
+/// which last succeeded hours ago is stale — so a pane whose every other field
+/// is unchanged but whose footer would print a new age must repaint, or it
+/// keeps asserting an age the footer exists to correct.
 #[must_use]
-fn eggpool_visibly_differ(old: Option<&EggpoolState>, new: Option<&EggpoolSnapshotDto>) -> bool {
+fn eggpool_visibly_differ(
+    old: Option<&EggpoolState>,
+    new: Option<&EggpoolSnapshotDto>,
+    now: Instant,
+    now_unix_ms: u64,
+) -> bool {
     match (old, new) {
         (None, None) => false,
         (Some(_), None) | (None, Some(_)) => true,
         (Some(old), Some(new)) => {
+            // `last_success_at` is reconstructed from the same wire millisecond
+            // the document carries, so this round-trips the retained instant
+            // back to the same value the document would have produced.
+            let old_success = elapsed_to_unix_ms(old.last_success_at, now, now_unix_ms);
             old.endpoint != new.endpoint
                 || old.period != new.period
                 || old.worker_state != new.worker_state
@@ -1940,6 +2004,7 @@ fn eggpool_visibly_differ(old: Option<&EggpoolState>, new: Option<&EggpoolSnapsh
                 || old.health != new.health
                 || old.last_error != new.last_error
                 || old.last_health_error != new.last_health_error
+                || old_success != new.last_success_at_unix_ms
         }
     }
 }
@@ -2218,7 +2283,12 @@ impl AppState {
             dto.endpoint.host = clean(&dto.endpoint.host);
             dto.endpoint.name = dto.endpoint.name.as_deref().map(clean);
         }
-        let eggpool_changed = eggpool_visibly_differ(self.eggpool.as_ref(), clean_eggpool.as_ref());
+        let eggpool_changed = eggpool_visibly_differ(
+            self.eggpool.as_ref(),
+            clean_eggpool.as_ref(),
+            now,
+            now_unix_ms,
+        );
         self.eggpool = clean_eggpool.as_ref().map(|dto| EggpoolState {
             endpoint: dto.endpoint.clone(),
             period: dto.period,

@@ -288,11 +288,20 @@ class EarlyExitDetectionTests(unittest.TestCase):
     def test_real_runner_smoke_reaches_success_path(self) -> None:
         import subprocess
 
+        # The runner locates its workload by running `cargo test --no-run`, so
+        # this budget covers a Cargo build the test does not control. On a warm
+        # cache it finishes in a few seconds; on a cold one it has to compile the
+        # whole test profile. A timeout here reports a build problem as a
+        # workload failure, so it is scaled to the build rather than to the
+        # 2-second workload.
+        build_timeout = int(
+            os.environ.get("GREGG_TEST_BUILD_TIMEOUT_SECONDS", "1800"),
+        )
         with tempfile.TemporaryDirectory() as raw:
             result = subprocess.run(
                 ["python3", str(RUNNER), "--duration-seconds", "2",
                  "--sample-interval-seconds", "0.25", "--evidence-dir", raw],
-                cwd=ROOT, capture_output=True, text=True, timeout=90,
+                cwd=ROOT, capture_output=True, text=True, timeout=build_timeout,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             summary = json.loads((Path(raw) / "sustained-summary.json").read_text())

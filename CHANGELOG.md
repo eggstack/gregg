@@ -45,6 +45,67 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Third audit corrective pass (Plan 182, 2026-10-07):** all eight findings
+  from the logic/robustness audit of commit `adc948d` are fixed, and both
+  recorded optimizations are applied. No mechanical gate was failing before
+  these changes — `cargo test`, `clippy -D warnings`, `cargo fmt`, and
+  `shellcheck` were all green — so every finding was logical. Every behavioral
+  fix carries a regression test that was executed against the pre-fix logic and
+  observed failing.
+
+  Daemon: a load-blocked occurrence coalescing into the next civil occurrence
+  no longer loses its gate reading (`state.last_gate = None` ran on the
+  coalesce path, not just the fresh-occurrence one), so a job the gate is
+  holding is published as `load_high` with its reading and a real
+  `next_retry_unix_ms` countdown instead of as `waiting_for_slot` with
+  `load: null`; nothing downstream would have restored it, because
+  `defer_blocked_before` skips a pending whose `retry_at` is still in the
+  future. The status and health handlers now read the clock *under* the
+  published read guard rather than taking it as an argument evaluated before
+  the await, so a read that parked behind a publication can no longer compare
+  a pre-publication instant against a post-publication snapshot and serve a
+  fresh sample as `503` (a client read that as `offline (http) HTTP 503`);
+  the health retry attempt re-reads for the same reason. `Engine::new` now
+  refuses an empty job set, so `next_deadline`'s assertion is backed by the
+  module that makes it true rather than by a caller's guard elsewhere.
+
+  Client: the per-system retained-job ceiling (`MAX_CRON_JOBS_PER_SYSTEM`, 64)
+  is enforced unconditionally. It previously sat behind an early return taken
+  whenever every cached job was still live, which is the normal steady state,
+  so a remote configured with more than 64 jobs grew the cache without bound —
+  proven by an executed test that retained 84 histories against a 64 ceiling.
+  The sweep also uses a borrowed `HashSet` instead of a `Vec<String>` of cloned
+  names with two linear scans. The EggPool footer's `Updated for Nm` age is
+  part of the render-visible comparison, since that age *is* rendered and the
+  footer's purpose is to state when a summary went stale; attempt ages remain
+  excluded because no renderer reads them. The condensed view's offline status
+  row now appends the same stable failure category the normal view renders
+  (`offline (refused)`, `offline (http) HTTP 503`) inside the existing width
+  budget; pressing `v` no longer drops the only statement of why a system is
+  offline. A pending row still carries no reason, since it has no poll result.
+
+  Test/CI: the sustained-runner smoke test's hardcoded 90-second timeout
+  wrapped a subprocess that runs `cargo test --no-run`, so it reported build
+  time as a workload failure on any cold or invalidated cache; it is now
+  scaled to the build (1800s, overridable with
+  `GREGG_TEST_BUILD_TIMEOUT_SECONDS`). A new blocking CI job runs `shellcheck`
+  over every shell script and `pytest scripts/tests`, both of which previously
+  ran nowhere — shellcheck existed only in the release workflow, against one
+  file, with findings discarded by `|| echo`. The release workflow's installer
+  check is now fatal rather than an echoed warning.
+
+  Optimization: the scheduler observer compares its last publication field by
+  field instead of deep-cloning the whole job vector to build a comparison key,
+  so the common "nothing changed" wake no longer allocates and copies every
+  configured job.
+
+  One existing test changed rather than being added to:
+  `empty_job_list_builds_no_engine_state` asserted that an empty job set
+  produces a state-free engine, which is precisely the state `next_deadline`
+  cannot serve a deadline from. It now asserts the refusal, and keeps its
+  original point — a jobless daemon still pays no reconciliation cost, because
+  `run.rs` never spawns the scheduler task.
+
 - **Release builds could not recover from a panic, despite three code paths that
   exist to do exactly that.** The workspace release profile set `panic = "abort"`
   with no per-package override, so every crate and dependency was compiled

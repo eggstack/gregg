@@ -223,6 +223,28 @@ claimed for them. Because all three are terminal, they unblock no remaining
 plan; Plan 091 is still the only in-progress plan, gated solely on its own
 extended soak record.
 
+Plan 182 is complete. It closes all eight findings from a fresh read-only logic
+and robustness audit of `adc948d` and applies both recorded optimizations. Every
+mechanical gate was already green before this pass — tests, `clippy -D
+warnings`, `cargo fmt`, `shellcheck` — so every finding was logical rather than
+lint-visible: a load gate reading erased when an occurrence coalesced, a
+per-system retained-job ceiling sitting behind an early return that the ordinary
+steady state always takes, a rendered footer age excluded from the predicate that
+decides whether to repaint, a compact view that dropped the only statement of
+*why* a system is offline, a staleness clock read before the await that guards the
+data it judges, an assertion whose precondition was enforced only ~800 lines away,
+a 90-second test budget wrapped around a `cargo test --no-run`, and two script
+surfaces that no blocking job could see. The pass also adds the missing blocking
+`shellcheck` / `pytest` CI job, so a shell or Python regression cannot reach a
+release unobserved. Every behavioral fix is mutation-verified — the pre-fix logic
+was reinstated in place, each test was observed failing with the recorded
+symptom, and the fix was restored and the test observed passing — so the tests
+detect the defects rather than merely existing. No wire-format, protocol,
+dependency, or product-scope change. The audit's fourth pass over
+`gregg-protocol` caps, `gregg-host` FFI, `gregg-update` injection/fallback paths,
+and `greggd` startup/uninstall ownership did not complete and stays recorded as
+unreviewed rather than clean.
+
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
 delivered inside a cancellation-biased select; the test asked four requests to
@@ -883,6 +905,7 @@ excluded.
 | [`179-greggd-post-exit-settle-deadline-authority-corrective.md`](179-greggd-post-exit-settle-deadline-authority-corrective.md) | Make the frozen 250 ms post-exit settle deadline outrank continuously-ready descendant stdout/stderr so output readiness can never retain the global scheduler slot beyond the bounded settle | **complete** at `5442dd2`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Clippy/Test steps; the deadline is the first `biased` branch in both `prefer_stdout` arms, with the optional `Instant::now()` guard deliberately rejected (it can pass and then lose the next poll to a drain that completed in between); 22 observation tests green, both ordering cases mutation-tested — restoring drain-first ordering consumed 262,144 bytes past the deadline in 0.00 s; stripped `greggd` +16 bytes (3,312,688 -> 3,312,704), Plan 162 ceiling retained with 87,296 bytes of headroom; depends on completed 177; independent of 091/180/181; no protocol/process-group change |
 | [`180-gregg-cron-observation-delivery-preemption-corrective.md`](180-gregg-cron-observation-delivery-preemption-corrective.md) | Let reload/cancellation preempt a cron observation blocked on the full bounded worker-to-engine channel, with history-gate commit only after successful delivery | **complete** at `64676b0`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Test step that executes the round-selection regressions; `deliver_observation` selects cancel, then reload, then the send, so the gate commit stays reachable only on `Ok(())`; 37 cron tests green (was 29), mutation-tested — a bare `send().await` failed the reload, cancellation, and round-level regressions in 0.03 s; `CRON_CHANNEL_CAPACITY` made `pub(crate)` so tests fill the real bounded channel; depends on completed 178; independent of 091/179/181; four-read bound, 30s cadence, and the 64-slot channel capacity all preserved |
 | [`181-eggpool-desired-state-result-backpressure-corrective.md`](181-eggpool-desired-state-result-backpressure-corrective.md) | Keep EggPool latest-desired-state convergence live while a completed result is blocked on the full bounded result channel, abandoning only superseded work | **complete** at `7853743`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Clippy/Test steps that are the platform authority Plan 176 waited on; `deliver_result_or_interrupt` selects cancel, then `control_rx.changed()`, then `sender.reserve()`, returning a typed `ResultDelivery`; an equivalent publication is consumed and the wait continues, so a redundant repaint cannot become a lost result; `Superseded` reuses the existing `EggpoolWorkerState::converge` for at most one request; 87 `eggpool` tests green (was 82), mutation-tested — removing the control branch failed deactivation and supersession in 0.00 s while Plan 176's cancellation regression still passed, proving addition not substitution; depends on completed 151+176; independent of 091/179/180; four-slot bounded backpressure preserved and never made lossy |
+| [`182-third-audit-logic-corrective-pass.md`](182-third-audit-logic-corrective-pass.md) | Close all eight findings from the fresh logic/robustness audit of `adc948d` and apply both recorded optimizations, with no product scope change | **complete**; all eight findings fixed with regression tests that were **mutation-verified** — the pre-fix logic was reinstated in place and each test observed failing with the recorded symptom (`left: None` vs the load gate; `65` vs `64`; `"srv  offline"`; no repaint; served stale-from-the-future), then observed passing after restoring the fix, so they detect the defects rather than merely existing; both optimizations applied (scheduler publish comparison without the job-vector clone, borrowed `HashSet` membership in the cron sweep); one existing test corrected in place (`empty_job_list_builds_no_engine_state` asserted a state-free engine was constructible, which is the state `next_deadline` cannot serve) — no reachable configuration changes behavior because `run.rs` already skipped the scheduler task for an empty job set; no mechanical gate was failing at `adc948d`, so every finding was logical; gates green: fmt, `clippy -D warnings` (0 warnings), 517 `greggd` + 951 `gregg` + 119 protocol + 62 integration + 49 update + 47 host tests 0 failed, `shellcheck` zero findings, `pytest scripts/tests` 61 passed; independent of 091/179/180/181 |
 
 Dependency order:
 

@@ -630,8 +630,13 @@ jobs:
           ls -lh packaging/install.sh packaging/install.ps1
           bash -n packaging/install.sh
           echo "install.sh syntax OK"
+          # Authoritative shellcheck runs in ci.yml over every shell script and
+          # is blocking. The installer is re-checked here as a release-time
+          # guard because it is the file users execute, but it is no longer the
+          # only place shellcheck runs, so a finding here is fatal rather than
+          # an echoed warning.
           if command -v shellcheck >/dev/null 2>&1; then
-            shellcheck packaging/install.sh || echo "shellcheck warnings (non-fatal for CI)"
+            shellcheck -x packaging/install.sh
           fi
           # PowerShell parse gate (mirrors bash -n above): fail on
           # syntax errors in install.ps1. Skipped only when pwsh is

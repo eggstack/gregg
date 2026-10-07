@@ -182,6 +182,12 @@ impl<'a> Engine<'a> {
         if configs.len() > MAX_JOBS {
             return Err(format!("scheduler has more than {MAX_JOBS} jobs"));
         }
+        // Established here, not in a caller: `next_deadline` has no deadline to
+        // return without a job, so an empty set would panic inside the wake
+        // loop rather than fail the way every other configuration error does.
+        if configs.is_empty() {
+            return Err("scheduler requires at least one job".to_owned());
+        }
         let mut states = Vec::with_capacity(configs.len());
         for config in configs {
             let schedule = LocalSchedule::parse(&config.schedule)?;
@@ -379,6 +385,12 @@ impl<'a> Engine<'a> {
             let config = &configs[index];
             if state.next_due <= wall_now {
                 if let Some(pending) = &mut state.pending {
+                    // Coalescing into the occurrence that is already waiting.
+                    // Its load decision still stands: clearing it here would
+                    // publish a load-blocked occurrence as `waiting_for_slot`
+                    // with no reading and no retry countdown, and
+                    // `defer_blocked_before` skips a pending whose `retry_at`
+                    // is still in the future, so nothing would restore it.
                     pending.coalesced = true;
                 } else {
                     state.pending = Some(PendingOccurrence {
@@ -390,9 +402,9 @@ impl<'a> Engine<'a> {
                         coalesced: false,
                         waiting_logged: false,
                     });
+                    // A fresh occurrence has no load decision yet.
+                    state.last_gate = None;
                 }
-                // A fresh occurrence has no load decision yet.
-                state.last_gate = None;
                 // Configuration validation already rejects calendar-impossible
                 // expressions, so a failure here is an internal time-domain
                 // error. It reaches the existing scheduler fatal boundary
@@ -1244,6 +1256,60 @@ mod tests {
         assert_eq!(launch.index, 0);
     }
 
+    /// A load-blocked occurrence must keep reporting the load relation that is
+    /// delaying it.
+    ///
+    /// The next civil occurrence coalesces into the occurrence the gate is
+    /// already holding back. Clearing `last_gate` there published it as
+    /// `waiting_for_slot` with `load: null` and `next_retry_unix_ms: null` —
+    /// the exact relation the client is required to state — and
+    /// `defer_blocked_before` skips a pending whose `retry_at` is still in the
+    /// future, so nothing restored it before the retry fired.
+    #[test]
+    fn coalescing_into_a_load_blocked_occurrence_keeps_its_gate_reading() {
+        let mut config = job("heavy", Some(1.0));
+        config.retry_interval_ms = Some(10_000);
+        config.max_wait_ms = Some(600_000);
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall_time(),
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
+        let since = Instant::now();
+        let overloaded = ready(9.0, 9.0, 9.0);
+        let due = engine.states[0].next_due;
+
+        // The occurrence is due and the gate refuses it.
+        assert!(engine.tick(due, since, overloaded, true).unwrap().is_none());
+        let gate = engine.states[0].last_gate.clone();
+        assert!(
+            gate.is_some(),
+            "a refused occurrence records the reading that refused it"
+        );
+
+        // The next civil occurrence arrives while the retry is still pending.
+        let next_due = engine.states[0].next_due;
+        let after_retry = since + Duration::from_millis(5_000);
+        assert!(engine
+            .tick(next_due, after_retry, overloaded, true)
+            .unwrap()
+            .is_none());
+        assert!(
+            engine.states[0].pending.as_ref().unwrap().coalesced,
+            "the civil occurrence coalesced into the blocked one"
+        );
+        assert_eq!(
+            engine.states[0].last_gate, gate,
+            "coalescing into a load-blocked occurrence must not erase the reading that is delaying it"
+        );
+        assert!(
+            engine.states[0].pending.as_ref().unwrap().retry_at > after_retry,
+            "the retry instant is still in the future, so this is a real countdown"
+        );
+    }
+
     #[test]
     fn load_threshold_is_inclusive_and_selected_window_is_exact() {
         let wall = wall_time();
@@ -1702,15 +1768,24 @@ mod tests {
 
     #[test]
     fn empty_job_list_builds_no_engine_state() {
-        // Production `run_with_shutdown` never spawns the scheduler task when
-        // `config.jobs` is empty (`run.rs` keeps the `is_empty` branch), so a
-        // jobless daemon pays zero reconciliation cost. At the engine layer
-        // this means an empty configuration carries no deadlines at all.
+        // A jobless daemon still pays zero reconciliation cost: production
+        // `run_with_shutdown` never spawns the scheduler task when
+        // `config.jobs` is empty (`run.rs` keeps the `is_empty` branch), so no
+        // wake loop exists to pay for.
+        //
+        // The engine layer refuses the same configuration instead of building
+        // a state-free engine. `next_deadline` has no deadline to return
+        // without a job, so constructing an empty engine would leave its
+        // assertion waiting to fire inside the wake loop rather than reporting
+        // a configuration error where the precondition belongs.
         let wall = wall_time();
         let configs: &[ScheduledJobConfig] = &[];
-        let engine = Engine::new(configs, wall, 5, SchedulerPublisher::empty()).unwrap();
-        assert_eq!(engine.pending_count(), 0);
-        assert!(engine.states.is_empty());
+        let error = Engine::new(configs, wall, 5, SchedulerPublisher::empty())
+            .expect_err("an empty engine would assert on its first wake");
+        assert!(
+            error.contains("at least one job"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
