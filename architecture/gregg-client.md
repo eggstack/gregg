@@ -217,9 +217,21 @@ places that would block are handled differently:
   pushed on the next tick, because a length-prefixed frame with a hole in it
   desynchronises the peer's parser permanently. At most one document is queued
   behind it and a newer document replaces it, since the publication cell is a
-  watch slot and a slow frontend skips to the newest state. A Windows pipe has
-  no non-blocking write; the repeated flush is what keeps it bounded, not the
-  single write call.
+  watch slot and a slow frontend skips to the newest state.
+
+  This is the one place the "nothing may block the runtime" rule is **not** yet
+  upheld on Windows, and the claim must not be restated as if it were. A
+  byte-mode pipe created without `FILE_FLAG_OVERLAPPED` has no non-blocking
+  write: `WriteFile` blocks until the peer has consumed every byte, and Win32
+  exposes no way to ask a synchronous pipe how much write space it has —
+  `PeekNamedPipe` reports only bytes *readable*, which is precisely why the
+  read arm above can be bounded and this one cannot. A frontend that stops
+  draining its pipe while a larger-than-buffer document is in flight therefore
+  stalls the whole current-thread daemon, every other frontend, and
+  `gregg daemon stop` with it. Bounding it requires overlapped I/O, which
+  changes how the instance is created, accepted, and read as well as written.
+  Only a native Windows run can establish that this is correct; treat it as a
+  known platform limitation, not a design choice.
 
 Each instance is created with the owner-only DACL `D:P(A;;GA;;;OW)`,
 `PIPE_REJECT_REMOTE_CLIENTS` in the **pipe-mode** argument (folding it into

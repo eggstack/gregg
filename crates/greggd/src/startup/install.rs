@@ -334,7 +334,11 @@ impl From<ShellQuoteError> for InstallError {
     }
 }
 pub(crate) fn elevated_command(exe: &Path, method: StartupMethodArg) -> String {
-    let exe_str = exe.display().to_string();
+    // The executable is real data, not a controlled literal, so it is quoted:
+    // a path with a space, `$`, or a quote in it must re-parse as one argument
+    // when the operator copies this exact command. `method` is this crate's
+    // own vocabulary and carries no metacharacter.
+    let exe_str = gregg_update::stage::unix_shell_quote(exe);
     match method {
         StartupMethodArg::Auto => format!("sudo {exe_str} startup install"),
         other => format!("sudo {exe_str} startup install --method {other}"),
@@ -759,6 +763,34 @@ mod tests {
     use super::super::state::StartupState;
     use super::*;
     use crate::startup::ArtifactOwnership;
+
+    /// The remediation hint is the exact command the operator is told to run,
+    /// so an executable path with shell metacharacters in it has to re-parse as
+    /// one argument.
+    #[cfg(unix)]
+    #[test]
+    fn the_elevation_hint_quotes_an_executable_with_metacharacters() {
+        assert_eq!(
+            elevated_command(
+                Path::new("/usr/local/bin/greggd"),
+                StartupMethodArg::Systemd
+            ),
+            "sudo '/usr/local/bin/greggd' startup install --method systemd",
+            "quoting is unconditional, so a plain path is quoted too"
+        );
+        assert_eq!(
+            elevated_command(Path::new("/opt/My Tools/greggd"), StartupMethodArg::Auto),
+            "sudo '/opt/My Tools/greggd' startup install"
+        );
+        assert_eq!(
+            elevated_command(Path::new("/opt/$HOME/greggd"), StartupMethodArg::Launchd),
+            "sudo '/opt/$HOME/greggd' startup install --method launchd"
+        );
+        assert_eq!(
+            elevated_command(Path::new("/opt/it's greggd"), StartupMethodArg::Systemd),
+            "sudo '/opt/it'\\''s greggd' startup install --method systemd"
+        );
+    }
 
     #[test]
     fn instructions_contain_standard_paths() {

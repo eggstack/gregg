@@ -2204,9 +2204,22 @@ impl AppState {
         // carrying an escape is enough to rewrite the pane. It goes through the
         // same chokepoint as the rest of the document.
         self.config_reload_error = snapshot.config_reload_error.as_deref().map(clean);
-        let eggpool_changed =
-            eggpool_visibly_differ(self.eggpool.as_ref(), snapshot.eggpool.as_ref());
-        self.eggpool = snapshot.eggpool.as_ref().map(|dto| EggpoolState {
+        // The pane's identity is `name`, falling back to `host`, and both reach a
+        // cell verbatim — so the configured endpoint goes through the same
+        // chokepoint as the rest of the document rather than being the one
+        // string copied raw. It is cleaned once, and the stored state and the
+        // visible-change comparison are both built from that same cleaned
+        // copy: comparing the stored (cleaned) endpoint against the raw one
+        // would report a difference for every string `sanitize` rewrites — a
+        // tab, a bare CR — on *every* document, so the TUI would redraw on
+        // every poll.
+        let mut clean_eggpool = snapshot.eggpool.clone();
+        if let Some(dto) = clean_eggpool.as_mut() {
+            dto.endpoint.host = clean(&dto.endpoint.host);
+            dto.endpoint.name = dto.endpoint.name.as_deref().map(clean);
+        }
+        let eggpool_changed = eggpool_visibly_differ(self.eggpool.as_ref(), clean_eggpool.as_ref());
+        self.eggpool = clean_eggpool.as_ref().map(|dto| EggpoolState {
             endpoint: dto.endpoint.clone(),
             period: dto.period,
             request_generation: dto.request_generation,
@@ -3310,6 +3323,83 @@ mod tests {
             error.contains("^[[2J"),
             "and must be shown in caret notation instead: {error:?}"
         );
+    }
+
+    /// The `EggPool` pane's identity is the configured `name`, falling back to
+    /// `host`, and both are rendered through the same `Span::raw` path as every
+    /// other document string. Adoption is the one chokepoint, so the endpoint is
+    /// escaped there like the rest rather than being the single raw copy.
+    #[test]
+    fn a_control_byte_in_the_eggpool_endpoint_is_inert() {
+        let config = test_config_with_ids(&["web"]);
+        let mut state = AppState::synthetic(&config);
+        let mut snapshot = FrontendSnapshot::empty(vec![SystemSnapshotDto::placeholder(
+            0,
+            Reachability::Pending,
+        )]);
+        snapshot.generation = 7;
+        snapshot.eggpool = Some(eggpool_dto_with_name(
+            "Egg\u{1b}[2Jwiped",
+            "pool\u{1b}[2J.local",
+        ));
+
+        state.adopt_snapshot(&snapshot);
+
+        let eggpool = state.eggpool.as_ref().expect("the pane is published");
+        let name = eggpool.endpoint.name.as_deref().expect("a configured name");
+        assert!(
+            !name.contains('\u{1b}'),
+            "a control byte must not reach the cell: {name:?}"
+        );
+        assert!(name.contains("^[[2J"), "shown in caret notation: {name:?}");
+        assert!(!eggpool.endpoint.host.contains('\u{1b}'));
+    }
+
+    /// Escaping the endpoint must not make adoption report a visible change on
+    /// every later document: the stored state and the change comparison are
+    /// both built from the cleaned copy, so a rewritten string is not a diff.
+    #[test]
+    fn a_rewritten_eggpool_endpoint_does_not_report_a_change_on_every_document() {
+        let config = test_config_with_ids(&["web"]);
+        let mut state = AppState::synthetic(&config);
+        let mut snapshot = FrontendSnapshot::empty(vec![SystemSnapshotDto::placeholder(
+            0,
+            Reachability::Pending,
+        )]);
+        snapshot.generation = 11;
+        snapshot.eggpool = Some(eggpool_dto_with_name("pool\tname", "pool.local"));
+
+        state.adopt_snapshot(&snapshot);
+        for _ in 0..5 {
+            assert!(
+                !state.republish(),
+                "an unchanged document must not warrant another frame"
+            );
+        }
+    }
+
+    fn eggpool_dto_with_name(name: &str, host: &str) -> EggpoolSnapshotDto {
+        EggpoolSnapshotDto {
+            endpoint: EggpoolEntry {
+                id: "pool".to_owned(),
+                host: host.to_owned(),
+                port: 8080,
+                scheme: EggpoolScheme::Http,
+                name: Some(name.to_owned()),
+                api_key_env: None,
+            },
+            period: crate::eggpool::EggpoolPeriod::Hour,
+            request_generation: 0,
+            worker_state: EggpoolWorkerState::Idle,
+            summary: None,
+            last_success_at_unix_ms: None,
+            last_attempt_at_unix_ms: None,
+            last_error: None,
+            health: None,
+            last_health_success_at_unix_ms: None,
+            last_health_attempt_at_unix_ms: None,
+            last_health_error: None,
+        }
     }
 
     #[test]

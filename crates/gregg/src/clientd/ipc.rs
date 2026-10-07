@@ -369,9 +369,19 @@ impl Connection {
     /// Push as much of the outbound buffer as the peer will take right now.
     ///
     /// Returns `false` when bytes remain because the peer's receive buffer is
-    /// full. That is transient backpressure, not a disconnect: neither a
-    /// stalled nor a vanished peer can keep the daemon's poll loop from making
-    /// progress, which is the whole reason the write path is non-blocking.
+    /// full. That is transient backpressure, not a disconnect.
+    ///
+    /// On Unix neither a stalled nor a vanished peer can keep the daemon's poll
+    /// loop from making progress, because the socket write is non-blocking.
+    /// **On Windows it can.** A byte-mode named pipe created without
+    /// `FILE_FLAG_OVERLAPPED` has no non-blocking write at all — `WriteFile`
+    /// blocks until the peer has consumed every byte — and Win32 exposes no way
+    /// to ask a synchronous pipe how much write space it has (`PeekNamedPipe`
+    /// reports only bytes *readable*, which is why the read arm can be bounded
+    /// and this one cannot). Bounding it would need overlapped I/O, which in
+    /// turn changes how the handle is created, read, and accepted. Until that
+    /// is done, a frontend that stops draining its pipe stalls the whole
+    /// current-thread daemon, `daemon stop` included.
     ///
     /// # Errors
     ///
@@ -479,10 +489,13 @@ impl Stream {
                 restore_write_blocking(stream, &result)?;
                 result
             }
-            // A synchronous named pipe has no non-blocking write and the client
-            // daemon runs on a current-thread runtime, so the single `write`
-            // writes the whole buffer (or fails); the caller's loop is what
-            // makes progress, not this call.
+            // A byte-mode pipe created without `FILE_FLAG_OVERLAPPED` has no
+            // non-blocking write: `write_all` blocks until the peer has
+            // consumed the whole buffer, and Win32 offers no write-space query
+            // to bound it with. The client daemon runs on a current-thread
+            // runtime, so a frontend that stops draining therefore stalls the
+            // whole daemon rather than just its own connection. See
+            // `Connection::flush_outbound`.
             #[cfg(windows)]
             Self::Windows(pipe) => {
                 pipe.write_all(buf)?;

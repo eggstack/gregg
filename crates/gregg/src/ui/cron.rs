@@ -1218,6 +1218,7 @@ mod tests {
         assert!(text.contains("line-3"), "{text}");
     }
 
+    #[test]
     fn a_pane_budget_truncates_the_history_and_the_viewport_is_the_only_thing_cut() {
         let records: Vec<CronRecord> = (1..=5)
             .map(|sequence| record(sequence, &format!("line-{sequence}"), ""))

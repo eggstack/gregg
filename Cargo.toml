@@ -36,4 +36,8 @@ all-features = true
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+# Unwinding is deliberately retained. `catch_unwind` in the gregg-host drive
+# refresh worker, `JoinError` supervision in greggd's `run_with_shutdown`, and
+# the panicked-task-to-`Cancelled` result in gregg's scheduler are all
+# production behaviour, and `panic = "abort"` silently made every one of them
+# unreachable in the shipped binaries.

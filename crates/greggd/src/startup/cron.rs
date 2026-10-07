@@ -264,12 +264,96 @@ pub fn remove_managed_cron_block(crontab: &str) -> String {
     result
 }
 
+/// True when this managed block invokes `exe` with the selected config
+/// identity, so it is the one this install/uninstall owns.
+///
+/// Every command in the block must parse and agree: a block whose lines
+/// disagree with each other is not provably owned by anything and is preserved.
+fn block_is_owned_by(exe: &Path, config: &Path, explicit: bool, block: &[&str]) -> bool {
+    let Some(first) = block.first() else {
+        return false;
+    };
+    let Ok((block_exe, block_config)) = parse_cron_command_parts(first) else {
+        return false;
+    };
+    if !gregg_update::uninstall::paths_equivalent(&block_exe, exe) {
+        return false;
+    }
+    let all_agree = block.iter().all(|line| {
+        parse_cron_command_parts(line).is_ok_and(|(line_exe, line_config)| {
+            gregg_update::uninstall::paths_equivalent(&line_exe, exe) && line_config == block_config
+        })
+    });
+    all_agree
+        && match (&block_config, explicit) {
+            (Some(block_config), true) => block_config == config,
+            (None, false) => true,
+            _ => false,
+        }
+}
+
+/// Remove only the managed block that names `exe` with the selected config
+/// identity, preserving every other managed block and every unrelated line.
+///
+/// This is the config-aware counterpart of [`remove_managed_cron_block`], which
+/// is marker-scoped and would take *every* Gregg block with it. Ownership is
+/// proven by parsing each block rather than assumed from its marker: a block
+/// belonging to another config, another executable, or one that cannot be
+/// parsed at all is preserved byte-for-byte. It is what lets two configs on one
+/// account each install and later uninstall their own watchdog.
+pub fn remove_managed_cron_block_for_config(
+    crontab: &str,
+    exe: &Path,
+    config: &Path,
+    explicit: bool,
+) -> String {
+    let lines: Vec<&str> = crontab.lines().collect();
+    let mut out: Vec<&str> = Vec::new();
+    let mut index = 0;
+    while index < lines.len() {
+        let line = lines[index];
+        if line.trim() != CRON_MANAGED_MARKER {
+            out.push(line);
+            index += 1;
+            continue;
+        }
+        // The block is the marker plus every immediately following croncheck
+        // line, exactly as the marker-scoped removal defines it.
+        let mut end = index + 1;
+        while end < lines.len() && lines[end].contains("croncheck") {
+            end += 1;
+        }
+        if block_is_owned_by(exe, config, explicit, &lines[index + 1..end]) {
+            index = end;
+            continue;
+        }
+        out.extend_from_slice(&lines[index..end]);
+        index = end;
+    }
+    let mut result = out.join("\n");
+    if !crontab.is_empty() && crontab.ends_with('\n') && !result.is_empty() {
+        result.push('\n');
+    }
+    result
+}
+
 /// Merge an existing crontab with a new canonical block idempotently.
 ///
-/// Preserves unrelated entries byte-for-byte where practical; ensures exactly
-/// one Gregg block at the end. `existing` may be empty (no crontab).
-pub fn merge_crontab(existing: &str, new_block: &str) -> String {
-    let stripped = remove_managed_cron_block(existing);
+/// Preserves unrelated entries byte-for-byte where practical, and ensures
+/// exactly one block *for this config* at the end. Any other config's managed
+/// block survives. `existing` may be empty (no crontab).
+///
+/// Removal is scoped through [`remove_managed_cron_block_for_config`] rather
+/// than by marker, so installing one config's watchdog can never delete
+/// another's — and so repeated installs stay idempotent for the block they own.
+pub fn merge_crontab(
+    existing: &str,
+    new_block: &str,
+    exe: &Path,
+    config: &Path,
+    explicit: bool,
+) -> String {
+    let stripped = remove_managed_cron_block_for_config(existing, exe, config, explicit);
     let stripped_trim = stripped.trim_end_matches('\n');
     if stripped_trim.is_empty() {
         // No existing content: just the new block.
@@ -375,7 +459,10 @@ pub fn install_cron(exe: &Path, config: &Path, explicit: bool) -> Result<(), Ins
             )));
         }
     };
-    let merged = merge_crontab(&existing, &block);
+    // Removal is scoped to this config's own block, proven by parsing it: a
+    // block belonging to another config — or one that cannot be parsed — is
+    // preserved rather than destroyed by installing ours.
+    let merged = merge_crontab(&existing, &block, exe, config, explicit);
     run_crontab_install(&merged).map_err(|e| {
         if e.kind() == io::ErrorKind::NotFound {
             InstallError::CrontabUnavailable {
@@ -421,8 +508,13 @@ pub fn cron_uninstall_changed_for(existing: &str, exe: &Path) -> Option<String> 
         .then(|| remove_managed_cron_block(existing))
 }
 
-/// Config-aware variant: strips only when the block targets `exe` with the
+/// Config-aware variant: strips only the block that targets `exe` with the
 /// selected config identity.
+///
+/// Uses the same per-block removal as install, so uninstall still works after a
+/// second config's block is present: a crontab carrying several managed blocks
+/// is `Unknown` to the whole-table classifier, but each block is still
+/// individually provable. Foreign and ambiguous blocks are preserved.
 #[must_use]
 pub fn cron_uninstall_changed_for_config(
     existing: &str,
@@ -430,8 +522,8 @@ pub fn cron_uninstall_changed_for_config(
     config: &Path,
     explicit: bool,
 ) -> Option<String> {
-    (cron_block_ownership_for_config(existing, exe, config, explicit) == ArtifactOwnership::Owned)
-        .then(|| remove_managed_cron_block(existing))
+    let stripped = remove_managed_cron_block_for_config(existing, exe, config, explicit);
+    (stripped != existing).then_some(stripped)
 }
 
 /// Remove only the Gregg managed watchdog block from the current
@@ -601,21 +693,77 @@ mod tests {
         let cfg = Path::new("/etc/gregg/greggd.toml");
         let block = cron_block_with_config(exe, cfg).unwrap();
         let existing = "FOO=bar\n";
-        let merged = merge_crontab(existing, &block);
+        let merged = merge_crontab(existing, &block, exe, cfg, true);
         assert!(merged.contains("FOO=bar"));
         assert!(merged.contains(CRON_MANAGED_MARKER));
         // Merging again should not duplicate
-        let merged2 = merge_crontab(&merged, &block);
+        let merged2 = merge_crontab(&merged, &block, exe, cfg, true);
         assert_eq!(merged, merged2);
         // Count occurrences of marker
         assert_eq!(merged.matches(CRON_MANAGED_MARKER).count(), 1);
     }
+
+    /// Two configs on one account each keep their own watchdog: installing the
+    /// second must not delete the first, and installing it again must still be
+    /// idempotent for its own block.
+    #[test]
+    fn merge_never_removes_a_block_another_config_owns() {
+        let exe = Path::new("/usr/local/bin/greggd");
+        let first = Path::new("/etc/gregg/a.toml");
+        let second = Path::new("/etc/gregg/b.toml");
+        let first_block = cron_block_with_config(exe, first).unwrap();
+        let second_block = cron_block_with_config(exe, second).unwrap();
+
+        let merged = merge_crontab(&first_block, &second_block, exe, second, true);
+        assert!(
+            merged.contains(&format!("--config '{}'", first.display())),
+            "config A's watchdog must survive installing config B's: {merged}"
+        );
+        assert!(merged.contains(&format!("--config '{}'", second.display())));
+        assert_eq!(merged.matches(CRON_MANAGED_MARKER).count(), 2, "{merged}");
+
+        // Re-installing B replaces only B's block.
+        let again = merge_crontab(&merged, &second_block, exe, second, true);
+        assert_eq!(again, merged, "re-install must stay idempotent");
+        assert_eq!(again.matches(CRON_MANAGED_MARKER).count(), 2, "{again}");
+
+        // And each config can still be uninstalled on its own.
+        let without_second = cron_uninstall_changed_for_config(&merged, exe, second, true)
+            .expect("config B's block is provably owned");
+        assert!(
+            !without_second.contains(&format!("--config '{}'", second.display())),
+            "{without_second}"
+        );
+        assert!(without_second.contains(&format!("--config '{}'", first.display())));
+    }
+
+    /// A block we could not parse is preserved, and one naming another
+    /// executable is preserved too.
+    #[test]
+    fn merge_preserves_a_block_it_cannot_prove_ownership_of() {
+        let exe = Path::new("/usr/local/bin/greggd");
+        let cfg = Path::new("/etc/gregg/greggd.toml");
+        let block = cron_block_with_config(exe, cfg).unwrap();
+        let unparsable = format!("FOO=bar\n{CRON_MANAGED_MARKER}\n@reboot croncheck\n");
+        let merged = merge_crontab(&unparsable, &block, exe, cfg, true);
+        assert!(merged.starts_with("FOO=bar\n"), "{merged}");
+        assert_eq!(merged.matches(CRON_MANAGED_MARKER).count(), 2, "{merged}");
+
+        let other_exe = cron_block_with_config(Path::new("/opt/other/greggd"), cfg).unwrap();
+        let mixed = merge_crontab(&other_exe, &block, exe, cfg, true);
+        assert!(
+            mixed.contains("--config '/etc/gregg/greggd.toml' croncheck"),
+            "{mixed}"
+        );
+        assert_eq!(mixed.matches(CRON_MANAGED_MARKER).count(), 2, "{mixed}");
+    }
+
     #[test]
     fn merge_empty_crontab() {
         let exe = Path::new("/usr/local/bin/greggd");
         let cfg = Path::new("/etc/gregg/greggd.toml");
         let block = cron_block_with_config(exe, cfg).unwrap();
-        let merged = merge_crontab("", &block);
+        let merged = merge_crontab("", &block, exe, cfg, true);
         assert_eq!(merged, block);
     }
     #[test]

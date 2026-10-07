@@ -500,7 +500,15 @@ impl<'a> Engine<'a> {
                 if config.max_load.is_some() {
                     let expiry =
                         pending.since + Duration::from_millis(config.effective_max_wait_ms());
-                    deadline = Some(deadline.map_or(expiry, |current| current.min(expiry)));
+                    // Same rule as `retry_at`: an already-elapsed expiry
+                    // describes work this tick has not taken, so folding it in
+                    // would park `sleep_until` on the past and spin the loop.
+                    // A pending can outlive its own max-wait — `take_expired`
+                    // only drops it while the load gate is still blocking — so
+                    // the guard is load-bearing, not defensive.
+                    if expiry > now {
+                        deadline = Some(deadline.map_or(expiry, |current| current.min(expiry)));
+                    }
                 }
             }
         }
@@ -1416,6 +1424,74 @@ mod tests {
             .is_none());
         assert!(engine.states[0].pending.as_ref().unwrap().retry_at > later);
         assert!(engine.next_deadline(due, later, true) > later);
+    }
+
+    /// A pending that outlives its own `max_wait` must not pin the wake on the
+    /// expiry it already passed. `take_expired` only drops such a pending while
+    /// the load gate is still blocking, so a recovering gate leaves it in
+    /// exactly that state.
+    #[test]
+    fn a_pending_past_its_max_wait_never_parks_the_wake_in_the_past() {
+        let wall = wall_time();
+        let mut config = job("gated", Some(8.0));
+        config.retry_interval_ms = Some(10_000);
+        config.max_wait_ms = Some(20_000);
+        let mut engine = Engine::new(
+            std::slice::from_ref(&config),
+            wall,
+            5,
+            SchedulerPublisher::empty(),
+        )
+        .unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        assert!(engine
+            .tick(due, mono, ready(9.0, 9.0, 9.0), true)
+            .unwrap()
+            .is_none());
+        // Well past the 20s max-wait, and the gate has recovered: the pending
+        // is still there (it is no longer blocked, so nothing expires it) but
+        // it is already ineligible because its retry is in the future.
+        let later = mono + Duration::from_secs(600);
+        assert!(engine.states[0].pending.is_some());
+        assert!(engine
+            .next_deadline(due, later, true)
+            .checked_duration_since(later)
+            .is_some_and(|ahead| !ahead.is_zero()));
+    }
+
+    /// A completed load-gated job keeps the gate that admitted it, and the
+    /// client renders that as `last gate …`. The published document therefore
+    /// has to survive its own wire validation or every poll fails.
+    #[tokio::test]
+    async fn a_completed_gated_job_publishes_a_document_its_client_accepts() {
+        let wall = wall_time();
+        let mut config = job("gated", Some(8.0));
+        config.retry_interval_ms = Some(10_000);
+        let publisher = SchedulerPublisher::empty();
+        let mut engine =
+            Engine::new(std::slice::from_ref(&config), wall, 5, publisher.clone()).unwrap();
+        let due = engine.states[0].next_due;
+        let mono = Instant::now();
+        let launch = engine
+            .tick(due, mono, ready(1.0, 1.0, 1.0), true)
+            .unwrap()
+            .expect("an open gate launches");
+        // The launch consumed the pending, so the row is idle again while the
+        // admitting gate is still retained.
+        assert!(engine.states[0].pending.is_none());
+        engine.publish(wall, None).await;
+        let publication = publisher.current().await;
+        let summary: SchedulerSummaryV2 =
+            serde_json::from_slice(&publication.summary_bytes).expect("valid summary");
+        summary.validate().expect("summary validates");
+        let job = &summary.jobs[launch.index];
+        assert_eq!(job.state, SchedulerJobStateV2::Idle);
+        assert_eq!(
+            job.load.as_ref().and_then(|gate| gate.observed),
+            Some(1.0),
+            "the gate that admitted the job is retained for the `last gate` row"
+        );
     }
 
     /// The published retry is a real countdown, not the second the tick began.

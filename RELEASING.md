@@ -303,7 +303,7 @@ install.ps1
 ```
 
 No binary is modified after hashing (the release profile already uses LTO,
-single codegen unit, stripped symbols, and aborting panics). A rerun while
+single codegen unit, and stripped symbols). A rerun while
 the release is still a draft is safe; a published release causes a hard
 failure that requires a new patch version. The workflow never calls
 `cargo publish`, `git tag`, or pushes source commits.

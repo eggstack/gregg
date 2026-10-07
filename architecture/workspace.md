@@ -489,15 +489,24 @@ The workspace defines a release profile in `Cargo.toml`:
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
 ```
 
 This optimises release binaries for size and runtime performance. Full LTO
 enables cross-crate optimisation; `codegen-units = 1` improves the optimizer's
-view of the whole program; symbol stripping reduces binary size; and aborting
-on an unrecovered panic avoids carrying unwind support into release binaries.
-The profile is intentionally shared by both binaries and has no alternate size
+view of the whole program; and symbol stripping reduces binary size. The
+profile is intentionally shared by both binaries and has no alternate size
 profile.
+
+Panic **unwinding is deliberately retained**. `panic = "abort"` was evaluated
+in Plan 071 and retained on the recorded finding that "no unwind-dependent
+production behavior was found". That finding did not survive contact with
+later work: the gregg-host drive refresh worker now recovers a panicking
+collector with `catch_unwind` and backs off, `greggd`'s `run_with_shutdown`
+supervises a dead task through its `JoinError`, and `gregg`'s scheduler turns a
+panicked poll task into a synthetic `Cancelled` result. All three are
+production resilience, `panic = "abort"` silently made all three unreachable in
+the shipped binaries, and no test can observe it because Cargo forces
+`panic = "unwind"` for the test and bench profiles.
 
 ## Supply-chain policy
 

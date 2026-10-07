@@ -56,8 +56,9 @@ impl ArtifactOwnership {
 pub use cron::{
     cron_block, cron_block_ownership, cron_block_ownership_for_config, cron_block_with_config,
     cron_uninstall_changed, cron_uninstall_changed_for, cron_uninstall_changed_for_config,
-    install_cron, merge_crontab, remove_managed_cron_block, shell_quote, uninstall_cron,
-    uninstall_cron_for, uninstall_cron_for_config, ShellQuoteError, CRON_MANAGED_MARKER,
+    install_cron, merge_crontab, remove_managed_cron_block, remove_managed_cron_block_for_config,
+    shell_quote, uninstall_cron, uninstall_cron_for, uninstall_cron_for_config, ShellQuoteError,
+    CRON_MANAGED_MARKER,
 };
 pub use install::{install_startup, render_instructions, restart_daemon, InstallError};
 pub use launchd::{

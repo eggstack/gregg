@@ -45,6 +45,90 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Release builds could not recover from a panic, despite three code paths that
+  exist to do exactly that.** The workspace release profile set `panic = "abort"`
+  with no per-package override, so every crate and dependency was compiled
+  abort-on-panic. `std::panic::catch_unwind` cannot intercept a panic under that
+  strategy and a panicking task aborts the process instead of yielding a
+  `JoinError`. That silently disabled the gregg-host drive-refresh worker's
+  collector containment and backoff, `greggd`'s `run_with_shutdown` supervision
+  of a dead server or sampler task, and `gregg`'s conversion of a panicked poll
+  task into a synthetic `Cancelled` result — so instead of degrading, a panic
+  anywhere in a collector or poll took down the whole TUI or the daemon and
+  every HTTP consumer behind it. Plan 071 retained `panic = "abort"` on the
+  recorded finding that "no unwind-dependent production behavior was found";
+  `slow_probe.rs` was added afterwards and reintroduced the dependency that
+  ruling ruled out, and the conclusion was never re-validated. No test could
+  catch it, because Cargo forces `panic = "unwind"` for test and bench profiles,
+  so the suite asserted a behaviour the shipped binary cannot exhibit.
+  Unwinding is restored; binary size grows by the unwind tables this gives back.
+
+- **A load-gated maintenance job made the cron pane show a permanent scheduler
+  error on a healthy daemon.** `greggd` deliberately retains the gate decision
+  that *admitted* a job, so a running row carries the reading it started under
+  and an idle or slot-waiting row carries the *last* one — which the client
+  renders as `start … <=` and `last gate …` precisely so an old reading is not
+  presented as current load. The wire validator rejected exactly that shape for
+  `idle` while permitting the identical meaning for `running` and
+  `waiting_for_slot`. Because the client validates every scheduler summary and
+  treats a failure as `Invalid`, any daemon with a `max_load`-gated job and
+  available load telemetry — the common case — failed that system's cron fetch
+  on every poll. The validator now accepts a retained gate in every non-deferred
+  state; `load_unavailable` is still the only state where an observed reading
+  contradicts the row.
+
+- **A pending job that outlived its own `max_wait` could pin the daemon at 100%
+  CPU.** The scheduler's `next_deadline` guards the `retry_at` candidate with
+  `> now` precisely so an elapsed instant cannot park `sleep_until` on the past,
+  but the `max_wait` expiry candidate twelve lines later had no such guard.
+  `take_expired` only drops an expired pending while the load gate is still
+  blocking, so a pending whose gate recovered keeps an expiry already in the
+  past; `bounded_wake_deadline` only caps *above*, so it reached `sleep_until`
+  ready, and the loop re-ticked and recomputed the same past deadline until the
+  retry interval elapsed — stalling metrics, and every client reading them, on
+  the single-threaded runtime that also serves HTTP. The candidate is now folded
+  under the same `> now` rule.
+
+- **`greggd croncheck` reported success when the daemon it started never came
+  up.** The readiness wait's result was discarded and the arm returned `Ok(())`
+  unconditionally. `croncheck` is the watchdog entry point that the managed cron
+  block schedules every minute, and the child is spawned with null stdio, so on
+  a system where the daemon cannot start — a config parse error, a bind
+  conflict, a slow first start — every run exited `0` and the watchdog looked
+  healthy forever without ever restarting the daemon. Reaching the deadline
+  without a healthy answer is now a failure that names the last probe, matching
+  the readiness contract other paths already honour.
+
+- **Installing one config's cron watchdog deleted another config's.** The
+  install path removed *any* Gregg managed block by marker text before writing
+  its own, while uninstall correctly proved config ownership first. Two
+  `greggd` configs on one account installed with `--method cron` meant that
+  `startup install --config <B>` silently destroyed config A's watchdog. Install
+  now proves ownership of the existing block with the same config-aware
+  classifier uninstall uses, and preserves a `Foreign` or `Unknown` block
+  exactly.
+
+- **The `sudo` remediation hint for a privileged `startup install` emitted an
+  unquoted executable path.** A path containing whitespace, `$`, or a quote
+  re-parsed into different arguments — or a different binary — when an operator
+  copied the hint. It now uses the same POSIX single-quote helper `gregg-update`
+  already applies to its own hints. Display-only: `greggd` never runs it.
+
+- **The EggPool endpoint skipped the sanitization chokepoint.** `AppState`
+  adoption is documented as the single point every renderer path passes through,
+  and every other document string is cleaned there — but the EggPool endpoint
+  was copied raw, and its `name` is the one operator-supplied string in the
+  config model with no control-character rejection. A config value like
+  `"[2Jwiped"` therefore reached a cell unescaped and was silently stripped
+  rather than shown in caret notation. It now goes through `clean` like the
+  rest of the document.
+
+- **A test asserting the cron pane-budget invariant never ran.** The function
+  had no `#[test]` attribute and `#![allow(dead_code)]` on the `ui` subtree
+  silenced the unused-function warning that would otherwise have caught it, so
+  the rule that remote-depth and viewport truncation are reported *separately*
+  had no coverage at all.
+
 - **`gregg daemon startup install` could erase your entire crontab.** On Linux
   without user systemd — the documented `auto` → cron fallback — the bounded
   manager runner read a child's stdout and stderr only *after* the child exited.

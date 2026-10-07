@@ -278,3 +278,23 @@ generation checks remain the smaller behavior-preserving design.
 Default local check: passed (`./scripts/check-local.sh`)
 Release preflight: passed once (`./scripts/check-local.sh --release`)
 Ordinary CI run: passed, workflow `31020619216` rerun at `d94851c`
+
+Correction note (audit 2026-10-07): the `panic = "abort"` decision recorded
+above is **reverted**. The completion note's precondition — "no unwind-dependent
+production behavior was found" — was true when written but was never
+re-validated, and later work reintroduced exactly the dependency it ruled out:
+`gregg-host`'s drive refresh worker recovers a panicking collector with
+`catch_unwind` and backs off (`slow_probe.rs`), `greggd`'s `run_with_shutdown`
+supervises a dead task through its `JoinError` (`run.rs`), and `gregg`'s
+scheduler turns a panicked poll task into a synthetic `Cancelled` result
+(`scheduler.rs`). Under `panic = "abort"` all three are unreachable in the
+shipped binaries and a panic takes the process down instead of degrading it.
+
+No test could observe this: Cargo forces `panic = "unwind"` for the test and
+bench profiles, so `scheduler::tests::panicked_task_produces_cancelled_result_for_endpoint`
+passed while asserting behaviour the release binary cannot exhibit. Requirement 6
+of Workstream B ("no crate-level panic strategy overrides") was satisfied
+throughout — the override was at the workspace profile, which is exactly where
+it was invisible. The recorded measurements above remain accurate for the
+configuration as built; the size benefit is given up in exchange for behaviour
+that the code and the architecture docs both claim exists.

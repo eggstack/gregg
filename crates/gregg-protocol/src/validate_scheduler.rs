@@ -67,9 +67,10 @@ pub enum ViolationKindScheduler {
     },
     /// A load gate carried a non-finite threshold.
     NonFiniteLoad,
-    /// A load-deferred job published an observed load value, or an idle job
-    /// published a load decision. The client must not be able to render a
-    /// fabricated reading.
+    /// A load decision contradicts the row it was published on: a
+    /// load-deferred row published no gate at all, or a `load_unavailable`
+    /// row published an observed reading. The client must not be able to
+    /// render a fabricated reading.
     InconsistentLoadDecision,
     /// `exit_code` or `signal` was present for an outcome that never ran a
     /// child.
@@ -419,14 +420,12 @@ fn check_job(
             format!("{field}.next_retry_unix_ms"),
         ));
     }
-    if (job.state == SchedulerJobStateV2::Idle)
-        && job.load.as_ref().is_some_and(|g| g.observed.is_some())
-    {
-        violations.push(ValidationViolationScheduler::new(
-            ViolationKindScheduler::InconsistentLoadDecision,
-            format!("{field}.load.observed"),
-        ));
-    }
+    // A gate is deliberately retained beyond the deferral that produced it: a
+    // running row names the gate it was admitted under and an idle or
+    // slot-waiting row names the *last* gate, so an old reading is never
+    // presented as the machine's current load. Those states therefore accept a
+    // retained `observed` reading — `LoadUnavailable` is the only state in
+    // which one contradicts the row.
 
     if let Some(last) = &job.last {
         check_run_summary(violations, &format!("{field}.last"), last);
@@ -852,6 +851,33 @@ mod tests {
         });
         entry.next_retry_unix_ms = Some(START + 60_000);
         assert!(summary(vec![entry]).validate().is_ok());
+    }
+
+    #[test]
+    fn a_retained_gate_is_accepted_outside_the_deferring_states() {
+        // greggd keeps the gate that admitted a job, so a completed or
+        // slot-waiting row carries the reading it ran under. Rejecting it
+        // would make a healthy daemon publish a document the client refuses.
+        for state in [
+            SchedulerJobStateV2::Idle,
+            SchedulerJobStateV2::WaitingForSlot,
+            SchedulerJobStateV2::Running,
+        ] {
+            let mut entry = job("gated");
+            entry.state = state;
+            if state == SchedulerJobStateV2::Running {
+                entry.running_since_unix_ms = Some(START);
+            }
+            entry.load = Some(SchedulerLoadGateV2 {
+                window: "15m".to_owned(),
+                threshold: 8.0,
+                observed: Some(1.2),
+            });
+            assert!(
+                summary(vec![entry]).validate().is_ok(),
+                "a {state:?} row may carry the gate that admitted it"
+            );
+        }
     }
 
     #[test]

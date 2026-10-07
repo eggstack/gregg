@@ -631,6 +631,40 @@ pub(crate) fn probe_greggd(target: SocketAddr) -> CroncheckProbe {
     }
 }
 
+/// Wait, bounded, for a just-spawned daemon to answer health on `target`.
+///
+/// Split out of the `croncheck` arm so the readiness *rule* is testable
+/// without a real spawn: the deadline, not the spawn, decides the outcome.
+/// Reaching the deadline still absent is returned as an error, never
+/// swallowed — this is the entry point the managed cron block schedules, so an
+/// unconditional success would leave the watchdog reporting a healthy daemon
+/// forever while the daemon never ran. `Ambiguous` stops the wait immediately
+/// and is reported, exactly as it is when it is seen before any spawn.
+///
+/// `probe` is injected so the rule can be exercised against a daemon that never
+/// answers without racing a real one for a port.
+pub(crate) fn wait_for_spawned_daemon(
+    target: SocketAddr,
+    deadline: std::time::Instant,
+    mut probe: impl FnMut(SocketAddr) -> CroncheckProbe,
+) -> Result<(), CroncheckProbe> {
+    let mut last;
+    loop {
+        last = probe(target);
+        if last != CroncheckProbe::Absent {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    match last {
+        CroncheckProbe::Running => Ok(()),
+        other => Err(other),
+    }
+}
+
 /// Build the [`Command`] used by `croncheck` to spawn `greggd run` as a
 /// detached watchdog child. Stdio is closed; the daemon's own logging is
 /// independent of croncheck's. On Unix the child is placed in a new
@@ -736,20 +770,16 @@ pub fn dispatch_with_config_intent(
                 CroncheckProbe::Running => Ok(()),
                 CroncheckProbe::Absent => {
                     build_daemon_command(config_path, explicit)?.spawn()?;
-                    // Best-effort bounded readiness wait so a failed spawn
-                    // is not reported as success. `run` binds before its
-                    // first sample; 2s covers bind + first health answer.
+                    // `run` binds before its first sample; 2s covers bind plus
+                    // the first health answer. The child was spawned with null
+                    // stdio, so nothing else reports it if it never comes up.
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-                    loop {
-                        if probe_greggd(target) == CroncheckProbe::Running {
-                            break;
-                        }
-                        if std::time::Instant::now() >= deadline {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    Ok(())
+                    wait_for_spawned_daemon(target, deadline, probe_greggd).map_err(|probe| {
+                        Box::new(std::io::Error::other(format!(
+                            "croncheck started greggd but it did not become healthy within \
+                             2s (last probe: {probe:?})"
+                        ))) as Box<dyn std::error::Error>
+                    })
                 }
                 CroncheckProbe::Ambiguous => Err(Box::new(std::io::Error::other(
                     "croncheck could not prove greggd is absent or healthy",
@@ -1174,6 +1204,51 @@ mod native_tests {
     fn croncheck_rejects_silent_peer_within_bound() {
         let target = silent_fixture();
         assert_eq!(probe_greggd(target), CroncheckProbe::Ambiguous);
+    }
+
+    /// The watchdog's whole job is to restart a daemon that is not running, so
+    /// "spawned but never came up" has to be visible as a failure. Reporting
+    /// success there would leave cron believing a dead daemon is healthy.
+    #[test]
+    fn a_spawned_daemon_that_never_answers_fails_the_watchdog() {
+        let target = unbound_loopback();
+        let deadline = std::time::Instant::now();
+        assert_eq!(
+            wait_for_spawned_daemon(target, deadline, |_| CroncheckProbe::Absent),
+            Err(CroncheckProbe::Absent),
+            "a spawn that never became healthy must not report success"
+        );
+    }
+
+    /// An answer that is not a valid Gregg health response stops the wait at
+    /// once and is reported rather than retried to the deadline.
+    #[test]
+    fn an_ambiguous_answer_during_the_wait_is_reported_immediately() {
+        let target = unbound_loopback();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        assert_eq!(
+            wait_for_spawned_daemon(target, deadline, |_| CroncheckProbe::Ambiguous),
+            Err(CroncheckProbe::Ambiguous)
+        );
+    }
+
+    #[test]
+    fn a_daemon_that_answers_within_the_wait_is_a_success() {
+        let target = unbound_loopback();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let mut calls = 0_u32;
+        assert_eq!(
+            wait_for_spawned_daemon(target, deadline, |_| {
+                calls += 1;
+                if calls < 2 {
+                    CroncheckProbe::Absent
+                } else {
+                    CroncheckProbe::Running
+                }
+            }),
+            Ok(())
+        );
+        assert_eq!(calls, 2);
     }
 
     #[test]
