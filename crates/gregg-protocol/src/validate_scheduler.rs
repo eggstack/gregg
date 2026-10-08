@@ -65,6 +65,13 @@ pub enum ViolationKindScheduler {
         /// Documented maximum.
         max: usize,
     },
+    /// A job row carried an empty name.
+    ///
+    /// A job is addressed by its name in `/v2/scheduler/history` and in the
+    /// client's per-system keying, so an empty one cannot identify anything.
+    /// This is its own kind rather than a `FieldTooLong` because an empty
+    /// string is within the length bound, not over it.
+    EmptyJobName,
     /// A load gate carried a non-finite threshold.
     NonFiniteLoad,
     /// A load decision contradicts the row it was published on: a
@@ -126,6 +133,7 @@ impl fmt::Display for ViolationKindScheduler {
                     "field exceeds maximum length of {max} bytes (found {len})"
                 )
             }
+            Self::EmptyJobName => f.write_str("job name must not be empty"),
             Self::NonFiniteLoad => f.write_str("load value must be finite"),
             Self::InconsistentLoadDecision => {
                 f.write_str("load decision fields contradict the published job state")
@@ -347,7 +355,10 @@ fn check_job(
         MAX_SCHEDULER_JOB_NAME_BYTES,
     );
     if job.name.is_empty() {
-        check_text(violations, &format!("{field}.name"), &job.name, 0);
+        violations.push(ValidationViolationScheduler::new(
+            ViolationKindScheduler::EmptyJobName,
+            format!("{field}.name"),
+        ));
     }
     check_text(
         violations,
@@ -482,6 +493,15 @@ fn check_job_history(
         &history.name,
         MAX_SCHEDULER_JOB_NAME_BYTES,
     );
+    // History is keyed by the same job name as the summary, so it carries the
+    // same non-empty requirement. The client tolerates an empty name by
+    // skipping the row, which would silently drop records the daemon published.
+    if history.name.is_empty() {
+        violations.push(ValidationViolationScheduler::new(
+            ViolationKindScheduler::EmptyJobName,
+            format!("{field}.name"),
+        ));
+    }
     if history.records.len() > MAX_SCHEDULER_HISTORY_LIMIT {
         violations.push(ValidationViolationScheduler::new(
             ViolationKindScheduler::TooManyRecords {
@@ -905,6 +925,45 @@ mod tests {
         assert!(violations
             .iter()
             .any(|v| matches!(v.kind, ViolationKindScheduler::DuplicateJobName { .. })));
+    }
+
+    /// An empty name is within the length bound, so it cannot be caught by
+    /// the byte cap. It must still be rejected on both routes: the client keys
+    /// cron rows by job name and tolerates an empty one by skipping the row,
+    /// which would silently drop the records the daemon published.
+    #[test]
+    fn empty_job_names_are_rejected_on_both_routes() {
+        let violations = summary(vec![job("")])
+            .validate()
+            .expect_err("empty summary job name rejected");
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v.kind, ViolationKindScheduler::EmptyJobName)
+                    && v.field == "jobs.0.name"),
+            "expected EmptyJobName at jobs.0.name: {violations:?}"
+        );
+
+        let violations = history("", vec![run(SchedulerOutcomeV2::Success, 1)])
+            .validate()
+            .expect_err("empty history job name rejected");
+        assert!(
+            violations
+                .iter()
+                .any(|v| matches!(v.kind, ViolationKindScheduler::EmptyJobName)
+                    && v.field == "jobs.0.name"),
+            "expected EmptyJobName at jobs.0.name: {violations:?}"
+        );
+
+        // The violation must read as what it is, not as an over-long field.
+        assert_eq!(
+            ViolationKindScheduler::EmptyJobName.to_string(),
+            "job name must not be empty"
+        );
+
+        // A one-byte name stays valid: this is a non-empty rule, not a
+        // minimum-length rule.
+        assert!(summary(vec![job("a")]).validate().is_ok());
     }
 
     #[test]

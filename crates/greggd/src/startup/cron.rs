@@ -1,12 +1,14 @@
 //! Shell quoting, cron watchdog block rendering/merging, and cron installation.
 
 use super::install::InstallError;
+use super::process::{
+    run_bounded_command, run_bounded_command_with_stdin, MANAGER_COMMAND_TIMEOUT,
+};
 use super::ArtifactOwnership;
 use std::fmt;
 use std::fmt::Write as FmtWrite;
 use std::io::{self};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // ── Shell quoting ─────────────────────────────────────────────────────────
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -375,19 +377,15 @@ pub fn merge_crontab(
     out
 }
 // ── Cron installation ─────────────────────────────────────────────────────
-/// Upper bound for a listed crontab: a huge foreign crontab must not OOM
-/// discovery.
-const MAX_CRONTAB_BYTES: usize = 4 * 1024 * 1024;
+// The 4 MiB output cap lives in `process::MAX_CHILD_OUTPUT_BYTES`, so both
+// crontab calls inherit it from the shared bounded-exec helper instead of
+// re-implementing a weaker post-hoc length check.
 
 pub(crate) fn run_crontab_list() -> io::Result<String> {
-    let output = Command::new("crontab").arg("-l").output()?;
-    // Bounded: a huge foreign crontab must not OOM discovery.
-    if output.stdout.len() > MAX_CRONTAB_BYTES || output.stderr.len() > MAX_CRONTAB_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::FileTooLarge,
-            "crontab output exceeds 4 MiB cap",
-        ));
-    }
+    // Bounded like every other manager call: a `crontab -l` that blocks on a
+    // locked/NFS spool or a hung cron daemon must not hang an operator command
+    // forever, and the helper also caps output before it is buffered.
+    let output = run_bounded_command("crontab", &["-l"], MANAGER_COMMAND_TIMEOUT)?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     } else {
@@ -414,24 +412,18 @@ pub(crate) fn run_crontab_list() -> io::Result<String> {
     }
 }
 pub(crate) fn run_crontab_install(content: &str) -> io::Result<()> {
-    let mut child = Command::new("crontab")
-        .arg("-")
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-    {
-        use std::io::Write;
-        let stdin = child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| io::Error::other("failed to open crontab stdin"))?;
-        stdin.write_all(content.as_bytes())?;
-    }
-    let status = child.wait()?;
-    if status.success() {
+    let output = run_bounded_command_with_stdin(
+        "crontab",
+        &["-"],
+        MANAGER_COMMAND_TIMEOUT,
+        Some(content.as_bytes()),
+    )?;
+    if output.status.success() {
         Ok(())
     } else {
         Err(io::Error::other(format!(
-            "crontab - failed with status {status}"
+            "crontab - failed with status {}",
+            output.status
         )))
     }
 }

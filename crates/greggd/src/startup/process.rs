@@ -1,6 +1,6 @@
 //! Bounded child-process execution for startup manager probes and commands.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::process::{Command, Output};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -22,11 +22,39 @@ pub(crate) fn run_bounded_command(
     args: &[&str],
     timeout: Duration,
 ) -> io::Result<Output> {
-    let mut child = Command::new(program)
+    run_bounded_command_with_stdin(program, args, timeout, None)
+}
+
+/// As [`run_bounded_command`], additionally feeding `stdin_data` to the
+/// child's stdin.
+///
+/// Used by `crontab -`, whose entire input is a rewritten crontab. A child
+/// that rejects the content and exits early makes the write fail with EPIPE;
+/// that is not returned on its own, because the child's own exit status is the
+/// more truthful error. The write error surfaces only when the child *did*
+/// succeed, which is exactly the case where something is genuinely wrong.
+pub(crate) fn run_bounded_command_with_stdin(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    stdin_data: Option<&[u8]>,
+) -> io::Result<Output> {
+    let mut command = Command::new(program);
+    command
         .args(args)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()?;
+        .stderr(std::process::Stdio::piped());
+    if stdin_data.is_some() {
+        command.stdin(std::process::Stdio::piped());
+    }
+    let mut child = command.spawn()?;
+    let mut write_error = None;
+    if let Some(data) = stdin_data {
+        match child.stdin.take() {
+            Some(mut stdin) => write_error = stdin.write_all(data).err(),
+            None => write_error = Some(io::Error::other("failed to open child stdin")),
+        }
+    }
     let stdout = child.stdout.take().map(read_pipe);
     let stderr = child.stderr.take().map(read_pipe);
     let deadline = Instant::now() + timeout;
@@ -46,11 +74,17 @@ pub(crate) fn run_bounded_command(
             None => thread::sleep(CHILD_POLL_INTERVAL),
         }
     };
-    Ok(Output {
+    let output = Output {
         status,
         stdout: join_pipe(stdout)?,
         stderr: join_pipe(stderr)?,
-    })
+    };
+    if output.status.success() {
+        if let Some(error) = write_error {
+            return Err(error);
+        }
+    }
+    Ok(output)
 }
 fn read_pipe<R: Read + Send + 'static>(reader: R) -> thread::JoinHandle<io::Result<Vec<u8>>> {
     thread::spawn(move || {
@@ -98,5 +132,55 @@ mod tests {
         let error = run_bounded_command("sh", &["-c", "sleep 1"], Duration::from_millis(40))
             .expect_err("slow manager command must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// `crontab -` takes its whole input on stdin, so it needs the bounded
+    /// helper to also feed stdin. Unbounded, a hung cron daemon would hang an
+    /// operator command forever -- the exact deviation this helper exists to
+    /// prevent.
+    #[cfg(unix)]
+    #[test]
+    fn bounded_command_with_stdin_delivers_input_and_still_bounds_the_child() {
+        let output = run_bounded_command_with_stdin(
+            "sh",
+            &["-c", "cat"],
+            Duration::from_secs(2),
+            Some(b"crontab body\n"),
+        )
+        .expect("a well-behaved child must succeed");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"crontab body\n");
+
+        // The stdin variant is bounded exactly like the plain one.
+        let error = run_bounded_command_with_stdin(
+            "sh",
+            &["-c", "cat > /dev/null; sleep 1"],
+            Duration::from_millis(40),
+            Some(b"x"),
+        )
+        .expect_err("a slow child must time out even when stdin was written");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    /// A child that never reads its stdin makes the write fail with EPIPE once the
+    /// pipe buffer fills. Reporting that as the error would bury the child's
+    /// own exit status, which is the more truthful diagnosis.
+    ///
+    /// The payload is larger than a pipe buffer on purpose: a small write is
+    /// absorbed by the kernel buffer before the child can exit, so the test
+    /// would pass for the wrong reason. Here the write necessarily blocks and
+    /// then meets a reader-less pipe.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_that_exits_early_reports_its_status_not_the_broken_pipe() {
+        let oversized = vec![b'x'; 512 * 1024];
+        let output = run_bounded_command_with_stdin(
+            "sh",
+            &["-c", "exit 3"],
+            Duration::from_secs(10),
+            Some(&oversized),
+        )
+        .expect("the child's own non-zero exit is a normal result here");
+        assert_eq!(output.status.code(), Some(3));
     }
 }

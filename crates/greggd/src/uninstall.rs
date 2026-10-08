@@ -499,8 +499,15 @@ fn discover_for(exe_path: &Path, config_path: &Path, explicit: bool) -> Discover
                     | crate::service::ServiceState::StartPending
                     | crate::service::ServiceState::StopPending => ScmDiscovery::Running,
                 };
+                // A registration whose image path could not be parsed
+                // unambiguously is *unknown*, not absent: a registration
+                // exists, we simply cannot prove whose it is. Classifying it
+                // `Absent` claimed there was nothing to preserve, so
+                // `--dry-run` printed nothing about a service that survives
+                // the teardown and nothing blocked. `Unknown` matches the
+                // other three classifiers and lets SCM uncertainty block.
                 let ownership = registration.executable_path.as_deref().map_or(
-                    crate::startup::ArtifactOwnership::Absent,
+                    crate::startup::ArtifactOwnership::Unknown,
                     |target| {
                         if gregg_update::uninstall::paths_equivalent(target, exe_path) {
                             crate::startup::ArtifactOwnership::Owned

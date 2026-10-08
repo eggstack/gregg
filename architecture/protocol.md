@@ -341,6 +341,17 @@ GET/HEAD /v2/scheduler/history    -> SchedulerHistoryV2
 | Methods | `GET` and `HEAD` only; any other method is `405` |
 | Unknown paths (including `/v2/scheduler/run`, `/v2/scheduler/jobs`) | `404` |
 | Daemon with no configured jobs | `200` with a valid empty document |
+
+Both routes are validated by `validate_summary` / `validate_history`, which
+return structured `ValidationViolationScheduler` entries rather than serde
+errors: schema version, job and record counts, field byte bounds, load-gate
+well-formedness, record/child consistency, monotonic sequences, and duplicate
+job names. **A job name must be non-empty on both routes** (`EmptyJobName`).
+This is a separate rule from the byte bound and not reachable through it —
+`""` is within any length limit — because the client keys cron rows by job name
+and skips an empty one, so an empty name would silently drop published
+records. The kind mirrors v2's `EmptyDriveName` for the same reason: an empty
+string is inside the bound, not over it.
 | Pre-feature daemon | `404`, which a client reads as *scheduler observability unsupported* |
 | Mutation | none: no create/edit/delete/start/cancel route exists |
 

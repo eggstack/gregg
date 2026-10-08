@@ -256,7 +256,7 @@ pub fn cargo_fallback(program: &str, version: &str) -> Result<StagedCandidate, U
         .arg(&cargo_root)
         .arg(program);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    let output = exec::run_command_with_timeout_for_cargo(cmd, exec::CARGO_TIMEOUT)?;
+    let output = exec::run_command_with_timeout_for_cargo(cmd, exec::CARGO_TIMEOUT, "install")?;
     if !output.status.success() {
         return Err(UpdateError::CargoFallback(format!(
             "cargo install {program} --version ={version} failed (status {:?})",

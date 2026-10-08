@@ -45,6 +45,71 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Fourth audit completion pass (Plan 183, 2026-10-08):** closes the coverage
+  gap Plan 182 disclosed in its own closure record, where the audit's fourth
+  pass had left `gregg-protocol`, `gregg-host`, `gregg-update`'s `exec.rs`,
+  greggd's control socket, `startup/install.rs`, and `uninstall.rs`
+  **unreviewed — not clean**. Again no mechanical gate was failing at `aa321dd`,
+  so all nine findings are logical, and every behavioral fix carries a
+  regression test executed against the pre-fix logic and observed failing.
+
+  Packaging: the HTTP-404 `cargo install` fallback in `install.sh` reached
+  `finalize_greggd_install` but **not** `finalize_gregg_install`, so a
+  user-local `gregg` replacement through that designed path captured its
+  running client daemon and then never transitioned it. On Unix the replacement
+  installs a new inode, so the old client daemon kept executing the
+  replaced-out image indefinitely and no startup entry was ever registered —
+  while the identical `greggd` operation on the same branch did finalize. The
+  mirror-image defect existed on Windows: `install.ps1`'s Cargo fallback called
+  `Register-UserLocalClientdStartup` without the `daemon stop` / `daemon
+  restart` transition the prebuilt path performs, contradicting its own comment
+  that both candidates share one finalization path. Both platforms now share a
+  single implementation.
+
+  Self-update: `run_command_with_timeout_for_cargo` serves both subcommands but
+  hardcoded "cargo install" in its messages, so a `cargo uninstall` timeout was
+  reported as an update-fallback timeout; it now names the operation actually
+  run. A post-exit drain timeout was reported as "curl timed out and was
+  killed" — also `ErrorKind::TimedOut`, but nothing was killed, because the
+  child had already exited; the real cause (an inherited writer holding the pipe
+  open) now survives, and the kill wording stays for a genuine capture deadline.
+
+  Protocol: the scheduler validator's empty-name check was dead code —
+  `check_text(..., &job.name, 0)` can never push, because `"".len() > 0` is
+  never true — so an empty job name passed validation on the summary route and
+  was never even checked on the history route. The client keys cron rows by job
+  name and tolerates an empty one by skipping the row, so records the daemon
+  published would be silently dropped. Both routes now reject it with a
+  dedicated `EmptyJobName` kind: an empty string is within the length bound,
+  not over it.
+
+  Daemon startup: a systemd unit and a launchd plist name their program as a
+  fixed canonical path, but ownership everywhere else is proved against the
+  *exact invoked* executable. An install invoked from anywhere else therefore
+  wrote an artifact that runs a different binary and that the same product then
+  classified `Foreign` — `uninstall --dry-run` reporting "foreign installation
+  preserved" and `restart` refusing outright. The code already carried the
+  intended check in a comment that was never implemented; it is now enforced.
+  `crontab -l` and `crontab -` were the only manager calls with no timeout, so
+  a blocked crontab hung an operator command forever; both now join the same
+  bounded allowlist (`crontab -` through a new bounded stdin variant), which
+  also enforces the 4 MiB cap in the reader rather than after buffering. An SCM
+  registration whose image path cannot be parsed unambiguously was classified
+  `Absent` rather than `Unknown`, which claimed there was nothing to preserve —
+  so `--dry-run` said nothing about a service that survives teardown and
+  nothing blocked; it is now `Unknown`, matching the other three classifiers.
+  Finally, `startup instructions` printed unquoted `sudo <exe>` and `--config`
+  paths while the `PermissionDenied` path quoted the identical command, so a
+  path containing a space re-parsed as several arguments and the "exact rerun
+  command" did not run.
+
+  Reported and deliberately **not** changed: the whole-crontab
+  read-modify-write race (inherent to the `crontab -` interface, which offers
+  no locking), and the macOS `--purge` ordering that deletes the config before a
+  root-owned log it never preflights. The Windows and macOS findings are correct
+  by construction and reading — this host is `aarch64-unknown-linux-gnu`, so
+  only a native Windows CI run is authority for them.
+
 - **Third audit corrective pass (Plan 182, 2026-10-07):** all eight findings
   from the logic/robustness audit of commit `adc948d` are fixed, and both
   recorded optimizations are applied. No mechanical gate was failing before

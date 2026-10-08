@@ -149,6 +149,12 @@ pub fn run_curl_capture(curl: &str, args: &[&str]) -> Result<Vec<u8>, UpdateErro
 }
 
 fn map_capture_error(e: &io::Error) -> UpdateError {
+    // The post-exit settle bound expiring is also `TimedOut`, but the child
+    // already exited and nothing was killed. Report that real cause rather
+    // than claiming a capture deadline that never fired.
+    if e.kind() == io::ErrorKind::TimedOut && e.to_string().contains(POST_EXIT_DRAIN_FRAGMENT) {
+        return UpdateError::VersionLookup(e.to_string());
+    }
     if e.kind() == io::ErrorKind::TimedOut {
         return UpdateError::VersionLookup("curl timed out and was killed".to_string());
     }
@@ -502,6 +508,15 @@ const POST_EXIT_DRAIN_SETTLE: Duration = Duration::from_millis(250);
 /// built, so the thread detaches and cannot keep this call parked. Its read end
 /// stays open until it finishes, which is the price of not killing somebody
 /// else's process — and the only alternative would be an unbounded wait.
+/// Stable fragment identifying the post-exit settle bound expiring because an
+/// inherited writer still holds a pipe open.
+///
+/// This condition is also reported as [`io::ErrorKind::TimedOut`], but it is
+/// *not* the capture deadline: the child has already exited, so nothing was
+/// killed. Callers that would otherwise claim a kill must test for this
+/// fragment first.
+const POST_EXIT_DRAIN_FRAGMENT: &str = "an inherited writer is holding the pipe open";
+
 struct PipeReader {
     result: std::sync::mpsc::Receiver<io::Result<Vec<u8>>>,
 }
@@ -517,8 +532,10 @@ impl PipeReader {
             Ok(outcome) => outcome,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
                 io::ErrorKind::TimedOut,
-                "child output did not settle within the post-exit bound; \
-                 an inherited writer is holding the pipe open",
+                format!(
+                    "child output did not settle within the post-exit bound; \
+                     {POST_EXIT_DRAIN_FRAGMENT}"
+                ),
             )),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::other(
                 "child output reader ended without producing a result",
@@ -664,18 +681,22 @@ pub fn run_command_with_timeout(cmd: Command, timeout: Duration) -> Result<Outpu
 
 /// Run a Cargo command with a timeout, mapping failures into the Cargo
 /// fallback error category.
+///
+/// `operation` names the subcommand actually run, so a `cargo uninstall`
+/// failure is never reported as a `cargo install` failure.
 pub fn run_command_with_timeout_for_cargo(
     cmd: Command,
     timeout: Duration,
+    operation: &str,
 ) -> Result<Output, UpdateError> {
     run_child_with_timeout(cmd, timeout).map_err(|error| {
         if error.kind() == io::ErrorKind::TimedOut {
             UpdateError::CargoFallback(format!(
-                "cargo install timed out after {}s",
+                "cargo {operation} timed out after {}s",
                 timeout.as_secs()
             ))
         } else {
-            UpdateError::CargoFallback(format!("cargo process failed: {error}"))
+            UpdateError::CargoFallback(format!("cargo {operation} process failed: {error}"))
         }
     })
 }
@@ -1142,6 +1163,66 @@ mod tests {
         }
     }
 
+    /// A `cargo uninstall` failure must never be reported as a
+    /// `cargo install` failure. `run_command_with_timeout_for_cargo` serves
+    /// both subcommands, so the operation label is what keeps the diagnostic
+    /// honest; without it a user in the uninstall path is told the update
+    /// fallback timed out.
+    #[test]
+    fn cargo_timeout_reports_the_operation_actually_run() {
+        let temp = crate::stage::create_temp_dir("gregg-update-test-cargo-op").unwrap();
+        let marker = temp.path().join("late");
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "exec::tests::timeout_child", "--nocapture"])
+            .env("GREGG_UPDATE_TIMEOUT_MARKER", &marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let error =
+            run_command_with_timeout_for_cargo(command, Duration::from_millis(40), "uninstall")
+                .expect_err("slow child must time out");
+        let message = error.to_string();
+        assert!(
+            message.contains("cargo uninstall timed out"),
+            "an uninstall timeout must name the uninstall operation: {message}"
+        );
+        assert!(
+            !message.contains("cargo install"),
+            "an uninstall timeout must never be reported as an install: {message}"
+        );
+    }
+
+    /// Both timeout sources share `ErrorKind::TimedOut`, but only the capture
+    /// deadline actually kills a child. Reporting the post-exit settle as a
+    /// kill claims a deadline that never fired and hides the real cause.
+    #[test]
+    fn post_exit_drain_expiry_is_not_reported_as_a_capture_kill() {
+        let drain = io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!(
+                "child output did not settle within the post-exit bound; \
+                 {POST_EXIT_DRAIN_FRAGMENT}"
+            ),
+        );
+        let message = map_capture_error(&drain).to_string();
+        assert!(
+            message.contains(POST_EXIT_DRAIN_FRAGMENT),
+            "the real cause must survive: {message}"
+        );
+        assert!(
+            !message.contains("killed"),
+            "nothing was killed; the child had already exited: {message}"
+        );
+
+        // The genuine capture deadline keeps its kill wording.
+        let deadline = io::Error::new(io::ErrorKind::TimedOut, "child capture deadline elapsed");
+        assert!(
+            map_capture_error(&deadline).to_string().contains("killed"),
+            "a real capture deadline is still reported as a kill"
+        );
+    }
+
     #[test]
     fn cargo_timeout_kills_and_reaps_child() {
         let temp = crate::stage::create_temp_dir("gregg-update-test-timeout").unwrap();
@@ -1152,8 +1233,9 @@ mod tests {
             .env("GREGG_UPDATE_TIMEOUT_MARKER", &marker)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let error = run_command_with_timeout_for_cargo(command, Duration::from_millis(40))
-            .expect_err("slow child must time out");
+        let error =
+            run_command_with_timeout_for_cargo(command, Duration::from_millis(40), "install")
+                .expect_err("slow child must time out");
         assert!(error.to_string().contains("timed out"));
         thread::sleep(Duration::from_millis(300));
         assert!(!marker.exists(), "timed-out child continued after return");

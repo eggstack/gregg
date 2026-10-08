@@ -932,6 +932,12 @@ install_program() {
       trap - EXIT
       cargo_fallback "$program" "$scope" "$existing_version"
       finalize_greggd_install "$program"
+      # Staged Cargo and prebuilt candidates share this path, so a user-local
+      # `gregg` replacement must transition its captured client daemon and
+      # register its startup entry here too -- exactly as the source-only-host
+      # branch below does. Omitting it left the running daemon executing the
+      # replaced-out image on Unix.
+      finalize_gregg_install "$DEST_DIR/$program" "$program" "$scope"
       return 0
     else
       echo "curl exit $curl_status, HTTP $http_code for $url" >&2

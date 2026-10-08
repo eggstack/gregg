@@ -41,8 +41,12 @@ pub fn render_instructions(
     config: &Path,
     _explicit: bool,
 ) -> String {
-    let exe_str = exe.display().to_string();
-    let cfg_str = config.display().to_string();
+    // The executable and the config are real data, not controlled literals,
+    // so they are quoted exactly like `elevated_command` below. These lines
+    // are presented as commands the operator copies verbatim; a path holding
+    // a space, `$`, or a quote must re-parse as one argument, not several.
+    let exe_str = gregg_update::stage::unix_shell_quote(exe);
+    let cfg_str = gregg_update::stage::unix_shell_quote(config);
     match method {
         StartupMethod::Systemd => {
             let unit = standard_systemd_unit_path().display().to_string();
@@ -295,6 +299,18 @@ pub enum InstallError {
     BinaryMissing {
         path: PathBuf,
     },
+    /// The invoked executable is not the binary the manager artifact would run.
+    ///
+    /// A systemd unit and a launchd plist name their program as a fixed
+    /// canonical path, so installing from anywhere else registers a service
+    /// that runs a *different* binary than the one the operator invoked -- and
+    /// one that `uninstall`/`restart` then classify as foreign because
+    /// ownership is proved against the exact invoked executable. Refusing is
+    /// the only outcome where the writer agrees with the classifier.
+    BinaryNotStandard {
+        invoked: PathBuf,
+        expected: PathBuf,
+    },
     UnsupportedMethod {
         method: StartupMethod,
         message: String,
@@ -320,6 +336,14 @@ impl fmt::Display for InstallError {
                 path.display(),
                 path.display()
             ),
+            Self::BinaryNotStandard { invoked, expected } => write!(
+                f,
+                "this install would register a service running {}, but it was invoked as {}: \
+                 install the binary at {} first, then install startup from there",
+                expected.display(),
+                invoked.display(),
+                expected.display()
+            ),
             Self::UnsupportedMethod { method, message } => {
                 write!(f, "method {method} not supported: {message}")
             }
@@ -333,6 +357,24 @@ impl From<ShellQuoteError> for InstallError {
         Self::ShellQuote(e)
     }
 }
+/// Confirm the invoked executable is the binary a manager artifact would run.
+///
+/// A systemd unit and a launchd plist both name their program as a fixed
+/// canonical path, while ownership everywhere else is proved against the exact
+/// invoked executable. Installing from any other path would therefore write an
+/// artifact that runs a *different* binary than the operator invoked and that
+/// `uninstall`/`restart` then classify as foreign. Refusing keeps the writer
+/// and the classifier in agreement instead of silently disagreeing.
+pub(crate) fn ensure_standard_binary(exe: &Path, expected: &Path) -> Result<(), InstallError> {
+    if gregg_update::uninstall::paths_equivalent(exe, expected) {
+        return Ok(());
+    }
+    Err(InstallError::BinaryNotStandard {
+        invoked: exe.to_path_buf(),
+        expected: expected.to_path_buf(),
+    })
+}
+
 pub(crate) fn elevated_command(exe: &Path, method: StartupMethodArg) -> String {
     // The executable is real data, not a controlled literal, so it is quoted:
     // a path with a space, `$`, or a quote in it must re-parse as one argument
@@ -789,6 +831,76 @@ mod tests {
         assert_eq!(
             elevated_command(Path::new("/opt/it's greggd"), StartupMethodArg::Systemd),
             "sudo '/opt/it'\\''s greggd' startup install --method systemd"
+        );
+    }
+
+    /// `startup instructions` prints commands the operator copies verbatim,
+    /// so it must quote exactly like `elevated_command`. An unquoted path with
+    /// a space re-parsed as two arguments is the whole defect.
+    #[cfg(unix)]
+    #[test]
+    fn instructions_quote_the_executable_and_config_they_print() {
+        let exe = "/opt/My Tools/greggd";
+        let cfg = "/opt/My Tools/greggd.toml";
+        let rendered = |method| render_instructions(method, Path::new(exe), Path::new(cfg), true);
+
+        let systemd = rendered(StartupMethod::Systemd);
+        assert!(
+            systemd.contains(&format!("sudo '{exe}' startup install --method systemd")),
+            "systemd install line is unquoted: {systemd}"
+        );
+        assert!(
+            systemd.contains(&format!(
+                "sudo '{exe}' startup install --method systemd --config '{cfg}'"
+            )),
+            "systemd explicit-config line is unquoted: {systemd}"
+        );
+
+        let launchd = rendered(StartupMethod::Launchd);
+        assert!(
+            launchd.contains(&format!("sudo '{exe}' startup install --method launchd")),
+            "launchd install line is unquoted: {launchd}"
+        );
+
+        let cron = rendered(StartupMethod::Cron);
+        assert!(
+            cron.contains(&format!("'{exe}' startup install --method cron")),
+            "cron install line is unquoted: {cron}"
+        );
+        assert!(
+            cron.contains(&format!(
+                "'{exe}' startup install --method cron --config '{cfg}'"
+            )),
+            "cron explicit-config line is unquoted: {cron}"
+        );
+    }
+
+    /// A systemd unit and a launchd plist name their program as a fixed
+    /// canonical path, while ownership is proved against the exact invoked
+    /// executable. An install from anywhere else therefore writes an artifact
+    /// that runs a different binary and that `uninstall`/`restart` classify as
+    /// foreign -- the writer and the classifier must not disagree.
+    #[test]
+    fn a_manager_install_refuses_a_binary_it_would_not_itself_run() {
+        let standard = Path::new("/usr/local/bin/greggd");
+        assert!(
+            ensure_standard_binary(standard, standard).is_ok(),
+            "the canonical binary must install"
+        );
+
+        let error = ensure_standard_binary(Path::new("/home/op/.local/bin/greggd"), standard)
+            .expect_err("a user-local binary must not register a system unit");
+        let InstallError::BinaryNotStandard { invoked, expected } = &error else {
+            panic!("expected BinaryNotStandard, got {error:?}");
+        };
+        assert_eq!(invoked, Path::new("/home/op/.local/bin/greggd"));
+        assert_eq!(expected, standard);
+
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("/usr/local/bin/greggd")
+                && rendered.contains("/home/op/.local/bin/greggd"),
+            "the refusal must name both paths so the operator can act: {rendered}"
         );
     }
 

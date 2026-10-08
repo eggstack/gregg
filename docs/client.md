@@ -35,6 +35,8 @@ interactive prompt and no `sudo` is invoked internally. A directly
 `cargo install`ed client keeps Cargo bookkeeping: on Unix the uninstall
 delegates to `cargo uninstall --root <root> gregg`, while on Windows it
 prints the exact `cargo uninstall` command to run after the process exits.
+Either way the failure names `cargo uninstall` itself, not the update's
+source-build fallback.
 
 `gregg add` requires an explicit port. Accepted: `host:port`, `[ipv6]:port`,
 `http://host:port/`, and `nickname@host:port`. Rejected: host-only (`host`,
@@ -190,6 +192,16 @@ parsing the entry back: a unit, plist, or Startup entry that names a different
 executable or config is left alone, and so is one that cannot be read at all.
 `uninstall` and `startup remove` use the same check, so they cannot disagree
 about what is yours.
+
+The bootstrap installers hold themselves to that same standard across **every**
+way of obtaining a new `gregg`: a prebuilt release asset, the source build that
+happens when no asset matches the host, and the source build used when a pinned
+release predates the first one carrying that asset. Each performs the same
+replacement finalization — identify a running client daemon by handshake,
+`daemon stop`, install, `daemon restart`, then register the startup entry. The
+client daemon runs *from* the installed executable, so an update path that
+skipped that sequence would leave it running the file that was just replaced,
+with nothing in the configuration acknowledging it.
 
 A root or Administrator install registers **nothing** — there is no honest way
 to pick which human a shared binary should watch for. Each user gets lazy

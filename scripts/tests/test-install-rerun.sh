@@ -75,6 +75,15 @@ if [[ "\${1:-}" == "startup" ]]; then
   echo "${program} startup" >> "\${STARTUP_LOG:?}"
   exit 0
 fi
+# Client-daemon lifecycle (status / stop / restart / startup install) is
+# logged verbatim so a test can prove the installer actually reached it.
+# Every form exits 0, which is what the trailing fallthrough used to do for
+# these unrecognized arguments. No backticks or angle brackets above: this
+# body sits in an unquoted heredoc, so either would be interpreted.
+if [[ "\${1:-}" == "daemon" ]]; then
+  echo "${program} \${*}" >> "\${DAEMON_LOG:?}"
+  exit 0
+fi
 if [[ "\${1:-}" == "status" ]]; then
   echo "${program} status" >> "\${DAEMON_LOG:?}"
   [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
@@ -139,6 +148,15 @@ if [[ "\${1:-}" == "startup" ]]; then
   echo "${program} startup" >> "\${STARTUP_LOG:?}"
   exit 0
 fi
+# Client-daemon lifecycle (status / stop / restart / startup install) is
+# logged verbatim so a test can prove the installer actually reached it.
+# Every form exits 0, which is what the trailing fallthrough used to do for
+# these unrecognized arguments. No backticks or angle brackets above: this
+# body sits in an unquoted heredoc, so either would be interpreted.
+if [[ "\${1:-}" == "daemon" ]]; then
+  echo "${program} \${*}" >> "\${DAEMON_LOG:?}"
+  exit 0
+fi
 if [[ "\${1:-}" == "status" ]]; then
   echo "${program} status" >> "\${DAEMON_LOG:?}"
   [[ "${program}" != "greggd" || "\${FAKE_DAEMON_RUNNING:-0}" == "1" ]]
@@ -180,6 +198,15 @@ if [[ "\${1:-}" == "version" ]]; then
 fi
 if [[ "\${1:-}" == "startup" ]]; then
   echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+# Client-daemon lifecycle (status / stop / restart / startup install) is
+# logged verbatim so a test can prove the installer actually reached it.
+# Every form exits 0, which is what the trailing fallthrough used to do for
+# these unrecognized arguments. No backticks or angle brackets above: this
+# body sits in an unquoted heredoc, so either would be interpreted.
+if [[ "\${1:-}" == "daemon" ]]; then
+  echo "${program} \${*}" >> "\${DAEMON_LOG:?}"
   exit 0
 fi
 if [[ "\${1:-}" == "status" ]]; then
@@ -258,6 +285,15 @@ if [[ "\${1:-}" == "version" ]]; then
 fi
 if [[ "\${1:-}" == "startup" ]]; then
   echo "${program} startup" >> "\${STARTUP_LOG:?}"
+  exit 0
+fi
+# Client-daemon lifecycle (status / stop / restart / startup install) is
+# logged verbatim so a test can prove the installer actually reached it.
+# Every form exits 0, which is what the trailing fallthrough used to do for
+# these unrecognized arguments. No backticks or angle brackets above: this
+# body sits in an unquoted heredoc, so either would be interpreted.
+if [[ "\${1:-}" == "daemon" ]]; then
+  echo "${program} \${*}" >> "\${DAEMON_LOG:?}"
   exit 0
 fi
 if [[ "\${1:-}" == "status" ]]; then
@@ -538,6 +574,33 @@ if [[ $STATUS -eq 0 && -x "${DEST_DIR}/greggd" && "$(grep -c '^greggd startup$' 
   ok "staged Cargo daemon reaches shared finalization and activation"
 else
   fail "staged Cargo daemon startup finalization (status=$STATUS, out=$OUT)"
+fi
+
+# The client half of the same contract. A 404 Cargo fallback is a supported
+# acquisition path, so a user-local `gregg` replacement through it must reach
+# the same shared finalization as every other path: transition the client
+# daemon it captured before replacement, then register its startup entry.
+# The daemon assertion above already covers the `greggd` side of this branch;
+# without a client counterpart the branch silently skipped `gregg` entirely,
+# leaving a running client daemon executing the replaced-out image on Unix.
+: > "$DAEMON_LOG"
+run_install gregg
+if [[ $STATUS -eq 0 ]]; then
+  ok "staged Cargo client replacement exits 0"
+else
+  fail "staged Cargo client replacement (status=$STATUS, out=$OUT)"
+fi
+if grep -q '^gregg daemon status$' "$DAEMON_LOG" \
+  && grep -q '^gregg daemon stop$' "$DAEMON_LOG" \
+  && grep -q '^gregg daemon restart$' "$DAEMON_LOG"; then
+  ok "staged Cargo client replacement transitions its running client daemon"
+else
+  fail "staged Cargo client transition (daemon log: $(tr '\n' ';' < "$DAEMON_LOG"))"
+fi
+if grep -q '^gregg daemon startup install$' "$DAEMON_LOG"; then
+  ok "staged Cargo client replacement registers its client-daemon startup entry"
+else
+  fail "staged Cargo client startup registration (daemon log: $(tr '\n' ';' < "$DAEMON_LOG"))"
 fi
 
 # --- 8. Plan 130 user-local PATH activation ---------------------------------------

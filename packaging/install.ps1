@@ -306,6 +306,10 @@ function Invoke-CargoFallback {
         $DestPath = Join-Path $DestDir "$Program.exe"
         Install-VerifiedCandidate -Program $Program -Candidate $Staged -DestPath $DestPath -DestDir $DestDir -Scope $Scope -ExistingVersion $ExistingVersion
         if ($Program -eq "gregg") {
+            # Staged Cargo and prebuilt candidates share this finalization path;
+            # without the transition a same-scope replacement registered a
+            # startup entry for the new image while the old daemon kept running.
+            Transition-UserLocalClientd -DestPath $DestPath -Scope $Scope -IsAdmin $IsAdmin
             Register-UserLocalClientdStartup -DestPath $DestPath -IsAdmin $IsAdmin
         }
     } finally {
@@ -348,6 +352,25 @@ function Register-UserLocalClientdStartup {
         Write-Warning "Nothing is broken: 'gregg' starts the daemon on demand. To keep it running"
         Write-Warning "without a TUI open, run:"
         Write-Warning "  $DestPath daemon startup instructions"
+    }
+}
+
+function Transition-UserLocalClientd {
+    param([string]$DestPath, [string]$Scope, [bool]$IsAdmin)
+
+    if ($IsAdmin) { return }
+    if ($Scope -ne "replace") { return }
+    if (-not $DestPath) { return }
+
+    & $DestPath daemon status *> $null
+    if ($LASTEXITCODE -ne 0) { return }
+    & $DestPath daemon stop
+    if ($LASTEXITCODE -ne 0) {
+        throw "binary updated; client-daemon transition failed: stop was not confirmed. Retry: `"$DestPath`" daemon stop && `"$DestPath`" daemon restart"
+    }
+    & $DestPath daemon restart
+    if ($LASTEXITCODE -ne 0) {
+        throw "binary updated; client-daemon transition failed: restart did not complete. Retry: `"$DestPath`" daemon restart"
     }
 }
 
@@ -482,20 +505,8 @@ function Install-Program {
         # same-scope replacement transitions the identified daemon before a
         # startup entry is registered that would otherwise still point at the
         # old image.
-        if ($Program -eq "gregg" -and $Scope -eq "replace" -and -not $IsAdmin) {
-            & $DestPath daemon status *> $null
-            if ($LASTEXITCODE -eq 0) {
-                & $DestPath daemon stop
-                if ($LASTEXITCODE -ne 0) {
-                    throw "binary updated; client-daemon transition failed: stop was not confirmed. Retry: `"$DestPath`" daemon stop && `"$DestPath`" daemon restart"
-                }
-                & $DestPath daemon restart
-                if ($LASTEXITCODE -ne 0) {
-                    throw "binary updated; client-daemon transition failed: restart did not complete. Retry: `"$DestPath`" daemon restart"
-                }
-            }
-        }
         if ($Program -eq "gregg") {
+            Transition-UserLocalClientd -DestPath $DestPath -Scope $Scope -IsAdmin $IsAdmin
             Register-UserLocalClientdStartup -DestPath $DestPath -IsAdmin $IsAdmin
         }
     } finally {

@@ -228,6 +228,15 @@ Details:
   `sudo <exe> startup install --method <...>` command is printed and exit 4
   (`PermissionDenied`) is returned. No internal `sudo`. `startup
   instructions` never mutates state.
+- A systemd unit and a launchd plist name their program as the canonical
+  `/usr/local/bin/greggd`, so `startup install` refuses to run when invoked from
+  any other copy: the unit would start a different binary than the one you
+  invoked, and `greggd uninstall` / `greggd restart` — which prove ownership
+  against the exact invoked executable — would then treat it as someone else's.
+  Install the binary at the canonical path first (or use `--method cron`) and
+  run the install from there. `crontab` itself is invoked through the same
+  bounded allowlist as every other manager call, so a locked or hung crontab
+  cannot hang the command.
 - `restart` is manager-aware and exact-executable-aware: systemd and launchd
   receive restart mutation only when their parsed registration targets the
   invoked executable. Foreign registrations using the selected config and
@@ -275,7 +284,10 @@ Details:
   owned-to-foreign transition fails with zero mutation. A missing exact asset
   (HTTP 404) permits a staged `cargo install --locked --version "=X.Y.Z"`
   fallback; checksum/version mismatch, transport failure, or 5xx never fall
-  back. Config and startup registration are preserved; only
+  back. That fallback ends in the same post-install finalization as a prebuilt
+  asset — the same config and startup handling, and on Windows the same
+  SCM-safe stop/replace/register/restart — so a fallback install is not a
+  second-class installation. Config and startup registration are preserved; only
   `ManagedRunning`/`DirectRunning` restart via ownership-aware
   `restart_daemon()`, stopped/foreign stay stopped/preserved, and a
   replacement whose restart fails reports

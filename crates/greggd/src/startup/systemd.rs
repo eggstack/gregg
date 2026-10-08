@@ -1,8 +1,8 @@
 //! systemd unit content, installation, and restart.
 
 use super::install::{
-    elevated_command, ensure_config_preserved, is_privileged, manager_error_is_permission,
-    repair_system_config_permissions, write_atomic_text, InstallError,
+    elevated_command, ensure_config_preserved, ensure_standard_binary, is_privileged,
+    manager_error_is_permission, repair_system_config_permissions, write_atomic_text, InstallError,
 };
 #[cfg(test)]
 use super::method::standard_systemd_config;
@@ -309,9 +309,13 @@ pub fn install_systemd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
     // Verify standard binary exists.
     let bin_path = standard_systemd_binary();
     if !bin_path.exists() {
-        // Also check if current exe is at that path; if current exe exists but not at standard path, give actionable error.
         return Err(InstallError::BinaryMissing { path: bin_path });
     }
+    // The unit's ExecStart names that same path verbatim, so an install from
+    // any other binary would register a service that does not run what the
+    // operator invoked -- and that uninstall/restart then refuse to treat as
+    // ours. Give the actionable error the check above promises.
+    ensure_standard_binary(exe, &bin_path)?;
     // Privilege check: if not root, print elevated command and return PermissionDenied.
     if !is_privileged() {
         let cmd = elevated_command(exe, StartupMethodArg::Systemd);
@@ -500,10 +504,12 @@ pub fn uninstall_systemd(exe: &Path) -> Result<(), InstallError> {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {}
                     Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
                         return Err(InstallError::Permission {
+                            // Quoted for the same reason as `elevated_command`:
+                            // this is a command the operator copies verbatim.
                             message: format!(
                                 "permission denied removing {}: rerun as root: sudo {} uninstall",
                                 unit_path.display(),
-                                exe.display()
+                                gregg_update::stage::unix_shell_quote(exe)
                             ),
                         });
                     }

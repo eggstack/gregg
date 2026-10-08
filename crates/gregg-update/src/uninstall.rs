@@ -280,8 +280,11 @@ pub fn cargo_uninstall(ownership: &CargoOwnership) -> Result<(), UpdateError> {
         .arg(&ownership.package)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    let output =
-        crate::exec::run_command_with_timeout_for_cargo(cmd, crate::exec::CARGO_UNINSTALL_TIMEOUT)?;
+    let output = crate::exec::run_command_with_timeout_for_cargo(
+        cmd,
+        crate::exec::CARGO_UNINSTALL_TIMEOUT,
+        "uninstall",
+    )?;
     if output.status.success() {
         Ok(())
     } else {

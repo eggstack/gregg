@@ -215,6 +215,10 @@ pub fn install_launchd(exe: &Path, config_path: &Path) -> Result<(), InstallErro
     if !bin_path.exists() {
         return Err(InstallError::BinaryMissing { path: bin_path });
     }
+    // ProgramArguments[0] names that same path verbatim. See the systemd
+    // install path for why an install from a different binary must fail here
+    // rather than register a service nobody owns.
+    super::install::ensure_standard_binary(exe, &bin_path)?;
     if !is_privileged() {
         let cmd = elevated_command(exe, StartupMethodArg::Launchd);
         return Err(InstallError::Permission {
