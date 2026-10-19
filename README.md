@@ -135,6 +135,8 @@ See [Daemon](docs/daemon.md) and [Client](docs/client.md).
 - `n`: expand/collapse network details for the selected system
 - `c`: expand/collapse cron details for the selected system
 - `Shift-J` / `Shift-K`: move between cron jobs in that block
+- `PageDown` / `PageUp` (or `f` / `b`, or `Ctrl-D` / `Ctrl-U`): page forward and
+  back through the system list
 - `Ctrl-R`: ask the client daemon to re-read the config and poll immediately
 
 ## Cron observability

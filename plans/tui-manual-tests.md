@@ -68,6 +68,17 @@ recorded with the date and environment.
 - [ ] **Host goes offline during display**: Reorder smoothly
 - [ ] **Host comes back online**: Reorder smoothly
 
+### Paging Through a Long Host List
+
+- [ ] **Ctrl-D pages down**: Selection and viewport advance by about one page
+- [ ] **Ctrl-U pages up**: Selection and viewport retreat by about one page
+- [ ] **Ctrl-D / Ctrl-U match PageDown / PageUp**: Same target system after the
+      same number of presses
+- [ ] **Ctrl-D at the end of the list**: Stops at the last system, no wrap
+- [ ] **Ctrl-U at the top of the list**: Stops at the first system, no wrap
+- [ ] **Unmodified `d` still expands drives**: The ctrl alias does not shadow
+      the drive-expansion key
+
 ### Resize
 
 - [ ] **Shrink terminal**: Content reflows, no crash

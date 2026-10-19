@@ -565,6 +565,7 @@ reappear when the operator comes back.
 | `n` | Toggle network detail expansion (legacy systems are a no-op) |
 | `g`/`G` | First/last system |
 | `f`/`b` (or `PageDown`/`PageUp`) | Page forward/back |
+| `Ctrl-D`/`Ctrl-U` | Page forward/back (aliases of `PageDown`/`PageUp`) |
 | `Ctrl-R` | Reload Systems config and reliably replace/poll endpoints, or refresh EggPool |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 
