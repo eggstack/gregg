@@ -221,16 +221,19 @@ requirement. The intermediate commits for Plans 179 and 180 were superseded by
 later pushes and are covered by this same green tree, so no separate run is
 claimed for them. Because all three are terminal, they unblock no remaining
 plan; Plan 091 remains in progress, gated solely on its own extended soak
-record, and Plan 182 is the one new in-progress plan.
+record.
 
-Plan 182 is a narrow client-side feature plan: `Ctrl-D` and `Ctrl-U` become
+Plan 182 is complete at implementation `132967a`: `Ctrl-D` and `Ctrl-U` are
 page-scrolling aliases in the TUI, so a long host list can be paged without
 reaching for `PageDown`/`PageUp` or `f`/`b`. They translate to the *same*
 `Action::PageUp`/`Action::PageDown` the dedicated paging keys already produce,
 so the client keeps exactly one scroll model — selection and viewport still
 move together by one computed viewport page, and the alias is a no-op on the
 EggPool pane exactly like the keys it aliases. No new `Action`, no new `Key`,
-no renderer, state, daemon, or protocol change, and no new dependency. It
+no renderer, state, daemon, or protocol change, and no new dependency. Five
+new tests take the `gregg` crate from 920 to 925; the three mapping proofs are
+mutation-tested, and the one existing test that asserted `Ctrl-D` was unmapped
+is corrected because that assertion *is* the mapping this plan replaces. It
 depends only on the current post-181 main and is independent of Plan 091 and
 Plans 179-181.
 
@@ -894,7 +897,7 @@ excluded.
 | [`179-greggd-post-exit-settle-deadline-authority-corrective.md`](179-greggd-post-exit-settle-deadline-authority-corrective.md) | Make the frozen 250 ms post-exit settle deadline outrank continuously-ready descendant stdout/stderr so output readiness can never retain the global scheduler slot beyond the bounded settle | **complete** at `5442dd2`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Clippy/Test steps; the deadline is the first `biased` branch in both `prefer_stdout` arms, with the optional `Instant::now()` guard deliberately rejected (it can pass and then lose the next poll to a drain that completed in between); 22 observation tests green, both ordering cases mutation-tested — restoring drain-first ordering consumed 262,144 bytes past the deadline in 0.00 s; stripped `greggd` +16 bytes (3,312,688 -> 3,312,704), Plan 162 ceiling retained with 87,296 bytes of headroom; depends on completed 177; independent of 091/180/181; no protocol/process-group change |
 | [`180-gregg-cron-observation-delivery-preemption-corrective.md`](180-gregg-cron-observation-delivery-preemption-corrective.md) | Let reload/cancellation preempt a cron observation blocked on the full bounded worker-to-engine channel, with history-gate commit only after successful delivery | **complete** at `64676b0`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Test step that executes the round-selection regressions; `deliver_observation` selects cancel, then reload, then the send, so the gate commit stays reachable only on `Ok(())`; 37 cron tests green (was 29), mutation-tested — a bare `send().await` failed the reload, cancellation, and round-level regressions in 0.03 s; `CRON_CHANNEL_CAPACITY` made `pub(crate)` so tests fill the real bounded channel; depends on completed 178; independent of 091/179/181; four-read bound, 30s cadence, and the 64-slot channel capacity all preserved |
 | [`181-eggpool-desired-state-result-backpressure-corrective.md`](181-eggpool-desired-state-result-backpressure-corrective.md) | Keep EggPool latest-desired-state convergence live while a completed result is blocked on the full bounded result channel, abandoning only superseded work | **complete** at `7853743`; **closure evidence run `37414987171` on `7853743` green across all six jobs**, including the native Windows Clippy/Test steps that are the platform authority Plan 176 waited on; `deliver_result_or_interrupt` selects cancel, then `control_rx.changed()`, then `sender.reserve()`, returning a typed `ResultDelivery`; an equivalent publication is consumed and the wait continues, so a redundant repaint cannot become a lost result; `Superseded` reuses the existing `EggpoolWorkerState::converge` for at most one request; 87 `eggpool` tests green (was 82), mutation-tested — removing the control branch failed deactivation and supersession in 0.00 s while Plan 176's cancellation regression still passed, proving addition not substitution; depends on completed 151+176; independent of 091/179/180; four-slot bounded backpressure preserved and never made lossy |
-| [`182-tui-page-scroll-key-bindings.md`](182-tui-page-scroll-key-bindings.md) | Add `Ctrl-D`/`Ctrl-U` page-scrolling aliases so a long host list can be paged without the dedicated paging keys | **in progress**; `Ctrl-U`/`Ctrl-D` translate to the existing `Action::PageUp`/`Action::PageDown`, so there is still one scroll model; depends on current post-181 main; independent of 091/179-181; no state, renderer, daemon, or protocol change |
+| [`182-tui-page-scroll-key-bindings.md`](182-tui-page-scroll-key-bindings.md) | Add `Ctrl-D`/`Ctrl-U` page-scrolling aliases so a long host list can be paged without the dedicated paging keys | **complete** at `132967a`; `Ctrl-U`/`Ctrl-D` translate to the existing `Action::PageUp`/`Action::PageDown`, so there is still one scroll model; five new tests (920 → 925 in the `gregg` crate), the three mapping proofs mutation-tested — removing the two arms fails them in 0.00 s; one existing test updated because it asserted the mapping this plan deliberately replaces; `Ctrl-Alt` still refused; depends on current post-181 main; independent of 091/179-181; no state, renderer, daemon, or protocol change |
 
 Dependency order:
 
