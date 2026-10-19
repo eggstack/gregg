@@ -172,7 +172,8 @@ release builds, SCM lifecycle smoke), MSRV Rust 1.89, FreeBSD `gregg-host`
 native, and Scripts (shellcheck + pytest). That run is the platform truth for
 the branch, and it is also the first green `main`-lineage run since
 `207c9d4`, because `d0d24c9` clears the two clippy failures that had been
-holding the Linux and Windows jobs red.
+holding the Linux and Windows jobs red. The record-only follow-up commit
+`c76b42f` is green on its own run `39343389523`, across the same seven jobs.
 
 ### The branch also carries two pre-existing corrective fixes
 
