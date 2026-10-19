@@ -1,6 +1,6 @@
 # Plan 184: TUI page-scroll key bindings
 
-Status: in progress. See the closure record at the end.
+Status: complete. See the closure record at the end.
 
 Depends on: current main at `1760ef1`.
 Independent of Plan 091 and Plans 179-183.
@@ -67,21 +67,21 @@ already records that there is one scroll model.
 
 ## Acceptance criteria
 
-- [ ] `Ctrl-U` translates to `Action::PageUp` and `Ctrl-D` translates to
+- [x] `Ctrl-U` translates to `Action::PageUp` and `Ctrl-D` translates to
       `Action::PageDown`, proven by deterministic unit tests on
       `key_to_action`.
-- [ ] The unmodified `d` (toggle drives), `u`-family, and `Ctrl-D` spellings
+- [x] The unmodified `d` (toggle drives), `u`-family, and `Ctrl-D` spellings
       are not confused: unmodified `d` still toggles drive expansion and
       unmodified `u` stays unmapped.
-- [ ] `Ctrl-U` / `Ctrl-D` with `alt` held stay unmapped.
-- [ ] The dedicated `PageUp` / `PageDown` / `f` / `b` bindings are unchanged.
-- [ ] Applying the action through the real reducer moves the Systems selection
+- [x] `Ctrl-U` / `Ctrl-D` with `alt` held stay unmapped.
+- [x] The dedicated `PageUp` / `PageDown` / `f` / `b` bindings are unchanged.
+- [x] Applying the action through the real reducer moves the Systems selection
       by one viewport page, so the alias is proven end-to-end and not only at
       the translation layer.
-- [ ] `README.md`, `crates/gregg/README.md`, `docs/client.md`,
+- [x] `README.md`, `crates/gregg/README.md`, `docs/client.md`,
       `architecture/gregg-client.md`, the `gregg-client` skill, and
       `CHANGELOG.md` describe the new bindings in the same pass.
-- [ ] `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`,
+- [x] `cargo fmt --all -- --check`, workspace Clippy with `-D warnings`,
       workspace tests, and `./scripts/check-local.sh` pass.
 
 ## Preserved exclusions
@@ -93,3 +93,89 @@ already records that there is one scroll model.
   scheduler, the collectors, the wire protocol, and the release pipeline.
 - Plan 091's soak record.
 - New CI jobs, workflows, or matrices.
+
+## Closure record
+
+Implementation `132967a86d068b518d6f2fc11cf87a765ce1d726`. Client-side feature
+in `crates/gregg/src/event.rs`; no state, renderer, daemon, protocol, or
+dependency change.
+
+### The alias, not a second scroll model
+
+The production change is two match arms in the `ctrl` branch of
+`key_to_action`:
+
+```rust
+Key::Char('u') => Some(Action::PageUp),
+Key::Char('d') => Some(Action::PageDown),
+```
+
+They produce the *same* actions `PageUp`/`PageDown` (and their `f`/`b`
+spellings) already produce, so the reducer, the computed viewport page
+(`AppState::page_size`), the viewport fix-up
+(`ensure_selected_visible_with_order`), the transient selection highlight, and
+the Systems-pane gating are all unchanged. There is no new `Action` variant,
+no new `Key` variant, no second page size, and no scroll-without-selecting
+mode — the repository already records that the client has one scroll model, and
+a second offset would be a second way to be wrong.
+
+`Ctrl-U`/`Ctrl-D` with `alt` held stay unmapped, matching the pre-existing
+`ctrl`+`alt` refusal and the `alt` refusal for unmodified keys.
+
+### One existing test changed, and why
+
+`event::tests::modified_view_controls_are_unmapped` asserted that `Ctrl-D` was
+unmapped. That assertion *is* the mapping this plan deliberately replaces, so
+it could not survive unchanged. It now asserts that `Ctrl-D` is the page-down
+alias, that every other modified view control (`h`, `l`, `Left`, `Right`, `e`)
+stays unmapped under ctrl, and — new coverage — that `Ctrl-Alt` stays refused
+for `d` and `e`. Every other assertion in that test is retained.
+
+### The five new tests
+
+| Test | What it locks |
+|---|---|
+| `event::tests::key_to_action_ctrl_u_and_ctrl_d_page` | `Ctrl-U` is `PageUp`, `Ctrl-D` is `PageDown` |
+| `event::tests::ctrl_page_aliases_are_the_same_actions_as_the_paging_keys` | The alias and the dedicated key produce the same action |
+| `event::tests::ctrl_page_aliases_do_not_shadow_the_unmodified_keys` | Plain `d` still toggles drives; plain `u` stays unmapped |
+| `event::tests::ctrl_page_aliases_with_alt_are_unmapped` | `Ctrl-Alt` is refused |
+| `state::tests::ctrl_page_aliases_move_the_selection_by_one_page` | End-to-end: the real key event is translated and the real action applied, and the Systems selection really pages |
+
+The end-to-end test is the one that matters most: a mapping that stopped at
+the action boundary would still pass the four translation-level tests.
+
+### Mutation check
+
+Removing the two match arms fails three of the five new tests in 0.00 s:
+`key_to_action_ctrl_u_and_ctrl_d_page`,
+`ctrl_page_aliases_are_the_same_actions_as_the_paging_keys`, and
+`state::tests::ctrl_page_aliases_move_the_selection_by_one_page`. The two
+remaining new tests pass either way *by design* — they are invariant guards
+(the unmodified keys, and the `Ctrl-Alt` refusal) whose property holds with or
+without the alias — so they are recorded as guards, not as proofs of the
+binding.
+
+### Verification
+
+- `cargo fmt --all -- --check` clean.
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
+- `./scripts/check-local.sh` green: the `gregg` crate's tests went 920 → 925
+  (the five new tests), and the workspace suite is 1705 passed / 0 failed /
+  2 ignored.
+- The manual TUI checklist (`plans/tui-manual-tests.md`) gained a "Paging
+  Through a Long Host List" section for the operator-side confirmation that a
+  unit test cannot give.
+
+No CI run is claimed here: the change adds no platform-specific code, wire
+change, or CI infrastructure, so the default local check plus the workspace
+Clippy/test gate is the lightest appropriate mechanism under this repository's
+completion rule. The ordinary workflow on the pull request remains the
+platform truth for the five existing jobs.
+
+### Preserved
+
+`Ctrl-R` is still the only config-reload boundary and `Ctrl-C` still quits.
+The one-line key hint in the TUI footer is unchanged: it is width-tiered and
+already saturates a narrow terminal, so the new spellings are documented in
+`README.md`, `docs/client.md`, the crate README, the architecture deep dive,
+and the `gregg-client` skill instead.
