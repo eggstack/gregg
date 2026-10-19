@@ -166,11 +166,13 @@ binding.
   Through a Long Host List" section for the operator-side confirmation that a
   unit test cannot give.
 
-No CI run is claimed here: the change adds no platform-specific code, wire
-change, or CI infrastructure, so the default local check plus the workspace
-Clippy/test gate is the lightest appropriate mechanism under this repository's
-completion rule. The ordinary workflow on the pull request remains the
-platform truth for the existing jobs.
+CI run `39342335567` on `6ef2f62` is green across all seven jobs — Linux,
+macOS arm64, macOS Intel, Windows (full-workspace Clippy and Test, both
+release builds, SCM lifecycle smoke), MSRV Rust 1.89, FreeBSD `gregg-host`
+native, and Scripts (shellcheck + pytest). That run is the platform truth for
+the branch, and it is also the first green `main`-lineage run since
+`207c9d4`, because `d0d24c9` clears the two clippy failures that had been
+holding the Linux and Windows jobs red.
 
 ### The branch also carries two pre-existing corrective fixes
 
