@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Page-scrolling aliases in the TUI (Plan 182):** `Ctrl-D` and `Ctrl-U` page
+  forward and back through the system list, next to the existing
+  `PageDown`/`PageUp` and `f`/`b` bindings. They are aliases of the same
+  actions — one page of the current viewport, with the selection and the
+  viewport moving together — so a long host list can be scrolled without
+  reaching for the dedicated paging keys. `Ctrl-D`/`Ctrl-U` are no-ops on the
+  EggPool pane, exactly like the paging keys they alias.
+
 - **Cron observability in the TUI (Plan 166):** `c` expands a read-only cron
   block inside the selected system, and `Shift-J` / `Shift-K` move between jobs.
   The block lists every job a `greggd` schedules with its state, schedule, and

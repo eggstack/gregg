@@ -109,6 +109,8 @@ metrics and reports health as unsupported.
 - `v`: toggle normal/condensed layout
 - `d`: expand/collapse drives for the selected system
 - `n`: expand/collapse network details for the selected system
+- `PageDown` / `PageUp` (or `f` / `b`, or `Ctrl-D` / `Ctrl-U`): page forward and
+  back through the system list
 - `Ctrl-R`: ask the client daemon to re-read the config and poll immediately;
   on the EggPool pane, refresh that pane
 

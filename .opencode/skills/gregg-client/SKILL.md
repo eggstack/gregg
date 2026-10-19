@@ -272,6 +272,7 @@ never activate the Systems-device highlight.
 | `n` | Toggle network detail expansion; legacy systems are a no-op |
 | `g`/`G` | First/last system |
 | `f`/`b` | Page forward/back |
+| `Ctrl-D`/`Ctrl-U` | Page forward/back (aliases of `PageDown`/`PageUp`) |
 | `Ctrl-R` | Ask the daemon to re-read the config and poll; on EggPool, refresh pane |
 | `q`/`Esc`/`Ctrl-C` | Quit |
 

@@ -111,6 +111,12 @@ pub fn key_to_action(event: KeyEvent) -> Option<crate::action::Action> {
         return match event.key {
             Key::Char('c') => Some(Action::Quit),
             Key::Char('r') => Some(Action::RefreshNow),
+            // Page aliases for a long host list. These are the *same*
+            // actions the dedicated paging keys produce, so there is still
+            // exactly one scroll model; the modifier only changes how the
+            // action is spelled.
+            Key::Char('u') => Some(Action::PageUp),
+            Key::Char('d') => Some(Action::PageDown),
             _ => None,
         };
     }
@@ -300,6 +306,17 @@ mod tests {
                 shift: false
             })
             .is_none());
+        }
+        // `Ctrl-D` is deliberately the page-down alias (Plan 182), so it is
+        // the one view-control key that ctrl no longer leaves unmapped.
+        // Every other modified view control stays unmapped.
+        for key in [
+            Key::Char('h'),
+            Key::Char('l'),
+            Key::Left,
+            Key::Right,
+            Key::Char('e'),
+        ] {
             assert!(key_to_action(KeyEvent {
                 key,
                 ctrl: true,
@@ -319,7 +336,7 @@ mod tests {
             assert!(key_to_action(KeyEvent {
                 key,
                 ctrl: true,
-                alt: false,
+                alt: true,
                 shift: false,
             })
             .is_none());
@@ -406,6 +423,84 @@ mod tests {
             shift: false,
         });
         assert!(matches!(action, Some(crate::action::Action::PageUp)));
+    }
+
+    #[test]
+    fn key_to_action_ctrl_u_and_ctrl_d_page() {
+        let action = key_to_action(KeyEvent {
+            key: Key::Char('u'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        });
+        assert!(matches!(action, Some(crate::action::Action::PageUp)));
+
+        let action = key_to_action(KeyEvent {
+            key: Key::Char('d'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        });
+        assert!(matches!(action, Some(crate::action::Action::PageDown)));
+    }
+
+    #[test]
+    fn ctrl_page_aliases_are_the_same_actions_as_the_paging_keys() {
+        // The alias must not introduce a second scroll model: `Ctrl-U` and
+        // `Ctrl-D` have to translate to the very same actions the dedicated
+        // paging keys produce.
+        for (key, ctrl) in [(Key::Char('u'), true), (Key::PageUp, false)] {
+            let action = key_to_action(KeyEvent {
+                key,
+                ctrl,
+                alt: false,
+                shift: false,
+            });
+            assert!(matches!(action, Some(crate::action::Action::PageUp)));
+        }
+        for (key, ctrl) in [(Key::Char('d'), true), (Key::PageDown, false)] {
+            let action = key_to_action(KeyEvent {
+                key,
+                ctrl,
+                alt: false,
+                shift: false,
+            });
+            assert!(matches!(action, Some(crate::action::Action::PageDown)));
+        }
+    }
+
+    #[test]
+    fn ctrl_page_aliases_do_not_shadow_the_unmodified_keys() {
+        // Unmodified `d` still toggles drive expansion, and unmodified `u`
+        // stays unmapped: the ctrl branch must not leak into plain keys.
+        let action = key_to_action(KeyEvent {
+            key: Key::Char('d'),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+        assert!(matches!(action, Some(crate::action::Action::ToggleDrives)));
+
+        let action = key_to_action(KeyEvent {
+            key: Key::Char('u'),
+            ctrl: false,
+            alt: false,
+            shift: false,
+        });
+        assert!(action.is_none());
+    }
+
+    #[test]
+    fn ctrl_page_aliases_with_alt_are_unmapped() {
+        for key in [Key::Char('u'), Key::Char('d')] {
+            assert!(key_to_action(KeyEvent {
+                key,
+                ctrl: true,
+                alt: true,
+                shift: false,
+            })
+            .is_none());
+        }
     }
 
     #[test]

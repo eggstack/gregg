@@ -4294,6 +4294,37 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_page_aliases_move_the_selection_by_one_page() {
+        // End-to-end proof that the `Ctrl-U` / `Ctrl-D` aliases really page
+        // the Systems list: the key is translated by the real input layer and
+        // the resulting action is applied by the real reducer. The alias must
+        // not be a mapping that stops at the action boundary.
+        let config = test_config_with_ids(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 20));
+
+        let page_down = crate::event::key_to_action(crate::event::KeyEvent {
+            key: crate::event::Key::Char('d'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        })
+        .expect("Ctrl-D must translate to an action");
+        state.apply_action(page_down);
+        assert_ne!(state.selected_id.as_deref(), Some("a"));
+
+        let page_up = crate::event::key_to_action(crate::event::KeyEvent {
+            key: crate::event::Key::Char('u'),
+            ctrl: true,
+            alt: false,
+            shift: false,
+        })
+        .expect("Ctrl-U must translate to an action");
+        state.apply_action(page_up);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+    }
+
+    #[test]
     fn move_selection_tolerates_isize_min_offset() {
         let config = test_config_with_ids(&["a", "b", "c"]);
         let mut state = AppState::synthetic(&config);

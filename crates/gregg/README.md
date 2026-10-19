@@ -103,6 +103,7 @@ milliseconds. Values outside that range are rejected during config validation.
 | `v` | Toggle Normal/Condensed Systems view |
 | `d` | Expand or collapse selected-system drives |
 | `n` | Expand or collapse selected-system network details |
+| `PageDown`/`PageUp` (or `f`/`b`, or `Ctrl-D`/`Ctrl-U`) | Page forward/back through the system list |
 | `Ctrl-R` | Reload Systems config and refresh, or refresh EggPool |
 
 If a Systems config reload is missing, malformed, or invalid, the last-known-good
