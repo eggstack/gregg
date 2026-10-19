@@ -2,7 +2,7 @@
 
 Status: complete. See the closure record at the end.
 
-Depends on: current main at `1760ef1`.
+Depends on: current main at `1760ef12f6db358afde33fc3d38e331070c8cd9e`.
 Independent of Plan 091 and Plans 179-183.
 
 ## Objective
@@ -96,7 +96,7 @@ already records that there is one scroll model.
 
 ## Closure record
 
-Implementation `132967a86d068b518d6f2fc11cf87a765ce1d726`. Client-side feature
+Implementation `540b56234dfd0d470948f268aa9f9e3788028854`. Client-side feature
 in `crates/gregg/src/event.rs`; no state, renderer, daemon, protocol, or
 dependency change.
 

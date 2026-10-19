@@ -359,6 +359,7 @@ mod tests {
             "run from an Administrator terminal/PowerShell: \"/opt/My Tools/greggd\" update"
         );
         // A hostile path cannot escape the literal.
+        #[cfg_attr(windows, allow(unused_variables))]
         let hostile = elevated_rerun_hint(Path::new("/tmp/a;rm -rf ~/'x"), "uninstall");
         #[cfg(not(windows))]
         assert_eq!(hostile, "sudo '/tmp/a;rm -rf ~/'\\''x' uninstall");

@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn settling_an_absent_pipe_is_not_treated_as_clipped() {
         let (bytes, clipped) = settle(None);
-        assert!(bytes.is_empty());
+        assert_eq!(bytes, [] as [u8; 0]);
         assert!(!clipped);
     }
 
