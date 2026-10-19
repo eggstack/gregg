@@ -159,9 +159,9 @@ binding.
 
 - `cargo fmt --all -- --check` clean.
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean.
-- `./scripts/check-local.sh` green: the `gregg` crate's tests went 920 → 925
-  (the five new tests), and the workspace suite is 1705 passed / 0 failed /
-  2 ignored.
+- `./scripts/check-local.sh` green: measured against the rebased base
+  `1760ef1`, the `gregg` crate's tests went 955 → 960 (the five new tests),
+  and the workspace suite went 1762 → 1767 passed, 0 failed, 2 ignored.
 - The manual TUI checklist (`plans/tui-manual-tests.md`) gained a "Paging
   Through a Long Host List" section for the operator-side confirmation that a
   unit test cannot give.
@@ -170,7 +170,20 @@ No CI run is claimed here: the change adds no platform-specific code, wire
 change, or CI infrastructure, so the default local check plus the workspace
 Clippy/test gate is the lightest appropriate mechanism under this repository's
 completion rule. The ordinary workflow on the pull request remains the
-platform truth for the five existing jobs.
+platform truth for the existing jobs.
+
+### The branch also carries two pre-existing corrective fixes
+
+`d0d24c9` is not part of this plan and is not scoped by it. It clears the two
+clippy failures that `207c9d4` left on `main`, which are why CI run
+`37731156030` on `1760ef1` is red and why every push to `main` since has been
+red: `clippy::assert_is_empty` in `crates/gregg/src/startup_support.rs` on the
+Linux job, and `unused_variables` in `crates/gregg-update/src/stage.rs` on
+the Windows job. Both are one-line, test-only changes with no production
+behavior, no protocol, and no dependency change. They are recorded here
+because this branch cannot demonstrate a green Clippy gate without them —
+the closure claim above is "clippy is clean on this tree", not "clippy was
+already clean before this branch".
 
 ### Preserved
 
