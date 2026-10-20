@@ -9,6 +9,14 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Page-scrolling aliases in the TUI (Plan 184):** `Ctrl-D` and `Ctrl-U` page
+  forward and back through the system list, next to the existing
+  `PageDown`/`PageUp` and `f`/`b` bindings. They are aliases of the same
+  actions — one page of the current viewport, with the selection and the
+  viewport moving together — so a long host list can be scrolled without
+  reaching for the dedicated paging keys. `Ctrl-D`/`Ctrl-U` are no-ops on the
+  EggPool pane, exactly like the paging keys they alias.
+
 - **Cron observability in the TUI (Plan 166):** `c` expands a read-only cron
   block inside the selected system, and `Shift-J` / `Shift-K` move between jobs.
   The block lists every job a `greggd` schedules with its state, schedule, and
@@ -46,7 +54,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 
 - **Fourth audit completion pass (Plan 183, 2026-10-08):** closes the coverage
-  gap Plan 182 disclosed in its own closure record, where the audit's fourth
+  gap Plan 184 disclosed in its own closure record, where the audit's fourth
   pass had left `gregg-protocol`, `gregg-host`, `gregg-update`'s `exec.rs`,
   greggd's control socket, `startup/install.rs`, and `uninstall.rs`
   **unreviewed — not clean**. Again no mechanical gate was failing at `aa321dd`,
@@ -110,7 +118,7 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   by construction and reading — this host is `aarch64-unknown-linux-gnu`, so
   only a native Windows CI run is authority for them.
 
-- **Third audit corrective pass (Plan 182, 2026-10-07):** all eight findings
+- **Third audit corrective pass (Plan 184, 2026-10-07):** all eight findings
   from the logic/robustness audit of commit `adc948d` are fixed, and both
   recorded optimizations are applied. No mechanical gate was failing before
   these changes — `cargo test`, `clippy -D warnings`, `cargo fmt`, and
