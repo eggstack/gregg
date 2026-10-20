@@ -160,6 +160,17 @@ carry a reason. Recovery clears the reason in the same poll generation.
 Offline endpoints keep polling on every configured cadence and recover
 automatically.
 
+Reachable systems are listed first and unreachable ones last. A system that
+goes down therefore moves to the bottom of the list, and the view does not
+follow it: the visible window stays on the same part of the fleet, so the
+other systems remain on screen instead of being scrolled out of view. This
+holds in a narrow pane too, where the fleet is larger than the view.
+
+The selection follows the same rule: when the selected system is the one that
+goes down, the selection moves to the reachable system that takes its place,
+so the view is never dragged down to the failed system. The failed system is
+still listed at the bottom, with its offline reason.
+
 The client also normalizes optional v2 CPU-frequency, disk-I/O, and network
 telemetry without renderer branches on wire version. A v1-only or pre-feature
 v2 daemon remains online and leaves these fields absent; `gregg` falls back

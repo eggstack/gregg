@@ -66,6 +66,18 @@ deadpool@192.168.1.10:11310 offline (refused)
 
 Pending systems (never polled) never carry a reason.
 
+Reachable systems are listed first and unreachable ones last, so a system that
+goes down moves to the bottom of the list. The view does not follow it down:
+the visible window stays on the same part of the fleet, and the remaining
+systems stay on screen instead of being scrolled out of view. This holds in a
+narrow pane too — with more systems than fit, the window keeps showing the
+same live systems.
+
+The selection follows the same rule. When the system you had selected is the
+one that goes down, the selection moves to the live system that takes its
+place, so the view is never dragged down to the failed system at the bottom of
+the list. The failed system is still listed there, with its offline reason.
+
 Press `d` to expand drive details. With live disk-I/O data, the expansion adds
 `R/s` and `W/s` columns plus a daemon-supplied `I/O TOTAL` line. Per-drive
 rates appear only for an exact, unambiguous drive/device association;

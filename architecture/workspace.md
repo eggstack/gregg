@@ -199,7 +199,11 @@ plus normalization (`normalized.rs` for the v1/v2 UI type; `event.rs` maps keys)
   five-row-base entries and condensed one-row entries, with bounded selected
   drive detail rows in either view. Header rows are included in view-aware
   geometry; all paging, viewport, and layout calculations use the same
-  state-aware height function.
+  state-aware height function. The viewport anchor and the logical selection
+  both name a host, so the one fleet writer re-anchors them when that host
+  fails: the dead host moves to the bottom of the list without dragging the
+  window down and hiding the live hosts above it — in a pane too small to
+  hold the fleet as well as in one that can.
 - `action.rs` — `Action` enum for typed state transitions (selection navigation,
   page scrolling, transient view/drive expansion, resize, quit).
 

@@ -53,6 +53,41 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The CI Clippy gate was red on `main`** (`crates/gregg/src/startup_support.rs`):
+  `assert!(bytes.is_empty())` tripped `clippy::assert_is_empty` under the current
+  stable toolchain (1.99.0), so `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` — a blocking CI gate — was red on `main`.
+  `d0d24c9` fixed it with an equivalent assertion
+  (`assert_eq!(bytes, [] as [u8; 0])`); that commit carried no CHANGELOG entry,
+  so it is recorded here. Unrelated to the viewport fix below.
+
+- **Offline host no longer scrolls the remaining fleet off screen** (`gregg`,
+  Plans 185 and 186): the Systems list renders reachable systems first and
+  unreachable ones last, so a host that goes down moves to the bottom of the
+  list. The viewport anchor names a *host*, though, and it followed the host
+  it names down to the bottom group — taking the whole window with it. With the
+  top host down, the view started at that dead host and every live host above
+  it left the screen.
+
+  The window is now re-anchored to the host that took the anchor's previous
+  place, so the dead host moves to the bottom of the list and the view stays
+  where it was. The logical selection needs the same repair, because the
+  window is kept on the selected system: a selection left on a host that just
+  failed dragged the window back down to the bottom of the list and undid the
+  re-anchor. The selection now moves to the live host that took the failed
+  host's place. That is what makes the fix hold in a pane too small to hold
+  the fleet — the case the operator actually runs — where the whole fleet
+  fitting on one screen cannot show the defect at all.
+
+  Both repairs fire only when the host *failed*: it was reachable and is now
+  unreachable. A host reset to "never polled" has not failed — a reload
+  repointed it on purpose, and a client daemon that restarts rebuilds the
+  fleet that way — and a host that a reload repointed is not treated as a
+  failed host either. An anchor that merely shifted up, because hosts above
+  it went down, still names the same top row. The window must not slide when
+  unrelated hosts change state. Both repairs live in the single fleet writer
+  (`AppState::adopt_snapshot`), so there is still exactly one scroll model.
+
 - **Fourth audit completion pass (Plan 183, 2026-10-08):** closes the coverage
   gap Plan 184 disclosed in its own closure record, where the audit's fourth
   pass had left `gregg-protocol`, `gregg-host`, `gregg-update`'s `exec.rs`,

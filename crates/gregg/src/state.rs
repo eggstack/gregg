@@ -149,6 +149,27 @@ pub struct SystemState {
     pub offline_reason: Option<OfflineReason>,
 }
 
+/// Where a system stood in the fleet that a document replaced.
+///
+/// The display order is reachability-sorted, so a system's *position* is only
+/// meaningful relative to the order it was captured in. This records that
+/// order's view of the system, and serves the viewport anchor and the logical
+/// selection alike: both name a host, and both are dragged out of the live
+/// group when that host fails.
+#[derive(Debug, Clone)]
+struct SystemPlacement {
+    /// The system's stable id.
+    id: SystemId,
+    /// Its reachability in the fleet that was replaced.
+    reachability: Reachability,
+    /// Its position in that fleet's display order.
+    position: usize,
+    /// The host it was polled at.
+    host: String,
+    /// The port it was polled at.
+    port: u16,
+}
+
 /// The display order: online systems first (in configured order), then
 /// offline/pending systems (in configured order).
 ///
@@ -2259,6 +2280,15 @@ impl AppState {
         self.saw_reachability |= snapshot.poll_initialized;
         let selected_before = self.selected_id.clone();
         let viewport_before = self.viewport_top_id.clone();
+        // The viewport anchor names a host, but the display order is
+        // reachability-sorted: a host that goes offline is pushed to the
+        // bottom of the list. An anchor that is pushed down would drag the
+        // whole window down with it, so remember where the anchor sat
+        // before the fleet is replaced.
+        let anchor_before = self.anchor_state();
+        // The logical selection names a host too, and the same re-sort drags
+        // it down. Remember where it sat for the same reason.
+        let selection_before = self.selection_state();
         let pane_before = self.active_pane;
         let refresh_before = self.refresh_status.clone();
         let reload_error_before = self.config_reload_error.clone();
@@ -2417,10 +2447,20 @@ impl AppState {
                 self.viewport_top_id = None;
             }
         }
+        // The fleet has been replaced, so a host that failed may now be at
+        // the bottom of the display order. The selection is repaired first,
+        // because the retained cron job is derived from the selected system
+        // and must not be left naming a job the new selection does not have.
+        self.repair_selection(selection_before);
+
         // A selection change, a reload, or a remote that dropped a job can all
         // leave the retained cron job name naming something the selected system
         // no longer has.
         self.repair_cron_selection();
+
+        // The anchor may now name a host that was pushed to the bottom of the
+        // display order. Repair it before anything reads the viewport.
+        self.repair_viewport_anchor(anchor_before);
 
         // The first document that carries polled reachability establishes the
         // reachability-sorted display order. Pinning selection and viewport top
@@ -2520,6 +2560,139 @@ impl AppState {
     /// and there is no second, subtly different answer to "which job is this".
     pub fn repair_cron_selection(&mut self) {
         self.cron_job = self.selected_cron_job().map(str::to_owned);
+    }
+
+    /// The viewport anchor's placement in the current display order.
+    ///
+    /// Captured before a fleet replacement so the anchor can be repaired
+    /// against the order it was anchored in, not the one it ended up in.
+    fn anchor_state(&self) -> Option<SystemPlacement> {
+        self.placement_of(self.viewport_top_id.as_ref()?)
+    }
+
+    /// The logical selection's placement in the current display order.
+    ///
+    /// Captured before a fleet replacement for the same reason as
+    /// [`Self::anchor_state`]: the selection names a host, and the display
+    /// order it was captured in is the only one that says where that host
+    /// *was*.
+    fn selection_state(&self) -> Option<SystemPlacement> {
+        self.placement_of(self.selected_id.as_ref()?)
+    }
+
+    /// Where `id` sat in the current display order.
+    fn placement_of(&self, id: &SystemId) -> Option<SystemPlacement> {
+        let order = self.display_order();
+        let position = order
+            .iter()
+            .position(|&index| &self.systems[index].id == id)?;
+        let system = &self.systems[order[position]];
+        Some(SystemPlacement {
+            id: id.clone(),
+            reachability: system.reachability,
+            position,
+            host: system.endpoint.host.clone(),
+            port: system.endpoint.port,
+        })
+    }
+
+    /// The live host that took `placement`'s place in the display order.
+    ///
+    /// `None` when the system did not *fail*. Only a failed poll makes a host
+    /// dead: a host that was reset to pending has not failed — a reload
+    /// repointed it on purpose, and a daemon restart rebuilds the fleet —
+    /// and a host that is still live has not moved at all.
+    ///
+    /// A host whose *target* changed is not down either, for the same reason
+    /// a reload is not a failure: the window belongs to the configured
+    /// system, not to the target that went away.
+    fn live_replacement(&self, placement: &SystemPlacement) -> Option<SystemId> {
+        // Only a host that *was* live is pushed out of the live group. A host
+        // that was already pending or offline never sat above the live
+        // group, so its position is not a re-sort.
+        if placement.reachability != Reachability::Online {
+            return None;
+        }
+        let index = self
+            .systems
+            .iter()
+            .position(|system| system.id == placement.id)?;
+        let system = &self.systems[index];
+        if system.reachability != Reachability::Offline {
+            return None;
+        }
+        if system.endpoint.port != placement.port
+            || !equivalent_endpoint_host(&system.endpoint.host, &placement.host)
+        {
+            return None;
+        }
+
+        let order = self.display_order();
+        if order.is_empty() {
+            return None;
+        }
+        // The live hosts are now all *above* the dead host, so the host that
+        // took its place is the nearest live one at or before the old
+        // position. A dead host there would put a dead row where the
+        // operator was looking at a live one.
+        let limit = placement.position.min(order.len() - 1);
+        let is_live =
+            |position: usize| self.systems[order[position]].reachability == Reachability::Online;
+        let replacement = (0..=limit)
+            .rev()
+            .find(|&position| is_live(position))
+            .or_else(|| (limit..order.len()).find(|&position| is_live(position)))
+            .unwrap_or(limit);
+        Some(self.systems[order[replacement]].id.clone())
+    }
+
+    /// Re-anchor the viewport after the fleet changed underneath it.
+    ///
+    /// The anchor names a *host*, but the display order is reachability-
+    /// sorted: a host that goes offline is pushed to the bottom of the
+    /// list. When the anchored host is the one that goes offline, an
+    /// identity anchor follows it down and takes the whole window with it —
+    /// every live host above it leaves the screen, even when the fleet
+    /// still fits and nothing needed to scroll at all.
+    ///
+    /// The window is re-anchored to the host that now occupies the anchor's
+    /// previous position, so the operator keeps looking at the same part of
+    /// the fleet: the dead host moves to the bottom of the list, and the
+    /// window stays where it was.
+    ///
+    /// An anchor that merely shifted *up* — because hosts above it went
+    /// offline — still names the same top row and is left alone. The window
+    /// must not slide when unrelated hosts change state.
+    fn repair_viewport_anchor(&mut self, anchor_before: Option<SystemPlacement>) {
+        let Some(anchor) = anchor_before else {
+            return;
+        };
+        let Some(replacement) = self.live_replacement(&anchor) else {
+            return;
+        };
+        self.viewport_top_id = Some(replacement);
+    }
+
+    /// Re-point the logical selection after the fleet changed underneath it.
+    ///
+    /// The selection names a *host* too, and it is dragged out of the live
+    /// group by exactly the same re-sort that moves the anchor. That matters
+    /// because the window is kept on the selected system: a selection left on
+    /// a host that just failed would pull the window down to the bottom of
+    /// the list, undoing the anchor repair and hiding the live hosts the
+    /// operator was looking at.
+    ///
+    /// So the selection moves to the host that took the failed host's place
+    /// — the same rule the anchor repair uses, and for the same reason: the
+    /// operator keeps looking at the same part of the fleet.
+    fn repair_selection(&mut self, selection_before: Option<SystemPlacement>) {
+        let Some(selection) = selection_before else {
+            return;
+        };
+        let Some(replacement) = self.live_replacement(&selection) else {
+            return;
+        };
+        self.selected_id = Some(replacement);
     }
 
     /// Record the `EggPool` period the operator asked for.
@@ -3312,6 +3485,248 @@ mod tests {
 
     fn make_snapshot() -> StatusSnapshot {
         LinuxSnapshotBuilder::default().build()
+    }
+
+    /// A host that goes offline is pushed to the bottom of the display
+    /// order. When that host is the viewport anchor, the window must not
+    /// follow it down: the live hosts above it have to stay on screen.
+    #[test]
+    fn offline_anchor_does_not_drag_the_viewport_to_the_bottom() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        let mut batch = batch_for_indices(&state, [0, 1, 2]);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
+
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::ConnectionRefused,
+                latency: Duration::from_millis(1),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        // The dead host sorts to the bottom…
+        let order = state.display_order();
+        assert_eq!(order, vec![1, 2, 0]);
+        // …but the window stays at the top of the list.
+        assert_eq!(state.viewport_top_id.as_deref(), Some("b"));
+
+        let viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 80, 24),
+            &order,
+        );
+        let visible: Vec<&str> = viewport
+            .iter()
+            .map(|entry| state.systems[entry.index].id.as_str())
+            .collect();
+        assert_eq!(
+            visible,
+            vec!["b", "c", "a"],
+            "every live host must stay on screen"
+        );
+    }
+
+    /// The reported defect, in the shape the operator actually hits it: a
+    /// small pane showing a few rows of a larger fleet.
+    ///
+    /// A test whose whole fleet fits cannot see this. When everything fits,
+    /// the window can hold all of it, so nothing is ever hidden and the
+    /// repair looks complete. Here the window is the only thing standing
+    /// between the operator and the live fleet: the host at the top of the
+    /// list goes down, and the live hosts the operator was looking at have to
+    /// stay on screen.
+    #[test]
+    fn offline_top_host_keeps_the_live_fleet_visible_in_a_crowded_pane() {
+        let config = test_config_with_ids(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let mut state = AppState::synthetic(&config);
+        // A crowded tmux pane: three condensed rows of an eight-host fleet.
+        state.terminal_size = Some((80, 5));
+        state.system_view_mode = SystemViewMode::Condensed;
+
+        let mut batch = batch_for_indices(&state, 0..8);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+
+        // The host at the very top of the list goes down.
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::ConnectionRefused,
+                latency: Duration::from_millis(1),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        // The dead host sorts to the bottom of the list…
+        let order = state.display_order();
+        assert_eq!(
+            order
+                .iter()
+                .map(|&index| state.systems[index].id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c", "d", "e", "f", "g", "h", "a"]
+        );
+        // …and the window stays at the top of the list, on live hosts.
+        assert_eq!(state.viewport_top_id.as_deref(), Some("b"));
+        // The selection moves with it. The window is kept on the selected
+        // system, so a selection left on the dead host would pull the window
+        // down to the bottom of the list and hide the live fleet again.
+        assert_eq!(state.selected_id.as_deref(), Some("b"));
+
+        let viewport = crate::ui::layout::compute_viewport(
+            &state,
+            ratatui::layout::Rect::new(0, 0, 80, 5),
+            &order,
+        );
+        let visible: Vec<&str> = viewport
+            .iter()
+            .map(|entry| state.systems[entry.index].id.as_str())
+            .collect();
+        assert_eq!(
+            visible,
+            vec!["b", "c", "d"],
+            "the live hosts must stay on screen"
+        );
+    }
+
+    /// The window is kept on the selected system, so a selection left on a
+    /// host that just failed drags the window down to the bottom of the
+    /// list. The selection moves to the host that took its place instead.
+    #[test]
+    fn selected_host_failure_moves_the_selection_to_the_live_replacement() {
+        let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 6));
+        state.system_view_mode = SystemViewMode::Condensed;
+
+        let mut batch = batch_for_indices(&state, 0..5);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+
+        // The operator selected a host in the middle of the list.
+        state.selected_id = Some("c".into());
+
+        // That host goes down.
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "c".into(),
+                endpoint: state.systems[2].endpoint.clone(),
+                outcome: PollOutcome::ConnectionRefused,
+                latency: Duration::from_millis(1),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        // The selection moves to the live host that took its place…
+        assert_eq!(
+            state.selected_id.as_deref(),
+            Some("d"),
+            "a failed host must not keep the selection"
+        );
+        // …and the window does not move at all.
+        assert_eq!(
+            state.viewport_top_id.as_deref(),
+            Some("a"),
+            "the window must not slide when the selected host fails"
+        );
+    }
+
+    /// A host that fails while it is *not* the selected system must not move
+    /// the selection: the operator is looking at a live system, and that
+    /// system is still live.
+    #[test]
+    fn host_below_the_selection_failing_does_not_move_the_selection() {
+        let config = test_config_with_ids(&["a", "b", "c", "d", "e"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 6));
+        state.system_view_mode = SystemViewMode::Condensed;
+
+        let mut batch = batch_for_indices(&state, 0..5);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        state.selected_id = Some("a".into());
+
+        // A host *below* the selection goes down.
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "c".into(),
+                endpoint: state.systems[2].endpoint.clone(),
+                outcome: PollOutcome::ConnectionRefused,
+                latency: Duration::from_millis(1),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        assert_eq!(
+            state.selected_id.as_deref(),
+            Some("a"),
+            "an unrelated host's failure must not move the selection"
+        );
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
+    }
+
+    /// A host that a reload repointed was reset on purpose: it has not
+    /// failed. The selection stays on the configured system.
+    #[test]
+    fn reconfigured_selected_host_keeps_the_selection() {
+        let config = test_config_with_ids(&["a", "b"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        let mut batch = batch_for_indices(&state, 0..2);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        assert_eq!(state.selected_id.as_deref(), Some("a"));
+
+        // Reload with "a" pointed at a different host. Its state is reset to
+        // pending because the old result no longer describes the new target.
+        let reloaded = Config {
+            systems: vec![
+                SystemEntry {
+                    id: "a".into(),
+                    host: "elsewhere.local".into(),
+                    port: 11310,
+                    name: None,
+                },
+                SystemEntry {
+                    id: "b".into(),
+                    host: "host1.local".into(),
+                    port: 11311,
+                    name: None,
+                },
+            ],
+            ..Config::default()
+        };
+        state.reconcile_systems(&reloaded);
+
+        assert_eq!(
+            state.selected_id.as_deref(),
+            Some("a"),
+            "a reconfigured host is not a failed host; the selection stays on it"
+        );
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
     }
 
     fn batch_for_indices(state: &AppState, indices: impl IntoIterator<Item = usize>) -> PollBatch {
@@ -4612,6 +5027,143 @@ mod tests {
         assert_eq!(state.viewport_top_id.as_deref(), Some(first_id.as_str()));
         // online2 is the only online system, must be at the top.
         assert_eq!(first_id, "online2");
+    }
+
+    /// A host that goes offline while it is *not* the viewport anchor must
+    /// not slide the window: the anchor still names the same top row.
+    #[test]
+    fn offline_host_above_the_anchor_does_not_slide_the_window() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        let mut batch = batch_for_indices(&state, [0, 1, 2]);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+
+        // Anchor the window on the *last* host, so that "keep the anchor"
+        // and "always re-anchor to the first live host" are different
+        // answers and this test can tell them apart.
+        //
+        // The selection moves with the anchor: the window is kept on the
+        // selected system, so a selection above the window is a state the
+        // real code never produces. The operator scrolled down to "c" and
+        // selected it, so the selection is the anchor.
+        state.viewport_top_id = Some("c".to_owned());
+        state.selected_id = Some("c".to_owned());
+
+        // The *first* host goes offline. It is re-sorted to the bottom of
+        // the list, but the anchor still names the same top row.
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![crate::poller::PollResult {
+                system_id: "a".into(),
+                endpoint: state.systems[0].endpoint.clone(),
+                outcome: PollOutcome::ConnectionRefused,
+                latency: Duration::from_millis(1),
+            }],
+        };
+        state.apply_batch(&batch);
+
+        assert_eq!(state.display_order(), vec![1, 2, 0]);
+        assert_eq!(
+            state.viewport_top_id.as_deref(),
+            Some("c"),
+            "the window must not slide when a host above the anchor goes down"
+        );
+    }
+
+    /// When the anchor host and another host go offline together, the
+    /// window must land on a live host rather than on a dead row.
+    #[test]
+    fn offline_anchor_reanchors_onto_a_live_host() {
+        let config = test_config_with_ids(&["a", "b", "c"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        let mut batch = batch_for_indices(&state, [0, 1, 2]);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
+
+        // The anchor host and the host next to it both go offline.
+        let endpoints: Vec<_> = state
+            .systems
+            .iter()
+            .map(|system| system.endpoint.clone())
+            .collect();
+        let batch = PollBatch {
+            generation: state.last_applied_generation() + 1,
+            started_at: Instant::now(),
+            completed_at: Instant::now(),
+            results: vec![
+                crate::poller::PollResult {
+                    system_id: "a".into(),
+                    endpoint: endpoints[0].clone(),
+                    outcome: PollOutcome::ConnectionRefused,
+                    latency: Duration::from_millis(1),
+                },
+                crate::poller::PollResult {
+                    system_id: "b".into(),
+                    endpoint: endpoints[1].clone(),
+                    outcome: PollOutcome::ConnectionRefused,
+                    latency: Duration::from_millis(1),
+                },
+            ],
+        };
+        state.apply_batch(&batch);
+
+        assert_eq!(state.display_order(), vec![2, 0, 1]);
+        assert_eq!(
+            state.viewport_top_id.as_deref(),
+            Some("c"),
+            "the window must land on the live host, not on a dead row"
+        );
+    }
+
+    /// A host whose *target* changed is not down. A reload resets its state
+    /// on purpose, because the old result no longer describes the new
+    /// target, so the window must stay on the configured system instead of
+    /// being re-anchored as though the host had failed.
+    #[test]
+    fn reconfigured_anchor_host_keeps_the_window() {
+        let config = test_config_with_ids(&["a", "b"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        let mut batch = batch_for_indices(&state, [0, 1]);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+        assert_eq!(state.viewport_top_id.as_deref(), Some("a"));
+
+        // Reload with "a" pointed at a different host. Its state is reset to
+        // pending because the old result no longer describes the new target.
+        let reloaded = Config {
+            systems: vec![
+                SystemEntry {
+                    id: "a".into(),
+                    host: "elsewhere.local".into(),
+                    port: 11310,
+                    name: None,
+                },
+                SystemEntry {
+                    id: "b".into(),
+                    host: "host1.local".into(),
+                    port: 11311,
+                    name: None,
+                },
+            ],
+            ..Config::default()
+        };
+        state.reconcile_systems(&reloaded);
+
+        assert_eq!(
+            state.viewport_top_id.as_deref(),
+            Some("a"),
+            "a reconfigured host is not a failed host; the window stays on it"
+        );
     }
 
     #[test]

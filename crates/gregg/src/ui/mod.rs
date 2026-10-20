@@ -1861,6 +1861,95 @@ mod tests {
         );
     }
 
+    /// A host that goes down moves to the bottom of the list, but the view
+    /// must not follow it there: the live hosts above it stay on screen.
+    #[test]
+    fn offline_top_host_does_not_hide_the_other_hosts() {
+        let config = test_config(&["a", "b", "c"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 24));
+
+        // All three hosts are up.
+        for index in 0..3 {
+            let mut batch = make_online_batch(&state, index, linux_snap());
+            batch.generation = state.last_applied_generation() + 1;
+            state.apply_batch(&batch);
+        }
+
+        // The top host goes down.
+        let mut batch = make_offline_batch(&state, 0);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+
+        let output = render_state(&state, 80, 24);
+
+        // Every host is still rendered — the dead one last.
+        assert!(
+            output.contains('a'),
+            "the dead host must still be listed, got:\n{output}"
+        );
+        assert!(
+            output.contains('b'),
+            "live host b must stay on screen, got:\n{output}"
+        );
+        assert!(
+            output.contains('c'),
+            "live host c must stay on screen, got:\n{output}"
+        );
+
+        // The dead host is rendered after the live ones.
+        let position = |needle: char| {
+            output
+                .lines()
+                .position(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} not rendered"))
+        };
+        assert!(
+            position('a') > position('b') && position('a') > position('c'),
+            "the dead host must sort to the bottom, got:\n{output}"
+        );
+    }
+
+    /// The reported defect asserted end to end through the renderer, in a
+    /// crowded pane: three condensed rows of an eight-host fleet, and the
+    /// host at the top of the list goes down.
+    ///
+    /// The whole-fleet-fits case cannot see this, because a window that can
+    /// hold every row never hides anything. Here the window is the only
+    /// thing standing between the operator and the live fleet.
+    #[test]
+    fn offline_top_host_does_not_hide_the_live_fleet_in_a_crowded_pane() {
+        let config = test_config(&["a", "b", "c", "d", "e", "f", "g", "h"]);
+        let mut state = AppState::synthetic(&config);
+        state.terminal_size = Some((80, 5));
+        state.system_view_mode = crate::state::SystemViewMode::Condensed;
+
+        // All eight hosts are up.
+        for index in 0..8 {
+            let mut batch = make_online_batch(&state, index, linux_snap());
+            batch.generation = state.last_applied_generation() + 1;
+            state.apply_batch(&batch);
+        }
+
+        // The host at the very top of the list goes down.
+        let mut batch = make_offline_batch(&state, 0);
+        batch.generation = state.last_applied_generation() + 1;
+        state.apply_batch(&batch);
+
+        let output = render_state(&state, 80, 5);
+
+        // The live hosts the operator was looking at are still on screen.
+        // A condensed row leads with the system's name.
+        for name in ['b', 'c', 'd'] {
+            assert!(
+                output
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(name)),
+                "live host {name} must stay on screen, got:\n{output}"
+            );
+        }
+    }
+
     #[test]
     fn render_two_offline_systems() {
         let config = test_config(&["x", "y"]);

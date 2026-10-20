@@ -533,6 +533,40 @@ normal and condensed. Selected system is always visible.
 Subsequent batches preserve the existing selection/viewport semantics.
 `Ctrl-R` does not re-snap.
 
+**Re-anchoring on a live→dead transition:** `viewport_top_id` and
+`selected_id` both name a *host*, but the display order is reachability-sorted,
+so a host that fails is pushed to the bottom of the list. An identity anchor
+therefore follows the host it names down, and takes the whole window with it:
+when the anchored host is the one that fails, every live host above it leaves
+the screen. `AppState::repair_viewport_anchor` re-anchors the window to the
+host that now occupies the anchor's previous display position (preferring a
+live one), so the dead host moves to the bottom of the list and the window
+stays where it was.
+
+The selection needs the same repair, because the window is kept on the
+selected system: `AppState::repair_selection` moves the selection to the live
+host that took the failed host's place. Without it, a selection left on a
+failed host drags the window down to the bottom of the list and undoes the
+anchor repair — which is what let the defect survive in a pane too small to
+hold the fleet, the case a fleet that fits on one screen cannot show. The
+anchor and the selection are repaired independently (they name different hosts
+in general) but by one rule, `AppState::live_replacement`, so when they name
+the same host — the usual case, since the top of the list is both — they
+agree.
+
+Both repairs fire only when the host **failed**: it was `Online` and is now
+`Offline`. `Pending` means "no poll result received yet", so a host that was
+reset to pending has not failed — a reload repointed it on purpose, and a
+client daemon that restarts rebuilds the fleet as pending. They also fire
+only when the host's **target is unchanged**, so a host a reload repointed is
+not treated as a failed host. An anchor that merely shifted *up*, because
+hosts above it went offline, still names the same top row and is left alone.
+The window must not slide when unrelated hosts change state. Both repairs are
+part of the single fleet writer (`AppState::adopt_snapshot`), so there is
+still exactly one scroll model. The selection repair runs before
+`repair_cron_selection`, because the retained cron job is derived from the
+selected system.
+
 **Visual vs. logical selection (Plan 087):** `selected_id` is the
 persistent logical selection that drives `d` (drive expansion), `n` (network
 expansion), and

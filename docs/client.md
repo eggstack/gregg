@@ -235,6 +235,13 @@ navigate, and fades after roughly ten seconds of inactivity so stale
 reverse-video does not survive a quiet screen. Leaving the Systems pane or
 returning to it does not extend or re-trigger the highlight.
 
+Reachable systems are listed first and unreachable ones last, so a system that
+goes down moves to the bottom of the list. The view does not follow it down:
+the visible window stays on the same part of the fleet, and the remaining
+systems stay on screen instead of being scrolled out of view. The selection
+moves with it, to the reachable system that takes the failed system's place,
+so a narrow pane is never dragged down to a failed system either.
+
 See [display](display.md) for what each view renders.
 
 ## Cron observability

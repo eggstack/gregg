@@ -274,6 +274,34 @@ The daemon therefore publishes that one-time transition even when it changed
 nothing visible, so the placement cannot be deferred onto an unrelated later
 change. Every later document preserves ordinary selection/viewport.
 
+**Re-anchoring on a live→dead transition:** `viewport_top_id` and
+`selected_id` both name a *host*, but the display order is reachability-sorted,
+so a host that fails is pushed to the bottom of the list. An identity anchor
+therefore follows the host it names down and takes the whole window with it:
+when the anchored host is the one that fails, every live host above it leaves
+the screen. `AppState::repair_viewport_anchor` re-anchors the window to the
+host that now occupies the anchor's previous display position (preferring a
+live one), so the dead host moves to the bottom of the list and the window
+stays where it was.
+
+The selection needs the same repair, because the window is kept on the
+selected system: `AppState::repair_selection` moves the selection to the live
+host that took the failed host's place. Without it, a selection left on a
+failed host drags the window down to the bottom of the list and undoes the
+anchor repair — which is what let the defect survive in a pane too small to
+hold the fleet. **A test whose whole fleet fits on one screen cannot see this
+defect**: a window that can hold every row never hides anything. Both repairs
+share one rule (`AppState::live_replacement`) and fire only when the host
+*failed* — it was `Online` and is now `Offline`, because `Pending` means
+"never polled", not "down" — and only when its target is unchanged: an
+anchor that merely shifted *up*, because hosts above it went offline, still
+names the same top row, and a host that a reload repointed was reset on
+purpose rather than having failed. The window must not slide when unrelated
+hosts change state. Both repairs live inside the single fleet writer
+(`AppState::adopt_snapshot`), so there is still exactly one scroll model. The
+selection repair runs before `repair_cron_selection`, because the retained
+cron job is derived from the selected system.
+
 **Plan 087 logical vs visual selection:** `selected_id` is the
 persistent logical selection (drives `d` and viewport behavior).
 `selection_highlight_active` is the transient reverse-video flag.

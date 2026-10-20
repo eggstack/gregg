@@ -263,6 +263,45 @@ branch also carries commit `d0d24c9`, which clears the two clippy failures
 depends only on the current post-183 main and is independent of Plan 091 and
 Plans 179-183.
 
+Plan 185 is complete, and is an operator-reported `gregg` TUI defect rather than
+an audit finding. The Systems list renders reachable systems first and
+unreachable ones last, so a host that goes down moves to the bottom of the list
+— correct. The viewport anchor, however, names a *host*, and it followed the
+host it names down to the bottom group, taking the whole window with it: with
+the top host down, the view started at that dead host and every live host left
+the screen. `AppState::repair_viewport_anchor` re-anchors the window to the
+host that took the anchor's previous display position, preferring a live one,
+and fires only when the anchored host itself left the live group *and* its
+target is unchanged — so an anchor that merely shifted up because hosts *above*
+it went down is left alone, a host that a reload repointed was reset on
+purpose rather than having failed, and the window never slides on unrelated
+state changes. The repair lives inside the single fleet writer, so there is
+still exactly one scroll model, and the dead host is still rendered at the
+bottom of the list. Its acceptance criterion was met as written and was false
+in a crowded pane, because the plan's tests used a fleet that fit on one
+screen; Plan 186 supersedes it there.
+
+Plan 186 is complete, and is that correction. The window is kept on the
+*selected* system, and Plan 185 left the selection on the host that had just
+failed — so `ensure_selected_visible` dragged the window straight back down
+to the bottom of the list and undid the anchor repair. Measured on an
+eight-host fleet in a three-row pane, the top host failing moved the view from
+the live hosts to the bottom group: the reported symptom survived, only its
+shape changed. The operator's TUI lives in a crowded tmux pane and routinely
+shows a few rows of a larger fleet, so that is the primary case, and a fleet
+that fits on one screen cannot show the defect at all. `AppState::repair_selection`
+now moves the selection to the live host that took the failed host's place, by
+the same rule the anchor repair uses (`AppState::live_replacement`), so both
+repairs agree when they name the same host — the usual case, since the top of
+the list is both. The trigger was also tightened from "left the live group" to
+*failed* (`Online` → `Offline`), because `Pending` means "never polled": a
+reload repointing a host, or a client daemon restarting and rebuilding the
+fleet, must not move the operator's selection. The selection repair runs
+before `repair_cron_selection`, because the retained cron job is derived from
+the selected system. The operator decided that a dead host scrolled out of a
+small pane is not surfaced by an indicator; that stays a separate change. No
+protocol, daemon, or wire change.
+
 Plan 176 is complete: the Windows EggPool full-result-channel cancellation
 regression no longer synthesizes its own precondition. The worker already
 delivered inside a cancellation-biased select; the test asked four requests to
@@ -926,6 +965,8 @@ excluded.
 | [`182-third-audit-logic-corrective-pass.md`](182-third-audit-logic-corrective-pass.md) | Close all eight findings from the fresh logic/robustness audit of `adc948d` and apply both recorded optimizations, with no product scope change | **complete**; all eight findings fixed with regression tests that were **mutation-verified** — the pre-fix logic was reinstated in place and each test observed failing with the recorded symptom (`left: None` vs the load gate; `65` vs `64`; `"srv  offline"`; no repaint; served stale-from-the-future), then observed passing after restoring the fix, so they detect the defects rather than merely existing; both optimizations applied (scheduler publish comparison without the job-vector clone, borrowed `HashSet` membership in the cron sweep); one existing test corrected in place (`empty_job_list_builds_no_engine_state` asserted a state-free engine was constructible, which is the state `next_deadline` cannot serve) — no reachable configuration changes behavior because `run.rs` already skipped the scheduler task for an empty job set; no mechanical gate was failing at `adc948d`, so every finding was logical; gates green: fmt, `clippy -D warnings` (0 warnings), 517 `greggd` + 951 `gregg` + 119 protocol + 62 integration + 49 update + 47 host tests 0 failed, `shellcheck` zero findings, `pytest scripts/tests` 61 passed; independent of 091/179/180/181 |
 | [`183-fourth-audit-completion-pass.md`](183-fourth-audit-completion-pass.md) | Close the coverage gap Plan 182 disclosed — the audit's fourth pass never completed, leaving `gregg-protocol`, `gregg-host`, `gregg-update/exec.rs`, greggd's control socket, `startup/install.rs`, and `uninstall.rs` unreviewed rather than clean | **complete**; nine findings fixed: the HTTP-404 Cargo fallback in `install.sh` finalized `greggd` but not `gregg`, leaving a replaced client daemon running its replaced-out image on Unix while the same branch finalized the daemon; the mirror-image gap in `install.ps1`, where the Cargo fallback registered the client startup entry without the transition the prebuilt path performs; a `cargo uninstall` timeout reported as `cargo install`; a post-exit drain timeout reported as a killed child; the scheduler validator's dead empty-name guard (`"".len() > 0` can never push) plus the history route's missing check, now a dedicated `EmptyJobName` kind on both; a systemd/launchd install that could register a service running a *different* binary than the one its own uninstall classifies `Foreign`, enforced as the check a stale comment already described; `crontab -l`/`-` as the only manager calls with no timeout, now on the shared bounded allowlist via a bounded stdin variant; an unparseable SCM image path classified `Absent` instead of `Unknown`; unquoted `sudo <exe>`/`--config` in `startup instructions`; every behavioral fix **mutation-verified** — the EPIPE test was rewritten twice because a small write is absorbed by the pipe buffer and the first version passed against mutated code, so it now writes 512 KiB into a child that never reads; the SCM fix has **no** regression test because it is `cfg(target_os = "windows")`; the whole-crontab lost-update race and the macOS `--purge` ordering reported and deliberately not changed (interface-inherent, or an untestable macOS-only destructive reorder); no mechanical gate was failing at `aa321dd`, so every finding was logical; `gregg-update`, `gregg-protocol`, `gregg-host`, the control socket, the SCM parser, `status.rs`, `net.rs`, and the packaging installers are now reviewed, with the macOS/Windows/FreeBSD FFI runtime behavior explicitly **not** verifiable from this Linux host |
 | [`184-tui-page-scroll-key-bindings.md`](184-tui-page-scroll-key-bindings.md) | Add `Ctrl-D`/`Ctrl-U` page-scrolling aliases so a long host list can be paged without the dedicated paging keys | **complete** at `540b562`; **CI run `39342335567` on `6ef2f62` green across all seven jobs**; `Ctrl-U`/`Ctrl-D` translate to the existing `Action::PageUp`/`Action::PageDown`, so there is still one scroll model; five new tests (955 → 960 in the `gregg` crate against base `1760ef1`), the three mapping proofs mutation-tested — removing the two arms fails them in 0.00 s; one existing test updated because it asserted the mapping this plan deliberately replaces; `Ctrl-Alt` still refused; depends on current post-183 main; independent of 091/179-183; no state, renderer, daemon, or protocol change |
+| [`185-gregg-tui-offline-anchor-viewport-corrective.md`](185-gregg-tui-offline-anchor-viewport-corrective.md) | Keep the `gregg` TUI from scrolling the live fleet off screen when the host at the top of the list goes down | **complete**, but **superseded in part by Plan 186** — the acceptance criterion was met as written and was false in a crowded pane, because the plan's tests used a fleet that fit on one screen; the viewport anchor names a *host* while the display order is reachability-sorted, so a host that goes offline is pushed to the bottom of the list and the identity anchor followed it there; `AppState::repair_viewport_anchor` re-anchors the window to the host that took the anchor's previous display position, preferring a live one, and fires **only** when the anchored host itself left the live group, so an anchor that merely shifted up because hosts above it went down is left alone and the window never slides on unrelated state changes; the repair lives in the single fleet writer (`AppState::adopt_snapshot`), so there is still one scroll model; the dead host still moves to the bottom of the list and is still rendered; five regression tests added, including one asserted end to end through the renderer and one proving the fix does not over-correct on a reload that repoints the anchored host; independent of 091/182/183; no protocol, daemon, or wire change |
+| [`186-gregg-tui-crowded-pane-selection-reanchoring.md`](186-gregg-tui-crowded-pane-selection-reanchoring.md) | Make the offline-anchor fix hold in a pane too small to hold the fleet, by re-anchoring the logical selection as well as the viewport | **complete**; Plan 185 repaired the viewport *anchor*, but the window is kept on the *selection*, and the selection was still left on the host that had just failed — so `ensure_selected_visible` dragged the window back down to the bottom of the list and undid the anchor repair; measured on an eight-host fleet in a three-row pane, the top host failing moved the view from the live hosts to the bottom group, so the reported symptom survived and only its shape changed, and a fleet that fits on one screen cannot show the defect at all; `AppState::repair_selection` now moves the selection to the live host that took the failed host's place, by the same rule the anchor repair uses (`AppState::live_replacement`), so both repairs agree when they name the same host — the usual case, since the top of the list is both; the trigger was tightened from "left the live group" to *failed* (`Online` → `Offline`), because `Pending` means "never polled" — a reload repointing a host, or a client daemon restarting and rebuilding the fleet, must not move the operator's selection; the selection repair runs before `repair_cron_selection`, because the retained cron job is derived from the selected system; the operator decided a dead host scrolled out of a small pane is not surfaced by an indicator, so that stays a separate change; five regression tests added, including one asserted end to end through the renderer; depends on 185; independent of 091/182/183; no protocol, daemon, or wire change |
 
 Dependency order:
 
