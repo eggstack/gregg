@@ -296,7 +296,71 @@ both of which the root workspace's `deny.toml` already allows.
 Full rationale, including the alternatives that were rejected:
 [`vendor/VENDORED-PATCH.md`](vendor/VENDORED-PATCH.md).
 
+## Packaging and install policy
+
+**Decision (Plan 190): the GUI is source-build-only in this phase. No installer,
+no bundle, no release asset.**
+
+That is a decision, not an omission. Shipping an installer or a `.app` bundle
+would put an unsigned, un-notarized binary in front of operators, and macOS
+Gatekeeper would quarantine it — so the first thing a user would meet would be
+a warning dialog, which is a worse first impression than a build command. The
+cross-platform evidence a shipping decision needs (a native Windows run, a
+Linux desktop session with a `StatusNotifierItem` host) does not exist yet
+either. The GUI therefore stays a source build until that evidence does.
+
+### The one operator path
+
+**The GUI requires an existing Gregg installation.** It is not a standalone
+product and does not bundle a second `gregg`.
+
+The GUI resolves the client daemon in exactly one order, and the order is the
+same on every platform:
+
+1. `--gregg <path>` — an explicit absolute path, which must prove it is a
+   Gregg client by answering `gregg <version>` to a bounded `version` probe.
+2. An **installer-owned `gregg` beside the GUI**. A `gregg` executable in the
+   same directory as `gregg-gui` is accepted without a probe, because whoever
+   put it there put it there on purpose.
+3. Otherwise the GUI exits with an actionable diagnostic naming `--gregg`.
+
+There is no fourth case. It never launches itself, never does a `PATH`
+lookup, and never polls the fleet directly.
+
+### Why there is no second daemon
+
+Packaging may include the existing `gregg` binary — it is the *same* binary,
+not a second daemon implementation — but the GUI does not need to: the client
+daemon is a **per-config, per-user** process with a `0600` socket beside the
+config, and the TUI already starts it on demand. The GUI attaches to that
+same daemon, so a user who already uses Gregg gets the GUI for free, with no
+second daemon and no second configuration.
+
+### When `gregg` is upgraded separately
+
+The GUI and the daemon negotiate the local protocol version at attach time. An
+**incompatible or newer** daemon is reported as *incompatible*, with
+guidance, and is **never** downgraded or silently replaced. The direction
+rules live in the core launcher and are unchanged by the GUI.
+
+### Release assets
+
+There is no GUI release asset, so there is no asset-naming collision with
+`gregg` or `greggd` — the assets that exist are untouched by this line. The
+binary name `gregg-gui` is deliberately distinct from both, so a GUI build can
+never overwrite a `gregg` or `greggd` installation.
+
+### Licensing
+
+The Slint licence path is `LicenseRef-Slint-Royalty-free-2.0`, **not** the GPL
+path, and no GPL dependency is added. The royalty-free licence requires
+attribution, and the attribution is **in the application**: the `About` button
+and the tray's `About Gregg` item show the Slint name, the licence identifier
+and the download page. It is verified present in the shipped release binary,
+not only in the source.
+
 ## Measured cost
+
 
 Release builds, `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"` —
 the same profile the root workspace uses, so the numbers are comparable with
@@ -326,6 +390,39 @@ baseline. The GUI grew on both sides, because the window grew.)
 (The `libgregg-*.rlib` in `target/release/deps/` is 18.2 MiB, but that is an
 unlinked archive with debug-free but unoptimised object code and heavy
 generics; it is not a proxy for what the linker keeps.)
+
+## Measured runtime cost
+
+Measured on macOS (Apple M4 Pro) against a 25-host synthetic fleet, with the
+measurement window aligned to the daemon's own start so every configuration is
+sampled over the same phase of the poll cadence. CPU is `getrusage`, and
+"wakeups" is the count of voluntary context switches — the observable proxy
+for a sleep/wake cycle.
+
+| configuration | remote requests | daemon RSS | daemon CPU | daemon wakeups | GUI RSS | GUI CPU | GUI wakeups |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| daemon alone | 414 | 7.2 MB | 0.111 s | 8,279 | — | — | — |
+| daemon + GUI, tray only | **414** | — | 0.157 s | 11,471 | 73–83 MB | 0.491 s | 22,884 |
+| daemon + GUI, monitor visible | **414** | — | 0.154 s | 11,333 | 72–82 MB | 0.476 s | 21,985 |
+
+Over a ~73-second lifetime the GUI costs **about 0.65% of one core**, whether
+the window is hidden or visible. The remote request count is **identical** in
+all three configurations: the GUI adds nothing to the fleet's budget.
+
+Two things worth reading carefully:
+
+- **The daemon's wakeup delta is the documented one.** 8,279 alone → ~11,400
+  with a frontend attached is about 44 extra wakeups per second, which is the
+  "one timer wake per attached frontend every 20 ms" that `clientd/daemon.rs`
+  documents. The GUI adds one more frontend to a cost the architecture
+  already accepted; it does not add a new kind of cost.
+- **The memory is Slint's, not the protocol's.** Hiding the monitor window
+  saves under a megabyte. The rest is the software renderer and the
+  system-font machinery.
+
+The measurements are noisy — RSS at the moment of sampling varied between
+72 MB and 83 MB for the same configuration — so the numbers above are ranges,
+not constants. See `EVIDENCE.md` for the deterministic request-count proof.
 
 ## Licence
 

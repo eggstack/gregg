@@ -241,9 +241,17 @@ Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
 core workspace depends on it, it is not published to crates.io, and the
 terminal client is unaffected by its existence. The GUI is the only thing that
 may start the client daemon, and it does so by naming the `gregg` executable
-explicitly rather than launching itself. See
+explicitly rather than launching itself.
+
+**The GUI is a source build.** There is no installer, no bundle and no release
+asset for it yet: it requires an existing Gregg installation, it has been
+qualified natively on macOS only, and shipping an unsigned binary would meet
+the operator with a Gatekeeper warning before the product. It has been measured
+against the fleet: attaching it to a 25-host fleet leaves the daemon's remote
+request budget **exactly** what it was with no frontend attached. See
 [`apps/gregg-gui/README.md`](apps/gregg-gui/README.md) for the tray, the
-helper resolution, the error states and the licence attribution.
+helper resolution, the error states, the licence attribution and the packaging
+decision.
 
 ## Live metrics and compatibility
 

@@ -53,6 +53,24 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The optional desktop frontend is qualified and stays a source build (Plan
+  190):** a counted harness — the real client daemon against two counted
+  remotes, one scheduler-capable and one that answers `404` for the scheduler
+  routes — proves that attaching a terminal-style frontend and the GUI to the
+  same config leaves the daemon's request budget **flat**: `/v2/status` is
+  unchanged in every phase, an opened cron job grows only the *local* IPC
+  document, and the `EggPool` pane drives one daemon-owned worker on the
+  converged window instead of one per frontend. The same claim was measured
+  natively on a 25-host fleet and is identical with the daemon alone, with the
+  GUI as a tray icon and with the monitor window visible. The GUI costs about
+  0.65% of one core and 72–83 MB of resident memory, almost all of it Slint's
+  renderer rather than the protocol's.
+
+  The packaging decision is **source-build-only**: there is no installer, no
+  bundle and no release asset, and the GUI requires an existing Gregg
+  installation rather than bundling a second `gregg`. The Windows and Linux
+  native runs are still outstanding and block shipment for those targets.
+
 - **The optional GUI activates itself before it raises its window (Plan 189):**
   on macOS a tray application is a *background* application, the system does
   not activate the app that owns a menu-bar item, and a background app cannot

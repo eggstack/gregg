@@ -44,6 +44,14 @@ The GUI is a **frontend**, not a second poller: it attaches to the existing
 per-config client daemon over the same local IPC and renders what that daemon
 already polls. It must never open its own remote HTTP client. It is not
 published to crates.io (`publish = false`).
+
+**The GUI is a source build.** There is no installer, no bundle and no release
+asset for it, and it is not shipped for any target yet: it has been qualified
+natively on macOS only, and the Windows and Linux native runs are still
+outstanding. It requires an existing Gregg installation and never bundles a
+second `gregg`. Do not add a GUI release asset, a packaging job or a publish
+step without a new, explicitly approved plan and the native evidence for the
+target it would ship to.
 → `architecture/gregg-client.md`
 
 ## Build and verify

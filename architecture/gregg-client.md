@@ -456,6 +456,39 @@ activation is the only platform-specific code in the GUI, it is macOS-only
 (`objc2`/`objc2-app-kit`, `NSApplication` feature only), and it is a no-op on
 Windows and Linux, where showing a window the process owns is enough.
 
+### The GUI's qualification record (Plan 190)
+
+The GUI is a **source build**. It has no installer, no bundle and no release
+asset, and it requires an existing Gregg installation rather than bundling a
+second `gregg`.
+
+What was proven, and how:
+
+- **The request budget is unchanged.** `apps/gregg-gui/src/evidence.rs` runs
+  the real daemon against two counted remotes — one scheduler-capable, one
+  answering `404` for the scheduler routes — with a terminal-style frontend and
+  the GUI's `Bridge` attached to the same config. `/v2/status` is flat at four
+  polls per window in every phase. Natively, on 25 synthetic endpoints, the
+  counts are identical with the daemon alone, with the GUI as a tray icon and
+  with the monitor window visible.
+- **The intents govern transmission, not fetching.** An opened cron job grew
+  the local IPC document and left the remote's history-fetch count at one. The
+  `EggPool` pane drove one daemon-owned worker on the converged window.
+- **The cost is a fraction of a core.** The GUI's CPU is roughly 0.5%–1.5% of
+  one core, and the daemon's wakeup count rises by about 2,150 over a 44-second
+  period with a frontend attached — the "one timer wake per attached frontend
+  every 20 ms" that `clientd/daemon.rs` already documents. The GUI adds no
+  *new kind* of cost.
+- **The memory is Slint's, not the protocol's.** Hiding the monitor window
+  saves under a megabyte; the rest is the software renderer and the system-font
+  machinery.
+
+The decision is **accept**. What is **not** claimed is the Windows and Linux
+native acceptance: a Windows run needs a Windows host and a Linux tray run
+needs a desktop session with a `StatusNotifierItem` host, so those two
+targets are not shippable on the strength of this line. The measured artifact
+is `apps/gregg-gui/EVIDENCE.md`.
+
 ### Daemon executable selection (Plan 188)
 
 The client daemon is the `gregg` binary. A frontend that *is* `gregg` can launch

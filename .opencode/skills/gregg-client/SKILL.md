@@ -169,6 +169,14 @@ what that daemon already polls. It must not open an HTTP client, must not
 implement its own poll scheduler, and must not publish a document the daemon
 did not publish.
 
+**The optional GUI is a source build** (Plan 190). There is no installer, no
+bundle and no release asset, and the GUI is **not shipped for any target yet**:
+it was qualified natively on macOS only, and the Windows and Linux native runs
+are outstanding. It requires an existing Gregg installation and never bundles a
+second `gregg`. Do not add a GUI release asset, a packaging job or a publish
+step without a new, explicitly approved plan and the native evidence for the
+target it would ship to.
+
 Its three layers are a contract, not a convenience: `apps/gregg-gui/src/model.rs`
 is a **pure** `FrontendSnapshot -> GuiViewModel` projection (no threads, no
 channels, no Slint) so every truthfulness rule is testable without a desktop

@@ -36,6 +36,9 @@ mod bridge;
 mod model;
 mod platform;
 
+#[cfg(test)]
+mod evidence;
+
 use bridge::{Bridge, BridgeMessage, CronDesired, DaemonResolution, EggpoolDesired};
 use model::{ConnectionState, GuiViewModel, Selection};
 
