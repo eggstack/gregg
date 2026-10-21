@@ -9,7 +9,7 @@ product code.
 | --- | --- |
 | `sni-host/` | A Rust helper crate that acts as a real **StatusNotifierItem host** on a D-Bus session bus, so the GUI's Linux system tray can be exercised for real. It is its own Cargo workspace (`[workspace]` in its `Cargo.toml`), so it never becomes a member of `apps/gregg-gui`. |
 | `linux-tray.sh` | The Linux driver: starts the repository's fleet fixture, writes a Gregg configuration that points at it, and runs `sni-host` twice — once with a tray host present and once without. |
-| `windows-tray.ps1` | The Windows driver: starts the GUI, waits for its `tray=` startup line, proves a **native top-level window** was created for that process, and checks that the GUI and its client daemon are still running. |
+| `windows-tray.ps1` | The Windows driver: proves the **core** client-daemon launch path with the CLI, then starts the GUI, waits for its `tray=` startup line, proves a **native top-level window** was created for that process, and checks that the GUI and its client daemon are still running. |
 
 ## Why a real tray host is needed
 
@@ -49,13 +49,32 @@ With **no** tray host present:
 
 ## What the Windows exercise asserts
 
+- the **core** client-daemon launch works on Windows: `gregg daemon restart`
+  takes the launch lock, spawns a daemon and waits for it to answer;
+  `gregg daemon status` identifies that daemon through the daemon's own local
+  protocol handshake, never through a process name; and `gregg daemon stop`
+  releases it. This is the path the **terminal client** takes, and it is
+  checked *before* the GUI starts, so the GUI is not what proves it;
 - the GUI starts and prints its `tray=` startup line;
 - the GUI created a **native top-level window**, proved by enumerating the
   process's windows with `EnumWindows` and matching the window's process id;
 - the GUI process is still alive afterwards;
 - the per-config client daemon the GUI launched is running, identified through
   the daemon's own local protocol handshake (`gregg daemon status`), not
-  through a process name.
+  through a process name;
+- the fleet fixture served at least one request, so the daemon really polls
+  the remote rather than merely being alive.
+
+The core-launch daemon is **stopped again** before the GUI starts, so the GUI
+finds a genuinely absent endpoint and has to launch a daemon of its own. That
+keeps the "the fixture served a request" check a proof about the GUI's own
+daemon rather than about the one the CLI started.
+
+> The core-launch check exists because it is exactly the path the Windows
+> launch-lock defect broke: the lock's path was derived from the endpoint, and
+> on Windows the endpoint is a named pipe, so the lock lived in the pipe
+> *device* namespace, where no file can exist. The launcher therefore failed
+> before it ever spawned a daemon — for the GUI *and* for the terminal client.
 
 ## What the Windows exercise does NOT assert
 

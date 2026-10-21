@@ -292,10 +292,26 @@ try {
     # the GUI's own daemon rather than about this one.
     Write-Log "proving the core client-daemon launch path"
     $daemonPattern = 'client daemon \S+ running \(protocol'
-    $restartOutput = & $GreggPath --config $configPath daemon restart 2>&1 | Out-String
-    Write-Log "daemon restart: $($restartOutput.Trim())"
-    if ($LASTEXITCODE -ne 0) {
-        Fail "the core client-daemon launch failed on Windows: $($restartOutput.Trim())"
+    # The output of this one command is redirected to a FILE, not piped.
+    #
+    # `gregg daemon restart` spawns the daemon detached, and on Windows a
+    # detached child inherits the launcher's inheritable handles — including
+    # the write end of a PowerShell pipeline. The daemon would then hold that
+    # pipe open for as long as it lives and the pipeline would never see EOF,
+    # so the script would block on a command that had already finished. A file
+    # has no such semantics: the redirection ends when the process exits.
+    #
+    # This is a real defect in the launcher, not a quirk of the exercise: it
+    # is recorded in `crates/gregg/src/clientd/launch.rs` and in
+    # `apps/gregg-gui/EVIDENCE.md`. The GUI is not affected, because its
+    # standard streams are a console or a file rather than a pipe.
+    $restartOut = Join-Path $workDir "restart.out"
+    & $GreggPath --config $configPath daemon restart *> $restartOut
+    $restartExit = $LASTEXITCODE
+    $restartText = [string](Get-Content -LiteralPath $restartOut -Raw -ErrorAction SilentlyContinue)
+    Write-Log "daemon restart: $($restartText.Trim())"
+    if ($restartExit -ne 0) {
+        Fail "the core client-daemon launch failed on Windows: $($restartText.Trim())"
     }
     $coreStatus = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
     Write-Log "daemon status after the core launch: $($coreStatus.Trim())"

@@ -255,9 +255,14 @@ has a job of its own. The `gui` job in `.github/workflows/ci.yml` runs on
   registered an item whose tooltip and menu carry the live fleet state — and
   then, in a second pass on a bus with **no** host, asserts that the GUI
   reports `tray=unavailable` and keeps running;
-- on **Windows**, starts the GUI and proves it created a **native top-level
-  window** for its process, and that the client daemon it launched is
-  running.
+- on **Windows**, proves the **core** client-daemon launch path first, with
+  the CLI and no GUI involved: `gregg daemon restart` takes the launch lock and
+  spawns a daemon, `gregg daemon status` identifies it through the daemon's own
+  handshake, and `gregg daemon stop` releases it. That is the path the terminal
+  client takes, and it is checked on its own so the GUI is not what proves it.
+  Then the exercise starts the GUI and proves it created a **native top-level
+  window** for its process, and that the client daemon it launched is running
+  and really polling the remote.
 
 `scripts/check-gui.sh` runs the same format, lint, test and build checks on a
 developer machine, and prints the release binary's size.

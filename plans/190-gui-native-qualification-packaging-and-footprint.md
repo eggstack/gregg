@@ -1,12 +1,13 @@
 # Plan 190: GUI multi-frontend correctness, native qualification and packaging
 
 Status: **complete, with a corrective pass on 2026-10-21** — the Windows
-compilation break and the missing no-tray fallback are fixed, and the GUI
-workspace now has its own CI; see the corrective-pass section and the closure
-record at the end of this file, and the scope record in `plans/README.md`. The
-**interactive** native acceptance for Windows and Linux is still **not
-performed**, so those two targets remain **not shippable** on the strength of
-this plan, and the GUI stays a source build.
+compilation break, the missing no-tray fallback **and the unusable Windows
+launch lock** are fixed, and the GUI workspace now has its own CI; see the
+corrective-pass section and the closure record at the end of this file, and the
+scope record in `plans/README.md`. The **interactive** native acceptance for
+Windows and Linux is still **not performed**, so those two targets remain
+**not shippable** on the strength of this plan, and the GUI stays a source
+build.
 
 Depends on Plans 188-189; closes Plan 187. Independent of Plan 091.
 
@@ -337,14 +338,92 @@ had no fallback of any kind, so on such a desktop — a plain GNOME session, for
 instance — closing the window left an invisible, unquittable GUI: the daemon
 kept polling and the operator had nothing left to press.
 
-Both defects were invisible for the same reason: **the GUI workspace had no CI
-at all**. It is a separate Cargo workspace with its own lockfile and its own
-toolchain, the root workspace excludes it, and no job built or tested it. So a
-`#[cfg(windows)]` branch that nothing else compiles, and a UI requirement that
-nothing asserts, could both ship unnoticed — which is the same trap the
-repository's own rule warns about for Windows-only Rust.
+**3. Windows could not launch a client daemon at all — neither the GUI nor the
+terminal client.** This one was found by the new CI rather than by reading, and
+it is the reason the native matrix says "the application must actually work on
+the target": the GUI started, printed its `tray=available` line and created a
+native top-level window on the Windows runner, and the client daemon it
+launched **never came up**. The GUI's own reason was the giveaway:
 
-The corrective pass therefore does four things:
+```
+gregg-gui: cannot attach to the client daemon: failed to read
+\\.\pipe\gregg-client-a38b32a809d9a7d4.launch.lock:
+The system cannot find the file specified. (os error 2)
+```
+
+The launch lock's path was derived from the endpoint, and on Windows the
+endpoint is a **named pipe**: the whole pipe namespace is a *device*
+namespace, not a filesystem, so a path inside it can never exist. Opening one
+asks for a pipe instance with that name and fails with
+`ERROR_FILE_NOT_FOUND`, the lock could never be taken, and the launcher failed
+**before it ever got as far as spawning a daemon**. The same wall stopped the
+**terminal client** from launching a daemon on Windows — `gregg daemon restart`
+and the TUI's own lazy activation take the same lock — so this was never a GUI
+defect; the GUI merely reported it first.
+
+It was invisible for the same reason as the other two: the launcher's test
+module is `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]` tests written
+inside it — including the ones added by the first half of this corrective pass
+— **never compiled on Windows and never ran**. The native Windows CI job
+reported `clientd::launch` as having no tests at all.
+
+The fix is a real one: the Windows lock is now a **real file beside the
+config**, named after the same identity digest, so both platforms keep the same
+properties — one lock per config, never the config mutation lock, and a path a
+file can actually be created at. The Unix path is unchanged. The Windows rules
+now live in their own `#[cfg(all(test, windows))]` module, so they run natively
+on the Windows job: the three executable rules, and three that pin the launch
+lock — that it is not in the pipe namespace, that it is a file which can really
+be locked, and that it stays distinct per config and from the config lock.
+
+The native Windows exercise now also proves the **core** launch path on its
+own, before the GUI is started at all: `gregg daemon restart` takes the lock,
+spawns a daemon and waits for it to answer, `gregg daemon status` identifies
+it through the daemon's own handshake, and `gregg daemon stop` releases it.
+That is the path the terminal client takes, and it was the path the defect
+broke. The daemon is stopped again afterwards, so the GUI that follows still
+has to launch a daemon of its own, and the "the fleet fixture served a
+request" check stays a proof about the GUI's own daemon.
+
+**4. A Windows spawn inherits more than its standard streams — found, recorded,
+and deliberately not fixed here.** The first run of the new core-launch check
+hung, and the hang was not the check's fault: `gregg daemon restart` finished
+(every step of it is bounded), but the PowerShell pipeline it ran in never
+returned. On Windows a detached child inherits **every** inheritable handle
+the parent holds, not only the three standard ones — Rust has to pass the null
+stdio handles to the child, so it creates the process with
+`bInheritHandles = TRUE` — so the daemon kept the launcher's stdout pipe open
+and the pipe never reached EOF. On Unix this cannot happen: `Stdio::null()`
+there really is `/dev/null`.
+
+The launcher's own comment claimed the daemon "must not inherit a pipe that
+would keep a parent waiting". That is true on Unix and **false on Windows**,
+so the comment now says so. The GUI is not affected — its standard streams
+are a console or a file, never a pipe — and neither is the terminal client in
+normal use; the exposure is a CLI command that spawns the daemon with a piped
+stdout (`gregg daemon restart | tee log`).
+
+It is **not fixed here**, and that is a decision rather than an omission.
+Closing it needs a handle *list* — `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through
+`STARTUPINFOEX` — which the standard library does not expose, so it means
+`windows-sys` plus `unsafe` code in `crates/gregg/src/clientd/launch.rs`,
+which the repository's unsafe allowlist does not cover. That is a core change
+with a plan of its own, not a consequence of this one, and it is recorded as
+an outstanding defect in `plans/README.md`, in
+`apps/gregg-gui/EVIDENCE.md`, and in the launcher's own documentation.
+
+All three defects were invisible for the same reason: **the GUI workspace had no
+CI at all**. It is a separate Cargo workspace with its own lockfile and its own
+toolchain, the root workspace excludes it, and no job built or tested it. So a
+`#[cfg(windows)]` branch that nothing else compiles, a UI requirement that
+nothing asserts, and a launch path that no frontend ever took on the target
+could all ship unnoticed — which is the same trap the repository's own rule
+warns about for Windows-only Rust. The third defect adds the sharper lesson:
+**the launcher's own test module was Unix-only**, so even the Windows-gated
+tests written for it never ran. The fourth was found only because the new
+check ran the launcher on the target and waited for it.
+
+The corrective pass therefore does five things:
 
 - **fix the Windows branch** in `crates/gregg/src/clientd/launch.rs`: the
   executable test asks the **path** for its extension, not the metadata, and it
@@ -356,6 +435,11 @@ The corrective pass therefore does four things:
   `.exe` appending. The behaviour is locked by **Windows-gated tests**
   (`#[cfg(windows)]`), which run on the native Windows CI job rather than on
   the machine that wrote them;
+- **give the Windows launcher a launch lock it can actually take**: the lock
+  path moves off the named pipe and onto a real file beside the config, and
+  the Windows rules move into a `#[cfg(all(test, windows))]` module so they
+  compile and run where the rule applies — the previous module was
+  `#[cfg(all(test, unix))]`, so no Windows test in the launcher had ever run;
 - **make the host list and the cron job list scroll**, with bounded heights, so
   a large fleet cannot push the metrics, cron and EggPool panes out of the
   fixed-size window — the previous layout grew without bound and a 25-host
@@ -419,21 +503,39 @@ run of the new job) is the evidence, and it is worth reading closely:
   `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this
   desktop"` and **still running three seconds later**. So the Linux tray and
   the no-tray fallback are both proven natively.
+- the run after that (`39652995079`) failed the GUI's own job on **Windows**
+  with the tightened daemon check, and the failure was **real**: the GUI
+  started, printed `tray=available` and created a native top-level window,
+  but the client daemon it launched never came up. The run after it
+  (`39654851024`) carried the diagnostic that named the cause — the launch
+  lock's path was inside the Windows **named pipe** namespace, so the lock
+  could never be taken and the launcher failed before it spawned anything.
+  That is the third defect above, and it is fixed in `713be8f`: the Windows
+  lock is a real file beside the config, the Windows rules have their own
+  module that runs natively, and the Windows exercise now proves the **core**
+  launch path on its own before the GUI starts.
 
-That is the point of the job: both failures are things no root job could have
-seen, and one of them is exactly the class of defect that broke this line.
+That is the point of the job: every failure it found is something no root job
+could have seen, and two of them are exactly the class of defect that broke
+this line.
 
 ### Evidence
 
 **Deterministic**
 
-- `cargo test --manifest-path apps/gregg-gui/Cargo.toml` — **54 passed, 0
+- `cargo test --manifest-path apps/gregg-gui/Cargo.toml` — **63 passed, 0
   failed**, three consecutive runs.
 - `cargo clippy --manifest-path apps/gregg-gui/Cargo.toml --all-targets
   --all-features -- -D warnings` — clean.
 - `cargo fmt --manifest-path apps/gregg-gui/Cargo.toml -- --check` — clean.
 - `cargo test -p gregg --all-features -- clientd::launch` — 25 passed, 0
-  failed.
+  failed (the Unix module).
+- `cargo test -p gregg --target x86_64-pc-windows-gnu --all-features --no-run`
+  — the Windows test binary builds, and it carries the six
+  `clientd::launch::windows_tests` (the three executable rules and the three
+  launch-lock rules). They are **run** on the native Windows CI job, not
+  cross-checked here: only a native Windows run is authority for Windows
+  test status.
 - `cargo clippy -p gregg --all-targets --all-features -- -D warnings` — clean.
 - `cargo fmt --all -- --check` — clean.
 - `cargo metadata --no-deps` — the root workspace still has exactly its five

@@ -568,6 +568,33 @@ async fn wait_ready(
 /// that would keep a parent waiting. It is never given a controlling terminal
 /// or process group.
 ///
+/// # The "must not inherit a pipe" half holds on Unix only
+///
+/// On Unix, `Stdio::null()` is exactly that: the daemon's three standard
+/// streams are `/dev/null`, and no descriptor of the launcher's is inherited
+/// but the ones the launcher asked for.
+///
+/// On Windows it is **not** the same, and the difference is a real defect
+/// rather than a subtlety. Rust's `Command` has to pass the three null
+/// handles to the child, so it creates the process with
+/// `bInheritHandles = TRUE`, and Windows then hands the child **every**
+/// inheritable handle the parent holds — not only the three standard ones.
+/// A launcher whose stdout is a pipe therefore leaves that pipe's write end
+/// open in the daemon, and the pipe never reaches EOF: the launching command
+/// finishes, but a reader on the other end waits for as long as the daemon
+/// lives. (`gregg daemon restart | tee log` hangs this way.)
+///
+/// It is **not** fixed here. Closing it needs a handle *list* —
+/// `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through `STARTUPINFOEX` — which the
+/// standard library does not expose, so it means `windows-sys` and `unsafe`
+/// code in this module, which the repository's unsafe allowlist does not
+/// currently cover. It is recorded as an outstanding defect in
+/// `plans/README.md` and in `apps/gregg-gui/EVIDENCE.md`.
+///
+/// It does not affect the GUI, whose standard streams are a console or a file
+/// rather than a pipe, and it does not affect the terminal client in normal
+/// use, where stdout is the terminal.
+///
 /// The **exact** path is used rather than a name from `PATH`, so a stale or
 /// shadowing `gregg` earlier in the path can never become the daemon this
 /// frontend then attaches to. The path has already been made absolute by

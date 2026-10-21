@@ -153,6 +153,48 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   that run on the native Windows job rather than on the machine that wrote
   them.
 
+- **Neither the terminal client nor the GUI could start a client daemon on
+  Windows.** The launch lock's path was derived from the endpoint, and on
+  Windows the endpoint is a **named pipe**: the whole pipe namespace is a
+  *device* namespace, not a filesystem, and a path inside it can never exist.
+  Opening one asks for a pipe instance with that name and fails with
+  `ERROR_FILE_NOT_FOUND`, so the lock could never be taken and the launcher
+  failed *before it ever got as far as spawning a daemon*. `gregg daemon
+  status` reported the daemon as not running, and a frontend reported that it
+  could not read the launch lock. The defect was invisible for the same
+  reason the Windows build break was: the launcher's test module is
+  `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]` tests written inside it
+  never compiled on Windows and never ran.
+
+  The Windows lock is now a **real file beside the config**, named after the
+  same identity digest, so both platforms keep the same properties: one lock
+  per config, never the config mutation lock, and a path a file can actually
+  be created at. The Unix path is unchanged. The Windows rules now live in
+  their own `#[cfg(all(test, windows))]` module, so they run natively on the
+  Windows job: the three executable rules, and three that pin the launch lock
+  — that it is not in the pipe namespace, that it is a file which can really
+  be locked, and that it stays distinct per config and from the config lock.
+
+### Known issues
+
+- **On Windows, a detached daemon spawn inherits more than its standard
+  streams.** Rust has to pass the three null stdio handles to the child, so it
+  creates the process with `bInheritHandles = TRUE`, and Windows then hands
+  the child **every** inheritable handle the parent holds. A launcher whose
+  stdout is a pipe therefore leaves that pipe's write end open in the daemon,
+  and the pipe never reaches EOF: the command finishes, but a reader waits for
+  as long as the daemon lives, which is forever. `gregg daemon restart | tee
+  log` hangs this way.
+
+  The GUI is not affected — its standard streams are a console or a file, never
+  a pipe — and neither is the terminal client in normal use, where stdout is
+  the terminal. The defect is pre-existing and is **not fixed here**: closing
+  it needs a handle *list* (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through
+  `STARTUPINFOEX`), which the standard library does not expose, so it means
+  `windows-sys` plus `unsafe` code in the launcher, which the repository's
+  unsafe allowlist does not cover. It is recorded as outstanding in
+  `plans/README.md` and in `apps/gregg-gui/EVIDENCE.md`.
+
 ### Added
 
 - **A desktop with no system tray no longer loses the GUI's only control

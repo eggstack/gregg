@@ -122,6 +122,16 @@ process first.
 Never add a PID file or a global daemon registry. The lock file is never unlinked
 and never read as a signal.
 
+**The lock's path must be a path a file can really be created at.** On Unix it
+is the endpoint's own file name with a `.launch.lock` extension. On Windows it
+is a real file beside the **config** — never derived from the endpoint, because
+the endpoint there is a named pipe and the whole pipe namespace is a *device*
+namespace where no file can exist. Deriving it from the endpoint produced a
+lock that could never be taken, and the launcher failed before it ever spawned
+a daemon: on Windows neither the TUI nor a GUI could start one. Derive the
+lock path from the **config identity**, and prove on the target that the path
+is one a file can occupy.
+
 Only `NotFound` and `ConnectionRefused` are plain absence. Any other `Io`
 (`EMFILE`/`ENFILE`, `EACCES` on the socket, an endpoint already held) is **not**
 absence and must not authorize a spawn. `restart` follows the same rule for its

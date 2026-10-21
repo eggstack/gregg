@@ -321,9 +321,41 @@ gregg
   never unlinked and is never read as a signal, so a crashed launcher cannot
   leave behind something that makes the next launch believe a daemon is
   starting. There is no PID file and no registry.
+- **The lock's path must be a path a file can really be created at.** On Unix
+  it is the endpoint's own file name with a `.launch.lock` extension, beside the
+  socket it guards. On Windows it is a real file beside the **config**, named
+  after the same identity digest — because the endpoint there is a named pipe,
+  the whole pipe namespace is a *device* namespace rather than a filesystem, and
+  a path inside it can never exist: opening one asks for a pipe instance with
+  that name and fails with `ERROR_FILE_NOT_FOUND`. Deriving the lock from the
+  endpoint therefore produced a lock that could never be taken, and the launcher
+  failed *before it ever spawned a daemon* — so on Windows neither the TUI nor
+  the GUI could start a client daemon at all. The lesson is general: **a lock
+  path is not derivable from an endpoint on every platform; derive it from the
+  config identity, and prove on the target that the path is one a file can
+  occupy.**
 - **The lock wait runs on `spawn_blocking`.** It is a blocking sleep loop, and
   the TUI runs on a current-thread runtime, so waiting inline would starve the
   tasks that make the winner's daemon reach readiness.
+- **The daemon is spawned detached, with every standard stream null.** On Unix
+  that is exactly what it should be: the daemon's streams are `/dev/null`, it
+  inherits no descriptor of the launcher's, and it can neither hold a terminal
+  nor hold a pipe open.
+- **On Windows the same spawn is not equivalent, and the difference is an open
+  defect.** Rust has to pass the three null handles to the child, so it creates
+  the process with `bInheritHandles = TRUE`, and Windows then hands the child
+  **every** inheritable handle the parent holds — not only the standard ones.
+  A launcher whose stdout is a pipe therefore leaves that pipe's write end
+  open in the daemon, and the pipe never reaches EOF: the command finishes,
+  but a reader waits for as long as the daemon lives, which is forever.
+  `gregg daemon restart | tee log` hangs this way. The GUI is not affected (its
+  streams are a console or a file), and neither is the terminal client in
+  normal use; the exposure is a CLI command that spawns the daemon with a
+  piped stdout. Closing it needs a handle *list* —
+  `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through `STARTUPINFOEX` — which the
+  standard library does not expose, so it means `windows-sys` and `unsafe`
+  code in the launcher. It is recorded as outstanding in `plans/README.md` and
+  in `apps/gregg-gui/EVIDENCE.md`, and it is **not** fixed by the GUI line.
 - **The probe is side-effect-free.** It returns a classification and stops
   nothing. Only *plain absence* authorizes a spawn, and the classification is
   redone under the lock: someone else can bind a foreign service while this

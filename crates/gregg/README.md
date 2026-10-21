@@ -148,6 +148,13 @@ be covered by a Windows-gated test: the `#[cfg(windows)]` branch of
 `is_executable_file` once asked `std::fs::Metadata` for a method it does not
 have, and nothing on a non-Windows machine could have noticed.
 
+A Windows-gated test has to live in a module that **compiles on Windows**. The
+launcher's own test module is `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]`
+tests written inside it never compiled there and never ran — which is how both
+the Windows executable rule and the Windows launch lock reached a merged
+branch unexercised. The Windows rules now live in their own
+`#[cfg(all(test, windows))]` module and run on the native Windows job.
+
 Because that frontend is not the `gregg` binary, it cannot launch the client
 daemon by using its own image. The launcher therefore takes the executable as
 an explicit argument:

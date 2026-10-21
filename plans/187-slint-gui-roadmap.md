@@ -1,10 +1,13 @@
 # Plan 187: Optional Slint desktop frontend roadmap
 
 Status: **complete for everything a macOS host can verify, plus a corrective
-pass on 2026-10-21.** The **interactive** three-desktop demonstration is still
-**outstanding and not claimed** — see the closure record at the end of this file
-and the scope record in `plans/README.md`. The GUI is therefore **not shippable
-for Windows or Linux**, and it stays a source build.
+pass on 2026-10-21** that fixed three real defects — the broken Windows build,
+the missing no-tray fallback, and the launch lock that made it impossible to
+start a client daemon on Windows — and added native CI on Windows and Linux.
+The **interactive** three-desktop demonstration is still **outstanding and not
+claimed** — see the closure record at the end of this file and the scope
+record in `plans/README.md`. The GUI is therefore **not shippable for Windows
+or Linux**, and it stays a source build.
 
 Depends on: the completed Plan 161-172 Gregg client-daemon split and current main at planning time (2026-10-21). Independent of the Plan 091 soak record.
 
@@ -187,6 +190,21 @@ the reason was structural rather than accidental.
   the GUI workspace gets its own CI — fmt, clippy, tests and a release build
   on macOS, Windows and Linux natively, plus native tray exercises on the
   Windows and Linux legs.
+- **What the new CI then found on Windows.** The first native Windows run of
+  the GUI's own job found a defect no amount of reading had: the GUI started
+  and created a native window, but **the client daemon it launched never came
+  up**. The cause was in the core launcher, not in the GUI: the launch lock's
+  path was derived from the endpoint, and on Windows the endpoint is a **named
+  pipe**, so the lock path was inside the pipe *device* namespace, where no
+  file can ever exist. The lock could therefore never be taken, and the
+  launcher failed **before it spawned anything** — which also meant the
+  **terminal client** could not launch a daemon on Windows either. The fix is
+  a real file beside the config, named after the same identity digest; the
+  Unix path is unchanged. The launcher's Windows rules now live in their own
+  `#[cfg(all(test, windows))]` module, because the old module was
+  `#[cfg(all(test, unix))]` — so the Windows-gated tests written inside it
+  never compiled on Windows and never ran, which is how the first defect
+  above got through in the first place.
 - **What the pass does not change:** the GUI is still a **source build**, still
   ships for no target, and the **interactive** native demonstration on Windows
   and Linux is still **not performed** and still **not claimed**. A CI runner
@@ -199,9 +217,9 @@ the reason was structural rather than accidental.
 
 ### Evidence
 
-- `cargo test --manifest-path apps/gregg-gui/Cargo.toml` — **54 passed, 0
-  failed** (48 of them from Plan 189 and 6 from Plan 190's counted harness),
-  across three consecutive runs.
+- `cargo test --manifest-path apps/gregg-gui/Cargo.toml` — **63 passed, 0
+  failed** (48 of them from Plan 189 and 6 from Plan 190's counted harness,
+  plus 9 added by the corrective pass), across three consecutive runs.
 - `cargo clippy --manifest-path apps/gregg-gui/Cargo.toml --all-targets
   --all-features -- -D warnings` — clean.
 - `cargo fmt --manifest-path apps/gregg-gui/Cargo.toml -- --check` — clean.

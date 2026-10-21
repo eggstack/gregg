@@ -111,7 +111,96 @@ tests with `-D warnings`; and the Linux runner was missing
 `libxkbcommon-x11`, so the GUI panicked as it opened its window — after the
 D-Bus half of the exercise had already passed.
 
-**5. The footprint was re-measured against a rebuilt baseline.** The scroll
+**5. The client daemon could not be launched on Windows at all.** The next
+Windows run failed with a *real* failure, not a flake: the GUI started,
+printed `gregg-gui: tray=available` and created a native window, but the
+client daemon it launched never came up. The GUI's own reason named the
+cause:
+
+```text
+gregg-gui: cannot attach to the client daemon: failed to read
+\\.\pipe\gregg-client-a38b32a809d9a7d4.launch.lock:
+The system cannot find the file specified. (os error 2)
+```
+
+The launch lock's path was derived from the endpoint, and on Windows the
+endpoint is a **named pipe**: the whole pipe namespace is a *device*
+namespace, not a filesystem, so a path inside it can never exist. Opening one
+asks for a pipe instance with that name and fails with
+`ERROR_FILE_NOT_FOUND`, so the lock could never be taken and the launcher
+failed **before it ever got as far as spawning a daemon**. This was never a
+GUI defect: the **terminal client** takes the same lock, so it could not
+launch a daemon on Windows either — the GUI merely reported it first.
+
+Two things follow from that, and both are now true:
+
+- the Windows lock is a **real file beside the config**, named after the same
+  identity digest (the Unix path is unchanged), so both platforms keep the
+  same properties: one lock per config, never the config mutation lock, and a
+  path a file can actually be created at;
+- the launcher's Windows rules now live in their own
+  `#[cfg(all(test, windows))]` module. The old module was
+  `#[cfg(all(test, unix))]`, so the `#[cfg(windows)]` tests written inside it
+  — including the ones added for the first defect above — **never compiled on
+  Windows and never ran**. Six Windows tests now exist and run natively: the
+  three executable rules, and three that pin the launch lock — that it is not
+  in the pipe namespace, that it is a file which can really be locked, and
+  that it stays distinct per config and from the config lock.
+
+The Windows exercise also now proves the **core** launch path on its own,
+before the GUI is started at all: `gregg daemon restart` takes the lock,
+spawns a daemon and waits for it to answer, `gregg daemon status` identifies
+it through the daemon's own handshake, and `gregg daemon stop` releases it.
+That is the path the terminal client takes, and it was the path the defect
+broke. The daemon is stopped again afterwards, so the GUI that follows still
+has to launch a daemon of its own, and the "the fleet fixture served a
+request" check stays a proof about the GUI's own daemon rather than about
+this one.
+
+**6. An outstanding Windows defect in the launcher, found by that exercise and
+not fixed.** The exercise hung the first time it ran the new core-launch
+check, and the hang was not the check's fault: it was a real property of the
+Windows spawn.
+
+`gregg daemon restart` finished — every step of it is bounded — but the
+PowerShell pipeline it ran in never returned. The reason is that on Windows a
+detached child inherits **every inheritable handle** the parent holds, not
+only the three standard ones: Rust has to pass the null stdio handles to the
+child, so it creates the process with `bInheritHandles = TRUE`, and Windows
+hands over the write end of the launcher's stdout pipe as well. The daemon
+kept that pipe open for as long as it lived, so the pipe never reached EOF.
+The daemon outlives the launcher by design, so "for as long as it lived" is
+forever.
+
+On Unix this cannot happen: `Stdio::null()` there really is `/dev/null`, and
+no descriptor of the launcher's is inherited. The launcher's own comment
+claimed the daemon "must not inherit a pipe that would keep a parent
+waiting" — true on Unix, false on Windows. The comment now says so.
+
+It is **not fixed here**, and it is recorded as an outstanding defect rather
+than quietly worked around. Closing it needs a handle *list* —
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through `STARTUPINFOEX` — which the
+standard library does not expose, so it means `windows-sys` plus `unsafe`
+code in `crates/gregg/src/clientd/launch.rs`, which the repository's unsafe
+allowlist does not currently cover. That is a core change of its own, not a
+corrective pass on the GUI line.
+
+What it does and does not affect:
+
+- the **GUI** is not affected: its standard streams are a console or a file,
+  never a pipe, so there is no EOF to withhold;
+- the **terminal client** is not affected in normal use, where stdout is the
+  terminal;
+- a **CLI command that spawns the daemon, whose stdout is a pipe**, is
+  affected: `gregg daemon restart | tee log` waits for a reader that will
+  never be satisfied.
+
+The exercise redirects that one command's output to a file instead of piping
+it, which is the correct way to run a command that spawns a detached child on
+Windows and is not a workaround for the defect — the defect is in the
+launcher, and the exercise only stops tripping over it.
+
+**7. The footprint was re-measured against a rebuilt baseline.** The scroll
 container comes from Slint's `std-widgets`, so both binaries grew: the GUI to
 **10,803,360 bytes** and the matched Slint-only baseline to **9,956,032
 bytes**. The difference — what this frontend adds over a pure-Slint build of

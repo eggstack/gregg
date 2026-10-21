@@ -251,7 +251,9 @@ may start the client daemon, and it does so by naming the `gregg` executable
 explicitly rather than launching itself. Being a separate workspace means it
 also has **its own CI** — it is formatted, linted, tested and release-built on
 macOS, Windows and Linux, and its tray is exercised natively on the Windows and
-Linux legs.
+Linux legs. The Windows leg also proves the **core** client-daemon launch with
+the CLI and no GUI involved (`gregg daemon restart` → `status` → `stop`),
+because the terminal client takes the same lock the GUI does.
 
 **The GUI is a source build.** There is no installer, no bundle and no release
 asset for it yet: it requires an existing Gregg installation, it has been
