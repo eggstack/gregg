@@ -70,10 +70,47 @@ const ROTATE_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 /// running at the same moment as a TUI launch does not make one wait on the
 /// other. It is derived from the same config identity as the endpoint, so two
 /// configs can never contend and two configs can never share a daemon.
+///
+/// # Why Windows does not derive it from the endpoint
+///
+/// On Unix the endpoint is a socket file, so the lock is that file's name
+/// with a `.launch.lock` extension and the lock sits beside the socket it
+/// guards.
+///
+/// On Windows the endpoint is a **named pipe**, and the whole `\\.\pipe\`
+/// namespace is a *device* namespace, not a filesystem. A path in it can
+/// never be created: opening one asks for a pipe instance with that name and
+/// fails with `ERROR_FILE_NOT_FOUND` ("the system cannot find the file
+/// specified") when no such pipe exists. Deriving the lock from the endpoint
+/// therefore produced a path on which the lock could never be taken, and the
+/// launcher failed with `failed to read \\.\pipe\gregg-client-<id>.launch.lock`
+/// **before it ever got as far as spawning a daemon** — so on Windows neither
+/// the TUI nor the GUI could start a client daemon at all.
+///
+/// The Windows lock is therefore a **real file beside the config**, named
+/// after the same identity digest, so the two platforms keep the same
+/// properties: one lock per config, never the config mutation lock, and a
+/// path that a file can actually be created at.
 #[must_use]
 pub fn launch_lock_path(identity: &ClientDaemonIdentity) -> PathBuf {
-    let primary = identity.candidates().first().cloned().unwrap_or_default();
-    primary.with_extension("launch.lock")
+    #[cfg(unix)]
+    {
+        let primary = identity.candidates().first().cloned().unwrap_or_default();
+        primary.with_extension("launch.lock")
+    }
+    #[cfg(windows)]
+    {
+        let directory = identity
+            .normalized_config_path()
+            .parent()
+            .map_or_else(std::env::temp_dir, Path::to_path_buf);
+        directory.join(format!("gregg-client-{}.launch.lock", identity.id()))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = identity;
+        PathBuf::new()
+    }
 }
 
 /// Why a client daemon could not be ensured.
@@ -1645,67 +1682,6 @@ mod tests {
         assert_eq!(adjacent_daemon_executable(&frontend), None);
     }
 
-    // ── The Windows executable rules ──────────────────────────────────
-    //
-    // These live behind `cfg(windows)` on purpose. The rule they cover is
-    // the Windows one, and the branch they guard is the branch that broke
-    // the Windows build when it asked `Metadata` for its extensions. A test
-    // that only ever compiles on the machine that wrote it is a test that
-    // never ran, so this one runs where the rule applies.
-    #[cfg(windows)]
-    #[test]
-    fn a_windows_executable_is_recognised_by_its_extension() {
-        let dir = TempDir::new("windows-executable");
-        let program = dir.0.join("gregg.exe");
-        std::fs::write(&program, b"not a real program").expect("writes the file");
-        let metadata = std::fs::metadata(&program).expect("metadata");
-        assert!(
-            is_executable_file(&program, &metadata),
-            "a .exe file is a program on Windows"
-        );
-
-        let document = dir.0.join("notes.txt");
-        std::fs::write(&document, b"not a program").expect("writes the file");
-        let metadata = std::fs::metadata(&document).expect("metadata");
-        assert!(
-            !is_executable_file(&document, &metadata),
-            "a .txt file is not a program on Windows"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_windows_name_without_an_extension_is_runnable() {
-        // Windows appends `.exe` to a name that carries no extension, so
-        // `C:\tools\gregg` runs `C:\tools\gregg.exe`. Refusing the bare name
-        // would refuse a path Windows itself resolves.
-        let dir = TempDir::new("windows-bare-name");
-        let program = dir.0.join("gregg");
-        std::fs::write(&program, b"not a real program").expect("writes the file");
-        let metadata = std::fs::metadata(&program).expect("metadata");
-        assert!(
-            is_executable_file(&program, &metadata),
-            "a name without an extension is runnable on Windows"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn the_runnable_windows_client_wins_over_the_bare_name() {
-        let dir = TempDir::new("windows-adjacent");
-        let frontend = dir.0.join("gregg-gui.exe");
-        std::fs::write(&frontend, b"not a real program").expect("writes the file");
-        std::fs::write(dir.0.join("gregg"), b"not a real program").expect("writes the file");
-        let client = dir.0.join("gregg.exe");
-        std::fs::write(&client, b"not a real program").expect("writes the file");
-
-        assert_eq!(
-            adjacent_daemon_executable(&frontend),
-            Some(client),
-            "the file Windows can actually run must be the one that is chosen"
-        );
-    }
-
     #[test]
     fn an_unusable_executable_is_reported_instead_of_a_readiness_timeout() {
         // The whole point of the boundary: a frontend that names an executable
@@ -1836,5 +1812,174 @@ mod tests {
             assert!(!running, "the stale daemon must have been stopped");
             cancel.cancel();
         });
+    }
+}
+
+/// The Windows-only rules of this module.
+///
+/// This is a **separate** module from the Unix one on purpose. The Unix suite
+/// is `#[cfg(all(test, unix))]`, so a `#[cfg(windows)]` test written *inside*
+/// it is a test that never compiles on Windows and therefore never runs —
+/// which is exactly how the Windows executable rule, and then the Windows
+/// launch lock, both reached a merged branch unexercised.
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use crate::clientd::identity::ClientDaemonIdentity;
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(tag: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "gregg-launch-{tag}-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("temp dir");
+            Self(path)
+        }
+
+        fn config_path(&self) -> PathBuf {
+            self.0.join("gregg.toml")
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A config on disk, so the identity is derived from a path that exists.
+    fn store_for(dir: &TempDir) -> ConfigStore {
+        let config = Config {
+            refresh_seconds: 1,
+            ..Config::default()
+        };
+        let store = ConfigStore::new(dir.config_path());
+        store.write(&config).expect("writes config");
+        store
+    }
+
+    // ── The Windows executable rules ──────────────────────────────────
+    //
+    // The rule they cover is the Windows one, and the branch they guard is
+    // the branch that broke the Windows build when it asked `Metadata` for
+    // its extensions.
+    #[test]
+    fn a_windows_executable_is_recognised_by_its_extension() {
+        let dir = TempDir::new("windows-executable");
+        let program = dir.0.join("gregg.exe");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a .exe file is a program on Windows"
+        );
+
+        let document = dir.0.join("notes.txt");
+        std::fs::write(&document, b"not a program").expect("writes the file");
+        let metadata = std::fs::metadata(&document).expect("metadata");
+        assert!(
+            !is_executable_file(&document, &metadata),
+            "a .txt file is not a program on Windows"
+        );
+    }
+
+    #[test]
+    fn a_windows_name_without_an_extension_is_runnable() {
+        // Windows appends `.exe` to a name that carries no extension, so
+        // `C:\tools\gregg` runs `C:\tools\gregg.exe`. Refusing the bare name
+        // would refuse a path Windows itself resolves.
+        let dir = TempDir::new("windows-bare-name");
+        let program = dir.0.join("gregg");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a name without an extension is runnable on Windows"
+        );
+    }
+
+    #[test]
+    fn the_runnable_windows_client_wins_over_the_bare_name() {
+        let dir = TempDir::new("windows-adjacent");
+        let frontend = dir.0.join("gregg-gui.exe");
+        std::fs::write(&frontend, b"not a real program").expect("writes the file");
+        std::fs::write(dir.0.join("gregg"), b"not a real program").expect("writes the file");
+        let client = dir.0.join("gregg.exe");
+        std::fs::write(&client, b"not a real program").expect("writes the file");
+
+        assert_eq!(
+            adjacent_daemon_executable(&frontend),
+            Some(client),
+            "the file Windows can actually run must be the one that is chosen"
+        );
+    }
+
+    // ── The Windows launch lock ───────────────────────────────────────
+    //
+    // The regression this module exists for. The lock path used to be
+    // derived from the endpoint, and on Windows the endpoint is a named
+    // pipe: the lock path was therefore inside the Windows *device*
+    // namespace, where no file can exist. The lock could never be taken and
+    // the launcher failed before it ever spawned a daemon. The GUI's
+    // Windows exercise found it; the TUI would have hit the same wall.
+    #[test]
+    fn the_windows_launch_lock_is_not_in_the_pipe_namespace() {
+        let dir = TempDir::new("windows-lock-namespace");
+        let identity = ClientDaemonIdentity::for_path(&dir.config_path());
+        let path = launch_lock_path(&identity);
+
+        let rendered = path.to_string_lossy();
+        assert!(
+            !rendered.starts_with(r"\\.\pipe"),
+            "a launch lock in the pipe namespace can never be created: {rendered}"
+        );
+    }
+
+    #[test]
+    fn the_windows_launch_lock_is_a_file_that_can_actually_be_locked() {
+        let dir = TempDir::new("windows-lock");
+        let store = store_for(&dir);
+        let identity = ClientDaemonIdentity::for_path(store.path());
+        let path = launch_lock_path(&identity);
+
+        std::fs::create_dir_all(path.parent().expect("has a parent")).expect("creates parent");
+        let held = FileLockGuard::acquire(&path, Duration::from_millis(500))
+            .unwrap_or_else(|error| panic!("the launch lock must be takeable on Windows: {error}"));
+        assert!(path.exists(), "the lock file is a real file on disk");
+
+        // A second acquirer must not be able to take it: that is the
+        // contention the lock exists to serialize.
+        let contended = FileLockGuard::acquire(&path, Duration::from_millis(50));
+        assert!(
+            contended.is_err(),
+            "a held launch lock must make a second launcher wait and then give up"
+        );
+
+        drop(held);
+        FileLockGuard::acquire(&path, Duration::from_millis(500)).expect("acquire after release");
+    }
+
+    #[test]
+    fn the_windows_launch_lock_is_distinct_per_config_and_from_the_config_lock() {
+        let dir = TempDir::new("windows-lock-distinct");
+        let first = ClientDaemonIdentity::for_path(&dir.0.join("a").join("gregg.toml"));
+        let second = ClientDaemonIdentity::for_path(&dir.0.join("b").join("gregg.toml"));
+        assert_ne!(
+            launch_lock_path(&first),
+            launch_lock_path(&second),
+            "two configs must never contend for one launch lock"
+        );
+
+        // Deliberately not the config mutation lock: an ordinary `gregg add`
+        // must not make a TUI launch wait, or vice versa.
+        let store = ConfigStore::new(dir.0.join("a").join("gregg.toml"));
+        assert_ne!(launch_lock_path(&first), store.lock_path());
     }
 }

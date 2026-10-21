@@ -2,13 +2,20 @@
 #
 # What this script asserts, and what it deliberately does NOT:
 #
-#   ASSERTED  - the GUI starts and prints its `tray=` startup line;
+#   ASSERTED  - the CORE client-daemon launch works on Windows: `gregg daemon
+#             restart` takes the launch lock, spawns a daemon and waits for it
+#             to answer, `gregg daemon status` identifies it through the
+#             daemon's own local protocol handshake, and `gregg daemon stop`
+#             releases it;
+#             - the GUI starts and prints its `tray=` startup line;
 #             - the GUI created a NATIVE top-level window, proved by
 #               enumerating the process's windows with EnumWindows;
 #             - the GUI process is still alive afterwards;
 #             - the per-config client daemon the GUI launched is running,
 #               identified through the daemon's own local protocol handshake
-#               (`gregg daemon status`), not through a process name.
+#               (`gregg daemon status`), not through a process name;
+#             - the fleet fixture served a request, so the daemon really
+#               polls the remote.
 #
 #   NOT ASSERTED - that a notification-area (system tray) ICON was rendered.
 #             The GitHub-hosted Windows runner executes the agent as a service
@@ -263,6 +270,49 @@ try {
         Stop-IfRunning $daemonProcess
     }
 
+    # ------------------------------------------------- the core launch, on Windows
+    #
+    # The GUI is not the only frontend: the terminal client launches the same
+    # per-config client daemon, through the same launch lock, and it launches
+    # it from its own executable rather than from a named one. So the core
+    # launch path is proved here on its own, with the CLI, *before* the GUI is
+    # started at all:
+    #
+    #   * `gregg daemon restart` takes the launch lock, spawns a daemon and
+    #     waits for it to answer — the exact path a terminal-client launch
+    #     takes, and the path that was broken when the lock was derived from
+    #     the Windows named pipe;
+    #   * `gregg daemon status` then identifies the daemon through its own
+    #     local protocol handshake, never through a process name;
+    #   * `gregg daemon stop` releases it again.
+    #
+    # The daemon is stopped before the GUI starts, so the GUI that follows
+    # finds a genuinely absent endpoint and has to launch a daemon of its own.
+    # That keeps the "the fixture served a request" check later a proof about
+    # the GUI's own daemon rather than about this one.
+    Write-Log "proving the core client-daemon launch path"
+    $daemonPattern = 'client daemon \S+ running \(protocol'
+    $restartOutput = & $GreggPath --config $configPath daemon restart 2>&1 | Out-String
+    Write-Log "daemon restart: $($restartOutput.Trim())"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "the core client-daemon launch failed on Windows: $($restartOutput.Trim())"
+    }
+    $coreStatus = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
+    Write-Log "daemon status after the core launch: $($coreStatus.Trim())"
+    if ($coreStatus -notmatch $daemonPattern) {
+        Fail "the core launch did not leave a running client daemon: $($coreStatus.Trim())"
+    }
+    $stopOutput = & $GreggPath --config $configPath daemon stop 2>&1 | Out-String
+    Write-Log "daemon stop: $($stopOutput.Trim())"
+    if ($LASTEXITCODE -ne 0) {
+        Fail "the client daemon did not stop on Windows: $($stopOutput.Trim())"
+    }
+    $afterStop = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
+    if ($afterStop -notmatch 'client daemon \S+ not running') {
+        Fail "the client daemon is still running after a stop: $($afterStop.Trim())"
+    }
+    Write-Log "the core launch, the status handshake and the stop all work on Windows"
+
     # ---------------------------------------------------------------- the GUI
     $stdoutFile = Join-Path $workDir "gui.stdout"
     $stderrFile = Join-Path $workDir "gui.stderr"
@@ -346,8 +396,8 @@ try {
     #
     # The running form is "client daemon <id> running (protocol <n>, version
     # <v>) at <endpoint>"; the parenthesis after "running" is what tells the
-    # two apart.
-    $daemonPattern = 'client daemon \S+ running \(protocol'
+    # two apart. `$daemonPattern` was defined above, where the core launch
+    # check used it.
     $daemonDeadline = (Get-Date).AddSeconds(60)
     $statusOutput = ""
     $daemonRunning = $false
