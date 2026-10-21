@@ -60,13 +60,56 @@ unit-tested function, and the probe is bounded and re-run at close time.
 
 **4. The GUI workspace now has its own CI.** The `gui` job formats, lints,
 tests and release-builds this workspace on macOS, Windows and Linux natively,
-and runs native tray exercises on the Windows and Linux legs: against a real
-`StatusNotifierItem` host on Linux, and a native window plus a native tray
-start on Windows. The **real** GUI against the **real** Linux SNI stack is
-CI-verified only — the harness's own D-Bus logic was executed locally against
-a throwaway client, not against the real GUI on a Linux host — and the
-**interactive** native runs (a visible notification-area icon in a real shell,
-a real GNOME session) remain outstanding and are not claimed.
+and runs native tray exercises on the Windows and Linux legs.
+
+*The Linux leg, natively, in CI run `39650126619`.* The exercise implements the
+real StatusNotifierItem protocol: `apps/gregg-gui/native/sni-host` owns
+`org.kde.StatusNotifierWatcher`, serves the watcher interface, starts the real
+GUI against the repository's own fleet fixture, and reads the item the GUI
+registers. What it observed:
+
+```text
+linux-tray: pass 1: a StatusNotifierItem host is present
+sni-host: PASS watcher-host-owned this helper owns org.kde.StatusNotifierWatcher at /StatusNotifierWatcher
+sni-host: PASS gui-reported-tray-available the GUI printed `gregg-gui: tray=available` with a tray host present
+sni-host: PASS gui-registered-an-item the GUI registered org.kde.StatusNotifierItem-22071-1
+sni-host: PASS watcher-lists-the-item RegisteredStatusNotifierItems is ["org.kde.StatusNotifierItem-22071-1"]
+sni-host: obs ToolTip.title="Gregg — 1 online"
+sni-host: obs Menu.labels=["1 online, 0 pending, 0 offline — gui-fixture", "Open Monitor", "Reload", "About Gregg", "Quit Gregg"]
+sni-host: PASS tray-tooltip-carries-the-fleet-status the tooltip is "Gregg — 1 online"
+sni-host: PASS tray-menu-carries-the-fleet a menu label mentions "gui-fixture"
+sni-host: PASS tray-item-has-an-icon IconName="", IconPixmap.entries=1
+sni-host: PASS tray-item-has-a-menu the menu is at /MenuBar
+sni-host: PASS gui-is-still-running the GUI is still running with a live tray
+sni-host: PASS all-checks mode=WithHost
+linux-tray: pass 2: no StatusNotifierItem host is present
+sni-host: PASS no-tray-host-present nobody owns org.kde.StatusNotifierWatcher
+sni-host: PASS gui-reported-tray-unavailable the GUI printed `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"`
+sni-host: PASS gui-survives-without-a-tray the GUI is still running three seconds after reporting `tray=unavailable`
+sni-host: PASS all-checks mode=NoHost
+linux-tray: PASS both Linux tray passes
+```
+
+So the Linux tray is proven natively — the item registers with a real host,
+its tooltip carries the live fleet status, and its menu carries the fleet
+summary and the five items — and so is the **no-tray fallback**, on a desktop
+with no host at all: the GUI reports the reason and keeps running instead of
+dying.
+
+*The Windows leg* starts the real GUI, waits for its `tray=` line, and proves
+with `EnumWindows` that it created a **native top-level window** for its own
+process, and that the client daemon it launched is running. It does **not**
+claim the notification-area icon was rendered: the runner is session 0 with no
+`explorer.exe`, so there is no notification area to observe. The
+**interactive** native runs — a visible icon in a real shell, a real GNOME
+session — remain outstanding and are not claimed.
+
+The first run of the job (`39647073131`) is also worth reading: it caught two
+defects no root job could see. The GUI's Unix-only test helpers were dead
+code on Windows, which is a build failure there because the job compiles the
+tests with `-D warnings`; and the Linux runner was missing
+`libxkbcommon-x11`, so the GUI panicked as it opened its window — after the
+D-Bus half of the exercise had already passed.
 
 **5. The footprint was re-measured against a rebuilt baseline.** The scroll
 container comes from Slint's `std-widgets`, so both binaries grew: the GUI to

@@ -407,6 +407,18 @@ run of the new job) is the evidence, and it is worth reading closely:
   half of that exercise is therefore **proven natively**: a real
   `StatusNotifierItem` host, a real session bus, and the real GUI's own
   answer to "is there a tray host?".
+- the **next run** (`39650126619`) has the GUI's own job green on **macOS and
+  Linux**, and the Linux leg is the **native Linux tray proof**: the exercise
+  owns `org.kde.StatusNotifierWatcher`, the real GUI registers an item with
+  it (`org.kde.StatusNotifierItem-22071-1`), the watcher's own
+  `RegisteredStatusNotifierItems` lists that item, the item's tooltip is
+  `Gregg — 1 online`, its menu labels are `["1 online, 0 pending, 0 offline —
+  gui-fixture", "Open Monitor", "Reload", "About Gregg", "Quit Gregg"]`, and
+  the item carries an icon and a menu at `/MenuBar`. The second pass, on a
+  session bus with **no** host, has the GUI print
+  `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this
+  desktop"` and **still running three seconds later**. So the Linux tray and
+  the no-tray fallback are both proven natively.
 
 That is the point of the job: both failures are things no root job could have
 seen, and one of them is exactly the class of defect that broke this line.

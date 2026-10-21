@@ -299,12 +299,68 @@ try {
     Write-Log "the GUI process $($guiProcess.Id) is still running"
 
     # ---------------------------------------------------------- the daemon runs
-    $statusOutput = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
+    #
+    # The GUI launches the client daemon for its config, so the daemon must
+    # come up. Two things this check has to get right, and the first version
+    # of it got both wrong:
+    #
+    #   * it has to WAIT. The daemon is a process the GUI spawns, so it is
+    #     not listening a few hundred milliseconds after the GUI starts.
+    #   * it has to match the running form and not the other one. The
+    #     daemon reports "client daemon <id> not running at <endpoint>: ..."
+    #     when it is down, and a pattern loose enough to match "running"
+    #     inside "not running" turns a missing daemon into a PASS.
+    #
+    # The running form is "client daemon <id> running (protocol <n>, version
+    # <v>) at <endpoint>"; the parenthesis after "running" is what tells the
+    # two apart.
+    $daemonPattern = 'client daemon \S+ running \(protocol'
+    $daemonDeadline = (Get-Date).AddSeconds(60)
+    $statusOutput = ""
+    $daemonRunning = $false
+    while ((Get-Date) -lt $daemonDeadline) {
+        $statusOutput = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
+        if ($statusOutput -match $daemonPattern) {
+            $daemonRunning = $true
+            break
+        }
+        if ($guiProcess.HasExited) {
+            Fail "the GUI exited with code $($guiProcess.ExitCode) before the client daemon came up"
+        }
+        Start-Sleep -Milliseconds 500
+    }
     Write-Log "daemon status: $($statusOutput.Trim())"
-    if ($statusOutput -notmatch "client daemon .* running ") {
+    if (-not $daemonRunning) {
         Fail "the client daemon the GUI launched is not running: $($statusOutput.Trim())"
     }
+    if ($statusOutput -match 'client daemon \S+ not running') {
+        Fail "the daemon status contradicts itself: $($statusOutput.Trim())"
+    }
     Write-Log "the client daemon is running"
+
+    # ------------------------------------------------- the daemon really polls
+    #
+    # "The daemon is running" and "the daemon is polling the fleet" are two
+    # different claims, and only the second one proves the GUI is attached to
+    # a working daemon. The fixture writes one JSON line per request it
+    # serves, so a non-empty log is the end-to-end evidence: GUI -> client
+    # daemon -> remote.
+    $fixtureLog = Join-Path $workDir "fixture.log"
+    $requestDeadline = (Get-Date).AddSeconds(60)
+    $requestCount = 0
+    while ((Get-Date) -lt $requestDeadline) {
+        if (Test-Path -LiteralPath $fixtureLog) {
+            $requestCount = @(Get-Content -LiteralPath $fixtureLog -ErrorAction SilentlyContinue).Count
+        }
+        if ($requestCount -gt 0) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if ($requestCount -le 0) {
+        Fail "the client daemon is running but the fleet fixture received no request in 60 seconds"
+    }
+    Write-Log "the fleet fixture served $requestCount request(s): the daemon is polling"
 
     Write-Log "PASS every Windows tray check"
 }

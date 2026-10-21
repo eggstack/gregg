@@ -1395,9 +1395,16 @@ Completed:
   helpers were dead code on Windows, which is a build failure there because
   the job compiles the tests with `-D warnings`, and the Linux runner was
   missing `libxkbcommon-x11`, which made the GUI panic as it opened its
-  window. The Linux exercise had already proven the D-Bus half natively by
-  then: a real `StatusNotifierItem` host, a real session bus, and the real
-  GUI answering `gregg-gui: tray=available`.
+  window. The **next run** (`39650126619`) has the GUI's job green on macOS
+  and Linux, and the Linux leg is the **native Linux tray proof**: a real
+  `StatusNotifierItem` host owns `org.kde.StatusNotifierWatcher`, the real GUI
+  registers an item with it, the watcher's own `RegisteredStatusNotifierItems`
+  lists that item, the item's tooltip carries the live fleet status
+  (`Gregg — 1 online`) and its menu carries the fleet summary and the five
+  items — and the second pass, on a bus with **no** host, has the GUI report
+  `gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this
+  desktop"` and still be running three seconds later. So the Linux tray and
+  the no-tray fallback are both proven natively.
 
 Preserved exclusions:
 
