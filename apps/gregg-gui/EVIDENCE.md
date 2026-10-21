@@ -195,10 +195,17 @@ What it does and does not affect:
   affected: `gregg daemon restart | tee log` waits for a reader that will
   never be satisfied.
 
-The exercise redirects that one command's output to a file instead of piping
-it, which is the correct way to run a command that spawns a detached child on
-Windows and is not a workaround for the defect — the defect is in the
-launcher, and the exercise only stops tripping over it.
+The exercise starts that command with `Start-Process` and redirects its
+output to **files**, never through a pipeline. PowerShell's `*>` redirection is
+not enough — it still hands the child a pipe and copies it into the file, so
+the daemon's inherited write end keeps *that* pipe open; `Start-Process
+-RedirectStandardOutput` passes a real file handle, which has no EOF to
+withhold. That is the same way the GUI itself is started in this exercise,
+and the GUI also spawns a daemon. The exercise also waits for the command
+with an explicit deadline, so a check that cannot fail reports itself in one
+line instead of hanging the step for fifteen minutes. None of this is a
+workaround for the defect: the defect is in the launcher, and the exercise
+only stops tripping over it.
 
 **7. The footprint was re-measured against a rebuilt baseline.** The scroll
 container comes from Slint's `std-widgets`, so both binaries grew: the GUI to

@@ -412,6 +412,16 @@ with a plan of its own, not a consequence of this one, and it is recorded as
 an outstanding defect in `plans/README.md`, in
 `apps/gregg-gui/EVIDENCE.md`, and in the launcher's own documentation.
 
+The exercise avoids tripping over it rather than papering over it: the command
+that spawns the daemon is started with `Start-Process` and its output goes to
+**files**. PowerShell's `*>` redirection is not enough — it still hands the
+child a pipe and copies it into the file, so the daemon's inherited write end
+keeps *that* pipe open; `Start-Process -RedirectStandardOutput` passes a real
+file handle, which has no EOF to withhold. That is the same way the GUI itself
+is started in that exercise, and the GUI also spawns a daemon. The exercise
+waits for the command with an explicit deadline as well, so a check that
+cannot fail says so in one line instead of hanging the step.
+
 All three defects were invisible for the same reason: **the GUI workspace had no
 CI at all**. It is a separate Cargo workspace with its own lockfile and its own
 toolchain, the root workspace excludes it, and no job built or tested it. So a
