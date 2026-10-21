@@ -157,6 +157,46 @@ has to launch a daemon of its own, and the "the fleet fixture served a
 request" check stays a proof about the GUI's own daemon rather than about
 this one.
 
+After the fixes, the exercise passes on the native Windows runner (CI run
+`39667817523`, job `GUI (windows-2022)`):
+
+```text
+windows-tray: proving the core client-daemon launch path
+windows-tray: daemon restart: client daemon d45402fdf71b3bd9 restarted
+windows-tray: daemon status after the core launch: client daemon d45402fdf71b3bd9 running (protocol 1, version 1.0.15) at \\.\pipe\gregg-client-d45402fdf71b3bd9
+windows-tray: the core launch, the status handshake and the stop all work on Windows
+windows-tray: starting the GUI
+windows-tray: the GUI printed: gregg-gui: tray=available
+windows-tray: top-level window: 589996|hidden|Gregg
+windows-tray: top-level window: 262650|visible|
+windows-tray: top-level window: 327998|hidden|Default IME
+windows-tray: the GUI created 3 native top-level window(s)
+windows-tray: the GUI process 5692 is still running
+windows-tray: daemon status: client daemon d45402fdf71b3bd9 running (protocol 1, version 1.0.15) at \\.\pipe\gregg-client-d45402fdf71b3bd9
+windows-tray: the client daemon is running
+windows-tray: the fleet fixture served 8 request(s): the daemon is polling
+windows-tray: PASS every Windows tray check
+```
+
+Read it as four separate claims, because they are four separate claims: the
+**core** launch path works on Windows (the first three lines, with no GUI
+involved); the GUI starts and creates a **native** window; the client daemon
+**the GUI launched** is running, identified through the daemon's own local
+protocol handshake on the named pipe; and that daemon is really **polling**,
+because the fleet fixture served eight requests.
+
+The six Windows launcher tests also ran natively in the same run, in the core
+`Windows` job:
+
+```text
+test clientd::launch::windows_tests::a_windows_executable_is_recognised_by_its_extension ... ok
+test clientd::launch::windows_tests::a_windows_name_without_an_extension_is_runnable ... ok
+test clientd::launch::windows_tests::the_runnable_windows_client_wins_over_the_bare_name ... ok
+test clientd::launch::windows_tests::the_windows_launch_lock_is_distinct_per_config_and_from_the_config_lock ... ok
+test clientd::launch::windows_tests::the_windows_launch_lock_is_not_in_the_pipe_namespace ... ok
+test clientd::launch::windows_tests::the_windows_launch_lock_is_a_file_that_can_actually_be_locked ... ok
+```
+
 **6. An outstanding Windows defect in the launcher, found by that exercise and
 not fixed.** The exercise hung the first time it ran the new core-launch
 check, and the hang was not the check's fault: it was a real property of the

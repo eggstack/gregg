@@ -1433,7 +1433,17 @@ Completed:
   proves the **core** launch path on its own, before the GUI starts:
   `gregg daemon restart` takes the lock and spawns a daemon, `gregg daemon
   status` identifies it through the daemon's own handshake, and `gregg daemon
-  stop` releases it.
+  stop` releases it. The **final run** (`39667817523`, and the identical
+  `39667345294` one commit earlier) is **green on every job**, including the
+  GUI's own job on **Windows**: the exercise reports `daemon restart: client
+  daemon d45402fdf71b3bd9 restarted`, then `client daemon d45402fdf71b3bd9
+  running (protocol 1, version 1.0.15) at \\.\pipe\gregg-client-d45402fdf71b3bd9`
+  — a daemon reached through the Windows **named pipe**, the very endpoint
+  whose derived lock path could never be taken — then the GUI's own
+  `gregg-gui: tray=available`, three native top-level windows, and `the fleet
+  fixture served 8 request(s): the daemon is polling`. The same run's core
+  `Windows` job executed the six new `clientd::launch::windows_tests`
+  natively, all of them `ok`.
 
 Preserved exclusions:
 
