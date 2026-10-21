@@ -24,6 +24,28 @@ gregg-update    ◄── gregg       (shared self-update mechanics)
 - `greggd` and `gregg` never depend on each other. `gregg-protocol` never depends on another workspace crate. `gregg-host`/`gregg-update` never depend on app crates, service managers, or the protocol.
 → `architecture/workspace.md`
 
+### The optional GUI app is NOT a workspace member
+
+`apps/gregg-gui/` is a **separate Cargo workspace** with its own lockfile, its own
+`rust-toolchain.toml`, and its own MSRV (**1.92**, because Slint 1.18 requires it).
+The root workspace lists it under `exclude` so a `members` glob cannot pull it
+back in.
+
+This is not a style choice. The root workspace's MSRV is **1.89** and its MSRV CI
+job runs `cargo test --workspace --all-targets --all-features`; a Slint member
+would break that job even with no core code touched. Build it on its own:
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+cargo test  --manifest-path apps/gregg-gui/Cargo.toml
+```
+
+The GUI is a **frontend**, not a second poller: it attaches to the existing
+per-config client daemon over the same local IPC and renders what that daemon
+already polls. It must never open its own remote HTTP client. It is not
+published to crates.io (`publish = false`).
+→ `architecture/gregg-client.md`
+
 ## Build and verify
 
 Routine loop (fmt + tests only; no clippy/docs/release checks):

@@ -131,6 +131,33 @@ and preserves the existing fleet-wide layout rules.
 Each monitored host must have `greggd` running and reachable on the
 configured port (default 11310).
 
+### As a library
+
+The crate is also consumed as a library by the optional desktop frontend in
+`apps/gregg-gui`, which is a **separate** Cargo workspace with its own
+lockfile and its own Rust 1.92 toolchain floor (Slint 1.18 requires it; the
+core workspace's MSRV stays 1.89). That frontend is a second way to look at
+the fleet, not a second poller: it attaches to the same per-config client
+daemon over the same local IPC and renders what that daemon already polls.
+
+Because that frontend is not the `gregg` binary, it cannot launch the client
+daemon by using its own image. The launcher therefore takes the executable as
+an explicit argument:
+
+```rust
+use gregg::clientd::{ensure_running_with_executable, DaemonExecutable};
+
+let attachment =
+    ensure_running_with_executable(&store, &DaemonExecutable::Path(gregg_path)).await?;
+```
+
+`ensure_running` remains the TUI's entry point and is exactly
+`ensure_running_with_executable(store, &DaemonExecutable::Current)`: one
+launcher, one set of ownership rules, one lock. A named executable is resolved
+to an absolute path and proved usable before anything destructive happens, and
+a frontend may never name itself. See
+[`architecture/gregg-client.md`](../../architecture/gregg-client.md).
+
 The normal view uses five rows for an online system whose snapshot lacks
 network telemetry, or six when its snapshot provides it, including aggregate
 disk and NET capacity. Mixed fleets can therefore contain both heights. All active metric rows share a fleet-wide `bar_width` so the opening

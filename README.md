@@ -215,6 +215,25 @@ entry that is provably Gregg's, leaving foreign ones alone; a daemon it cannot
 confidently stop blocks the deletion rather than leaving a stale endpoint
 behind. See [Client](docs/client.md).
 
+## Optional desktop GUI
+
+`apps/gregg-gui` is an **optional, experimental** Slint frontend — a system
+tray entry and a compact monitor window for the same fleet the TUI shows. It
+is a second way to *look* at the fleet, never a second way to *poll* it: it
+attaches to the same per-config client daemon over the same local protocol, so
+a TUI and a GUI window cost the fleet exactly what one window costs.
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+```
+
+It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
+Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
+core workspace depends on it, it is not published to crates.io, and the
+terminal client is unaffected by its existence. The GUI is the only thing that
+may start the client daemon, and it does so by naming the `gregg` executable
+explicitly rather than launching itself.
+
 ## Live metrics and compatibility
 
 Beyond the core CPU/memory/load/swap/drive gauges, v2 daemons may report

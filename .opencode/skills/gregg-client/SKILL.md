@@ -129,6 +129,28 @@ own window: take the launch lock *before* deciding to stop anything, re-decide
 running-or-not from inside it, and propagate the readiness result rather than
 discarding it.
 
+**A separately named frontend names the client it launches** (Plan 188).
+`ensure_running(store)` is the TUI's path and is exactly
+`ensure_running_with_executable(store, &DaemonExecutable::Current)`. A frontend
+that is *not* the `gregg` binary — a desktop GUI — must use
+`DaemonExecutable::Path`; spawning its own image with `daemon run` produces a
+process that exits immediately and a readiness timeout that blames the daemon.
+
+- The **exact resolved absolute path** is spawned, never a name from `PATH`.
+- The executable is resolved **before** anything destructive, and a resolution
+  failure is raised **only where a spawn is authorized**. A daemon that is
+  already serving needs no helper, so a wrong helper must never stop or refuse
+  a working daemon; a daemon that is replaced must be replaceable, so an
+  unusable helper is reported *before* the old daemon is stopped.
+- A frontend may **not launch itself**: `DaemonExecutable::Path` refuses a path
+  that canonicalizes to this frontend's own executable. `Current` is exempt.
+- A missing or unusable executable is an **actionable diagnostic**, never a
+  readiness timeout.
+- Identity is the caller's decision:
+  `verify_gregg_client_executable` runs `<exe> version` under a bounded
+  deadline and requires `gregg <version>`. Use it for a user-selected external
+  executable; an installer-owned adjacent or bundled `gregg` needs no probe.
+
 **User-scoped startup only** (`clientd::startup`): `systemctl --user`, a
 `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a managed
 user crontab watchdog. Never a system unit, never `LocalService` SCM, never

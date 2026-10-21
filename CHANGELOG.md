@@ -9,6 +9,35 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **A daemon-executable selection boundary for separately named frontends
+  (Plan 188):** `clientd::ensure_running_with_executable` lets a frontend that
+  is *not* the `gregg` binary — an optional desktop GUI — name the client it
+  should launch, instead of spawning its own image and failing with a
+  readiness timeout that blames the daemon. `ensure_running` is unchanged for
+  the TUI and is now exactly `ensure_running_with_executable(store, &
+  DaemonExecutable::Current)`: one launcher, one set of ownership rules, one
+  lock.
+
+  The named executable is resolved to an absolute path and proved usable
+  before anything destructive happens, and a failure is raised only where a
+  spawn is actually authorized — so a daemon that is already serving is never
+  stopped or refused because the frontend packaged the wrong helper, and a
+  daemon that *is* replaced is never stopped by a frontend that cannot start
+  its replacement. A frontend may not launch itself, and a missing or
+  unusable executable produces an actionable diagnostic instead of a timeout.
+  `verify_gregg_client_executable` adds a bounded positive identity check
+  (`gregg version`) for a user-selected external executable.
+
+- **An optional Slint desktop frontend (Plans 187-190):** `apps/gregg-gui` is a
+  separate Cargo workspace with its own lockfile and its own toolchain floor
+  (Rust 1.92, because Slint 1.18 requires it), so the five core crates keep
+  their Rust 1.89 MSRV and the root `cargo test --workspace` never sees
+  Slint. It is a *frontend*: it attaches to the existing per-config client
+  daemon over the same local IPC and renders what that daemon already
+  polls. It is not a second poller and it is not published to crates.io.
+
+### Changed
+
 - **Page-scrolling aliases in the TUI (Plan 184):** `Ctrl-D` and `Ctrl-U` page
   forward and back through the system list, next to the existing
   `PageDown`/`PageUp` and `f`/`b` bindings. They are aliases of the same

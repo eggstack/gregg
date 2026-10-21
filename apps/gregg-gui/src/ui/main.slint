@@ -1,0 +1,194 @@
+// Plan 188 Part B: the Slint definition of the optional Gregg desktop
+// frontend.
+//
+// Two independent top-level components live here, on purpose:
+//
+//   * `MainWindow` — the compact monitor window.
+//   * `TrayIcon`   — the native tray entry.
+//
+// A Slint `SystemTrayIcon` is a *top-level* component: it is never a child of
+// a window, and a tray-rooted component does not share `Globals` with a
+// window-rooted one — each instance gets its own copy of every global. So
+// anything both of them need has to be pushed into each of them explicitly
+// from Rust, which is where the truth lives anyway.
+//
+// A `SystemTrayIcon` must contain exactly one `Menu` child, the menu may not
+// be inside an `if` or a `for`, and no other child element types are allowed
+// in it. The menu itself may use `if`/`for` to build its entries.
+
+/// One monitored system, as the window shows it.
+export struct SystemRow {
+    /// Display name, or the host when the system has no configured name.
+    name: string,
+    /// The endpoint being polled, as `host:port`.
+    endpoint: string,
+    /// Reachability in words, including the reason when it is offline.
+    status: string,
+    /// CPU usage line.
+    cpu: string,
+    /// Memory usage line.
+    memory: string,
+    /// Whether the most recent poll succeeded.
+    online: bool,
+}
+
+// A button, built by hand.
+//
+// Slint has no built-in `Button`: the built-in elements stop at the layout
+// and text primitives, and a real button needs a style, a hover state and a
+// pressed state. This is the smallest version of one that behaves like a
+// button, which is all the monitor window needs.
+component ActionButton inherits Rectangle {
+    /// The button's label.
+    in property <string> label: "";
+    /// Whether this is the emphasized button.
+    in property <bool> primary: false;
+    /// Invoked when the button is activated.
+    callback clicked();
+
+    border-radius: 4px;
+    background: root.primary ? #3c4a5a : #d4d4d4;
+
+    Text {
+        text: root.label;
+        color: root.primary ? #ffffff : #202020;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+}
+
+export component MainWindow inherits Window {
+    title: "Gregg";
+    width: 520px;
+    height: 360px;
+
+    /// One line describing the client-daemon attachment.
+    in property <string> status-text: "connecting to the client daemon…";
+
+    /// The fleet, in display order.
+    in property <[SystemRow]> systems;
+
+    /// The operator asked for a configuration reload.
+    callback refresh-requested();
+
+    /// The operator asked to quit.
+    callback quit-requested();
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: root.status-text;
+            font-size: 14px;
+        }
+
+        Rectangle {
+            min-height: 1px;
+            max-height: 1px;
+            background: #80808080;
+        }
+
+        for row in root.systems : VerticalLayout {
+            spacing: 1px;
+
+            Text {
+                text: row.name + "  " + row.endpoint;
+                font-size: 14px;
+                font-weight: 700;
+                color: row.online ? #202020 : #8a5a30;
+            }
+            Text {
+                text: row.status;
+                font-size: 12px;
+            }
+            Text {
+                text: row.cpu;
+                font-size: 12px;
+            }
+            Text {
+                text: row.memory;
+                font-size: 12px;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+
+            ActionButton {
+                label: "Reload";
+                clicked => {
+                    root.refresh-requested();
+                }
+            }
+            ActionButton {
+                label: "Quit";
+                primary: true;
+                clicked => {
+                    root.quit-requested();
+                }
+            }
+        }
+    }
+}
+
+export component TrayIcon inherits SystemTrayIcon {
+    /// The tray icon image.
+    ///
+    /// The inherited `icon` is bound to this one rather than assigned
+    /// directly: a property that is bound in the `.slint` file is compiled as
+    /// a constant, and a constant has no setter on the Rust side. The tray
+    /// icon is only created once a non-empty image has been assigned, so this
+    /// property is what the GUI fills in.
+    in property <image> tray-icon;
+
+    /// The hover text.
+    ///
+    /// Bound to the inherited `tooltip` for the same reason as `tray-icon`.
+    in property <string> status-text: "Gregg";
+
+    /// The macOS menu-bar label. Windows and Linux ignore it.
+    title: "Gregg";
+
+    icon: root.tray-icon;
+    tooltip: root.status-text;
+
+    /// The operator asked to bring the monitor window back.
+    callback show-window();
+
+    /// The operator asked for a configuration reload.
+    callback refresh-requested();
+
+    /// The operator asked to quit.
+    callback quit-requested();
+
+    // Exactly one `Menu` child, and nothing else.
+    Menu {
+        MenuItem {
+            title: "Open Gregg";
+            activated => {
+                root.show-window();
+            }
+        }
+        MenuItem {
+            title: "Reload";
+            activated => {
+                root.refresh-requested();
+            }
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Quit Gregg";
+            activated => {
+                root.quit-requested();
+            }
+        }
+    }
+}

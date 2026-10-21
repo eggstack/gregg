@@ -384,6 +384,48 @@ EggPool results, `Resize`, `RefreshNow`, `ToggleSystemView`,
 arm is parked at a far-future sleep while no highlight is active so the
 select branch never fires spuriously.
 
+### Daemon executable selection (Plan 188)
+
+The client daemon is the `gregg` binary. A frontend that *is* `gregg` can launch
+its own image; a frontend that is **not** — a separately named desktop GUI —
+must name the client explicitly, because spawning itself with `daemon run`
+produces a process that exits immediately and a readiness timeout that blames
+the daemon for a mistake the launcher made.
+
+```rust
+pub enum DaemonExecutable {
+    Current,        // this frontend's own image (the `gregg` TUI)
+    Path(PathBuf),  // an explicit path to a Gregg client
+}
+```
+
+- `ensure_running(store)` is the TUI's entry point and is exactly
+  `ensure_running_with_executable(store, &DaemonExecutable::Current)`. There is
+  one launcher, not two: `probe`, `classify`, `rotate`, `wait_ready` and the
+  lock are shared, and the ownership rules do not vary with the executable.
+- **The exact resolved path is spawned**, never a name from `PATH`. A stale or
+  shadowing `gregg` earlier in the path must never become the daemon a frontend
+  then attaches to. The path is made absolute before it is used, so a spawn can
+  never fall back to a `PATH` lookup.
+- **The executable is resolved before anything destructive, and a resolution
+  failure is raised only where a spawn is authorized.** A daemon that is
+  already running needs no helper at all, so "the GUI packaged the wrong
+  helper" must never stop or refuse a working daemon. A daemon that *is*
+  replaced must be replaced by something, so an unusable executable is reported
+  *before* the old daemon is stopped.
+- **A frontend may not launch itself.** `DaemonExecutable::Path` refuses a path
+  that canonicalizes to this frontend's own executable, so a symlink, a
+  relative spelling or a `..` segment cannot slip past. `Current` is exempt:
+  for the `gregg` TUI its own image is exactly the right binary.
+- **A missing or unusable executable is an actionable diagnostic**, not a
+  readiness timeout. The path, the reason, and the fact that the file must be
+  executable are all reported.
+- **Identity is the caller's decision.** `verify_gregg_client_executable` runs
+  `<exe> version` under a bounded deadline and requires the answer `gregg
+  <version>`. A user-selected external executable must pass it before it is
+  trusted; an installer-owned adjacent or bundled `gregg` needs no probe,
+  because it is owned by the same installation.
+
 ### Action/Reducer pattern
 
 All state changes go through the `Action` enum:
