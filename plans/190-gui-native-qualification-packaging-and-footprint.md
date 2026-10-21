@@ -383,6 +383,34 @@ release build of the GUI workspace, plus native tray exercises — and it adds
 step. That is an explicitly approved change to the exclusion, recorded here
 because the exclusion was a plan decision rather than a repository rule.
 
+**What the new CI proved, on native runners.** Run `39647073131` (the first
+run of the new job) is the evidence, and it is worth reading closely:
+
+- the **core Windows job went green** for the first time in this line's
+  history, which is the native proof that the `Metadata::extensions()` break
+  is gone and that the `#[cfg(windows)]` branch of the launcher now compiles
+  on a Windows host;
+- the GUI's own job failed on **Windows** — and the failure was a real defect
+  the new job exists to find: the Unix-only helpers in the GUI's own test
+  code were dead code on Windows, and the Windows job compiles the tests with
+  `-D warnings`, so dead code there is a build failure. The bridge's counted
+  proof is now gated `#[cfg(all(test, unix))]` as a whole, and the one helper
+  in the qualification harness that only the Unix-only proof uses is gated
+  with it. Reproduced and fixed locally against a Windows target before the
+  next run;
+- the GUI's own job failed on **Linux** — the tray exercise ran the real D-Bus
+  protocol, the real `StatusNotifierItem` host and the real GUI, and the GUI
+  printed `gregg-gui: tray=available` against a live session bus before it
+  **panicked opening its window**: `libxkbcommon-x11.so could not be loaded`.
+  The runner had `libxkbcommon-dev` but not the X11 variant, so the CI job
+  now installs `libxkbcommon-x11-0` and `libxkbcommon-x11-dev`. The D-Bus
+  half of that exercise is therefore **proven natively**: a real
+  `StatusNotifierItem` host, a real session bus, and the real GUI's own
+  answer to "is there a tray host?".
+
+That is the point of the job: both failures are things no root job could have
+seen, and one of them is exactly the class of defect that broke this line.
+
 ### Evidence
 
 **Deterministic**

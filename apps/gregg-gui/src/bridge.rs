@@ -852,7 +852,13 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+// The counted proof in this module speaks the Unix socket protocol directly
+// (`/bin/true` as the stand-in client, a Unix socket as the stand-in
+// daemon), so it is a Unix-only proof. The module is gated as a whole rather
+// than item by item: a helper that only a Unix-only test uses is dead code
+// on Windows, and the Windows CI job compiles this crate's tests with
+// `-D warnings`, so "dead code" there is a build failure rather than a note.
+#[cfg(all(test, unix))]
 mod evidence {
     //! Counted evidence that the GUI is a *frontend*, not a second poller.
     //!

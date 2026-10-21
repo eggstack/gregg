@@ -302,6 +302,12 @@ jobs:
         # against; xvfb gives the GUI a display and dbus-x11 gives it a
         # session bus. Without them the native exercise would be skipped
         # rather than run, which is exactly what this job must not do.
+        #
+        # `libxkbcommon-x11-0` and `libxkbcommon-x11-dev` are both needed:
+        # the X11 backend loads `libxkbcommon-x11.so` at runtime through
+        # `xkbcommon-dl`, and the runtime package alone provides only the
+        # versioned `.so.0`. Without them the GUI panics the moment it opens
+        # its window.
         timeout-minutes: 15
         run: |
           sudo apt-get update
@@ -309,6 +315,8 @@ jobs:
             pkg-config \
             libfontconfig1-dev \
             libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxkbcommon-x11-dev \
             libx11-dev \
             xvfb \
             dbus-x11 \

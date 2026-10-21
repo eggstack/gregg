@@ -1571,6 +1571,11 @@ async fn the_gui_refuses_an_incompatible_daemon_without_stopping_it() {
 }
 
 /// Wait for the GUI to publish a message the predicate accepts.
+///
+/// Unix-only, because its only caller is the incompatible-daemon proof, which
+/// stands in a Unix socket as the peer. On Windows this would be dead code,
+/// and dead code is a build failure there.
+#[cfg(unix)]
 async fn wait_for_gui_message(
     gui: &Bridge,
     predicate: impl Fn(&BridgeMessage) -> bool,

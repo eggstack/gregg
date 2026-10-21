@@ -1387,7 +1387,17 @@ Completed:
   tray exercises on the Windows and Linux legs — which is what makes the first
   defect impossible to ship again. The footprint and the resource cost were
   re-measured after the change and are recorded in
-  `apps/gregg-gui/EVIDENCE.md`.
+  `apps/gregg-gui/EVIDENCE.md`. The **first run of that job** (CI run
+  `39647073131`) is the evidence that it earns its place: the **core Windows
+  job went green** for the first time in this line's history — the native
+  proof that the compilation break is gone — and the new job itself caught
+  **two** defects that no root job could have seen: the GUI's Unix-only test
+  helpers were dead code on Windows, which is a build failure there because
+  the job compiles the tests with `-D warnings`, and the Linux runner was
+  missing `libxkbcommon-x11`, which made the GUI panic as it opened its
+  window. The Linux exercise had already proven the D-Bus half natively by
+  then: a real `StatusNotifierItem` host, a real session bus, and the real
+  GUI answering `gregg-gui: tray=available`.
 
 Preserved exclusions:
 
