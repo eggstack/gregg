@@ -36,7 +36,40 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   daemon over the same local IPC and renders what that daemon already
   polls. It is not a second poller and it is not published to crates.io.
 
+  The MVP (Plan 189) is a native system-tray entry and a compact monitor
+  window. The tray shows a health-coloured icon, a bounded fleet summary, and
+  Open Monitor, Reload, About Gregg and Quit Gregg; the window shows the fleet,
+  the selected host's metrics, drives and interfaces, its scheduler jobs and
+  retained records, and the `EggPool` plane. The GUI keeps the TUI's
+  truthfulness rules: an unpolled host is *pending* and never *offline*, an
+  absent metric is `—` and never `0`, and the selection is keyed by the stable
+  system id so a host that reorders does not move it. Its projection from a
+  daemon document to a view model is pure, so those rules are tested without a
+  desktop session. There is no polling timer: the GUI redraws because
+  something changed, not because a clock woke. Closing the monitor window
+  hides it and leaves the tray running; quitting the GUI never stops the
+  client daemon. The Slint royalty-free licence attribution is part of the
+  application, not of a README.
+
 ### Changed
+
+- **The optional GUI activates itself before it raises its window (Plan 189):**
+  on macOS a tray application is a *background* application, the system does
+  not activate the app that owns a menu-bar item, and a background app cannot
+  bring its own window to the front. A GUI launched the way a real one is
+  launched — a login item, a launcher, an agent — would therefore have shown
+  nothing at all when "Open Monitor" was chosen from the menu bar. The GUI now
+  activates itself first. The activation is the only platform-specific code in
+  the GUI, and it is macOS-only.
+
+- **Shared scheduler and EggPool display vocabulary (Plan 189):** the words the
+  TUI uses for a scheduler job's state, a terminal outcome, a load gate and a
+  duration — and for an `EggPool` failure — are now shared functions in
+  `gregg::cron` and `gregg::eggpool` rather than private to the terminal
+  renderer. The optional desktop frontend has to say the same things about the
+  same state, and a second implementation of "load delayed" or "authentication
+  required" is a second thing that can drift from the truth. The TUI's output
+  is unchanged; its existing tests still assert the same words.
 
 - **Page-scrolling aliases in the TUI (Plan 184):** `Ctrl-D` and `Ctrl-U` page
   forward and back through the system list, next to the existing

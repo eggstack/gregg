@@ -225,14 +225,25 @@ a TUI and a GUI window cost the fleet exactly what one window costs.
 
 ```bash
 cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+
+apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
+    --gregg ./target/release/gregg
 ```
+
+The tray is the always-visible entry: a health-coloured icon, a bounded fleet
+summary, and Open Monitor, Reload, About Gregg and Quit Gregg. The window
+shows the fleet, the selected host's metrics, drives and interfaces, its
+scheduler jobs and the `EggPool` plane. Closing the window hides it and leaves
+the tray running; quitting the GUI never stops the client daemon.
 
 It is its own Cargo workspace with its own lockfile, because Slint 1.18 needs
 Rust 1.92 and the five core crates keep their Rust 1.89 MSRV. Nothing in the
 core workspace depends on it, it is not published to crates.io, and the
 terminal client is unaffected by its existence. The GUI is the only thing that
 may start the client daemon, and it does so by naming the `gregg` executable
-explicitly rather than launching itself.
+explicitly rather than launching itself. See
+[`apps/gregg-gui/README.md`](apps/gregg-gui/README.md) for the tray, the
+helper resolution, the error states and the licence attribution.
 
 ## Live metrics and compatibility
 

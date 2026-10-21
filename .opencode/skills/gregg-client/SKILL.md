@@ -129,8 +129,7 @@ own window: take the launch lock *before* deciding to stop anything, re-decide
 running-or-not from inside it, and propagate the readiness result rather than
 discarding it.
 
-**A separately named frontend names the client it launches** (Plan 188).
-`ensure_running(store)` is the TUI's path and is exactly
+**A separately named frontend names the client it launches** (Plan 188).`ensure_running(store)` is the TUI's path and is exactly
 `ensure_running_with_executable(store, &DaemonExecutable::Current)`. A frontend
 that is *not* the `gregg` binary — a desktop GUI — must use
 `DaemonExecutable::Path`; spawning its own image with `daemon run` produces a
@@ -150,6 +149,48 @@ process that exits immediately and a readiness timeout that blames the daemon.
   `verify_gregg_client_executable` runs `<exe> version` under a bounded
   deadline and requires `gregg <version>`. Use it for a user-selected external
   executable; an installer-owned adjacent or bundled `gregg` needs no probe.
+
+**The display vocabulary is shared, not re-implemented** (Plan 189). A second
+frontend has to describe the same scheduler state and the same `EggPool`
+failures as the TUI, and a second implementation of "load delayed" or
+"authentication required" is a second thing that can drift from the truth. Use
+the shared functions: `gregg::cron::{state_label, outcome_label, load_gate_label,
+duration_label, elapsed_since, countdown_to, job_is_running, job_is_load_deferred}`
+and `gregg::eggpool::{outcome_text, health_error_text}`. `load_gate_label` is the
+one that matters: it renders the gate **by meaning** — the load is only ever
+compared above the threshold in the one state where it really is above it, a
+retained observation is labelled as the admission or last gate it was, and a
+missing one is spelled unavailable. `ui/cron.rs` and `ui/eggpool.rs` call these,
+so the TUI's own words are unchanged.
+
+**The optional GUI is a frontend, not a second poller** (Plan 189). It attaches
+to the same per-config client daemon over the same local protocol and renders
+what that daemon already polls. It must not open an HTTP client, must not
+implement its own poll scheduler, and must not publish a document the daemon
+did not publish.
+
+Its three layers are a contract, not a convenience: `apps/gregg-gui/src/model.rs`
+is a **pure** `FrontendSnapshot -> GuiViewModel` projection (no threads, no
+channels, no Slint) so every truthfulness rule is testable without a desktop
+session; `apps/gregg-gui/src/bridge.rs` owns the attachment and the intents and
+holds no HTTP client; `apps/gregg-gui/src/main.rs` owns the Slint components and
+mutates them **only on the UI thread**, through `slint::invoke_from_event_loop`.
+There is **no polling timer** — a redraw happens because the bridge published
+something. The `EggPool` and cron intents are desired state on a `watch`
+channel, so the newest value wins, a rejected write is retried, and a reconnect
+publishes the new *full* desired state. Closing the monitor window **hides** it
+and leaves the tray running; Quit is the only thing that ends the GUI, and it
+never ends the client daemon.
+
+**A tray application is a background application** (Plan 189). On macOS an
+`NSStatusItem` menu does not activate the app that owns it, and a background
+app cannot bring its own window to the front with `orderFront:`. A GUI
+launched the way a real one is launched — a login item, a launcher, an agent —
+is a background app from its first moment, so "Open Monitor" would silently
+show nothing. `apps/gregg-gui/src/platform.rs` therefore activates the
+application before raising the window; it is the only platform-specific code in
+the GUI, it is macOS-only (`objc2`/`objc2-app-kit`, `NSApplication` feature
+only), and it is a no-op on Windows and Linux.
 
 **User-scoped startup only** (`clientd::startup`): `systemctl --user`, a
 `~/Library/LaunchAgents` agent, a current-user Startup-folder entry, or a managed

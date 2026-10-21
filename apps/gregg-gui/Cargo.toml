@@ -29,6 +29,13 @@ publish = false
 # crate. That is why Ratatui/Crossterm come along transitively.
 gregg = { path = "../../crates/gregg" }
 
+# `gregg::normalized::NormalizedSnapshot` embeds the remote wire types
+# (`SystemIdentity`, `LoadAverage`), so a frontend that builds fixtures for it
+# has to name them. `gregg-protocol` is a leaf crate — `serde`, `serde_json`
+# and `thiserror` only — and it is already in the graph through `gregg`, so
+# this edge adds no new code to the binary.
+gregg-protocol = { path = "../../crates/gregg-protocol" }
+
 # Slint is pinned exactly (`=1.18.1`). Slint's minor releases carry language
 # and feature changes, and this crate is an independent workspace whose
 # lockfile nobody else maintains; an exact pin is the only way the lockfile
@@ -65,6 +72,38 @@ slint = { version = "=1.18.1", default-features = false, features = [
 # and `FrameStream::next` is async), and it runs on a background thread
 # beside Slint's main-thread event loop.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+
+# macOS only: AppKit bindings, so the GUI can **activate itself** when it
+# raises the monitor window.
+#
+# WHY THIS EXISTS: on macOS, `NSWindow.orderFront:` from a *background*
+# application does not bring the window to the front, and an `NSStatusItem`
+# menu does not activate the app that owns it. A tray application launched the
+# way a real one is launched — a login item, a launcher, a login-item agent —
+# is a background application from its first moment, so "Open Monitor" from
+# the tray would do nothing at all. The fix is `NSApplication
+# activateIgnoringOtherApps:`, which Slint 1.18 does not expose.
+#
+# The feature set is minimal (`default-features = false`): only `NSApplication`
+# is needed, so the whole of AppKit is not linked. These crates are macOS-only
+# and never enter the Linux or Windows builds.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "AppKitDefines",
+    "AppKitErrors",
+    "NSApplication",
+] }
+
+# Test-only. The counted-remote fixture serves a real status document, and
+# the evidence test starts a real client daemon, so it needs the protocol
+# crate's document builder, a JSON serializer, and the cancellation token the
+# daemon's shutdown path takes. None of this reaches the shipped binary.
+[dev-dependencies]
+gregg-protocol = { path = "../../crates/gregg-protocol", features = ["test_support"] }
+serde_json = "1"
+tokio-util = "0.7"
 
 [build-dependencies]
 slint-build = { version = "=1.18.1" }

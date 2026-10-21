@@ -266,51 +266,20 @@ fn clock_text(at: Instant) -> String {
 
 /// Bounded health diagnostic text. Raw bodies, credentials, and upstream
 /// error text are never rendered.
+///
+/// Shared with the optional desktop GUI, so both frontends say the same thing
+/// about the same failure. The words live in
+/// [`crate::eggpool::health_error_text`].
 fn health_error_text(outcome: &EggpoolHealthFetchOutcome) -> &'static str {
-    match outcome {
-        EggpoolHealthFetchOutcome::AuthenticationRequired => "auth required",
-        EggpoolHealthFetchOutcome::Forbidden => "forbidden",
-        EggpoolHealthFetchOutcome::Unsupported => "unsupported",
-        EggpoolHealthFetchOutcome::InvalidApiKey => "invalid api key",
-        EggpoolHealthFetchOutcome::Timeout => "timed out",
-        // Every local transport failure renders the same bounded word: a
-        // transport failure is never a `EggPool`-reported proxy status.
-        EggpoolHealthFetchOutcome::ConnectionRefused
-        | EggpoolHealthFetchOutcome::DnsFailure
-        | EggpoolHealthFetchOutcome::NetworkError => "unreachable",
-        EggpoolHealthFetchOutcome::HttpStatus(code) if *code == 503 => "unavailable",
-        EggpoolHealthFetchOutcome::BodyTooLarge => "response too large",
-        EggpoolHealthFetchOutcome::DecodeError => "invalid response",
-        EggpoolHealthFetchOutcome::UnsupportedSchema => "schema unsupported",
-        EggpoolHealthFetchOutcome::InvalidStatus => "invalid status",
-        EggpoolHealthFetchOutcome::InvalidEndpoint => "invalid endpoint",
-        EggpoolHealthFetchOutcome::HttpStatus(_) => "unavailable",
-        EggpoolHealthFetchOutcome::Online(_) => "unknown",
-    }
+    crate::eggpool::health_error_text(outcome)
 }
 
+/// The bounded reason a summary fetch failed.
+///
+/// Shared with the optional desktop GUI. The words live in
+/// [`crate::eggpool::outcome_text`].
 fn outcome_text(outcome: &EggpoolFetchOutcome) -> String {
-    match outcome {
-        EggpoolFetchOutcome::MissingApiKeyEnv { name } => {
-            format!("API key environment variable {name} is not set")
-        }
-        EggpoolFetchOutcome::Unauthorized => "authentication required or key rejected".into(),
-        EggpoolFetchOutcome::Forbidden => "access forbidden".into(),
-        EggpoolFetchOutcome::StatsUnavailable => {
-            "stats unavailable — enable EggPool dashboard/statistics routes".into()
-        }
-        EggpoolFetchOutcome::Timeout => "request timed out".into(),
-        EggpoolFetchOutcome::ConnectionRefused => "connection refused".into(),
-        EggpoolFetchOutcome::DnsFailure => "DNS lookup failed".into(),
-        EggpoolFetchOutcome::NetworkError => "network error".into(),
-        EggpoolFetchOutcome::HttpStatus(code) => format!("HTTP {code}"),
-        EggpoolFetchOutcome::BodyTooLarge => "response too large".into(),
-        EggpoolFetchOutcome::DecodeError => "invalid JSON response".into(),
-        EggpoolFetchOutcome::InvalidSummary => "invalid summary response".into(),
-        EggpoolFetchOutcome::Cancelled => "refresh cancelled".into(),
-        EggpoolFetchOutcome::InvalidEndpoint => "invalid endpoint".into(),
-        EggpoolFetchOutcome::Online(_) => String::new(),
-    }
+    crate::eggpool::outcome_text(outcome)
 }
 
 #[cfg(test)]

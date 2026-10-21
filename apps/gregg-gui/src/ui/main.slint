@@ -1,5 +1,4 @@
-// Plan 188 Part B: the Slint definition of the optional Gregg desktop
-// frontend.
+// Plan 189: the Slint definition of the optional Gregg desktop frontend.
 //
 // Two independent top-level components live here, on purpose:
 //
@@ -16,20 +15,40 @@
 // be inside an `if` or a `for`, and no other child element types are allowed
 // in it. The menu itself may use `if`/`for` to build its entries.
 
-/// One monitored system, as the window shows it.
-export struct SystemRow {
+/// One monitored host, as the window's host list shows it.
+export struct HostRow {
     /// Display name, or the host when the system has no configured name.
     name: string,
     /// The endpoint being polled, as `host:port`.
     endpoint: string,
     /// Reachability in words, including the reason when it is offline.
     status: string,
-    /// CPU usage line.
-    cpu: string,
-    /// Memory usage line.
-    memory: string,
+    /// The one-line metric summary.
+    headline: string,
     /// Whether the most recent poll succeeded.
     online: bool,
+    /// Whether this is the host the detail pane is showing.
+    selected: bool,
+}
+
+/// One labelled value, used for the metric, detail and EggPool panes.
+export struct ValueRow {
+    /// The short label.
+    label: string,
+    /// The formatted value.
+    value: string,
+}
+
+/// One scheduler job, as the cron pane shows it.
+export struct JobRow {
+    /// The job's name.
+    name: string,
+    /// The job's current scheduling state.
+    state: string,
+    /// Its last terminal outcome.
+    outcome: string,
+    /// Whether this is the job whose records are shown.
+    selected: bool,
 }
 
 // A button, built by hand.
@@ -65,14 +84,35 @@ component ActionButton inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: "Gregg";
-    width: 520px;
-    height: 360px;
+    width: 560px;
+    height: 520px;
 
     /// One line describing the client-daemon attachment.
     in property <string> status-text: "connecting to the client daemon…";
 
+    /// The one-line fleet summary.
+    in property <string> fleet-summary: "";
+
     /// The fleet, in display order.
-    in property <[SystemRow]> systems;
+    in property <[HostRow]> hosts;
+
+    /// The selected host's measured rows.
+    in property <[ValueRow]> metrics;
+
+    /// The selected host's drive and interface rows.
+    in property <[ValueRow]> details;
+
+    /// The selected host's scheduler jobs.
+    in property <[JobRow]> jobs;
+
+    /// The retained records of the open scheduler job.
+    in property <string> cron-records: "";
+
+    /// The `EggPool` plane.
+    in property <[ValueRow]> eggpool;
+
+    /// The attribution and about text. Empty until the operator asks for it.
+    in property <string> about-text: "";
 
     /// The operator asked for a configuration reload.
     callback refresh-requested();
@@ -80,13 +120,32 @@ export component MainWindow inherits Window {
     /// The operator asked to quit.
     callback quit-requested();
 
+    /// The operator selected a host. The index is into `hosts`.
+    callback host-selected(int);
+
+    /// The operator selected a scheduler job, by name.
+    callback job-selected(string);
+
+    /// The operator asked for the about and attribution text.
+    callback about-requested();
+
+    /// The operator opened or closed the `EggPool` pane.
+    callback eggpool-toggled();
+
     VerticalLayout {
         padding: 12px;
-        spacing: 8px;
+        spacing: 6px;
 
         Text {
             text: root.status-text;
             font-size: 14px;
+            font-weight: 700;
+        }
+
+        Text {
+            text: root.fleet-summary;
+            font-size: 12px;
+            color: #4a4a4a;
         }
 
         Rectangle {
@@ -95,26 +154,123 @@ export component MainWindow inherits Window {
             background: #80808080;
         }
 
-        for row in root.systems : VerticalLayout {
+        // The host list. Clicking a row selects that host; the selection is
+        // keyed by the stable system id on the Rust side, so a host that
+        // reorders does not move the selection.
+        VerticalLayout {
             spacing: 1px;
 
-            Text {
-                text: row.name + "  " + row.endpoint;
-                font-size: 14px;
-                font-weight: 700;
-                color: row.online ? #202020 : #8a5a30;
+            for row[index] in root.hosts : Rectangle {
+                height: 44px;
+                background: row.selected ? #dce6f0 : #00000000;
+
+                TouchArea {
+                    clicked => {
+                        root.host-selected(index);
+                    }
+                }
+
+                VerticalLayout {
+                    padding: 2px;
+                    spacing: 0px;
+
+                    Text {
+                        text: row.name + "  " + row.endpoint;
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: row.online ? #202020 : #8a5a30;
+                    }
+                    Text {
+                        text: row.status;
+                        font-size: 11px;
+                        color: #4a4a4a;
+                    }
+                    Text {
+                        text: row.headline;
+                        font-size: 11px;
+                        color: #4a4a4a;
+                    }
+                }
             }
+        }
+
+        Rectangle {
+            min-height: 1px;
+            max-height: 1px;
+            background: #80808080;
+        }
+
+        Text {
+            text: "METRICS";
+            font-size: 11px;
+            font-weight: 700;
+            color: #4a4a4a;
+        }
+
+        for row in root.metrics : Text {
+            text: row.label + "  " + row.value;
+            font-size: 12px;
+        }
+
+        for row in root.details : Text {
+            text: row.label + "  " + row.value;
+            font-size: 12px;
+            color: #333333;
+        }
+
+        Text {
+            text: "CRON";
+            font-size: 11px;
+            font-weight: 700;
+            color: #4a4a4a;
+        }
+
+        for job[index] in root.jobs : Rectangle {
+            height: 22px;
+            background: job.selected ? #dce6f0 : #00000000;
+
+            TouchArea {
+                clicked => {
+                    root.job-selected(job.name);
+                }
+            }
+
             Text {
-                text: row.status;
+                text: job.name + "  " + job.state + "  " + job.outcome;
                 font-size: 12px;
             }
+        }
+
+        Text {
+            text: root.cron-records;
+            font-size: 11px;
+            color: #333333;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "EGGPOOL";
+            font-size: 11px;
+            font-weight: 700;
+            color: #4a4a4a;
+        }
+
+        for row in root.eggpool : Text {
+            text: row.label + "  " + row.value;
+            font-size: 12px;
+        }
+
+        // The about and attribution block. It is empty — and therefore
+        // invisible — until the operator asks for it.
+        VerticalLayout {
+            spacing: 2px;
+            visible: root.about-text != "";
+
             Text {
-                text: row.cpu;
-                font-size: 12px;
-            }
-            Text {
-                text: row.memory;
-                font-size: 12px;
+                text: root.about-text;
+                font-size: 11px;
+                color: #333333;
+                wrap: word-wrap;
             }
         }
 
@@ -126,6 +282,18 @@ export component MainWindow inherits Window {
                 label: "Reload";
                 clicked => {
                     root.refresh-requested();
+                }
+            }
+            ActionButton {
+                label: "EggPool";
+                clicked => {
+                    root.eggpool-toggled();
+                }
+            }
+            ActionButton {
+                label: "About";
+                clicked => {
+                    root.about-requested();
                 }
             }
             ActionButton {
@@ -154,6 +322,12 @@ export component TrayIcon inherits SystemTrayIcon {
     /// Bound to the inherited `tooltip` for the same reason as `tray-icon`.
     in property <string> status-text: "Gregg";
 
+    /// The fleet summary, shown as the menu's header.
+    ///
+    /// It is a bound property rather than an assigned one, for the same
+    /// reason: the inherited `title` is compiled as a constant.
+    in property <string> summary-text: "";
+
     /// The macOS menu-bar label. Windows and Linux ignore it.
     title: "Gregg";
 
@@ -166,13 +340,24 @@ export component TrayIcon inherits SystemTrayIcon {
     /// The operator asked for a configuration reload.
     callback refresh-requested();
 
+    /// The operator asked for the about and attribution text.
+    callback about-requested();
+
     /// The operator asked to quit.
     callback quit-requested();
 
     // Exactly one `Menu` child, and nothing else.
     Menu {
+        // The header is the fleet summary. It is not an action, so it is
+        // disabled: a native menu has no read-only item that does not look
+        // like a broken button.
         MenuItem {
-            title: "Open Gregg";
+            title: root.summary-text;
+            enabled: false;
+        }
+        MenuSeparator {}
+        MenuItem {
+            title: "Open Monitor";
             activated => {
                 root.show-window();
             }
@@ -181,6 +366,12 @@ export component TrayIcon inherits SystemTrayIcon {
             title: "Reload";
             activated => {
                 root.refresh-requested();
+            }
+        }
+        MenuItem {
+            title: "About Gregg";
+            activated => {
+                root.about-requested();
             }
         }
         MenuSeparator {}

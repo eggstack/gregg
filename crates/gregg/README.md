@@ -158,6 +158,13 @@ to an absolute path and proved usable before anything destructive happens, and
 a frontend may never name itself. See
 [`architecture/gregg-client.md`](../../architecture/gregg-client.md).
 
+The shared display vocabulary the desktop frontend needs — the words for a
+scheduler job's state, a terminal outcome, a load gate and a duration, and for
+an `EggPool` failure — lives in this crate as `gregg::cron` and
+`gregg::eggpool`, not in the frontend. A second implementation of "load
+delayed" or "authentication required" is a second thing that can drift from
+the truth, and the TUI's own output is unchanged by sharing them.
+
 The normal view uses five rows for an online system whose snapshot lacks
 network telemetry, or six when its snapshot provides it, including aggregate
 disk and NET capacity. Mixed fleets can therefore contain both heights. All active metric rows share a fleet-wide `bar_width` so the opening

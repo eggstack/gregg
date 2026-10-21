@@ -39,8 +39,12 @@
 //! and a new epoch never rewrites the old one.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fmt::Write as _;
 
-use gregg_protocol::{SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobV2, SchedulerSummaryV2};
+use gregg_protocol::{
+    SchedulerEpochV2, SchedulerHistoryV2, SchedulerJobStateV2, SchedulerJobV2, SchedulerLoadGateV2,
+    SchedulerOutcomeV2, SchedulerSummaryV2,
+};
 use serde::{Deserialize, Serialize};
 
 /// Number of terminal records the cron view shows for the selected job when
@@ -648,6 +652,193 @@ struct OldestRecord {
     finished_unix_ms: u64,
     system: String,
     job: String,
+}
+
+// ── Shared display vocabulary ──────────────────────────────────────────
+//
+// These formatters were private to the TUI's `ui::cron` renderer. A second
+// frontend — the optional desktop GUI — has to say the same things about the
+// same scheduler state, and a second implementation of "load delayed" or
+// "spawn failed" is a second thing that can drift from the truth.
+//
+// They are therefore pure functions of the published state, with the clock
+// injected, and they live here so the TUI and the GUI render the *same*
+// words. The TUI's own output is unchanged: it calls these.
+
+/// The current scheduling state, in the fewest words that stay unambiguous.
+#[must_use]
+pub fn state_label(state: SchedulerJobStateV2) -> String {
+    match state {
+        SchedulerJobStateV2::Idle => "idle".to_owned(),
+        SchedulerJobStateV2::WaitingForSlot => "waiting for slot".to_owned(),
+        // Distinct words, not a colour: a delayed job and a running job must
+        // never read the same at a glance.
+        SchedulerJobStateV2::LoadHigh => "load delayed".to_owned(),
+        SchedulerJobStateV2::LoadUnavailable => "load unavailable".to_owned(),
+        SchedulerJobStateV2::Running => "running".to_owned(),
+    }
+}
+
+/// Whether a job is currently running.
+///
+/// A predicate rather than an exposed enum, so a frontend does not have to
+/// depend on the wire crate to ask a simple question.
+#[must_use]
+pub fn job_is_running(job: &SchedulerJobV2) -> bool {
+    matches!(job.state, SchedulerJobStateV2::Running)
+}
+
+/// Whether a job is waiting on a load gate.
+///
+/// Load-*delayed* and load-*unavailable* are both "the load gate is holding
+/// this job back", and both are distinct from a job that is simply running.
+#[must_use]
+pub fn job_is_load_deferred(job: &SchedulerJobV2) -> bool {
+    matches!(
+        job.state,
+        SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable
+    )
+}
+
+/// A terminal outcome, named in words rather than by enum spelling.
+#[must_use]
+pub fn outcome_label(outcome: SchedulerOutcomeV2) -> String {
+    match outcome {
+        SchedulerOutcomeV2::Success => "ok".to_owned(),
+        SchedulerOutcomeV2::Failed => "failed".to_owned(),
+        SchedulerOutcomeV2::SpawnFailed => "spawn failed".to_owned(),
+        SchedulerOutcomeV2::WaitFailed => "wait failed".to_owned(),
+        // A load-expired occurrence is a real terminal record even though no
+        // child ever ran, so it is named rather than omitted.
+        SchedulerOutcomeV2::LoadExpired => "load expired".to_owned(),
+        SchedulerOutcomeV2::Cancelled => "cancelled".to_owned(),
+    }
+}
+
+/// A compact duration, from milliseconds up to days.
+///
+/// Crate-visible so the `EggPool` footer reports an age in the same units and
+/// with the same ladder instead of inventing a second one.
+#[must_use]
+pub fn duration_label(millis: u64) -> String {
+    const SECOND: u64 = 1_000;
+    const MINUTE: u64 = 60 * SECOND;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    if millis < SECOND {
+        format!("{millis}ms")
+    } else if millis < MINUTE {
+        // Integer arithmetic rather than a float cast: a `u64` millisecond
+        // count does not fit an `f64` mantissa exactly, and pedantic rightly
+        // objects. The tenths are derived by division instead.
+        let tenths = millis.saturating_mul(10) / SECOND;
+        format!("{}.{}s", tenths / 10, tenths % 10)
+    } else if millis < HOUR {
+        format!("{}m{:02}s", millis / MINUTE, (millis % MINUTE) / SECOND)
+    } else if millis < DAY {
+        format!("{}h{:02}m", millis / HOUR, (millis % HOUR) / MINUTE)
+    } else {
+        format!("{}d{:02}h", millis / DAY, (millis % DAY) / HOUR)
+    }
+}
+
+/// How long ago a state began, in whole units.
+///
+/// Clock skew degrades conservatively: a stamp in the future — a remote whose
+/// clock is ahead, or a transition mid-propagation — yields `0ms` rather than
+/// underflowing. A saturated zero is a visibly wrong duration; a wrapped
+/// `u64` would be an absurd one.
+#[must_use]
+pub fn elapsed_since(unix_ms: u64, now_unix_ms: u64) -> String {
+    duration_label(now_unix_ms.saturating_sub(unix_ms))
+}
+
+/// What a due instant that has already passed reads as.
+///
+/// A word, not a saturated `0ms`. `next 0ms` states a confident duration for a
+/// schedule the daemon has not run yet, which is the fabricated-value class
+/// this pane exists to avoid; "due" is the relation that actually holds.
+const DUE: &str = "due";
+
+/// How long until a scheduled instant, in whole units.
+///
+/// Unlike [`elapsed_since`], a past instant here is not clock skew that degrades
+/// to a small number — it is the ordinary reading of a schedule whose time has
+/// come, possibly by hours. It reads [`DUE`] rather than a countdown, so the row
+/// says the relation it means instead of a `0ms` that implies the job is about
+/// to start.
+#[must_use]
+pub fn countdown_to(unix_ms: u64, now_unix_ms: u64) -> String {
+    if unix_ms <= now_unix_ms {
+        return DUE.to_owned();
+    }
+    duration_label(unix_ms - now_unix_ms)
+}
+
+/// The load-gate context, or `None` for a time-only job.
+///
+/// The relation is rendered *by meaning*, because `greggd` deliberately retains
+/// the gate decision that admitted a job: a running or idle row can legitimately
+/// carry an observation **below** the threshold. Printing every gate as
+/// `observed > threshold` therefore produced lines like `1.20 > 8.00`, which are
+/// not merely ugly but false, and `— > 8.00` for a missing reading, which is not
+/// a comparison at all.
+///
+/// So the load is only ever compared above the threshold in the one state where
+/// it *is* above it. A retained observation is labelled as the admission or last
+/// gate it was, and a missing one is always spelled unavailable — never zero, and
+/// never a numeric comparison.
+#[must_use]
+pub fn load_gate_label(job: &SchedulerJobV2, now_unix_ms: u64) -> Option<String> {
+    let gate: &SchedulerLoadGateV2 = job.load.as_ref()?;
+    // Unbounded: this is escaping, not a viewport decision. The row itself is
+    // clipped to the display width by the caller.
+    let window = crate::sanitize::sanitize(&gate.window, usize::MAX).text;
+    let max = format!("max {:.2}", gate.threshold);
+    let unavailable = || format!("load{window} unavailable ({max})");
+    let mut text = match (job.state, gate.observed) {
+        // The only state where the reading really is above the threshold.
+        (SchedulerJobStateV2::LoadHigh, Some(observed)) => {
+            format!("load{window} {observed:.2} > {:.2}", gate.threshold)
+        }
+        // Admitted under the gate it was started with.
+        (SchedulerJobStateV2::Running, Some(observed)) => {
+            format!("start load{window} {observed:.2} <= {:.2}", gate.threshold)
+        }
+        // Idle and slot-waiting rows carry the *previous* gate's observation.
+        // "last gate" says so, rather than presenting an old reading as the
+        // machine's current load.
+        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, Some(observed)) => {
+            format!(
+                "last gate load{window} {observed:.2} <= {:.2}",
+                gate.threshold
+            )
+        }
+        (SchedulerJobStateV2::Running, None) => {
+            format!("start load{window} unavailable ({max})")
+        }
+        (SchedulerJobStateV2::Idle | SchedulerJobStateV2::WaitingForSlot, None) => {
+            format!("last gate load{window} unavailable ({max})")
+        }
+        // No reading in any state, including the one that gates on load: there
+        // is no comparison to make, and `— > 8.00` is not one.
+        (SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable, _) => unavailable(),
+    };
+    // The retry context belongs to the *job*, not the gate, and is only
+    // meaningful while a load delay is actually in force. It is appended last
+    // so it is the first thing dropped on a narrow display.
+    if matches!(
+        job.state,
+        SchedulerJobStateV2::LoadHigh | SchedulerJobStateV2::LoadUnavailable
+    ) {
+        match job.next_retry_unix_ms {
+            Some(retry) => {
+                let _ = write!(text, " retry {}", countdown_to(retry, now_unix_ms));
+            }
+            None => text.push_str(" retry pending"),
+        }
+    }
+    Some(text)
 }
 
 #[cfg(test)]

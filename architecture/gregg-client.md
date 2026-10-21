@@ -384,6 +384,78 @@ EggPool results, `Resize`, `RefreshNow`, `ToggleSystemView`,
 arm is parked at a far-future sleep while no highlight is active so the
 select branch never fires spuriously.
 
+### Shared display vocabulary (Plan 189)
+
+A second frontend — the optional desktop GUI — has to describe the same
+scheduler state and the same `EggPool` failures as the TUI. A second
+implementation of "load delayed" or "authentication required" is a second
+thing that can drift from the truth, so the words are **shared functions**
+rather than duplicated strings:
+
+- `gregg::cron::state_label`, `outcome_label`, `load_gate_label`,
+  `duration_label`, `elapsed_since`, `countdown_to`, `job_is_running` and
+  `job_is_load_deferred` — the scheduler vocabulary. `load_gate_label` is the
+  one that matters most: it renders the gate **by meaning** (the load is only
+  ever compared above the threshold in the one state where it really is above
+  it; a retained observation is labelled as the admission or last gate it was;
+  a missing one is spelled unavailable), and that is a rule a second
+  implementation would get wrong.
+- `gregg::eggpool::outcome_text` and `health_error_text` — the bounded
+  `EggPool` failure vocabulary. Raw bodies, credentials and upstream error
+  text are never rendered.
+
+The TUI's own output is unchanged: `ui/cron.rs` and `ui/eggpool.rs` call
+these, and their existing tests still assert the same words.
+
+### The optional GUI frontend (Plan 189)
+
+`apps/gregg-gui` is a second frontend for the same client daemon. It is a
+**frontend, never a second poller**, and the architecture that makes that true
+is a three-layer split:
+
+- **A pure projection.** `apps/gregg-gui/src/model.rs` maps one
+  `FrontendSnapshot` to one `GuiViewModel` and touches nothing else. It has no
+  threads, no channels and no Slint. The truthfulness rules live here — absent
+  is absent, unpolled is not offline, a missing value is `—` and never `0`, the
+  selection is keyed by the stable system id — so they are testable **without a
+  desktop session**. A rule that is only enforced by a renderer is a rule that
+  will be broken by the next renderer.
+- **A protocol owner.** `apps/gregg-gui/src/bridge.rs` owns the client-daemon
+  attachment and the intents. It holds **no HTTP client, no poll scheduler, no
+  parsed remote configuration and no history store**; the daemon owns all of
+  that. A GUI that opened its own remote connection would double the fleet's
+  request budget exactly when the daemon is unhealthy — the failure this
+  architecture exists to prevent.
+- **A presentation owner.** `apps/gregg-gui/src/main.rs` owns the Slint
+  components. Slint components are not `Send`, so every mutation happens on the
+  UI thread, and the bridge's notification callback only *schedules* work with
+  `slint::invoke_from_event_loop`. There is **no polling timer**: an idle GUI
+  redraws for no reason at all, and a redraw only ever happens because the
+  bridge published something.
+
+The `EggPool` and cron intents are **desired state**, not a command queue. The
+bridge keeps the latest desired state, republishes it whenever it changes,
+republishes it when a write is rejected by the bounded request channel, and
+republishes the **new full** desired state on a reconnect — the daemon that
+answers a new attachment has never seen the old one, so a delta would be
+meaningless. An intent governs what the daemon *transmits*, never what it
+*fetches*, so a released intent costs the fleet nothing.
+
+Closing the monitor window **hides** it and leaves the tray and the observation
+running; Quit is the only thing that ends the GUI, and it never ends the client
+daemon.
+
+A tray application is a **background** application, and on macOS that has a
+concrete consequence: an `NSStatusItem` menu does not activate the app that
+owns it, and a background app cannot bring its own window to the front with
+`orderFront:`. A GUI launched the way a real one is launched — a login item, a
+launcher, an agent — is a background app from its first moment, so "Open
+Monitor" would silently do nothing. The GUI therefore **activates itself**
+before it raises the window, through `apps/gregg-gui/src/platform.rs`. The
+activation is the only platform-specific code in the GUI, it is macOS-only
+(`objc2`/`objc2-app-kit`, `NSApplication` feature only), and it is a no-op on
+Windows and Linux, where showing a window the process owns is enough.
+
 ### Daemon executable selection (Plan 188)
 
 The client daemon is the `gregg` binary. A frontend that *is* `gregg` can launch
