@@ -457,6 +457,19 @@ Honest notes on these values:
 - **The "the GUI did not stop the peer" claim counts the peer's connections
   after a 300 ms settle**, because a stop attempt would be asynchronous
   relative to the incompatibility report. The count was exactly 1.
+- **One test in this workspace is sensitive to a heavily loaded host, and it
+  is pre-existing.** `bridge::tests::an_explicit_client_must_identify_itself`
+  asks the launcher to identify a candidate client executable, and the
+  launcher's identity probe gives that child **ten seconds** to answer. On a
+  heavily loaded host that budget was exceeded and the test failed with `gregg
+  version did not answer within 10000 ms` — the same message the core's own
+  three identity tests produced in the same window. The probe, its budget and
+  the test are all untouched by this line; the test passes in about half a
+  second when the machine is idle, and the whole GUI suite passes 63/63 when
+  it is. The failure is recorded here rather than "fixed", because raising
+  the budget or weakening the assertion would hide the environment
+  sensitivity instead of removing it, and the CI runs of this branch are
+  green on all three desktop targets.
 
 ## Reproducing
 
