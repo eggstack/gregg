@@ -230,6 +230,39 @@ try {
     ) | Set-Content -LiteralPath $configPath -Encoding UTF8
     Write-Log "wrote $configPath"
 
+    # ------------------------------------------------- the daemon, standalone
+    #
+    # A diagnostic, and it is here because the GUI's own launcher starts the
+    # daemon with every standard stream null: if the daemon dies, it dies
+    # silently and the GUI can only say "it did not become ready". Running
+    # the same daemon in the foreground for a few seconds separates the two
+    # possibilities that matter:
+    #
+    #   * the daemon exits on its own -> the daemon itself is unhappy on this
+    #     platform, and its own message says why;
+    #   * the daemon keeps running   -> the daemon is fine, and whatever is
+    #     wrong is in how the GUI starts it.
+    Write-Log "starting the client daemon in the foreground to see what it says"
+    $daemonOut = Join-Path $workDir "daemon.stdout"
+    $daemonErr = Join-Path $workDir "daemon.stderr"
+    $daemonProcess = Start-Process -FilePath $GreggPath `
+        -ArgumentList @("--config", $configPath, "daemon", "run") `
+        -RedirectStandardOutput $daemonOut `
+        -RedirectStandardError $daemonErr `
+        -NoNewWindow -PassThru
+    $daemonDeadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $daemonDeadline -and -not $daemonProcess.HasExited) {
+        Start-Sleep -Milliseconds 250
+    }
+    if ($daemonProcess.HasExited) {
+        Write-Log "the daemon exited on its own with code $($daemonProcess.ExitCode):"
+        Write-Host (Read-SharedFile $daemonOut)
+        Write-Host (Read-SharedFile $daemonErr)
+    } else {
+        Write-Log "the daemon runs in the foreground (it was still running after 10s)"
+        Stop-IfRunning $daemonProcess
+    }
+
     # ---------------------------------------------------------------- the GUI
     $stdoutFile = Join-Path $workDir "gui.stdout"
     $stderrFile = Join-Path $workDir "gui.stderr"
@@ -331,6 +364,11 @@ try {
     }
     Write-Log "daemon status: $($statusOutput.Trim())"
     if (-not $daemonRunning) {
+        # The GUI's own words come first: it is the thing under test, and the
+        # reason it gives ("it did not become ready") is the operator's clue.
+        Write-Host "the GUI said:"
+        Write-Host (Read-SharedFile $stdoutFile)
+        Write-Host (Read-SharedFile $stderrFile)
         Fail "the client daemon the GUI launched is not running: $($statusOutput.Trim())"
     }
     if ($statusOutput -match 'client daemon \S+ not running') {

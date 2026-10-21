@@ -485,10 +485,18 @@ fn apply_pending(
                     }
                 }
                 BridgeMessage::Failed { reason } => {
+                    // The window shows the reason, but a GUI is often launched
+                    // in the background where nobody is looking at the window.
+                    // The reason also goes to stderr, so the launcher's own
+                    // output says why there is no daemon. The launcher starts
+                    // the daemon with every stream null, so this line is the
+                    // only place the reason can surface.
+                    eprintln!("gregg-gui: cannot attach to the client daemon: {reason}");
                     state.connection = ConnectionState::Disconnected { reason };
                     changed = true;
                 }
                 BridgeMessage::Incompatible { reason } => {
+                    eprintln!("gregg-gui: the client daemon is incompatible: {reason}");
                     state.connection = ConnectionState::Incompatible { reason };
                     changed = true;
                 }
