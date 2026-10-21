@@ -1,6 +1,9 @@
 # Plan 187: Optional Slint desktop frontend roadmap
 
-Status: planned; planning/registration only. No GUI implementation is claimed.
+Status: **complete for everything a macOS host can verify.** The three-desktop
+demonstration is **outstanding and not claimed** — see the closure record at
+the end of this file and the scope record in `plans/README.md`. The GUI is
+therefore **not shippable for Windows or Linux**, and it stays a source build.
 
 Depends on: the completed Plan 161-172 Gregg client-daemon split and current main at planning time (2026-10-21). Independent of the Plan 091 soak record.
 
@@ -76,12 +79,107 @@ No webview/Tauri, network dashboard, remote control, new HTTP routes, remote cro
 
 ## Roadmap acceptance
 
-- [ ] Plan 188 records a concrete dual-toolchain build path and proves launch/attach from two differently named frontend binaries.
-- [ ] Plan 189 provides a working compact Slint tray + monitor and reuses the exact client-daemon snapshot/intents.
-- [ ] Plan 190 demonstrates the three desktop platforms, a no-duplicate-poll integration proof, and the release/footprint decision.
-- [ ] Gregg's existing Rust 1.89 CI/MSRV, tests, TUI, and headless `greggd` remain unaffected.
-- [ ] Updates to `README.md`, `crates/gregg/README.md`, `architecture/gregg-client.md`, `AGENTS.md`, GUI docs, and `CHANGELOG.md` are made with the behavior they describe.
+- [x] Plan 188 records a concrete dual-toolchain build path and proves launch/attach from two differently named frontend binaries. — `apps/gregg-gui` is its own workspace with its own lockfile and its own Rust 1.92 floor; the root workspace excludes it and `cargo metadata` still shows exactly five core members, so the Rust 1.89 MSRV job never sees Slint. `clientd::DaemonExecutable` + `ensure_running_with_executable` is the single launcher, with `ensure_running` reduced to its `Current` wrapper, and the **GUI — a differently named binary — launches and attaches to the `gregg` client daemon** for real, natively.
+- [x] Plan 189 provides a working compact Slint tray + monitor and reuses the exact client-daemon snapshot/intents. — a native `SystemTrayIcon` (exactly one `Menu`) beside an independent 560×520 monitor window, both driven from the same Rust model, fed by the daemon's own `FrontendSnapshot` documents over the existing local IPC; the `EggPool` and cron intents are the daemon's existing replacement-style intents.
+- [ ] Plan 190 demonstrates the three desktop platforms, a no-duplicate-poll integration proof, and the release/footprint decision. — the **no-duplicate-poll proof and the release/footprint decision are done**: the counted harness keeps `/v2/status` flat in every phase and the native 25-host measurement is identical in all three configurations, and the packaging decision is source-build-only. The **three desktop platforms are not demonstrated**: only macOS was exercised, because a Windows run needs a Windows host and a Linux tray run needs a desktop session with a `StatusNotifierItem` host. Left unchecked rather than claimed, and it blocks shipment for Windows and Linux.
+- [x] Gregg's existing Rust 1.89 CI/MSRV, tests, TUI, and headless `greggd` remain unaffected. — the root workspace still has exactly its five core members; `cargo +1.89 test --workspace --all-targets --all-features` compiles the whole workspace and passes 967 tests; `git diff` over `crates/greggd` and `crates/gregg-protocol` is empty and `greggd`'s stripped release binary is unchanged at 3,356,800 bytes; the TUI's rendering and its key bindings are unchanged, and the shared scheduler/`EggPool` vocabulary it now uses renders exactly the same words.
+- [x] Updates to `README.md`, `crates/gregg/README.md`, `architecture/gregg-client.md`, `AGENTS.md`, GUI docs, and `CHANGELOG.md` are made with the behavior they describe. — done in the same pass as each behavior, across Plans 188, 189 and 190.
+
+## Invariants, as verified
+
+Every invariant this roadmap set out is now checked against evidence rather
+than against intent:
+
+| invariant | how it is verified |
+| --- | --- |
+| Zero additional remote Systems or scheduler HTTP reads when opening another frontend | the counted harness: `/v2/status` is flat at four polls per window in every phase; natively, 375 status + 39 scheduler requests in **every** configuration on a 25-host fleet |
+| Cron summary always available when supported; job history only for an active intent, released on close/disconnect; the intent never changes the remote fetch cadence | the cron-intent test: the local document grew 1903 → 2276 bytes and the remote's history counter stayed at the one discovery fetch |
+| `EggPool` is activated by the converged intents of attached frontends, not always-on because a tray exists | the `EggPool` test: `7d` was asked for three times and `30d` never, and the request stream stopped when the last pane closed |
+| Snapshot generation is monotonic; stale snapshots are discarded; missing values keep `None` semantics; unsupported cron is not offline metrics | the projection tests: only a strictly newer generation is applied, an absent metric is `—` and never `0`, and an unsupported scheduler family is not a host outage |
+| User-local endpoint and handshake identity, launch lock, safe/version-directional rotation, bounded frames, IPC owner restrictions, no PID-file or process-name discovery | the 25 launcher tests in `clientd/launch.rs`, unchanged and green, plus the isolation test: distinct config paths reach distinct daemons, one path spelled two ways reaches one |
+| A GUI exit never stops polling; an explicit Quit stops only its own frontend | natively: quitting the GUI left the client daemon alive and still polling |
+| The Rust 1.89 core, the TUI UX, the headless CLI/daemon release path, manual publishing and `greggd`'s footprint remain unchanged | `cargo metadata` shows five core members; the MSRV job compiles and passes; `git diff` over `crates/greggd` is empty and its binary size is identical; the GUI's own dependency cost is measured separately and charged to the GUI |
 
 ## Handoff
 
 Start with Plan 188. Do not begin by cloning the TUI's network scheduler into `gregg-gui`. The launch path and toolchain isolation are the only architectural prerequisites. Close each child plan using observed native verification; do not check a box merely because a Linux cargo build passed.
+
+## Closure record
+
+Closed on 2026-10-21 on a macOS host (Apple M4 Pro, macOS 26.0.1, `rustc`/`cargo`
+1.99.1 stable, `aarch64-apple-darwin`). Children 188, 189 and 190 are all
+closed; this roadmap's invariants are all verified.
+
+### What the line produced
+
+- **`apps/gregg-gui`** — an optional Slint desktop frontend that is a
+  **frontend, never a second poller**. It attaches to the same per-config
+  client daemon the TUI attaches to, over the same local IPC, and renders the
+  documents that daemon already publishes.
+- **A native tray and a compact monitor window**, with the truthfulness rules
+  in a *pure* `FrontendSnapshot → GuiViewModel` projection so they are
+  testable without a desktop session, and the scheduler and `EggPool` words
+  **shared** with the TUI rather than reimplemented.
+- **One launcher.** `clientd::DaemonExecutable` and
+  `ensure_running_with_executable` let a frontend that is *not* the `gregg`
+  binary name the client it should launch, with `ensure_running` reduced to
+  its `Current` wrapper. A latent defect in the rotation branch — stop the
+  stale daemon, then *attach* to the daemon it had just stopped — was
+  corrected.
+- **An isolated toolchain.** The GUI is its own Cargo workspace with its own
+  lockfile and its own Rust 1.92 floor, excluded from the root workspace, so
+  the Rust 1.89 MSRV job never sees Slint. One structural dependency conflict
+  (`ratatui` 0.29's exact `unicode-width =0.2.0` against Slint's
+  `annotate-snippets` needing `^0.2.2`) was resolved with a byte-identical
+  vendored copy of `annotate-snippets` 0.12.9 and one relaxed bound, scoped to
+  the GUI workspace only.
+- **A counted qualification** proving the one-polling-plane property twice —
+  deterministically in the harness and natively on 25 hosts — and an explicit
+  packaging decision: **source-build-only**, one operator path, no asset-name
+  collision, no downgrade, and the Slint royalty-free attribution verified
+  present in the shipped binary.
+
+### What this line did not do, and why
+
+- **It did not demonstrate the three desktop platforms.** Only macOS was
+  exercised. A Windows run needs a Windows host — the repository's own rule is
+  that only a native Windows run is authority, and a cross-compiled build is
+  not it — and a Linux tray run needs a desktop session with a
+  `StatusNotifierItem` host, plus the "plain GNOME, no SNI host" fallback
+  case. **Those two targets are not shippable on the strength of this line.**
+- **It did not ship a GUI artifact.** There is no installer, no bundle and no
+  release asset, and the GUI requires an existing Gregg installation.
+- **It did not change the core.** `crates/greggd` and `crates/gregg-protocol`
+  are untouched; `greggd`'s stripped binary is the same size it was; the TUI's
+  rendered output is unchanged; the only core change is the *addition* of
+  shared display vocabulary that the TUI now calls instead of its own copies.
+- **It did not quiet the wakeups.** The obvious lever is the frontend's shared
+  10 ms no-header poll, which is core behaviour the TUI also pays; changing it
+  here would have reopened the headless client's correctness for a gain this
+  host could not measure above its own noise. That is a future, separately
+  approved piece of work.
+
+### Evidence
+
+- `cargo test --manifest-path apps/gregg-gui/Cargo.toml` — **54 passed, 0
+  failed** (48 of them from Plan 189 and 6 from Plan 190's counted harness),
+  across three consecutive runs.
+- `cargo clippy --manifest-path apps/gregg-gui/Cargo.toml --all-targets
+  --all-features -- -D warnings` — clean.
+- `cargo fmt --manifest-path apps/gregg-gui/Cargo.toml -- --check` — clean.
+- `cargo +1.89 test --workspace --all-targets --all-features` — the workspace
+  compiles on the root MSRV; 967 pass. The 13 failures are the pre-existing,
+  environment-induced ones, identical on an untouched worktree at `eb45029`.
+- `cargo metadata --no-deps` — the root workspace still has exactly its five
+  core members.
+- `cargo build --release -p gregg -p greggd` — 5,224,096 and 3,356,800 bytes
+  stripped, unchanged.
+- Native macOS: the tray is present and its menu is correct; Open Monitor
+  raises the window to the front; Reload polls immediately; About renders the
+  Slint attribution; closing the window hides it and leaves the tray running;
+  Quit ends the GUI while the client daemon survives and keeps polling; and
+  the GUI process opens no network connections of its own.
+- The measured artifacts are `apps/gregg-gui/EVIDENCE.md` (the counted
+  request-count table and the process identities) and
+  `apps/gregg-gui/README.md` (the footprint, the runtime cost and the
+  packaging decision).

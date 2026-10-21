@@ -323,3 +323,27 @@ is reading.
 or not a TUI is attached, which is why ten windows with the pane open cost the
 fleet exactly what zero windows cost. An intent change alters the document
 without touching the cache, and is therefore its own publication reason.
+
+## Optional desktop GUI
+
+`apps/gregg-gui` is an **optional** Slint frontend: a system tray entry and a
+compact monitor window for the same fleet this TUI shows. It is a second way
+to *look* at the fleet, never a second way to *poll* it — it attaches to the
+same per-config client daemon over the same local channel, so a TUI and a GUI
+window cost the fleet exactly what one window costs.
+
+```bash
+cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+apps/gregg-gui/target/release/gregg-gui --config ~/.config/gregg/gregg.toml \
+    --gregg ./target/release/gregg
+```
+
+It needs an existing Gregg installation: it names the `gregg` client it should
+launch with `--gregg`, or uses an installer-owned `gregg` beside the GUI. It
+never launches itself and never polls the fleet directly. Closing its window
+hides it and leaves the tray running; quitting it never stops the client
+daemon.
+
+It is currently a **source build** — there is no installer and no release
+asset — and it has been exercised natively on macOS only. See
+[`apps/gregg-gui/README.md`](../apps/gregg-gui/README.md).

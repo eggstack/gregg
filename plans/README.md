@@ -30,8 +30,11 @@ root MSRV CI job never sees Slint. Plan 189 is **complete**: the GUI exists as
 a native tray entry and a compact monitor window, built on a pure document
 projection and a bridge that owns no HTTP client, with the scheduler and
 `EggPool` words shared with the TUI rather than reimplemented; the native
-macOS tray was exercised for real. Plan 190 owns counted multi-frontend,
-native Linux/macOS/Windows, packaging/license and performance qualification.
+macOS tray was exercised for real, and the native run found a real defect —
+a tray application is a background application, so "Open Monitor" did nothing
+when the GUI was launched the way a real one is launched — which is now fixed.
+Plan 190 owns counted multi-frontend, native Linux/macOS/Windows,
+packaging/license and performance qualification.
 Plan 190 is **complete, with the Windows and Linux native acceptance recorded
 as not performed**: the counted multi-frontend proof, the native macOS run,
 the footprint and the resource decision are all real, but a Windows run needs a
@@ -992,7 +995,7 @@ excluded.
 | [`184-tui-page-scroll-key-bindings.md`](184-tui-page-scroll-key-bindings.md) | Add `Ctrl-D`/`Ctrl-U` page-scrolling aliases so a long host list can be paged without the dedicated paging keys | **complete** at `540b562`; **CI run `39342335567` on `6ef2f62` green across all seven jobs**; `Ctrl-U`/`Ctrl-D` translate to the existing `Action::PageUp`/`Action::PageDown`, so there is still one scroll model; five new tests (955 → 960 in the `gregg` crate against base `1760ef1`), the three mapping proofs mutation-tested — removing the two arms fails them in 0.00 s; one existing test updated because it asserted the mapping this plan deliberately replaces; `Ctrl-Alt` still refused; depends on current post-183 main; independent of 091/179-183; no state, renderer, daemon, or protocol change |
 | [`185-gregg-tui-offline-anchor-viewport-corrective.md`](185-gregg-tui-offline-anchor-viewport-corrective.md) | Keep the `gregg` TUI from scrolling the live fleet off screen when the host at the top of the list goes down | **complete**, but **superseded in part by Plan 186** — the acceptance criterion was met as written and was false in a crowded pane, because the plan's tests used a fleet that fit on one screen; the viewport anchor names a *host* while the display order is reachability-sorted, so a host that goes offline is pushed to the bottom of the list and the identity anchor followed it there; `AppState::repair_viewport_anchor` re-anchors the window to the host that took the anchor's previous display position, preferring a live one, and fires **only** when the anchored host itself left the live group, so an anchor that merely shifted up because hosts above it went down is left alone and the window never slides on unrelated state changes; the repair lives in the single fleet writer (`AppState::adopt_snapshot`), so there is still one scroll model; the dead host still moves to the bottom of the list and is still rendered; five regression tests added, including one asserted end to end through the renderer and one proving the fix does not over-correct on a reload that repoints the anchored host; independent of 091/182/183; no protocol, daemon, or wire change |
 | [`186-gregg-tui-crowded-pane-selection-reanchoring.md`](186-gregg-tui-crowded-pane-selection-reanchoring.md) | Make the offline-anchor fix hold in a pane too small to hold the fleet, by re-anchoring the logical selection as well as the viewport | **complete**; Plan 185 repaired the viewport *anchor*, but the window is kept on the *selection*, and the selection was still left on the host that had just failed — so `ensure_selected_visible` dragged the window back down to the bottom of the list and undid the anchor repair; measured on an eight-host fleet in a three-row pane, the top host failing moved the view from the live hosts to the bottom group, so the reported symptom survived and only its shape changed, and a fleet that fits on one screen cannot show the defect at all; `AppState::repair_selection` now moves the selection to the live host that took the failed host's place, by the same rule the anchor repair uses (`AppState::live_replacement`), so both repairs agree when they name the same host — the usual case, since the top of the list is both; the trigger was tightened from "left the live group" to *failed* (`Online` → `Offline`), because `Pending` means "never polled" — a reload repointing a host, or a client daemon restarting and rebuilding the fleet, must not move the operator's selection; the selection repair runs before `repair_cron_selection`, because the retained cron job is derived from the selected system; the operator decided a dead host scrolled out of a small pane is not surfaced by an indicator, so that stays a separate change; five regression tests added, including one asserted end to end through the renderer; depends on 185; independent of 091/182/183; no protocol, daemon, or wire change |
-| [`187-slint-gui-roadmap.md`](187-slint-gui-roadmap.md) | Roadmap for an optional Slint menu-bar/system-tray and compact desktop GUI using the already separated Gregg client daemon | **complete**; no second polling plane, no headless scope expansion; children 188-190 are all closed; independent of Plan 091 |
+| [`187-slint-gui-roadmap.md`](187-slint-gui-roadmap.md) | Roadmap for an optional Slint menu-bar/system-tray and compact desktop GUI using the already separated Gregg client daemon | **complete for everything a macOS host can verify**; no second polling plane, no headless scope expansion; children 188-190 are all closed; every roadmap invariant is checked against evidence rather than intent (the request budget is flat in every phase, deterministically and natively on 25 hosts; the cron intent grows only the *local* document; the `EggPool` pane runs on the converged window; a GUI exit never stops polling; the Rust 1.89 core, the TUI and `greggd`'s footprint are unchanged); the packaging decision is **source-build-only**; **the three-desktop-platform demonstration is outstanding and not claimed, so Windows and Linux are not shippable on the strength of this line**; independent of Plan 091 |
 | [`188-gui-daemon-launch-and-toolchain-boundary.md`](188-gui-daemon-launch-and-toolchain-boundary.md) | Refactor safe explicit daemon-binary selection for a separately named GUI; isolate Slint's newer toolchain from root MSRV 1.89 | **complete**; `DaemonExecutable` + `ensure_running_with_executable` with `ensure_running` as its `Current` wrapper; the resolved path is proved usable before anything destructive and a frontend may never launch itself; the rotation branch's stop-then-attach defect corrected; `apps/gregg-gui` is an independent workspace (own lockfile, Rust 1.92) excluded from the root workspace; measured `gregg` drag in the GUI is **747,936 bytes (+7.8%)** over a Slint-only baseline; **unblocks 189**; the Windows-native matrix item stays unchecked |
 | [`189-slint-tray-and-compact-monitor-mvp.md`](189-slint-tray-and-compact-monitor-mvp.md) | Implement Slint tray/menu and compact monitor from clientd snapshots with host, drive, network, cron and optional EggPool views | **complete**; the GUI is a three-layer split — a pure `FrontendSnapshot -> GuiViewModel` projection, a protocol owner with **no HTTP client**, and a presentation owner that mutates Slint components only on the UI thread; a native `SystemTrayIcon` (exactly one `Menu`: bounded summary, Open Monitor, Reload, About Gregg, Quit Gregg) beside an independent 560×520 monitor window; a **procedural, light, health-coloured** tray icon with no binary asset; **no polling timer** — the bridge's callback schedules the update with `invoke_from_event_loop`, so an idle GUI never redraws; the `EggPool` and cron intents are desired state on a `watch` channel, so a rejected write is retried and a reconnect republishes the **new full** state; closing the window **hides** it and leaves the tray running, and Quit never stops the client daemon; the scheduler/`EggPool` words are now **shared** functions in `gregg::cron` and `gregg::eggpool` with the TUI's output unchanged; the one-polling-plane property is proved for the GUI specifically by a counted in-process remote; the native macOS tray was exercised for real (tray present, Open Monitor raises the window to the front, Reload polls immediately, About renders the Slint royalty-free attribution, Quit leaves the daemon polling, the GUI opens no network connections); **unblocks 190**; the Windows/Linux native matrix stays with Plan 190 |
 | [`190-gui-native-qualification-packaging-and-footprint.md`](190-gui-native-qualification-packaging-and-footprint.md) | Native-platform qualification, counted TUI+GUI one-polling-plane proof, packaging, licensing, MSRV and resource measurements | **complete, with the Windows and Linux native acceptance recorded as not performed**; the blocking gate is a counted harness (`apps/gregg-gui/src/evidence.rs`, recorded in `apps/gregg-gui/EVIDENCE.md`) running the real daemon against two counted remotes — one scheduler-capable, one 404ing the scheduler routes — with `/v2/status` **flat at 4 polls per window in every phase** (daemon alone, +TUI, +TUI+GUI, frontends closed), a cron intent that grows the **local document** (1903→2276 bytes) and not the remote history fetch, and one converged `EggPool` worker (`7d` asked for, `30d` never); the native 25-host measurement, window-aligned to the daemon's own start, is **identical** in all three configurations (375 status + 39 scheduler requests) — the GUI adds nothing to the remote budget; `gregg-gui` is 9,776,560 bytes stripped against a matched 8,929,216-byte Slint-only baseline (**847,344 bytes, +9.5%**), and `gregg`/`greggd` are unchanged and carry none of it; the resource decision is **accept** (≈0.5–1.5% of one core; the daemon's wakeup delta of ≈2,150 matches its own documented 20 ms per-frontend poll), and the runtime-shape A/B was **inconclusive**, so nothing was changed; the packaging decision is **source-build-only** — no installer, no bundle, no release asset, one operator path (an existing Gregg installation), no asset-name collision and no downgrade; the Slint royalty-free attribution is verified present in the **release binary**; **the Windows and Linux native runs are not performed and block shipment for those targets** |
@@ -1258,6 +1261,66 @@ A phase is complete only when its explicit acceptance criteria are implemented a
 Do not check boxes based on comments, intent, compilation alone, or an earlier commit that no longer matches HEAD.
 
 Plans 081 and 082 are complete because Plan 081's Ubuntu one-daemon lifecycle smoke, Ubuntu two-config stop-isolation smoke, and native CI run `31813136597` all passed, and Plan 082's same-file identity tests, local checks, release-binary relative/absolute smoke, and record reconciliation all passed. Plan 083 is complete because its client behavior and focused tests passed under the default local check and CI run `32094925174`; Plan 084 is complete because its four corrective findings passed the exact local CI-equivalent checks and CI run `32100189772`.
+
+## Closed scope record for Plan 187
+
+Completed:
+
+- sequence the line and close all three children: **188** (the launch and
+  toolchain boundary), **189** (the tray and the compact monitor MVP) and
+  **190** (the counted qualification and the packaging decision);
+- hold every invariant this roadmap set out to a **verified** state rather than
+  an intended one, with the evidence named per invariant: zero additional
+  remote reads when a frontend opens (the counted harness and the native
+  25-host measurement), the cron intent growing only the *local* document
+  (1903 → 2276 bytes, with the remote's history fetch untouched), the
+  `EggPool` pane driven by the converged intents of the attached frontends
+  (`7d` asked for, `30d` never) rather than always-on because a tray exists,
+  monotonic generations with missing values keeping `None` semantics and an
+  unsupported scheduler not being a host outage, the launcher's ownership
+  rules unchanged and green, a GUI exit never stopping polling, and the Rust
+  1.89 core, the TUI, the headless release path and `greggd`'s footprint all
+  unchanged;
+- land the optional Slint desktop frontend as a **frontend, never a second
+  poller**, with a native tray and a compact monitor window whose truthfulness
+  rules live in a pure projection that is testable without a desktop session,
+  and whose scheduler and `EggPool` words are shared with the TUI rather than
+  reimplemented;
+- land **one launcher** for two differently named frontend binaries
+  (`clientd::DaemonExecutable` + `ensure_running_with_executable`, with
+  `ensure_running` reduced to its `Current` wrapper), including the correction
+  of the rotation branch that stopped the stale daemon and then *attached* to
+  the daemon it had just stopped;
+- land the **isolated toolchain** — the GUI's own workspace, lockfile and Rust
+  1.92 floor, excluded from the root workspace so the MSRV job never sees
+  Slint — and resolve the one structural dependency conflict with a
+  byte-identical vendored `annotate-snippets` 0.12.9 and a single relaxed
+  bound, scoped to the GUI workspace;
+- land the **counted qualification** (the request budget is flat in every
+  phase, deterministically and natively) and the explicit **packaging
+  decision**: source-build-only, one operator path, an existing Gregg
+  installation required, no asset-name collision, no downgrade, and the Slint
+  royalty-free attribution verified present in the shipped binary;
+- update `README.md`, `crates/gregg/README.md`, `apps/gregg-gui/README.md`,
+  `architecture/gregg-client.md`, `AGENTS.md`,
+  `.opencode/skills/gregg-client/SKILL.md` and `CHANGELOG.md` in the same pass
+  as the behavior each of them describes.
+
+Preserved exclusions:
+
+- any change to `greggd`, the read-only remote HTTP API, the wire protocol, the scheduler, the cron cache, the EggPool worker, or the TUI's rendering geometry and key bindings;
+- a second remote HTTP client, a second polling plane, or any GUI feature that needs remote-polling access;
+- a webview, a network dashboard, a remote control surface, new HTTP routes, remote cron mutation, alerts, tray-based elevation, a telemetry database, secret storage, an auto-update framework, a mandatory daemon binary split, a replacement of Ratatui, a custom overlay window, or an SBC compilation benchmark;
+- new CI jobs, matrices, evidence bundles, uploaded artifacts, signed releases, crates.io publication, or a release workflow;
+- rewriting the historical Plan 091 soak record or the completed client-daemon Plans 161-172 records.
+
+Not satisfied by this roadmap, and deliberately left unchecked:
+
+- the **three-desktop-platform demonstration**. Only macOS was exercised: a Windows run needs a Windows host (and the repository's rule is that only a native Windows run is authority), and a Linux tray run needs a desktop session with a `StatusNotifierItem` host plus the plain-GNOME "no SNI host" fallback case. **Windows and Linux are not shippable on the strength of this line**, which is consistent with the packaging decision — the GUI is not shipped for any target yet, and the source build is the only distribution.
+
+Recorded environment conditions, not caused by this line:
+
+- the default local check does not pass on this host and did not before the line either, and neither does the workspace Clippy gate. `cargo test --workspace --all-targets --all-features` fails 13-16 tests on an untouched worktree at commit `eb45029` — the `eggpool` worker tests, the `scheduler` fleet-scaling tests (which pass again when the machine is idle), and `clientd::ipc::tests::a_config_inside_the_temp_directory_yields_one_location`, which hardcodes `/tmp` while the code uses `std::env::temp_dir()` on a host that sets `TMPDIR`. `cargo clippy --workspace --all-targets --all-features -- -D warnings` fails in `gregg-host` (24 errors) and `greggd` (17 errors) with `clippy::borrow_as_ptr` and `clippy::too_many_lines`, identically on that same clean worktree, because the local clippy 1.99.1 has lints the CI's clippy version does not flag. `git diff` over `crates/gregg-host`, `crates/greggd` and `crates/gregg-protocol` is empty for this line. None of these were "fixed": they are outside this line's scope, and silencing a lint the CI does not raise, or editing a test to tolerate this host's temp directory, would have masked a real environment sensitivity and changed core crates for no reason.
 
 ## Closed scope record for Plan 190
 
@@ -1530,5 +1593,6 @@ Preserved exclusions:
 | [`056-eggpool-summary-pane-roadmap.md`](056-eggpool-summary-pane-roadmap.md) with Plans 057-062 | One optional EggPool endpoint, four fixed periods/metrics, bounded worker, and compact second pane | completed historical baseline; post-closure command/status corrections tracked by Plans 151-152 |
 | [`063-narrow-correctness-and-simplification-roadmap.md`](063-narrow-correctness-and-simplification-roadmap.md) with Plans 064-065 | Windows v2 staleness, strict endpoint parsing, package truth, verification deduplication, and runtime cleanup | completed; CI run `30964819950` passed |
 | [`161-cron-observability-and-client-daemon-roadmap.md`](161-cron-observability-and-client-daemon-roadmap.md) with Plans 162-168 | Bounded read-only `greggd` scheduler observability, the per-config per-user Gregg client daemon that owns all remote polling for multiple TUIs, the plain `c` cron view, terminal-output sanitization, the measured footprint closure, and the cross-platform verification of the Windows transport | closed at `154ab36` with Plans 162-167; **the macOS/Windows/MSRV jobs were not run by that closure**, and running them exposed that the Windows client daemon had never compiled, which Plan 168 corrected and verified |
+| [`187-slint-gui-roadmap.md`](187-slint-gui-roadmap.md) with Plans 188-190 | The optional Slint desktop frontend: the daemon-executable and toolchain boundary, the native tray and compact monitor MVP, and the counted cross-platform qualification with the packaging decision | closed with Plans 188-190; the request budget is proven flat in every phase, the GUI's cost is measured against a matched Slint-only baseline, and the packaging decision is **source-build-only**; **the Windows and Linux native acceptance were not performed**, so those two targets are not shippable on the strength of this line |
 
 Plans 010-035 describing retired staged release/evidence work remain archived under `plans/archive/v1.0.1-release/` and are not current requirements.
