@@ -292,26 +292,43 @@ try {
     # the GUI's own daemon rather than about this one.
     Write-Log "proving the core client-daemon launch path"
     $daemonPattern = 'client daemon \S+ running \(protocol'
-    # The output of this one command is redirected to a FILE, not piped.
+    # This command is started with Start-Process and its output redirected to
+    # FILES, never piped.
     #
     # `gregg daemon restart` spawns the daemon detached, and on Windows a
-    # detached child inherits the launcher's inheritable handles — including
-    # the write end of a PowerShell pipeline. The daemon would then hold that
-    # pipe open for as long as it lives and the pipeline would never see EOF,
-    # so the script would block on a command that had already finished. A file
-    # has no such semantics: the redirection ends when the process exits.
+    # detached child inherits the launcher's inheritable handles - including
+    # the write end of a pipeline. The daemon would then hold that pipe open
+    # for as long as it lives, so the pipeline would never reach EOF and this
+    # script would block on a command that had already finished.
+    #
+    # PowerShell's `*>` redirection is not enough: it still hands the child a
+    # pipe and copies it into the file. `Start-Process -RedirectStandardOutput`
+    # passes a real file handle instead, so there is no EOF to withhold -
+    # which is why the GUI below, which also spawns a daemon, is started the
+    # same way.
     #
     # This is a real defect in the launcher, not a quirk of the exercise: it
     # is recorded in `crates/gregg/src/clientd/launch.rs` and in
     # `apps/gregg-gui/EVIDENCE.md`. The GUI is not affected, because its
     # standard streams are a console or a file rather than a pipe.
     $restartOut = Join-Path $workDir "restart.out"
-    & $GreggPath --config $configPath daemon restart *> $restartOut
-    $restartExit = $LASTEXITCODE
-    $restartText = [string](Get-Content -LiteralPath $restartOut -Raw -ErrorAction SilentlyContinue)
+    $restartErr = Join-Path $workDir "restart.err"
+    $restartProcess = Start-Process -FilePath $GreggPath `
+        -ArgumentList @("--config", $configPath, "daemon", "restart") `
+        -RedirectStandardOutput $restartOut `
+        -RedirectStandardError $restartErr `
+        -NoNewWindow -PassThru
+    $restartDeadline = (Get-Date).AddSeconds(90)
+    while ((Get-Date) -lt $restartDeadline -and -not $restartProcess.HasExited) {
+        Start-Sleep -Milliseconds 250
+    }
+    if (-not $restartProcess.HasExited) {
+        Fail "gregg daemon restart did not finish within 90 seconds on Windows"
+    }
+    $restartText = Read-SharedFile $restartOut
     Write-Log "daemon restart: $($restartText.Trim())"
-    if ($restartExit -ne 0) {
-        Fail "the core client-daemon launch failed on Windows: $($restartText.Trim())"
+    if ($restartProcess.ExitCode -ne 0) {
+        Fail "the core client-daemon launch failed on Windows: $($restartText.Trim()) $(Read-SharedFile $restartErr)"
     }
     $coreStatus = & $GreggPath --config $configPath daemon status 2>&1 | Out-String
     Write-Log "daemon status after the core launch: $($coreStatus.Trim())"
