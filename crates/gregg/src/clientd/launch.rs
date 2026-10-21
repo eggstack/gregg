@@ -624,7 +624,7 @@ fn resolve_daemon_executable(executable: &DaemonExecutable) -> Result<PathBuf, E
             absolute.display()
         )));
     }
-    if !is_executable_file(&metadata) {
+    if !is_executable_file(&absolute, &metadata) {
         return Err(EnsureError::Executable(format!(
             "the client daemon executable {} is not executable",
             absolute.display()
@@ -649,27 +649,48 @@ fn resolve_daemon_executable(executable: &DaemonExecutable) -> Result<PathBuf, E
     Ok(absolute)
 }
 
-/// Whether a file's metadata says it can be executed.
+/// Whether a file can be executed.
 ///
 /// Unix answers from the mode bits. Windows has no execute bit, so the
-/// extension carries the meaning there; a `.txt` file is not a program.
-fn is_executable_file(metadata: &std::fs::Metadata) -> bool {
+/// **name** carries the meaning there, and the name is a property of the
+/// path rather than of the metadata — which is why this takes both.
+///
+/// The Windows rule is the one Windows itself applies when it is handed a
+/// path to run:
+///
+/// - a path with **no** extension is runnable, because Windows appends
+///   `.exe` to a name that carries none (`C:\tools\gregg` runs
+///   `C:\tools\gregg.exe`);
+/// - a path **with** an extension is runnable only when that extension is
+///   one Windows runs, so a `.txt` file is not a program.
+///
+/// The earlier version of this function asked the *metadata* for its
+/// extensions, which does not exist: `Metadata` has no extension, only
+/// `Path` does. The branch was therefore never compiled on the machine that
+/// wrote it, and it broke the whole Windows build of the crate.
+fn is_executable_file(path: &Path, metadata: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
+        let _ = path;
         metadata.permissions().mode() & 0o111 != 0
     }
     #[cfg(windows)]
     {
-        metadata.extensions().next().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("exe")
-                || extension.eq_ignore_ascii_case("cmd")
-                || extension.eq_ignore_ascii_case("bat")
-        })
+        let _ = metadata;
+        match path.extension() {
+            None => true,
+            Some(extension) => {
+                extension.eq_ignore_ascii_case("exe")
+                    || extension.eq_ignore_ascii_case("com")
+                    || extension.eq_ignore_ascii_case("cmd")
+                    || extension.eq_ignore_ascii_case("bat")
+            }
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = metadata;
+        let _ = (path, metadata);
         true
     }
 }
@@ -810,7 +831,16 @@ fn verify_gregg_client_executable_with_timeout(
 #[must_use]
 pub fn adjacent_daemon_executable(frontend_exe: &Path) -> Option<PathBuf> {
     let directory = frontend_exe.parent()?;
-    for name in ["gregg", "gregg.exe"] {
+    // The order is platform-specific because the two names are not
+    // interchangeable. On Windows the runnable file is `gregg.exe`; a bare
+    // `gregg` is only *found* by Windows because it appends `.exe` to a name
+    // that carries no extension, so when both files exist the one that can
+    // actually be run is the one that must win.
+    #[cfg(windows)]
+    let names = ["gregg.exe", "gregg"];
+    #[cfg(not(windows))]
+    let names = ["gregg", "gregg.exe"];
+    for name in names {
         let candidate = directory.join(name);
         if candidate.is_file() {
             return Some(candidate);
@@ -1613,6 +1643,67 @@ mod tests {
         let dir = TempDir::new("no-adjacent");
         let frontend = dir.0.join("gregg-gui");
         assert_eq!(adjacent_daemon_executable(&frontend), None);
+    }
+
+    // ── The Windows executable rules ──────────────────────────────────
+    //
+    // These live behind `cfg(windows)` on purpose. The rule they cover is
+    // the Windows one, and the branch they guard is the branch that broke
+    // the Windows build when it asked `Metadata` for its extensions. A test
+    // that only ever compiles on the machine that wrote it is a test that
+    // never ran, so this one runs where the rule applies.
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_executable_is_recognised_by_its_extension() {
+        let dir = TempDir::new("windows-executable");
+        let program = dir.0.join("gregg.exe");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a .exe file is a program on Windows"
+        );
+
+        let document = dir.0.join("notes.txt");
+        std::fs::write(&document, b"not a program").expect("writes the file");
+        let metadata = std::fs::metadata(&document).expect("metadata");
+        assert!(
+            !is_executable_file(&document, &metadata),
+            "a .txt file is not a program on Windows"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_name_without_an_extension_is_runnable() {
+        // Windows appends `.exe` to a name that carries no extension, so
+        // `C:\tools\gregg` runs `C:\tools\gregg.exe`. Refusing the bare name
+        // would refuse a path Windows itself resolves.
+        let dir = TempDir::new("windows-bare-name");
+        let program = dir.0.join("gregg");
+        std::fs::write(&program, b"not a real program").expect("writes the file");
+        let metadata = std::fs::metadata(&program).expect("metadata");
+        assert!(
+            is_executable_file(&program, &metadata),
+            "a name without an extension is runnable on Windows"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_runnable_windows_client_wins_over_the_bare_name() {
+        let dir = TempDir::new("windows-adjacent");
+        let frontend = dir.0.join("gregg-gui.exe");
+        std::fs::write(&frontend, b"not a real program").expect("writes the file");
+        std::fs::write(dir.0.join("gregg"), b"not a real program").expect("writes the file");
+        let client = dir.0.join("gregg.exe");
+        std::fs::write(&client, b"not a real program").expect("writes the file");
+
+        assert_eq!(
+            adjacent_daemon_executable(&frontend),
+            Some(client),
+            "the file Windows can actually run must be the one that is chosen"
+        );
     }
 
     #[test]

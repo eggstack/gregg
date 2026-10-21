@@ -1701,6 +1701,7 @@ dependencies = [
  "slint-build",
  "tokio",
  "tokio-util",
+ "zbus",
 ]
 
 [[package]]

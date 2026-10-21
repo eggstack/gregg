@@ -217,3 +217,136 @@ jobs:
             export PATH="$HOME/.cargo/bin:$PATH"
             rustc --version
             cargo test -p gregg-host --all-features
+
+  gui:
+    # The optional Slint desktop frontend is a SEPARATE Cargo workspace: it has
+    # its own lockfile, its own target directory, and its own toolchain floor
+    # (Rust >= 1.92), so the root workspace's `cargo test --workspace` never
+    # sees it and the root workspace's MSRV job is unaffected.
+    #
+    # That independence is exactly why this job had to exist. A Windows-only
+    # compilation break in the code the GUI depends on shipped unnoticed for a
+    # long time and took the whole Windows build of the `gregg` crate with it;
+    # nothing in the root workspace's own gates could have seen it, because
+    # the root workspace never compiles the GUI.
+    #
+    # The job is deliberately independent of the other jobs: it checks the GUI
+    # workspace on its own terms and never widens the root workspace's gates.
+    name: GUI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+          - os: windows-2022
+          - os: ubuntu-latest
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v4
+        timeout-minutes: 10
+
+      - name: Install Rust stable
+        # The GUI's own rust-toolchain.toml pins the `stable` channel, which is
+        # >= 1.92; `rustup` resolves a toolchain file from the working
+        # directory, and both the root and the GUI pin `stable`, so the same
+        # toolchain serves both.
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+        timeout-minutes: 10
+
+      - name: Install Python
+        # The fleet fixture is a Python script. The Windows runner spells the
+        # interpreter `python`, the Unix runners spell it `python3`, so the
+        # interpreter is pinned here rather than assumed.
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+        timeout-minutes: 10
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-gui-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gui-cargo-
+        timeout-minutes: 10
+
+      # The GUI is its own workspace with its own target directory and its own
+      # lockfile, so it is cached under its own key. The GUI's artifacts never
+      # land in, and are never read from, the root workspace's target
+      # directory: the two have different toolchain floors and different
+      # feature sets, and sharing a target directory between them only
+      # produces cache thrash.
+      - name: Cache the GUI target directories
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            apps/gregg-gui/target
+            apps/gregg-gui/native/sni-host/target
+          key: ${{ runner.os }}-gui-target-${{ hashFiles('apps/gregg-gui/Cargo.lock', 'apps/gregg-gui/native/sni-host/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-gui-target-
+        timeout-minutes: 10
+
+      - name: Install the Linux build and runtime dependencies
+        if: runner.os == 'Linux'
+        # fontconfig and xkbcommon are what Slint's Linux backend links
+        # against; xvfb gives the GUI a display and dbus-x11 gives it a
+        # session bus. Without them the native exercise would be skipped
+        # rather than run, which is exactly what this job must not do.
+        timeout-minutes: 15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libfontconfig1-dev \
+            libxkbcommon-dev \
+            libx11-dev \
+            xvfb \
+            dbus-x11 \
+            dbus-daemon
+
+      - name: Format check
+        timeout-minutes: 10
+        run: cargo fmt --manifest-path apps/gregg-gui/Cargo.toml -- --check
+
+      - name: Clippy
+        timeout-minutes: 30
+        run: cargo clippy --manifest-path apps/gregg-gui/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: Test
+        timeout-minutes: 30
+        run: cargo test --manifest-path apps/gregg-gui/Cargo.toml
+
+      - name: Build release
+        timeout-minutes: 30
+        run: cargo build --manifest-path apps/gregg-gui/Cargo.toml --release
+
+      - name: Native Linux tray exercise (a real StatusNotifierItem host)
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          cargo build --release --manifest-path apps/gregg-gui/native/sni-host/Cargo.toml
+          cargo build --release -p gregg
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            bash apps/gregg-gui/native/linux-tray.sh \
+              --gui "$PWD/apps/gregg-gui/target/release/gregg-gui" \
+              --gregg "$PWD/target/release/gregg" \
+              --helper "$PWD/apps/gregg-gui/native/sni-host/target/release/sni-host"
+
+      - name: Native Windows tray exercise (a native window and a tray start)
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          cargo build --release -p gregg
+          pwsh -NoProfile -ExecutionPolicy Bypass -File ./apps/gregg-gui/native/windows-tray.ps1 -GuiPath "$PWD\apps\gregg-gui\target\release\gregg-gui.exe" -GreggPath "$PWD\target\release\gregg.exe" -Python "python"

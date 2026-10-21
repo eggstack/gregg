@@ -1,9 +1,10 @@
 # Plan 187: Optional Slint desktop frontend roadmap
 
-Status: **complete for everything a macOS host can verify.** The three-desktop
-demonstration is **outstanding and not claimed** — see the closure record at
-the end of this file and the scope record in `plans/README.md`. The GUI is
-therefore **not shippable for Windows or Linux**, and it stays a source build.
+Status: **complete for everything a macOS host can verify, plus a corrective
+pass on 2026-10-21.** The **interactive** three-desktop demonstration is still
+**outstanding and not claimed** — see the closure record at the end of this file
+and the scope record in `plans/README.md`. The GUI is therefore **not shippable
+for Windows or Linux**, and it stays a source build.
 
 Depends on: the completed Plan 161-172 Gregg client-daemon split and current main at planning time (2026-10-21). Independent of the Plan 091 soak record.
 
@@ -147,6 +148,9 @@ closed; this roadmap's invariants are all verified.
   not it — and a Linux tray run needs a desktop session with a
   `StatusNotifierItem` host, plus the "plain GNOME, no SNI host" fallback
   case. **Those two targets are not shippable on the strength of this line.**
+  Read this with the corrective pass below: this bullet is about the
+  **interactive** demonstration, and it was also, for a while, hiding two real
+  defects that a build-only CI job would have caught.
 - **It did not ship a GUI artifact.** There is no installer, no bundle and no
   release asset, and the GUI requires an existing Gregg installation.
 - **It did not change the core.** `crates/greggd` and `crates/gregg-protocol`
@@ -158,6 +162,40 @@ closed; this roadmap's invariants are all verified.
   here would have reopened the headless client's correctness for a gain this
   host could not measure above its own noise. That is a future, separately
   approved piece of work.
+
+### The corrective pass (2026-10-21)
+
+Re-opening this roadmap for one focused pass found that the closure language
+was describing the *evidence* accurately and the *code* inaccurately, and that
+the reason was structural rather than accidental.
+
+- **The GUI workspace had no CI.** It is a separate Cargo workspace with its own
+  lockfile and its own toolchain, the root workspace excludes it, and no job
+  built or tested it. A `#[cfg(windows)]` branch that nothing else compiles was
+  therefore never compiled, and a UI requirement that nothing asserts was never
+  asserted. The `#[cfg(windows)]` branch in
+  `crates/gregg/src/clientd/launch.rs` asked `std::fs::Metadata` for its
+  `extensions()` — a method that does not exist — and broke the **whole**
+  `gregg` crate on Windows; the Windows CI job was red for every commit of this
+  line from `9029bc9` to `14a4b93` (run `39628897811`). The GUI's
+  "no-StatusNotifierItem-host" fallback, which this roadmap required by name,
+  was never implemented at all: the GUI hid its only window and left the
+  operator with nothing to press.
+- **What the pass changed:** the Windows branch is fixed and locked by
+  Windows-gated tests; the host list and the cron job list scroll with bounded
+  heights; the no-tray fallback is implemented, reported and unit-tested; and
+  the GUI workspace gets its own CI — fmt, clippy, tests and a release build
+  on macOS, Windows and Linux natively, plus native tray exercises on the
+  Windows and Linux legs.
+- **What the pass does not change:** the GUI is still a **source build**, still
+  ships for no target, and the **interactive** native demonstration on Windows
+  and Linux is still **not performed** and still **not claimed**. A CI runner
+  is a native Windows host and a native Linux host, so the *code* is now
+  compiled, linted, tested and started there; it is not an operator's desktop,
+  so a visible notification-area icon and a real GNOME session are still
+  unproven. The wording "the three-desktop demonstration" is therefore
+  narrowed, not widened: the **builds** now cover three desktops, the
+  **demonstration** does not.
 
 ### Evidence
 

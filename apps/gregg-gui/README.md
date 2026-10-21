@@ -24,12 +24,21 @@ Plans 188 and 189 are implemented. What exists:
   About Gregg and Quit Gregg;
 - a **compact monitor window** showing the fleet, the selected host's metrics,
   drives and interfaces, its scheduler jobs and records, and the `EggPool`
-  plane;
+  plane. The two lists that grow with the fleet — the hosts and the scheduler
+  jobs — are **scrollable with bounded heights**, so a large fleet cannot push
+  the metrics, cron and `EggPool` panes out of the window;
+- a **no-tray fallback**: the GUI asks the desktop whether it has a tray,
+  reports the answer in one machine-readable line, and never hides its only
+  control surface when the answer is no (see [A desktop with no system
+  tray](#a-desktop-with-no-system-tray));
 - an entry point (`src/main.rs`) that wires the two together and runs the
   Slint event loop.
 
 Plan 190 owns native cross-platform qualification, the footprint measurement
-and the packaging decision.
+and the packaging decision. A corrective pass on 2026-10-21 fixed the
+Windows build of the `gregg` crate this frontend depends on, implemented the
+no-tray fallback the native matrix required, made the lists scroll, and gave
+this workspace **its own CI** — see [CI](#ci).
 
 ## Running it
 
@@ -105,7 +114,48 @@ AppIndicator.
   Gregg. The full list belongs in the window, not in a native menu.
 - On a desktop with **no tray service**, the monitor window is still shown on
   launch, so the GUI is never an invisible background process with no way to
-  quit.
+  quit. See [A desktop with no system
+  tray](#a-desktop-with-no-system-tray) below: the GUI asks the desktop
+  whether it has a tray, and it does not hide its only window when it has not.
+
+### A desktop with no system tray
+
+On Linux the tray is a `StatusNotifierItem`, and the desktop has to run a
+**host** for it — the panel, the GNOME Shell extension, and so on. A desktop
+without one has no tray at all, and Slint fails to register **silently**: the
+icon simply never appears. That is a trap, because the monitor window's close
+button *hides* the window, so on such a desktop closing it would leave an
+invisible, unquittable GUI with the daemon still polling.
+
+So the GUI asks the desktop, and answers in one machine-readable line:
+
+```text
+gregg-gui: tray=available
+gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"
+```
+
+- **macOS and Windows** always have a tray: their native APIs always work.
+- **Linux** asks the session bus whether the
+  `org.kde.StatusNotifierWatcher` name has an owner — exactly what Slint's
+  own `ksni` backend requires. The probe is **bounded** (one second), and "the
+  bus did not answer" counts as "there is no tray", because that is the safe
+  answer: the operator keeps a window that quits instead of a window that
+  vanishes.
+
+With no tray, the window says so in a line of its own, and **closing the
+window ends the GUI** instead of hiding it. With a tray, closing hides the
+window and the tray brings it back, exactly as before.
+
+The decision is taken when the window is closed, not at startup: a tray host
+can start after the desktop session is up, and Slint retries the registration
+whenever the icon is set again. The window's warning line is refreshed when
+the window comes back, so it cannot keep claiming there is no tray after one
+appears.
+
+The classification, the close decision and the status line are **pure
+functions** in `src/platform.rs`, so both branches are unit-tested without a
+desktop session — 9 tests cover the three probe outcomes, the two close
+outcomes, and the exact shape of the line a CI job asserts on.
 
 ### Actions
 
@@ -118,7 +168,7 @@ AppIndicator.
 | Window | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
 | Window | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
 | Window | Reload / EggPool / About / Quit buttons | The same actions as the tray items. The `EggPool` button opens and closes the `EggPool` plane, and the intent is sent only while it is open. |
-| Window | Close button | **Hides** the window. The tray and the observation keep running. |
+| Window | Close button | **Hides** the window, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden window with no tray is an application you can no longer reach. |
 | Window | Quit button | Ends the GUI. The client daemon keeps running. |
 
 The GUI is mouse-driven; there are no keyboard shortcuts in this MVP. Every
@@ -190,6 +240,34 @@ The root `Cargo.toml` lists `apps/gregg-gui` under `exclude`, so the root's
 `cargo test --workspace` and its MSRV CI job never see Slint's toolchain
 floor. This directory has **its own `Cargo.lock`** (`apps/gregg-gui/Cargo.lock`),
 which is not the root workspace's lockfile and is not affected by it.
+
+## CI
+
+Because this workspace is separate, **no root job builds or tests it** — so it
+has a job of its own. The `gui` job in `.github/workflows/ci.yml` runs on
+**macOS, Windows and Linux**, natively, and:
+
+- checks the format, the lints (`-D warnings`), the tests and a release build
+  of this workspace;
+- on **Linux**, runs a native tray exercise against a **real
+  `StatusNotifierItem` host**: `apps/gregg-gui/native/sni-host` owns
+  `org.kde.StatusNotifierWatcher`, starts the GUI, and asserts that the GUI
+  registered an item whose tooltip and menu carry the live fleet state — and
+  then, in a second pass on a bus with **no** host, asserts that the GUI
+  reports `tray=unavailable` and keeps running;
+- on **Windows**, starts the GUI and proves it created a **native top-level
+  window** for its process, and that the client daemon it launched is
+  running.
+
+`scripts/check-gui.sh` runs the same format, lint, test and build checks on a
+developer machine, and prints the release binary's size.
+
+The Windows exercise does **not** claim that the notification-area icon was
+*rendered*: the CI runner is session 0 with no `explorer.exe`, so there is no
+notification area to observe. What it proves is that the native window and the
+native tray path start without error on a native Windows host. The
+**interactive** desktop runs — a visible icon in a real notification area, a
+real GNOME session — are still outstanding, and are still not claimed.
 
 ## Dependencies
 
@@ -373,15 +451,25 @@ makes the difference attributable.
 
 | Binary | Size |
 | ------ | ---- |
-| `gregg-gui` (this crate, with the `gregg` core library) | 9,776,560 bytes (9.3 MiB) |
-| Slint-only baseline (same Slint features, same `main.slint`, same activation code, no `gregg`) | 8,929,216 bytes (8.5 MiB) |
-| **Difference** | **847,344 bytes (~828 KiB, +9.5%)** |
+| `gregg-gui` (this crate, with the `gregg` core library) | 10,803,360 bytes (10.3 MiB) |
+| Slint-only baseline (same Slint features, same `main.slint`, same activation code, no `gregg`) | 9,956,032 bytes (9.5 MiB) |
+| **Difference** | **847,328 bytes (~828 KiB, +8.5%)** |
 
-So the Slint GUI itself costs about 8.5 MiB stripped, and everything
+So the Slint GUI itself costs about 9.5 MiB stripped, and everything
 `gregg-gui` adds on top of a pure-Slint build of the same UI — the `gregg`
 core library with Ratatui, Crossterm, Clap, `eggfetch-core` with rustls and
 the config and reducer machinery, plus the GUI's own projection, bridge and
 wiring — is about 828 KiB.
+
+**The baseline was rebuilt for the 2026-10-21 corrective pass, and the
+comparison is the interesting part.** The pass gave the monitor window's two
+lists a scroll container, and a scroll container comes from Slint's
+`std-widgets`, so *both* binaries grew: the GUI by 1,026,800 bytes and the
+baseline by 1,026,816 bytes — the style's own assets, on both sides. The
+**difference** stayed where it was: 847,328 bytes against 847,344 bytes
+before, a change of 16 bytes on a 10-megabyte binary. That is what a matched
+baseline is for: a baseline that was not rebuilt would have reported the whole
+growth as the GUI's cost.
 
 (For comparison, Plan 188 measured the same drag against the *scaffold* UI,
 before the monitor window existed: 747,936 bytes over an 8,813,296-byte

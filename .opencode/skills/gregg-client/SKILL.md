@@ -171,11 +171,11 @@ did not publish.
 
 **The optional GUI is a source build** (Plan 190). There is no installer, no
 bundle and no release asset, and the GUI is **not shipped for any target yet**:
-it was qualified natively on macOS only, and the Windows and Linux native runs
-are outstanding. It requires an existing Gregg installation and never bundles a
-second `gregg`. Do not add a GUI release asset, a packaging job or a publish
-step without a new, explicitly approved plan and the native evidence for the
-target it would ship to.
+it was qualified natively on macOS only, and the **interactive** Windows and
+Linux native runs are outstanding. It requires an existing Gregg installation
+and never bundles a second `gregg`. Do not add a GUI release asset, a packaging
+job or a publish step without a new, explicitly approved plan and the native
+evidence for the target it would ship to.
 
 Its three layers are a contract, not a convenience: `apps/gregg-gui/src/model.rs`
 is a **pure** `FrontendSnapshot -> GuiViewModel` projection (no threads, no
@@ -189,6 +189,25 @@ channel, so the newest value wins, a rejected write is retried, and a reconnect
 publishes the new *full* desired state. Closing the monitor window **hides** it
 and leaves the tray running; Quit is the only thing that ends the GUI, and it
 never ends the client daemon.
+
+**A desktop with no system tray must never lose the only control surface**
+(Plans 187-190, corrective pass). On Linux the tray needs a
+`StatusNotifierItem` host and a plain GNOME session has none; Slint then fails
+to register the tray **silently**. The GUI therefore probes for a tray host (on
+Linux, the `org.kde.StatusNotifierWatcher` name on the session bus), reports
+the answer in one machine-readable line, and **closes by quitting rather than
+by hiding** when there is no tray — a hidden window with no tray is an
+unreachable application. The probe is re-run at close time and is bounded. The
+decision is a pure, unit-tested function. The monitor window's host and job
+lists are **scrollable with bounded heights**, so a large fleet cannot push
+the metrics, cron and `EggPool` panes out of the window.
+
+**The GUI workspace has its own CI.** It is not a member of the root workspace,
+so no root job builds or tests it — one CI job formats, lints, tests and
+release-builds it on macOS, Windows and Linux natively and exercises the tray
+on the Windows and Linux legs, and `scripts/check-gui.sh` runs the same checks
+locally. A `#[cfg(windows)]` branch that no other job compiles is how the
+Windows build of `gregg` stayed broken for a whole line of work.
 
 **A tray application is a background application** (Plan 189). On macOS an
 `NSStatusItem` menu does not activate the app that owns it, and a background

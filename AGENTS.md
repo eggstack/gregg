@@ -45,11 +45,28 @@ per-config client daemon over the same local IPC and renders what that daemon
 already polls. It must never open its own remote HTTP client. It is not
 published to crates.io (`publish = false`).
 
+**The GUI workspace has its own CI.** It is not a member of the root workspace,
+so no root job sees it: one CI job formats, lints, tests and release-builds it
+on macOS, Windows and Linux **natively**, and exercises the system tray on the
+Windows and Linux legs. A `#[cfg(windows)]` branch inside it — or inside the
+`gregg` crate it depends on — that no other job compiles is exactly how the
+Windows build of `gregg` stayed broken for a whole line of work; the GUI's own
+job is what makes that impossible now.
+
+**A desktop with no system tray must never lose its only control surface.**
+On Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session
+has none. The GUI therefore probes for a tray host, reports the answer in one
+machine-readable line, shows the operator what is going on in the window, and
+**closes by quitting rather than by hiding** when there is no tray — a hidden
+window with no tray is an unreachable application. The lists in the monitor
+window scroll with **bounded** heights: a large fleet must not push the
+metrics, cron and EggPool panes out of the window.
+
 **The GUI is a source build.** There is no installer, no bundle and no release
 asset for it, and it is not shipped for any target yet: it has been qualified
-natively on macOS only, and the Windows and Linux native runs are still
-outstanding. It requires an existing Gregg installation and never bundles a
-second `gregg`. Do not add a GUI release asset, a packaging job or a publish
+natively on macOS only, and the interactive Windows and Linux native runs are
+still outstanding. It requires an existing Gregg installation and never bundles
+a second `gregg`. Do not add a GUI release asset, a packaging job or a publish
 step without a new, explicitly approved plan and the native evidence for the
 target it would ship to.
 → `architecture/gregg-client.md`

@@ -1,9 +1,12 @@
 # Plan 190: GUI multi-frontend correctness, native qualification and packaging
 
-Status: **complete, with the Windows and Linux native acceptance recorded as
-not performed** — see the closure record at the end of this file and the scope
-record in `plans/README.md`. Those two targets are **not shippable** on the
-strength of this plan, and the GUI stays a source build.
+Status: **complete, with a corrective pass on 2026-10-21** — the Windows
+compilation break and the missing no-tray fallback are fixed, and the GUI
+workspace now has its own CI; see the corrective-pass section and the closure
+record at the end of this file, and the scope record in `plans/README.md`. The
+**interactive** native acceptance for Windows and Linux is still **not
+performed**, so those two targets remain **not shippable** on the strength of
+this plan, and the GUI stays a source build.
 
 Depends on Plans 188-189; closes Plan 187. Independent of Plan 091.
 
@@ -262,6 +265,13 @@ three consequences that are all testable:
   targets is claimed. **They block shipment for Windows and Linux**, which is
   consistent with the packaging decision: the GUI is not shipped for any
   target yet, and the source build is the only distribution.
+  **Read this with the corrective pass above:** "not performed" described the
+  *evidence*, not the *code*. The Windows build was broken and the no-tray
+  fallback was missing; both are fixed now, and the GUI's own CI now covers
+  the two targets it can cover without an interactive desktop. What is still
+  outstanding is the **interactive** native run — a real Windows shell with a
+  visible notification area, and a real Linux desktop session — which is still
+  not claimed.
 - **The macOS matrix is a partial one.** It was exercised on Apple Silicon
   only; the **Intel** build was not produced, because the runner is not
   available. Retina scaling was observed (the menu bar and the window render
@@ -296,6 +306,82 @@ three consequences that are all testable:
   were not "fixed" here either: silencing a lint the CI does not even raise
   would have been a change to core crates made for no reason, in a line whose
   whole point is not to touch them.
+
+### Corrective pass (2026-10-21)
+
+This plan was closed as "complete, with the Windows and Linux native acceptance
+recorded as not performed". That framing was **too kind to the reader**, and
+the difference matters: it said those two targets were *unverified* when one of
+them was **broken** and the other was **never implemented**. Both statements are
+about this plan's own acceptance requirements, so both belong in the closure
+record.
+
+**1. Windows did not compile at all.** The native matrix requires a "native
+MSVC compile" on Windows. The `#[cfg(windows)]` branch of
+`is_executable_file` in `crates/gregg/src/clientd/launch.rs` (added by Plan
+188) asked `std::fs::Metadata` for its `extensions()` — a method that does not
+exist: `Path` has an extension, `Metadata` has none. The branch was never
+compiled on the machine that wrote it, and it broke the **whole** `gregg` crate
+on Windows, not just the GUI: the Windows CI job on this branch was **red for
+every commit from `9029bc9` to `14a4b93`**, with
+`error[E0599]: no method named 'extensions' found for reference '&std::fs::Metadata'`
+(run `39628897811`). The GUI could not have been built for Windows either,
+because it depends on that crate. "Not performed" was true; "not broken" was
+not.
+
+**2. The "no SNI host" fallback was never implemented.** The native matrix
+requires, for a desktop without a `StatusNotifierItem` host, that "the
+application must provide a visible/failsafe window and clear guidance, **not
+hide its only control surface**". The GUI hid the monitor window on close and
+had no fallback of any kind, so on such a desktop — a plain GNOME session, for
+instance — closing the window left an invisible, unquittable GUI: the daemon
+kept polling and the operator had nothing left to press.
+
+Both defects were invisible for the same reason: **the GUI workspace had no CI
+at all**. It is a separate Cargo workspace with its own lockfile and its own
+toolchain, the root workspace excludes it, and no job built or tested it. So a
+`#[cfg(windows)]` branch that nothing else compiles, and a UI requirement that
+nothing asserts, could both ship unnoticed — which is the same trap the
+repository's own rule warns about for Windows-only Rust.
+
+The corrective pass therefore does four things:
+
+- **fix the Windows branch** in `crates/gregg/src/clientd/launch.rs`: the
+  executable test asks the **path** for its extension, not the metadata, and it
+  applies the rule Windows itself applies when it is handed a path to run — a
+  name with no extension is runnable (Windows appends `.exe`), and a name with
+  an extension is runnable only when that extension is one Windows runs. The
+  adjacent-client lookup now prefers `gregg.exe` over a bare `gregg` on
+  Windows, because the bare name is only *found* by Windows through that same
+  `.exe` appending. The behaviour is locked by **Windows-gated tests**
+  (`#[cfg(windows)]`), which run on the native Windows CI job rather than on
+  the machine that wrote them;
+- **make the host list and the cron job list scroll**, with bounded heights, so
+  a large fleet cannot push the metrics, cron and EggPool panes out of the
+  fixed-size window — the previous layout grew without bound and a 25-host
+  fleet pushed everything below the host list off screen;
+- **implement the no-tray fallback** the matrix asked for: the GUI probes for a
+  tray host (on Linux, the `org.kde.StatusNotifierWatcher` name on the session
+  bus, because that is exactly what Slint's `ksni` backend requires), reports
+  the result in one machine-readable line, shows the operator what is going on
+  in the window, and **never hides the only control surface when there is no
+  tray**: closing the window then quits the GUI instead of stranding it. The
+  decision is a pure, unit-tested function, and the probe at close time is
+  re-run rather than taken from a startup snapshot, because a tray host can
+  appear after the GUI started;
+- **give the GUI workspace its own CI**, so a Windows-only break in the code it
+  depends on can never again reach a merged branch unnoticed: one job that
+  builds, lints and tests the GUI workspace on macOS, Windows and Linux
+  natively, plus native tray exercises on the Windows and Linux legs.
+
+**Scope note.** The three scope records for Plans 187-190 each preserved an
+exclusion of "new CI jobs, matrices, evidence bundles, uploaded artifacts,
+signed releases, crates.io publication, or a release workflow". This pass
+adds **one** CI job that is a **build check** — fmt, clippy, tests and a
+release build of the GUI workspace, plus native tray exercises — and it adds
+**no** artifact, no bundle, no release asset, no publication and no packaging
+step. That is an explicitly approved change to the exclusion, recorded here
+because the exclusion was a plan decision rather than a repository rule.
 
 ### Evidence
 

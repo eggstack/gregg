@@ -140,6 +140,14 @@ core workspace's MSRV stays 1.89). That frontend is a second way to look at
 the fleet, not a second poller: it attaches to the same per-config client
 daemon over the same local IPC and renders what that daemon already polls.
 
+Because that workspace is separate, **no root job builds or tests it** — the
+GUI has its own CI job, which formats, lints, tests and release-builds it on
+macOS, Windows and Linux natively (`scripts/check-gui.sh` runs the same checks
+locally). That separation is also why a Windows-only branch in this crate must
+be covered by a Windows-gated test: the `#[cfg(windows)]` branch of
+`is_executable_file` once asked `std::fs::Metadata` for a method it does not
+have, and nothing on a non-Windows machine could have noticed.
+
 Because that frontend is not the `gregg` binary, it cannot launch the client
 daemon by using its own image. The launcher therefore takes the executable as
 an explicit argument:

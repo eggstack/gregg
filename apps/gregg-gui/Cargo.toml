@@ -96,6 +96,20 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSApplication",
 ] }
 
+# Linux only: the desktop's system tray is a `StatusNotifierItem`, and the
+# GUI has to know whether this desktop runs a host for it — a desktop without
+# one has no tray at all, and closing the monitor window has to end the GUI
+# instead of hiding it into a process the operator cannot reach.
+#
+# `zbus` is already in this workspace's graph: Slint's `system-tray` feature
+# reaches it through `ksni`, so this edge adds no new crate to the build and
+# no new download. The one feature that is added is `blocking-api`, zbus's
+# own synchronous wrapper, which is what makes a *bounded* probe possible
+# without a second async runtime: the probe runs on its own thread and the
+# caller waits for a deadline.
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+
 # Test-only. The counted-remote fixture serves a real status document, and
 # the evidence test starts a real client daemon, so it needs the protocol
 # crate's document builder, a JSON serializer, and the cancellation token the

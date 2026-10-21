@@ -445,6 +445,28 @@ Closing the monitor window **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
 daemon.
 
+That "hide" is only safe when there **is** a tray to bring the window back. On
+Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session has
+none — Slint's `ksni` backend then fails to register, silently, and the GUI is
+left with a window it can hide and nothing that can show it again. An operator
+in that state would have an invisible, unquittable process. So the GUI **probes
+for a tray host** before it hides anything: on Linux it looks for the
+`org.kde.StatusNotifierWatcher` name on the session bus, which is exactly what
+Slint's own backend requires, and it reports the answer in one machine-readable
+line. When there is **no** tray, closing the window **quits** the GUI instead
+of hiding it, and the window says so. The probe is re-run at close time rather
+than taken from startup, because a tray host can appear after the GUI started,
+and it is bounded, because a wedged bus must not hang the close. The decision
+itself is a pure function, so both branches are unit-tested without a desktop
+session.
+
+The monitor window's lists are **bounded and scrollable**. The host list and
+the cron job list grow with the fleet, and a fixed-size window cannot hold an
+unbounded list: before, a 25-host fleet pushed the metrics, cron and `EggPool`
+panes out of the window entirely. Each list therefore lives in a scroll
+container with a bounded height, so the window keeps its size and every pane
+stays reachable.
+
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that
 owns it, and a background app cannot bring its own window to the front with
@@ -483,11 +505,36 @@ What was proven, and how:
   saves under a megabyte; the rest is the software renderer and the system-font
   machinery.
 
-The decision is **accept**. What is **not** claimed is the Windows and Linux
-native acceptance: a Windows run needs a Windows host and a Linux tray run
-needs a desktop session with a `StatusNotifierItem` host, so those two
-targets are not shippable on the strength of this line. The measured artifact
-is `apps/gregg-gui/EVIDENCE.md`.
+The decision is **accept**. What is **not** claimed is the **interactive**
+Windows and Linux native acceptance: a Windows run needs a Windows host and a
+Linux tray run needs a desktop session with a `StatusNotifierItem` host, so
+those two targets are not shippable on the strength of this line. The measured
+artifact is `apps/gregg-gui/EVIDENCE.md`.
+
+### The GUI's own CI, and what it caught (Plans 187-190, corrective pass)
+
+The GUI is a **separate Cargo workspace** with its own lockfile and its own
+Rust 1.92 floor, and the root workspace excludes it. That separation is
+correct — it is what keeps Slint out of the Rust 1.89 MSRV job — but it has a
+consequence that is easy to forget: **no root job builds or tests the GUI**.
+A `#[cfg(windows)]` branch that nothing else compiles, and a UI requirement
+that nothing asserts, both ship unnoticed.
+
+That is not hypothetical. The `#[cfg(windows)]` branch of `is_executable_file`
+in `crates/gregg/src/clientd/launch.rs` asked `std::fs::Metadata` for its
+`extensions()` — a method that does not exist — and broke the **whole** `gregg`
+crate on Windows; the Windows CI job was red for every commit of the GUI line,
+and the GUI could not have been built for Windows at all. Meanwhile the
+no-tray-host fallback this architecture describes above was not implemented, so
+a plain GNOME session would have had a GUI that hid its only window and left
+the operator with nothing to press.
+
+The corrective pass fixes the branch (the extension lives on the **path**, and
+the rule is the one Windows itself applies when it is handed a path to run),
+locks it with Windows-gated tests, and gives the GUI workspace **its own CI**:
+one job that formats, lints, tests and release-builds it on macOS, Windows and
+Linux **natively**, plus native tray exercises on the Windows and Linux legs.
+`scripts/check-gui.sh` runs the same checks on a developer machine.
 
 ### Daemon executable selection (Plan 188)
 

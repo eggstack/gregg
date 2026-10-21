@@ -133,6 +133,63 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **The Windows build of the `gregg` crate did not compile** (Plan 188's
+  launcher boundary): the `#[cfg(windows)]` branch of `is_executable_file` in
+  `crates/gregg/src/clientd/launch.rs` asked `std::fs::Metadata` for its
+  `extensions()` — a method that does not exist, because a *path* has an
+  extension and metadata does not. The branch was therefore never compiled on
+  the machine that wrote it, and the whole crate failed to build on Windows
+  with `error[E0599]: no method named 'extensions' found for reference
+  '&std::fs::Metadata'`. The Windows CI job was red for every commit of the
+  GUI line as a result.
+
+  The executable test now asks the **path** for its extension and applies the
+  rule Windows itself applies when it is handed a path to run: a name with no
+  extension is runnable, because Windows appends `.exe` to a name that carries
+  none, and a name with an extension is runnable only when that extension is
+  one Windows runs. The adjacent-client lookup now prefers `gregg.exe` over a
+  bare `gregg` on Windows, because the bare name is only *found* by Windows
+  through that same appending. The behaviour is locked by Windows-gated tests
+  that run on the native Windows job rather than on the machine that wrote
+  them.
+
+### Added
+
+- **A desktop with no system tray no longer loses the GUI's only control
+  surface** (Plans 187-190, corrective pass): on Linux the system tray is a
+  `StatusNotifierItem` and the desktop has to run a **host** for it — a plain
+  GNOME session has none — and Slint fails to register **silently**, so the
+  tray icon simply never appears. Because the monitor window's close button
+  *hides* the window, closing it on such a desktop used to leave an invisible,
+  unquittable GUI with the client daemon still polling. The GUI now asks the
+  desktop whether it has a tray (on Linux, whether the
+  `org.kde.StatusNotifierWatcher` name has an owner on the session bus, which
+  is exactly what Slint's own backend requires), reports the answer in one
+  machine-readable line (`gregg-gui: tray=available` or
+  `gregg-gui: tray=unavailable reason="..."`), shows the operator what is
+  going on in the window, and **closes by quitting rather than hiding** when
+  there is no tray. The probe is bounded and re-run at close time, because a
+  tray host can start after the desktop session is up. The classification, the
+  close decision and the status line are pure functions, so both branches are
+  unit-tested without a desktop session.
+
+- **The GUI's monitor window scrolls.** The host list and the scheduler job
+  list are the two lists that grow with the fleet, and they were unbounded: a
+  25-host fleet pushed the metrics, cron and `EggPool` panes out of the
+  fixed-size window entirely. Both are now in scroll containers with bounded
+  heights, vertical scrolling only, with the row text kept clear of the
+  scrollbar.
+
+- **The GUI workspace has its own CI** (Plans 187-190, corrective pass): one
+  job formats, lints, tests and release-builds `apps/gregg-gui` on **macOS,
+  Windows and Linux natively**, and exercises the system tray on the Windows
+  and Linux legs. The GUI is a separate Cargo workspace with its own lockfile
+  and its own toolchain, and the root workspace excludes it — so no root job
+  ever built or tested it. That is how a Windows-only break in the `gregg`
+  crate the GUI depends on could reach a branch unnoticed, and the GUI's own
+  job is what makes that impossible now. `scripts/check-gui.sh` runs exactly
+  the same checks on a developer machine.
+
 - **The CI Clippy gate was red on `main`** (`crates/gregg/src/startup_support.rs`):
   `assert!(bytes.is_empty())` tripped `clippy::assert_is_empty` under the current
   stable toolchain (1.99.0), so `cargo clippy --workspace --all-targets

@@ -9,6 +9,73 @@ Every number below was produced by an actual run of the harness in
 `apps/gregg-gui/src/evidence.rs`. Nothing here is an expectation, a design
 intent, or a comment.
 
+## The corrective pass (2026-10-21)
+
+The counted proof above is unchanged. This section records what a later
+corrective pass added, and — as importantly — what it did **not** manage to
+observe.
+
+**1. The Windows build was broken, and nothing noticed.** The `#[cfg(windows)]`
+branch of `is_executable_file` in `crates/gregg/src/clientd/launch.rs` asked
+`std::fs::Metadata` for its `extensions()`, a method that does not exist, so
+the whole `gregg` crate failed to build on Windows and the Windows CI job was
+red for every commit of the GUI line (run `39628897811`). The GUI could not
+have been built for Windows at all, because it depends on that crate. The
+branch is fixed — the extension lives on the **path**, and the rule is the one
+Windows applies when it is handed a path to run — and locked by Windows-gated
+tests that run on the native Windows job.
+
+**2. The monitor window's lists did not scroll.** The host list and the
+scheduler job list were unbounded, so a large fleet pushed the metrics, cron
+and `EggPool` panes out of the fixed-size window. Both are now in scroll
+containers with bounded heights.
+
+*Observed* (macOS, this host): 25 fixture instances, one port each — the
+config validator rejects duplicate endpoints — a config with 25 `[[systems]]`
+(UUID v4 ids), and the real GUI against the real client daemon. The GUI
+printed `gregg-gui: tray=available`, attached, and the monitor window showed
+the fleet summary (`25 online, 0 pending, 0 offline — fixture-host-01, …`),
+the host list **clipped to about three and a half rows with the vertical
+scrollbar drawn at the right edge** and the row text clear of it, the first row
+highlighted as selected, and the METRICS, CRON and EGGPOOL panes and the
+Reload / EggPool / About / Quit buttons **all still inside the 560×520
+window**.
+
+*Not observed*: the **macOS menu bar** could not be photographed. Another
+session's full-screen application covered the bar for the whole run, the
+Gregg window sat on a non-active Space whenever another application held
+focus, and `CGWindowListCreateImage` is unavailable on this macOS release.
+The only tray evidence from that run is the machine-readable line above and
+Slint's unchanged `NSStatusItem` path. No tray-icon visual proof is claimed.
+
+**3. The no-tray fallback did not exist.** The native matrix requires, for a
+desktop without a `StatusNotifierItem` host, that the application "must provide
+a visible/failsafe window and clear guidance, not hide its only control
+surface". The GUI hid its window and had no fallback at all. It now probes the
+desktop (on Linux, the `org.kde.StatusNotifierWatcher` name on the session
+bus — exactly what Slint's `ksni` backend requires), reports the answer on one
+machine-readable line, shows the operator what is going on, and **closes by
+quitting rather than hiding** when there is no tray. The decision is a pure,
+unit-tested function, and the probe is bounded and re-run at close time.
+
+**4. The GUI workspace now has its own CI.** The `gui` job formats, lints,
+tests and release-builds this workspace on macOS, Windows and Linux natively,
+and runs native tray exercises on the Windows and Linux legs: against a real
+`StatusNotifierItem` host on Linux, and a native window plus a native tray
+start on Windows. The **real** GUI against the **real** Linux SNI stack is
+CI-verified only — the harness's own D-Bus logic was executed locally against
+a throwaway client, not against the real GUI on a Linux host — and the
+**interactive** native runs (a visible notification-area icon in a real shell,
+a real GNOME session) remain outstanding and are not claimed.
+
+**5. The footprint was re-measured against a rebuilt baseline.** The scroll
+container comes from Slint's `std-widgets`, so both binaries grew: the GUI to
+**10,803,360 bytes** and the matched Slint-only baseline to **9,956,032
+bytes**. The difference — what this frontend adds over a pure-Slint build of
+the same UI — is **847,328 bytes**, against 847,344 bytes before the change:
+16 bytes, on a ten-megabyte binary. A baseline that was not rebuilt would have
+reported the whole growth as the GUI's cost.
+
 ## The fixture
 
 | piece | what it is |
@@ -153,10 +220,17 @@ Honest notes on these values:
    `Incompatible` reporting and the "no second connection" property. The
    launcher's `EnsureError::IncompatibleOwned` refusal belongs to
    `launch.rs`.
-3. **Windows is not covered.** The GUI crate is not a root workspace member,
-   so no CI job runs its tests; the stand-in-daemon test is `#[cfg(unix)]`
-   because it speaks the Unix socket protocol directly. The named-pipe
-   transport on Windows is untested here.
+3. **Windows was not covered here, and the reason was structural.** The GUI
+   crate is not a root workspace member, so no CI job ran its tests; the
+   stand-in-daemon test is `#[cfg(unix)]` because it speaks the Unix socket
+   protocol directly. The named-pipe transport on Windows was untested here.
+   **That is no longer true of the build**: the `gui` CI job builds, lints and
+   tests this workspace on a native Windows runner, and the native Windows
+   exercise starts the GUI and proves it creates a native top-level window.
+   The named-pipe transport *within* the GUI's own tests is still
+   `#[cfg(unix)]`, and the **interactive** Windows run — a visible
+   notification-area icon in a real shell — is still outstanding and still not
+   claimed.
 4. **The scheduler summary's rate over a long horizon is not measured.** The
    summary cadence is 30 seconds and the window is 4 seconds, so a window
    contains zero or one summary request. The comparison therefore uses a

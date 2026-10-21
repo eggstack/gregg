@@ -14,6 +14,18 @@
 // A `SystemTrayIcon` must contain exactly one `Menu` child, the menu may not
 // be inside an `if` or a `for`, and no other child element types are allowed
 // in it. The menu itself may use `if`/`for` to build its entries.
+//
+// The host list and the scheduler job list are the two lists that grow with
+// the fleet, so both live in a `ScrollView`: the window is a fixed size, and
+// an unbounded list would push the metrics, cron and `EggPool` panes — and
+// the buttons — out of it. The scroll container owns the scrolling; there is
+// no second scroll model on the Rust side.
+//
+// `ScrollView` is the only thing here that comes from `std-widgets`. The
+// buttons stay hand-rolled, because a real button needs a style, a hover
+// state and a pressed state, and this window needs none of that.
+
+import { ScrollView } from "std-widgets.slint";
 
 /// One monitored host, as the window's host list shows it.
 export struct HostRow {
@@ -114,6 +126,30 @@ export component MainWindow inherits Window {
     /// The attribution and about text. Empty until the operator asks for it.
     in property <string> about-text: "";
 
+    /// What the operator is told about the desktop's system tray.
+    ///
+    /// Empty when the desktop has a tray, so the line is only ever on screen
+    /// when it is true: with no tray, closing the window ends the GUI.
+    in property <string> tray-warning: "";
+
+    /// The room the vertical scrollbar takes out of the viewport.
+    ///
+    /// The scrollbar is drawn over the right-hand edge of the viewport, so
+    /// the content is given the viewport width minus this. It is the widest
+    /// the native scrollbars get (they grow on hover), so the row text is
+    /// never under the scrollbar.
+    private property <length> scrollbar-reserve: 24px;
+
+    /// The padding inside the window.
+    private property <length> pane-padding: 12px;
+
+    /// The width the panes get: the window without its padding.
+    private property <length> pane-width: root.width - 2 * root.pane-padding;
+
+    /// The width the content of a scroll container gets: the pane without
+    /// the room the vertical scrollbar takes.
+    private property <length> list-content-width: max(0px, root.pane-width - root.scrollbar-reserve);
+
     /// The operator asked for a configuration reload.
     callback refresh-requested();
 
@@ -133,13 +169,27 @@ export component MainWindow inherits Window {
     callback eggpool-toggled();
 
     VerticalLayout {
-        padding: 12px;
+        padding: root.pane-padding;
         spacing: 6px;
 
         Text {
             text: root.status-text;
             font-size: 14px;
             font-weight: 700;
+        }
+
+        // The tray warning. It takes no room at all unless the desktop
+        // really has no tray, because a hidden element still takes part in
+        // the layout.
+        Rectangle {
+            height: root.tray-warning == "" ? 0px : 18px;
+            visible: root.tray-warning != "";
+
+            Text {
+                text: root.tray-warning;
+                font-size: 12px;
+                color: #8a5a30;
+            }
         }
 
         Text {
@@ -157,38 +207,62 @@ export component MainWindow inherits Window {
         // The host list. Clicking a row selects that host; the selection is
         // keyed by the stable system id on the Rust side, so a host that
         // reorders does not move the selection.
-        VerticalLayout {
-            spacing: 1px;
+        //
+        // The list is in a scroll container with a bounded height: a fleet
+        // can be large, and an unbounded list would push the metrics, cron
+        // and `EggPool` panes out of the window.
+        ScrollView {
+            // The content is the pane without the room the vertical
+            // scrollbar takes, so a row's text is never under the
+            // scrollbar.
+            content-width: root.list-content-width;
+            // Vertical scrolling only: there is never a horizontal
+            // scrollbar, and never a horizontal scroll.
+            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
+            // The list is bounded, and it may be squeezed further when the
+            // window is tight.
+            min-height: 66px;
+            max-height: 176px;
+            preferred-height: 132px;
 
-            for row[index] in root.hosts : Rectangle {
-                height: 44px;
-                background: row.selected ? #dce6f0 : #00000000;
+            VerticalLayout {
+                width: root.list-content-width;
+                spacing: 1px;
 
-                TouchArea {
-                    clicked => {
-                        root.host-selected(index);
+                for row[index] in root.hosts : Rectangle {
+                    height: 44px;
+                    background: row.selected ? #dce6f0 : #00000000;
+
+                    TouchArea {
+                        clicked => {
+                            root.host-selected(index);
+                        }
                     }
-                }
 
-                VerticalLayout {
-                    padding: 2px;
-                    spacing: 0px;
+                    VerticalLayout {
+                        padding: 2px;
+                        spacing: 0px;
 
-                    Text {
-                        text: row.name + "  " + row.endpoint;
-                        font-size: 13px;
-                        font-weight: 700;
-                        color: row.online ? #202020 : #8a5a30;
-                    }
-                    Text {
-                        text: row.status;
-                        font-size: 11px;
-                        color: #4a4a4a;
-                    }
-                    Text {
-                        text: row.headline;
-                        font-size: 11px;
-                        color: #4a4a4a;
+                        Text {
+                            text: row.name + "  " + row.endpoint;
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: row.online ? #202020 : #8a5a30;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.status;
+                            font-size: 11px;
+                            color: #4a4a4a;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: row.headline;
+                            font-size: 11px;
+                            color: #4a4a4a;
+                            overflow: elide;
+                        }
                     }
                 }
             }
@@ -225,19 +299,37 @@ export component MainWindow inherits Window {
             color: #4a4a4a;
         }
 
-        for job[index] in root.jobs : Rectangle {
-            height: 22px;
-            background: job.selected ? #dce6f0 : #00000000;
+        // The scheduler jobs, in a bounded scroll container for the same
+        // reason as the host list: a host with many jobs must not push the
+        // rest of the window out of it.
+        ScrollView {
+            content-width: root.list-content-width;
+            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
+            min-height: 44px;
+            max-height: 88px;
+            preferred-height: 66px;
 
-            TouchArea {
-                clicked => {
-                    root.job-selected(job.name);
+            VerticalLayout {
+                width: root.list-content-width;
+                spacing: 0px;
+
+                for job[index] in root.jobs : Rectangle {
+                    height: 22px;
+                    background: job.selected ? #dce6f0 : #00000000;
+
+                    TouchArea {
+                        clicked => {
+                            root.job-selected(job.name);
+                        }
+                    }
+
+                    Text {
+                        text: job.name + "  " + job.state + "  " + job.outcome;
+                        font-size: 12px;
+                        overflow: elide;
+                    }
                 }
-            }
-
-            Text {
-                text: job.name + "  " + job.state + "  " + job.outcome;
-                font-size: 12px;
             }
         }
 

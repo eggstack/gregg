@@ -212,6 +212,12 @@ fn main() {
         }
     };
 
+    // The desktop is asked about its system tray before anything else: the
+    // answer decides what closing the monitor window means, and it is
+    // reported on one machine-readable line.
+    let tray_support = platform::tray_support();
+    println!("{}", platform::tray_status_line(&tray_support));
+
     // The GUI is not a Gregg client, so it names the executable it launches.
     // A missing or unusable helper is an actionable diagnostic, never a
     // silent fallback to launching the GUI itself.
@@ -233,6 +239,7 @@ fn main() {
     let window = MainWindow::new().expect("the window component is constructible");
     let tray = TrayIcon::new().expect("the tray component is constructible");
     tray.set_tray_icon(tray_icon(TrayHealth::Pending));
+    window.set_tray_warning(platform::tray_warning_text(&tray_support).into());
 
     let state: Arc<Mutex<UiState>> = Arc::new(Mutex::new(UiState {
         connection: ConnectionState::Connecting,
@@ -279,6 +286,31 @@ fn main() {
 
     window.on_quit_requested(move || {
         let _ = slint::quit_event_loop();
+    });
+
+    // Closing the monitor window hides it, and the tray brings it back.
+    // That is only true while the desktop has a tray: without one, hiding
+    // the window would leave the operator with no way back to the GUI and
+    // no way to quit it, so the GUI ends instead.
+    //
+    // The desktop is asked again *here*, and not at startup, because a tray
+    // host can start after the desktop session is up — Slint retries the
+    // registration whenever the icon is set again — and a GUI that decided
+    // at startup would keep quitting the window on a desktop that has a
+    // tray by now.
+    window.window().on_close_requested(move || {
+        let support = platform::tray_support();
+        match platform::close_action(&support) {
+            platform::CloseAction::HideToTray => slint::CloseRequestResponse::HideWindow,
+            platform::CloseAction::Quit => {
+                eprintln!(
+                    "gregg-gui: close with tray=unavailable -> quitting ({})",
+                    platform::tray_reason(&support)
+                );
+                let _ = slint::quit_event_loop();
+                slint::CloseRequestResponse::KeepWindowShown
+            }
+        }
     });
 
     let callback_state = Arc::clone(&state);
@@ -346,13 +378,7 @@ fn main() {
     let tray_window = window.as_weak();
     tray.on_show_window(move || {
         if let Some(window) = tray_window.upgrade() {
-            // The application is activated *before* the window is shown. On
-            // macOS a background application cannot bring its own window to
-            // the front, and a tray application is a background application —
-            // so without this, "Open Monitor" from the tray does nothing at
-            // all when the GUI was launched the way a real one is launched.
-            platform::activate();
-            let _ = window.show();
+            show_monitor(&window);
         }
     });
 
@@ -365,8 +391,7 @@ fn main() {
     tray.on_about_requested(move || {
         if let Some(window) = tray_window.upgrade() {
             window.set_about_text(SLINT_ATTRIBUTION.into());
-            platform::activate();
-            let _ = window.show();
+            show_monitor(&window);
         }
     });
 
@@ -392,6 +417,33 @@ fn main() {
     if let Err(error) = slint::run_event_loop_until_quit() {
         eprintln!("gregg-gui: the event loop ended with an error: {error}");
     }
+}
+
+/// Bring the monitor window up, and say what the desktop's tray is now.
+///
+/// The application is activated *before* the window is shown. On macOS a
+/// background application cannot bring its own window to the front, and a
+/// tray application is a background application — so without this, "Open
+/// Monitor" from the tray does nothing at all when the GUI was launched the
+/// way a real one is launched.
+///
+/// The tray state is re-probed when the window comes back: a
+/// `StatusNotifierItem` host can start after the GUI did, and the window must
+/// not keep claiming there is no tray when there is one by now. The probe
+/// runs off the UI thread, so a slow session bus never freezes the window.
+fn show_monitor(window: &MainWindow) {
+    platform::activate();
+    let _ = window.show();
+
+    let weak = window.as_weak();
+    platform::tray_support_async(move |support| {
+        let text = platform::tray_warning_text(&support);
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(window) = weak.upgrade() {
+                window.set_tray_warning(text.into());
+            }
+        });
+    });
 }
 
 /// Take everything the bridge published and push it into the components.
