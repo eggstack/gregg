@@ -537,10 +537,15 @@ What was proven, and how:
   saves under a megabyte; the rest is the software renderer and the system-font
   machinery.
 
-The decision is **accept**. What is **not** claimed is the **interactive**
-Windows and Linux native acceptance: a Windows run needs a Windows host and a
-Linux tray run needs a desktop session with a `StatusNotifierItem` host, so
-those two targets are not shippable on the strength of this line. The measured
+The decision is **accept**, and it is a decision about a **source build on a
+developer's machine**: 72–83 MB resident and a ten-megabyte binary are
+unremarkable for Slint and comparatively substantial for a utility meant to
+sit in the menu bar all day, which is a **release-time** question rather than a
+defect. What is **not** claimed is the **interactive** Windows and Linux
+native acceptance: a Windows run needs a Windows host and a Linux tray run
+needs a desktop session with a `StatusNotifierItem` host, so those two targets
+are not shippable on the strength of this line. Plan 190's status is therefore
+**implemented, pending release qualification**, not closed. The measured
 artifact is `apps/gregg-gui/EVIDENCE.md`.
 
 ### The GUI's own CI, and what it caught (Plans 187-190, corrective pass)

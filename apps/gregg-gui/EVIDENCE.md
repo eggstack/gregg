@@ -252,7 +252,10 @@ container comes from Slint's `std-widgets`, so both binaries grew: the GUI to
 **10,803,360 bytes** and the matched Slint-only baseline to **9,956,032
 bytes**. The difference — what this frontend adds over a pure-Slint build of
 the same UI — is **847,328 bytes**, against 847,344 bytes before the change:
-16 bytes, on a ten-megabyte binary. A baseline that was not rebuilt would have
+16 bytes, on a ten-megabyte binary. The earlier pair was **9,776,560 bytes**
+against **8,929,216 bytes**, so both binaries grew by roughly a megabyte —
+1,026,800 and 1,026,816 bytes respectively — and the growth was the style's
+own assets, on both sides. A baseline that was not rebuilt would have
 reported the whole growth as the GUI's cost.
 
 ## The fixture

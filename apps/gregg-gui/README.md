@@ -40,6 +40,13 @@ Windows build of the `gregg` crate this frontend depends on, implemented the
 no-tray fallback the native matrix required, made the lists scroll, and gave
 this workspace **its own CI** — see [CI](#ci).
 
+Plan 190's status is **implemented, pending release qualification**: its
+native-platform acceptance gate is still unchecked, because the **interactive**
+Windows and Linux runs were never performed and the macOS matrix is partial
+(Apple Silicon only). The GUI is therefore **not shippable for Windows or
+Linux**, and it is **not shipped for any target** — it stays a source build.
+The plan's *Release qualification* section lists what is outstanding.
+
 ## Running it
 
 ```bash

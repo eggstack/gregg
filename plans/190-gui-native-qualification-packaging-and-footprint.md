@@ -1,13 +1,19 @@
 # Plan 190: GUI multi-frontend correctness, native qualification and packaging
 
-Status: **complete, with a corrective pass on 2026-10-21** — the Windows
+Status: **implemented, pending release qualification** — the Windows
 compilation break, the missing no-tray fallback **and the unusable Windows
 launch lock** are fixed, and the GUI workspace now has its own CI; see the
 corrective-pass section and the closure record at the end of this file, and the
-scope record in `plans/README.md`. The **interactive** native acceptance for
-Windows and Linux is still **not performed**, so those two targets remain
-**not shippable** on the strength of this plan, and the GUI stays a source
-build.
+scope record in `plans/README.md`.
+
+This plan is **not complete**. Its own native-platform acceptance gate is still
+**unchecked**, and it is unchecked because the **interactive** acceptance for
+Windows and Linux was never performed — a CI runner is a native host, but it is
+not an operator's desktop. Windows and Linux therefore remain **not shippable**
+on the strength of this plan, the macOS matrix is partial, and the GUI stays a
+**source build** with no installer, no bundle and no release asset. See
+[Release qualification](#release-qualification) for what is outstanding and
+what would close it.
 
 Depends on Plans 188-189; closes Plan 187. Independent of Plan 091.
 
@@ -64,7 +70,7 @@ Do not introduce any SBC source-compilation performance gate; normal supported d
 
 - [x] Counted same-config multi-frontend integration proves identical remote request budgets and bounded cron/EggPool control behavior. — `apps/gregg-gui/src/evidence.rs` runs the **real** client daemon against two counted in-process remotes (one scheduler-capable, one answering `404` for the scheduler routes — an old daemon), with a terminal-style frontend and the GUI's `Bridge` attached to the same config. The recorded table is in `apps/gregg-gui/EVIDENCE.md`: `/v2/status` is flat at 4 polls per 4-second window in every phase (daemon alone, with the TUI, with the TUI **and** the GUI, and after both frontends closed), the scheduler summary and history are fetched at their own cadence and never multiply, opening a cron job grew the **local IPC document** 1903 → 2276 bytes while the remote's history fetch stayed at 1, and the `EggPool` pane drove **one** daemon-owned worker on the converged window (`7d` asked for, `30d` never) that stopped asking the remote when the last pane closed.
 - [x] GUI is offline-honest and retains optional/unsupported semantics, bounded strings/history, and terminal-output sanitization. — 54 deterministic GUI tests, including the projection's pending-is-not-offline and absent-is-`—` rules, the unsupported scheduler family, the bounded truncation on a character boundary, the remote-truncation-reported-separately rule, and the caret-notation escaping of remote control characters.
-- [ ] Native macOS and Windows acceptance and Linux desktop/tray/fallback acceptance are recorded; missing real-run evidence stays unchecked and blocks shipment for that target. — **macOS is recorded** (see the closure record). **Windows and Linux are NOT performed**: this plan was closed on a macOS host, a Windows run needs a Windows host, and a Linux tray run needs a desktop session with a `StatusNotifierItem` host. Those two stay unchecked rather than being claimed, and they **block shipment for Windows and Linux** — which is consistent with the packaging decision below: the GUI is a source build and is not shipped for any target yet.
+- [ ] Native macOS and Windows acceptance and Linux desktop/tray/fallback acceptance are recorded; missing real-run evidence stays unchecked and blocks shipment for that target. — **macOS is recorded** (see the closure record). **Windows and Linux are NOT performed**: this plan was implemented on a macOS host, a Windows run needs a Windows host, and a Linux tray run needs a desktop session with a `StatusNotifierItem` host. Those two stay unchecked rather than being claimed, and they **block shipment for Windows and Linux** — which is consistent with the packaging decision below: the GUI is a source build and is not shipped for any target yet. See [Release qualification](#release-qualification) for what closing this gate would require.
 - [x] Builds/tests and workspace Clippy remain green for unchanged core packages, including Rust 1.89 MSRV tests; GUI newer-Rust build verified independently. — the root workspace still has exactly its five core members and its Rust 1.89 MSRV job never sees Slint; the GUI is verified separately on its own toolchain.
 - [x] No remote `greggd` schema/API or daemon-owned poller changes; no reintroduced TUI direct polling or duplication of the daemon's logic. — `git diff` over `crates/greggd` and `crates/gregg-protocol` is empty; `greggd`'s stripped release binary is byte-for-byte the same size as before this line (3,356,800 bytes), and the GUI opens no network connection of its own.
 - [x] No unauthorized launcher/foreign-peer behavior, user-local IPC exposure, hidden replacement, or incorrect daemon downgrade on mismatch. — the 25 launcher tests in `crates/gregg/src/clientd/launch.rs` are unchanged and green; the harness adds `the_gui_refuses_an_incompatible_daemon_without_stopping_it` and `distinct_config_paths_reach_distinct_daemons_and_one_spelling_reaches_one`.
@@ -73,14 +79,90 @@ Do not introduce any SBC source-compilation performance gate; normal supported d
 - [x] Native footprint measurements and an accept/rework/defer decision are recorded. Original `greggd` and core Gregg release sizes must not be charged with optional GUI dependencies. — the sizes, the per-process resource numbers and the **accept** decision are in the closure record. `gregg` (5,224,096 bytes) and `greggd` (3,356,800 bytes) are unchanged and carry **none** of the GUI's cost; the GUI's own footprint is measured against a purpose-built Slint-only baseline.
 - [x] Update `plans/README.md` roadmap and closure status, `architecture/`, README/user docs, relevant skill, `AGENTS.md` and `CHANGELOG.md` with concrete evidence; do not rewrite historical completed plans. — done in the same pass; Plans 187-189's records were not rewritten.
 
+## Release qualification
+
+This plan is **implemented, pending release qualification**. "Implemented" is a
+statement about the work: the code exists, the counted proof is deterministic,
+the GUI workspace has its own CI, the packaging decision is made and recorded,
+and the footprint and the resource cost are measured. "Pending release
+qualification" is a statement about the **acceptance gate this plan set for
+itself**, and that gate is **unchecked**.
+
+The distinction is not cosmetic. A plan whose own acceptance is partly unmet is
+not complete, and calling it complete tells a reader that the remaining risk is
+zero when the remaining risk is **target-specific desktop behaviour that nobody
+has watched happen**.
+
+### What is outstanding
+
+1. **Interactive native acceptance, per target.**
+   - **Windows** — a run in a real Windows desktop session where a **visible**
+     notification-area icon appears, the tray menu opens, Open Monitor raises
+     the window, the close button hides it, and Quit ends the GUI while the
+     client daemon survives. The CI exercise proves the code compiles, lints,
+     tests, starts, creates **native top-level windows** and launches a daemon
+     on a native Windows host — but it enumerates window *objects* and never
+     observes a **rendered** notification-area icon, because a CI runner is not
+     an operator's desktop.
+   - **Linux** — a run in a **real GNOME session**. The Linux CI leg proves the
+     `StatusNotifierItem` registration against a real session bus and a real
+     `StatusNotifierItem` host, and the no-host fallback on a bus with no host
+     — that is the protocol half; an operator's desktop session is not.
+   - **macOS** — the matrix is **partial**: Apple Silicon was exercised (tray
+     entry, menu, Open Monitor, Reload, About, Quit), the **Intel** build was
+     not produced, and there is **no recorded DPI measurement**.
+2. **The outstanding core defect: Windows handle inheritance.** A detached
+   daemon spawn on Windows inherits every inheritable handle the parent holds,
+   so a command that spawns the daemon with a **piped** stdout hangs its reader
+   (`gregg daemon restart | tee log`). It is recorded, not fixed: closing it
+   needs a handle *list* (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST` through
+   `STARTUPINFOEX`), i.e. `windows-sys` plus `unsafe` in
+   `crates/gregg/src/clientd/launch.rs`, which the repository's unsafe
+   allowlist does not cover. The GUI is not affected — its streams are a console
+   or a file — but it is **core** work and it belongs to a plan of its own.
+3. **The footprint as a release-time question.** 10,803,360 bytes stripped,
+   72–83 MB resident, roughly 0.65% of one core. The **accept** decision
+   stands for the source build; whether a ten-megabyte binary and ~80 MB
+   resident is the right thing to ship in a menu bar all day is a **shipping**
+   decision, not a defect.
+4. **Recorded dependency debt.** The GUI workspace vendors a patched
+   `annotate-snippets` 0.12.9 to reconcile the conflicting `unicode-width`
+   requirements of Slint and Ratatui. It works, and it is byte-identical to the
+   upstream release rather than a fork of anyone's code — but it is technical
+   debt to be removed when the shared client-library boundary is revisited.
+
+### What is not outstanding
+
+Everything this plan's gates *can* be checked on the evidence available is
+**done and recorded**: the counted multi-frontend proof, the offline-honesty
+rules, the one-polling-plane property, the licence attribution in the shipped
+binary, the footprint measurement, the resource decision and the packaging
+decision. The native acceptance gate is the one that is not, and it is the only
+one.
+
+### What closing it would mean
+
+Closing this plan requires the **interactive** evidence above, recorded the way
+this plan records everything else — a transcript, not a claim. Until then:
+
+- the GUI is **not shippable for Windows or Linux**;
+- the GUI is **not shipped for any target**: it stays a **source build**, with
+  no installer, no bundle and no release asset;
+- the packaging decision is unchanged, and no release asset, packaging job or
+  publication step may be added without a new, explicitly approved plan and the
+  native evidence for the target it would ship to.
+
 ## Stop conditions
 
 If Slint's native tray proves unreliable on a target or the GUI idle cost is excessive, stop that target's release and document measured evidence plus a narrow fallback (including a tray-only native-menu alternative if justified). Do not substitute a webview, new worker, or broad GUI rewrite without a new explicitly approved plan. This is a bounded optional frontend line and never overrides the headless monitor's correctness.
 
 ## Closure record
 
-Implemented and closed on 2026-10-21, on a macOS host (Apple M4 Pro, macOS
-26.0.1, `rustc`/`cargo` 1.99.1 stable, `aarch64-apple-darwin`).
+Implemented on 2026-10-21, on a macOS host (Apple M4 Pro, macOS
+26.0.1, `rustc`/`cargo` 1.99.1 stable, `aarch64-apple-darwin`). The work is
+**done**; the plan is **not closed**, because its native-platform acceptance
+gate is still unchecked — see
+[Release qualification](#release-qualification).
 
 ### The blocking gate: the counted multi-frontend proof
 
@@ -149,11 +231,21 @@ the TUI's.
 
 | binary | stripped size |
 | --- | --- |
-| `gregg-gui` | 9,776,560 bytes (9.3 MiB) |
-| Slint-only baseline (same features, same `main.slint`, same activation code, no `gregg`) | 8,929,216 bytes (8.5 MiB) |
-| **difference** | **847,344 bytes (+9.5%)** |
+| `gregg-gui` | 10,803,360 bytes (10.3 MiB) |
+| Slint-only baseline (same features, same `main.slint`, same activation code, no `gregg`) | 9,956,032 bytes (9.5 MiB) |
+| **difference** | **847,328 bytes (+8.5%)** |
 | `gregg` (the TUI) | 5,224,096 bytes — **unchanged** |
 | `greggd` | 3,356,800 bytes — **unchanged** |
+
+These are the **re-measured** numbers, taken after the corrective pass, and
+they are the ones the GUI's own documentation carries. The scroll container
+comes from Slint's `std-widgets`, so *both* binaries grew — the GUI by
+1,026,800 bytes and the baseline by 1,026,816 bytes, the style's own assets on
+both sides — and the **difference** stayed where it was: 847,328 bytes against
+847,344 before, a change of 16 bytes on a ten-megabyte binary. That is what a
+matched baseline is for; a baseline that was not rebuilt would have reported the
+whole growth as the GUI's cost. The earlier pair (9,776,560 bytes against
+8,929,216) is recorded in `apps/gregg-gui/EVIDENCE.md`.
 
 The original `gregg` and `greggd` release sizes carry **none** of the GUI's
 cost: `git diff` over `crates/greggd` and `crates/gregg-protocol` is empty, and
@@ -227,6 +319,14 @@ IPC architecture. The request budget and the wakeup structure are not the
 problem, and changing them would trade a proven property for an unmeasured
 one.
 
+The **accept** decision is a decision about a **source build on a developer's
+machine**, and it should be read as exactly that: 72–83 MB resident and a
+ten-megabyte binary are unremarkable for Slint and comparatively substantial
+for a utility meant to sit in the menu bar all day. That is a **release-time**
+question rather than a defect, and it is listed under
+[Release qualification](#release-qualification) with the other outstanding
+items.
+
 ### The packaging decision
 
 **The GUI is source-build-only in this phase. No installer, no bundle, no
@@ -272,7 +372,8 @@ three consequences that are all testable:
   the two targets it can cover without an interactive desktop. What is still
   outstanding is the **interactive** native run — a real Windows shell with a
   visible notification area, and a real Linux desktop session — which is still
-  not claimed.
+  not claimed. Every outstanding item is listed under
+  [Release qualification](#release-qualification).
 - **The macOS matrix is a partial one.** It was exercised on Apple Silicon
   only; the **Intel** build was not produced, because the runner is not
   available. Retina scaling was observed (the menu bar and the window render
@@ -315,7 +416,10 @@ recorded as not performed". That framing was **too kind to the reader**, and
 the difference matters: it said those two targets were *unverified* when one of
 them was **broken** and the other was **never implemented**. Both statements are
 about this plan's own acceptance requirements, so both belong in the closure
-record.
+record. The status is now **implemented, pending release qualification**, and
+the outstanding work is listed under
+[Release qualification](#release-qualification) instead of being carried in a
+parenthetical.
 
 **1. Windows did not compile at all.** The native matrix requires a "native
 MSVC compile" on Windows. The `#[cfg(windows)]` branch of

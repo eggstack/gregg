@@ -69,7 +69,9 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   The packaging decision is **source-build-only**: there is no installer, no
   bundle and no release asset, and the GUI requires an existing Gregg
   installation rather than bundling a second `gregg`. The Windows and Linux
-  native runs are still outstanding and block shipment for those targets.
+  native runs are still outstanding and block shipment for those targets, so
+  Plan 190's status is **implemented, pending release qualification** rather
+  than closed.
 
 - **The optional GUI activates itself before it raises its window (Plan 189):**
   on macOS a tray application is a *background* application, the system does
