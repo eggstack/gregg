@@ -381,7 +381,7 @@ the pulldown, and the pulldown carries the content. The mechanism is Slint's
 `SystemTrayIcon.clicked`, and a native menu with no entries detaches itself so
 the platform routes the click there instead of popping the menu — on macOS
 (`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
-(`windows.rs:290`, where a right-click still opens the native menu) and on
+(`windows.rs:290-298`, where a right-click still opens the native menu) and on
 Linux (`ksni.rs:284`). The `if cond : Menu { … }` form was **verified by
 compiling it** in this workspace.
 

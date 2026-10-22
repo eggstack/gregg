@@ -69,7 +69,7 @@ to picking an entry from its menu" (`i-slint-compiler-1.18.1/builtin_elements.rs
 | Platform | Source | Behaviour |
 | --- | --- | --- |
 | macOS | `i-slint-core-1.18.1/items/system_tray/appkit.rs:64`, `:221`, `:248` | The status item's button action is `tray_clicked:`, which calls `clicked`. `rebuild_menu` calls `setMenu(None)` when the Slint menu has **no entries**, so AppKit forwards the click to the button's action instead of popping the menu. The button's `sendActionOn` mask is `LeftMouseUp`, so it is a left-click. |
-| Windows | `i-slint-core-1.18.1/items/system_tray/windows.rs:290` | `WM_LBUTTONUP` → `clicked`. `WM_RBUTTONUP` / `WM_CONTEXTMENU` → the native menu. |
+| Windows | `i-slint-core-1.18.1/items/system_tray/windows.rs:290-298` | `WM_LBUTTONUP` → `clicked`. `WM_RBUTTONUP` / `WM_CONTEXTMENU` → the native menu. |
 | Linux | `i-slint-core-1.18.1/items/system_tray/ksni.rs:45`, `:284` | The `StatusNotifierItem` `Activate` event → `clicked`. |
 
 **A detached menu is reachable from the `.slint` file.** The `clicked` documentation states the
@@ -105,7 +105,7 @@ because they are what make the pulldown impossible to get right.
 **1. The pulldown is never positioned on the startup path.**
 `placement::work_area()` asks Slint for the winit window, and Slint's own documentation says
 `with_winit_window` "will only succeed when the event loop is active"
-(`i-slint-backend-winit-1.18.1/lib.rs:1099`). The `--panel` startup path — and every desktop
+(`i-slint-backend-winit-1.18.1/lib.rs:1099-1103`). The `--panel` startup path — and every desktop
 with no tray host — calls it **before** the event loop runs, so it returns `None`: the panel is
 never positioned, never clamped to the work area, and its size is never clamped either.
 Measured on the committed build: `work_area=None`, no `set_position` at all, and the window at

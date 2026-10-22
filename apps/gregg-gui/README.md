@@ -59,7 +59,7 @@ Plans 188, 189 and 191 are implemented. What exists:
 > entries **detaches itself**, so the platform routes the tray's click to that
 > callback instead of popping the menu: on macOS
 > (`i-slint-core-1.18.1/items/system_tray/appkit.rs:248`), on Windows
-> (`windows.rs:290`, where a right-click still opens the native menu), and on
+> (`windows.rs:290-298`, where a right-click still opens the native menu), and on
 > Linux (`ksni.rs:284`, where the desktop decides the gesture).
 >
 > So the direction is: **the tray's click opens the pulldown, and the pulldown
