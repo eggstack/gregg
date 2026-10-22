@@ -56,11 +56,35 @@ job is what makes that impossible now.
 **A desktop with no system tray must never lose its only control surface.**
 On Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session
 has none. The GUI therefore probes for a tray host, reports the answer in one
-machine-readable line, shows the operator what is going on in the window, and
+machine-readable line, shows the operator what is going on in the panel, and
 **closes by quitting rather than by hiding** when there is no tray — a hidden
-window with no tray is an unreachable application. The lists in the monitor
-window scroll with **bounded** heights: a large fleet must not push the
-metrics, cron and EggPool panes out of the window.
+panel with no tray is an unreachable application. With no tray the panel is
+also opened at startup, so it is never a hidden surface.
+
+**The GUI has one surface: a tray pulldown.** The separate monitor window is
+gone. A borderless, always-on-top panel opens from the native tray menu and
+carries every pane: the fleet summary, the host list, the selected host's
+metrics, drives, interfaces, cron, records and the EggPool plane, plus the
+forms that add, remove and edit hosts. The lists scroll with **bounded**
+heights: a large fleet must not push the metrics, cron and EggPool panes — or
+the buttons — out of the panel. It is dismissed by `Esc`, the tray's Open Gregg
+entry and its own Close control; there is **no click-away dismissal**, because
+Slint 1.18 exposes no focus-lost event, and that limit is stated in the
+documentation rather than papered over.
+
+**The GUI may write the configuration file, and only through the CLI's own
+code.** The panel's add, remove and rename go through `gregg::cli::add_host`
+and `gregg::cli::remove_host` — the paths `gregg add` and `gregg remove` take —
+so the endpoint grammar, the config lock, the whole-config validation and the
+atomic write are the CLI's, unchanged. A refused mutation leaves the file
+byte-identical and says why in the panel. The panel is a second writer of the
+configuration **file**, never a second writer of fleet state: the client
+daemon remains the only poller, and `DaemonRequest` gains no message. An
+endpoint change is a **replacement**, not an edit — the endpoint is part of a
+host's identity — and the panel says so before it applies one. Reach for
+those narrow entry points, not `gregg::cli::dispatch`: the dispatcher also
+reaches the daemon commands, and the daemon reaches the HTTP client and its
+TLS stack, so calling it linked 2.8 MB of unused machinery into the GUI.
 
 **The GUI is a source build.** There is no installer, no bundle and no release
 asset for it, and it is not shipped for any target yet: it has been qualified

@@ -465,9 +465,9 @@ fn dispatch_inner(
             endpoint,
             name,
             replace,
-        } => cmd_add(store, endpoint, name.as_deref(), *replace),
+        } => add_host(store, endpoint, name.as_deref(), *replace),
         Command::List { json } => cmd_list(store, *json),
-        Command::Remove { endpoint } => cmd_remove(store, endpoint),
+        Command::Remove { endpoint } => remove_host(store, endpoint),
         Command::Refresh { seconds } => cmd_refresh(store, *seconds),
         Command::Edit => cmd_edit(store),
         Command::Update => cmd_update(store),
@@ -840,6 +840,49 @@ fn validate_eggpool_env(value: &str) -> Result<(), ConfigError> {
             },
         ]))
     }
+}
+
+/// Add a host to the configuration.
+///
+/// This is **the same code path `gregg add` takes** — the same endpoint
+/// grammar, the same whole-config validation, the same lock and the same
+/// atomic write — exposed on its own so that a frontend can reach it without
+/// linking the whole command dispatcher.
+///
+/// The reason it is separate is a measured one. `dispatch` also reaches the
+/// daemon commands, and the daemon reaches the HTTP client and its TLS
+/// stack, so a GUI that called `dispatch` linked all of that into its binary
+/// for two commands that never touch it. Calling the narrow entry point keeps
+/// the rules and drops the weight.
+///
+/// Unlike [`dispatch`], this does **not** nudge a running daemon. A frontend
+/// that is attached to a daemon asks that daemon to reload through its own
+/// connection; a caller with no daemon is not worse off, because the
+/// configuration on disk is already correct.
+///
+/// # Errors
+///
+/// Returns the reason the host was not added: a malformed endpoint, a
+/// duplicate, or a configuration that does not validate.
+pub fn add_host(
+    store: &ConfigStore,
+    endpoint: &str,
+    name: Option<&str>,
+    replace: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_add(store, endpoint, name, replace)
+}
+
+/// Remove a host from the configuration.
+///
+/// This is **the same code path `gregg remove` takes**, on the same terms as
+/// [`add_host`].
+///
+/// # Errors
+///
+/// Returns the reason the host was not removed.
+pub fn remove_host(store: &ConfigStore, endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
+    cmd_remove(store, endpoint)
 }
 
 fn cmd_add(

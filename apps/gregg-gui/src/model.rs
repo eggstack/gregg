@@ -162,6 +162,21 @@ pub struct SystemCard {
     pub name: String,
     /// The endpoint, as `host:port`.
     pub endpoint: String,
+    /// The endpoint in full, untruncated.
+    ///
+    /// [`Self::endpoint`] is truncated because a *native menu* has to stay
+    /// readable. The panel's host-management forms are not a native menu,
+    /// and an endpoint that is truncated in the form is an endpoint that
+    /// cannot be written back: the panel's forms use this one.
+    pub address: String,
+    /// The configured name, when the host has one.
+    ///
+    /// The display name falls back to the endpoint's name and then to the
+    /// host, so it cannot say whether a name is *configured*. A rename form
+    /// has to: an empty field means "clear the configured name", and that
+    /// is only the same as an empty field if the host had no name to begin
+    /// with.
+    pub configured_name: Option<String>,
     /// The host's state.
     pub state: HostState,
     /// The state in words, e.g. `offline (http) HTTP 503`.
@@ -369,6 +384,8 @@ fn card(system: &SystemSnapshotDto, now_unix_ms: u64) -> SystemCard {
         id: system.id.clone(),
         name: truncate(&name, MAX_NAME_CHARS),
         endpoint: truncate(&system.endpoint.display_address(), MAX_ENDPOINT_CHARS),
+        address: system.endpoint.display_address(),
+        configured_name: system.configured_name.clone(),
         status: status_text(&state),
         state,
         headline,

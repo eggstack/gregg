@@ -15,14 +15,21 @@
 # ---------------------------------------------------------------------
 gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
 ├── gregg v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg)
+├── gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol)
+├── objc2 v0.6.5
+├── objc2-app-kit v0.3.2
 ├── slint v1.18.1
 └── tokio v1.54.0
 [build-dependencies]
 └── slint-build v1.18.1
+[dev-dependencies]
+├── gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
+├── serde_json v1.0.154
+└── tokio-util v0.7.20
 
 # ---------------------------------------------------------------------
-# Full tree (one package per line; a trailing (*) marks a duplicate of an
-# earlier line: the same crate name at a different version)
+# Full tree (one package per line; cargo tree marks a repeated
+# package with a trailing (*))
 # ---------------------------------------------------------------------
 gregg-gui v0.1.0 (/Users/davidbowman/projects/gregg/apps/gregg-gui)
 gregg v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg)
@@ -391,21 +398,7 @@ unicode-width v0.2.0
 url v2.5.8 (*)
 uuid v1.28.0
 getrandom v0.4.3 (*)
-slint v1.18.1
-const-field-offset v0.2.1
-const-field-offset-macro v0.2.1 (proc-macro)
-proc-macro2 v1.0.107 (*)
-quote v1.0.47 (*)
-syn v3.0.9 (*)
-field-offset v0.3.6
-memoffset v0.9.1
-autocfg v1.5.1
-rustc_version v0.4.1
-semver v1.0.28
-i-slint-backend-selector v1.18.1
-cfg-if v1.0.5
-i-slint-backend-winit v1.18.1
-arboard v3.7.0
+gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
 objc2 v0.6.5
 objc2-encode v4.1.0
 objc2-app-kit v0.3.2
@@ -429,6 +422,23 @@ bitflags v2.13.2 (*)
 objc2 v0.6.5 (*)
 objc2-core-foundation v0.3.2 (*)
 objc2-foundation v0.3.2 (*)
+slint v1.18.1
+const-field-offset v0.2.1
+const-field-offset-macro v0.2.1 (proc-macro)
+proc-macro2 v1.0.107 (*)
+quote v1.0.47 (*)
+syn v3.0.9 (*)
+field-offset v0.3.6
+memoffset v0.9.1
+autocfg v1.5.1
+rustc_version v0.4.1
+semver v1.0.28
+i-slint-backend-selector v1.18.1
+cfg-if v1.0.5
+i-slint-backend-winit v1.18.1
+arboard v3.7.0
+objc2 v0.6.5 (*)
+objc2-app-kit v0.3.2 (*)
 objc2-foundation v0.3.2 (*)
 block2 v0.6.2 (*)
 bytemuck v1.25.2
@@ -778,6 +788,7 @@ i-slint-core v1.18.1 (*)
 i-slint-core-macros v1.18.1 (proc-macro) (*)
 cfg_aliases v0.2.2
 i-slint-common v1.18.1 (*)
+i-slint-backend-winit v1.18.1 (*)
 i-slint-common v1.18.1 (*)
 i-slint-core v1.18.1 (*)
 i-slint-core-macros v1.18.1 (proc-macro) (*)
@@ -879,3 +890,6 @@ derive_more v2.1.1 (*)
 i-slint-compiler v1.18.1 (*)
 spin_on v0.1.1 (*)
 toml_edit v0.25.17+spec-1.1.0 (*)
+gregg-protocol v1.0.15 (/Users/davidbowman/projects/gregg/crates/gregg-protocol) (*)
+serde_json v1.0.154 (*)
+tokio-util v0.7.20 (*)

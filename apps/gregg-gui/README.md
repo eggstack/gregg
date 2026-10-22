@@ -10,23 +10,31 @@ depends on it, and the terminal client is unaffected by its existence.
 
 ## Status
 
-Plans 188 and 189 are implemented. What exists:
+Plans 188, 189 and 191 are implemented. What exists:
 
 - an independent Cargo workspace with its own lockfile;
-- a Slint UI definition (`src/ui/main.slint`) with a `Window` and a
+- a Slint UI definition (`src/ui/main.slint`) with a `Pulldown` and a
   `SystemTrayIcon` as separate top-level components;
 - a bridge (`src/bridge.rs`) that owns the client-daemon attachment, reads the
   real local protocol, and publishes the real reducer's output;
 - a **pure projection** (`src/model.rs`) from a daemon document to a typed view
   model, with the truthfulness rules (absent is absent, unpolled is not
   offline, selection is keyed by stable id) testable without a desktop session;
-- a **native system-tray entry** with a fleet summary, Open Monitor, Reload,
-  About Gregg and Quit Gregg;
-- a **compact monitor window** showing the fleet, the selected host's metrics,
-  drives and interfaces, its scheduler jobs and records, and the `EggPool`
-  plane. The two lists that grow with the fleet — the hosts and the scheduler
-  jobs — are **scrollable with bounded heights**, so a large fleet cannot push
-  the metrics, cron and `EggPool` panes out of the window;
+- a **native system-tray entry** with a fleet summary, the hosts the menu can
+  jump to, Open Gregg, Reload, About Gregg and Quit Gregg;
+- **one tray pulldown** (`Pulldown`): a borderless, always-on-top panel that
+  opens from the tray menu and carries the fleet summary, the host list, the
+  selected host's metrics, drives and interfaces, its scheduler jobs and
+  records, and the `EggPool` plane. There is **no separate monitor window**.
+  The lists that grow with the fleet — the hosts, the metrics and the
+  scheduler jobs — are **scrollable with bounded heights**, so a large fleet
+  cannot push the cron and `EggPool` panes, or the buttons, out of the panel;
+- **host management** in the panel: add, remove, rename and re-point a host.
+  The panel writes the configuration through the **CLI's own library code**
+  against the same `ConfigStore`, so the endpoint grammar, the config lock,
+  the whole-config validation and the atomic write are the CLI's, unchanged;
+- a **placement module** (`src/placement.rs`) that keeps the panel on the
+  display it opens on, and remembers where the operator put it;
 - a **no-tray fallback**: the GUI asks the desktop whether it has a tray,
   reports the answer in one machine-readable line, and never hides its only
   control surface when the answer is no (see [A desktop with no system
@@ -47,17 +55,24 @@ Windows and Linux runs were never performed and the macOS matrix is partial
 Linux**, and it is **not shipped for any target** — it stays a source build.
 The plan's *Release qualification* section lists what is outstanding.
 
-**Planned next step — Plan 191.** The product direction is a **single tray
+**Plan 191 is implemented.** The product direction is a **single tray
 pulldown**: one borderless, always-on-top panel opened from the native tray
 menu, carrying all the metrics, cron and `EggPool` surfaces the compact
-monitor window carries today, with the separate monitor window dropped. The
-same plan adds host **add / remove / edit** to that panel, which the GUI
-cannot do today: it writes the config through the **CLI's own library code**
-against the same `ConfigStore`, so no protocol change and no second poller is
+monitor window carried, with the separate monitor window dropped. The same
+plan adds host **add / remove / edit** to that panel, which the GUI could not
+do before: it writes the config through the **CLI's own library code** against
+the same `ConfigStore`, so no protocol change and no second poller is
 involved. Plan 191 also **retains Slint 1.18.1** after reviewing the
 alternatives — it is the latest published release and the only Rust option
 with a first-class native tray, and the measured footprint is the software
-renderer's rather than the window's. See `plans/191-tray-pulldown-gui-and-host-management.md`.
+renderer's rather than the window's. See
+`plans/191-tray-pulldown-gui-and-host-management.md`.
+
+Plan 191's own acceptance gate is **not** fully closed: the **interactive**
+native-platform runs are still outstanding, exactly as they were for Plan 190.
+The panel has been built and its logic is covered by tests on all three
+targets, but nobody has yet opened it from a real macOS menu bar, a real
+Windows notification area or a real GNOME session.
 
 ## Running it
 
@@ -75,6 +90,7 @@ apps/gregg-gui/target/release/gregg-gui --config ./gregg.toml --gregg ./target/r
 | ------ | ------- |
 | `--config <path>` | The configuration file to read. Defaults to the same path the TUI uses (`gregg::config::Config::default_path`). |
 | `--gregg <path>` | The `gregg` client executable to launch as the client daemon. See "Finding the client daemon" below. |
+| `--panel` | Open the panel at startup instead of waiting for the tray. The tray still works either way. |
 | `--help` | Print the usage text. |
 
 ### Finding the client daemon
@@ -129,13 +145,14 @@ AppIndicator.
 - The icon is drawn procedurally. No binary asset is committed, so it cannot
   go stale.
 - The menu contains a **bounded** fleet summary (the counts plus at most a
-  handful of host names), then Open Monitor, Reload, About Gregg and Quit
-  Gregg. The full list belongs in the window, not in a native menu.
-- On a desktop with **no tray service**, the monitor window is still shown on
-  launch, so the GUI is never an invisible background process with no way to
-  quit. See [A desktop with no system
+  handful of host names), the **hosts the menu can jump to**, then Open Gregg,
+  Reload, About Gregg and Quit Gregg. The full list belongs in the panel, not
+  in a native menu.
+- On a desktop with **no tray service**, the panel is still shown on launch,
+  so the GUI is never an invisible background process with no way to quit.
+  See [A desktop with no system
   tray](#a-desktop-with-no-system-tray) below: the GUI asks the desktop
-  whether it has a tray, and it does not hide its only window when it has not.
+  whether it has a tray, and it does not hide its only panel when it has not.
 
 ### A desktop with no system tray
 
@@ -161,14 +178,14 @@ gregg-gui: tray=unavailable reason="no StatusNotifierItem host on this desktop"
   answer: the operator keeps a window that quits instead of a window that
   vanishes.
 
-With no tray, the window says so in a line of its own, and **closing the
-window ends the GUI** instead of hiding it. With a tray, closing hides the
-window and the tray brings it back, exactly as before.
+With no tray, the panel says so in a line of its own, and **closing the panel
+ends the GUI** instead of hiding it. With a tray, closing hides the panel and
+the tray brings it back, exactly as before.
 
-The decision is taken when the window is closed, not at startup: a tray host
+The decision is taken when the panel is closed, not at startup: a tray host
 can start after the desktop session is up, and Slint retries the registration
-whenever the icon is set again. The window's warning line is refreshed when
-the window comes back, so it cannot keep claiming there is no tray after one
+whenever the icon is set again. The panel's warning line is refreshed when
+the panel comes back, so it cannot keep claiming there is no tray after one
 appears.
 
 The classification, the close decision and the status line are **pure
@@ -180,19 +197,83 @@ outcomes, and the exact shape of the line a CI job asserts on.
 
 | Where | Action | Effect |
 | ----- | ------ | ------ |
-| Tray | Open Monitor | Brings the monitor window back to the front. |
+| Tray | A host entry | Opens the panel with that host selected. |
+| Tray | Open Gregg | Opens the panel, or closes it if it is already open. |
 | Tray | Reload | The `Ctrl-R` boundary: the daemon re-reads its configuration and polls immediately. |
-| Tray | About Gregg | Shows the licence attribution in the window. |
+| Tray | About Gregg | Opens the panel and shows the licence attribution in it. |
 | Tray | Quit Gregg | Ends the GUI. The client daemon keeps running. |
-| Window | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
-| Window | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
-| Window | Reload / EggPool / About / Quit buttons | The same actions as the tray items. The `EggPool` button opens and closes the `EggPool` plane, and the intent is sent only while it is open. |
-| Window | Close button | **Hides** the window, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden window with no tray is an application you can no longer reach. |
-| Window | Quit button | Ends the GUI. The client daemon keeps running. |
+| Panel | Click a host row | Selects that host. The selection is keyed by the stable system id, so a host that reorders does not move the selection. |
+| Panel | Click a scheduler job | Opens that job's retained records. Only an open job asks the daemon for history; closing the view releases the intent. |
+| Panel | Reload / Add host / EggPool / About / Quit buttons | The same actions as the tray items. The `EggPool` button opens and closes the `EggPool` plane, and the intent is sent only while it is open. |
+| Panel | A host row's **Edit** button | Opens the form that renames the host, or that re-points it at another endpoint. |
+| Panel | A host row's **Remove** button | Removes the host from the configuration. |
+| Panel | **Add host** | Opens the form that adds a host. |
+| Panel | **Close** (in the header strip) | **Hides** the panel, and the tray brings it back. On a desktop with **no tray** it **ends the GUI** instead — a hidden panel with no tray is an application you can no longer reach. |
+| Panel | **Esc** | The same as Close. |
+| Panel | The header strip | **Drags** the panel. The panel has no window frame, so it has no title bar to drag. |
+| Panel | The grip in the bottom-right corner | **Resizes** the panel. |
+| Panel | Quit button | Ends the GUI. The client daemon keeps running. |
 
-The GUI is mouse-driven; there are no keyboard shortcuts in this MVP. Every
-action is reachable by pointer, and the window never becomes the only way to
-quit.
+Every action is reachable by pointer, and the panel never becomes the only way
+to quit.
+
+### How the panel is dismissed
+
+**`Esc`, the tray's Open Gregg entry, and the panel's own Close control.** That
+is the whole list.
+
+There is **no click-away dismissal**, and that is a real limitation rather than
+an oversight. Slint 1.18 exposes no "the window lost focus" event: a window
+cannot be told that the click landed somewhere else, so a panel cannot close
+itself when the operator clicks the desktop behind it. The panel is also
+`always-on-top`, so it stays over whatever is behind it.
+
+The consequences are worth stating plainly:
+
+- a panel left open stays open until it is dismissed deliberately;
+- `Esc` works, because the panel's own focus scope handles the key, and the
+  key reaches it even when a text field has the focus.
+
+On a desktop with **no tray**, `Esc` and Close end the GUI instead, because a
+hidden panel with no tray is an application the operator can no longer reach.
+
+### Host management
+
+The panel can **add**, **remove**, **rename** and **re-point** the hosts in the
+configuration file.
+
+It writes that file through the **CLI's own library code** — `gregg::cli::dispatch`
+against the same `ConfigStore` the daemon reads — so the panel inherits the
+CLI's exact behaviour rather than a second copy of its rules:
+
+| Rule | Where it comes from |
+| ---- | ------------------- |
+| An explicit port is required; a portless host is refused | `gregg add`'s endpoint grammar |
+| HTTPS is never accepted or downgraded | the same grammar |
+| A nickname may not be combined with an explicit name | the same grammar |
+| The configuration is validated as a whole before it is written | `ConfigStore::mutate_with_result` |
+| The write is atomic — temp file, flush, rename | the same |
+| Two writers cannot interleave | the store's lock, the same one the CLI takes |
+
+A **refused** mutation leaves the configuration **byte-identical** and says why
+in the panel. A successful one asks the daemon to re-read its configuration at
+its own reload boundary, and the daemon republishes.
+
+**Changing a host's endpoint is a replacement, not an edit.** The endpoint is
+part of a host's identity, so the host gets a new stable id and its selection
+and history do not follow it. The panel says so before it applies one, and the
+confirming button is labelled **Replace endpoint** rather than Save, so the
+replacement is the operator's explicit choice. The new endpoint is added
+**before** the old one is removed, so a refusal — a malformed endpoint, or one
+that is already configured — happens before anything is removed.
+
+**Renaming is in place.** The same endpoint with a different name keeps the
+host's identity, because the endpoint — the thing the identity is made of —
+did not move. An empty name field clears the configured name.
+
+The panel is a **second writer of the configuration file**, never a second
+writer of fleet state. The client daemon remains the only poller and the only
+owner of the fleet's state.
 
 ### Application activation
 
@@ -346,6 +427,7 @@ slint = { version = "=1.18.1", default-features = false, features = [
     "software-renderer-systemfonts",
     "system-tray",
     "compat-1-18",
+    "unstable-winit-030",
 ] }
 ```
 
@@ -360,6 +442,7 @@ femtovg (OpenGL) renderer and its GPU stack.
 | `software-renderer-systemfonts` | System font discovery for the software renderer. Without it the software renderer has no font to draw text with, and every label renders blank. |
 | `system-tray` | The native tray entry (`NSStatusItem` on macOS, the notification area on Windows, `StatusNotifierItem` on Linux). Required by the `SystemTrayIcon` component. |
 | `compat-1-18` | Enables the Slint 1.18 language and version features, so the `.slint` file compiles with 1.18 semantics. The older `compat-1-0`/`compat-1-2` features are not what is wanted: they chain to 1.18 but also imply the software renderer as the default. |
+| `unstable-winit-030` | The `slint::winit_030` module, which is the **only** way to ask the display for its own bounds. The panel has to know where the screen ends so it can never open off it, and Slint's stable API exposes no screen information at all. The winit backend is already in this build through `backend-winit`, so the feature adds **no new crate and no new code to the binary** — it only exposes the module that re-exports what is already there. "Unstable" means Slint may move the module in a future minor release; this crate pins Slint **exactly** (`=1.18.1`), so that cannot happen underneath us: a move would be a deliberate version bump and a compile error, not a silent change. |
 
 Deliberately **not** enabled: `renderer-femtovg`, `renderer-skia`,
 `renderer-wgpu`, `backend-qt`, `accessibility`.
@@ -475,25 +558,59 @@ makes the difference attributable.
 
 | Binary | Size |
 | ------ | ---- |
-| `gregg-gui` (this crate, with the `gregg` core library) | 10,803,360 bytes (10.3 MiB) |
-| Slint-only baseline (same Slint features, same `main.slint`, same activation code, no `gregg`) | 9,956,032 bytes (9.5 MiB) |
-| **Difference** | **847,328 bytes (~828 KiB, +8.5%)** |
+| The GUI before Plan 191 (the separate monitor window) | 10,803,360 bytes (10.3 MiB) |
+| **The GUI now** (the tray pulldown, with host management) | **11,896,608 bytes** (11.3 MiB) |
+| **Difference** | **+1,093,248 bytes (+10.1%)** |
+| The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
 
-So the Slint GUI itself costs about 9.5 MiB stripped, and everything
-`gregg-gui` adds on top of a pure-Slint build of the same UI — the `gregg`
-core library with Ratatui, Crossterm, Clap, `eggfetch-core` with rustls and
-the config and reducer machinery, plus the GUI's own projection, bridge and
-wiring — is about 828 KiB.
+So the pulldown and the host-management forms cost about **1.04 MiB** more
+than the monitor window they replaced.
 
-**The baseline was rebuilt for the 2026-10-21 corrective pass, and the
-comparison is the interesting part.** The pass gave the monitor window's two
-lists a scroll container, and a scroll container comes from Slint's
-`std-widgets`, so *both* binaries grew: the GUI by 1,026,800 bytes and the
-baseline by 1,026,816 bytes — the style's own assets, on both sides. The
-**difference** stayed where it was: 847,328 bytes against 847,344 bytes
-before, a change of 16 bytes on a 10-megabyte binary. That is what a matched
-baseline is for: a baseline that was not rebuilt would have reported the whole
-growth as the GUI's cost.
+**Where that megabyte goes**, from `cargo bloat --release --crates`, which
+attributes the linked binary per crate:
+
+| Crate | Before | Now | Change |
+| ----- | ------ | --- | ------ |
+| `gregg_gui` (the generated Slint code and the GUI's own Rust) | 285.1 KiB | 703.6 KiB | **+418.5 KiB** |
+| `std` | 759.8 KiB | 870.7 KiB | +110.9 KiB |
+| `toml_edit` | — | 114.7 KiB | +114.7 KiB |
+| `i_slint_core` | 452.4 KiB | 527.2 KiB | +74.8 KiB |
+| `gregg` | 100.2 KiB | 148.9 KiB | +48.7 KiB |
+| `serde_core` | 163.7 KiB | 188.4 KiB | +24.7 KiB |
+| the font stack (`harfrust`, `skrifa`, `zeno`, `parley`, `read_fonts`, `fontique`) | 1,356.9 KiB | 1,358.0 KiB | **+1.1 KiB** |
+| the SVG stack (`usvg`, `resvg`, `tiny_skia`, `svgtypes`, `roxmltree`, `simplecss`) | 949.4 KiB | 947.3 KiB | **−2.1 KiB** |
+| the HTTP and TLS stack (`rustls`, `ring`, `hyper`, `http`, `webpki`, `eggfetch_core`) | — | — | **absent** |
+
+Three things follow, and they are the measurement Plan 191's gate asked for.
+
+1. **The style's own assets did not grow.** The font stack and the SVG stack —
+   the bulk of what the `std-widgets` import brings — are unchanged to within
+   a kilobyte, because the scroll container had already paid for them. What
+   the `Button` and the `LineEdit` add is **418.5 KiB of generated widget
+   code**.
+2. **Removing `std-widgets` would not be worth it.** The `Button` would have
+   to be hand-rolled again, and the `LineEdit` would have to be a text field
+   with a caret, a selection and keyboard editing written from scratch. That
+   is not a saving of 418 KiB; it is a worse text field for a slightly
+   smaller binary. The import is **kept**, with this measurement recorded.
+3. **The rejected alternative is measured, not speculated.** Calling
+   `gregg::cli::dispatch` from the GUI cost **2,864,992 bytes more**, because
+   the dispatcher also reaches the daemon commands, and the daemon reaches
+   the HTTP client and its TLS stack. The GUI calls
+   `gregg::cli::add_host` and `gregg::cli::remove_host` instead — the same
+   code paths `gregg add` and `gregg remove` take — and those crates are
+   absent from the binary it builds.
+
+**The earlier baseline, for the record.** Before Plan 191 the comparison was
+against a throwaway crate with the same Slint features, the same `main.slint`
+and the same activation code but no `gregg` dependency: 9,956,032 bytes
+against the GUI's 10,803,360, a difference of 847,328 bytes. That baseline
+was itself rebuilt for the 2026-10-21 corrective pass, because the pass gave
+the window's lists a scroll container and a scroll container comes from
+`std-widgets`: *both* binaries grew by about a megabyte — 1,026,800 and
+1,026,816 bytes — and the **difference** stayed where it was, 16 bytes apart
+on a ten-megabyte binary. That is what a matched baseline is for: a baseline
+that was not rebuilt would have reported the whole growth as the GUI's cost.
 
 (For comparison, Plan 188 measured the same drag against the *scaffold* UI,
 before the monitor window existed: 747,936 bytes over an 8,813,296-byte
@@ -505,36 +622,52 @@ generics; it is not a proxy for what the linker keeps.)
 
 ## Measured runtime cost
 
-Measured on macOS (Apple M4 Pro) against a 25-host synthetic fleet, with the
-measurement window aligned to the daemon's own start so every configuration is
-sampled over the same phase of the poll cadence. CPU is `getrusage`, and
-"wakeups" is the count of voluntary context switches — the observable proxy
-for a sleep/wake cycle.
+Plan 190 measured the **monitor window** on macOS (Apple M4 Pro) against a
+25-host synthetic fleet, with the measurement window aligned to the daemon's own
+start so every configuration is sampled over the same phase of the poll
+cadence. CPU is `getrusage`, and "wakeups" is the count of voluntary context
+switches — the observable proxy for a sleep/wake cycle.
 
-| configuration | remote requests | daemon RSS | daemon CPU | daemon wakeups | GUI RSS | GUI CPU | GUI wakeups |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| daemon alone | 414 | 7.2 MB | 0.111 s | 8,279 | — | — | — |
-| daemon + GUI, tray only | **414** | — | 0.157 s | 11,471 | 73–83 MB | 0.491 s | 22,884 |
-| daemon + GUI, monitor visible | **414** | — | 0.154 s | 11,333 | 72–82 MB | 0.476 s | 21,985 |
+Those figures are the **monitor window's**. Plan 191 changed the shape, so they
+are kept here as the record of that shape and are **not** a claim about the
+pulldown.
 
-Over a ~73-second lifetime the GUI costs **about 0.65% of one core**, whether
-the window is hidden or visible. The remote request count is **identical** in
-all three configurations: the GUI adds nothing to the fleet's budget.
+The pulldown was measured separately, on the same host, against a **one-host**
+configuration — the 25-host harness is not in the repository, so it was not
+repeated — with the GUI launched against a real client daemon:
 
-Two things worth reading carefully:
+| configuration | observed resident memory |
+| ------------- | ----------------------- |
+| The panel open | **69,792 – 106,496 KB** (68–104 MB) |
+| The panel hidden | **66,672 – 78,304 KB** (65–76 MB) |
+
+The spread is wide and the two ranges **overlap**, so the honest reading is
+that the pulldown's residency is around **67–104 MB** on this host and that
+this measurement cannot cleanly separate the panel from the renderer: the
+software renderer and the system-font machinery dominate, and they dominated
+Plan 190's 72–83 MB too.
+
+What the samples do say is that the pulldown is **not** lighter in memory
+than the monitor window was: the first open-panel run was 106/94/100 MB
+against a hidden 78 MB in the same session. One surface instead of two is not
+a memory saving. The **request-budget** claim is unaffected — the GUI still
+attaches to the same daemon and still adds no request of its own (see
+`EVIDENCE.md`) — but the CPU and request figures above are the old shape's
+and were not re-measured.
+
+Two things worth reading carefully about the old shape's figures:
 
 - **The daemon's wakeup delta is the documented one.** 8,279 alone → ~11,400
   with a frontend attached is about 44 extra wakeups per second, which is the
   "one timer wake per attached frontend every 20 ms" that `clientd/daemon.rs`
   documents. The GUI adds one more frontend to a cost the architecture
   already accepted; it does not add a new kind of cost.
-- **The memory is Slint's, not the protocol's.** Hiding the monitor window
-  saves under a megabyte. The rest is the software renderer and the
-  system-font machinery.
+- **The memory is Slint's, not the protocol's.** The rest is the software
+  renderer and the system-font machinery.
 
-The measurements are noisy — RSS at the moment of sampling varied between
-72 MB and 83 MB for the same configuration — so the numbers above are ranges,
-not constants. See `EVIDENCE.md` for the deterministic request-count proof.
+The measurements are noisy — RSS at the moment of sampling varied by tens of
+megabytes for the same configuration — so the numbers above are ranges, not
+constants. See `EVIDENCE.md` for the deterministic request-count proof.
 
 ## Licence
 
@@ -566,18 +699,20 @@ apps/gregg-gui/
 ├── build.rs              # slint_build::compile("src/ui/main.slint")
 ├── dependency-tree.txt   # the full resolved tree
 ├── src/
-│   ├── main.rs           # entry point: window, tray, wiring, the render push
+│   ├── main.rs           # entry point: the panel, the tray, wiring, the render push
 │   ├── bridge.rs         # the client-daemon attachment, the intents, the frame pump
 │   ├── model.rs          # the pure FrontendSnapshot -> GuiViewModel projection
+│   ├── hosts.rs          # the configuration mutations, behind an injectable seam
+│   ├── placement.rs      # where the panel opens, and how far it may be moved
 │   ├── platform.rs       # the per-desktop bits: macOS application activation
 │   └── ui/
-│       └── main.slint    # the Window and the SystemTrayIcon
+│       └── main.slint    # the Pulldown and the SystemTrayIcon
 └── vendor/
     ├── VENDORED-PATCH.md # why the vendored crate exists
     └── annotate-snippets/
 ```
 
-### The three layers
+### The four layers
 
 - **`model.rs` is pure.** One daemon document in, one view model out. No
   threads, no channels, no Slint. Every rule the GUI keeps — absent is absent,
@@ -595,6 +730,12 @@ apps/gregg-gui/
   connection state, projects the document into the view model, and pushes the
   result into the components — on the UI thread, and only when something
   changed.
+- **`hosts.rs` owns the configuration mutations.** It describes what the
+  operator asked for and performs it through the CLI's own library code,
+  behind a seam a test can replace. It never writes a file by itself.
+- **`placement.rs` owns where the panel opens.** The work area, the anchor and
+  the clamping are pure functions, so they are tested without a desktop
+  session.
 
 ## Slint 1.18 notes worth knowing
 
@@ -615,8 +756,18 @@ apps/gregg-gui/
   one to it (see `TrayIcon.tray-icon` and `TrayIcon.status-text`).
 - A `Window` may not set both `width` and `min-width` (or `height` and
   `min-height`): the compiler rejects it.
-- There is **no built-in `Button`**. This file defines a small
-  `ActionButton` from `Rectangle` + `Text` + `TouchArea`.
+- There **is** a built-in `Button`, in `std-widgets.slint`, and Plan 191 uses
+  it: a popover is operated with the pointer already over it, so a button with
+  no hover state and no pressed state is a button the operator cannot feel.
+  The hand-rolled `ActionButton` this file used before is gone.
+- `LineEdit` comes from `std-widgets.slint` too, and it is what makes the
+  host-management forms possible: a single-line text field with a placeholder,
+  a caret and keyboard editing is not something to re-implement, and a
+  half-working one would be worse than none.
+- `std-widgets.slint` **is** the style: importing `Button` from it brings the
+  style's own assets with it. That cost is measured below.
+- The `Palette` global has to be **imported** from `std-widgets.slint`; it is
+  not available unqualified.
 - `Image::from_rgba8` takes a `SharedPixelBuffer<Rgba8Pixel>` (not a size and
   a byte vector), and `Timer` is created with `Timer::default()` and started
   with `timer.start(mode, interval, callback)`.

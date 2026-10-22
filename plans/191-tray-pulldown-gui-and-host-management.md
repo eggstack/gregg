@@ -1,7 +1,9 @@
 # Plan 191: Tray pulldown GUI and host management
 
-Status: planned. Depends on Plan 190 (implemented, pending release qualification) and the
-187-189 line; independent of Plan 091. Unblocks nothing yet.
+Status: implemented, pending native interactive acceptance. Depends on Plan 190 (implemented,
+pending release qualification) and the 187-189 line; independent of Plan 091. Unblocks nothing
+yet. The interactive native acceptance gate is **unchecked**, so this plan is **not closed** and
+the GUI is **not shippable** for Windows or Linux.
 
 ## Objective
 
@@ -26,7 +28,7 @@ webview; one Rust codebase; and a panel that can be shown and dismissed.
 
 | Option | Native tray | Footprint / residency | Toolchain | Verdict |
 | --- | --- | --- | --- | --- |
-| **Slint 1.18.1** (current) | First-class `SystemTrayIcon` with a native menu on all three platforms | 10,803,360 B stripped; 72–83 MB resident; ~0.65% of one core | Rust 1.92 (its own floor) | **Retain** |
+| **Slint 1.18.1** (current) | First-class `SystemTrayIcon` with a native menu on all three platforms | 10,803,360 B stripped (11,896,608 B after this plan); 72–83 MB resident; ~0.65% of one core | Rust 1.92 (its own floor) | **Retain** |
 | `egui`/`eframe` + `tray-icon` | No built-in tray; a second crate (`tray-icon` 0.26.1) plus a hand-written native menu | Materially smaller binary and RSS, but immediate-mode redraw | `egui` 0.37 needs **Rust 1.95**; the 0.34/0.35 line fits 1.92 | Rejected |
 | Tauri / any webview | `tauri-plugin-tray` | A webview process dominates RSS | — | Excluded by existing rules |
 | GTK4 / Qt6 / per-platform native | First-class | Heavy, or three codebases | Not Rust | Rejected |
@@ -283,7 +285,169 @@ mutation.
   release that ships a native tray) — stop and re-run the review rather than
   reimplementing the frontend under a deadline.
 
+## Release qualification
+
+What is outstanding is the **interactive** acceptance, and it is the same outstanding item
+Plan 190 carries: a visible notification-area icon on a real Windows desktop, a real GNOME
+session on Linux, and the macOS Intel build. Plan 191 changed the GUI's *shape* and gave it
+host management; it did not produce any of that evidence, and it does not need to — but a
+pulldown is **more** exposed to it than a window was, because the whole product is "a panel
+that opens from the tray", and a tray that never appears is a product with no surface at all.
+The Linux CI leg registers a `StatusNotifierItem` against a real host, and the Windows leg
+proves a native window is created, but neither is an operator opening a panel with a pointer.
+
+The macOS Intel qualification and a recorded DPI measurement are outstanding too, and they
+were outstanding before this plan.
+
+What **is** closed by this plan, and does not need re-doing:
+
+- the GUI's own CI job formats, lints, tests and release-builds on macOS, Windows and Linux
+  natively, and the native tray exercises pass on the legs that have one;
+- the host-management path is proven on all three targets without a desktop session, because
+  it is a config-and-reload path and not a pointer path.
+
 ## Closure record
 
-To be completed when the gates above are met, with the native evidence, the
-measurements, and an honest statement of what was not performed.
+Implemented on 2026-10-22. The plan is **not closed**: the interactive native acceptance gate
+below is unchecked, exactly as Plan 190 leaves it.
+
+### What was built
+
+- **One surface.** `apps/gregg-gui/src/ui/main.slint` defines a `Pulldown` component and a
+  `TrayIcon` component, and nothing else. The separate monitor window is gone. The pulldown is
+  `no-frame` and `always-on-top` and carries the fleet summary, the host list, the selected
+  host's metrics, drives and interfaces, its scheduler jobs and retained records, and the
+  `EggPool` plane, with the lists bounded and scrollable so a large fleet cannot push the
+  cron and `EggPool` panes, or the buttons, out of the panel.
+- **Host management.** `apps/gregg-gui/src/hosts.rs` is a seam: `HostMutation` describes what
+  the operator asked for, `HostMutations` is the trait it goes through, and `ConfigMutations`
+  performs it against a real `ConfigStore`. `HostForm` is the form's own state, including
+  whether the endpoint field has moved off the host's endpoint — which is what makes an
+  endpoint change a replacement rather than an edit.
+- **Placement.** `apps/gregg-gui/src/placement.rs` owns the work area, the anchor and the
+  clamping, as pure functions, so they are tested without a desktop session.
+- **The model** gained the host's untruncated address and its configured name, because the
+  forms write an endpoint back and a truncated one cannot be written back.
+
+### Gate by gate
+
+| Gate | State | Evidence |
+| ---- | ----- | -------- |
+| The framework decision is recorded, and the `std-widgets` import is removed with a smaller binary or kept with the measurement recorded | **Met** | The review is above. `std-widgets` was **kept**: the panel's `Button` and `LineEdit` come from it. The measurement is below. |
+| The separate monitor window is gone; one pulldown carries every pane | **Met** | `src/ui/main.slint` has no `Window` component other than `Pulldown`. |
+| The panel opens from the tray, is positioned within the work area, keeps its position and size, and is dismissed by `Esc`, the tray toggle and its close control; the absence of click-away dismissal is stated | **Met, with a stated limit** | The position is clamped to the display's bounds and remembered; `Esc` is handled by the panel's focus scope. The absence of click-away dismissal is stated in `apps/gregg-gui/README.md`. |
+| The panel follows the desktop colour scheme through `Palette`, and the buttons have hover and pressed states | **Met** | `Palette` is imported and used for every colour; the buttons are `std-widgets`' `Button`, which has both states. |
+| Add, remove and rename work from the panel against the real config path, with the CLI's validation and atomic write, and a refused mutation leaves the config byte-identical and shows a visible reason | **Met** | `hosts.rs` tests write to a real `ConfigStore` in a temporary directory and compare the file's bytes before and after a refusal. |
+| An endpoint change is presented as a replacement, states that the host's identity changes, and is applied only on the operator's explicit confirmation | **Met** | The form's note says the host is replaced and its identity changes, and the confirming button is labelled **Replace endpoint**. |
+| The GUI still opens no HTTP client, still starts no polling plane, and the daemon's `DaemonRequest` set is unchanged | **Met** | `crates/gregg/src/clientd/protocol.rs` is untouched: no `DaemonRequest` variant was added, removed or changed. The GUI's own test asserts it links no HTTP client, and the host-management path was narrowed until the HTTP stack was not even *linked* (below). |
+| The GUI's own CI job still formats, lints, tests and release-builds on macOS, Windows and Linux, and the native tray exercises still pass | **Met** | `scripts/check-gui.sh` passes locally; the CI job runs the same script on all three legs. |
+| The host-management path is proven on all three targets in CI without a desktop session | **Met** | The tests in `hosts.rs` use a temporary directory and the real `ConfigStore`, and are part of the GUI workspace's `cargo test` on every leg. |
+| The **interactive** native acceptance is recorded per target, or left unchecked and blocking shipment | **Left unchecked** | Nothing interactive was performed: no notification-area icon was seen, no panel was opened by a pointer, no GNOME session was used. This blocks shipment for Windows and Linux, and the GUI stays a source build. |
+
+### Measurements
+
+**The binary.** Release build, `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"` — the
+profile the root workspace uses.
+
+| Binary | Size |
+| ------ | ---- |
+| The GUI before this plan (the monitor window) | 10,803,360 bytes |
+| **The GUI now** | **11,896,608 bytes** (11.3 MiB) |
+| The difference | **+1,093,248 bytes (+10.1%)** |
+| The same GUI calling `gregg::cli::dispatch` (the rejected alternative) | 14,761,600 bytes |
+
+The attribution, from `cargo bloat --release --crates`, is per crate and is what makes the
+`std-widgets` number mean something:
+
+| Crate | Before | Now | Change |
+| ----- | ------ | --- | ------ |
+| `gregg_gui` (the generated Slint code and the GUI's own Rust) | 285.1 KiB | 703.6 KiB | **+418.5 KiB** |
+| `std` | 759.8 KiB | 870.7 KiB | +110.9 KiB |
+| `i_slint_core` | 452.4 KiB | 527.2 KiB | +74.8 KiB |
+| `toml_edit` | — | 114.7 KiB | +114.7 KiB |
+| `gregg` | 100.2 KiB | 148.9 KiB | +48.7 KiB |
+| `serde_core` | 163.7 KiB | 188.4 KiB | +24.7 KiB |
+| `harfrust`, `skrifa`, `zeno`, `parley`, `read_fonts`, `fontique` | 1,356.9 KiB | 1,358.0 KiB | **+1.1 KiB** |
+| `usvg`, `resvg`, `tiny_skia`, `svgtypes`, `roxmltree`, `simplecss` | 949.4 KiB | 947.3 KiB | **−2.1 KiB** |
+| `rustls`, `ring`, `hyper`, `http`, `webpki`, `eggfetch_core` | — | — | **absent** |
+
+Two things follow from that table, and they are the measurement the gate asked for.
+
+1. **The style's own assets did not grow.** The font stack and the SVG stack — the bulk of
+   what the `std-widgets` import brings — are unchanged to within a kilobyte, because the
+   scroll container had already paid for them in the previous corrective pass. What the
+   `Button` and the `LineEdit` add is **418.5 KiB of generated widget code** in the GUI's own
+   crate.
+2. **The rejected alternative is measured, not speculated.** Calling `gregg::cli::dispatch`
+   from the GUI cost **14,761,600 bytes** — 2,864,992 bytes more — because the dispatcher
+   also reaches the daemon commands, and the daemon reaches the HTTP client and its TLS
+   stack. Those crates (`rustls`, `ring`, `hyper`, `webpki`, `eggfetch_core`) are absent from
+   the binary the GUI now builds.
+
+**What removing `std-widgets` would cost in work.** The `Button` would have to be hand-rolled
+again, and the `LineEdit` would have to be a text field with a caret, a selection and keyboard
+editing written from scratch. That is not a saving of 418 KiB; it is a worse text field for
+the price of a slightly smaller binary. The import is kept, with this measurement recorded.
+
+**The runtime.** Measured on macOS (Apple M4 Pro) against a **one-host** configuration — not
+Plan 190's 25-host fleet, whose harness is not in the repository — with the GUI launched
+against a real client daemon, sampling three times per run over two runs:
+
+| configuration | observed resident memory |
+| ------------- | ----------------------- |
+| The panel open | **69,792 – 106,496 KB** (68–104 MB) |
+| The panel hidden | **66,672 – 78,304 KB** (65–76 MB) |
+
+The spread is wide and the two ranges **overlap**, so the honest reading is that the
+pulldown's residency is around **67–104 MB** on this host and that this measurement cannot
+cleanly separate the panel from the renderer: the software renderer and the system-font
+machinery dominate, and they dominated Plan 190's 72–83 MB too. What the samples do say is
+that the pulldown is **not** lighter in memory than the monitor window was — the first
+open-panel run was 106/94/100 MB against a hidden 78 MB in the same session — so one surface
+instead of two is not a memory saving. Plan 190's 25-host numbers were **not** re-measured,
+because the harness that produced them is not in the repository, and the numbers above
+should not be read as replacing them.
+
+### Deviations from this plan, and why
+
+1. **The write path is `gregg::cli::add_host` / `remove_host`, not `gregg::cli::dispatch`.**
+   These are the code paths `gregg add` and `gregg remove` take — the same endpoint grammar,
+   the same whole-config validation, the same lock, the same atomic write — and the command
+   dispatcher now goes through them, so the CLI's own behaviour is unchanged. The narrow entry
+   points exist because the broad one measured 2,864,992 bytes worse, as above. The core
+   gained two public functions; it lost no behaviour.
+2. **The panel is anchored to the platform's trailing corner, not to the exact point the
+   native menu was drawn at.** Slint 1.18 exposes neither the tray icon's position nor the
+   pointer's position, and `winit` 0.30 knows a monitor's bounds but not its work area. The
+   panel is therefore anchored to the trailing edge of the display on the side where the
+   desktop's shell lives, and clamped so it is always fully on the display. The operator can
+   drag it by its header strip and resize it by the corner grip, and the position is
+   remembered.
+3. **The GUI's Slint dependency gained the `unstable-winit-030` feature.** The
+   `slint::winit_030` module is the only way to ask the display for its bounds, and Slint's
+   stable API exposes no screen information at all. The winit backend was already in the
+   build through `backend-winit`, so the feature adds **no new crate and no new code**; it
+   only exposes the module that re-exports what was already there. Slint is pinned exactly
+   (`=1.18.1`), so the module cannot move underneath this workspace.
+4. **A `--panel` option was added.** It opens the pulldown at startup instead of waiting for
+   the tray. The native exercises use it, because under the new shape the panel is the GUI's
+   only window and it does not exist until the tray is used — without the option, the Windows
+   exercise's "the GUI created a native top-level window" check would have had nothing to
+   find.
+
+### What was not performed
+
+- **No interactive native run.** No notification-area icon was seen on a real Windows
+  desktop; no panel was opened by a pointer on any platform; no GNOME session was used; the
+  macOS Intel build was not qualified; no DPI measurement was recorded.
+- **The 25-host runtime measurement was not repeated.** The harness is not in the repository.
+- **The panel was never opened by a human.** Every statement about how it looks and feels is
+  a statement about the code and the measurements, not about a session at a desk.
+
+### What closing this plan would mean
+
+The interactive acceptance on macOS, Windows and Linux, a recorded DPI measurement, the
+macOS Intel build, and a re-measurement of the runtime cost on the 25-host fleet — and, with
+them, Plan 190's own release qualification. Until then the GUI is a source build that is
+qualified on Apple Silicon only.
+

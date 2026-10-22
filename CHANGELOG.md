@@ -51,7 +51,56 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   client daemon. The Slint royalty-free licence attribution is part of the
   application, not of a README.
 
+- **The optional desktop frontend is a tray pulldown, and it manages hosts
+  (Plan 191):** the GUI's separate monitor window is gone. There is now **one
+  surface** — a borderless, always-on-top panel that opens from the native tray
+  menu and carries the fleet summary, the host list, the selected host's
+  metrics, drives and interfaces, its scheduler jobs and retained records, and
+  the `EggPool` plane. The panel is dismissed with `Esc`, the tray's Open Gregg
+  entry, or its own Close control; there is **no click-away dismissal**,
+  because Slint 1.18 exposes no focus-lost event, and that limit is stated in
+  the documentation rather than papered over. The panel is anchored to the
+  trailing edge of the display, on the side where the desktop's own shell
+  lives, clamped so it can never open off the screen, and it keeps the
+  position and size the operator gave it — a borderless panel carries its own
+  header strip to drag it and its own corner grip to resize it. Its colours
+  come from Slint's `Palette` global, so it follows the desktop's colour
+  scheme instead of a hard-coded monochrome, and its buttons and text fields
+  come from `std-widgets`, so they have the hover and pressed states a popover
+  operated with the pointer already over it needs.
+
+  The panel can now **add, remove, rename and re-point** the hosts in the
+  configuration file, which the GUI could not do before. It writes that file
+  through the **CLI's own library code** against the same `ConfigStore`, so
+  the endpoint grammar, the config lock, the whole-config validation and the
+  atomic write are the CLI's, unchanged, and a refused mutation leaves the
+  file byte-identical and says why. Changing a host's endpoint is presented
+  as a **replacement**, not an edit — the endpoint is part of a host's
+  identity — so the confirming button says so and the host's identity changes
+  with it; a rename is in place and keeps the identity. The panel is a second
+  writer of the configuration *file*, never a second writer of fleet state:
+  the client daemon remains the only poller, and no protocol message was added
+  or changed.
+
+- **The optional desktop frontend can open its panel at startup:** the new
+  `--panel` option opens the pulldown instead of waiting for the tray. The
+  tray still works either way, and the native exercises use it so that a panel
+  is really on screen on the platform they run on.
+
 ### Changed
+
+- **`gregg::cli` exposes the add and remove paths on their own (Plan 191):**
+  `gregg::cli::add_host` and `gregg::cli::remove_host` are the code paths
+  `gregg add` and `gregg remove` take — the same endpoint grammar, the same
+  validation, the same lock and the same atomic write — and the command
+  dispatcher now goes through them, so the CLI's own behaviour is unchanged.
+  They are exposed separately because the alternative was measured: a frontend
+  that called the whole dispatcher also linked the daemon's HTTP client and
+  its TLS stack into its binary for two commands that never touch it, which
+  cost 2,864,992 bytes. Unlike the dispatcher, they do not nudge a running
+  daemon — a frontend attached to a daemon asks it to reload over its own
+  connection, and a caller with no daemon is not worse off, because the
+  configuration on disk is already correct.
 
 - **The optional desktop frontend is qualified and stays a source build (Plan
   190):** a counted harness — the real client daemon against two counted

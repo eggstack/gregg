@@ -1,9 +1,16 @@
-// Plan 189: the Slint definition of the optional Gregg desktop frontend.
+// Plan 191: the Slint definition of the optional Gregg desktop frontend.
+//
+// ONE surface: a tray pulldown.
+//
+// There is no separate monitor window. The panel that opens from the tray
+// carries the fleet summary, the host list, the selected host's metrics,
+// drives, interfaces, cron, records and `EggPool`, and the host-management
+// forms.
 //
 // Two independent top-level components live here, on purpose:
 //
-//   * `MainWindow` — the compact monitor window.
-//   * `TrayIcon`   — the native tray entry.
+//   * `Pulldown`  — the panel that opens from the tray.
+//   * `TrayIcon`  — the native tray entry.
 //
 // A Slint `SystemTrayIcon` is a *top-level* component: it is never a child of
 // a window, and a tray-rooted component does not share `Globals` with a
@@ -11,24 +18,35 @@
 // anything both of them need has to be pushed into each of them explicitly
 // from Rust, which is where the truth lives anyway.
 //
-// A `SystemTrayIcon` must contain exactly one `Menu` child, the menu may not
-// be inside an `if` or a `for`, and no other child element types are allowed
-// in it. The menu itself may use `if`/`for` to build its entries.
+// The panel is borderless and always on top, so it carries its own chrome: a
+// header strip that moves the window and closes it, and a grip in the corner
+// that resizes it.
+//
+// The colours come from Slint's `Palette` global, which follows the
+// desktop's own colour scheme, and the buttons and the text fields come
+// from `std-widgets`, which are styled to match the desktop. The palette
+// used to be hard-coded monochrome, which made the panel look like a
+// foreign object on a dark desktop, and the buttons used to be hand-rolled
+// with no hover and no pressed state — which is exactly what a popover
+// operated with the pointer already over it cannot do without.
 //
 // The host list and the scheduler job list are the two lists that grow with
-// the fleet, so both live in a `ScrollView`: the window is a fixed size, and
-// an unbounded list would push the metrics, cron and `EggPool` panes — and
-// the buttons — out of it. The scroll container owns the scrolling; there is
-// no second scroll model on the Rust side.
-//
-// `ScrollView` is the only thing here that comes from `std-widgets`. The
-// buttons stay hand-rolled, because a real button needs a style, a hover
-// state and a pressed state, and this window needs none of that.
+// the fleet, so both live in a `ScrollView`, and so do the metric rows: the
+// panel is a fixed size, and an unbounded list would push the metrics, cron
+// and `EggPool` panes — and the buttons — out of it. The scroll container
+// owns the scrolling; there is no second scroll model on the Rust side.
 
-import { ScrollView } from "std-widgets.slint";
+import { Button, LineEdit, Palette, ScrollView } from "std-widgets.slint";
 
-/// One monitored host, as the window's host list shows it.
+/// One monitored host, as the panel's host list and the tray menu show it.
 export struct HostRow {
+    /// The host's stable id.
+    ///
+    /// The panel's actions name the host by this and not by its place in
+    /// the list: the fleet can reorder between the moment the list was
+    /// drawn and the moment a row is clicked, and an action aimed at the
+    /// wrong host is not something a stale index may do.
+    id: string,
     /// Display name, or the host when the system has no configured name.
     name: string,
     /// The endpoint being polled, as `host:port`.
@@ -63,46 +81,30 @@ export struct JobRow {
     selected: bool,
 }
 
-// A button, built by hand.
-//
-// Slint has no built-in `Button`: the built-in elements stop at the layout
-// and text primitives, and a real button needs a style, a hover state and a
-// pressed state. This is the smallest version of one that behaves like a
-// button, which is all the monitor window needs.
-component ActionButton inherits Rectangle {
-    /// The button's label.
-    in property <string> label: "";
-    /// Whether this is the emphasized button.
-    in property <bool> primary: false;
-    /// Invoked when the button is activated.
-    callback clicked();
-
-    border-radius: 4px;
-    background: root.primary ? #3c4a5a : #d4d4d4;
-
-    Text {
-        text: root.label;
-        color: root.primary ? #ffffff : #202020;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-
-    TouchArea {
-        clicked => {
-            root.clicked();
-        }
-    }
+/// What the panel is showing.
+export enum PanelMode {
+    /// The fleet: metrics, drives, cron, records and `EggPool`.
+    Metrics,
+    /// The form that adds a host.
+    AddHost,
+    /// The form that edits one host.
+    EditHost,
 }
 
-export component MainWindow inherits Window {
+export component Pulldown inherits Window {
     title: "Gregg";
+    // The panel is a popover, not a window: no chrome, and it stays above
+    // whatever the operator is looking at.
+    no-frame: true;
+    always-on-top: true;
     width: 560px;
     height: 520px;
+    background: Palette.background;
 
     /// One line describing the client-daemon attachment.
     in property <string> status-text: "connecting to the client daemon…";
 
-    /// The one-line fleet summary.
+    /// The one-line fleet summary. It is also the header strip's title.
     in property <string> fleet-summary: "";
 
     /// The fleet, in display order.
@@ -129,26 +131,35 @@ export component MainWindow inherits Window {
     /// What the operator is told about the desktop's system tray.
     ///
     /// Empty when the desktop has a tray, so the line is only ever on screen
-    /// when it is true: with no tray, closing the window ends the GUI.
+    /// when it is true: with no tray, closing the panel quits Gregg.
     in property <string> tray-warning: "";
 
-    /// The room the vertical scrollbar takes out of the viewport.
-    ///
-    /// The scrollbar is drawn over the right-hand edge of the viewport, so
-    /// the content is given the viewport width minus this. It is the widest
-    /// the native scrollbars get (they grow on hover), so the row text is
-    /// never under the scrollbar.
-    private property <length> scrollbar-reserve: 24px;
+    /// What the panel is showing.
+    in property <PanelMode> mode: PanelMode.Metrics;
 
-    /// The padding inside the window.
-    private property <length> pane-padding: 12px;
+    /// The endpoint the form is editing. Bound to the form's text field.
+    in-out property <string> form-endpoint: "";
 
-    /// The width the panes get: the window without its padding.
-    private property <length> pane-width: root.width - 2 * root.pane-padding;
+    /// The name the form is editing. Bound to the form's text field.
+    in-out property <string> form-name: "";
 
-    /// The width the content of a scroll container gets: the pane without
-    /// the room the vertical scrollbar takes.
-    private property <length> list-content-width: max(0px, root.pane-width - root.scrollbar-reserve);
+    /// The form's heading.
+    in property <string> form-title: "";
+
+    /// What the form says about what it is about to do.
+    in property <string> form-note: "";
+
+    /// What the last attempt said.
+    in property <string> panel-message: "";
+
+    /// Whether the last attempt failed.
+    in property <bool> panel-message-is-error: false;
+
+    /// The label on the form's confirming button.
+    in property <string> form-apply-text: "Add";
+
+    /// Whether the form's confirming button does anything.
+    in property <bool> form-can-apply: false;
 
     /// The operator asked for a configuration reload.
     callback refresh-requested();
@@ -156,8 +167,11 @@ export component MainWindow inherits Window {
     /// The operator asked to quit.
     callback quit-requested();
 
-    /// The operator selected a host. The index is into `hosts`.
-    callback host-selected(int);
+    /// The operator asked to close the panel.
+    callback close-requested();
+
+    /// The operator selected a host, by its stable id.
+    callback host-selected(string);
 
     /// The operator selected a scheduler job, by name.
     callback job-selected(string);
@@ -168,233 +182,594 @@ export component MainWindow inherits Window {
     /// The operator opened or closed the `EggPool` pane.
     callback eggpool-toggled();
 
-    VerticalLayout {
-        padding: root.pane-padding;
-        spacing: 6px;
+    /// The operator asked for the form that adds a host.
+    callback add-host-requested();
 
-        Text {
-            text: root.status-text;
-            font-size: 14px;
-            font-weight: 700;
-        }
+    /// The operator asked to edit a host, by its stable id.
+    callback edit-host-requested(string);
 
-        // The tray warning. It takes no room at all unless the desktop
-        // really has no tray, because a hidden element still takes part in
-        // the layout.
+    /// The operator asked to remove a host, by its stable id.
+    callback remove-host-requested(string);
+
+    /// The operator confirmed the form.
+    callback form-submitted();
+
+    /// The operator abandoned the form.
+    callback form-cancelled();
+
+    /// The form's endpoint field changed.
+    callback endpoint-edited(string);
+
+    /// The form's name field changed.
+    callback name-edited(string);
+
+    /// The header strip was dragged, by this much.
+    callback dragged(length, length);
+
+    /// The corner grip was dragged, by this much.
+    callback resized(length, length);
+
+    /// The room the vertical scrollbar takes out of the viewport.
+    ///
+    /// The scrollbar is drawn over the right-hand edge of the viewport, so
+    /// the content is given the viewport width minus this. It is the widest
+    /// the native scrollbars get (they grow on hover), so the row text is
+    /// never under the scrollbar.
+    private property <length> scrollbar-reserve: 16px;
+
+    /// The padding inside the panel.
+    private property <length> pane-padding: 12px;
+
+    /// The width the panes get: the panel without its padding.
+    private property <length> pane-width: root.width - 2 * root.pane-padding;
+
+    /// The width the content of a scroll container gets: the pane without
+    /// the room the vertical scrollbar takes.
+    private property <length> list-content-width: max(0px, root.pane-width - root.scrollbar-reserve);
+
+    /// The keyboard handler. It is the window's focus target, so `Esc`
+    /// reaches it even when a text field has the focus.
+    forward-focus: key-handler;
+
+    // The keyboard handler **wraps** the whole panel.
+    //
+    // Slint routes a key to the focused item and then, if the item rejects
+    // it, up through that item's ancestors. A text field rejects `Esc` — it
+    // has no meaning there — so a handler that merely sat beside the content
+    // would never see the key while a field had the focus. Wrapping the
+    // content makes the handler an ancestor of the fields, so `Esc` reaches
+    // it from anywhere in the panel.
+    //
+    // `forward-focus` gives this scope the focus when the panel opens, which
+    // is what makes `Esc` work before anything has been clicked.
+    key-handler := FocusScope {
         Rectangle {
-            height: root.tray-warning == "" ? 0px : 18px;
-            visible: root.tray-warning != "";
-
-            Text {
-                text: root.tray-warning;
-                font-size: 12px;
-                color: #8a5a30;
-            }
-        }
-
-        Text {
-            text: root.fleet-summary;
-            font-size: 12px;
-            color: #4a4a4a;
-        }
-
-        Rectangle {
-            min-height: 1px;
-            max-height: 1px;
-            background: #80808080;
-        }
-
-        // The host list. Clicking a row selects that host; the selection is
-        // keyed by the stable system id on the Rust side, so a host that
-        // reorders does not move the selection.
-        //
-        // The list is in a scroll container with a bounded height: a fleet
-        // can be large, and an unbounded list would push the metrics, cron
-        // and `EggPool` panes out of the window.
-        ScrollView {
-            // The content is the pane without the room the vertical
-            // scrollbar takes, so a row's text is never under the
-            // scrollbar.
-            content-width: root.list-content-width;
-            // Vertical scrolling only: there is never a horizontal
-            // scrollbar, and never a horizontal scroll.
-            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
-            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
-            // The list is bounded, and it may be squeezed further when the
-            // window is tight.
-            min-height: 66px;
-            max-height: 176px;
-            preferred-height: 132px;
+            background: Palette.background;
 
             VerticalLayout {
-                width: root.list-content-width;
-                spacing: 1px;
-
-                for row[index] in root.hosts : Rectangle {
-                    height: 44px;
-                    background: row.selected ? #dce6f0 : #00000000;
-
-                    TouchArea {
-                        clicked => {
-                            root.host-selected(index);
-                        }
-                    }
-
-                    VerticalLayout {
-                        padding: 2px;
-                        spacing: 0px;
-
-                        Text {
-                            text: row.name + "  " + row.endpoint;
-                            font-size: 13px;
-                            font-weight: 700;
-                            color: row.online ? #202020 : #8a5a30;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: row.status;
-                            font-size: 11px;
-                            color: #4a4a4a;
-                            overflow: elide;
-                        }
-                        Text {
-                            text: row.headline;
-                            font-size: 11px;
-                            color: #4a4a4a;
-                            overflow: elide;
-                        }
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            min-height: 1px;
-            max-height: 1px;
-            background: #80808080;
-        }
-
-        Text {
-            text: "METRICS";
-            font-size: 11px;
-            font-weight: 700;
-            color: #4a4a4a;
-        }
-
-        for row in root.metrics : Text {
-            text: row.label + "  " + row.value;
-            font-size: 12px;
-        }
-
-        for row in root.details : Text {
-            text: row.label + "  " + row.value;
-            font-size: 12px;
-            color: #333333;
-        }
-
-        Text {
-            text: "CRON";
-            font-size: 11px;
-            font-weight: 700;
-            color: #4a4a4a;
-        }
-
-        // The scheduler jobs, in a bounded scroll container for the same
-        // reason as the host list: a host with many jobs must not push the
-        // rest of the window out of it.
-        ScrollView {
-            content-width: root.list-content-width;
-            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
-            horizontal-scrollbar-policy: ScrollBarPolicy.as-needed;
-            min-height: 44px;
-            max-height: 88px;
-            preferred-height: 66px;
-
-            VerticalLayout {
-                width: root.list-content-width;
+                padding: 0px;
                 spacing: 0px;
 
-                for job[index] in root.jobs : Rectangle {
-                    height: 22px;
-                    background: job.selected ? #dce6f0 : #00000000;
+                // ---------------------------------------------------- the header
+                // The panel has no window chrome, so the header strip is the
+                // panel's own title bar: it carries the summary, it drags the
+                // window, and it holds the close control.
+                Rectangle {
+                    height: 36px;
+                    background: Palette.alternate-background;
 
+                    // The drag area sits underneath the summary and the button,
+                    // so the button still gets its click.
                     TouchArea {
-                        clicked => {
-                            root.job-selected(job.name);
+                        moved => {
+                            root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
                         }
                     }
 
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 6px;
+                        spacing: 8px;
+                        alignment: center;
+
+                        Text {
+                            text: root.fleet-summary;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+
+                        Button {
+                            text: "Close";
+                            clicked => {
+                                root.close-requested();
+                            }
+                        }
+                    }
+                }
+
+                // ------------------------------------------------------- the body
+                VerticalLayout {
+                    padding: root.pane-padding;
+                    spacing: 6px;
+                    vertical-stretch: 1;
+
                     Text {
-                        text: job.name + "  " + job.state + "  " + job.outcome;
+                        text: root.status-text;
                         font-size: 12px;
-                        overflow: elide;
+                        font-weight: 700;
+                        color: Palette.foreground;
+                    }
+
+                    // What the last action said. It is in the body rather than
+                    // in a form, so the outcome of a removal is visible in the
+                    // fleet view too.
+                    Text {
+                        text: root.panel-message;
+                        font-size: 11px;
+                        color: Palette.foreground;
+                        wrap: word-wrap;
+                        visible: root.panel-message != "";
+                    }
+
+                    // The tray warning. It takes no room at all unless the
+                    // desktop really has no tray, because a hidden element still
+                    // takes part in the layout.
+                    Rectangle {
+                        height: root.tray-warning == "" ? 0px : 18px;
+                        visible: root.tray-warning != "";
+
+                        Text {
+                            text: root.tray-warning;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                        }
+                    }
+
+                    // ------------------------------------------------ the fleet
+                    if root.mode == PanelMode.Metrics : VerticalLayout {
+                        spacing: 6px;
+                        vertical-stretch: 1;
+
+                        // The host list. Clicking a row selects that host; the
+                        // selection is keyed by the stable system id on the Rust
+                        // side, so a host that reorders does not move the
+                        // selection.
+                        //
+                        // The list is in a scroll container with a bounded
+                        // height: a fleet can be large, and an unbounded list
+                        // would push the metrics, cron and `EggPool` panes out of
+                        // the panel.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            min-height: 66px;
+                            max-height: 156px;
+                            preferred-height: 110px;
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: 1px;
+
+                                for row in root.hosts : Rectangle {
+                                    height: 46px;
+                                    background: row.selected ? Palette.selection-background : #00000000;
+
+                                    // Under the row's contents, so the row's
+                                    // own buttons still get their clicks.
+                                    TouchArea {
+                                        clicked => {
+                                            root.host-selected(row.id);
+                                        }
+                                    }
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 4px;
+                                        spacing: 6px;
+                                        alignment: center;
+
+                                        VerticalLayout {
+                                            spacing: 0px;
+                                            horizontal-stretch: 1;
+
+                                            Text {
+                                                text: row.name + "  " + row.endpoint;
+                                                font-size: 13px;
+                                                font-weight: 700;
+                                                color: row.selected ? Palette.selection-foreground : Palette.foreground;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: row.status;
+                                                font-size: 11px;
+                                                color: row.selected ? Palette.selection-foreground : Palette.foreground;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: row.headline;
+                                                font-size: 11px;
+                                                color: row.selected ? Palette.selection-foreground : Palette.foreground;
+                                                overflow: elide;
+                                            }
+                                        }
+
+                                        Button {
+                                            text: "Edit";
+                                            clicked => {
+                                                root.edit-host-requested(row.id);
+                                            }
+                                        }
+                                        Button {
+                                            text: "Remove";
+                                            clicked => {
+                                                root.remove-host-requested(row.id);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            min-height: 1px;
+                            max-height: 1px;
+                            background: Palette.border;
+                        }
+
+                        Text {
+                            text: "METRICS";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        // The measured rows, bounded for the same reason as the
+                        // host list: a host with a lot of metrics must not push
+                        // the cron and `EggPool` panes out of the panel.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            visible: root.metrics.length > 0;
+                            min-height: 40px;
+                            max-height: 104px;
+                            preferred-height: 76px;
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: 0px;
+
+                                for row in root.metrics : Text {
+                                    text: row.label + "  " + row.value;
+                                    font-size: 12px;
+                                    color: Palette.foreground;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        // The drive and interface rows.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            visible: root.details.length > 0;
+                            min-height: 20px;
+                            max-height: 72px;
+                            preferred-height: 52px;
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: 0px;
+
+                                for row in root.details : Text {
+                                    text: row.label + "  " + row.value;
+                                    font-size: 12px;
+                                    color: Palette.foreground;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: "CRON";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        // The scheduler jobs, in a bounded scroll container for
+                        // the same reason as the host list: a host with many jobs
+                        // must not push the rest of the panel out of it.
+                        ScrollView {
+                            content-width: root.list-content-width;
+                            vertical-scrollbar-policy: ScrollBarPolicy.as-needed;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            min-height: 44px;
+                            max-height: 88px;
+                            preferred-height: 66px;
+
+                            VerticalLayout {
+                                width: root.list-content-width;
+                                spacing: 0px;
+
+                                for job in root.jobs : Rectangle {
+                                    height: 22px;
+                                    background: job.selected ? Palette.selection-background : #00000000;
+
+                                    TouchArea {
+                                        clicked => {
+                                            root.job-selected(job.name);
+                                        }
+                                    }
+
+                                    Text {
+                                        text: job.name + "  " + job.state + "  " + job.outcome;
+                                        font-size: 12px;
+                                        color: job.selected ? Palette.selection-foreground : Palette.foreground;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            text: root.cron-records;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "EGGPOOL";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                            visible: root.eggpool.length > 0;
+                        }
+
+                        for row in root.eggpool : Text {
+                            text: row.label + "  " + row.value;
+                            font-size: 12px;
+                            color: Palette.foreground;
+                        }
+                    }
+
+                    // --------------------------------------------------- the forms
+                    if root.mode == PanelMode.AddHost : VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 1;
+
+                        Text {
+                            text: root.form-title;
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        Text {
+                            text: root.form-note;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Endpoint";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        LineEdit {
+                            text <=> root.form-endpoint;
+                            placeholder-text: "host:port";
+                            edited => {
+                                root.endpoint-edited(self.text);
+                            }
+                        }
+
+                        Text {
+                            text: "Name (optional)";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        LineEdit {
+                            text <=> root.form-name;
+                            placeholder-text: "a name for this host";
+                            edited => {
+                                root.name-edited(self.text);
+                            }
+                        }
+
+                        Rectangle {
+                            min-height: 1px;
+                            max-height: 1px;
+                            background: Palette.border;
+                        }
+
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+
+                            Button {
+                                text: "Cancel";
+                                clicked => {
+                                    root.form-cancelled();
+                                }
+                            }
+                            Button {
+                                text: root.form-apply-text;
+                                enabled: root.form-can-apply;
+                                primary: true;
+                                clicked => {
+                                    root.form-submitted();
+                                }
+                            }
+                        }
+                    }
+
+                    if root.mode == PanelMode.EditHost : VerticalLayout {
+                        spacing: 8px;
+                        vertical-stretch: 1;
+
+                        Text {
+                            text: root.form-title;
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        Text {
+                            text: root.form-note;
+                            font-size: 11px;
+                            color: Palette.foreground;
+                            wrap: word-wrap;
+                        }
+
+                        Text {
+                            text: "Endpoint";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        LineEdit {
+                            text <=> root.form-endpoint;
+                            placeholder-text: "host:port";
+                            edited => {
+                                root.endpoint-edited(self.text);
+                            }
+                        }
+
+                        Text {
+                            text: "Name (optional)";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Palette.foreground;
+                        }
+
+                        LineEdit {
+                            text <=> root.form-name;
+                            placeholder-text: "a name for this host";
+                            edited => {
+                                root.name-edited(self.text);
+                            }
+                        }
+
+                        Rectangle {
+                            min-height: 1px;
+                            max-height: 1px;
+                            background: Palette.border;
+                        }
+
+                        HorizontalLayout {
+                            alignment: end;
+                            spacing: 8px;
+
+                            Button {
+                                text: "Cancel";
+                                clicked => {
+                                    root.form-cancelled();
+                                }
+                            }
+                            Button {
+                                text: root.form-apply-text;
+                                enabled: root.form-can-apply;
+                                primary: true;
+                                clicked => {
+                                    root.form-submitted();
+                                }
+                            }
+                        }
+                    }
+
+                    // --------------------------------------------------- the footer
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+
+                        Button {
+                            text: "Reload";
+                            clicked => {
+                                root.refresh-requested();
+                            }
+                        }
+                        Button {
+                            text: "Add host";
+                            visible: root.mode == PanelMode.Metrics;
+                            clicked => {
+                                root.add-host-requested();
+                            }
+                        }
+                        Button {
+                            text: "EggPool";
+                            visible: root.mode == PanelMode.Metrics;
+                            clicked => {
+                                root.eggpool-toggled();
+                            }
+                        }
+                        Button {
+                            text: "About";
+                            clicked => {
+                                root.about-requested();
+                            }
+                        }
+                        Button {
+                            text: "Quit";
+                            primary: true;
+                            clicked => {
+                                root.quit-requested();
+                            }
+                        }
                     }
                 }
             }
-        }
-
-        Text {
-            text: root.cron-records;
-            font-size: 11px;
-            color: #333333;
-            wrap: word-wrap;
-        }
-
-        Text {
-            text: "EGGPOOL";
-            font-size: 11px;
-            font-weight: 700;
-            color: #4a4a4a;
-        }
-
-        for row in root.eggpool : Text {
-            text: row.label + "  " + row.value;
-            font-size: 12px;
         }
 
         // The about and attribution block. It is empty — and therefore
         // invisible — until the operator asks for it.
-        VerticalLayout {
-            spacing: 2px;
+        Text {
+            x: root.pane-padding;
+            y: root.height - 96px;
+            width: root.pane-width;
+            text: root.about-text;
+            font-size: 11px;
+            color: Palette.foreground;
+            wrap: word-wrap;
             visible: root.about-text != "";
+        }
 
-            Text {
-                text: root.about-text;
-                font-size: 11px;
-                color: #333333;
-                wrap: word-wrap;
+        // The resize grip, in the corner. The panel has no window frame, so
+        // there is nothing else to resize it with.
+        Rectangle {
+            x: root.width - 16px;
+            y: root.height - 16px;
+            width: 14px;
+            height: 14px;
+            border-width: 1px;
+            border-color: Palette.border;
+
+            TouchArea {
+                moved => {
+                    root.resized(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                }
             }
         }
 
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
-
-            ActionButton {
-                label: "Reload";
-                clicked => {
-                    root.refresh-requested();
-                }
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.close-requested();
+                return accept;
             }
-            ActionButton {
-                label: "EggPool";
-                clicked => {
-                    root.eggpool-toggled();
-                }
-            }
-            ActionButton {
-                label: "About";
-                clicked => {
-                    root.about-requested();
-                }
-            }
-            ActionButton {
-                label: "Quit";
-                primary: true;
-                clicked => {
-                    root.quit-requested();
-                }
-            }
+            return reject;
         }
     }
 }
@@ -420,14 +795,20 @@ export component TrayIcon inherits SystemTrayIcon {
     /// reason: the inherited `title` is compiled as a constant.
     in property <string> summary-text: "";
 
+    /// The hosts the menu offers to jump to.
+    ///
+    /// A native menu is not a scrollable viewport, so the list is bounded:
+    /// the panel is the surface that carries the whole fleet.
+    in property <[HostRow]> hosts;
+
     /// The macOS menu-bar label. Windows and Linux ignore it.
     title: "Gregg";
 
     icon: root.tray-icon;
     tooltip: root.status-text;
 
-    /// The operator asked to bring the monitor window back.
-    callback show-window();
+    /// The operator asked to open or close the panel.
+    callback toggle-panel();
 
     /// The operator asked for a configuration reload.
     callback refresh-requested();
@@ -437,6 +818,10 @@ export component TrayIcon inherits SystemTrayIcon {
 
     /// The operator asked to quit.
     callback quit-requested();
+
+    /// The operator picked a host from the menu. The argument is its
+    /// stable id.
+    callback host-jump(string);
 
     // Exactly one `Menu` child, and nothing else.
     Menu {
@@ -448,10 +833,21 @@ export component TrayIcon inherits SystemTrayIcon {
             enabled: false;
         }
         MenuSeparator {}
-        MenuItem {
-            title: "Open Monitor";
+
+        // The hosts the operator can jump to. The panel opens with the
+        // picked host selected.
+        for host in root.hosts : MenuItem {
+            title: host.name + "  " + host.endpoint;
             activated => {
-                root.show-window();
+                root.host-jump(host.id);
+            }
+        }
+
+        MenuSeparator {}
+        MenuItem {
+            title: "Open Gregg";
+            activated => {
+                root.toggle-panel();
             }
         }
         MenuItem {

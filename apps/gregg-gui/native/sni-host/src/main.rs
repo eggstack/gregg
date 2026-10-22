@@ -282,6 +282,11 @@ fn spawn_gui(
         .arg(config)
         .arg("--gregg")
         .arg(gregg)
+        // The pulldown is the GUI's only window, and it opens from the tray.
+        // This exercise drives the tray, so the panel is opened at startup
+        // instead: that way the panel really is rendered on a real X11
+        // session while the tray is checked.
+        .arg("--panel")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

@@ -260,8 +260,23 @@ impl Bridge {
     /// written to. The desired-state channel is the real one, so the test
     /// drives the intents exactly the way the UI thread does.
     pub(crate) fn with_publisher() -> (Self, Sender<BridgeMessage>) {
+        let (bridge, messages, _desired) = Self::with_publisher_and_desired();
+        (bridge, messages)
+    }
+
+    /// A bridge whose published messages the test supplies, and whose
+    /// desired state the test can read.
+    ///
+    /// The desired state is what the intents travel through, so a test that
+    /// wants to know whether the GUI asked the daemon to reload has to be
+    /// able to read it.
+    pub(crate) fn with_publisher_and_desired() -> (
+        Self,
+        Sender<BridgeMessage>,
+        tokio::sync::watch::Receiver<DesiredState>,
+    ) {
         let (tx, messages) = std::sync::mpsc::channel();
-        let (desired, _desired_rx) = tokio::sync::watch::channel(DesiredState::default());
+        let (desired, desired_rx) = tokio::sync::watch::channel(DesiredState::default());
         (
             Self {
                 messages: Arc::new(Mutex::new(messages)),
@@ -269,6 +284,7 @@ impl Bridge {
                 next_generation: AtomicU64::new(0),
             },
             tx,
+            desired_rx,
         )
     }
 }

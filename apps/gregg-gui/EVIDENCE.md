@@ -258,6 +258,42 @@ against **8,929,216 bytes**, so both binaries grew by roughly a megabyte —
 own assets, on both sides. A baseline that was not rebuilt would have
 reported the whole growth as the GUI's cost.
 
+**8. Plan 191 re-measured the footprint for the pulldown, and the measurement
+is per crate.** The GUI is now **11,896,608 bytes** against **10,803,360**
+before the plan: **+1,093,248 bytes (+10.1%)** for the pulldown and the
+host-management forms together. `cargo bloat --release --crates` attributes
+it: the GUI's own crate grew **418.5 KiB** (285.1 → 703.6 KiB), which is the
+generated code for the `Button` and the `LineEdit` the forms need, plus
+`toml_edit` (+114.7 KiB), `std` (+110.9 KiB), `i_slint-core` (+74.8 KiB),
+`gregg` (+48.7 KiB) and `serde_core` (+24.7 KiB).
+
+Two facts in that measurement matter more than the total.
+
+- **The style's own assets did not grow.** The font stack (`harfrust`,
+  `skrifa`, `zeno`, `parley`, `read_fonts`, `fontique`) is 1,356.9 KiB before
+  and 1,358.0 KiB after; the SVG stack (`usvg`, `resvg`, `tiny_skia`,
+  `svgtypes`, `roxmltree`, `simplecss`) is 949.4 KiB before and 947.3 KiB
+  after. The scroll container had already paid for them, so keeping the
+  `std-widgets` import cost 418.5 KiB of widget code rather than a megabyte of
+  style.
+- **The HTTP and TLS stack is absent from the binary.** An earlier draft of
+  the host-management path called `gregg::cli::dispatch`, which also reaches
+  the daemon commands, and the daemon reaches the HTTP client and rustls:
+  that binary was **14,761,600 bytes**, **2,864,992 bytes** more, with
+  `rustls`, `ring`, `hyper`, `http`, `webpki` and `eggfetch_core` all linked
+  in. The GUI now calls `gregg::cli::add_host` and `gregg::cli::remove_host`
+  — the same code paths `gregg add` and `gregg remove` take — and those
+  crates are not in the binary at all.
+
+The **runtime** figures in the README are the monitor window's, and Plan 191
+did **not** re-measure them on the 25-host fleet, because the harness that
+produced them is not in the repository. The pulldown was measured separately
+against a one-host configuration on the same host, and the ranges overlap
+(68–104 MB with the panel open, 65–76 MB with it hidden), so the honest
+reading is that the pulldown is **not** lighter in memory than the monitor
+window was. The **request-budget** result above is unaffected: the GUI still
+attaches to the same daemon and still adds no request of its own.
+
 ## The fixture
 
 | piece | what it is |

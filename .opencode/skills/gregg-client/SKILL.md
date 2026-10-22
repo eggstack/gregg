@@ -183,23 +183,59 @@ did not publish.
 bundle and no release asset, and the GUI is **not shipped for any target yet**:
 it was qualified natively on macOS only, and the **interactive** Windows and
 Linux native runs are outstanding, so Plan 190's status is **implemented,
-pending release qualification** rather than closed. It requires an existing
-Gregg installation and never bundles a second `gregg`. Do not add a GUI release
-asset, a packaging job or a publish step without a new, explicitly approved
-plan and the native evidence for the target it would ship to.
+pending release qualification** rather than closed. Plan 191 leaves the same
+interactive gate **unchecked** — its status is **implemented, pending native
+interactive acceptance** — so the GUI stays a source build and Windows and
+Linux stay unshippable. It requires an existing Gregg installation and never
+bundles a second `gregg`. Do not add a GUI release asset, a packaging job or a
+publish step without a new, explicitly approved plan and the native evidence
+for the target it would ship to.
 
-Its three layers are a contract, not a convenience: `apps/gregg-gui/src/model.rs`
+Its layers are a contract, not a convenience: `apps/gregg-gui/src/model.rs`
 is a **pure** `FrontendSnapshot -> GuiViewModel` projection (no threads, no
 channels, no Slint) so every truthfulness rule is testable without a desktop
 session; `apps/gregg-gui/src/bridge.rs` owns the attachment and the intents and
-holds no HTTP client; `apps/gregg-gui/src/main.rs` owns the Slint components and
-mutates them **only on the UI thread**, through `slint::invoke_from_event_loop`.
-There is **no polling timer** — a redraw happens because the bridge published
-something. The `EggPool` and cron intents are desired state on a `watch`
-channel, so the newest value wins, a rejected write is retried, and a reconnect
-publishes the new *full* desired state. Closing the monitor window **hides** it
-and leaves the tray running; Quit is the only thing that ends the GUI, and it
-never ends the client daemon.
+holds no HTTP client; `apps/gregg-gui/src/hosts.rs` owns the configuration
+mutations behind an injectable seam; `apps/gregg-gui/src/placement.rs` owns
+where the panel opens; `apps/gregg-gui/src/main.rs` owns the Slint components
+and mutates them **only on the UI thread**, through
+`slint::invoke_from_event_loop`. There is **no polling timer** — a redraw
+happens because the bridge published something. The `EggPool` and cron intents
+are desired state on a `watch` channel, so the newest value wins, a rejected
+write is retried, and a reconnect publishes the new *full* desired state.
+Closing the panel **hides** it and leaves the tray running; Quit is the only
+thing that ends the GUI, and it never ends the client daemon.
+
+**The GUI has one surface: a tray pulldown** (Plan 191). The separate monitor
+window is gone. A borderless, always-on-top panel opens from the native tray
+menu and carries every pane — the fleet summary, the host list, the selected
+host's metrics, drives, interfaces, cron, records and `EggPool` — plus the
+forms that add, remove, rename and re-point hosts. It is dismissed with `Esc`,
+the tray's Open Gregg entry, or its own Close control; there is **no
+click-away dismissal**, because Slint 1.18 exposes no focus-lost event, and
+that limit is stated in the user documentation rather than papered over. It is
+anchored to the trailing edge of the display, on the side where the desktop's
+own shell lives, clamped so it can never open off the screen, and it keeps the
+position and size the operator gave it — a borderless panel carries its own
+header strip to drag it and its own corner grip to resize it. Its colours come
+from Slint's `Palette`, so it follows the desktop's scheme, and its buttons
+and text fields come from `std-widgets`, so they have the hover and pressed
+states a popover needs.
+
+**The GUI may write the configuration file, and only through the CLI's own
+code** (Plan 191). The panel's add, remove and rename go through
+`gregg::cli::add_host` and `gregg::cli::remove_host` — the paths `gregg add`
+and `gregg remove` take — so the endpoint grammar, the config lock, the
+whole-config validation and the atomic write are the CLI's, unchanged. A
+refused mutation leaves the file byte-identical and says why in the panel. The
+panel is a second writer of the configuration **file**, never a second writer
+of fleet state: the client daemon remains the only poller, and `DaemonRequest`
+gains no message. An endpoint change is a **replacement**, not an edit — the
+endpoint is part of a host's identity — and the panel says so before it
+applies one. Reach for those narrow entry points, not `gregg::cli::dispatch`:
+the dispatcher also reaches the daemon commands, and the daemon reaches the
+HTTP client and its TLS stack, so calling it linked 2,864,992 bytes of unused
+machinery into the GUI.
 
 **A desktop with no system tray must never lose the only control surface**
 (Plans 187-190, corrective pass). On Linux the tray needs a
@@ -207,11 +243,12 @@ never ends the client daemon.
 to register the tray **silently**. The GUI therefore probes for a tray host (on
 Linux, the `org.kde.StatusNotifierWatcher` name on the session bus), reports
 the answer in one machine-readable line, and **closes by quitting rather than
-by hiding** when there is no tray — a hidden window with no tray is an
-unreachable application. The probe is re-run at close time and is bounded. The
-decision is a pure, unit-tested function. The monitor window's host and job
+by hiding** when there is no tray — a hidden panel with no tray is an
+unreachable application. With no tray the panel is also opened at startup, so
+it is never a hidden surface. The probe is re-run at close time and is bounded.
+The decision is a pure, unit-tested function. The panel's host, metric and job
 lists are **scrollable with bounded heights**, so a large fleet cannot push
-the metrics, cron and `EggPool` panes out of the window.
+the cron and `EggPool` panes, or the buttons, out of the panel.
 
 **The GUI workspace has its own CI.** It is not a member of the root workspace,
 so no root job builds or tests it — one CI job formats, lints, tests and
@@ -224,9 +261,9 @@ Windows build of `gregg` stayed broken for a whole line of work.
 `NSStatusItem` menu does not activate the app that owns it, and a background
 app cannot bring its own window to the front with `orderFront:`. A GUI
 launched the way a real one is launched — a login item, a launcher, an agent —
-is a background app from its first moment, so "Open Monitor" would silently
+is a background app from its first moment, so "Open Gregg" would silently
 show nothing. `apps/gregg-gui/src/platform.rs` therefore activates the
-application before raising the window; it is the only platform-specific code in
+application before raising the panel; it is the only platform-specific code in
 the GUI, it is macOS-only (`objc2`/`objc2-app-kit`, `NSApplication` feature
 only), and it is a no-op on Windows and Linux.
 

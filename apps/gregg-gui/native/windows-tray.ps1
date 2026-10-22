@@ -350,8 +350,14 @@ try {
     $stdoutFile = Join-Path $workDir "gui.stdout"
     $stderrFile = Join-Path $workDir "gui.stderr"
     Write-Log "starting the GUI"
+    # `--panel` opens the pulldown at startup instead of waiting for the
+    # tray. The tray is there either way — this exercise checks it — but the
+    # panel is the GUI's only window, and the window check below proves that
+    # the GUI really created a native top-level window. Without the flag the
+    # panel stays hidden until the tray is used, and there is no window to
+    # find.
     $guiProcess = Start-Process -FilePath $GuiPath `
-        -ArgumentList @("--config", $configPath, "--gregg", $GreggPath) `
+        -ArgumentList @("--config", $configPath, "--gregg", $GreggPath, "--panel") `
         -RedirectStandardOutput $stdoutFile `
         -RedirectStandardError $stderrFile `
         -NoNewWindow -PassThru

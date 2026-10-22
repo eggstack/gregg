@@ -439,11 +439,11 @@ rather than duplicated strings:
 The TUI's own output is unchanged: `ui/cron.rs` and `ui/eggpool.rs` call
 these, and their existing tests still assert the same words.
 
-### The optional GUI frontend (Plan 189)
+### The optional GUI frontend (Plans 189 and 191)
 
 `apps/gregg-gui` is a second frontend for the same client daemon. It is a
 **frontend, never a second poller**, and the architecture that makes that true
-is a three-layer split:
+is a split into layers:
 
 - **A pure projection.** `apps/gregg-gui/src/model.rs` maps one
   `FrontendSnapshot` to one `GuiViewModel` and touches nothing else. It has no
@@ -473,39 +473,63 @@ answers a new attachment has never seen the old one, so a delta would be
 meaningless. An intent governs what the daemon *transmits*, never what it
 *fetches*, so a released intent costs the fleet nothing.
 
-Closing the monitor window **hides** it and leaves the tray and the observation
+The GUI has **one surface**: a tray pulldown (Plan 191). The separate monitor
+window is gone. The pulldown is a borderless, always-on-top panel that opens
+from the native tray menu and carries the fleet summary, the host list, the
+selected host's metrics, drives and interfaces, its scheduler jobs and
+records, and the `EggPool` plane. Its lists are bounded and scrollable, so a
+large fleet cannot push the cron and `EggPool` panes, or the buttons, out of
+the panel.
+
+Closing the panel **hides** it and leaves the tray and the observation
 running; Quit is the only thing that ends the GUI, and it never ends the client
-daemon.
+daemon. `Esc`, the tray's Open Gregg entry and the panel's own Close control
+all dismiss it. There is **no click-away dismissal**, because Slint 1.18
+exposes no focus-lost event: a window cannot be told that the click landed
+elsewhere, and the panel is always-on-top, so it stays over whatever is
+behind it. That limit is stated in the user documentation rather than papered
+over.
+
+The panel is placed on the display it opens on, and it keeps the position and
+size the operator gave it. Slint 1.18 exposes no tray-icon position and no
+pointer position, and `winit` 0.30 knows a monitor's bounds but not its work
+area, so the panel is anchored to the **trailing edge of the display, on the
+side where the desktop's own shell lives** — the top on macOS and Linux, the
+bottom on Windows — and clamped so it is always fully on the display. The
+operator can drag the panel by its header strip and resize it by the grip in
+its corner, which is what a borderless panel needs and what a window frame
+would otherwise have provided.
 
 That "hide" is only safe when there **is** a tray to bring the window back. On
 Linux the tray needs a `StatusNotifierItem` host, and a plain GNOME session has
 none — Slint's `ksni` backend then fails to register, silently, and the GUI is
-left with a window it can hide and nothing that can show it again. An operator
+left with a panel it can hide and nothing that can show it again. An operator
 in that state would have an invisible, unquittable process. So the GUI **probes
 for a tray host** before it hides anything: on Linux it looks for the
 `org.kde.StatusNotifierWatcher` name on the session bus, which is exactly what
 Slint's own backend requires, and it reports the answer in one machine-readable
-line. When there is **no** tray, closing the window **quits** the GUI instead
-of hiding it, and the window says so. The probe is re-run at close time rather
+line. When there is **no** tray, closing the panel **quits** the GUI instead
+of hiding it, and the panel says so. With no tray the panel is also opened at
+startup, so it is never a hidden surface. The probe is re-run at close time rather
 than taken from startup, because a tray host can appear after the GUI started,
 and it is bounded, because a wedged bus must not hang the close. The decision
 itself is a pure function, so both branches are unit-tested without a desktop
 session.
 
-The monitor window's lists are **bounded and scrollable**. The host list and
-the cron job list grow with the fleet, and a fixed-size window cannot hold an
-unbounded list: before, a 25-host fleet pushed the metrics, cron and `EggPool`
-panes out of the window entirely. Each list therefore lives in a scroll
-container with a bounded height, so the window keeps its size and every pane
-stays reachable.
+The panel's lists are **bounded and scrollable**. The host list, the metric
+rows and the cron job list grow with the fleet, and a fixed-size panel cannot
+hold an unbounded list: before, a 25-host fleet pushed the metrics, cron and
+`EggPool` panes out of the window entirely. Each list therefore lives in a
+scroll container with a bounded height, so the panel keeps its size and every
+pane stays reachable.
 
 A tray application is a **background** application, and on macOS that has a
 concrete consequence: an `NSStatusItem` menu does not activate the app that
 owns it, and a background app cannot bring its own window to the front with
 `orderFront:`. A GUI launched the way a real one is launched — a login item, a
 launcher, an agent — is a background app from its first moment, so "Open
-Monitor" would silently do nothing. The GUI therefore **activates itself**
-before it raises the window, through `apps/gregg-gui/src/platform.rs`. The
+Gregg" would silently do nothing. The GUI therefore **activates itself**
+before it raises the panel, through `apps/gregg-gui/src/platform.rs`. The
 activation is the only platform-specific code in the GUI, it is macOS-only
 (`objc2`/`objc2-app-kit`, `NSApplication` feature only), and it is a no-op on
 Windows and Linux, where showing a window the process owns is enough.
@@ -524,7 +548,7 @@ What was proven, and how:
   the GUI's `Bridge` attached to the same config. `/v2/status` is flat at four
   polls per window in every phase. Natively, on 25 synthetic endpoints, the
   counts are identical with the daemon alone, with the GUI as a tray icon and
-  with the monitor window visible.
+  with the panel visible.
 - **The intents govern transmission, not fetching.** An opened cron job grew
   the local IPC document and left the remote's history-fetch count at one. The
   `EggPool` pane drove one daemon-owned worker on the converged window.
@@ -533,9 +557,8 @@ What was proven, and how:
   period with a frontend attached — the "one timer wake per attached frontend
   every 20 ms" that `clientd/daemon.rs` already documents. The GUI adds no
   *new kind* of cost.
-- **The memory is Slint's, not the protocol's.** Hiding the monitor window
-  saves under a megabyte; the rest is the software renderer and the system-font
-  machinery.
+- **The memory is Slint's, not the protocol's.** Hiding the panel saves under
+  a megabyte; the rest is the software renderer and the system-font machinery.
 
 The decision is **accept**, and it is a decision about a **source build on a
 developer's machine**: 72–83 MB resident and a ten-megabyte binary are

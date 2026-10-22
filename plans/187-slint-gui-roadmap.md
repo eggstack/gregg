@@ -7,10 +7,13 @@ start a client daemon on Windows — and added native CI on Windows and Linux.
 Children 188 and 189 are closed; child **Plan 190 is implemented, pending
 release qualification** — its own native-platform acceptance gate is still
 unchecked, and the outstanding work is listed in that plan's *Release
-qualification* section. The **interactive** three-desktop demonstration is
-still **outstanding and not claimed** — see the closure record at the end of
-this file and the scope record in `plans/README.md`. The GUI is therefore
-**not shippable for Windows or Linux**, and it stays a source build.
+qualification* section. Child **Plan 191 is implemented, pending native
+interactive acceptance**: the separate monitor window is gone, the GUI is one
+tray pulldown, and it can add, remove, rename and re-point hosts. The
+**interactive** three-desktop demonstration is still **outstanding and not
+claimed** — see the closure record at the end of this file and the scope
+record in `plans/README.md`. The GUI is therefore **not shippable for Windows
+or Linux**, and it stays a source build.
 
 Depends on: the completed Plan 161-172 Gregg client-daemon split and current main at planning time (2026-10-21). Independent of the Plan 091 soak record.
 
