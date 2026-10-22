@@ -750,6 +750,25 @@ Raspi 8      192.168.182.8    Online   net agg cap rx=None tx=None
 The two hosts' network **shares** now read as *not measured* (`—`) in the fleet
 view, and every other reading on them is shown.
 
+**A host that is not online was observed natively too.** The same build was run
+against a configuration carrying a host that answers nothing
+(`192.168.182.250:11310`, a timeout of 1500 ms), and the block drew its header
+line and nothing else:
+
+```text
+Deadpool  IO 35.5%  12.45/12.29/12.27  16C  3.54GHz
+CPU   [██████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  14%
+MEM   [██████████████████████████████░░░░░░░░░░]  79%
+SWP   [████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]  21%
+DISK  [██████████████████████████████████████░░░]  94%
+NET   [░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░]   0%
+Ghost  offline (network)
+```
+
+The summary line above it read `2 online, 0 pending, 1 offline`, and the
+pulldown's height followed the content: **220 px** for two online blocks and one
+offline header, against 478 px for four online blocks.
+
 **The cost:** the release binary is **12,012,560 bytes**, **−49,568 (−0.4 %)** on
 the 12,062,128 of the revision above.
 
@@ -758,6 +777,23 @@ it was for Plan 192 — no tray icon was clicked and no pulldown was opened by a
 pointer. The macOS Intel build was not produced locally, there is still no DPI
 measurement at 125 % or 150 %, and Wayland was never executed. The Windows and
 Linux legs are authority in the GUI CI job, not here.
+
+**The CI run that covers this work** is **`39863031513`**, against `9932b57`, and
+it is **green on all ten jobs**: the core `Linux`, `macOS (macos-15)`,
+`macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV` and `FreeBSD` jobs, and
+the three `GUI` legs (`macos-15`, `windows-2022`, `ubuntu-latest`). The `GUI`
+legs are the only authority for this workspace's Windows and Linux behaviour,
+because the workspace is not a member of the root workspace and no root job
+compiles it.
+
+**The root workspace's `cargo clippy --workspace --all-targets --all-features
+-- -D warnings` does not pass on this macOS host**, and did not before this
+work either: the local toolchain is Rust 1.99.1, whose clippy has new lints
+(`borrow_as_ptr` and `clippy::panic`) that fire in `gregg-host`'s **macOS-only**
+collector, which no CI job lints — CI's clippy job runs on Linux, where that
+module is not compiled, and the macOS CI job runs `cargo check`, not clippy.
+Re-verified on a pristine worktree at `cf05ad0` with none of this work present:
+the same lints fire there. Nothing under `crates/gregg-host/` was changed here.
 
 ### The native exercises, on CI run `39811582623`
 
