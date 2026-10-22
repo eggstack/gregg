@@ -652,6 +652,15 @@ is not in the tree. The macOS Intel build was not produced locally, there is
 still no DPI measurement at 125 % or 150 %, and Wayland was never executed.
 The Windows and Linux legs are authority in the GUI CI job, not here.
 
+**The CI run that covers this work** is **`39846098748`**, against
+`7e56a3c`, and it is **green on all ten jobs**: the core `Linux`,
+`macOS (macos-15)`, `macOS (macos-15-intel)`, `Windows`, `Scripts`, `MSRV`
+and `FreeBSD` jobs, and the three `GUI` legs (`macos-15`, `windows-2022`,
+`ubuntu-latest`). The `GUI` legs are the only authority for this workspace's
+Windows and Linux behaviour, because the workspace is not a member of the
+root workspace and no root job compiles it. The `GUI (macos-15)` leg is the
+one that builds the patched macOS backend.
+
 ### The native exercises, on CI run `39811582623`
 
 The GUI workspace is not a member of the root workspace, so no root job

@@ -64,6 +64,9 @@ the GUI is **not shippable** for Windows or Linux.
 > The amendment changes the pulldown's *shape*, not its *behaviour*: the tray's click still opens
 > the pulldown, the pulldown still carries the content, there is still no launcher entry, and the
 > protocol is still untouched.
+>
+> CI run **`39846098748`** on `7e56a3c` is **green on all ten jobs**, including the three `GUI`
+> legs — the only authority for this workspace's Windows and Linux behaviour.
 
 ## Objective
 
